@@ -56,16 +56,84 @@ class StartupPreferencesState:
         self._commit(replace(self._value,section_display_mode=mode))
 
 
-    def feedback_orientation(self,section_key: str) -> str:
-        return self._value.feedback_orientations.get(str(section_key),"identity")
+    def feedback_orientation_default(self,section_key: str) -> str:
+        settings = self._value.feedback_orientations.get(str(section_key))
+        return "identity" if settings is None else settings.default
 
-    def set_feedback_orientation(self,section_key: str,value: Any) -> None:
+    def feedback_orientation_for_plane(
+        self,section_key: str,plane_name: str | None,
+    ) -> str | None:
+        plane = str(plane_name or "").strip()
+        if not plane:
+            return None
+        settings = self._value.feedback_orientations.get(str(section_key))
+        if settings is None:
+            return None
+        return settings.planes.get(plane)
+
+    def feedback_orientation(
+        self,section_key: str,plane_name: str | None=None,
+    ) -> str:
+        override = self.feedback_orientation_for_plane(section_key,plane_name)
+        if override is not None:
+            return override
+        return self.feedback_orientation_default(section_key)
+
+    def set_feedback_orientation_default(
+        self,section_key: str,value: Any,
+    ) -> None:
         from ..core.cgh.feedback import FeedbackOrientation
+        from ..setup import FeedbackOrientationPreferences
         section = str(section_key)
         orientation = FeedbackOrientation.normalize(value).value
         orientations = dict(self._value.feedback_orientations)
-        orientations[section] = orientation
+        previous = orientations.get(section,FeedbackOrientationPreferences())
+        orientations[section] = FeedbackOrientationPreferences(
+            default=orientation,planes=previous.planes,
+        )
         self._commit(replace(self._value,feedback_orientations=orientations))
+
+    def set_feedback_orientation_for_plane(
+        self,section_key: str,plane_name: str,value: Any,
+    ) -> None:
+        from ..core.cgh.feedback import FeedbackOrientation
+        from ..setup import FeedbackOrientationPreferences
+        section = str(section_key)
+        plane = str(plane_name or "").strip()
+        if not plane:
+            raise ValueError("plane_name must not be empty")
+        orientation = FeedbackOrientation.normalize(value).value
+        orientations = dict(self._value.feedback_orientations)
+        previous = orientations.get(section,FeedbackOrientationPreferences())
+        planes = dict(previous.planes)
+        planes[plane] = orientation
+        orientations[section] = FeedbackOrientationPreferences(
+            default=previous.default,planes=planes,
+        )
+        self._commit(replace(self._value,feedback_orientations=orientations))
+
+    def clear_feedback_orientation_for_plane(
+        self,section_key: str,plane_name: str,
+    ) -> None:
+        from ..setup import FeedbackOrientationPreferences
+        section = str(section_key)
+        plane = str(plane_name or "").strip()
+        if not plane:
+            return
+        orientations = dict(self._value.feedback_orientations)
+        previous = orientations.get(section)
+        if previous is None or plane not in previous.planes:
+            return
+        planes = dict(previous.planes)
+        planes.pop(plane,None)
+        orientations[section] = FeedbackOrientationPreferences(
+            default=previous.default,planes=planes,
+        )
+        self._commit(replace(self._value,feedback_orientations=orientations))
+
+    # Compatibility helper for the first pre-release section-only behavior.
+    def set_feedback_orientation(self,section_key: str,value: Any) -> None:
+        self.set_feedback_orientation_default(section_key,value)
 
     def _commit(self,new_value: SLMStartupPreferences) -> None:
         if new_value == self._value:

@@ -67,11 +67,36 @@ def test_all_feedback_orientations_are_bijections_for_square_lattice():
         assert sorted(permutation.tolist()) == [0,1,2,3]
 
 
-def test_feedback_orientation_preference_roundtrips_and_persists():
+def test_feedback_orientation_preferences_resolve_plane_then_default():
     saved = []
     state = StartupPreferencesState(SLMStartupPreferences(),saved.append)
-    state.set_feedback_orientation("sec_0","flip_horizontal")
+
+    state.set_feedback_orientation_default("sec_0","flip_horizontal")
     assert state.feedback_orientation("sec_0") == "flip_horizontal"
+    assert state.feedback_orientation("sec_0","sample") == "flip_horizontal"
+    assert state.feedback_orientation_for_plane("sec_0","sample") is None
+
+    state.set_feedback_orientation_for_plane("sec_0","sample","rotate_180")
+    assert state.feedback_orientation("sec_0","sample") == "rotate_180"
+    assert state.feedback_orientation("sec_0","fourier") == "flip_horizontal"
+
     restored = SLMStartupPreferences.from_dict(state.value.to_dict())
-    assert restored.feedback_orientations == {"sec_0":"flip_horizontal"}
+    settings = restored.feedback_orientations["sec_0"]
+    assert settings.default == "flip_horizontal"
+    assert dict(settings.planes) == {"sample":"rotate_180"}
     assert saved[-1] == state.value
+
+
+def test_feedback_orientation_pre_release_section_value_migrates_to_default():
+    restored = SLMStartupPreferences.from_dict({
+        "feedback_orientations":{"sec_0":"flip_horizontal"},
+    })
+    settings = restored.feedback_orientations["sec_0"]
+    assert settings.default == "flip_horizontal"
+    assert dict(settings.planes) == {}
+    assert restored.to_dict()["feedback_orientations"] == {
+        "sec_0":{
+            "default":"flip_horizontal",
+            "planes":{},
+        },
+    }

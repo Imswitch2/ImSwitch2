@@ -61,6 +61,9 @@ class FeedbackCoordinator(QtCore.QObject):
                     detectors=sources,
                     current_detector=current,
                     feedback_orientation=self.service.feedback_orientation(section_key),
+                    feedback_orientation_context=(
+                        self._feedback_orientation_ui_context(section_key)
+                    ),
                     cgh_summary=self.measurements_cgh_summary(section_key),
                     title="CGH Session - %s/%s" % (
                         self.controller.presenter.display_name,section_key,
@@ -110,6 +113,7 @@ class FeedbackCoordinator(QtCore.QObject):
             self.localization_context(section_key),
             self.measurements_cgh_summary(section_key),
             self.service.feedback_orientation(section_key),
+            self._feedback_orientation_ui_context(section_key),
         )
         self._configure_automatic_availability(window)
         self._apply_automatic_state_to_window(section_key,window)
@@ -127,6 +131,18 @@ class FeedbackCoordinator(QtCore.QObject):
         self,section_key: str,available: Sequence[str],
     ) -> str | None:
         return self.service.preferred_source(section_key,available)
+
+    def _feedback_orientation_ui_context(
+        self,section_key: str,
+    ) -> dict[str,Any]:
+        context = self.service.feedback_orientation_context(section_key)
+        return {
+            "plane_name":context.plane_name,
+            "plane_override":context.plane_override,
+            "saved_orientation":context.saved_orientation.value,
+            "change_enabled":context.change_allowed,
+            "change_reason":context.change_unavailable_reason,
+        }
 
     def request_measurement(
         self,
@@ -561,6 +577,8 @@ class FeedbackCoordinator(QtCore.QObject):
             self.service.set_feedback_orientation(
                 section_key,values.get("orientation","identity"),
             )
+        elif request is MeasurementsAction.FEEDBACK_ORIENTATION_SAVE:
+            self.service.save_feedback_orientation(section_key)
         elif request is MeasurementsAction.INTENSITY_APPLY:
             self.apply_intensity_feedback(section_key)
         elif request is MeasurementsAction.INTENSITY_RESET:

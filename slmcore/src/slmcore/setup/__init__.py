@@ -4,13 +4,14 @@ from .io import (
     save_slm_startup_preferences,
 )
 from .model import SLMDefinition,SLMHardwareConfig,SLMSectionsDefinition
-from .preferences import SLMStartupPreferences
+from .preferences import FeedbackOrientationPreferences,SLMStartupPreferences
 
 __all__ = [
     "SLM_SETUP_FILE_SCHEMA_VERSION",
     "SLMDefinition",
     "SLMHardwareConfig",
     "SLMSectionsDefinition",
+    "FeedbackOrientationPreferences",
     "SLMStartupPreferences",
     "load_slm_setup_file",
     "save_slm_startup_preferences",

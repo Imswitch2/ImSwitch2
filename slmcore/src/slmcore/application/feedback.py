@@ -83,6 +83,22 @@ class FeedbackParameterUpdateResult:
 
 
 @dataclass(frozen=True)
+class FeedbackOrientationContext:
+    """Current transient orientation and its persistent plane/default context."""
+
+    orientation: FeedbackOrientation
+    saved_orientation: FeedbackOrientation
+    plane_name: str | None=None
+    plane_override: bool=False
+    change_allowed: bool=True
+    change_unavailable_reason: str=""
+
+    @property
+    def save_needed(self) -> bool:
+        return self.orientation is not self.saved_orientation
+
+
+@dataclass(frozen=True)
 class SLMFeedbackCallbacks:
     """Presentation-neutral events emitted by :class:`SLMFeedbackService`."""
 
@@ -373,6 +389,12 @@ class SLMFeedbackService:
         self.measurements = measurements
         self._callbacks = callbacks or SLMFeedbackCallbacks()
         self._measurement_requests: dict[str,MeasurementRequest] = {}
+        # Runtime/test orientation is deliberately separate from startup
+        # preferences. It is scoped to the currently active plane and only
+        # becomes persistent through save_feedback_orientation().
+        self._feedback_orientations: dict[
+            str,tuple[str | None,FeedbackOrientation]
+        ] = {}
         self._automatic = AutomaticFeedbackRunner(self)
 
     def set_callbacks(self,callbacks: SLMFeedbackCallbacks | None) -> None:
@@ -434,28 +456,125 @@ class SLMFeedbackService:
             return None
         return measurements.preferred_source(section_key,available)
 
-    def feedback_orientation(self,section_key: str) -> FeedbackOrientation:
+    def _active_feedback_plane(self,section_key: str) -> str | None:
+        calibration = getattr(self.session,"calibration",None)
+        if calibration is None:
+            return None
+        plane = calibration.active_plane(section_key)
+        return str(plane or "").strip() or None
+
+    def _saved_feedback_orientation(
+        self,section_key: str,plane_name: str | None,
+    ) -> FeedbackOrientation:
         preferences = self.session.startup_preferences
         value = (
             "identity" if preferences is None
-            else preferences.feedback_orientation(section_key)
+            else preferences.feedback_orientation(section_key,plane_name)
         )
         return FeedbackOrientation.normalize(value)
+
+    def _feedback_orientation_change_reason(self,section_key: str) -> str:
+        status = self.session.runtime.get_section_cgh_status(section_key)
+        current = status.current_round_index
+        feedback_cgh_computed = bool(
+            current is not None
+            and (int(current) > 0 or bool(status.position_active))
+        )
+        if feedback_cgh_computed:
+            return (
+                "Feedback orientation is locked after a feedback-corrected "
+                "hologram has been computed. Reset the intensity feedback to "
+                "the base round or clear the position correction before "
+                "changing orientation."
+            )
+        return ""
+
+    def feedback_orientation(self,section_key: str) -> FeedbackOrientation:
+        section = str(section_key)
+        plane = self._active_feedback_plane(section)
+        current = self._feedback_orientations.get(section)
+        if current is None or current[0] != plane:
+            orientation = self._saved_feedback_orientation(section,plane)
+            self._feedback_orientations[section] = (plane,orientation)
+            return orientation
+        return current[1]
+
+    def feedback_orientation_context(
+        self,section_key: str,
+    ) -> FeedbackOrientationContext:
+        section = str(section_key)
+        plane = self._active_feedback_plane(section)
+        orientation = self.feedback_orientation(section)
+        saved = self._saved_feedback_orientation(section,plane)
+        preferences = self.session.startup_preferences
+        plane_override = bool(
+            plane
+            and preferences is not None
+            and preferences.feedback_orientation_for_plane(section,plane) is not None
+        )
+        reason = self._feedback_orientation_change_reason(section)
+        return FeedbackOrientationContext(
+            orientation=orientation,
+            saved_orientation=saved,
+            plane_name=plane,
+            plane_override=plane_override,
+            change_allowed=not bool(reason),
+            change_unavailable_reason=reason,
+        )
 
     def set_feedback_orientation(
         self,section_key: str,orientation: FeedbackOrientation | str,
     ) -> FeedbackOrientation:
         self._require_editor_mode()
+        section = str(section_key)
+        reason = self._feedback_orientation_change_reason(section)
+        if reason:
+            raise RuntimeError(reason)
         normalized = FeedbackOrientation.normalize(orientation)
-        preferences = self.session.startup_preferences
-        if preferences is not None:
-            preferences.set_feedback_orientation(section_key,normalized.value)
+        plane = self._active_feedback_plane(section)
+        self._feedback_orientations[section] = (plane,normalized)
         if self.session.runtime.get_section_feedback_status(
-            section_key
+            section
         ).localization_available:
-            self._update_committed_analysis(section_key)
-        self._section_changed(section_key)
+            self._update_committed_analysis(section)
+        self._section_changed(section)
         return normalized
+
+    def save_feedback_orientation(self,section_key: str) -> FeedbackOrientation:
+        """Persist the current transient orientation for the active plane/default."""
+        self._require_editor_mode()
+        section = str(section_key)
+        orientation = self.feedback_orientation(section)
+        plane = self._active_feedback_plane(section)
+        preferences = self.session.startup_preferences
+        if preferences is None:
+            raise RuntimeError("Startup preferences are unavailable")
+        if plane is None:
+            preferences.set_feedback_orientation_default(section,orientation.value)
+        else:
+            preferences.set_feedback_orientation_for_plane(
+                section,plane,orientation.value,
+            )
+        self._section_changed(section)
+        return orientation
+
+    def refresh_feedback_orientation_contexts(self) -> None:
+        """Discard unsaved orientation only for sections whose active plane changed."""
+        for section_key in tuple(self.session.runtime.section_keys):
+            section = str(section_key)
+            current = self._feedback_orientations.get(section)
+            if current is None:
+                continue
+            plane = self._active_feedback_plane(section)
+            if current[0] == plane:
+                continue
+            orientation = self._saved_feedback_orientation(section,plane)
+            self._feedback_orientations[section] = (plane,orientation)
+            if self.session.runtime.get_section_feedback_status(
+                section
+            ).localization_available:
+                self._update_committed_analysis(section)
+            self._section_changed(section)
 
     def request_measurement(
         self,
@@ -871,6 +990,7 @@ class SLMFeedbackService:
         self._automatic.cancel_for_runtime_change()
         for section_key in tuple(self._measurement_requests):
             self.cancel_measurement(section_key)
+        self._feedback_orientations.clear()
 
     def dispose(self) -> None:
         self.prepare_runtime_change()
