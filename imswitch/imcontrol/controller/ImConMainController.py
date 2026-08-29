@@ -186,6 +186,30 @@ class ImConMainController(MainController):
         
         # Register per-positioner axis jog actions (Phase 3c migration)
         self._registerPositionerJogActions()
+
+        # Positioner-wide actions live in the same global shortcut catalog as jog actions.
+        if 'Positioner' in self.controllers:
+            positionerController = self.controllers['Positioner']
+            positionerWidget = positionerController._widget
+            self.__shortcutManager.registerAction(
+                actionId='positioner.toggleCoarseFine',
+                displayName='Positioner: toggle coarse/fine',
+                callback=positionerController.toggleStepMode,
+                defaultKeySequence=None,
+                scope=ShortcutScope.Application,
+                owner=positionerWidget,
+                initiallyBound=False,
+            )
+            if positionerController._getJoystickPositionerName() is not None:
+                self.__shortcutManager.registerAction(
+                    actionId='positioner.toggleJoystick',
+                    displayName='Positioner: toggle joystick',
+                    callback=positionerController.toggleJoystick,
+                    defaultKeySequence=None,
+                    scope=ShortcutScope.Application,
+                    owner=positionerWidget,
+                    initiallyBound=False,
+                )
         
         self.__shortcutManager.loadConfigOverrides(self.__setupInfo.shortcuts)
         self.__shortcutManager.computeEffectiveBindings()
@@ -460,9 +484,21 @@ class ImConMainController(MainController):
         from imswitch.imcommon.model import ShortcutScope
         from imswitch.imcontrol.controller.ShortcutManager import computePositionerJogDefaults
 
-        jogDefaults = computePositionerJogDefaults(self.__setupInfo.positioners)
-
+        visiblePositioners = {}
         for positionerName, positionerInfo in self.__setupInfo.positioners.items():
+            if not positionerInfo.forPositioning or getattr(positionerInfo, 'hide', False):
+                continue
+            try:
+                pManager = self.__masterController.positionersManager[positionerName]
+            except Exception:
+                continue
+            if not getattr(pManager, 'isAvailable', True):
+                continue
+            visiblePositioners[positionerName] = positionerInfo
+
+        jogDefaults = computePositionerJogDefaults(visiblePositioners)
+
+        for positionerName, positionerInfo in visiblePositioners.items():
             for axis in positionerInfo.axes:
                 for direction, label in (('plus', '+'), ('minus', '-')):
                     actionId = f'positioner.{positionerName}.{axis}.{direction}'

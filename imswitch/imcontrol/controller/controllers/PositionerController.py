@@ -23,16 +23,25 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
 
         self.settingAttr = False
         self._previousJoystickState = None
+        self._liveUpdateAvailable = {}
+        self._liveUpdateEnabled = {}
+        self._coarseStepMultiplier = 5.0
+        self._isCoarseMode = False
+        self._joystickAutoReenable = True
+        self._joystickAutoReenableDelayS = 5.0
+        self._joystickAutoReenableTimers = {}
+        self._joystickAutoReenablePendingAxes = {}
+        self._joystickAutoReenablePollIntervalMs = 200
 
         self.__logger = initLogger(self, tryInheritParent=True)
 
         # Set up positioners
         for pName, pManager in self._master.positionersManager:
-            if not pManager.forPositioning:
+            if not self._isPositionerShownInWidget(pManager):
                 continue
 
-            if getattr(pManager, 'device', True) is None:
-                continue
+            self._liveUpdateAvailable[pName] = bool(getattr(pManager, 'liveUpdate', False))
+            self._liveUpdateEnabled[pName] = self._liveUpdateAvailable[pName]
 
             if pManager.joystick:
                 self._widget.addJoystick(pName)
@@ -73,6 +82,11 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                     )
         
         self._widget.sigJoystickToggled.connect(self.requestJoystickStatus)
+        self._widget.sigSettingsClicked.connect(self.openSettingsDialog)
+        self._widget.sigSettingsChanged.connect(self.applySettings)
+        self._widget.sigStepModeChanged.connect(self.setStepMode)
+        self._widget.setCoarseStepMultiplier(self._coarseStepMultiplier)
+        self._widget.setStepMode(self._isCoarseMode)
         self._updateLiveTimerState()
         self._refreshLiveUpdatedPositioners()
 
@@ -93,36 +107,123 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
     def _onManagerJoystickStatusChanged(self, pName, enabled):
         self.setJoystickCheckStatus(enabled)
 
+    def _isPositionerShownInWidget(self, pManager):
+        return bool(
+            pManager.forPositioning
+            and getattr(pManager, 'isAvailable', True)
+            and not getattr(pManager, 'hide', False)
+        )
+
+    def _isLiveUpdateEnabled(self, positionerName, pManager=None):
+        if pManager is None:
+            pManager = self._master.positionersManager[positionerName]
+        return bool(
+            getattr(pManager, 'liveUpdate', False)
+            and self._liveUpdateAvailable.get(positionerName, False)
+            and self._liveUpdateEnabled.get(positionerName, False)
+        )
+
+    def openSettingsDialog(self):
+        positionerSettings = {}
+        for pName, pManager in self._master.positionersManager:
+            if not self._isPositionerShownInWidget(pManager):
+                continue
+            positionerSettings[pName] = {
+                'liveUpdateAvailable': self._liveUpdateAvailable.get(pName, False),
+                'liveUpdateEnabled': self._liveUpdateEnabled.get(pName, False),
+            }
+        self._widget.showSettingsDialog(
+            self._liveUpdateIntervalMs,
+            positionerSettings,
+            {
+                'coarseStepMultiplier': self._coarseStepMultiplier,
+                'joystickAvailable': self._getJoystickPositionerName() is not None,
+                'joystickAutoReenable': self._joystickAutoReenable,
+                'joystickAutoReenableDelayS': self._joystickAutoReenableDelayS,
+            },
+        )
+
+    def applySettings(self, settings):
+        self._liveUpdateIntervalMs = max(100, int(settings.get(
+            'liveUpdateIntervalMs', self._liveUpdateIntervalMs
+        )))
+        self._liveUpdateTimer.setInterval(self._liveUpdateIntervalMs)
+
+        liveUpdateEnabled = settings.get('liveUpdateEnabled', {})
+        for pName in self._liveUpdateEnabled:
+            if pName in liveUpdateEnabled:
+                self._liveUpdateEnabled[pName] = bool(
+                    self._liveUpdateAvailable.get(pName, False)
+                    and liveUpdateEnabled[pName]
+                )
+
+        try:
+            multiplier = float(settings.get('coarseStepMultiplier', self._coarseStepMultiplier))
+        except (TypeError, ValueError):
+            multiplier = self._coarseStepMultiplier
+        self._coarseStepMultiplier = max(1.0, multiplier)
+        self._widget.setCoarseStepMultiplier(self._coarseStepMultiplier)
+
+        self._joystickAutoReenable = bool(settings.get(
+            'joystickAutoReenable', self._joystickAutoReenable
+        ))
+        try:
+            delay = float(settings.get(
+                'joystickAutoReenableDelayS', self._joystickAutoReenableDelayS
+            ))
+        except (TypeError, ValueError):
+            delay = self._joystickAutoReenableDelayS
+        self._joystickAutoReenableDelayS = max(0.1, delay)
+        if not self._joystickAutoReenable:
+            self._cancelAllJoystickAutoReenable()
+
+        self._updateLiveTimerState()
+        self._refreshLiveUpdatedPositioners()
+
+    def setStepMode(self, coarseMode):
+        self._isCoarseMode = bool(coarseMode)
+        self._widget.setStepMode(self._isCoarseMode)
+
+    def toggleStepMode(self):
+        self.setStepMode(not self._isCoarseMode)
+
+    def _getStepModeMultiplier(self):
+        return self._coarseStepMultiplier if self._isCoarseMode else 1.0
+
+    def toggleJoystick(self):
+        pName = self._getJoystickPositionerName()
+        if pName is None:
+            return
+        pManager = self._master.positionersManager[pName]
+        enabled = not bool(getattr(pManager, 'joystickStatus', False))
+        self.requestJoystickStatus(enabled, pName)
+        self.setJoystickCheckStatus(getattr(pManager, 'joystickStatus', enabled))
+
+    def _getJoystickPositionerName(self):
+        for pName, pManager in self._master.positionersManager:
+            if self._isPositionerShownInWidget(pManager) and getattr(pManager, 'joystick', False):
+                return pName
+        return None
+
     def _hasLiveUpdatePositioner(self):
-        for _, pManager in self._master.positionersManager:
-            if not pManager.forPositioning:
-                continue
-            if getattr(pManager, 'device', True) is None:
-                continue
-            if getattr(pManager, 'liveUpdate', False):
+        for pName, pManager in self._master.positionersManager:
+            if self._isPositionerShownInWidget(pManager) and self._isLiveUpdateEnabled(pName, pManager):
                 return True
         return False
-
 
     def _updateLiveTimerState(self):
         if self._hasLiveUpdatePositioner():
             if not self._liveUpdateTimer.isActive():
                 self._liveUpdateTimer.start()
-        else:
-            if self._liveUpdateTimer.isActive():
-                self._liveUpdateTimer.stop()
-
+        elif self._liveUpdateTimer.isActive():
+            self._liveUpdateTimer.stop()
 
     def _refreshLiveUpdatedPositioners(self):
         for pName, pManager in self._master.positionersManager:
-            if not pManager.forPositioning:
+            if not self._isPositionerShownInWidget(pManager):
                 continue
-            if getattr(pManager, 'device', True) is None:
-                continue
-            if not getattr(pManager, 'liveUpdate', False):
-                continue
-
-            self.updatePosition(pName, 'all')
+            if self._isLiveUpdateEnabled(pName, pManager):
+                self.updatePosition(pName, 'all')
 
     def setJoystickStatusAfterRec(self, pName):
         if self._previousJoystickState:
@@ -152,6 +253,7 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
             self._widget.joystickCheck.setChecked(True)
 
     def closeEvent(self):
+        self._cancelAllJoystickAutoReenable()
         if hasattr(self, '_liveUpdateTimer') and self._liveUpdateTimer.isActive():
             self._liveUpdateTimer.stop()
         self._master.positionersManager.execOnAll(
@@ -166,20 +268,32 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         return self._master.positionersManager.execOnAll(lambda p: p.speed)
 
     def move(self, positionerName, axis, dist):
-        """ Moves positioner by dist micrometers in the specified axis. """
-        self._master.positionersManager[positionerName].move(dist, axis)
-        self.updatePosition(positionerName, axis)
+        """Move positioner by ``dist`` in the specified axis."""
+        pManager = self._master.positionersManager[positionerName]
+        shouldAutoReenableJoystick = self._shouldAutoReenableJoystickAfterMove(pManager)
+        result = pManager.move(dist, axis)
+        if not self._isLiveUpdateEnabled(positionerName, pManager):
+            if not self._applyPositionResult(positionerName, axis, result):
+                self.updatePosition(positionerName, axis)
+        self._scheduleJoystickAutoReenable(positionerName, axis, shouldAutoReenableJoystick)
 
     def setPos(self, positionerName, axis, position):
-        """ Moves the positioner to the specified position in the specified axis. """
-        self._master.positionersManager[positionerName].setPosition(position, axis)
-        self.updatePosition(positionerName, axis)
+        """Move the positioner to an absolute position."""
+        pManager = self._master.positionersManager[positionerName]
+        shouldAutoReenableJoystick = self._shouldAutoReenableJoystickAfterMove(pManager)
+        result = pManager.setPosition(position, axis)
+        if not self._isLiveUpdateEnabled(positionerName, pManager):
+            if not self._applyPositionResult(positionerName, axis, result):
+                self.updatePosition(positionerName, axis)
+        self._scheduleJoystickAutoReenable(positionerName, axis, shouldAutoReenableJoystick)
 
     def stepUp(self, positionerName, axis):
-        self.move(positionerName, axis, self._widget.getStepSize(positionerName, axis))
+        stepSize = self._widget.getStepSize(positionerName, axis) * self._getStepModeMultiplier()
+        self.move(positionerName, axis, stepSize)
 
     def stepDown(self, positionerName, axis):
-        self.move(positionerName, axis, -self._widget.getStepSize(positionerName, axis))
+        stepSize = self._widget.getStepSize(positionerName, axis) * self._getStepModeMultiplier()
+        self.move(positionerName, axis, -stepSize)
 
     def setSpeedGUI(self):
         positionerName = self.getPositionerNames()[0]
@@ -191,19 +305,97 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         
     def updatePosition(self, positionerName, axis):
         pManager = self._master.positionersManager[positionerName]
-
         if hasattr(pManager, 'updatePosition'):
             pManager.updatePosition()
 
-        if axis == 'all':
-            for axisName in self._master.positionersManager[positionerName].axes:
-                newPos = self._master.positionersManager[positionerName].position[axisName]
+        axes = pManager.axes if axis == 'all' else [axis]
+        for axisName in axes:
+            newPos = pManager.position[axisName]
+            if self._isPositionerShownInWidget(pManager):
                 self._widget.updatePosition(positionerName, axisName, newPos)
-                self.setSharedAttr(positionerName, axisName, _positionAttr, newPos)
-        else:
-            newPos = self._master.positionersManager[positionerName].position[axis]
+            self.setSharedAttr(positionerName, axisName, _positionAttr, newPos)
+
+    def _applyPositionResult(self, positionerName, axis, result):
+        if not isinstance(result, dict) or axis not in result:
+            return False
+        newPos = result[axis]
+        pManager = self._master.positionersManager[positionerName]
+        if self._isPositionerShownInWidget(pManager):
             self._widget.updatePosition(positionerName, axis, newPos)
-            self.setSharedAttr(positionerName, axis, _positionAttr, newPos)
+        self.setSharedAttr(positionerName, axis, _positionAttr, newPos)
+        return True
+
+    def _shouldAutoReenableJoystickAfterMove(self, pManager):
+        return bool(
+            self._joystickAutoReenable
+            and getattr(pManager, 'joystick', False)
+            and getattr(pManager, 'isAvailable', True)
+            and hasattr(pManager, 'setJoystickEnabled')
+            and getattr(pManager, 'joystickStatus', False)
+        )
+
+    def _scheduleJoystickAutoReenable(self, positionerName, axis, shouldAutoReenable):
+        if not shouldAutoReenable:
+            return
+        pManager = self._master.positionersManager[positionerName]
+        if getattr(pManager, 'joystickStatus', False):
+            return
+        self._joystickAutoReenablePendingAxes.setdefault(positionerName, set()).add(axis)
+        timer = self._joystickAutoReenableTimers.get(positionerName)
+        if timer is None:
+            timer = QTimer()
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda pName=positionerName: self._checkJoystickAutoReenable(pName))
+            self._joystickAutoReenableTimers[positionerName] = timer
+        timer.start(int(self._joystickAutoReenableDelayS * 1000))
+
+    def _checkJoystickAutoReenable(self, positionerName):
+        if positionerName not in self._joystickAutoReenablePendingAxes:
+            return
+        if not self._joystickAutoReenable:
+            self._cancelJoystickAutoReenable(positionerName)
+            return
+        pManager = self._master.positionersManager[positionerName]
+        if getattr(pManager, 'joystickStatus', False) or not getattr(pManager, 'isAvailable', True):
+            self._cancelJoystickAutoReenable(positionerName)
+            return
+        movementFinished = self._isMovementFinished(
+            pManager, self._joystickAutoReenablePendingAxes.get(positionerName, set())
+        )
+        if movementFinished is False:
+            self._joystickAutoReenableTimers[positionerName].start(self._joystickAutoReenablePollIntervalMs)
+            return
+        self._cancelJoystickAutoReenable(positionerName)
+        self.requestJoystickStatus(True, positionerName)
+        self.setJoystickCheckStatus(getattr(pManager, 'joystickStatus', True))
+
+    def _isMovementFinished(self, pManager, axes):
+        query = getattr(pManager, 'isMovementFinished', None)
+        if not callable(query):
+            return None
+        for axis in axes:
+            try:
+                axisFinished = query(axis)
+            except Exception as e:
+                self.__logger.debug(
+                    f'Could not query movement status for {pManager.name} axis {axis}: {e}'
+                )
+                return None
+            if axisFinished is None:
+                return None
+            if not axisFinished:
+                return False
+        return True
+
+    def _cancelJoystickAutoReenable(self, positionerName):
+        timer = self._joystickAutoReenableTimers.get(positionerName)
+        if timer is not None and timer.isActive():
+            timer.stop()
+        self._joystickAutoReenablePendingAxes.pop(positionerName, None)
+
+    def _cancelAllJoystickAutoReenable(self):
+        for positionerName in list(self._joystickAutoReenableTimers):
+            self._cancelJoystickAutoReenable(positionerName)
 
 
 
@@ -306,10 +498,18 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 }
             }
         """
-        state = {'step_sizes': {}}
+        state = {
+            'step_sizes': {},
+            'coarse_mode': self._isCoarseMode,
+            'coarse_step_multiplier': self._coarseStepMultiplier,
+            'live_update_interval_ms': self._liveUpdateIntervalMs,
+            'live_update_enabled': dict(self._liveUpdateEnabled),
+            'joystick_auto_reenable': self._joystickAutoReenable,
+            'joystick_auto_reenable_delay_s': self._joystickAutoReenableDelayS,
+        }
         
         for pName, pManager in self._master.positionersManager:
-            if not pManager.forPositioning:
+            if not self._isPositionerShownInWidget(pManager):
                 continue
             
             state['step_sizes'][pName] = {}
@@ -358,7 +558,7 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 continue
             
             pManager = self._master.positionersManager[pName]
-            if not pManager.forPositioning:
+            if not self._isPositionerShownInWidget(pManager):
                 continue
             
             for axis, step_size in axes_state.items():
@@ -371,6 +571,18 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 except Exception as e:
                     warnings.append(f'Failed to restore step size for {pName}.{axis}: {e}')
         
+        settings = {
+            'liveUpdateIntervalMs': state.get('live_update_interval_ms', self._liveUpdateIntervalMs),
+            'liveUpdateEnabled': state.get('live_update_enabled', self._liveUpdateEnabled),
+            'coarseStepMultiplier': state.get('coarse_step_multiplier', self._coarseStepMultiplier),
+            'joystickAutoReenable': state.get('joystick_auto_reenable', self._joystickAutoReenable),
+            'joystickAutoReenableDelayS': state.get(
+                'joystick_auto_reenable_delay_s', self._joystickAutoReenableDelayS
+            ),
+        }
+        self.applySettings(settings)
+        self.setStepMode(bool(state.get('coarse_mode', False)))
+
         return warnings
     
     def describeComponentState(self, state: dict) -> list[str]:
