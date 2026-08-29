@@ -22,6 +22,7 @@ class CGHResult:
     metrics: tuple[CGHIterationMetrics, ...] = ()
     warnings: tuple[str, ...] = ()
     diagnostics: Mapping[str,Any] = field(default_factory=dict)
+    target_phase: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         generation = int(self.generation)
@@ -58,6 +59,16 @@ class CGHResult:
         pattern = np.array(pattern,dtype=np.complex128,copy=True)
         pattern.setflags(write=False)
 
+        target_phase = self.target_phase
+        if target_phase is not None:
+            target_phase = np.asarray(target_phase,dtype=np.float64)
+            if target_phase.ndim != 2 or not np.all(np.isfinite(target_phase)):
+                raise InvalidCGHResultError(
+                    "CGH target_phase must be a finite 2D array or None"
+                )
+            target_phase = np.array(target_phase,copy=True)
+            target_phase.setflags(write=False)
+
         metrics = tuple(self.metrics or ())
         for metric in metrics:
             if not isinstance(metric,CGHIterationMetrics):
@@ -83,6 +94,7 @@ class CGHResult:
         object.__setattr__(self,"generation",generation)
         object.__setattr__(self,"target_name",target_name)
         object.__setattr__(self,"pattern",pattern)
+        object.__setattr__(self,"target_phase",target_phase)
         object.__setattr__(self,"metrics",metrics)
         object.__setattr__(self,"warnings",warnings)
         object.__setattr__(self,"diagnostics",diagnostics)
@@ -102,6 +114,7 @@ class CGHResult:
             spec=spec,
             target_name=self.target_name,
             pattern=self.pattern,
+            target_phase=self.target_phase,
             metrics=self.metrics,
             warnings=self.warnings,
             diagnostics=self.diagnostics,

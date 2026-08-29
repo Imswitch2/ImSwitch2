@@ -274,6 +274,10 @@ def _cgh_result_to_dict(result: CGHResult | None):
         "generation":result.generation,
         "target_name":result.target_name,
         "pattern":np.array(result.pattern,copy=True),
+        "target_phase":(
+            None if result.target_phase is None
+            else np.array(result.target_phase,copy=True)
+        ),
         "spec":{
             "context":_context_to_dict(result.spec.context),
             "target_type":result.spec.target_type,
@@ -330,6 +334,10 @@ def _cgh_result_from_dict(
         spec=spec,
         target_name=str(data.get("target_name") or spec.target_type),
         pattern=np.asarray(data["pattern"]),
+        target_phase=(
+            None if data.get("target_phase") is None
+            else np.asarray(data["target_phase"])
+        ),
         metrics=metrics,
         warnings=tuple(data.get("warnings",())),
         diagnostics=data.get("diagnostics",{}),

@@ -623,11 +623,14 @@ class SLMSectionRuntime:
             target_signature=target.signature,
         )
 
-    def compute_feedback_intensity_analysis(self,localization=None):
+    def compute_feedback_intensity_analysis(
+        self,localization=None,*,orientation="identity",
+    ):
         """Calculate centralized experimental intensity analysis without mutation."""
         candidate = self._cgh_session.clone()
         return candidate.compute_feedback_intensity_analysis(
             self.state.cgh,self._build_context(self.state),localization,
+            orientation=orientation,
         )
 
     def set_feedback_intensity_analysis(self,analysis) -> None:
@@ -636,11 +639,14 @@ class SLMSectionRuntime:
         candidate.set_feedback_intensity_analysis(analysis)
         self._cgh_session = candidate
 
-    def compute_feedback_measurement_metrics(self,localization=None):
+    def compute_feedback_measurement_metrics(
+        self,localization=None,*,orientation="identity",
+    ):
         """Calculate geometry-defined metrics without mutating section state."""
         candidate = self._cgh_session.clone()
         return candidate.compute_feedback_measurement_metrics(
             self.state.cgh,self._build_context(self.state),localization,
+            orientation=orientation,
         )
 
     def set_feedback_measurement_metrics(self,metrics) -> None:
@@ -722,7 +728,7 @@ class SLMSectionRuntime:
         return True
 
     def apply_position_correction(
-            self, *, reset_intensity: bool=False
+            self, *, reset_intensity: bool=False,orientation="identity"
         ) -> bool:
         """Calculate/replace the one-shot position correction from ideal positions."""
         candidate = self._cgh_session.clone()
@@ -730,6 +736,7 @@ class SLMSectionRuntime:
             self.state.cgh,
             self._build_context(self.state),
             reset_intensity=reset_intensity,
+            orientation=orientation,
         )
         self._commit_feedback_session(candidate,effective_changed)
         return effective_changed

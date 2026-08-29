@@ -14,6 +14,7 @@ from ...core.cgh.execution.status import CGHResultState,CGHStatus
 from ...core.cgh.feedback.model import (
     FeedbackCapability,FeedbackChangeKind,FeedbackInspection,FeedbackStatus,
 )
+from ...core.cgh.feedback import FeedbackOrientation
 from ...core.cgh.feedback.parameters import INTENSITY_ANALYSIS_PARAMS
 from ...core.cgh.measurement_metrics import IntensityAnalysis
 from ...core.engine.parameters.spec import make_display_name
@@ -44,6 +45,7 @@ class MeasurementsAction(str,Enum):
     LOCALIZATION_ACCEPT = "localization_accept"
     LOCALIZATION_REUSE = "localization_reuse"
     FEEDBACK_PARAMETERS = "feedback_parameters"
+    FEEDBACK_ORIENTATION = "feedback_orientation"
     INTENSITY_APPLY = "intensity_apply"
     INTENSITY_RESET = "intensity_reset"
     POSITION_APPLY = "position_apply"
@@ -72,6 +74,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         localization_context: Mapping[str, Any] | None=None,
         detectors: Sequence[str]=(),
         current_detector: str | None=None,
+        feedback_orientation: FeedbackOrientation | str=FeedbackOrientation.IDENTITY,
         cgh_summary: Mapping[str, Any] | None=None,
         title: str="CGH Session",
         parent: QtWidgets.QWidget | None=None,
@@ -94,6 +97,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._session_inspection = session_inspection
         self._cgh_status = cgh_status
         self._cgh_summary = dict(cgh_summary or {})
+        self._feedback_orientation = FeedbackOrientation.normalize(feedback_orientation)
         self._cgh_computing = False
         self._candidate_current = False
         self._candidate_metrics: IntensityAnalysis | None = None
@@ -353,6 +357,33 @@ class CGHSessionWindow(QtWidgets.QDialog):
         layout.setContentsMargins(8,10,8,8)
         layout.setSpacing(7)
 
+        orientation_row = QtWidgets.QHBoxLayout()
+        orientation_row.setContentsMargins(0,0,0,0)
+        orientation_row.setSpacing(6)
+        orientation_row.addWidget(QtWidgets.QLabel("Feedback orientation"))
+        self.feedback_orientation_combo = QtWidgets.QComboBox()
+        for label,value in (
+            ("Identity",FeedbackOrientation.IDENTITY),
+            ("Flip horizontal",FeedbackOrientation.FLIP_HORIZONTAL),
+            ("Flip vertical",FeedbackOrientation.FLIP_VERTICAL),
+            ("Rotate 180°",FeedbackOrientation.ROTATE_180),
+            ("Rotate 90° CW",FeedbackOrientation.ROTATE_90_CW),
+            ("Rotate 90° CCW",FeedbackOrientation.ROTATE_90_CCW),
+            ("Transpose",FeedbackOrientation.TRANSPOSE),
+            ("Anti-transpose",FeedbackOrientation.ANTI_TRANSPOSE),
+        ):
+            self.feedback_orientation_combo.addItem(label,value.value)
+        self.feedback_orientation_combo.setToolTip(
+            "Map camera-localized lattice identities onto logical CGH target identities."
+        )
+        self.feedback_orientation_combo.currentIndexChanged.connect(
+            self._on_feedback_orientation_changed,
+        )
+        orientation_row.addWidget(self.feedback_orientation_combo)
+        orientation_row.addStretch(1)
+        layout.addLayout(orientation_row)
+        self.set_feedback_orientation(self._feedback_orientation)
+
         self.feedback_tabs = QtWidgets.QTabWidget()
         self.feedback_tabs.addTab(self._build_intensity_tab(status),"Intensity")
         self.feedback_tabs.addTab(self._build_position_tab(),"Position")
@@ -388,7 +419,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         self.reuse_localization_checkbox.setChecked(True)
         controls_layout.addWidget(self.reuse_localization_checkbox)
-        controls_layout.addSpacing(3)
 
         manual_label = QtWidgets.QLabel("Manual")
         manual_font = manual_label.font()
@@ -576,6 +606,29 @@ class CGHSessionWindow(QtWidgets.QDialog):
     # Host-facing state updates
     # ------------------------------------------------------------------
 
+    def set_feedback_orientation(
+        self,orientation: FeedbackOrientation | str,
+    ) -> None:
+        orientation = FeedbackOrientation.normalize(orientation)
+        self._feedback_orientation = orientation
+        combo = getattr(self,"feedback_orientation_combo",None)
+        if combo is None:
+            return
+        blocker = QtCore.QSignalBlocker(combo)
+        try:
+            index = combo.findData(orientation.value)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            del blocker
+
+    def _on_feedback_orientation_changed(self,_index: int) -> None:
+        value = self.feedback_orientation_combo.currentData()
+        orientation = FeedbackOrientation.normalize(value)
+        self._feedback_orientation = orientation
+        self._emit(MeasurementsAction.FEEDBACK_ORIENTATION,{
+            "orientation":orientation.value,
+        })
+
     def configure_detectors(
         self,detectors: Sequence[str],current_detector: str | None=None,
     ) -> None:
@@ -589,6 +642,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         cgh_status: CGHStatus,
         localization_context: Mapping[str, Any] | None=None,
         cgh_summary: Mapping[str, Any] | None=None,
+        feedback_orientation: FeedbackOrientation | str | None=None,
     ) -> None:
         """Refresh from authoritative backend state while preserving round view."""
         follow_latest = (
@@ -604,6 +658,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._cgh_status = cgh_status
         if cgh_summary is not None:
             self._cgh_summary = dict(cgh_summary)
+        if feedback_orientation is not None:
+            self.set_feedback_orientation(feedback_orientation)
         self.measurement_view.set_context(localization_context)
         self.intensity_form.set_values(status.intensity_params,emit=False)
         self._populate_position_selector()
@@ -1206,6 +1262,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
         viewing_current = self._viewing_current_measurement()
         current_context = self._selected_is_current_context()
 
+        self.feedback_orientation_combo.setEnabled(
+            current_context and not self._cgh_computing
+        )
         self.feedback_tabs.setTabEnabled(0,True)
         self.feedback_tabs.setTabEnabled(1,position_available)
         if self.feedback_tabs.currentIndex() == 1 and not position_available:

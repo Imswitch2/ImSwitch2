@@ -60,6 +60,7 @@ class FeedbackCoordinator(QtCore.QObject):
                     localization_context=self.localization_context(section_key),
                     detectors=sources,
                     current_detector=current,
+                    feedback_orientation=self.service.feedback_orientation(section_key),
                     cgh_summary=self.measurements_cgh_summary(section_key),
                     title="CGH Session - %s/%s" % (
                         self.controller.presenter.display_name,section_key,
@@ -108,6 +109,7 @@ class FeedbackCoordinator(QtCore.QObject):
             runtime.get_section_cgh_status(section_key),
             self.localization_context(section_key),
             self.measurements_cgh_summary(section_key),
+            self.service.feedback_orientation(section_key),
         )
         self._configure_automatic_availability(window)
         self._apply_automatic_state_to_window(section_key,window)
@@ -534,6 +536,10 @@ class FeedbackCoordinator(QtCore.QObject):
                 localization_parameters=values.get(
                     "localization_parameters",{}
                 ),
+            )
+        elif request is MeasurementsAction.FEEDBACK_ORIENTATION:
+            self.service.set_feedback_orientation(
+                section_key,values.get("orientation","identity"),
             )
         elif request is MeasurementsAction.INTENSITY_APPLY:
             self.apply_intensity_feedback(section_key)

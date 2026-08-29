@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any,Callable,Mapping,Protocol,Sequence,TYPE_CHECKING
 
 from ..core.cgh.execution.status import CGHResultState
+from ..core.cgh.feedback import FeedbackOrientation
 from ..core.cgh.localization.policy import suggest_localization_sources
 from ..core.cgh.propagation import simulate_propagation_fft
 from ..core.measurement import ImageMeasurement
@@ -432,6 +433,29 @@ class SLMFeedbackService:
             return None
         return measurements.preferred_source(section_key,available)
 
+    def feedback_orientation(self,section_key: str) -> FeedbackOrientation:
+        preferences = self.session.startup_preferences
+        value = (
+            "identity" if preferences is None
+            else preferences.feedback_orientation(section_key)
+        )
+        return FeedbackOrientation.normalize(value)
+
+    def set_feedback_orientation(
+        self,section_key: str,orientation: FeedbackOrientation | str,
+    ) -> FeedbackOrientation:
+        self._require_editor_mode()
+        normalized = FeedbackOrientation.normalize(orientation)
+        preferences = self.session.startup_preferences
+        if preferences is not None:
+            preferences.set_feedback_orientation(section_key,normalized.value)
+        if self.session.runtime.get_section_feedback_status(
+            section_key
+        ).localization_available:
+            self._update_committed_analysis(section_key)
+        self._section_changed(section_key)
+        return normalized
+
     def request_measurement(
         self,
         section_key: str,
@@ -566,7 +590,7 @@ class SLMFeedbackService:
         metrics = None
         try:
             metrics = runtime.compute_section_feedback_intensity_analysis(
-                section_key,candidate,
+                section_key,candidate,orientation=self.feedback_orientation(section_key),
             )
         except Exception as error:
             self._warning(
@@ -645,6 +669,7 @@ class SLMFeedbackService:
                 try:
                     candidate_analysis = runtime.compute_section_feedback_intensity_analysis(
                         section_key,localization,
+                        orientation=self.feedback_orientation(section_key),
                     )
                 except Exception as error:
                     self._warning(
@@ -684,6 +709,7 @@ class SLMFeedbackService:
             section_key,
             lambda runtime:runtime.apply_section_position_correction(
                 section_key,reset_intensity=bool(reset_intensity),
+                orientation=self.feedback_orientation(section_key),
             ),
             "Applying position correction failed",
         )
@@ -837,6 +863,7 @@ class SLMFeedbackService:
             runtime = self.session.runtime
             analysis = runtime.compute_section_feedback_intensity_analysis(
                 section_key,localization,
+                orientation=self.feedback_orientation(section_key),
             )
             runtime.set_section_feedback_intensity_analysis(section_key,analysis)
         except Exception as error:

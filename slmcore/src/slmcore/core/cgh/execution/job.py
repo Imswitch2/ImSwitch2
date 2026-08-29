@@ -27,6 +27,8 @@ class CGHJob:
         default=None, repr=False, compare=False)
     prepared_request: CGHPreparedRequest | None = field(
         default=None,repr=False,compare=False)
+    fixed_target_phase: np.ndarray | None = field(
+        default=None,repr=False,compare=False)
 
     def __post_init__(self) -> None:
         """Detach the optional initialization phase from runtime-owned arrays."""
@@ -57,6 +59,14 @@ class CGHJob:
                 initial_field,self.spec.context.shape
             )
 
+        fixed_target_phase = self.fixed_target_phase
+        if fixed_target_phase is not None:
+            fixed_target_phase = np.asarray(fixed_target_phase,dtype=np.float64)
+            if fixed_target_phase.ndim != 2 or not np.all(np.isfinite(fixed_target_phase)):
+                raise ValueError("CGHJob.fixed_target_phase must be a finite 2D array")
+            fixed_target_phase = np.array(fixed_target_phase,copy=True)
+            fixed_target_phase.setflags(write=False)
+
         prepared_request = self.prepared_request
         if (
             prepared_request is not None
@@ -69,15 +79,20 @@ class CGHJob:
         object.__setattr__(self,"generation",generation)
         object.__setattr__(self,"target_name",target_name)
         object.__setattr__(self,"initial_field",initial_field)
+        object.__setattr__(self,"fixed_target_phase",fixed_target_phase)
 
     def run(self) -> CGHResult:
         """Execute the registered algorithm and return a validated CGH result."""
         try:
-            output = self.compute_func(
-                self.resolution,
-                self.spec.compute_params,
-                self.initial_field,
-            )
+            if self.fixed_target_phase is None:
+                output = self.compute_func(
+                    self.resolution,self.spec.compute_params,self.initial_field,
+                )
+            else:
+                output = self.compute_func(
+                    self.resolution,self.spec.compute_params,self.initial_field,
+                    fixed_target_phase=self.fixed_target_phase,
+                )
         except Exception as error:
             raise CGHComputationError(
                 f"CGH algorithm '{self.spec.algorithm}' failed: {error}"
@@ -94,6 +109,7 @@ class CGHJob:
             spec=self.spec,
             target_name=self.target_name,
             pattern=output.pattern,
+            target_phase=output.target_phase,
             metrics=output.metrics,
             warnings=output.warnings,
             diagnostics=output.diagnostics,

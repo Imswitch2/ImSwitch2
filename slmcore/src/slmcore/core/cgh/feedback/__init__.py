@@ -13,6 +13,11 @@ from .model import (
     RoundEvaluation,
 )
 from ..measurement_metrics import IntensityAnalysis
+from .orientation import (
+    FeedbackOrientation,
+    orient_localization,
+    orientation_permutation,
+)
 from .parameters import (
     INTENSITY_ANALYSIS_PARAMS,
     INTENSITY_FEEDBACK_PARAMS,
@@ -25,6 +30,7 @@ __all__ = [
     "FeedbackInspection",
     "FeedbackMeasurement",
     "FeedbackStatus",
+    "FeedbackOrientation",
     "base_cgh_recompute_would_discard_feedback",
     "INTENSITY_ANALYSIS_PARAMS",
     "INTENSITY_FEEDBACK_PARAMS",
@@ -34,4 +40,6 @@ __all__ = [
     "PositionAnalysis",
     "PositionCorrection",
     "RoundEvaluation",
+    "orient_localization",
+    "orientation_permutation",
 ]
