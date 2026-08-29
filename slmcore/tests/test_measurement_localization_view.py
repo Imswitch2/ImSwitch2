@@ -127,3 +127,51 @@ def test_measurement_localization_view_read_only_disables_accept_action():
         assert accept.isEnabled()
     finally:
         view.deleteLater()
+
+
+def test_measurement_localization_view_shows_contextual_infer_missing_action():
+    _app,QtWidgets,MeasurementLocalizationView = _qapp_and_view_class()
+    import numpy as np
+    from slmcore import ImageMeasurement
+    from slmcore.core.cgh.localization import LocalizationResult
+
+    parameters = _localization_defaults()
+    view = MeasurementLocalizationView(
+        parameters=parameters,
+        show_infer_missing=True,
+        show_accept=True,
+    )
+    try:
+        image = np.zeros((20,20),dtype=np.float64)
+        measurement = ImageMeasurement(image=image,source="test")
+        view.set_measurement(measurement)
+        positions = np.array([
+            [5.0,15.0,5.0,15.0],
+            [5.0,5.0,15.0,15.0],
+        ])
+        result = LocalizationResult(
+            target_type="multi_foci_vector",
+            target_params={},
+            parameters=parameters,
+            lattice_indices=np.array([[0,1,0,1],[0,0,1,1]]),
+            crop_coord=(0,20,0,20),
+            cropped_image=image,
+            expected_positions_px=positions,
+            measured_positions_px=positions,
+            period_x_px=10.0,
+            period_y_px=10.0,
+            offset_x_px=5.0,
+            offset_y_px=5.0,
+            diagnostics={
+                "matched_mask":(True,False,True,True),
+                "inferred_mask":(False,False,False,False),
+            },
+        )
+        view.set_result(result,parameters)
+
+        infer = _button_with_text(view,QtWidgets,"Infer Missing (1)")
+        assert infer is not None
+        assert not infer.isHidden()
+        assert infer.isEnabled()
+    finally:
+        view.deleteLater()

@@ -866,6 +866,10 @@ class CghGroupView(BaseGroupView):
                     status.localization_total_count,
                 )
             )
+            if status.localization_inferred_count:
+                lines.append(
+                    "Inferred lattice spots: %d" % status.localization_inferred_count
+                )
             if status.localization_missing_count:
                 lines.append(
                     "Missing lattice spots: %d" % status.localization_missing_count

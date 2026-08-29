@@ -607,6 +607,7 @@ def _measurement_metrics_to_dict(value):
         "geometry_type":value.geometry_type,
         "values":deepcopy(dict(value.values)),
         "matched_count":value.matched_count,
+        "inferred_count":value.inferred_count,
         "total_count":value.total_count,
     }
 
@@ -619,6 +620,7 @@ def _measurement_metrics_from_dict(data):
         geometry_type=str(data.get("geometry_type","unknown")),
         values=data.get("values",{}),
         matched_count=int(data.get("matched_count",0)),
+        inferred_count=int(data.get("inferred_count",0)),
         total_count=int(data.get("total_count",0)),
     )
 
@@ -637,6 +639,7 @@ def _intensity_analysis_to_dict(
         "normalized_std":value.normalized_std,
         "integration_preview":np.array(value.integration_preview,copy=True),
         "matched_count":value.matched_count,
+        "inferred_count":value.inferred_count,
         "total_count":value.total_count,
     }
 
@@ -655,6 +658,7 @@ def _intensity_analysis_from_dict(
         normalized_std=float(data["normalized_std"]),
         integration_preview=np.asarray(data["integration_preview"]),
         matched_count=int(data.get("matched_count",len(data["spot_powers"]))),
+        inferred_count=int(data.get("inferred_count",0)),
         total_count=int(data.get("total_count",len(data["spot_powers"]))),
     )
 

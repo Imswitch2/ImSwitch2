@@ -216,6 +216,21 @@ class FeedbackCoordinator(QtCore.QObject):
         except Exception as error:
             self._set_localization_error(section_key,error)
 
+    def infer_missing_localization_candidate(
+        self,section_key: str,localization: Any,parameters: Mapping[str,Any],
+    ) -> None:
+        try:
+            candidate,metrics = self.service.infer_missing_localization_candidate(
+                section_key,localization,
+            )
+            window = self._windows.get(section_key)
+            if window is not None:
+                window.set_localization_result(
+                    candidate,parameters,metrics=metrics,
+                )
+        except Exception as error:
+            self._set_localization_error(section_key,error)
+
     def accept_localization(
         self,
         section_key: str,
@@ -520,6 +535,11 @@ class FeedbackCoordinator(QtCore.QObject):
         elif request is MeasurementsAction.LOCALIZATION_RUN:
             self.run_localization_candidate(
                 section_key,values.get("parameters",{}),
+            )
+        elif request is MeasurementsAction.LOCALIZATION_INFER_MISSING:
+            self.infer_missing_localization_candidate(
+                section_key,values.get("localization"),
+                values.get("parameters",{}),
             )
         elif request is MeasurementsAction.LOCALIZATION_ACCEPT:
             self.accept_localization(

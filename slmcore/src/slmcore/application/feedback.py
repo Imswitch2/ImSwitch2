@@ -13,6 +13,7 @@ from typing import Any,Callable,Mapping,Protocol,Sequence,TYPE_CHECKING
 
 from ..core.cgh.execution.status import CGHResultState
 from ..core.cgh.feedback import FeedbackOrientation
+from ..core.cgh.localization import infer_missing_localization
 from ..core.cgh.localization.policy import suggest_localization_sources
 from ..core.cgh.propagation import simulate_propagation_fft
 from ..core.measurement import ImageMeasurement
@@ -590,6 +591,24 @@ class SLMFeedbackService:
         metrics = None
         try:
             metrics = runtime.compute_section_feedback_intensity_analysis(
+                section_key,candidate,orientation=self.feedback_orientation(section_key),
+            )
+        except Exception as error:
+            self._warning(
+                "Measurement metrics",
+                "Measurement metrics are unavailable: %s" % error,
+            )
+        return candidate,metrics
+
+    def infer_missing_localization_candidate(
+        self,section_key: str,localization: Any,
+    ):
+        """Return a candidate with unresolved lattice sites explicitly inferred."""
+        self._require_editor_mode()
+        candidate = infer_missing_localization(localization)
+        metrics = None
+        try:
+            metrics = self.session.runtime.compute_section_feedback_intensity_analysis(
                 section_key,candidate,orientation=self.feedback_orientation(section_key),
             )
         except Exception as error:

@@ -31,6 +31,7 @@ def _localization():
         offset_y_px=10,
         diagnostics={
             "matched_mask":(True,False,True,False),
+            "inferred_mask":(False,True,False,False),
             "detection_indices":(0,1,2,3),
         },
     )
@@ -53,6 +54,7 @@ def test_horizontal_feedback_orientation_reindexes_correspondence_not_image():
     )
     np.testing.assert_array_equal(oriented.cropped_image,localization.cropped_image)
     assert oriented.diagnostics["matched_mask"] == (False,True,False,True)
+    assert oriented.diagnostics["inferred_mask"] == (True,False,False,False)
     assert oriented.diagnostics["feedback_orientation"] == "flip_horizontal"
 
 

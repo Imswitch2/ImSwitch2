@@ -126,6 +126,10 @@ class LocalizationResultView(QtWidgets.QWidget):
         self.measured_item = pg.ScatterPlotItem(
             symbol="x",size=9,pen=pg.mkPen("#55aa55",width=1.6),
         )
+        self.inferred_item = pg.ScatterPlotItem(
+            symbol="t",size=10,pen=pg.mkPen("#4c8bd8",width=1.8),
+            brush=pg.mkBrush(0,0,0,0),
+        )
         self.missing_item = pg.ScatterPlotItem(
             symbol="x",size=12,pen=pg.mkPen(_WARNING_COLOR,width=2.0),
         )
@@ -138,7 +142,7 @@ class LocalizationResultView(QtWidgets.QWidget):
         )
         for item in (
             self.detected_item,self.expected_item,self.measured_item,
-            self.missing_item,self.unmatched_item,self.residual_item,
+            self.inferred_item,self.missing_item,self.unmatched_item,self.residual_item,
         ):
             self.view_box.addItem(item)
 
@@ -176,11 +180,13 @@ class LocalizationResultView(QtWidgets.QWidget):
         self.show_expected.setChecked(True)
         self.show_measured = QtWidgets.QCheckBox("Matched")
         self.show_measured.setChecked(True)
+        self.show_inferred = QtWidgets.QCheckBox("Inferred")
+        self.show_inferred.setChecked(True)
         self.show_residuals = QtWidgets.QCheckBox("Residuals")
         self.show_residuals.setChecked(True)
         for checkbox in (
             self.show_detected,self.show_expected,
-            self.show_measured,self.show_residuals,
+            self.show_measured,self.show_inferred,self.show_residuals,
         ):
             checkbox.toggled.connect(self._apply_visibility)
             side_layout.addWidget(checkbox)
@@ -321,6 +327,8 @@ class LocalizationResultView(QtWidgets.QWidget):
         measured = _points(getattr(result,"measured_positions_px",None))
         detected = _points(diagnostics.get("detected_positions_px"))
         matched = _matched_mask(result,diagnostics,expected.shape[1])
+        inferred = _inferred_mask(result,diagnostics,expected.shape[1])
+        missing = ~(matched | inferred)
 
         self.expected_item.setData(
             x=expected[0],y=expected[1],
@@ -328,8 +336,11 @@ class LocalizationResultView(QtWidgets.QWidget):
         self.measured_item.setData(
             x=measured[0,matched],y=measured[1,matched],
         )
+        self.inferred_item.setData(
+            x=measured[0,inferred],y=measured[1,inferred],
+        )
         self.missing_item.setData(
-            x=expected[0,~matched],y=expected[1,~matched],
+            x=expected[0,missing],y=expected[1,missing],
         )
         self.detected_item.setData(
             x=detected[0],y=detected[1],
@@ -356,7 +367,8 @@ class LocalizationResultView(QtWidgets.QWidget):
 
         total = int(expected.shape[1])
         matched_count = int(np.count_nonzero(matched))
-        missing_count = total - matched_count
+        inferred_count = int(np.count_nonzero(inferred))
+        missing_count = int(np.count_nonzero(missing))
         extra_count = int(diagnostics.get(
             "unmatched_detection_count",len(unmatched_indices),
         ) or 0)
@@ -367,6 +379,8 @@ class LocalizationResultView(QtWidgets.QWidget):
                 rms = float(np.sqrt(np.mean(np.sum(residuals*residuals,axis=0))))
 
         summary = "%d/%d matched" % (matched_count,total)
+        if inferred_count:
+            summary += " · %d inferred" % inferred_count
         if rms is not None:
             summary += " · RMS %.3g px" % rms
         if missing_count:
@@ -375,7 +389,7 @@ class LocalizationResultView(QtWidgets.QWidget):
             summary += " · %d unmatched detection%s" % (
                 extra_count,"" if extra_count == 1 else "s",
             )
-        warning = bool(missing_count or extra_count)
+        warning = bool(inferred_count or missing_count or extra_count)
         self.summary_label.setText(summary)
         self.summary_label.setStyleSheet(
             "color: %s; font-weight: 600;" % (
@@ -411,7 +425,7 @@ class LocalizationResultView(QtWidgets.QWidget):
     def _clear_overlays(self) -> None:
         for item in (
             self.detected_item,self.expected_item,self.measured_item,
-            self.missing_item,self.unmatched_item,
+            self.inferred_item,self.missing_item,self.unmatched_item,
         ):
             item.setData(x=[],y=[])
         self.residual_item.setData([],[])
@@ -423,7 +437,7 @@ class LocalizationResultView(QtWidgets.QWidget):
         )
         for checkbox in (
             self.show_detected,self.show_expected,
-            self.show_measured,self.show_residuals,
+            self.show_measured,self.show_inferred,self.show_residuals,
         ):
             checkbox.setEnabled(localization_mode)
 
@@ -441,6 +455,9 @@ class LocalizationResultView(QtWidgets.QWidget):
         )
         self.measured_item.setVisible(
             localization_mode and self.show_measured.isChecked()
+        )
+        self.inferred_item.setVisible(
+            localization_mode and self.show_inferred.isChecked()
         )
         self.residual_item.setVisible(
             localization_mode and self.show_residuals.isChecked()
@@ -1491,6 +1508,19 @@ def _matched_mask(result: Any,diagnostics: Mapping[str,Any],count: int) -> np.nd
     mask = np.asarray(value,dtype=bool)
     if mask.shape != (count,):
         raise ValueError("Localization matched mask does not match point count")
+    return mask
+
+
+def _inferred_mask(
+    result: Any,diagnostics: Mapping[str,Any],count: int,
+) -> np.ndarray:
+    del result
+    value = diagnostics.get("inferred_mask")
+    if value is None:
+        return np.zeros(count,dtype=bool)
+    mask = np.asarray(value,dtype=bool)
+    if mask.shape != (count,):
+        raise ValueError("Localization inferred mask does not match point count")
     return mask
 
 

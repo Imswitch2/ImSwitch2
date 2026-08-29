@@ -60,7 +60,7 @@ def orient_localization(
         localization.lattice_indices,orientation,
     )
     diagnostics = dict(localization.diagnostics or {})
-    for key in ("matched_mask","detection_indices"):
+    for key in ("matched_mask","inferred_mask","detection_indices"):
         value = diagnostics.get(key)
         if value is not None:
             array = np.asarray(value)

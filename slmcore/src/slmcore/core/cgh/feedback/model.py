@@ -277,6 +277,7 @@ class FeedbackStatus:
     # metadata rather than localization parameters.
     previous_localization_available: bool = False
     localization_matched_count: int = 0
+    localization_inferred_count: int = 0
     localization_total_count: int = 0
     localization_missing_count: int = 0
     localization_unmatched_detection_count: int = 0
@@ -333,6 +334,10 @@ class FeedbackStatus:
         object.__setattr__(
             self,"localization_matched_count",
             int(self.localization_matched_count),
+        )
+        object.__setattr__(
+            self,"localization_inferred_count",
+            int(self.localization_inferred_count),
         )
         object.__setattr__(
             self,"localization_total_count",

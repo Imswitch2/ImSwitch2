@@ -142,12 +142,14 @@ def localize_measurement(
         ),
         "detected_spot_count":int(registration.detections.positions_px.shape[1]),
         "matched_count":int(np.count_nonzero(registration.matched_mask)),
+        "inferred_count":0,
         "missing_count":int(np.count_nonzero(~registration.matched_mask)),
         "unmatched_detection_count":int(
             registration.diagnostics.get("unmatched_detection_count",0)
         ),
         "rms_residual_px":float(registration.rms_residual_px),
         "matched_mask":tuple(bool(value) for value in registration.matched_mask),
+        "inferred_mask":tuple(False for _ in registration.matched_mask),
         "detection_indices":tuple(
             int(value) for value in registration.detection_indices
         ),
@@ -174,6 +176,75 @@ def localize_measurement(
         offset_x_px=float(translation[0]),
         offset_y_px=float(translation[1]),
         reused_previous=False,
+        diagnostics=diagnostics,
+    )
+
+def infer_missing_localization(
+    localization: LocalizationResult,
+) -> LocalizationResult:
+    """Accept unmatched lattice sites at their fitted lattice coordinates.
+
+    Genuine detector matches remain recorded exclusively by ``matched_mask``.
+    Newly accepted sites are recorded by ``inferred_mask`` so downstream
+    workflows can explicitly decide whether inferred coordinates are suitable.
+    """
+    if not isinstance(localization,LocalizationResult):
+        raise TypeError("localization must be a LocalizationResult")
+
+    total = int(localization.lattice_indices.shape[1])
+    diagnostics = dict(localization.diagnostics or {})
+    matched_value = diagnostics.get("matched_mask")
+    if matched_value is None:
+        # Older localization results were complete by construction.
+        return localization
+    matched = np.asarray(matched_value,dtype=bool)
+    if matched.shape != (total,):
+        raise RuntimeError("Localization matched-mask shape is inconsistent")
+
+    inferred_value = diagnostics.get("inferred_mask")
+    inferred = (
+        np.zeros(total,dtype=bool)
+        if inferred_value is None
+        else np.asarray(inferred_value,dtype=bool)
+    )
+    if inferred.shape != (total,):
+        raise RuntimeError("Localization inferred-mask shape is inconsistent")
+    if np.any(matched & inferred):
+        raise RuntimeError("Localization matched and inferred masks overlap")
+
+    unresolved = ~(matched | inferred)
+    if not np.any(unresolved):
+        return localization
+
+    inferred = np.array(inferred,copy=True)
+    inferred[unresolved] = True
+    measured = np.array(localization.measured_positions_px,copy=True)
+    measured[:,unresolved] = np.asarray(
+        localization.expected_positions_px,dtype=np.float64,
+    )[:,unresolved]
+
+    diagnostics.update({
+        "matched_count":int(np.count_nonzero(matched)),
+        "inferred_count":int(np.count_nonzero(inferred)),
+        "missing_count":int(np.count_nonzero(~(matched | inferred))),
+        "inferred_mask":tuple(bool(value) for value in inferred),
+        "missing_inference_source":"fitted_lattice",
+    })
+
+    return LocalizationResult(
+        target_type=localization.target_type,
+        target_params=localization.target_params,
+        parameters=localization.parameters,
+        lattice_indices=localization.lattice_indices,
+        crop_coord=localization.crop_coord,
+        cropped_image=localization.cropped_image,
+        expected_positions_px=localization.expected_positions_px,
+        measured_positions_px=measured,
+        period_x_px=localization.period_x_px,
+        period_y_px=localization.period_y_px,
+        offset_x_px=localization.offset_x_px,
+        offset_y_px=localization.offset_y_px,
+        reused_previous=localization.reused_previous,
         diagnostics=diagnostics,
     )
 
@@ -230,6 +301,7 @@ def _matrix_tuple(array: np.ndarray):
 
 
 __all__ = [
+    "infer_missing_localization",
     "localize_measurement",
     "reuse_localization",
 ]
