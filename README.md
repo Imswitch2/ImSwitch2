@@ -97,6 +97,19 @@ pip install -e ".[full]"       # also napari, OpenCV, vispy
 <img src="docs/images/auto/setup-picker.png" alt="Pick-setup dialog and first-run UI" width="720"/>
 </div>
 
+> **For Conda users on Windows* We recommend installing PyQt5 from
+> `conda-forge` before installing ImSwitch:
+>
+> ```bash
+> conda create -n imswitch2 python=3.12 pip
+> conda activate imswitch2
+> conda install -c conda-forge "pyqt=5.15"
+> ```
+>
+> Then continue with the `pip install -e ...` commands above. Installing
+> PyQt5 entirely through pip inside a Conda environment can cause Qt platform
+> plugin/DLL conflicts on Windows.
+
 ---
 
 ## Documentation
