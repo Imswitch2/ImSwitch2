@@ -6,9 +6,12 @@ from qtpy.QtWidgets import QLabel, QApplication
 
 from imswitch.imcommon.framework import SignalInterface
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.status import (
+    DeviceConnectionState, DeviceManagerStatusMixin,
+)
 
 
-class HamamatsuSLMdviManager(SignalInterface):
+class HamamatsuSLMdviManager(DeviceManagerStatusMixin, SignalInterface):
     """Manager for communication with Hamamatsu SLM with dvi connection"""
     
     requires_device_connection: bool = False
@@ -33,6 +36,7 @@ class HamamatsuSLMdviManager(SignalInterface):
         if self.mockermode:
             self.__logger.info(
                 f"SLM Manager {self.slmName} running in MOCKER MODE. No actual connection to SLM will be made.")
+            self._setMockActive("DVI SLM mock mode configured")
 
         # prepare the qwidget
 
@@ -40,6 +44,14 @@ class HamamatsuSLMdviManager(SignalInterface):
         self.imgArr = np.random.randint(1, 250, size=(self.width, self.height), dtype=np.uint8)
 
         self.init_slm_window()
+        self._setConnectionState(
+            DeviceConnectionState.NOT_APPLICABLE,
+            summary="DVI SLM physical connection cannot be verified",
+            details=(
+                f"Display output available at monitor index {self.preferredMonitor}; "
+                f"active geometry {self.width} x {self.height}"
+            ),
+        )
 
     def init_slm_window(self):
         """Init SLM QLabel as fullscreen wundow and show a random pattern on specified screen"""

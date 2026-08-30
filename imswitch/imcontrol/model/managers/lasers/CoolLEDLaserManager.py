@@ -1,6 +1,63 @@
+from weakref import WeakKeyDictionary
+
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
 from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
+from imswitch.imcontrol.model.devices.status import (
+    DeviceConnectionState, DeviceFailureKind, DeviceRuntimeMode,
+)
+
+
+# One physical CoolLED controller can be represented by several laser-channel
+# managers. Probe the shared controller once per RS232 manager at startup and
+# reuse that passive result for all channels.
+_COOLLED_PROBE_CACHE = WeakKeyDictionary()
+
+
+def _probe_coolled_controller(rs232manager):
+    cached = _COOLLED_PROBE_CACHE.get(rs232manager)
+    if cached is not None:
+        return cached
+
+    mode = getattr(rs232manager, "runtimeMode", DeviceRuntimeMode.REAL)
+    transport_state = getattr(
+        rs232manager, "connectionState", DeviceConnectionState.UNKNOWN
+    )
+    if mode is DeviceRuntimeMode.MOCK or transport_state in {
+        DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED
+    }:
+        result = (
+            DeviceConnectionState.ERROR,
+            mode,
+            "CoolLED transport unavailable",
+            getattr(rs232manager, "connectionStatusDetails", None),
+            getattr(
+                rs232manager, "connectionFailureKind", DeviceFailureKind.CONNECTION_ERROR
+            ) or DeviceFailureKind.CONNECTION_ERROR,
+        )
+    else:
+        try:
+            reply = rs232manager.query("CSS?")
+            if reply is None or not str(reply).strip():
+                raise RuntimeError("CoolLED CSS? returned no response")
+            result = (
+                DeviceConnectionState.CONNECTED,
+                DeviceRuntimeMode.REAL,
+                "CoolLED controller responded to CSS?",
+                None,
+                None,
+            )
+        except Exception as exc:
+            result = (
+                DeviceConnectionState.ERROR,
+                DeviceRuntimeMode.REAL,
+                "CoolLED controller did not respond to CSS?",
+                str(exc),
+                DeviceFailureKind.CONNECTION_ERROR,
+            )
+
+    _COOLLED_PROBE_CACHE[rs232manager] = result
+    return result
 
 
 class CoolLEDLaserManager(LaserManager):
@@ -44,6 +101,18 @@ class CoolLEDLaserManager(LaserManager):
                             else False)
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0, isModulated=isModulated)
+
+        if not self._isMock and self._rs232manager is not None:
+            state, mode, summary, details, failure_kind = _probe_coolled_controller(
+                self._rs232manager
+            )
+            self._deviceRuntimeMode = mode
+            self._setConnectionState(
+                state,
+                summary=summary,
+                details=details,
+                failure_kind=failure_kind,
+            )
 
 
     def getDeviceDescriptorSpec(self):

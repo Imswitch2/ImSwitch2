@@ -37,15 +37,14 @@ _CATEGORY_ORDER = {
 _HEALTH_COLORS = {
     "ok": "#2e7d32",
     "issue": "#c62828",
-    "unknown": "#ef6c00",
+    "mixed": "#ef6c00",
     "neutral": "#757575",
 }
 
 _HEALTH_LABELS = {
     "ok": "Connected",
     "issue": "Connection issue",
-    "unknown": "Unverified",
-    "neutral": "Mock / not applicable",
+    "neutral": "Status unavailable / not applicable",
 }
 
 
@@ -59,8 +58,8 @@ def _health(status) -> str:
         return "neutral"
     if status.connection is DeviceConnectionState.CONNECTED:
         return "ok"
-    if status.connection is DeviceConnectionState.UNKNOWN:
-        return "unknown"
+    # UNKNOWN is deliberately neutral at device level. It means ImSwitch has
+    # no verified connection fact, not that the device is in a warning state.
     return "neutral"
 
 
@@ -84,10 +83,13 @@ def _dot_icon(health: str, size: int = 10) -> QtGui.QIcon:
 
 def _category_health(statuses) -> str:
     healths = {_health(status) for status in statuses}
+    # Orange is reserved for a mixed group: at least one verified healthy
+    # device and at least one known issue. Neutral children do not degrade a
+    # healthy group.
+    if "ok" in healths and "issue" in healths:
+        return "mixed"
     if "issue" in healths:
         return "issue"
-    if "unknown" in healths:
-        return "unknown"
     if "ok" in healths:
         return "ok"
     return "neutral"
@@ -98,7 +100,10 @@ def _category_summary(category, statuses) -> str:
     for status in statuses:
         health = _health(status)
         if health == "neutral":
-            counts["mock" if status.mode is DeviceRuntimeMode.MOCK else "inactive"] += 1
+            if status.mode is DeviceRuntimeMode.MOCK:
+                counts["mock"] += 1
+            else:
+                counts["unavailable"] += 1
         else:
             counts[health] += 1
 
@@ -107,9 +112,8 @@ def _category_summary(category, statuses) -> str:
     labels = (
         ("ok", "connected"),
         ("mock", "mock"),
-        ("inactive", "inactive"),
         ("issue", "issue"),
-        ("unknown", "unknown"),
+        ("unavailable", "status unavailable"),
     )
     for key, label in labels:
         count = counts[key]
@@ -166,10 +170,6 @@ class HardwareStatusWidget(Widget):
         detailsLayout.addRow("Message", self.detailMessage)
 
         top = QtWidgets.QHBoxLayout()
-        top.addWidget(QtWidgets.QLabel(
-            "Green = connected, red = issue, orange = unverified, gray = mock/not applicable. "
-            "Refresh reads cached status only."
-        ))
         top.addStretch(1)
         top.addWidget(self.refreshButton)
 
@@ -220,8 +220,8 @@ class HardwareStatusWidget(Widget):
                 suffix = ""
                 if _health(status) == "neutral" and status.mode is DeviceRuntimeMode.MOCK:
                     suffix = "    Mock"
-                elif _health(status) == "unknown":
-                    suffix = "    Unverified"
+                elif status.connection is DeviceConnectionState.UNKNOWN:
+                    suffix = "    Status unavailable"
                 elif _health(status) == "issue":
                     suffix = "    Connection issue"
                 child.setText(0, f"{status.name}{suffix}")
