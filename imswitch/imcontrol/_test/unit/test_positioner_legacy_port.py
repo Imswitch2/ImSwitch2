@@ -37,6 +37,11 @@ def test_step_mode_signal_and_global_step_entry_point_remain_compatible(qtbot):
     assert modes == [True]
     assert moves == [('Stage', 'X')]
 
+    layout = widget.pars['StepModeWidget'].layout()
+    assert layout.indexOf(widget.pars['FineModeButton']) < layout.indexOf(
+        widget.pars['CoarseModeButton']
+    )
+
 
 def test_settings_button_is_present_without_private_shortcut_editor(qtbot):
     widget = PositionerWidget({})
