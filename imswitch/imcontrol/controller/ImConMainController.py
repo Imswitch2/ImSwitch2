@@ -97,6 +97,9 @@ class ImConMainController(MainController):
         self.pickDatasetsController = self.__factory.createController(
             PickDatasetsController, self.__mainView.pickDatasetsDialog
         )
+        self.hardwareStatusController = self.__factory.createController(
+            controllers.HardwareStatusController, self.__mainView.hardwareStatusWidget
+        )
 
         self.controllers = {}
 
