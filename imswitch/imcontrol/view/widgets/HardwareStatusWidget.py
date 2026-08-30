@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -122,6 +123,55 @@ def _category_summary(category, statuses) -> str:
     return " · ".join(parts)
 
 
+@dataclass(frozen=True)
+class _StatusRow:
+    key: object
+    name: str
+    category: str
+    connection: DeviceConnectionState
+    mode: DeviceRuntimeMode
+    summary: str | None
+    details: str | None
+    failure_kind: object | None
+    manager_names: tuple[str, ...]
+    components: tuple = ()
+    dependencies: tuple = ()
+    via: str | None = None
+
+    @classmethod
+    def forHardware(cls, status):
+        return cls(
+            key=("hardware", status.hardware_id),
+            name=status.name,
+            category=status.category,
+            connection=status.connection,
+            mode=status.mode,
+            summary=status.summary,
+            details=status.details,
+            failure_kind=status.failure_kind,
+            manager_names=status.manager_names,
+            components=status.components,
+            dependencies=status.dependencies,
+        )
+
+    @classmethod
+    def forComponent(cls, parent, component):
+        status = component.status
+        return cls(
+            key=("component", parent.hardware_id, component.device_id),
+            name=component.name,
+            category=component.category,
+            connection=status.connection,
+            mode=status.mode,
+            summary=status.summary,
+            details=status.details,
+            failure_kind=status.failure_kind,
+            manager_names=(status.manager_name,),
+            dependencies=parent.dependencies,
+            via=parent.name,
+        )
+
+
 class HardwareStatusWidget(Widget):
     """Global read-only hardware status grouped by user-meaningful device."""
 
@@ -133,7 +183,7 @@ class HardwareStatusWidget(Widget):
         self.resize(760, 620)
 
         self._statuses = []
-        self._statusByHardwareId = {}
+        self._statusByKey = {}
 
         self.refreshButton = QtWidgets.QPushButton("Refresh")
         self.refreshButton.clicked.connect(self.sigRefreshRequested)
@@ -153,6 +203,7 @@ class HardwareStatusWidget(Widget):
         self.detailConnection = QtWidgets.QLabel("—")
         self.detailMode = QtWidgets.QLabel("—")
         self.detailManagers = QtWidgets.QLabel("—")
+        self.detailVia = QtWidgets.QLabel("—")
         self.detailComponents = QtWidgets.QLabel("—")
         self.detailDependencies = QtWidgets.QLabel("—")
         self.detailDependencies.setWordWrap(True)
@@ -164,6 +215,7 @@ class HardwareStatusWidget(Widget):
         detailsLayout.addRow("Connection", self.detailConnection)
         detailsLayout.addRow("Mode", self.detailMode)
         detailsLayout.addRow("Manager(s)", self.detailManagers)
+        detailsLayout.addRow("Via", self.detailVia)
         detailsLayout.addRow("Components", self.detailComponents)
         detailsLayout.addRow("Dependencies", self.detailDependencies)
         detailsLayout.addRow("Failure", self.detailFailure)
@@ -179,18 +231,27 @@ class HardwareStatusWidget(Widget):
         layout.addWidget(detailsGroup)
 
     def setStatuses(self, statuses) -> None:
-        selected_id = self._selectedHardwareId()
+        selected_key = self._selectedStatusKey()
         expanded = self._expandedCategories()
 
         self._statuses = list(statuses)
-        self._statusByHardwareId = {
-            status.hardware_id: status for status in self._statuses
-        }
+        rows = []
+        for status in self._statuses:
+            rows.append(_StatusRow.forHardware(status))
+            for component in status.components:
+                # Same-category components are implementation details of one
+                # physical device (e.g. CoolLED channels). Cross-category
+                # components are useful capabilities in their own UI group
+                # (e.g. Leica objective Z under Positioners).
+                if component.category != status.category:
+                    rows.append(_StatusRow.forComponent(status, component))
+
+        self._statusByKey = {row.key: row for row in rows}
         self.tree.clear()
 
         grouped = defaultdict(list)
-        for status in self._statuses:
-            grouped[status.category].append(status)
+        for row in rows:
+            grouped[row.category].append(row)
 
         first_child = None
         selected_item = None
@@ -217,19 +278,13 @@ class HardwareStatusWidget(Widget):
             for status in category_statuses:
                 child = QtWidgets.QTreeWidgetItem(header)
                 child.setIcon(0, _dot_icon(_health(status)))
-                suffix = ""
-                if _health(status) == "neutral" and status.mode is DeviceRuntimeMode.MOCK:
-                    suffix = "    Mock"
-                elif status.connection is DeviceConnectionState.UNKNOWN:
-                    suffix = "    Status unavailable"
-                elif _health(status) == "issue":
-                    suffix = "    Connection issue"
+                suffix = self._rowSuffix(status)
                 child.setText(0, f"{status.name}{suffix}")
-                child.setData(0, QtCore.Qt.UserRole, status.hardware_id)
+                child.setData(0, QtCore.Qt.UserRole, status.key)
                 child.setToolTip(0, self._tooltipFor(status))
                 if first_child is None:
                     first_child = child
-                if selected_id is not None and status.hardware_id == selected_id:
+                if selected_key is not None and status.key == selected_key:
                     selected_item = child
 
         target = selected_item or first_child
@@ -249,14 +304,36 @@ class HardwareStatusWidget(Widget):
                     break
         return result
 
-    def _selectedHardwareId(self):
+    def _selectedStatusKey(self):
         selected = self.tree.selectedItems()
         if not selected:
             return None
         return selected[0].data(0, QtCore.Qt.UserRole)
 
+    @staticmethod
+    def _rowSuffix(status) -> str:
+        health = _health(status)
+        if health == "neutral" and status.mode is DeviceRuntimeMode.MOCK:
+            label = "Mock"
+        elif status.connection is DeviceConnectionState.UNKNOWN:
+            label = "Status unavailable"
+        elif health == "issue":
+            label = "Connection issue"
+        elif status.via is not None and status.connection is DeviceConnectionState.CONNECTED:
+            label = "Connected"
+        else:
+            label = ""
+
+        if status.via is not None:
+            if label:
+                return f"    {label} · via {status.via}"
+            return f"    via {status.via}"
+        return f"    {label}" if label else ""
+
     def _tooltipFor(self, status) -> str:
         parts = [_HEALTH_LABELS[_health(status)]]
+        if status.via:
+            parts.append(f"Via {status.via}")
         if status.summary:
             parts.append(status.summary)
         if status.details:
@@ -270,6 +347,7 @@ class HardwareStatusWidget(Widget):
             self.detailConnection,
             self.detailMode,
             self.detailManagers,
+            self.detailVia,
             self.detailComponents,
             self.detailDependencies,
             self.detailFailure,
@@ -278,8 +356,8 @@ class HardwareStatusWidget(Widget):
             label.setText("—")
 
     def _updateDetails(self) -> None:
-        hardware_id = self._selectedHardwareId()
-        status = self._statusByHardwareId.get(hardware_id)
+        status_key = self._selectedStatusKey()
+        status = self._statusByKey.get(status_key)
         if status is None:
             self._clearDetails()
             return
@@ -291,6 +369,7 @@ class HardwareStatusWidget(Widget):
         self.detailConnection.setText(_connection_text(status))
         self.detailMode.setText(status.mode.value.upper())
         self.detailManagers.setText(", ".join(status.manager_names) or "—")
+        self.detailVia.setText(status.via or "—")
         self.detailComponents.setText(
             ", ".join(component.name for component in status.components) or "—"
         )

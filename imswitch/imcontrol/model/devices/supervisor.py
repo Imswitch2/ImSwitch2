@@ -16,6 +16,7 @@ from .graph import (
     DeviceRelationKind,
     DeviceRole,
     DeviceSection,
+    HardwareComponentStatus,
     HardwareDependencyStatus,
     HardwareDeviceId,
     HardwareStatus,
@@ -484,23 +485,42 @@ class DeviceSupervisor:
         return DeviceGraph(tuple(descriptors), tuple(relations))
 
     def _aggregateHardwareStatus(self, descriptors, source_statuses) -> HardwareStatus:
-        relevant = [
-            source_statuses[d.source_device_id]
-            for d in descriptors
-            if d.source_device_id in source_statuses and d.role is not DeviceRole.RESOURCE
+        status_pairs = [
+            (descriptor, source_statuses[descriptor.source_device_id])
+            for descriptor in descriptors
+            if descriptor.source_device_id in source_statuses
+            and descriptor.role is not DeviceRole.RESOURCE
         ]
-        if not relevant:
+        if not status_pairs:
             raise ValueError("Cannot aggregate hardware without a status-bearing endpoint")
 
-        selected = max(relevant, key=_status_rank)
-        all_mock = all(status.mode is DeviceRuntimeMode.MOCK for status in relevant)
+        # If a physical device has an explicit PRIMARY endpoint, that endpoint
+        # owns physical-device health. COMPONENT failures are capability-local
+        # and must not make an otherwise healthy physical device look failed.
+        # Devices made only of COMPONENT endpoints (e.g. a multi-channel serial
+        # laser controller) keep the previous aggregate behavior.
+        primary_statuses = [
+            status
+            for descriptor, status in status_pairs
+            if descriptor.role is DeviceRole.PRIMARY
+        ]
+        health_sources = primary_statuses or [status for _, status in status_pairs]
+        selected = max(health_sources, key=_status_rank)
+        all_mock = all(status.mode is DeviceRuntimeMode.MOCK for status in health_sources)
         mode = DeviceRuntimeMode.MOCK if all_mock else selected.mode
 
         primary = next((d for d in descriptors if d.role is DeviceRole.PRIMARY), descriptors[0])
         components = tuple(
             sorted(
-                (d.source_device_id for d in descriptors if d.role is DeviceRole.COMPONENT),
-                key=lambda item: (item.kind, item.name.casefold()),
+                (
+                    HardwareComponentStatus(
+                        device_id=descriptor.source_device_id,
+                        status=status,
+                    )
+                    for descriptor, status in status_pairs
+                    if descriptor.role is DeviceRole.COMPONENT
+                ),
+                key=lambda item: (item.category, item.name.casefold()),
             )
         )
         managers = tuple(sorted({d.manager_name for d in descriptors}))
@@ -528,6 +548,29 @@ class DeviceSupervisor:
             summary=status.summary,
             details=status.details,
             failure_kind=status.failure_kind,
+        )
+
+    @staticmethod
+    def _statusWithTransportFailure(
+        status: DeviceStatus, relation: DeviceRelation, dependency: DeviceStatus
+    ) -> DeviceStatus:
+        label = relation.label or dependency.name
+        connection = (
+            DeviceConnectionState.ERROR
+            if dependency.connection is DeviceConnectionState.ERROR
+            else DeviceConnectionState.DISCONNECTED
+        )
+        return replace(
+            status,
+            connection=connection,
+            mode=(
+                DeviceRuntimeMode.MOCK
+                if dependency.mode is DeviceRuntimeMode.MOCK
+                else status.mode
+            ),
+            summary=f"Transport {label}: {dependency.summary or dependency.connection.value}",
+            details=dependency.details,
+            failure_kind=dependency.failure_kind or DeviceFailureKind.CONNECTION_ERROR,
         )
 
     def getHardwareStatuses(self) -> tuple[HardwareStatus, ...]:
@@ -588,23 +631,25 @@ class DeviceSupervisor:
             current = replace(base, dependencies=tuple(dependency_statuses))
             if transport_failure is not None:
                 relation, dependency = transport_failure
-                label = relation.label or dependency.name
-                connection = (
-                    DeviceConnectionState.ERROR
-                    if dependency.connection is DeviceConnectionState.ERROR
-                    else DeviceConnectionState.DISCONNECTED
+                transport_status = self._statusWithTransportFailure(
+                    self._hardwareAsDeviceStatus(current), relation, dependency
                 )
                 current = replace(
                     current,
-                    connection=connection,
-                    mode=(
-                        DeviceRuntimeMode.MOCK
-                        if dependency.mode is DeviceRuntimeMode.MOCK
-                        else current.mode
+                    connection=transport_status.connection,
+                    mode=transport_status.mode,
+                    summary=transport_status.summary,
+                    details=transport_status.details,
+                    failure_kind=transport_status.failure_kind,
+                    components=tuple(
+                        replace(
+                            component,
+                            status=self._statusWithTransportFailure(
+                                component.status, relation, dependency
+                            ),
+                        )
+                        for component in current.components
                     ),
-                    summary=f"Transport {label}: {dependency.summary or dependency.connection.value}",
-                    details=dependency.details,
-                    failure_kind=dependency.failure_kind or DeviceFailureKind.CONNECTION_ERROR,
                 )
             resolved[hardware_id] = current
 
