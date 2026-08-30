@@ -1,5 +1,6 @@
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
+from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
 
 
 class CoolLEDLaserManager(LaserManager):
@@ -43,6 +44,16 @@ class CoolLEDLaserManager(LaserManager):
                             else False)
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0, isModulated=isModulated)
+
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = self.getProperty('rs232device')
+        return sharedRs232ComponentSpec(
+            category='laser',
+            family='coolled',
+            display_name='CoolLED controller',
+            rs232_name=str(rs232_name),
+        )
 
     def setEnabled(self, enabled):
         """Turn on (N) or off (F) laser emission"""

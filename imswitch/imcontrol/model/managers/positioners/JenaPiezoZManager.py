@@ -1,6 +1,7 @@
 import time
 from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
+from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
 
 
 class JenaPiezoZManager(PositionerManager):
@@ -59,6 +60,14 @@ class JenaPiezoZManager(PositionerManager):
             )
             self._position[self.axes[0]] = self._posRangeUm[0]
             self._setConnectionError(e, summary="Jena piezo initialization failed")
+
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = (self._positionerInfo.managerProperties or {}).get('rs232device')
+        return rs232BackedPrimarySpec(
+            category='positioner',
+            rs232_name=str(rs232_name),
+        )
 
     def move(self, dist, axis):
         """Move the positioner by the specified distance."""

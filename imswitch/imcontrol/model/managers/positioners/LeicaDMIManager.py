@@ -2,12 +2,18 @@ import numpy as np
 from scipy.interpolate import interp1d
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.graph import (
+    DeviceDescriptorSpec, DeviceDependencySpec, DeviceRelationKind,
+    DeviceRole, HardwareDeviceId,
+)
+from imswitch.imcontrol.model.devices.status import DeviceId
 from imswitch.imcontrol.model.managers.positioners.PositionerManager import PositionerManager
 
 
 class LeicaDMIManager(PositionerManager):
     def __init__(self, positionerInfo, name, *args, **lowLevelManagers):
         self.__logger = initLogger(self)
+        self._positionerInfo = positionerInfo
         using_mock_fallback = False
         try:
             self._rs232Manager = lowLevelManagers['rs232sManager'][positionerInfo.managerProperties['rs232device']]
@@ -41,6 +47,22 @@ class LeicaDMIManager(PositionerManager):
         self.__logger.info(f"DMI stand serial no: {self._rs232Manager.query(cmd)}")
         if not using_mock_fallback:
             self._setConnected("Leica DMI stand responding")
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = (self._positionerInfo.managerProperties or {}).get('rs232device')
+        return DeviceDescriptorSpec(
+            role=DeviceRole.COMPONENT,
+            hardware_id=HardwareDeviceId('stand', f'leica:{rs232_name}'),
+            display_name='Leica stand',
+            category='stand',
+            dependencies=(
+                DeviceDependencySpec(
+                    DeviceRelationKind.USES_TRANSPORT,
+                    target=DeviceId('rs232', str(rs232_name)),
+                    label=str(rs232_name),
+                ),
+            ),
+        )
 
     def move(self, value, *args):
         """
