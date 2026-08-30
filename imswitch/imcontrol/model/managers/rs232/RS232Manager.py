@@ -1,7 +1,11 @@
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.graph import (
+    DeviceDescriptorSpec, DeviceRole,
+)
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
 
 
-class RS232Manager:
+class RS232Manager(DeviceManagerStatusMixin):
     """ A general-purpose RS232 manager that together with a general-purpose
     RS232Driver interface can handle an arbitrary RS232 communication channel,
     with all the standard serial communication protocol parameters as defined
@@ -60,6 +64,12 @@ class RS232Manager:
 
     def finalize(self):
         self._rs232port.close()
+        self._setFinalizedStatus()
+
+    def getDeviceDescriptorSpec(self):
+        # A generic RS232Manager is communication infrastructure, not the
+        # user-meaningful microscope device that happens to use it.
+        return DeviceDescriptorSpec(role=DeviceRole.RESOURCE)
 
     def _getRS232port(self, port, settings):
         try:
@@ -67,10 +77,16 @@ class RS232Manager:
             DriverClass = generateDriverClass(settings)
             rs232port = DriverClass(port)
             rs232port.initialize()
+            self._setConnected(f'RS232 transport {port} opened')
             return rs232port
         except Exception as e:
             self.__logger.warning(f'Failed to initialize RS232 port {port}: {e}. Initializing mock RS232 port')
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
+            self._setConnectionError(
+                e,
+                summary=f'RS232 transport {port} failed; mock fallback active',
+                mock_active=True,
+            )
             return MockRS232Driver(port, settings)
 
 

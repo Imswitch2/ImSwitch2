@@ -7,7 +7,16 @@ from .status import (
     DeviceStatus,
     DeviceStatusProvider,
 )
-from .supervisor import DeviceSupervisor, resolveDeviceStatus
+
+from .graph import (
+    DeviceDependencySpec, DeviceDescriptor, DeviceDescriptorProvider,
+    DeviceDescriptorSpec, DeviceGraph, DeviceRelation, DeviceRelationKind,
+    DeviceRole, DeviceSection, HardwareDependencyStatus, HardwareDeviceId,
+    HardwareStatus, rs232BackedPrimarySpec, sharedRs232ComponentSpec,
+)
+from .supervisor import (
+    DeviceSupervisor, resolveDeviceDescriptor, resolveDeviceStatus,
+)
 
 __all__ = [
     "DeviceConnectionState",
@@ -19,4 +28,19 @@ __all__ = [
     "DeviceStatusProvider",
     "DeviceSupervisor",
     "resolveDeviceStatus",
+    "DeviceDependencySpec",
+    "DeviceDescriptor",
+    "DeviceDescriptorProvider",
+    "DeviceDescriptorSpec",
+    "DeviceGraph",
+    "DeviceRelation",
+    "DeviceRelationKind",
+    "DeviceRole",
+    "DeviceSection",
+    "HardwareDependencyStatus",
+    "HardwareDeviceId",
+    "HardwareStatus",
+    "resolveDeviceDescriptor",
+    "rs232BackedPrimarySpec",
+    "sharedRs232ComponentSpec",
 ]

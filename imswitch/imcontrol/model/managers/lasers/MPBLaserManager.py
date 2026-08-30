@@ -5,6 +5,7 @@ import numpy as np
 
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
+from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
 
 
 def _as_bool(value):
@@ -128,6 +129,12 @@ class MPBLaserManager(LaserManager):
             isBinary=False,
             valueUnits='mW',
             valueDecimals=0,
+        )
+
+    def getDeviceDescriptorSpec(self):
+        return rs232BackedPrimarySpec(
+            category='laser',
+            rs232_name=str(self.getProperty('rs232device')),
         )
 
     @staticmethod
