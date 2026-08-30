@@ -238,6 +238,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         )
         self.resetLayoutAction.triggered.connect(self.resetDockLayout)
         tools.addAction(self.resetLayoutAction)
+
+        self.hardwareStatusWidget = self.factory.createWidget(widgets.HardwareStatusWidget)
+        self.hardwareStatusWidget.hide()
+        self.hardwareStatusAction = QtWidgets.QAction('Hardware status…', self)
+        self.hardwareStatusAction.triggered.connect(self.showHardwareStatus)
+        tools.addAction(self.hardwareStatusAction)
         
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
@@ -499,6 +505,12 @@ class ImConMainView(QtWidgets.QMainWindow):
             else:
                 # Action is disabled or has no binding
                 qAction.setText(baseText)
+
+    def showHardwareStatus(self):
+        """Show and raise the global read-only hardware status window."""
+        self.hardwareStatusWidget.show()
+        self.hardwareStatusWidget.raise_()
+        self.hardwareStatusWidget.activateWindow()
 
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()
