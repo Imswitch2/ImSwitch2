@@ -1,4 +1,5 @@
 from .PositionerManager import PositionerManager
+from imswitch.imcontrol.model.devices.status import DeviceConnectionState
 
 
 class NidaqPositionerManager(PositionerManager):
@@ -25,6 +26,15 @@ class NidaqPositionerManager(PositionerManager):
         })
         if getattr(self._nidaqManager, 'isSimulated', False):
             self._setMockActive("Simulated NI-DAQ positioner backend")
+        else:
+            # An analog NI-DAQ output can prove that the DAQ board is
+            # available, but it cannot verify that the physical positioner
+            # connected to that output exists or responds. Connection status
+            # is therefore intentionally not applicable for this device.
+            self._setConnectionState(
+                DeviceConnectionState.NOT_APPLICABLE,
+                summary="Physical connection cannot be verified through NI-DAQ output",
+            )
 
     def move(self, dist, axis):
         self.setPosition(self._position[axis] + dist, axis)

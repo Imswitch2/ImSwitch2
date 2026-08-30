@@ -387,3 +387,40 @@ def test_connected_transport_alone_does_not_prove_shared_device_connected():
     coolled = supervisor.getPhysicalDeviceStatuses()[0]
     assert coolled.connection is DeviceConnectionState.UNKNOWN
     assert coolled.mode is DeviceRuntimeMode.REAL
+
+
+def test_coolled_startup_probe_is_shared_per_rs232_manager():
+    from imswitch.imcontrol.model.managers.lasers.CoolLEDLaserManager import (
+        _probe_coolled_controller,
+    )
+
+    class _CoolLedTransport(DeviceManagerStatusMixin):
+        def __init__(self):
+            self.calls = 0
+            self._setConnected("COM10 opened")
+
+        def query(self, command):
+            self.calls += 1
+            assert command == "CSS?"
+            return "CSS status"
+
+    transport = _CoolLedTransport()
+    first = _probe_coolled_controller(transport)
+    second = _probe_coolled_controller(transport)
+
+    assert transport.calls == 1
+    assert first == second
+    assert first[0] is DeviceConnectionState.CONNECTED
+    assert first[1] is DeviceRuntimeMode.REAL
+
+
+def test_slm_managers_expose_canonical_passive_status_contract():
+    from imswitch.imcontrol.model.managers.slms.HamamatsuSLMdviManager import (
+        HamamatsuSLMdviManager,
+    )
+    from imswitch.imcontrol.model.managers.slms.HamamatsuSLMusbManager import (
+        HamamatsuSLMusbManager,
+    )
+
+    assert issubclass(HamamatsuSLMdviManager, DeviceManagerStatusMixin)
+    assert issubclass(HamamatsuSLMusbManager, DeviceManagerStatusMixin)

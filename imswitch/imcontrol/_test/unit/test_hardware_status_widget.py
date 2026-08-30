@@ -6,7 +6,9 @@ from imswitch.imcontrol.model.devices import (
     HardwareDeviceId,
     HardwareStatus,
 )
-from imswitch.imcontrol.view.widgets.HardwareStatusWidget import HardwareStatusWidget
+from imswitch.imcontrol.view.widgets.HardwareStatusWidget import (
+    HardwareStatusWidget, _category_health, _health,
+)
 
 
 def _status(category, name, connection, mode, *, summary=None, failure_kind=None,
@@ -99,3 +101,25 @@ def test_hardware_status_widget_preserves_selected_device_across_refresh(qtbot):
     selected = widget.tree.selectedItems()
     assert len(selected) == 1
     assert selected[0].text(0).startswith("488")
+
+
+def test_health_colors_reserve_orange_for_mixed_groups_only():
+    connected = _status(
+        "laser", "Good", DeviceConnectionState.CONNECTED, DeviceRuntimeMode.REAL
+    )
+    issue = _status(
+        "laser", "Bad", DeviceConnectionState.ERROR, DeviceRuntimeMode.REAL
+    )
+    unknown = _status(
+        "laser", "Unknown", DeviceConnectionState.UNKNOWN, DeviceRuntimeMode.REAL
+    )
+    mock = _status(
+        "laser", "Mock", DeviceConnectionState.NOT_APPLICABLE, DeviceRuntimeMode.MOCK
+    )
+
+    assert _health(unknown) == "neutral"
+    assert _health(mock) == "neutral"
+    assert _category_health([connected, unknown]) == "ok"
+    assert _category_health([connected, issue]) == "mixed"
+    assert _category_health([issue, unknown]) == "issue"
+    assert _category_health([unknown, mock]) == "neutral"
