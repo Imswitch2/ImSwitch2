@@ -183,16 +183,25 @@ class RS232Driver:
 
     @classmethod
     def getDefaults(cls, settings):
-        if settings["parity"] == 'none':
+        baudrate = int(settings["baudrate"])
+
+        parity = str(settings["parity"]).strip().lower()
+        if parity == "none":
             set_par = constants.Parity.none
-        if settings["stopbits"] == 1:
+        else:
+            raise ValueError(f"Unsupported parity value: {settings['parity']!r}")
+
+        stopbits = float(settings["stopbits"])
+        if stopbits == 1:
             set_stopb = constants.StopBits.one
-        elif settings["stopbits"] == 2:
+        elif stopbits == 2:
             set_stopb = constants.StopBits.two
+        else:
+            raise ValueError(f"Unsupported stopbits value: {settings['stopbits']!r}")
 
         defaults = {'ASRL': {'write_termination': settings["send_termination"],
                              'read_termination': settings["recv_termination"],
-                             'baud_rate': settings["baudrate"],
+                             'baud_rate': baudrate,
                              'bytesize': settings["bytesize"],
                              'parity': set_par,
                              'stop_bits': set_stopb,
