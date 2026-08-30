@@ -64,8 +64,8 @@ class PositionerWidget(Widget):
 
         stepModeStyle = """
         QPushButton { padding: 2px 10px; border: 1px solid rgba(255,255,255,60); }
-        QPushButton#coarseModeBtn { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
-        QPushButton#fineModeBtn { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+        QPushButton#fineModeBtn { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+        QPushButton#coarseModeBtn { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
         QPushButton:hover { border: 1px solid rgba(255,255,255,120); }
         QPushButton:checked {
             background-color: rgba(120,180,255,120);
@@ -78,8 +78,8 @@ class PositionerWidget(Widget):
 
         self._stepModeButtonGroup = QtWidgets.QButtonGroup(self)
         self._stepModeButtonGroup.setExclusive(True)
-        self._stepModeButtonGroup.addButton(self.pars['FineModeButton'])
         self._stepModeButtonGroup.addButton(self.pars['CoarseModeButton'])
+        self._stepModeButtonGroup.addButton(self.pars['FineModeButton'])
         stepModeLayout.addWidget(self.pars['FineModeButton'], 1)
         stepModeLayout.addWidget(self.pars['CoarseModeButton'], 1)
         self.pars['CoarseModeButton'].clicked.connect(lambda: self.sigStepModeChanged.emit(True))

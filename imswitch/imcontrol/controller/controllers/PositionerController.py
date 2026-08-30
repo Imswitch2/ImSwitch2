@@ -1,3 +1,4 @@
+import time
 from typing import Dict, List, Any
 
 from imswitch.imcommon.model import APIExport
@@ -25,12 +26,16 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         self._previousJoystickState = None
         self._liveUpdateAvailable = {}
         self._liveUpdateEnabled = {}
+        self._liveUpdateFailureCount = {}
+        self._liveUpdateRetryAfter = {}
+        self._pollBackoffSeconds = (1.0, 2.0, 5.0, 10.0)
         self._coarseStepMultiplier = 5.0
         self._isCoarseMode = False
         self._joystickAutoReenable = True
         self._joystickAutoReenableDelayS = 5.0
         self._joystickAutoReenableTimers = {}
         self._joystickAutoReenablePendingAxes = {}
+        self._joystickAutoReenableFailureCount = {}
         self._joystickAutoReenablePollIntervalMs = 200
 
         self.__logger = initLogger(self, tryInheritParent=True)
@@ -59,10 +64,11 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 self.setSharedAttr(pName, axis, _positionAttr, pManager.position[axis])
                 if speed:
                     self.setSharedAttr(pName, axis, _positionAttr, pManager.speed)
-                # Push the manager's current position into the widget so the
-                # displayed value reflects the actual hardware state at
-                # startup — not just the initialPosition=0 placeholder.
-                self.updatePosition(pName, axis)
+
+            # Do one best-effort hardware refresh per positioner. Some managers
+            # (notably PIStageManager) refresh all axes in one transaction, so
+            # refreshing once per axis duplicates hardware traffic at startup.
+            self._pollPositionerPosition(pName, pManager, respectBackoff=False)
 
             if pManager.joystick:
                 # Set joystick checkbox status for first start
@@ -223,7 +229,45 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
             if not self._isPositionerShownInWidget(pManager):
                 continue
             if self._isLiveUpdateEnabled(pName, pManager):
-                self.updatePosition(pName, 'all')
+                self._pollPositionerPosition(pName, pManager)
+
+    def _pollPositionerPosition(self, positionerName, pManager, respectBackoff=True):
+        """Best-effort passive position refresh with per-positioner backoff.
+
+        Explicit calls to :meth:`updatePosition` deliberately remain strict; only
+        timer/startup-driven passive polling is allowed to absorb hardware errors.
+        """
+        now = time.monotonic()
+        if respectBackoff and now < self._liveUpdateRetryAfter.get(positionerName, 0.0):
+            return False
+
+        try:
+            self.updatePosition(positionerName, 'all')
+        except Exception as e:
+            failureCount = self._liveUpdateFailureCount.get(positionerName, 0) + 1
+            self._liveUpdateFailureCount[positionerName] = failureCount
+            delayS = self._pollBackoffSeconds[min(failureCount - 1, len(self._pollBackoffSeconds) - 1)]
+            self._liveUpdateRetryAfter[positionerName] = time.monotonic() + delayS
+            if failureCount <= len(self._pollBackoffSeconds) or failureCount % 10 == 0:
+                self.__logger.warning(
+                    f'Live position polling failed for {positionerName}; '
+                    f'retrying in {delayS:g} s (failure {failureCount}): {e}'
+                )
+            else:
+                self.__logger.debug(
+                    f'Live position polling still failing for {positionerName} '
+                    f'(failure {failureCount}): {e}'
+                )
+            return False
+
+        failureCount = self._liveUpdateFailureCount.pop(positionerName, 0)
+        self._liveUpdateRetryAfter.pop(positionerName, None)
+        if failureCount:
+            self.__logger.info(
+                f'Live position polling recovered for {positionerName} '
+                f'after {failureCount} failure(s).'
+            )
+        return True
 
     def setJoystickStatusAfterRec(self, pName):
         if self._previousJoystickState:
@@ -359,28 +403,53 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         if getattr(pManager, 'joystickStatus', False) or not getattr(pManager, 'isAvailable', True):
             self._cancelJoystickAutoReenable(positionerName)
             return
-        movementFinished = self._isMovementFinished(
-            pManager, self._joystickAutoReenablePendingAxes.get(positionerName, set())
-        )
+
+        try:
+            movementFinished = self._isMovementFinished(
+                pManager, self._joystickAutoReenablePendingAxes.get(positionerName, set())
+            )
+        except Exception as e:
+            self._retryJoystickAutoReenableAfterFailure(positionerName, e)
+            return
+
+        # ``None`` means that this manager does not expose movement-finished
+        # information. Keep the configured delay-only fallback in that case.
         if movementFinished is False:
+            self._joystickAutoReenableFailureCount.pop(positionerName, None)
             self._joystickAutoReenableTimers[positionerName].start(self._joystickAutoReenablePollIntervalMs)
             return
+
+        try:
+            self.requestJoystickStatus(True, positionerName)
+        except Exception as e:
+            self._retryJoystickAutoReenableAfterFailure(positionerName, e)
+            return
+
         self._cancelJoystickAutoReenable(positionerName)
-        self.requestJoystickStatus(True, positionerName)
         self.setJoystickCheckStatus(getattr(pManager, 'joystickStatus', True))
+
+    def _retryJoystickAutoReenableAfterFailure(self, positionerName, error):
+        failureCount = self._joystickAutoReenableFailureCount.get(positionerName, 0) + 1
+        self._joystickAutoReenableFailureCount[positionerName] = failureCount
+        delayS = self._pollBackoffSeconds[min(failureCount - 1, len(self._pollBackoffSeconds) - 1)]
+        if failureCount == 1 or failureCount % 10 == 0:
+            self.__logger.warning(
+                f'Joystick auto-reenable communication failed for {positionerName}; '
+                f'retrying in {delayS:g} s (failure {failureCount}): {error}'
+            )
+        else:
+            self.__logger.debug(
+                f'Joystick auto-reenable still failing for {positionerName} '
+                f'(failure {failureCount}): {error}'
+            )
+        self._joystickAutoReenableTimers[positionerName].start(int(delayS * 1000))
 
     def _isMovementFinished(self, pManager, axes):
         query = getattr(pManager, 'isMovementFinished', None)
         if not callable(query):
             return None
         for axis in axes:
-            try:
-                axisFinished = query(axis)
-            except Exception as e:
-                self.__logger.debug(
-                    f'Could not query movement status for {pManager.name} axis {axis}: {e}'
-                )
-                return None
+            axisFinished = query(axis)
             if axisFinished is None:
                 return None
             if not axisFinished:
@@ -392,6 +461,7 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         if timer is not None and timer.isActive():
             timer.stop()
         self._joystickAutoReenablePendingAxes.pop(positionerName, None)
+        self._joystickAutoReenableFailureCount.pop(positionerName, None)
 
     def _cancelAllJoystickAutoReenable(self):
         for positionerName in list(self._joystickAutoReenableTimers):
