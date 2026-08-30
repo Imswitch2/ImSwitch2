@@ -23,6 +23,8 @@ class NidaqPositionerManager(PositionerManager):
         super().__init__(positionerInfo, name, initialPosition={
             axis: 0 for axis in positionerInfo.axes
         })
+        if getattr(self._nidaqManager, 'isSimulated', False):
+            self._setMockActive("Simulated NI-DAQ positioner backend")
 
     def move(self, dist, axis):
         self.setPosition(self._position[axis] + dist, axis)

@@ -18,6 +18,7 @@ class MockPositionerManager(PositionerManager):
         super().__init__(positionerInfo, name, initialPosition={
             axis: 0 for axis in positionerInfo.axes
         })
+        self._setMockActive("Mock positioner configured")
 
     def move(self, dist, axis):
         self.setPosition(self._position[axis] + dist, axis)

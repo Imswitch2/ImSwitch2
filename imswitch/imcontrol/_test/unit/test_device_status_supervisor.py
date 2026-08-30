@@ -4,6 +4,7 @@ from imswitch.imcontrol.model.devices import (
     DeviceConnectionState,
     DeviceFailureKind,
     DeviceId,
+    DeviceManagerStatusMixin,
     DeviceRuntimeMode,
     DeviceStatus,
     DeviceSupervisor,
@@ -56,6 +57,13 @@ class _ActiveConnectionMethod:
         raise AssertionError("status refresh must not probe hardware")
 
 
+class _CanonicalStatus(DeviceManagerStatusMixin):
+    # Deliberately conflicts with the legacy resolver conventions. Canonical
+    # managers must not be reverse-engineered by DeviceSupervisor.
+    connected = True
+    mockermode = True
+
+
 class _ExplicitProvider:
     def getDeviceStatus(self):
         return DeviceStatus(
@@ -105,6 +113,50 @@ def test_mock_fallback_keeps_failure_diagnostic():
     assert status.failure_kind is DeviceFailureKind.CONNECTION_ERROR
     assert "fallback" in status.summary.lower()
 
+
+def test_canonical_status_contract_is_lazy_and_takes_precedence_over_inference():
+    manager = _CanonicalStatus()
+    device_id = DeviceId("laser", "canonical")
+
+    status = resolveDeviceStatus(device_id, manager)
+    assert status.connection is DeviceConnectionState.UNKNOWN
+    assert status.mode is DeviceRuntimeMode.REAL
+
+    manager._setConnected("hardware opened")
+    status = resolveDeviceStatus(device_id, manager)
+    assert status.connection is DeviceConnectionState.CONNECTED
+    assert status.mode is DeviceRuntimeMode.REAL
+    assert status.summary == "hardware opened"
+
+
+def test_canonical_mock_semantics_use_not_applicable_or_error():
+    manager = _CanonicalStatus()
+    device_id = DeviceId("positioner", "mock")
+
+    manager._setMockActive("mock configured")
+    status = resolveDeviceStatus(device_id, manager)
+    assert status.connection is DeviceConnectionState.NOT_APPLICABLE
+    assert status.mode is DeviceRuntimeMode.MOCK
+
+    manager._setConnectionError(
+        RuntimeError("port unavailable"),
+        summary="fallback mock active",
+        mock_active=True,
+    )
+    status = resolveDeviceStatus(device_id, manager)
+    assert status.connection is DeviceConnectionState.ERROR
+    assert status.mode is DeviceRuntimeMode.MOCK
+    assert status.failure_kind is DeviceFailureKind.CONNECTION_ERROR
+
+
+def test_main_device_family_bases_expose_canonical_status_contract():
+    from imswitch.imcontrol.model.managers.detectors.DetectorManager import DetectorManager
+    from imswitch.imcontrol.model.managers.lasers.LaserManager import LaserManager
+    from imswitch.imcontrol.model.managers.positioners.PositionerManager import PositionerManager
+
+    assert issubclass(DetectorManager, DeviceManagerStatusMixin)
+    assert issubclass(LaserManager, DeviceManagerStatusMixin)
+    assert issubclass(PositionerManager, DeviceManagerStatusMixin)
 
 def test_explicit_provider_cannot_override_supervisor_identity():
     device_id = DeviceId("laser", "L")

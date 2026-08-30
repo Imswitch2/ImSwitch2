@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcontrol.model.devices.status import DeviceConnectionState
 from .basewidgets import Widget
 
 
@@ -91,7 +92,11 @@ class HardwareStatusWidget(Widget):
             values = (
                 status.name,
                 _KIND_LABELS.get(status.kind, status.kind),
-                status.connection.value.upper(),
+                (
+                    "-"
+                    if status.connection is DeviceConnectionState.NOT_APPLICABLE
+                    else status.connection.value.upper()
+                ),
                 status.mode.value.upper(),
                 status.manager_name,
                 status.summary or "",

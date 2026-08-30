@@ -241,6 +241,7 @@ class PhotometricsManager(DetectorManager):
             self.__logger.debug(f'Trying to initialize Photometrics camera {cameraId}')
             camera = next(Camera.detect_camera())
             camera.open()
+            self._setConnected("Photometrics camera initialized")
         except Exception as e:
             # A stand-in that answers the PVCAM surface this manager reads.
             # The Hamamatsu mock that used to be substituted here answered none
@@ -251,6 +252,11 @@ class PhotometricsManager(DetectorManager):
                 exc_info=True
             )
             camera = MockPhotometrics()
+            self._setConnectionError(
+                e,
+                summary="Photometrics camera initialization failed; mock fallback active",
+                mock_active=True,
+            )
 
         self.__logger.info(f'Initialized camera, model: {camera.name}')
         return camera

@@ -23,6 +23,7 @@ class OxxiusCombinerLaserManager(LaserManager):
 
         self.blankingOn()
         self.internalControl()
+        self._setConnected("Oxxius combiner responding")
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits='arb', valueDecimals=0)
 

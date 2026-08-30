@@ -33,6 +33,11 @@ class PiezoconceptZManager(PiezoconceptZSerialMixin, PositionerManager):
             )
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name='mock', settings={'port': 'Mock'})
+            self._setConnectionError(
+                e,
+                summary="Piezoconcept RS232 backend unavailable; mock fallback active",
+                mock_active=True,
+            )
 
     def move(self, value, _):
         if float(value) > 0:

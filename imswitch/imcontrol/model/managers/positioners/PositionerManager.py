@@ -2,8 +2,10 @@ from abc import ABC, abstractmethod
 
 from typing import Dict, List
 
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
 
-class PositionerManager(ABC):
+
+class PositionerManager(DeviceManagerStatusMixin, ABC):
     """ Abstract base class for managers that control positioners. Each type of
     positioner corresponds to a manager derived from this class. """
 

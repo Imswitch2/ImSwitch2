@@ -22,6 +22,7 @@ class GRBLLaserManager(LaserManager):
         self.enabled = False
         super().__init__(laserInfo, name, isBinary=False, valueUnits='arb', valueDecimals=0)
         self._rs232manager._board.set_laser_intensity(self.enabled*self.laserval)
+        self._setConnected("GRBL laser initialized")
 
     def setEnabled(self, enabled):
         """Turn on (1) or off (0) laser emission"""

@@ -113,7 +113,10 @@ class SerialDacZManager(PositionerManager):
             f"{self._axis} -> {initial_voltage} V"
         )
 
-        self._send_voltage(initial_voltage)
+        self._send_voltage(self._position_to_voltage(initial_position))
+
+        self.__logger.info("Serial DAC Z manager initialized")
+        self._setConnected("Serial DAC Z initialized")
 
     def move(self, dist, axis=None):
         self._check_axis(axis)
@@ -185,12 +188,9 @@ class SerialDacZManager(PositionerManager):
         try:
             if self._ser is not None and self._ser.is_open:
                 self._ser.close()
-        except Exception as exc:
-            self.__logger.debug(
-                f"Failed to close serial DAC Z connection on {self._port}: {exc}"
-            )
-        finally:
-            self._is_available = False
+        except Exception:
+            pass
+        self._setFinalizedStatus()
 
     def _check_axis(self, axis):
         if axis is not None and axis != self._axis:

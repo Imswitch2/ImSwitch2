@@ -139,6 +139,7 @@ class KDC101PositionerManager(PositionerManager):
     def finalize(self) -> None:
         if self.device is not None and hasattr(self.device, 'close'):
             self.device.close()
+        self._setFinalizedStatus()
 
     def _move_to_units(self, position: float) -> None:
         if self.device is None:
@@ -170,24 +171,27 @@ class KDC101PositionerManager(PositionerManager):
     def _getDeviceObj(self, port: str):
         try:
             from thorlabs_apt_device.devices.kdc101 import KDC101
-        except ImportError:
+        except ImportError as e:
             self.__logger.error(
                 'thorlabs_apt_device is not installed. Install it with: '
                 'pip install thorlabs-apt-device'
             )
+            self._setConnectionError(e, summary="KDC101 dependency unavailable")
             return None
 
         try:
             device = KDC101(serial_port=port)
             self.__logger.info('Initialized KDC101 positioner on %s', port)
+            self._setConnected("KDC101 positioner initialized")
             return device
-        except Exception:
+        except Exception as e:
             self.__logger.error(
                 'Failed to initialize KDC101 positioner on %s. If the port is '
                 'denied, check that no other manager in the setup file (or a '
                 'second ImSwitch instance, or Kinesis) already holds it.', port,
                 exc_info=True
             )
+            self._setConnectionError(e, summary="KDC101 positioner initialization failed")
             return None
 
 

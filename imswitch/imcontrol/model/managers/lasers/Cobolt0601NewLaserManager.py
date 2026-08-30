@@ -214,6 +214,7 @@ class Cobolt0601NewLaserManager(LaserManager):
                 f'port {self._port} will not be opened.'
             )
             self._start_mock()
+            self._setMockActive("Cobolt simulation configured")
         else:
             self.__logger.debug(f'Initializing Cobolt laser {name} on {self._port}')
             try:
@@ -239,8 +240,14 @@ class Cobolt0601NewLaserManager(LaserManager):
                 )
                 self._start_mock()
                 self._mock_fallback = True
+                self._setConnectionError(
+                    exc,
+                    summary="Cobolt connection failed; mock fallback active",
+                    mock_active=True,
+                )
             else:
                 self._real_hw = True
+                self._setConnected("Cobolt laser connected")
 
         # Profile validation and the safe state are part of initialization: if
         # either fails we must not hand back a manager that looks usable. The

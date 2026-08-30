@@ -96,6 +96,7 @@ class MPBLaserManager(LaserManager):
             self.__logger.debug(f'MPB laser {name}, SN: {serial_number}')
 
             self.setTriggerSource(0)  # internal; not implemented by this driver
+            self._setConnected("MPB laser initialized")
 
         except Exception as exc:
             # Initialization is the recovery path after a crashed ImSwitch
@@ -115,6 +116,11 @@ class MPBLaserManager(LaserManager):
             if not self._use_mock_on_failure:
                 raise RuntimeError(message) from exc
             self._isMock = True
+            self._setConnectionError(
+                exc,
+                summary="MPB laser initialization failed; mock fallback active",
+                mock_active=True,
+            )
 
         super().__init__(
             laserInfo,

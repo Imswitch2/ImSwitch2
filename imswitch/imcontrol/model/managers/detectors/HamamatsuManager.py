@@ -519,6 +519,7 @@ class HamamatsuManager(DetectorManager):
             from imswitch.imcontrol.model.interfaces.hamamatsu import HamamatsuCameraMR
             self.__logger.debug(f'Trying to initialize Hamamatsu camera {cameraId}')
             camera = HamamatsuCameraMR(cameraId)
+            self._setConnected("Hamamatsu camera initialized")
         except Exception as e:
             self.__logger.warning(
                 f'Failed to initialize Hamamatsu camera {cameraId}, loading mocker: {e}',
@@ -526,6 +527,14 @@ class HamamatsuManager(DetectorManager):
             )
             from imswitch.imcontrol.model.interfaces.hamamatsu_mock import MockHamamatsu
             camera = MockHamamatsu()
+            if str(cameraId).strip().lower().startswith("mock"):
+                self._setMockActive("Mock camera configured")
+            else:
+                self._setConnectionError(
+                    e,
+                    summary="Hamamatsu camera initialization failed; mock fallback active",
+                    mock_active=True,
+                )
 
         self.__logger.info(f'Initialized camera, model: {camera.camera_model}')
         return camera

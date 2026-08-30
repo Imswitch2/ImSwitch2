@@ -187,6 +187,8 @@ class APDManager(DetectorManager):
         self.__shape = fullShape
         super().__init__(detectorInfo, name, fullShape=fullShape, supportedBinnings=[1],
                          model=model, parameters=parameters, croppable=False)
+        if self._simulation_mode:
+            self._setMockActive("Simulated NI-DAQ detector backend")
 
     def __del__(self):
         try:
