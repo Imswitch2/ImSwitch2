@@ -79,6 +79,9 @@ class CoolLEDLaserManager(LaserManager):
             self._rs232manager = lowLevelManagers['rs232sManager'][
                 laserInfo.managerProperties['rs232device']
             ]
+            self._isMock = (
+                self._rs232manager.runtimeMode is DeviceRuntimeMode.MOCK
+            )
             self.__channel_index = laserInfo.managerProperties['channel_index']
             self.__digital_mod = False
         except Exception as e:
@@ -102,7 +105,7 @@ class CoolLEDLaserManager(LaserManager):
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0, isModulated=isModulated)
 
-        if not self._isMock and self._rs232manager is not None:
+        if self._rs232manager is not None:
             state, mode, summary, details, failure_kind = _probe_coolled_controller(
                 self._rs232manager
             )
