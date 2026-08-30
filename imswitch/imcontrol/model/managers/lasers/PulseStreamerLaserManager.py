@@ -25,6 +25,11 @@ class PulseStreamerLaserManager(LaserManager):
                 f'Failed to initialize PulseStreamer hardware, running in mock mode: {e}'
             )
             self._pulseStreamerManager = None
+            self._setConnectionError(
+                e,
+                summary="PulseStreamer laser initialization failed; mock fallback active",
+                mock_active=True,
+            )
             self._digitalChannels = getattr(laserInfo, 'digitalLine', None)
             self._analogChannels = getattr(laserInfo, 'analogChannel', None)
 

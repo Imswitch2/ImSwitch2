@@ -29,6 +29,11 @@ class CoolLEDLaserManager(LaserManager):
                 f'Failed to initialize CoolLED hardware, running in mock mode: {e}'
             )
             self._rs232manager = None
+            self._setConnectionError(
+                e,
+                summary="CoolLED initialization failed; mock fallback active",
+                mock_active=True,
+            )
             self.__channel_index = laserInfo.managerProperties.get('channel_index', 'A')
             self.__digital_mod = False
 

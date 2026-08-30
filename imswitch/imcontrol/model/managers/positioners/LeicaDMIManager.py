@@ -8,12 +8,19 @@ from imswitch.imcontrol.model.managers.positioners.PositionerManager import Posi
 class LeicaDMIManager(PositionerManager):
     def __init__(self, positionerInfo, name, *args, **lowLevelManagers):
         self.__logger = initLogger(self)
+        using_mock_fallback = False
         try:
             self._rs232Manager = lowLevelManagers['rs232sManager'][positionerInfo.managerProperties['rs232device']]
-        except KeyError:
+        except KeyError as e:
             self.__logger.error(f'Failed to access Leica DMI stand RS232 connection with name {positionerInfo.managerProperties["rs232device"]}, define it in your setup .json. Loading mocker.')
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name=positionerInfo.managerProperties['rs232device'], settings={'port': 'Mock'})
+            using_mock_fallback = True
+            self._setConnectionError(
+                e,
+                summary="Leica DMI RS232 backend unavailable; mock fallback active",
+                mock_active=True,
+            )
 
         self._lut_du_to_nm = None
         self._lut_nm_to_du = None
@@ -32,6 +39,8 @@ class LeicaDMIManager(PositionerManager):
 
         cmd = '71003'
         self.__logger.info(f"DMI stand serial no: {self._rs232Manager.query(cmd)}")
+        if not using_mock_fallback:
+            self._setConnected("Leica DMI stand responding")
 
     def move(self, value, *args):
         """

@@ -81,6 +81,7 @@ class SerialDacZManager(PositionerManager):
         self._send_voltage(self._position_to_voltage(initial_position))
 
         self.__logger.info("Serial DAC Z manager initialized")
+        self._setConnected("Serial DAC Z initialized")
 
     def move(self, dist, axis=None):
         self._check_axis(axis)
@@ -117,6 +118,7 @@ class SerialDacZManager(PositionerManager):
                 self._ser.close()
         except Exception:
             pass
+        self._setFinalizedStatus()
 
     def _check_axis(self, axis):
         if axis is not None and axis != self._axis:

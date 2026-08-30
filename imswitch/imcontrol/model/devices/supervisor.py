@@ -10,6 +10,7 @@ from .status import (
     DeviceConnectionState,
     DeviceFailureKind,
     DeviceId,
+    DeviceManagerStatusMixin,
     DeviceRuntimeMode,
     DeviceStatus,
 )
@@ -144,10 +145,25 @@ def _infer_summary(manager, mode: DeviceRuntimeMode) -> tuple[str | None, str | 
 def resolveDeviceStatus(device_id: DeviceId, manager) -> DeviceStatus:
     """Build a passive status snapshot without performing device I/O.
 
-    Managers may opt into the explicit ``getDeviceStatus`` contract. Existing
-    managers are handled conservatively from state already stored on the object.
-    Unknown is preferred over assuming successful construction means connected.
+    Migrated managers expose the canonical cached-only status contract. Other
+    managers use the temporary explicit-provider / conservative legacy adapter
+    path. Unknown is preferred over assuming construction means connected.
     """
+    # The narrow canonical manager contract is the long-term source of truth.
+    # Do not run legacy/provider inference for migrated managers: UNKNOWN is a
+    # valid statement that the manager does not yet know its passive state.
+    if isinstance(manager, DeviceManagerStatusMixin):
+        return DeviceStatus(
+            device_id=device_id,
+            manager_name=type(manager).__name__,
+            connection=manager.connectionState,
+            mode=manager.runtimeMode,
+            summary=manager.connectionStatusSummary,
+            details=manager.connectionStatusDetails,
+            failure_kind=manager.connectionFailureKind,
+        )
+
+    # Compatibility path for non-migrated/special managers.
     provider = getattr(type(manager), "getDeviceStatus", None)
     if callable(provider):
         try:

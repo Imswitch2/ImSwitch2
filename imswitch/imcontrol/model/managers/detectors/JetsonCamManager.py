@@ -157,6 +157,7 @@ class JetsonCamManager(DetectorManager):
             from imswitch.imcontrol.model.interfaces.jetsoncam import CameraJETSON
             self.__logger.debug(f'Trying to initialize Jetson IMX219 camera')
             camera = CameraJETSON()
+            self._setConnected("Jetson camera initialized")
         except Exception as e:
             self.__logger.warning(
                 f'Failed to initialize Jetson IMX219 camera, loading TIS mocker: {e}',
@@ -164,6 +165,11 @@ class JetsonCamManager(DetectorManager):
             )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
+            self._setConnectionError(
+                e,
+                summary="Jetson camera initialization failed; mock fallback active",
+                mock_active=True,
+            )
 
         self.__logger.info(f'Initialized camera, model: {camera.model}')
         return camera

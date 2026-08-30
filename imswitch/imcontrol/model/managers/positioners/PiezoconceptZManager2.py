@@ -23,6 +23,7 @@ class PiezoconceptZManager2(PiezoconceptZSerialMixin, PositionerManager):
         })
         self.__logger = initLogger(self, instanceName=name)
         self._initPiezoconceptSerial(self.__logger)
+        using_mock_fallback = False
         try:
             self._rs232Manager = lowLevelManagers['rs232sManager'][
                 positionerInfo.managerProperties['rs232device']
@@ -33,12 +34,24 @@ class PiezoconceptZManager2(PiezoconceptZSerialMixin, PositionerManager):
             )
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name='mock', settings={'port': 'Mock'})
+            using_mock_fallback = True
+            self._setConnectionError(
+                e,
+                summary="Piezoconcept RS232 backend unavailable; mock fallback active",
+                mock_active=True,
+            )
         # Try to retrieve range and move to center!
         try:
             self._range = positionerInfo.managerProperties['range_um']
             self.setPosition(self._range//2, None)
+            if not using_mock_fallback:
+                self._setConnected("Piezoconcept Z piezo responding")
+        except KeyError as e:
+            self.__logger.warning(f"PiezoconceptZManager2 init error: {e}")
         except Exception as e:
             self.__logger.warning(f"PiezoconceptZManager2 init error: {e}")
+            if not using_mock_fallback:
+                self._setConnectionError(e, summary="Piezoconcept Z piezo initialization failed")
 
 
 

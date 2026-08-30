@@ -133,6 +133,7 @@ class AAAOTFLaserManager(LaserManager):
             self.__logger.error(f"Creating LUT for {name} from calib failed due to: {e}")
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits=self._value_units, valueDecimals=0)
+        self._setConnected("AA AOTF initialized")
 
     @staticmethod
     def _parse_channel(value, name):

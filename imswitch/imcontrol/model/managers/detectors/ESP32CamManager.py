@@ -164,6 +164,7 @@ class ESP32CamManager(DetectorManager):
             from imswitch.imcontrol.model.interfaces.esp32camera import CameraESP32Cam
             self.__logger.debug(f'Trying to initialize ESP32Camera {host}')
             camera = CameraESP32Cam(host, port)
+            self._setConnected("ESP32 camera initialized")
         except Exception as e:
             self.__logger.warning(
                 f'Failed to initialize ESP32Camera {e}, loading TIS mocker',
@@ -171,6 +172,14 @@ class ESP32CamManager(DetectorManager):
             )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
+            if str(host).strip().lower().startswith("mock"):
+                self._setMockActive("Mock camera configured")
+            else:
+                self._setConnectionError(
+                    e,
+                    summary="ESP32 camera initialization failed; mock fallback active",
+                    mock_active=True,
+                )
 
         self.__logger.info(f'Initialized camera, model: {camera.model}')
         return camera

@@ -128,11 +128,17 @@ class ThorCamTSIManager(DetectorManager):
                     ThorTSICamera
                 )
                 camera = ThorTSICamera(serial=serial, dll_directory=dll_location)
+                self._setConnected("Thorlabs TSI camera initialized")
                 return camera
             except (ImportError, RuntimeError, ValueError) as e:
                 self.__logger.warning(
                     f"Failed to initialize Thorlabs TSI camera: {e}. "
                     f"Loading mock camera."
+                )
+                self._setConnectionError(
+                    e,
+                    summary="Thorlabs TSI camera initialization failed; mock fallback active",
+                    mock_active=True,
                 )
                 use_mock = True
         
@@ -140,7 +146,10 @@ class ThorCamTSIManager(DetectorManager):
         from imswitch.imcontrol.model.interfaces.thorcamera_tsi import (
             MockThorTSICamera
         )
-        return MockThorTSICamera(serial=serial)
+        camera = MockThorTSICamera(serial=serial)
+        if serial is not None and serial.startswith("MOCK_"):
+            self._setMockActive("Mock camera configured")
+        return camera
     
     def _applyDefaults(self):
         """Apply default parameter values to hardware."""
