@@ -10,4 +10,4 @@ class HardwareStatusController(ImConWidgetController):
         self.refresh()
 
     def refresh(self):
-        self._widget.setStatuses(self._master.deviceSupervisor.getAllStatuses())
+        self._widget.setStatuses(self._master.deviceSupervisor.getHardwareStatuses())

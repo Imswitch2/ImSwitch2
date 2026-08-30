@@ -1,15 +1,37 @@
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.graph import (
+    DeviceDependencySpec, DeviceDescriptorSpec, DeviceRelationKind,
+    DeviceRole, HardwareDeviceId,
+)
+from imswitch.imcontrol.model.devices.status import DeviceId
 
 
 class MockLeicaDMIStandManager:
     def __init__(self, deviceInfo, *args, **kwargs):
         self.__logger = initLogger(self)
+        self._deviceInfo = deviceInfo
         try:
             self._rs232Manager = kwargs['rs232sManager']._subManagers[deviceInfo.rs232device]
         except Exception as e:
             self.__logger.error(f'Failed to access Leica DMI stand RS232 connection with name {deviceInfo.rs232device}: {e}. Define it in your setup .json. Loading mocker.')
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name=deviceInfo.rs232device, settings={'port': 'Mock'})
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = self._deviceInfo.rs232device
+        return DeviceDescriptorSpec(
+            role=DeviceRole.PRIMARY,
+            hardware_id=HardwareDeviceId('stand', f'leica:{rs232_name}'),
+            display_name='Leica stand',
+            category='stand',
+            dependencies=(
+                DeviceDependencySpec(
+                    DeviceRelationKind.USES_TRANSPORT,
+                    target=DeviceId('rs232', str(rs232_name)),
+                    label=str(rs232_name),
+                ),
+            ),
+        )
 
     def move(self, value, *args):
         if not int(value) == 0:

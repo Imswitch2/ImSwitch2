@@ -1,5 +1,6 @@
 from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
+from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
 
 
 class MHXYStageManager(PositionerManager):
@@ -133,6 +134,14 @@ class MHXYStageManager(PositionerManager):
             return False
         self.updateTrackedPosition(positions)
         return True
+
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = (self._positionerInfo.managerProperties or {}).get('rs232device')
+        return rs232BackedPrimarySpec(
+            category='positioner',
+            rs232_name=str(rs232_name),
+        )
 
     def move(self, value, axis):
         if axis == 'X':

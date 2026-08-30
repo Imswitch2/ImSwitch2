@@ -102,8 +102,12 @@ class NidaqManager(SignalInterface):
     def __init__(self, setupInfo):
         super().__init__()
         self.__logger = initLogger(self)
+        self.__setupInfo = setupInfo
         self.__simulating = bool(setupInfo.nidaq.simulation)
         self.__warnedRuntimeErrors = set()
+        self._configuredDeviceNames = self._extractConfiguredDeviceNames(setupInfo)
+        self._detectedDeviceNames = ()
+        self._deviceEnumerationError = None
         scanInfo = getattr(setupInfo, 'scan', None)
         if not self.__simulating and scanInfo is not None:
             self._checkScanClockRate(getattr(scanInfo, 'sampleRate', None))
@@ -125,7 +129,9 @@ class NidaqManager(SignalInterface):
             else:
                 self.__logger.debug('nidaqmx not installed; NI-DAQ operations disabled.')
 
-        self.__setupInfo = setupInfo
+        if _NIDAQMX_AVAILABLE and not self.__simulating:
+            self._cacheDetectedDeviceNames()
+
         self.tasks = {}
         self.doTaskWaiter = None
         self.aoTaskWaiter = None
@@ -156,6 +162,62 @@ class NidaqManager(SignalInterface):
             self.__scanSimulator = ScanSimulationCoordinator(setupInfo)
             self.__scanSimulator.sigFrameTrigger.connect(self.sigSimScanFrameTrigger)
             self.__scanSimulator.sigDone.connect(self.scanDone)
+
+    @staticmethod
+    def _extractConfiguredDeviceNames(setupInfo):
+        names = set()
+
+        def add_channel(channel):
+            if channel is None:
+                return
+            text = str(channel).strip()
+            if not text or '/' not in text:
+                return
+            device_name = text.split('/', 1)[0].strip()
+            if device_name and device_name.casefold() != 'triggerscope':
+                names.add(device_name)
+
+        for info in setupInfo.getAllDevices().values():
+            add_channel(info.getAnalogChannel())
+            add_channel(info.getDigitalLine())
+        add_channel(setupInfo.nidaq.getTimerCounterChannel())
+        return tuple(sorted(names, key=str.casefold))
+
+    def _cacheDetectedDeviceNames(self):
+        """Best-effort one-time NI-DAQmx board discovery for diagnostics.
+
+        This runs during normal manager initialization, never from Hardware
+        Status refresh. Failure is cached for the infrastructure view and does
+        not change scan/task behavior.
+        """
+        try:
+            import nidaqmx.system
+            system = nidaqmx.system.System.local()
+            self._detectedDeviceNames = tuple(
+                sorted((str(device.name) for device in system.devices), key=str.casefold)
+            )
+        except Exception as exc:
+            self._deviceEnumerationError = exc
+            self.__logger.warning(
+                'Could not enumerate NI-DAQmx devices for hardware status: %s',
+                exc,
+            )
+
+    @property
+    def configuredDeviceNames(self):
+        return tuple(self._configuredDeviceNames)
+
+    @property
+    def detectedDeviceNames(self):
+        return tuple(self._detectedDeviceNames)
+
+    @property
+    def deviceEnumerationError(self):
+        return self._deviceEnumerationError
+
+    @property
+    def simulating(self):
+        return self.__simulating
 
     def __del__(self):
         try:

@@ -109,7 +109,7 @@ class MasterController:
         # Read-only device inventory/status facade. It observes the managers
         # created above and deliberately performs no probing or lifecycle work.
         from imswitch.imcontrol.model.devices import DeviceSupervisor
-        self.deviceSupervisor = DeviceSupervisor(self)
+        self.deviceSupervisor = DeviceSupervisor(self, setupInfo=self.__setupInfo)
 
         # Connect signals
         cc = self.__commChannel
