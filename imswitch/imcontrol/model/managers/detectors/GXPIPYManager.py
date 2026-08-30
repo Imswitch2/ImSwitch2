@@ -195,6 +195,7 @@ class GXPIPYManager(DetectorManager):
             from imswitch.imcontrol.model.interfaces.gxipycamera import CameraGXIPY
             self.__logger.debug(f'Trying to initialize Daheng Imaging camera {cameraId}')
             camera = CameraGXIPY(cameraNo=cameraId, binning=binning)
+            self._setConnected("Daheng camera initialized")
         except Exception as e:
             self.__logger.warning(
                 f'Failed to initialize CameraGXIPY {cameraId}, loading TIS mocker: {e}',
@@ -202,6 +203,14 @@ class GXPIPYManager(DetectorManager):
             )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
+            if str(cameraId).strip().lower().startswith("mock"):
+                self._setMockActive("Mock camera configured")
+            else:
+                self._setConnectionError(
+                    e,
+                    summary="Daheng camera initialization failed; mock fallback active",
+                    mock_active=True,
+                )
 
         self.__logger.info(f'Initialized camera, model: {camera.model}')
         return camera

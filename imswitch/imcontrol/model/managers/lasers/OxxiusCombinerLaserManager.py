@@ -1,4 +1,5 @@
 from .LaserManager import LaserManager
+from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
 from imswitch.imcommon.model import initLogger
 
 
@@ -23,8 +24,19 @@ class OxxiusCombinerLaserManager(LaserManager):
 
         self.blankingOn()
         self.internalControl()
+        self._setConnected("Oxxius combiner responding")
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits='arb', valueDecimals=0)
+
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = self.getProperty('rs232device')
+        return sharedRs232ComponentSpec(
+            category='laser',
+            family='oxxius-combiner',
+            display_name='Oxxius Combiner',
+            rs232_name=str(rs232_name),
+        )
 
     def setEnabled(self, enabled):
         """Turn on (1) or off (0) laser emission"""

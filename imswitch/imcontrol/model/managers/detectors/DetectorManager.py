@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from imswitch.imcommon.framework import Signal, SignalInterface
+from imswitch.imcontrol.model.devices.status import DeviceManagerStatusMixin
 from imswitch.imcommon.model import initLogger
 
 
@@ -176,7 +177,7 @@ class RawFrameUnavailableError(RuntimeError):
     """
 
 
-class DetectorManager(SignalInterface):
+class DetectorManager(DeviceManagerStatusMixin, SignalInterface):
     """ Abstract base class for managers that control detectors. Each type of
     detector corresponds to a manager derived from this class. """
 

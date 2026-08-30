@@ -1,6 +1,7 @@
 from imswitch.imcommon.model import initLogger
 from ._PiezoconceptZSerialMixin import PiezoconceptZSerialMixin
 from .PositionerManager import PositionerManager
+from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
 
 
 class PiezoconceptZManager(PiezoconceptZSerialMixin, PositionerManager):
@@ -33,6 +34,19 @@ class PiezoconceptZManager(PiezoconceptZSerialMixin, PositionerManager):
             )
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name='mock', settings={'port': 'Mock'})
+            self._setConnectionError(
+                e,
+                summary="Piezoconcept RS232 backend unavailable; mock fallback active",
+                mock_active=True,
+            )
+
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = (self._positionerInfo.managerProperties or {}).get('rs232device')
+        return rs232BackedPrimarySpec(
+            category='positioner',
+            rs232_name=str(rs232_name),
+        )
 
     def move(self, value, _):
         if float(value) > 0:

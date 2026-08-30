@@ -1,5 +1,6 @@
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
+from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
 
 
 class CoolLEDLaserManager(LaserManager):
@@ -29,6 +30,11 @@ class CoolLEDLaserManager(LaserManager):
                 f'Failed to initialize CoolLED hardware, running in mock mode: {e}'
             )
             self._rs232manager = None
+            self._setConnectionError(
+                e,
+                summary="CoolLED initialization failed; mock fallback active",
+                mock_active=True,
+            )
             self.__channel_index = laserInfo.managerProperties.get('channel_index', 'A')
             self.__digital_mod = False
 
@@ -38,6 +44,16 @@ class CoolLEDLaserManager(LaserManager):
                             else False)
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0, isModulated=isModulated)
+
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = self.getProperty('rs232device')
+        return sharedRs232ComponentSpec(
+            category='laser',
+            family='coolled',
+            display_name='CoolLED controller',
+            rs232_name=str(rs232_name),
+        )
 
     def setEnabled(self, enabled):
         """Turn on (N) or off (F) laser emission"""

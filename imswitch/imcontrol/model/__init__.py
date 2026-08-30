@@ -15,3 +15,12 @@ from .signaldesigners import SignalDesignerFactory
 import sys
 
 #sys.modules['visa'] = 'pyvisa'
+from .devices import (
+    DeviceConnectionState,
+    DeviceFailureKind,
+    DeviceId,
+    DeviceRuntimeMode,
+    DeviceStatus,
+    DeviceStatusProvider,
+    DeviceSupervisor,
+)

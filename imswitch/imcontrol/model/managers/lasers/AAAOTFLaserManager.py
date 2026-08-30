@@ -3,6 +3,7 @@ from scipy.interpolate import interp1d
 
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
+from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
 from .aa_aotf_protocols import DEFAULT_PROFILE_ID, build_profiles
 from .aa_aotf_protocols.frequency_startup import validate_frequency_mhz
 from ._protocol import DeviceInitializationError, ProtocolError
@@ -133,6 +134,7 @@ class AAAOTFLaserManager(LaserManager):
             self.__logger.error(f"Creating LUT for {name} from calib failed due to: {e}")
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits=self._value_units, valueDecimals=0)
+        self._setConnected("AA AOTF initialized")
 
     @staticmethod
     def _parse_channel(value, name):
@@ -197,6 +199,16 @@ class AAAOTFLaserManager(LaserManager):
             self.externalControl()
         else:
             self.internalControl()
+
+
+    def getDeviceDescriptorSpec(self):
+        rs232_name = self.getProperty('rs232device')
+        return sharedRs232ComponentSpec(
+            category='laser',
+            family='aa-aotf',
+            display_name='AA AOTF',
+            rs232_name=str(rs232_name),
+        )
 
     def setEnabled(self, enabled):
         """Turn on (1) or off (0) laser emission"""

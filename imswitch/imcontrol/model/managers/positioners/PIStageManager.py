@@ -71,8 +71,10 @@ class PIStageManager(PositionerManager, SignalInterface):
         try:
             self.connect()
             self.getJoystickEnabledStatus()
+            self._setConnected("PI stage connected")
         except Exception as e:
             self.__logger.debug(f'Could not initialize PI motorized stage: {e}')
+            self._setConnectionError(e, summary="PI stage initialization failed")
             self.device = None
 
 
@@ -106,6 +108,7 @@ class PIStageManager(PositionerManager, SignalInterface):
             self.__logger.warning(
                 f'Failed to enumerate PI USB devices for {self.device!r}: {exc}'
             )
+            self._setConnectionError(exc, summary="PI USB enumeration failed")
             return None
         finally:
             try:
@@ -120,6 +123,10 @@ class PIStageManager(PositionerManager, SignalInterface):
         if not usb_devices:
             self.__logger.warning(
                 f'No PI USB devices found while searching for {self.device!r}.'
+            )
+            self._setDeviceNotFound(
+                f"No PI USB devices found while searching for {self.device!r}",
+                summary="PI stage not found",
             )
             return None
 
@@ -140,6 +147,10 @@ class PIStageManager(PositionerManager, SignalInterface):
                 f'(candidates: {device_candidates}). '
                 f'Found: {usb_devices}'
             )
+            self._setDeviceNotFound(
+                f"No enumerated PI USB device matched {self.device!r}; found {usb_devices}",
+                summary="PI stage not found",
+            )
             return None
         self.__logger.debug(f'Auto-selected PI USB device: {selected_device}')
         return selected_device
@@ -154,6 +165,7 @@ class PIStageManager(PositionerManager, SignalInterface):
                 self.activate_joystick()
                 self.X.CloseDaisyChain()
             self.__logger.debug('PIstage connection closed, joystick activated')
+            self._setFinalizedStatus()
 
     @property
     def isAvailable(self) -> bool:

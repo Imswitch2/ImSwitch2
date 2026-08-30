@@ -162,6 +162,7 @@ class BaslerManager(DetectorManager):
             from imswitch.imcontrol.model.interfaces.baslercamera import CameraBasler
             self.__logger.debug(f'Trying to initialize Basler Imaging camera {cameraId}')
             camera = CameraBasler(cameraId)
+            self._setConnected("Basler camera initialized")
         except Exception as e:
             self.__logger.warning(
                 f'Failed to initialize basler camera {cameraId}, loading TIS mocker: {e}',
@@ -169,6 +170,14 @@ class BaslerManager(DetectorManager):
             )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
+            if str(cameraId).strip().lower().startswith("mock"):
+                self._setMockActive("Mock camera configured")
+            else:
+                self._setConnectionError(
+                    e,
+                    summary="Basler camera initialization failed; mock fallback active",
+                    mock_active=True,
+                )
 
         self.__logger.info(f'Initialized camera, model: {camera.model}')
         return camera

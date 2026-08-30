@@ -61,6 +61,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 'TimeTagger Python library not found. Install it from the Swabian Instruments '
                 'software package. SwabianTimeTaggerManager will not function.'
             )
+            self._setConnectionError(
+                ImportError("TimeTagger Python library not found"),
+                summary="TimeTagger dependency unavailable",
+            )
 
 
         self._detectorInfo = detectorInfo
@@ -413,8 +417,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             if self._tt is None:
                 self._tt = createTimeTagger()
                 self._isMock = False
+                self._setConnected("TimeTagger initialized")
         except Exception as error:
             self._isMock = True
+            self._setConnectionError(
+                error, summary="TimeTagger initialization failed"
+            )
             with self._flim_lock:
                 self._flim = None
             raise RuntimeError('createTimeTagger() failed') from error
