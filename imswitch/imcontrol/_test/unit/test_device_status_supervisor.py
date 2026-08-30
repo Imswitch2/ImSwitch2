@@ -424,3 +424,101 @@ def test_slm_managers_expose_canonical_passive_status_contract():
 
     assert issubclass(HamamatsuSLMdviManager, DeviceManagerStatusMixin)
     assert issubclass(HamamatsuSLMusbManager, DeviceManagerStatusMixin)
+
+
+class _GraphLeicaStand(DeviceManagerStatusMixin):
+    def getDeviceDescriptorSpec(self):
+        from imswitch.imcontrol.model.devices import (
+            DeviceDependencySpec,
+            DeviceDescriptorSpec,
+            DeviceRelationKind,
+            DeviceRole,
+            HardwareDeviceId,
+        )
+        return DeviceDescriptorSpec(
+            role=DeviceRole.PRIMARY,
+            hardware_id=HardwareDeviceId("stand", "leica:leica"),
+            display_name="Leica stand",
+            category="stand",
+            dependencies=(
+                DeviceDependencySpec(
+                    DeviceRelationKind.USES_TRANSPORT,
+                    target=DeviceId("rs232", "leica"),
+                    label="leica",
+                ),
+            ),
+        )
+
+
+class _GraphLeicaZ(DeviceManagerStatusMixin):
+    def getDeviceDescriptorSpec(self):
+        from imswitch.imcontrol.model.devices import (
+            DeviceDescriptorSpec,
+            DeviceRole,
+            HardwareDeviceId,
+        )
+        return DeviceDescriptorSpec(
+            role=DeviceRole.COMPONENT,
+            hardware_id=HardwareDeviceId("stand", "leica:leica"),
+            display_name="Leica objective Z",
+            category="stand",
+        )
+
+
+def test_primary_endpoint_owns_physical_health_while_component_keeps_own_status():
+    stand = _GraphLeicaStand()
+    stand._setConnected("Leica stand connected")
+    z = _GraphLeicaZ()
+    z._setConnectionError(
+        "missing Z calibration",
+        summary="Leica DMI Z calibration is unavailable",
+        failure_kind=DeviceFailureKind.CONFIGURATION_ERROR,
+    )
+
+    supervisor = DeviceSupervisor(
+        _empty_master(
+            positionersManager=_Group({"Objective Z": z}),
+            standManager=_StandWrapper(stand),
+        )
+    )
+    statuses = supervisor.getHardwareStatuses()
+
+    assert len(statuses) == 1
+    leica = statuses[0]
+    assert leica.name == "Leica stand"
+    assert leica.connection is DeviceConnectionState.CONNECTED
+    assert len(leica.components) == 1
+    component = leica.components[0]
+    assert component.name == "Objective Z"
+    assert component.category == "positioner"
+    assert component.status.connection is DeviceConnectionState.ERROR
+    assert component.status.failure_kind is DeviceFailureKind.CONFIGURATION_ERROR
+
+
+def test_transport_failure_propagates_to_cross_category_component_status():
+    stand = _GraphLeicaStand()
+    stand._setConnected("Leica stand connected")
+    z = _GraphLeicaZ()
+    z._setConnected("Leica DMI Z connected")
+    transport = _GraphTransport()
+    transport._setConnectionError(
+        RuntimeError("COM port unavailable"),
+        summary="RS232 transport failed; mock fallback active",
+        mock_active=True,
+    )
+
+    supervisor = DeviceSupervisor(
+        _empty_master(
+            positionersManager=_Group({"Objective Z": z}),
+            rs232sManager=_Group({"leica": transport}),
+            standManager=_StandWrapper(stand),
+        )
+    )
+    leica = supervisor.getHardwareStatuses()[0]
+
+    assert leica.connection is DeviceConnectionState.ERROR
+    assert leica.mode is DeviceRuntimeMode.MOCK
+    component = leica.components[0]
+    assert component.status.connection is DeviceConnectionState.ERROR
+    assert component.status.mode is DeviceRuntimeMode.MOCK
+    assert "Transport leica" in component.status.summary

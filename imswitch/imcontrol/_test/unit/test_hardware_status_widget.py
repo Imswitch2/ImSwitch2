@@ -1,8 +1,11 @@
 from imswitch.imcontrol.model.devices import (
     DeviceConnectionState,
     DeviceFailureKind,
+    DeviceId,
     DeviceRuntimeMode,
     DeviceSection,
+    DeviceStatus,
+    HardwareComponentStatus,
     HardwareDeviceId,
     HardwareStatus,
 )
@@ -123,3 +126,75 @@ def test_health_colors_reserve_orange_for_mixed_groups_only():
     assert _category_health([connected, issue]) == "mixed"
     assert _category_health([issue, unknown]) == "issue"
     assert _category_health([unknown, mock]) == "neutral"
+
+
+def test_cross_category_component_is_projected_into_its_capability_group(qtbot):
+    widget = HardwareStatusWidget(None)
+    qtbot.addWidget(widget)
+
+    z_status = DeviceStatus(
+        device_id=DeviceId("positioner", "Objective Z"),
+        manager_name="LeicaDMIZPositionerManager",
+        connection=DeviceConnectionState.CONNECTED,
+        mode=DeviceRuntimeMode.REAL,
+        summary="Leica DMI Z connected",
+    )
+    leica = HardwareStatus(
+        hardware_id=HardwareDeviceId("stand", "leica:COM10"),
+        name="Leica stand",
+        category="stand",
+        section=DeviceSection.DEVICES,
+        connection=DeviceConnectionState.CONNECTED,
+        mode=DeviceRuntimeMode.REAL,
+        manager_names=("LeicaDMIStandManager", "LeicaDMIZPositionerManager"),
+        components=(
+            HardwareComponentStatus(
+                device_id=z_status.device_id,
+                status=z_status,
+            ),
+        ),
+    )
+
+    widget.setStatuses([leica])
+
+    assert widget.tree.topLevelItemCount() == 2
+    assert "1 connected" in _find_category(widget, "Positioners").text(0)
+    assert "1 connected" in _find_category(widget, "Microscope stands").text(0)
+
+    z_item = _find_child(widget, "Objective Z")
+    assert "Connected · via Leica stand" in z_item.text(0)
+    widget.tree.setCurrentItem(z_item)
+    assert widget.detailDevice.text() == "Objective Z"
+    assert widget.detailVia.text() == "Leica stand"
+    assert widget.detailManagers.text() == "LeicaDMIZPositionerManager"
+
+
+def test_same_category_components_remain_collapsed_in_physical_row(qtbot):
+    widget = HardwareStatusWidget(None)
+    qtbot.addWidget(widget)
+
+    channel = DeviceStatus(
+        device_id=DeviceId("laser", "365 LED"),
+        manager_name="CoolLEDLaserManager",
+        connection=DeviceConnectionState.CONNECTED,
+        mode=DeviceRuntimeMode.REAL,
+    )
+    coolled = HardwareStatus(
+        hardware_id=HardwareDeviceId("laser", "coolled:COM10"),
+        name="CoolLED controller",
+        category="laser",
+        section=DeviceSection.DEVICES,
+        connection=DeviceConnectionState.CONNECTED,
+        mode=DeviceRuntimeMode.REAL,
+        manager_names=("CoolLEDLaserManager",),
+        components=(
+            HardwareComponentStatus(device_id=channel.device_id, status=channel),
+        ),
+    )
+
+    widget.setStatuses([coolled])
+
+    assert widget.tree.topLevelItemCount() == 1
+    lasers = _find_category(widget, "Lasers")
+    assert lasers.childCount() == 1
+    assert lasers.child(0).text(0).startswith("CoolLED controller")

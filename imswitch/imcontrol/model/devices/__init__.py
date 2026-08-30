@@ -11,8 +11,9 @@ from .status import (
 from .graph import (
     DeviceDependencySpec, DeviceDescriptor, DeviceDescriptorProvider,
     DeviceDescriptorSpec, DeviceGraph, DeviceRelation, DeviceRelationKind,
-    DeviceRole, DeviceSection, HardwareDependencyStatus, HardwareDeviceId,
-    HardwareStatus, rs232BackedPrimarySpec, sharedRs232ComponentSpec,
+    DeviceRole, DeviceSection, HardwareComponentStatus, HardwareDependencyStatus,
+    HardwareDeviceId, HardwareStatus, rs232BackedPrimarySpec,
+    sharedRs232ComponentSpec,
 )
 from .supervisor import (
     DeviceSupervisor, resolveDeviceDescriptor, resolveDeviceStatus,
@@ -37,6 +38,7 @@ __all__ = [
     "DeviceRelationKind",
     "DeviceRole",
     "DeviceSection",
+    "HardwareComponentStatus",
     "HardwareDependencyStatus",
     "HardwareDeviceId",
     "HardwareStatus",

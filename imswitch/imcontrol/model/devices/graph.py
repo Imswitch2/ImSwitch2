@@ -116,6 +116,22 @@ class HardwareDependencyStatus:
 
 
 @dataclass(frozen=True)
+class HardwareComponentStatus:
+    """Cached status for one logical capability of a physical device."""
+
+    device_id: DeviceId
+    status: DeviceStatus
+
+    @property
+    def name(self) -> str:
+        return self.device_id.name
+
+    @property
+    def category(self) -> str:
+        return self.device_id.kind
+
+
+@dataclass(frozen=True)
 class HardwareStatus:
     """Supervisor-resolved status for one user-facing hardware node."""
 
@@ -129,7 +145,7 @@ class HardwareStatus:
     details: str | None = None
     failure_kind: DeviceFailureKind | None = None
     manager_names: tuple[str, ...] = ()
-    components: tuple[DeviceId, ...] = ()
+    components: tuple[HardwareComponentStatus, ...] = ()
     dependencies: tuple[HardwareDependencyStatus, ...] = ()
 
 
