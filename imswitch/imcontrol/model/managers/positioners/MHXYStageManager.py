@@ -29,6 +29,7 @@ class MHXYStageManager(PositionerManager):
                                f' respectively, {positionerInfo.axes} provided.')
 
         # The RS232 channel must exist before the initial position query below.
+        self._usingMockFallback = False
         try:
             self._rs232Manager = lowLevelManagers['rs232sManager'][
                 positionerInfo.managerProperties['rs232device']
@@ -39,6 +40,12 @@ class MHXYStageManager(PositionerManager):
             )
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name='mock', settings={'port': 'Mock'})
+            self._usingMockFallback = True
+            self._setConnectionError(
+                e,
+                summary="Marzhauser RS232 backend unavailable; mock fallback active",
+                mock_active=True,
+            )
 
         super().__init__(positionerInfo, name, initialPosition=self._readHardwarePosition(
             list(positionerInfo.axes)
@@ -80,6 +87,8 @@ class MHXYStageManager(PositionerManager):
             return fallback
 
         self.positionSynced = True
+        if not self._usingMockFallback:
+            self._setConnected("Marzhauser stage responding")
         self.__logger.info(
             f'MHXYStage position synced from hardware: '
             f'{ {axis: round(value, 3) for axis, value in parsed.items()} }'

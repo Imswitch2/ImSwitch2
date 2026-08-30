@@ -51,12 +51,14 @@ class JenaPiezoZManager(PositionerManager):
             current_pos = self._read_position_um()
             self._position[self.axes[0]] = current_pos
             self.__logger.info(f"Jena piezo initialized at {current_pos:.2f} µm")
+            self._setConnected("Jena piezo initialized")
         except Exception as e:
             self.__logger.warning(
                 f"Jena piezo init failed ({e!s}); continuing with position={self._posRangeUm[0]} µm. "
                 f"Check COM port, baudrate (9600), and that the controller is in remote mode."
             )
             self._position[self.axes[0]] = self._posRangeUm[0]
+            self._setConnectionError(e, summary="Jena piezo initialization failed")
 
     def move(self, dist, axis):
         """Move the positioner by the specified distance."""

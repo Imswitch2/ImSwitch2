@@ -21,6 +21,7 @@ class LantzLaserManager(LaserManager):
 
         # Init laser
         self._laser = LantzLaser(driver, ports)
+        self._setConnected("Laser initialized")
         self._numLasers = len(ports)
         self.__logger.info(f'Initialized laser, model: {self._laser.idn}')
 
@@ -29,6 +30,7 @@ class LantzLaserManager(LaserManager):
 
     def finalize(self):
         self._laser.finalize()
+        self._setFinalizedStatus()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

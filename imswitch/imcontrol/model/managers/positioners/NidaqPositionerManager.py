@@ -36,6 +36,8 @@ class NidaqPositionerManager(PositionerManager):
         super().__init__(positionerInfo, name, initialPosition={
             axis: 0 for axis in positionerInfo.axes
         })
+        if getattr(self._nidaqManager, 'isSimulated', False):
+            self._setMockActive("Simulated NI-DAQ positioner backend")
 
         # Simulation has no unknown physical stage state to synchronize.
         # Treat its software coordinates as referenced so headless/API scans

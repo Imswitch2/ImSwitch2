@@ -34,14 +34,21 @@ def test_hardware_status_widget_renders_status_and_details(qtbot):
             summary="Using mock fallback after hardware connection failure",
             failure_kind=DeviceFailureKind.CONNECTION_ERROR,
         ),
+        _status(
+            "positioner", "Mock Z", DeviceConnectionState.NOT_APPLICABLE,
+            DeviceRuntimeMode.MOCK,
+            summary="Mock positioner configured",
+        ),
     ]
 
     widget.setStatuses(statuses)
 
-    assert widget.table.rowCount() == 2
+    assert widget.table.rowCount() == 3
     assert widget.table.item(0, 0).text() == "Camera"
     assert widget.table.item(0, 2).text() == "CONNECTED"
     assert widget.table.item(1, 3).text() == "MOCK"
+    assert widget.table.item(2, 2).text() == "-"
+    assert widget.table.item(2, 3).text() == "MOCK"
 
     widget.table.selectRow(1)
     assert widget.detailDevice.text().startswith("488")

@@ -26,9 +26,11 @@ class OxxiusLaserManager(LaserManager):
             else:
                 self._laser = LBX(port=port, prefix=prefix)
             self.__logger.info(f'Connected to Oxxius {laser_type} on {port}')
+            self._setConnected("Oxxius laser connected")
         except Exception as e:
             self.__logger.error(f'Failed to connect to Oxxius laser on {port}: {e}')
             self._laser = None
+            self._setConnectionError(e, summary="Oxxius laser connection failed")
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=1)
 
