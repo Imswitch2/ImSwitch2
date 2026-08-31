@@ -41,6 +41,7 @@ class _FakeGCSDevice:
         self._timeout = 7000
         self.dcid = 42
         self.fail_qpos = False
+        self.qpos_exception = None
         self.fail_qjbs = False
         self.position_mm = 0.001 if self.label == 'D0' else 0.002
         self.joystick_enabled = True
@@ -67,6 +68,8 @@ class _FakeGCSDevice:
         return {'1': 25.0}
 
     def qPOS(self, axis):
+        if self.qpos_exception is not None:
+            raise self.qpos_exception
         if self.fail_qpos:
             raise OSError(f'{self.label} qPOS timeout')
         return {1: self.position_mm}
@@ -190,18 +193,147 @@ def test_movement_status_communication_error_propagates(fake_pi):
         manager.isMovementFinished('X')
 
 
-def test_button_polling_backs_off_and_recovers(fake_pi):
+def test_button_polling_communication_loss_falls_back_to_mock(fake_pi):
     manager = PIStageManager(_info(), 'PI')
     manager.buttonTimer.started.clear()
     manager.X.fail_qjbs = True
 
     manager._pollButtons()
 
-    assert manager._buttonPollFailureCount == 1
-    assert manager.buttonTimer.started[-1] == 1000
-
-    manager.X.fail_qjbs = False
-    manager._pollButtons()
-
+    assert manager.isMock is True
+    assert manager.buttonTimer.stopped is True
     assert manager._buttonPollFailureCount == 0
-    assert manager.buttonTimer.started[-1] == manager.buttonPollIntervalMs
+
+
+def test_runtime_communication_failure_switches_to_stateful_mock(fake_pi):
+    from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
+
+    manager = PIStageManager(_info(), 'PI')
+    manager._position.update({'X': 10.0, 'Y': 20.0})
+    manager.Y.fail_qpos = True
+
+    with pytest.raises(OSError, match='qPOS timeout'):
+        manager.updatePosition()
+
+    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
+    assert manager.connectionState is DeviceConnectionState.ERROR
+    assert manager.position == {'X': 10.0, 'Y': 20.0}
+    assert manager.isAvailable is True
+
+    manager.move(5.0, 'X')
+    assert manager.position['X'] == pytest.approx(15.0)
+
+
+def test_pi_controller_error_does_not_trigger_mock_fallback(fake_pi):
+    from imswitch.imcontrol.model.devices import DeviceRuntimeMode
+    from imswitch.imcontrol.model.interfaces.pipython.pidevice import GCSError, gcserror
+
+    manager = PIStageManager(_info(), 'PI')
+    manager.X.qpos_exception = GCSError(gcserror.E_1008_PI_CONTROLLER_BUSY)
+
+    with pytest.raises(GCSError):
+        manager.updatePosition()
+
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
+    assert manager.isMock is False
+
+
+def test_pi_send_error_triggers_mock_fallback(fake_pi):
+    from imswitch.imcontrol.model.devices import DeviceRuntimeMode
+    from imswitch.imcontrol.model.interfaces.pipython.pidevice import GCSError, gcserror
+
+    manager = PIStageManager(_info(), 'PI')
+    manager.X.qpos_exception = GCSError(gcserror.E_2_SEND_ERROR)
+
+    with pytest.raises(GCSError):
+        manager.updatePosition()
+
+    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
+    assert manager.isMock is True
+
+
+def test_startup_failure_keeps_configured_pi_as_mock(fake_pi, monkeypatch):
+    from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
+
+    def failing_startup(device):
+        raise OSError('PI USB unavailable')
+
+    monkeypatch.setattr(pi_module.gcs2pitools, 'startup', failing_startup)
+    manager = PIStageManager(_info(), 'PI')
+
+    assert manager.isAvailable is True
+    assert manager.isMock is True
+    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
+    assert manager.connectionState is DeviceConnectionState.ERROR
+    assert 'mock fallback' in manager.connectionStatusSummary.lower()
+
+    manager.move(100.0, 'X')
+    assert manager.position['X'] == pytest.approx(100.0)
+
+
+def test_lifecycle_reconnects_startup_mock_to_real(fake_pi, monkeypatch):
+    from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
+
+    calls = {'count': 0}
+
+    def startup(device):
+        calls['count'] += 1
+        fake_pi.events.append(('startup', device.label))
+        if calls['count'] == 1:
+            raise OSError('initial USB failure')
+
+    monkeypatch.setattr(pi_module.gcs2pitools, 'startup', startup)
+    manager = PIStageManager(_info(), 'PI')
+    assert manager.isMock is True
+
+    lifecycle = manager.getDeviceLifecycle()
+    result = lifecycle.reconnect()
+
+    assert result.success is True
+    assert lifecycle.hardware_id.category == 'positioner'
+    assert lifecycle.hardware_id.key == 'positioner:PI'
+    assert manager.runtimeMode is DeviceRuntimeMode.REAL
+    assert manager.connectionState is DeviceConnectionState.CONNECTED
+    assert manager.isMock is False
+    assert manager.X is not None
+    assert manager.Y is not None
+
+
+def test_real_to_real_reconnect_exposes_mock_before_reopening_usb(fake_pi):
+    manager = PIStageManager(_info(), 'PI')
+    old_x = manager.X
+    fake_pi.events.clear()
+
+    result = manager.getDeviceLifecycle().reconnect()
+
+    assert result.success is True
+    assert manager.isMock is False
+    assert manager.X is not old_x
+
+    old_close = fake_pi.events.index(('close', old_x.label))
+    first_new_open = next(
+        i for i, event in enumerate(fake_pi.events)
+        if event[0] == 'open' and event[1] != old_x.label
+    )
+    assert old_close < first_new_open
+
+
+def test_failed_reconnect_keeps_mock_at_last_known_position(fake_pi, monkeypatch):
+    from imswitch.imcontrol.model.devices import DeviceConnectionState, DeviceRuntimeMode
+
+    manager = PIStageManager(_info(), 'PI')
+    manager._position.update({'X': 123.0, 'Y': 456.0})
+
+    monkeypatch.setattr(
+        pi_module.gcs2pitools,
+        'startup',
+        lambda device: (_ for _ in ()).throw(OSError('reconnect USB failure')),
+    )
+
+    result = manager.getDeviceLifecycle().reconnect()
+
+    assert result.success is False
+    assert manager.runtimeMode is DeviceRuntimeMode.MOCK
+    assert manager.connectionState is DeviceConnectionState.ERROR
+    assert manager.position == {'X': 123.0, 'Y': 456.0}
+    assert manager.isAvailable is True
