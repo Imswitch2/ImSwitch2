@@ -83,6 +83,8 @@ def worldEdgeWidth(viewer, screenPixels: float) -> float:
 
 
 def addNapariGrayclipColormap():
+    if 'grayclip' in napari.utils.colormaps.AVAILABLE_COLORMAPS:
+        return
     try:
         if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, 'grayclip'):
             return
