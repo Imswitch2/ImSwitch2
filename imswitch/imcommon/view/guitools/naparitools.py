@@ -83,6 +83,8 @@ def worldEdgeWidth(viewer, screenPixels: float) -> float:
 
 
 def addNapariGrayclipColormap():
+    if 'grayclip' in napari.utils.colormaps.AVAILABLE_COLORMAPS:
+        return
     try:
         # Membership, not hasattr: AVAILABLE_COLORMAPS is a dict, so hasattr
         # asked whether it had an *attribute* called 'grayclip' and was always
