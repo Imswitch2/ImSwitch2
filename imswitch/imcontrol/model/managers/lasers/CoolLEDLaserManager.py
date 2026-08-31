@@ -1,20 +1,32 @@
-from weakref import WeakKeyDictionary
+import threading
+from weakref import WeakKeyDictionary, WeakSet
 
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
-from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
+from imswitch.imcontrol.model.devices.graph import (
+    HardwareDeviceId, sharedRs232ComponentSpec,
+)
+from imswitch.imcontrol.model.devices.lifecycle import (
+    DeviceLifecycleAction,
+    DeviceLifecycleCapabilities,
+    DeviceLifecycleNotSupportedError,
+    DeviceLifecycleResult,
+)
 from imswitch.imcontrol.model.devices.status import (
-    DeviceConnectionState, DeviceFailureKind, DeviceRuntimeMode,
+    DeviceConnectionState, DeviceFailureKind, DeviceId, DeviceRuntimeMode,
 )
 
 
 # One physical CoolLED controller can be represented by several laser-channel
-# managers. Probe the shared controller once per RS232 manager at startup and
-# reuse that passive result for all channels.
+# managers. Probe and lifecycle state are both shared per RS232 manager.
 _COOLLED_PROBE_CACHE = WeakKeyDictionary()
+_COOLLED_LIFECYCLE_CACHE = WeakKeyDictionary()
 
 
-def _probe_coolled_controller(rs232manager):
+def _probe_coolled_controller(rs232manager, *, force=False):
+    if force:
+        _COOLLED_PROBE_CACHE.pop(rs232manager, None)
+
     cached = _COOLLED_PROBE_CACHE.get(rs232manager)
     if cached is not None:
         return cached
@@ -60,63 +72,207 @@ def _probe_coolled_controller(rs232manager):
     return result
 
 
+class _CoolLEDLifecycle:
+    """Physical-device lifecycle for all channels on one CoolLED controller."""
+
+    capabilities = DeviceLifecycleCapabilities(probe=True, reconnect=True)
+
+    def __init__(self, rs232manager, rs232_name: str):
+        self._rs232manager = rs232manager
+        self._rs232_name = str(rs232_name)
+        self._channels = WeakSet()
+        self._lock = threading.RLock()
+        self._hardware_id = HardwareDeviceId(
+            category="laser", key=f"coolled:{self._rs232_name}"
+        )
+
+    @property
+    def hardware_id(self):
+        return self._hardware_id
+
+    def registerChannel(self, manager) -> None:
+        self._channels.add(manager)
+
+    def _channelManagers(self):
+        return tuple(sorted(self._channels, key=lambda manager: manager.name.casefold()))
+
+    def _channelIds(self):
+        return tuple(
+            DeviceId("laser", manager.name) for manager in self._channelManagers()
+        )
+
+    def _unsupported(self, action: DeviceLifecycleAction):
+        raise DeviceLifecycleNotSupportedError(
+            f"CoolLED lifecycle does not yet support {action.value}."
+        )
+
+    def connect(self):
+        return self._unsupported(DeviceLifecycleAction.CONNECT)
+
+    def disconnect(self):
+        return self._unsupported(DeviceLifecycleAction.DISCONNECT)
+
+    def shutdown(self):
+        return self._unsupported(DeviceLifecycleAction.SHUTDOWN)
+
+    def _applyProbeToChannels(self, probe_result) -> None:
+        for manager in self._channelManagers():
+            manager._applyControllerProbe(probe_result)
+
+    def probe(self):
+        with self._lock:
+            result = _probe_coolled_controller(
+                self._rs232manager, force=True
+            )
+            self._applyProbeToChannels(result)
+            state, _, summary, details, _ = result
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id,
+                action=DeviceLifecycleAction.PROBE,
+                success=state is DeviceConnectionState.CONNECTED,
+                summary=summary,
+                details=details,
+                affected_device_ids=self._channelIds(),
+            )
+
+    def reconnect(self):
+        with self._lock:
+            channels = self._channelManagers()
+            channel_ids = self._channelIds()
+
+            # Best effort before touching the transport. A broken connection
+            # may make this fail, but reconnect must still proceed. The same
+            # channels are forced OFF again after a verified reconnect.
+            for manager in channels:
+                if manager._isMock:
+                    continue
+                try:
+                    manager.setEnabled(False)
+                except Exception:
+                    pass
+
+            real_transport = self._rs232manager.reconnectTransport()
+            probe_result = _probe_coolled_controller(
+                self._rs232manager, force=True
+            )
+            self._applyProbeToChannels(probe_result)
+            state, _, summary, details, _ = probe_result
+
+            if not real_transport or state is not DeviceConnectionState.CONNECTED:
+                return DeviceLifecycleResult(
+                    hardware_id=self.hardware_id,
+                    action=DeviceLifecycleAction.RECONNECT,
+                    success=False,
+                    summary=summary,
+                    details=details,
+                    affected_device_ids=channel_ids,
+                    deactivated_device_ids=channel_ids,
+                )
+
+            safe_off_errors = []
+            for manager in channels:
+                try:
+                    manager.setEnabled(False)
+                except Exception as exc:
+                    safe_off_errors.append(f"{manager.name}: {exc}")
+
+            if safe_off_errors:
+                error_details = "; ".join(safe_off_errors)
+                for manager in channels:
+                    manager._setConnectionError(
+                        error_details,
+                        summary="CoolLED reconnected but safe OFF initialization failed",
+                    )
+                return DeviceLifecycleResult(
+                    hardware_id=self.hardware_id,
+                    action=DeviceLifecycleAction.RECONNECT,
+                    success=False,
+                    summary="CoolLED reconnected but safe OFF initialization failed",
+                    details=error_details,
+                    affected_device_ids=channel_ids,
+                    deactivated_device_ids=channel_ids,
+                )
+
+            for manager in channels:
+                manager._setConnected("CoolLED reconnected; all channels forced OFF")
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id,
+                action=DeviceLifecycleAction.RECONNECT,
+                success=True,
+                summary="CoolLED reconnected; all channels forced OFF",
+                affected_device_ids=channel_ids,
+                deactivated_device_ids=channel_ids,
+            )
+
+
 class CoolLEDLaserManager(LaserManager):
-    """ LaserManager for controlling the LEDs from CoolLED. Each LaserManager
-    instance controls one LED.
+    """LaserManager for controlling one LED channel on a CoolLED controller.
 
     Manager properties:
 
-    - ``rs232device`` -- name of the defined rs232 communication channel
-      through which the communication should take place
+    - ``rs232device`` -- configured RS232 communication resource
     - ``channel_index`` -- laser channel (A to H)
     """
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
-        self._isMock = False
+        self._rs232manager = None
 
         try:
             self._rs232manager = lowLevelManagers['rs232sManager'][
                 laserInfo.managerProperties['rs232device']
             ]
-            self._isMock = (
-                self._rs232manager.runtimeMode is DeviceRuntimeMode.MOCK
-            )
             self.__channel_index = laserInfo.managerProperties['channel_index']
             self.__digital_mod = False
-        except Exception as e:
-            self._isMock = True
+        except Exception as exc:
             self.__logger.warning(
-                f'Failed to initialize CoolLED hardware, running in mock mode: {e}'
+                f'Failed to initialize CoolLED hardware, running in mock mode: {exc}'
             )
             self._rs232manager = None
             self._setConnectionError(
-                e,
+                exc,
                 summary="CoolLED initialization failed; mock fallback active",
                 mock_active=True,
             )
             self.__channel_index = laserInfo.managerProperties.get('channel_index', 'A')
             self.__digital_mod = False
 
-        isModulated = (True if laserInfo.freqRangeMin is not None and 
-                                laserInfo.freqRangeMax is not None and
-                                laserInfo.freqRangeInit is not None 
-                            else False)
+        isModulated = (
+            laserInfo.freqRangeMin is not None
+            and laserInfo.freqRangeMax is not None
+            and laserInfo.freqRangeInit is not None
+        )
 
-        super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0, isModulated=isModulated)
+        super().__init__(
+            laserInfo,
+            name,
+            isBinary=False,
+            valueUnits='mW',
+            valueDecimals=0,
+            isModulated=isModulated,
+        )
 
         if self._rs232manager is not None:
-            state, mode, summary, details, failure_kind = _probe_coolled_controller(
-                self._rs232manager
-            )
-            self._deviceRuntimeMode = mode
-            self._setConnectionState(
-                state,
-                summary=summary,
-                details=details,
-                failure_kind=failure_kind,
+            self._applyControllerProbe(
+                _probe_coolled_controller(self._rs232manager)
             )
 
+    @property
+    def _isMock(self):
+        """Dynamic transport mode; reconnect may replace mock with real hardware."""
+        if self._rs232manager is None:
+            return True
+        return self._rs232manager.runtimeMode is DeviceRuntimeMode.MOCK
+
+    def _applyControllerProbe(self, result) -> None:
+        state, mode, summary, details, failure_kind = result
+        self._deviceRuntimeMode = mode
+        self._setConnectionState(
+            state,
+            summary=summary,
+            details=details,
+            failure_kind=failure_kind,
+        )
 
     def getDeviceDescriptorSpec(self):
         rs232_name = self.getProperty('rs232device')
@@ -127,27 +283,35 @@ class CoolLEDLaserManager(LaserManager):
             rs232_name=str(rs232_name),
         )
 
+    def getDeviceLifecycle(self):
+        """Return the shared physical lifecycle without performing hardware I/O."""
+        if self._rs232manager is None:
+            return None
+        lifecycle = _COOLLED_LIFECYCLE_CACHE.get(self._rs232manager)
+        if lifecycle is None:
+            lifecycle = _CoolLEDLifecycle(
+                self._rs232manager, self.getProperty('rs232device')
+            )
+            _COOLLED_LIFECYCLE_CACHE[self._rs232manager] = lifecycle
+        lifecycle.registerChannel(self)
+        return lifecycle
+
     def setEnabled(self, enabled):
-        """Turn on (N) or off (F) laser emission"""
+        """Turn on (N) or off (F) laser emission."""
         if self._isMock:
             self.__logger.debug(f'Mock mode: setEnabled({enabled}) ignored')
             return
-        
-        if enabled:
-            value = "N"
-        else:
-            value = "F"
+
+        value = "N" if enabled else "F"
         cmd = "C" + self.__channel_index + value
         self._rs232manager.query(cmd)
 
     def setValue(self, power, enabled=True, for_scanning=False):
-        """Handles output power.
-        Sends a RS232 command to the laser specifying the new intensity.
-        """
+        """Set the channel intensity."""
         if self._isMock:
             self.__logger.debug(f'Mock mode: setValue({power}) ignored')
             return
-        
+
         cmd = "C" + self.__channel_index + "IX" + "{0:03.0f}".format(power)
         self.__logger.debug(cmd)
         self._rs232manager.query(cmd)

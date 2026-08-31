@@ -12,6 +12,7 @@ from imswitch.imcontrol.model.devices.status import (
     DeviceRuntimeMode,
 )
 from imswitch.imcontrol.model.interfaces.LeicaDMIHardware import createLeicaDMIHardware
+from imswitch.imcontrol.model.managers.LeicaDMILifecycle import getLeicaDMILifecycle
 
 from .PositionerManager import PositionerManager
 
@@ -40,6 +41,8 @@ class LeicaDMIZPositionerManager(PositionerManager):
         self._axis = axis
         self._hardware = None
         self._connectionError = None
+        self._rs232Manager = None
+        self._deviceLifecycle = None
 
         managerProperties = positionerInfo.managerProperties or {}
         rs232DeviceName = managerProperties.get("rs232device")
@@ -70,6 +73,10 @@ class LeicaDMIZPositionerManager(PositionerManager):
             )
             return
 
+        self._rs232Manager = rs232Manager
+        self._deviceLifecycle = getLeicaDMILifecycle(rs232Manager, rs232DeviceName)
+        self._deviceLifecycle.registerManager(self, managerProperties)
+
         transport_is_mock = (
             getattr(rs232Manager, "runtimeMode", None) is DeviceRuntimeMode.MOCK
         )
@@ -80,11 +87,23 @@ class LeicaDMIZPositionerManager(PositionerManager):
         )
 
         if self._hardware is None:
-            self._connectionError = "Leica DMI hardware interface unavailable."
-            self._setConnectionError(
-                self._connectionError,
-                summary="Leica DMI Z hardware interface is unavailable",
-            )
+            if transport_is_mock:
+                self._connectionError = getattr(
+                    rs232Manager,
+                    "connectionStatusDetails",
+                    "Leica RS232 transport is using a mock backend",
+                )
+                self._setConnectionError(
+                    self._connectionError,
+                    summary="Leica DMI Z transport is mock",
+                    mock_active=True,
+                )
+            else:
+                self._connectionError = "Leica DMI hardware interface unavailable."
+                self._setConnectionError(
+                    self._connectionError,
+                    summary="Leica DMI Z hardware interface is unavailable",
+                )
             self.__logger.warning(
                 "Leica DMI Z positioner unavailable. See Leica DMI hardware "
                 "log entry above."
@@ -114,6 +133,50 @@ class LeicaDMIZPositionerManager(PositionerManager):
         else:
             self._setConnected("Leica DMI Z connected")
         self.updatePosition()
+
+    def getDeviceLifecycle(self):
+        return self._deviceLifecycle
+
+    def _leicaLifecycleDeviceId(self):
+        return DeviceId("positioner", self.name)
+
+    def _leicaLifecycleSortKey(self):
+        return f"positioner:{self.name}"
+
+    def _adoptLeicaHardware(self, hardware, *, error=None, mock_active=False):
+        self._hardware = hardware
+        if hardware is None:
+            self._connectionError = str(error or "Leica DMI hardware unavailable")
+            self._setConnectionError(
+                self._connectionError,
+                summary=(
+                    "Leica DMI Z transport is mock"
+                    if mock_active
+                    else "Leica DMI Z hardware interface is unavailable"
+                ),
+                mock_active=mock_active,
+            )
+            return
+
+        if not hardware.has_z_position_um():
+            self._connectionError = "Leica DMI Z micrometer conversion is unavailable."
+            self._setConnectionError(
+                self._connectionError,
+                summary="Leica DMI Z calibration is unavailable",
+                failure_kind=DeviceFailureKind.CONFIGURATION_ERROR,
+            )
+            return
+
+        self._connectionError = None
+        self._setConnected("Leica DMI Z connected")
+        try:
+            self.updatePosition()
+        except Exception as exc:
+            self._connectionError = str(exc)
+            self._setConnectionError(
+                exc,
+                summary="Leica DMI Z position refresh failed after reconnect",
+            )
 
     def getDeviceDescriptorSpec(self):
         rs232_name = (self._positionerInfo.managerProperties or {}).get("rs232device")

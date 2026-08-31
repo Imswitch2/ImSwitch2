@@ -48,6 +48,7 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
         self._manager = None
         self._last_selected_fluo_cube_name = None
         self._current_mode = "FLUO"
+        self._deviceLifecycleListener = None
 
         stand_manager = getattr(self._master, "standManager", None)
 
@@ -72,9 +73,38 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
         self._connect_widget_signals()
         self._init_widget()
 
+        lifecycleService = getattr(self._master, "deviceLifecycleService", None)
+        if lifecycleService is not None:
+            self._deviceLifecycleListener = self._deviceLifecycleChanged
+            lifecycleService.addListener(self._deviceLifecycleListener)
+
         # Register with unified state persistence (only reached when a usable
         # manager is present — mock/disconnected paths return early above).
         getWidgetStatePersistence().register('LeicaStand', self)
+
+    def closeEvent(self):
+        lifecycleService = getattr(self._master, "deviceLifecycleService", None)
+        listener = getattr(self, "_deviceLifecycleListener", None)
+        if lifecycleService is not None and listener is not None:
+            lifecycleService.removeListener(listener)
+            self._deviceLifecycleListener = None
+
+    def _deviceLifecycleChanged(self, result):
+        affected = tuple(getattr(result, "affected_device_ids", ()))
+        if not any(
+            getattr(device_id, "kind", None) == "stand"
+            and getattr(device_id, "name", None) == "Microscope stand"
+            for device_id in affected
+        ):
+            return
+
+        self._invokeOnControllerThreadIfNeeded(self._refreshLifecycleConnectionState)
+
+    def _refreshLifecycleConnectionState(self):
+        if self._manager is None:
+            self._widget.setConnected(False)
+            return
+        self._widget.setConnected(self._manager.isConnected())
 
     # ── Setup-mode component interface ──────────────────────────────────── #
 
