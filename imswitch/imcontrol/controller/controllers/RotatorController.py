@@ -33,6 +33,15 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
         self._commChannel.sigUpdateRotatorPosition.connect(lambda name: self.updatePosition(name))
         self._commChannel.sigSetSyncInMovementSettings.connect(lambda name, pos, rel_shift, enabled: self.setSyncInMovement(name, pos, rel_shift, enabled))
 
+        # Lifecycle callbacks may run on the Hardware Status reconnect worker.
+        # Refresh only the affected rotator positions on this controller's UI
+        # thread; a shared Elliptec bus reconnect can affect several rows.
+        self._deviceLifecycleListener = None
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        if lifecycleService is not None:
+            self._deviceLifecycleListener = self._deviceLifecycleChanged
+            lifecycleService.addListener(self._deviceLifecycleListener)
+
         for name, _ in self._master.rotatorsManager:
             self.updatePosition(name)
         
@@ -40,7 +49,29 @@ class RotatorController(ImConWidgetController, StatefulComponentMixin):
         getWidgetStatePersistence().register('Rotator', self)
  
     def closeEvent(self):
-        pass
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        listener = getattr(self, '_deviceLifecycleListener', None)
+        if lifecycleService is not None and listener is not None:
+            lifecycleService.removeListener(listener)
+            self._deviceLifecycleListener = None
+
+    def _deviceLifecycleChanged(self, result):
+        affected = tuple(
+            device_id
+            for device_id in getattr(result, 'affected_device_ids', ())
+            if getattr(device_id, 'kind', None) == 'rotator'
+        )
+        if not affected:
+            return
+        self._invokeOnControllerThreadIfNeeded(
+            lambda: self._refreshLifecycleAffectedRotators(affected)
+        )
+
+    def _refreshLifecycleAffectedRotators(self, device_ids):
+        known = {name for name, _ in self._master.rotatorsManager}
+        for device_id in device_ids:
+            if device_id.name in known:
+                self.updatePosition(device_id.name)
 
     def moveRel(self, name, dir=1):
         dist = dir * self._widget.getRelStepSize(name)

@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from imswitch.imcontrol.model.devices import (
     DeviceConnectionState,
     DeviceRuntimeMode,
@@ -13,6 +15,10 @@ from imswitch.imcontrol.model.managers.rotators.ElliptecRotatorManager import (
 class _FakeStage:
     def __init__(self, position=12.5):
         self.position = float(position)
+        self.closed = False
+
+    def update_connected_addrs(self):
+        pass
 
     def home(self, addr=None):
         self.position = 0.0
@@ -24,21 +30,17 @@ class _FakeStage:
         return self.position
 
     def close(self):
-        pass
+        self.closed = True
 
 
-class _FakeBus:
-    def __init__(self, stage):
-        import threading
-        self.stage = stage
-        self.lock = threading.RLock()
-        self.refcount = 0
-
-    def acquire(self):
-        self.refcount += 1
-
-    def release(self):
-        self.refcount -= 1
+@pytest.fixture(autouse=True)
+def _reset_shared_buses():
+    elliptecbus._SharedElliptecBus._instances.clear()
+    yield
+    for bus in tuple(elliptecbus._SharedElliptecBus._instances.values()):
+        for manager in bus.registered_managers():
+            bus.release(manager, manager._addr)
+    elliptecbus._SharedElliptecBus._instances.clear()
 
 
 def _info():
@@ -53,11 +55,10 @@ def _info():
 
 
 def test_elliptec_reports_connected_from_cached_startup_state(monkeypatch):
-    bus = _FakeBus(_FakeStage())
     monkeypatch.setattr(
-        elliptecbus._SharedElliptecBus,
-        "get_bus",
-        classmethod(lambda cls, port, scale="stage": bus),
+        elliptecbus,
+        "_open_elliptec_stage",
+        lambda port, scale: _FakeStage(),
     )
 
     manager = ElliptecRotatorManager(_info(), "HWP")
@@ -67,15 +68,10 @@ def test_elliptec_reports_connected_from_cached_startup_state(monkeypatch):
 
 
 def test_elliptec_reports_mock_fallback_without_status_probe(monkeypatch):
-    elliptecbus.MockElliptecBus._instances.clear()
     monkeypatch.setattr(
-        elliptecbus._SharedElliptecBus,
-        "get_bus",
-        classmethod(
-            lambda cls, port, scale="stage": (_ for _ in ()).throw(
-                OSError("COM20 unavailable")
-            )
-        ),
+        elliptecbus,
+        "_open_elliptec_stage",
+        lambda port, scale: (_ for _ in ()).throw(OSError("COM20 unavailable")),
     )
 
     manager = ElliptecRotatorManager(_info(), "HWP")
@@ -83,6 +79,3 @@ def test_elliptec_reports_mock_fallback_without_status_probe(monkeypatch):
     assert manager.connectionState is DeviceConnectionState.ERROR
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
     assert "COM20 unavailable" in (manager.connectionStatusDetails or "")
-
-    manager.finalize()
-    elliptecbus.MockElliptecBus._instances.clear()
