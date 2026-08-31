@@ -31,6 +31,7 @@ class HardwareStatusController(ImConWidgetController):
         self._widget.sigRefreshRequested.connect(self.refresh)
         self._widget.sigReconnectRequested.connect(self.reconnect)
         self.refresh()
+        QtCore.QTimer.singleShot(0, self.refresh)
 
     def refresh(self):
         lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
