@@ -1,165 +1,223 @@
 """Manager for Thorlabs ELL14/ELL14K Elliptec rotation mounts."""
 
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.devices import DeviceManagerStatusMixin
+from imswitch.imcontrol.model.devices import (
+    DeviceId,
+    DeviceLifecycleAction,
+    DeviceLifecycleCapabilities,
+    DeviceLifecycleNotSupportedError,
+    DeviceLifecycleResult,
+    DeviceManagerStatusMixin,
+    HardwareDeviceId,
+)
+from imswitch.imcontrol.model.interfaces.elliptecbus import (
+    _SharedElliptecBus,
+    isElliptecCommunicationError,
+)
 from .RotatorManager import RotatorManager
 
 
+class _ElliptecRotatorLifecycle:
+    """Lifecycle for one Elliptec mount backed by a shared COM resource."""
+
+    capabilities = DeviceLifecycleCapabilities(reconnect=True)
+
+    def __init__(self, manager):
+        self._manager = manager
+        self._hardware_id = HardwareDeviceId(
+            category="rotator", key=f"rotator:{manager.name}"
+        )
+
+    @property
+    def hardware_id(self):
+        return self._hardware_id
+
+    def _unsupported(self, action):
+        raise DeviceLifecycleNotSupportedError(
+            f"Elliptec lifecycle does not yet support {action.value}."
+        )
+
+    def connect(self):
+        return self._unsupported(DeviceLifecycleAction.CONNECT)
+
+    def disconnect(self):
+        return self._unsupported(DeviceLifecycleAction.DISCONNECT)
+
+    def probe(self):
+        return self._unsupported(DeviceLifecycleAction.PROBE)
+
+    def shutdown(self):
+        return self._unsupported(DeviceLifecycleAction.SHUTDOWN)
+
+    def reconnect(self):
+        manager = self._manager
+        outcome = manager._bus.reconnect()
+        affected = tuple(
+            DeviceId("rotator", candidate.name)
+            for candidate in manager._bus.registered_managers()
+        )
+        success = outcome.succeeded(manager._addr)
+        details = outcome.error_for(manager._addr)
+
+        if success:
+            summary = f"Elliptec rotator {manager.name} reconnected"
+        else:
+            summary = (
+                f"Elliptec rotator {manager.name} reconnect failed; "
+                "mock fallback active"
+            )
+
+        return DeviceLifecycleResult(
+            hardware_id=self.hardware_id,
+            action=DeviceLifecycleAction.RECONNECT,
+            success=success,
+            summary=summary,
+            details=details,
+            affected_device_ids=affected,
+        )
+
+
 class ElliptecRotatorManager(DeviceManagerStatusMixin, RotatorManager):
-    """RotatorManager for Thorlabs ELL14/ELL14K Elliptec rotation mounts.
-    
-    Multiple rotators can share one COM bus distinguished by address (multidrop).
-    Uses a refcounted singleton bus manager to ensure safe bus sharing.
-    
-    Supports both real hardware (via pylablib) and headless mock operation.
-    
+    """Rotator manager for Thorlabs ELL14/ELL14K multidrop mounts.
+
+    Each configured mount remains an independent logical/physical rotator in
+    ImSwitch, while all mounts on the same COM port share one stable bus
+    resource.  The shared resource can replace its real pylablib connection
+    with virtual state (and vice versa) without replacing this manager object.
+
     Manager properties:
-        - port (str, required): Serial port name (e.g. "COM20" or "/dev/ttyUSB0").
-        - address (int, required): Elliptec bus address for this device.
-        - scale (str or float, default "stage"): Pylablib scale parameter.
-        - homeOnInit (bool, default False): If True, home the motor on init.
-    
-    Example setup JSON (two rotators on same port):
-        "rotators": {
-            "HWP": {
-                "managerName": "ElliptecRotatorManager",
-                "managerProperties": {
-                    "port": "COM20",
-                    "address": 0,
-                    "homeOnInit": false
-                }
-            },
-            "QWP": {
-                "managerName": "ElliptecRotatorManager",
-                "managerProperties": {
-                    "port": "COM20",
-                    "address": 1,
-                    "homeOnInit": false
-                }
-            }
-        }
+        - port (str, required): Serial port name (e.g. "COM20").
+        - address (int, required): Elliptec multidrop address.
+        - scale (str or float, default "stage"): pylablib scale parameter.
+        - homeOnInit (bool, default False): home during initial startup only.
     """
 
     def __init__(self, rotatorInfo, name: str, *args, **kwargs):
         super().__init__(rotatorInfo, name, *args, **kwargs)
         self.__logger = initLogger(self)
+        self._bus = None
+        self._lifecycle = None
 
         if rotatorInfo is None:
             return
 
-        self._port = rotatorInfo.managerProperties['port']
-        self._addr = rotatorInfo.managerProperties['address']
-        self._scale = rotatorInfo.managerProperties.get('scale', 'stage')
-        home_on_init = rotatorInfo.managerProperties.get('homeOnInit', False)
-
-        self._bus = self._getBusObj(self._port, self._scale)
-        self._bus.acquire()
-
-        if home_on_init:
-            self.__logger.info(f'Homing Elliptec rotator {name} (port={self._port} addr={self._addr})')
-            with self._bus.lock:
-                self._bus.stage.home(addr=self._addr)
-
-        self._update_position()
-        self._setConnected(
-            f"Elliptec address {self._addr} connected on {self._port}"
+        self._port = str(rotatorInfo.managerProperties["port"])
+        self._addr = int(rotatorInfo.managerProperties["address"])
+        self._scale = rotatorInfo.managerProperties.get("scale", "stage")
+        home_on_init = bool(
+            rotatorInfo.managerProperties.get("homeOnInit", False)
         )
 
+        # Scale conflicts are configuration errors and intentionally propagate.
+        # Hardware-open/address failures, by contrast, are absorbed by the
+        # stable bus resource as mock fallback state.
+        self._bus = _SharedElliptecBus.get_bus(self._port, self._scale)
+        self._bus.acquire(self, self._addr)
+        self._lifecycle = _ElliptecRotatorLifecycle(self)
+
+        self._position = self._bus.initialize_address(self._addr)
+        self._syncStatusFromBus()
+
+        if home_on_init:
+            self.__logger.info(
+                f"Homing Elliptec rotator {name} "
+                f"(port={self._port} addr={self._addr})"
+            )
+            try:
+                self._bus.home(self._addr)
+            except Exception as exc:
+                if isElliptecCommunicationError(exc):
+                    self._bus.fallback_to_mock(exc)
+                    # Preserve historical headless behavior: startup homing of
+                    # a mock device simply establishes virtual zero.
+                    self._bus.home(self._addr)
+                else:
+                    raise
+            self._position = self._bus.cached_position(self._addr)
+            self._syncStatusFromBus()
+
+    @property
+    def isMock(self) -> bool:
+        return self._bus is None or not self._bus.is_real(self._addr)
+
+    def getDeviceLifecycle(self):
+        return self._lifecycle
+
     def move_abs(self, pos_deg: float) -> None:
-        """Move to an absolute position in degrees.
-        
-        Elliptec moves are synchronous; no wait needed. Retries up to 5 times
-        on failure (Elliptec NAKs on bus contention).
-        
-        Args:
-            pos_deg: Target position in degrees.
-        """
-        self._move_with_retry(pos_deg, is_relative=False)
+        self._move_with_retry(float(pos_deg))
         self._update_position()
 
     def move_rel(self, d_deg: float) -> None:
-        """Move by a relative displacement in degrees.
-        
-        Elliptec moves are synchronous; no wait needed. Retries up to 5 times
-        on failure (Elliptec NAKs on bus contention).
-        
-        Args:
-            d_deg: Relative displacement in degrees.
-        """
-        target = self._position + d_deg
-        self._move_with_retry(target, is_relative=False)
+        target = self._position + float(d_deg)
+        self._move_with_retry(target)
         self._update_position()
 
-    def _move_with_retry(self, target_deg: float, is_relative: bool, fails: int = 0) -> None:
-        """Move to target position with retry logic for bus contention.
-        
-        Args:
-            target_deg: Target position in degrees.
-            is_relative: Unused (kept for API compatibility).
-            fails: Retry counter.
-        """
-        with self._bus.lock:
+    def _move_with_retry(self, target_deg: float) -> None:
+        """Retry transient Elliptec NAKs before considering bus fallback."""
+        last_error = None
+        for attempt in range(6):
             try:
-                self._bus.stage.move_to(target_deg, addr=self._addr)
-            except Exception as e:
+                self._bus.move_to(self._addr, target_deg)
+                self._position = self._bus.cached_position(self._addr)
+                self._syncStatusFromBus()
+                return
+            except Exception as exc:
+                last_error = exc
                 self.__logger.warning(
                     f"Elliptec move failed (port={self._port} addr={self._addr}, "
-                    f"attempt {fails+1}/5): {e}"
+                    f"attempt {attempt + 1}/6): {exc}"
                 )
-                if fails < 5:
-                    self._move_with_retry(target_deg, is_relative, fails + 1)
-                else:
-                    raise
+
+        if last_error is not None and isElliptecCommunicationError(last_error):
+            self._bus.fallback_to_mock(last_error)
+            self._syncStatusFromBus()
+        # The command which discovers connection loss must still fail once;
+        # subsequent commands use the mock resource normally.
+        raise last_error
 
     def _update_position(self) -> None:
-        """Read current position from the device."""
-        with self._bus.lock:
-            self._position = self._bus.stage.get_position(addr=self._addr)
-            self.__logger.debug(
-                f"Elliptec position (port={self._port} addr={self._addr}): {self._position}°"
-            )
-
-    def _getBusObj(self, port: str, scale: str | float):
-        """Get the shared bus instance with real-then-mock fallback.
-        
-        Args:
-            port: Serial port name.
-            scale: Pylablib scale parameter.
-        
-        Returns:
-            Shared bus instance (_SharedElliptecBus or MockElliptecBus).
-        """
         try:
-            from imswitch.imcontrol.model.interfaces.elliptecbus import _SharedElliptecBus
-            bus = _SharedElliptecBus.get_bus(port, scale)
-            self.__logger.info(f'Initialized Elliptec rotator (port={port} addr={self._addr})')
-            return bus
-        except Exception as e:
-            self.__logger.warning(
-                f'Failed to initialize Elliptec rotator (port={port} addr={self._addr}, '
-                f'real hardware): {e}'
+            self._position = self._bus.get_position(self._addr)
+        except Exception as exc:
+            if isElliptecCommunicationError(exc):
+                self._bus.fallback_to_mock(exc)
+                self._syncStatusFromBus()
+            raise
+        self._syncStatusFromBus()
+        self.__logger.debug(
+            f"Elliptec position (port={self._port} addr={self._addr}): "
+            f"{self._position}°"
+        )
+
+    def _syncStatusFromBus(self) -> None:
+        if self._bus is None:
+            return
+        if self._bus.is_real(self._addr):
+            self._setConnected(
+                f"Elliptec address {self._addr} connected on {self._port}"
             )
-            self.__logger.warning('Loading mock Elliptec bus for headless operation')
-            from imswitch.imcontrol.model.interfaces.elliptecbus import MockElliptecBus, MockElliptecMotor
-            mock_bus = MockElliptecBus.get_bus(port, scale)
-            # Replace stage with mock motor
-            mock_bus.stage = MockElliptecMotor(mock_bus)
-            self._setConnectionError(
-                e,
-                summary=(
-                    f"Elliptec address {self._addr} unavailable; "
-                    "mock fallback active"
-                ),
-                mock_active=True,
-            )
-            return mock_bus
+            return
+
+        error = self._bus.error_for(self._addr)
+        self._setConnectionError(
+            error or f"Elliptec address {self._addr} unavailable",
+            summary=(
+                f"Elliptec address {self._addr} unavailable; mock fallback active"
+            ),
+            mock_active=True,
+        )
+
+    def _onElliptecBusStateChanged(self) -> None:
+        """Called by the shared bus after fallback/reconnect transitions."""
+        self._position = self._bus.cached_position(self._addr)
+        self._syncStatusFromBus()
 
     def finalize(self) -> None:
-        """Release the shared bus (closes when refcount reaches zero)."""
         if self._bus is not None:
-            self._bus.release()
+            self._bus.release(self, self._addr)
             self.__logger.info(
-                f"Released Elliptec rotator (port={self._port} addr={self._addr})"
+                f"Released Elliptec rotator "
+                f"(port={self._port} addr={self._addr})"
             )
         self._setFinalizedStatus()
 
