@@ -1,10 +1,11 @@
 """Manager for Thorlabs ELL14/ELL14K Elliptec rotation mounts."""
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices import DeviceManagerStatusMixin
 from .RotatorManager import RotatorManager
 
 
-class ElliptecRotatorManager(RotatorManager):
+class ElliptecRotatorManager(DeviceManagerStatusMixin, RotatorManager):
     """RotatorManager for Thorlabs ELL14/ELL14K Elliptec rotation mounts.
     
     Multiple rotators can share one COM bus distinguished by address (multidrop).
@@ -60,6 +61,9 @@ class ElliptecRotatorManager(RotatorManager):
                 self._bus.stage.home(addr=self._addr)
 
         self._update_position()
+        self._setConnected(
+            f"Elliptec address {self._addr} connected on {self._port}"
+        )
 
     def move_abs(self, pos_deg: float) -> None:
         """Move to an absolute position in degrees.
@@ -140,6 +144,14 @@ class ElliptecRotatorManager(RotatorManager):
             mock_bus = MockElliptecBus.get_bus(port, scale)
             # Replace stage with mock motor
             mock_bus.stage = MockElliptecMotor(mock_bus)
+            self._setConnectionError(
+                e,
+                summary=(
+                    f"Elliptec address {self._addr} unavailable; "
+                    "mock fallback active"
+                ),
+                mock_active=True,
+            )
             return mock_bus
 
     def finalize(self) -> None:
@@ -149,6 +161,7 @@ class ElliptecRotatorManager(RotatorManager):
             self.__logger.info(
                 f"Released Elliptec rotator (port={self._port} addr={self._addr})"
             )
+        self._setFinalizedStatus()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
