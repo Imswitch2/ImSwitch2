@@ -7,7 +7,6 @@ from .status import (
     DeviceStatus,
     DeviceStatusProvider,
 )
-
 from .graph import (
     DeviceDependencySpec, DeviceDescriptor, DeviceDescriptorProvider,
     DeviceDescriptorSpec, DeviceGraph, DeviceRelation, DeviceRelationKind,
@@ -15,9 +14,17 @@ from .graph import (
     HardwareDeviceId, HardwareStatus, rs232BackedPrimarySpec,
     sharedRs232ComponentSpec,
 )
+from .lifecycle import (
+    DeviceHandle, DeviceLifecycle, DeviceLifecycleAction,
+    DeviceLifecycleBlockedError, DeviceLifecycleBusyError,
+    DeviceLifecycleCapabilities, DeviceLifecycleError,
+    DeviceLifecycleNotSupportedError, DeviceLifecycleProvider,
+    DeviceLifecycleResult,
+)
 from .supervisor import (
     DeviceSupervisor, resolveDeviceDescriptor, resolveDeviceStatus,
 )
+from .lifecycle_service import DeviceLifecycleService
 
 __all__ = [
     "DeviceConnectionState",
@@ -45,4 +52,15 @@ __all__ = [
     "resolveDeviceDescriptor",
     "rs232BackedPrimarySpec",
     "sharedRs232ComponentSpec",
+    "DeviceHandle",
+    "DeviceLifecycle",
+    "DeviceLifecycleAction",
+    "DeviceLifecycleBlockedError",
+    "DeviceLifecycleBusyError",
+    "DeviceLifecycleCapabilities",
+    "DeviceLifecycleError",
+    "DeviceLifecycleNotSupportedError",
+    "DeviceLifecycleProvider",
+    "DeviceLifecycleResult",
+    "DeviceLifecycleService",
 ]

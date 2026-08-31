@@ -108,8 +108,16 @@ class MasterController:
 
         # Read-only device inventory/status facade. It observes the managers
         # created above and deliberately performs no probing or lifecycle work.
-        from imswitch.imcontrol.model.devices import DeviceSupervisor
+        from imswitch.imcontrol.model.devices import (
+            DeviceLifecycleService, DeviceSupervisor,
+        )
         self.deviceSupervisor = DeviceSupervisor(self, setupInfo=self.__setupInfo)
+        # Runtime lifecycle is a separate, opt-in mutation boundary. Legacy
+        # managers remain status-only/default-deny until they explicitly
+        # contribute a physical-device lifecycle adapter.
+        self.deviceLifecycleService = DeviceLifecycleService(
+            self, self.deviceSupervisor
+        )
 
         # Connect signals
         cc = self.__commChannel

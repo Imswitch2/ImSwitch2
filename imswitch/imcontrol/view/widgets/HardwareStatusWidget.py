@@ -126,6 +126,7 @@ def _category_summary(category, statuses) -> str:
 @dataclass(frozen=True)
 class _StatusRow:
     key: object
+    hardware_id: object
     name: str
     category: str
     connection: DeviceConnectionState
@@ -142,6 +143,7 @@ class _StatusRow:
     def forHardware(cls, status):
         return cls(
             key=("hardware", status.hardware_id),
+            hardware_id=status.hardware_id,
             name=status.name,
             category=status.category,
             connection=status.connection,
@@ -159,6 +161,7 @@ class _StatusRow:
         status = component.status
         return cls(
             key=("component", parent.hardware_id, component.device_id),
+            hardware_id=parent.hardware_id,
             name=component.name,
             category=component.category,
             connection=status.connection,
@@ -173,9 +176,10 @@ class _StatusRow:
 
 
 class HardwareStatusWidget(Widget):
-    """Global read-only hardware status grouped by user-meaningful device."""
+    """Global hardware status with opt-in physical-device lifecycle actions."""
 
     sigRefreshRequested = QtCore.Signal()
+    sigReconnectRequested = QtCore.Signal(object)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -184,7 +188,14 @@ class HardwareStatusWidget(Widget):
 
         self._statuses = []
         self._statusByKey = {}
+        self._reconnectableHardwareIds = set()
+        self._reconnectBusy = False
 
+        self.operationLabel = QtWidgets.QLabel("")
+        self.operationLabel.setWordWrap(True)
+        self.reconnectButton = QtWidgets.QPushButton("Reconnect")
+        self.reconnectButton.setEnabled(False)
+        self.reconnectButton.clicked.connect(self._requestReconnect)
         self.refreshButton = QtWidgets.QPushButton("Refresh")
         self.refreshButton.clicked.connect(self.sigRefreshRequested)
 
@@ -222,7 +233,8 @@ class HardwareStatusWidget(Widget):
         detailsLayout.addRow("Message", self.detailMessage)
 
         top = QtWidgets.QHBoxLayout()
-        top.addStretch(1)
+        top.addWidget(self.operationLabel, 1)
+        top.addWidget(self.reconnectButton)
         top.addWidget(self.refreshButton)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -230,8 +242,9 @@ class HardwareStatusWidget(Widget):
         layout.addWidget(self.tree, 1)
         layout.addWidget(detailsGroup)
 
-    def setStatuses(self, statuses) -> None:
+    def setStatuses(self, statuses, reconnectableHardwareIds=()) -> None:
         selected_key = self._selectedStatusKey()
+        self._reconnectableHardwareIds = set(reconnectableHardwareIds)
         expanded = self._expandedCategories()
 
         self._statuses = list(statuses)
@@ -292,6 +305,37 @@ class HardwareStatusWidget(Widget):
             self.tree.setCurrentItem(target)
         else:
             self._clearDetails()
+        self._updateReconnectButton()
+
+    def setReconnectBusy(self, busy: bool, message: str | None = None) -> None:
+        self._reconnectBusy = bool(busy)
+        self.reconnectButton.setText("Reconnecting…" if busy else "Reconnect")
+        self.operationLabel.setText(message or "")
+        self._updateReconnectButton()
+
+    def _requestReconnect(self) -> None:
+        status = self._statusByKey.get(self._selectedStatusKey())
+        if status is None or self._reconnectBusy:
+            return
+        if status.hardware_id not in self._reconnectableHardwareIds:
+            return
+        self.sigReconnectRequested.emit(status.hardware_id)
+
+    def _updateReconnectButton(self) -> None:
+        status = self._statusByKey.get(self._selectedStatusKey())
+        supported = (
+            status is not None
+            and status.hardware_id in self._reconnectableHardwareIds
+        )
+        self.reconnectButton.setEnabled(bool(supported and not self._reconnectBusy))
+        if supported:
+            self.reconnectButton.setToolTip(
+                "Reconnect this physical device using its lifecycle adapter."
+            )
+        else:
+            self.reconnectButton.setToolTip(
+                "Reconnect is not available for this device yet."
+            )
 
     def _expandedCategories(self):
         result = {}
@@ -360,6 +404,7 @@ class HardwareStatusWidget(Widget):
         status = self._statusByKey.get(status_key)
         if status is None:
             self._clearDetails()
+            self._updateReconnectButton()
             return
 
         health = _health(status)
@@ -381,6 +426,7 @@ class HardwareStatusWidget(Widget):
         )
         message_parts = [part for part in (status.summary, status.details) if part]
         self.detailMessage.setText("\n".join(message_parts) if message_parts else "—")
+        self._updateReconnectButton()
 
     @staticmethod
     def _formatDependencies(dependencies) -> str:
