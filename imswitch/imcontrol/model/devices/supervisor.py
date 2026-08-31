@@ -305,6 +305,19 @@ class DeviceSupervisor:
     def _rawEntries(self):
         return tuple(self._iterDevices())
 
+    def getManager(self, device_id: DeviceId):
+        """Return the already-created manager behind one graph endpoint.
+
+        This is a read-only identity lookup used by lifecycle orchestration; it
+        never constructs, replaces, probes or otherwise mutates hardware.
+        Synthetic graph-only endpoints (for example per-board NI-DAQ nodes) do
+        not have a direct manager and therefore raise ``KeyError``.
+        """
+        for candidate_id, manager in self._rawEntries():
+            if candidate_id == device_id:
+                return manager
+        raise KeyError(f"Unknown device {device_id.kind}/{device_id.name}")
+
     def getAllStatuses(self) -> tuple[DeviceStatus, ...]:
         """Raw manager-endpoint statuses retained for diagnostics/back-compat."""
         statuses = []

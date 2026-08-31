@@ -1,3 +1,5 @@
+from qtpy import QtCore
+
 from imswitch.imcontrol.model.devices import (
     DeviceConnectionState,
     DeviceFailureKind,
@@ -198,3 +200,33 @@ def test_same_category_components_remain_collapsed_in_physical_row(qtbot):
     lasers = _find_category(widget, "Lasers")
     assert lasers.childCount() == 1
     assert lasers.child(0).text(0).startswith("CoolLED controller")
+
+
+def test_reconnect_button_is_opt_in_per_physical_device(qtbot):
+    widget = HardwareStatusWidget(None)
+    qtbot.addWidget(widget)
+
+    hardware_id = HardwareDeviceId("laser", "coolled:COM10")
+    coolled = HardwareStatus(
+        hardware_id=hardware_id,
+        name="CoolLED controller",
+        category="laser",
+        section=DeviceSection.DEVICES,
+        connection=DeviceConnectionState.ERROR,
+        mode=DeviceRuntimeMode.MOCK,
+        manager_names=("CoolLEDLaserManager",),
+    )
+
+    emitted = []
+    widget.sigReconnectRequested.connect(emitted.append)
+    widget.setStatuses([coolled])
+    assert widget.reconnectButton.isEnabled() is False
+
+    widget.setStatuses([coolled], reconnectableHardwareIds=(hardware_id,))
+    assert widget.reconnectButton.isEnabled() is True
+    qtbot.mouseClick(widget.reconnectButton, QtCore.Qt.LeftButton)
+    assert emitted == [hardware_id]
+
+    widget.setReconnectBusy(True, "Reconnecting device…")
+    assert widget.reconnectButton.isEnabled() is False
+    assert "Reconnecting" in widget.operationLabel.text()
