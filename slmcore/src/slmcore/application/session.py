@@ -47,6 +47,7 @@ class SLMSessionCallbacks:
     on_error: Callable[[str,Exception],None] = _noop
     on_upload_failed: Callable[[Exception],None] = _noop
     on_upload_state_changed: Callable[[bool,Exception | None],None] = _noop
+    on_device_connection_changed: Callable[[DeviceConnectionResult],None] = _noop
     on_runtime_replaced: Callable[[SLMRuntime],None] = _noop
     on_config_committed: Callable[[ConfigLoadOutcome],None] = _noop
     on_control_mode_changed: Callable[[SLMControlMode,str | None],None] = _noop
@@ -474,6 +475,7 @@ class SLMSession:
         if device is None:
             raise RuntimeError("No SLM device provider is configured")
         result = device.connect()
+        self._notify("on_device_connection_changed",result)
         if result.connected and upload_current_frame:
             self.upload_current_frame()
         return result
@@ -483,7 +485,45 @@ class SLMSession:
         device = self.host_services.device
         if device is None:
             raise RuntimeError("No SLM device provider is configured")
-        return device.disconnect()
+        result = device.disconnect()
+        self._notify("on_device_connection_changed",result)
+        return result
+
+    def reconnect_device(self) -> DeviceConnectionResult:
+        """Reconnect the configured device and restore the active frame.
+
+        The operation is owned by the toolkit-independent application session
+        so hosts can request reconnect without bypassing session state. For
+        explicit devices, an existing connection is disconnected first. A
+        successful reconnect always uploads the frame that is authoritative for
+        the current control mode (the active compiled frame in Fast Config mode,
+        otherwise the current runtime frame).
+        """
+        self._require_active()
+        device = self.host_services.device
+        if device is None:
+            raise RuntimeError("No SLM device provider is configured")
+
+        if device.requires_explicit_connection:
+            disconnected = self.disconnect_device()
+            if disconnected.connected:
+                return disconnected
+            connected = self.connect_device(upload_current_frame=False)
+        else:
+            connected = DeviceConnectionResult(connected=True)
+            self._notify("on_device_connection_changed",connected)
+
+        if connected.connected:
+            self._upload_active_device_frame()
+        return connected
+
+    def _upload_active_device_frame(self) -> bool:
+        if self.control_mode is SLMControlMode.FAST_CONFIG and self.fast_config_path:
+            _resolved,frame = self._read_validated_compiled_frame(
+                self.fast_config_path
+            )
+            return self.upload_frame(frame)
+        return self.upload_current_frame()
 
     def set_measurement_dispatcher(
         self,measurements: MeasurementDispatcher | None,

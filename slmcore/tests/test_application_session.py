@@ -219,3 +219,54 @@ def test_headless_session_owns_explicit_device_lifecycle():
     disconnected = session.disconnect_device()
     assert not disconnected.connected
     assert events == ["connect","disconnect"]
+
+
+def test_headless_session_reconnects_explicit_device_and_restores_current_frame():
+    runtime = _runtime()
+    events = []
+    uploads = []
+    connection_events = []
+    device = SLMDeviceProvider(
+        upload_frame=lambda frame: uploads.append(np.array(frame, copy=True)),
+        connect=lambda: (events.append("connect") or (True, "SER123")),
+        disconnect=lambda: (events.append("disconnect") or (True, "closed")),
+        requires_explicit_connection=True,
+    )
+    session = SLMSession(
+        runtime=runtime,
+        host_services=SLMHostServices(device=device),
+        callbacks=SLMSessionCallbacks(
+            on_device_connection_changed=connection_events.append,
+        ),
+    )
+
+    result = session.reconnect_device()
+
+    assert result.connected
+    assert events == ["disconnect", "connect"]
+    assert [item.connected for item in connection_events] == [False, True]
+    assert len(uploads) == 1
+    np.testing.assert_array_equal(uploads[0], runtime.artifacts.eightbit)
+
+
+def test_headless_session_reconnect_stops_when_disconnect_fails():
+    runtime = _runtime()
+    events = []
+    uploads = []
+    device = SLMDeviceProvider(
+        upload_frame=lambda frame: uploads.append(frame),
+        connect=lambda: (events.append("connect") or (True, "SER123")),
+        disconnect=lambda: (events.append("disconnect") or (False, "still connected")),
+        requires_explicit_connection=True,
+    )
+    session = SLMSession(
+        runtime=runtime,
+        host_services=SLMHostServices(device=device),
+    )
+
+    result = session.reconnect_device()
+
+    assert result.connected
+    assert result.message == "still connected"
+    assert events == ["disconnect"]
+    assert uploads == []
