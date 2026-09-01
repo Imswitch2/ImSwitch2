@@ -63,11 +63,6 @@ class MockThorlabsMFFManager:
     def close(self):
         self._connected = False
 
-    def reset_connection(self):
-        self._connected = True
-        self._last_error = None
-        return True
-
     def finalize(self):
         self.close()
 
