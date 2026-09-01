@@ -41,7 +41,6 @@ def mock_flip_mirror_manager():
     manager.hasDevices = Mock(return_value=True)
     manager.getAllDeviceNames = Mock(return_value=['FM1', 'FM2'])
     manager.__getitem__ = Mock(side_effect=lambda name: fm1 if name == 'FM1' else fm2)
-    manager.reset_connections = Mock()
     
     return manager
 
@@ -58,7 +57,6 @@ def mock_widget():
     widget.setRowState = Mock()
     widget.sigStateChanged = MagicMock()
     widget.sigLinkChanged = MagicMock()
-    widget.sigResetConnectionsClicked = MagicMock()
     
     return widget
 
