@@ -1,7 +1,95 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices import (
+    DeviceId, DeviceLifecycleAction, DeviceLifecycleCapabilities,
+    DeviceLifecycleNotSupportedError, DeviceLifecycleResult,
+    DeviceRuntimeMode, HardwareDeviceId,
+)
 from .DetectorManager import DetectorManager, DetectorAction, DetectorNumberParameter
+
+
+class _TISLifecycle:
+    """Reconnect one TIS camera without replacing its detector manager."""
+
+    def __init__(self, manager, detectorsManager, detectorName):
+        self._manager = manager
+        self._detectorsManager = detectorsManager
+        self._detectorName = detectorName
+        self.hardware_id = HardwareDeviceId(
+            category='detector', key=f'detector:{detectorName}'
+        )
+        self.capabilities = DeviceLifecycleCapabilities(reconnect=True)
+
+    def _unsupported(self, action):
+        raise DeviceLifecycleNotSupportedError(
+            f'TIS lifecycle does not yet support {action.value}.'
+        )
+
+    def connect(self):
+        return self._unsupported(DeviceLifecycleAction.CONNECT)
+
+    def disconnect(self):
+        return self._unsupported(DeviceLifecycleAction.DISCONNECT)
+
+    def probe(self):
+        return self._unsupported(DeviceLifecycleAction.PROBE)
+
+    def shutdown(self):
+        return self._unsupported(DeviceLifecycleAction.SHUTDOWN)
+
+    def reconnect(self):
+        device_id = DeviceId('detector', self._detectorName)
+        with self._detectorsManager.detectorLifecycleMaintenance(
+            self._detectorName
+        ):
+            try:
+                hardware_connected = self._manager._reconnectCameraBackend()
+            except Exception as exc:
+                self._manager._setConnectionError(
+                    exc, summary='TIS camera reconnect failed'
+                )
+                return DeviceLifecycleResult(
+                    hardware_id=self.hardware_id,
+                    action=DeviceLifecycleAction.RECONNECT,
+                    success=False,
+                    summary='TIS camera reconnect failed',
+                    details=str(exc),
+                    affected_device_ids=(device_id,),
+                )
+
+            # A completed backend replacement makes any stop failure from the
+            # retired backend obsolete, including real -> mock fallback.
+            self._detectorsManager.clearFaultAfterHardwareReplacement(
+                self._detectorName
+            )
+
+        if hardware_connected:
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id,
+                action=DeviceLifecycleAction.RECONNECT,
+                success=True,
+                summary='TIS camera reconnected; acquisition remains stopped',
+                affected_device_ids=(device_id,),
+            )
+
+        if self._manager._configuredForMock:
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id,
+                action=DeviceLifecycleAction.RECONNECT,
+                success=True,
+                summary='Mock TIS camera reinitialized; acquisition remains stopped',
+                affected_device_ids=(device_id,),
+            )
+
+        return DeviceLifecycleResult(
+            hardware_id=self.hardware_id,
+            action=DeviceLifecycleAction.RECONNECT,
+            success=False,
+            summary='TIS hardware reconnect failed; mock fallback active',
+            details=self._manager.connectionStatusDetails,
+            affected_device_ids=(device_id,),
+        )
 
 
 class TISManager(DetectorManager):
@@ -26,22 +114,26 @@ class TISManager(DetectorManager):
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
 
-        self._camera = self._getTISObj(detectorInfo.managerProperties['cameraListIndex'])
-        
+        self._cameraId = detectorInfo.managerProperties['cameraListIndex']
+        tisProperties = dict(detectorInfo.managerProperties['tis'])
+        self._startupCameraProperties = {
+            name: value for name, value in tisProperties.items()
+            if name not in self._CAMERA_PROPERTIES
+        }
+        self._detectorLifecycle = None
         self._running = False
         self._adjustingParameters = False
         self.__image = None
 
-        notApplied = []
-        for propertyName, propertyValue in detectorInfo.managerProperties['tis'].items():
-            if propertyName in self._CAMERA_PROPERTIES:
-                # These never reached the camera before (CameraTIS assigned
-                # them to the wrong object), so shipped setups carry
-                # placeholder zeros here. Applying them now would start the
-                # camera at minimum exposure.
-                notApplied.append(propertyName)
-                continue
-            self._camera.setPropertyValue(propertyName, propertyValue)
+        # exposure / gain / brightness from the setup are not applied: they
+        # never reached the camera before (CameraTIS assigned them to the
+        # wrong object), so shipped setups carry placeholder zeros that would
+        # start the camera at minimum exposure. Only the remaining (geometry)
+        # properties are startup state -- also what a reconnect replays.
+        notApplied = sorted(
+            name for name in tisProperties if name in self._CAMERA_PROPERTIES)
+        self._camera = self._getTISObj(self._cameraId)
+        self._applyCameraProperties(self._camera, self._startupCameraProperties)
         if notApplied:
             self.__logger.info(
                 f'Not applying startup {", ".join(notApplied)} from '
@@ -69,7 +161,9 @@ class TISManager(DetectorManager):
             ),
         }
 
-        # Prepare actions
+        # Resolve through the manager at call time. Binding directly to the
+        # startup backend would leave this action pointing at a retired camera
+        # after reconnect.
         actions = {
             'More properties': DetectorAction(group='Misc',
                                               func=self.openPropertiesDialog)
@@ -206,6 +300,87 @@ class TISManager(DetectorManager):
             parameter = self.parameters[name]
             parameter.value = self._readCameraProperty(name, parameter.value)
 
+    @property
+    def _configuredForMock(self):
+        return str(self._cameraId).strip().lower().startswith('mock')
+
+    def _bindDetectorLifecycleHost(self, detectorsManager, detectorName):
+        """Bind the acquisition owner after DetectorsManager construction."""
+        self._detectorLifecycle = _TISLifecycle(
+            self, detectorsManager, detectorName
+        )
+
+    def getDeviceLifecycle(self):
+        """Return the already-bound lifecycle without touching hardware."""
+        return self._detectorLifecycle
+
+    @staticmethod
+    def _applyCameraProperties(camera, properties):
+        for propertyName, propertyValue in properties.items():
+            camera.setPropertyValue(propertyName, propertyValue)
+
+    def _closeCameraBackend(self, camera):
+        if camera is None:
+            return
+        model = getattr(camera, 'model', 'unknown')
+        try:
+            close = getattr(camera, 'close', None)
+            if callable(close):
+                close()
+            else:
+                stop = getattr(camera, 'stop_live', None)
+                if callable(stop):
+                    stop()
+        except Exception as exc:
+            # Reconnect must still get a chance to create a fresh backend when
+            # the disconnected SDK object itself refuses to close cleanly.
+            self.__logger.warning(
+                f'Error while retiring TIS camera {model}: {exc}'
+            )
+
+    def _reconnectCameraBackend(self):
+        """Replace the TIS backend and replay ImSwitch-owned runtime state.
+
+        Called only inside ``DetectorsManager.detectorLifecycleMaintenance``.
+        The manager object, parameters and ROI therefore remain stable while
+        the SDK camera object is replaced. The new backend always remains idle.
+        Returns whether the replacement is real hardware (rather than mock).
+        """
+        runtime_properties = {
+            name: self.parameters[name].value
+            for name in self._CAMERA_PROPERTIES
+            if name in self.parameters
+        }
+        hpos, vpos = self.frameStart
+        hsize, vsize = self.shape
+
+        old_camera = self._camera
+        self._running = False
+        self._adjustingParameters = True
+        self.__image = None
+        self._camera = None
+        self._closeCameraBackend(old_camera)
+
+        camera = None
+        try:
+            camera = self._getTISObj(self._cameraId)
+            self._applyCameraProperties(camera, self._startupCameraProperties)
+            self._applyCameraProperties(camera, runtime_properties)
+            camera.setROI(hpos, vpos, hsize, vsize)
+        except Exception:
+            self._closeCameraBackend(camera)
+            raise
+        finally:
+            self._adjustingParameters = False
+
+        self._camera = camera
+        self._setModel(camera.model)
+        self._running = False
+        self.__image = None
+        if self.runtimeMode is DeviceRuntimeMode.REAL:
+            self._setConnected('TIS camera reconnected')
+        return self.runtimeMode is DeviceRuntimeMode.REAL
+
     def _getTISObj(self, cameraId):
         try:
             from imswitch.imcontrol.model.interfaces.tiscamera import CameraTIS
@@ -239,18 +414,9 @@ class TISManager(DetectorManager):
 
         self._running = False
         self._adjustingParameters = True
-
+        camera, self._camera = self._camera, None
         try:
-            close = getattr(self._camera, "close", None)
-            if callable(close):
-                close()
-            else:
-                try:
-                    self._camera.stop_live()
-                except Exception:
-                    pass
-        except Exception as e:
-            self.__logger.warning(f"Error while shutting down TIS camera {model}: {e}")
+            self._closeCameraBackend(camera)
         finally:
             self._adjustingParameters = False
             self.__image = None

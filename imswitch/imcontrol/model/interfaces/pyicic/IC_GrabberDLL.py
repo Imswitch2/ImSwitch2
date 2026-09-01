@@ -2022,6 +2022,9 @@ class IC_GrabberDLL:
     #    @param FilterHandle    Handle to a frame filter object.
     #*/
     #void AC IC_DeleteFrameFilter( HFRAMEFILTER FilterHandle );
+    delete_frame_filter = _ic_grabber_dll.IC_DeleteFrameFilter
+    delete_frame_filter.restype = None
+    delete_frame_filter.argtypes = (POINTER(structs.FrameFilterHandle),)
     #
     #///////////////////////////////////////////////////////////////
     #/* Delete the memory allocated by the HFRAMEFILTER structure. Please remove the frame filter from the HGrabber, 
@@ -2111,6 +2114,9 @@ class IC_GrabberDLL:
     #
     #*/
     #int AC IC_FrameFilterDeviceClear(HGRABBER hGrabber );
+    frame_filter_device_clear = _ic_grabber_dll.IC_FrameFilterDeviceClear
+    frame_filter_device_clear.restype = c_int
+    frame_filter_device_clear.argtypes = (GrabberHandlePtr,)
     #
     #
     #typedef struct CODECHANDLE_t__ { int unused; } CODECHANDLE_t; ///<Internal structure of the grabber object handle.

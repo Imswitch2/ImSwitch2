@@ -236,6 +236,25 @@ class AcquisitionLeaseTable:
             self._faulted.discard(detectorName)
             self._notifyState(detectorName)
 
+    def clearFaultAfterHardwareReplacement(self, detectorName: str) -> None:
+        """Clear a stale stop quarantine after the detector backend changed.
+
+        Reconnect is only allowed while the detector has zero leases. Once a
+        lifecycle has replaced the old hardware/backend object, a failure from
+        stopping that *old* object no longer describes the current hardware.
+        This deliberately does not retry ``stopDetector``: the object whose
+        state was uncertain has been retired.
+        """
+        with self._lock:
+            if self._refcounts.get(detectorName, 0) != 0:
+                raise RuntimeError(
+                    f'Detector {detectorName!r} is still leased during hardware replacement'
+                )
+            if detectorName not in self._faulted:
+                return
+            self._faulted.discard(detectorName)
+            self._notifyState(detectorName)
+
     # ------------------------------------------------------------------ #
     # Queries                                                            #
     # ------------------------------------------------------------------ #
