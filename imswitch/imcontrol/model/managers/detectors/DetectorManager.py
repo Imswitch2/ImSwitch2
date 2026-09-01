@@ -404,6 +404,10 @@ class DetectorManager(DeviceManagerStatusMixin, SignalInterface):
         """ Detector model name. """
         return self.__model
 
+    def _setModel(self, model: str) -> None:
+        """Update cached model identity after an in-place backend replacement."""
+        self.__model = model
+
     @property
     def binning(self) -> int:
         """ Current binning. """

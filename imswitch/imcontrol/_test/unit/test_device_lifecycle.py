@@ -119,6 +119,12 @@ def test_lifecycle_service_is_default_deny_and_builds_stable_physical_handles():
     assert handle.source_device_ids == (DeviceId("laser", "managed"),)
 
 
+class _BlockedLifecycle(_Lifecycle):
+    def reconnect(self):
+        self.calls += 1
+        raise DeviceLifecycleBlockedError('device is still in use')
+
+
 def test_lifecycle_service_publishes_results_and_serializes_safety_guards():
     hardware_id = HardwareDeviceId("laser", "managed:one")
     lifecycle = _Lifecycle(hardware_id)
@@ -144,6 +150,19 @@ def test_lifecycle_service_publishes_results_and_serializes_safety_guards():
     master.recordingManager.record = True
     with pytest.raises(DeviceLifecycleBlockedError, match="recording"):
         service.reconnect(hardware_id)
+    assert lifecycle.calls == 1
+
+
+def test_lifecycle_service_preserves_adapter_blocked_errors():
+    hardware_id = HardwareDeviceId("laser", "managed:blocked")
+    lifecycle = _BlockedLifecycle(hardware_id)
+    manager = _LifecycleManager(lifecycle, name="managed")
+    master = _master(lasers={"managed": manager})
+    service = DeviceLifecycleService(master, DeviceSupervisor(master))
+
+    with pytest.raises(DeviceLifecycleBlockedError, match="still in use"):
+        service.reconnect(hardware_id)
+
     assert lifecycle.calls == 1
 
 
