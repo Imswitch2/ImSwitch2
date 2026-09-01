@@ -10,8 +10,9 @@ class Cobolt0601(RS232Driver):
     Serial settings: 115200 baud, 8N1, CR termination.
 
     Older firmware revisions omit certain query commands (l?, gmod?, sn?).
-    All properties fall back to locally-tracked state when the hardware returns
-    a syntax error, so the driver works across firmware versions.
+    Optional queries fall back to locally tracked state only when the device
+    explicitly reports an unsupported command. Transport exceptions propagate
+    so callers can distinguish an old firmware limitation from a lost device.
     """
 
     DEFAULTS = {
@@ -36,6 +37,11 @@ class Cobolt0601(RS232Driver):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _unsupported_reply(result):
+        text = '' if result is None else str(result).lower()
+        return 'syntax error' in text or 'illegal command' in text
+
     def _log_capabilities(self):
         """Probe optional commands and log which are supported by this firmware."""
         import logging
@@ -58,18 +64,23 @@ class Cobolt0601(RS232Driver):
             log.info(f'Cobolt firmware {fw}: all optional queries supported')
 
     def _safe_query(self, command, default=None):
-        """Send command and return the response.
+        """Send an optional query and return its response.
 
-        Returns *default* if the firmware responds with a syntax/illegal-command
-        error or if a communication exception occurs.
+        Returns ``default`` only when the firmware explicitly rejects the
+        command as unsupported. Communication exceptions are deliberately not
+        swallowed: callers must be able to recognize a lost serial transport.
         """
-        try:
-            result = self.query(command)
-            if 'syntax error' in result.lower() or 'illegal command' in result.lower():
-                return default
-            return result
-        except Exception:
+        result = self.query(command)
+        if self._unsupported_reply(result):
             return default
+        return result
+
+    def _command(self, command):
+        """Send a mutating command, raising if the device rejects it."""
+        result = self.query(command)
+        if self._unsupported_reply(result):
+            raise RuntimeError(f'Cobolt rejected command {command!r}: {result}')
+        return result
 
     # ------------------------------------------------------------------
     # Identification
@@ -79,6 +90,12 @@ class Cobolt0601(RS232Driver):
     def idn(self):
         # gfv? (firmware version) is universally supported; sn? is not on older FW
         return self._safe_query('gfv?', default='Cobolt (unknown)')
+
+    @property
+    def serial_number(self):
+        # sn? is optional on older firmware. None means identity unavailable,
+        # not a transport failure.
+        return self._safe_query('sn?')
 
     @property
     def status(self):
@@ -97,7 +114,7 @@ class Cobolt0601(RS232Driver):
 
     @enabled.setter
     def enabled(self, value):
-        self._safe_query('l1' if value else 'l0')
+        self._command('l1' if value else 'l0')
         self._enabled = bool(value)
 
     # ------------------------------------------------------------------
@@ -114,7 +131,7 @@ class Cobolt0601(RS232Driver):
 
     @power_sp.setter
     def power_sp(self, value):
-        self._safe_query(f'p {float(value) / 1000:.6f}')  # mW → W
+        self._command(f'p {float(value) / 1000:.6f}')  # mW → W
 
     @property
     def power(self):
@@ -149,7 +166,7 @@ class Cobolt0601(RS232Driver):
 
     @autostart.setter
     def autostart(self, value):
-        self._safe_query(f'@cobas {1 if value else 0}')
+        self._command(f'@cobas {1 if value else 0}')
 
     # ------------------------------------------------------------------
     # Digital modulation
@@ -164,11 +181,11 @@ class Cobolt0601(RS232Driver):
 
     @digital_mod.setter
     def digital_mod(self, value):
-        self._safe_query(f'sdmes {1 if value else 0}')
+        self._command(f'sdmes {1 if value else 0}')
         self._digital_mod = bool(value)
 
     def enter_mod_mode(self):
-        self._safe_query('em')
+        self._command('em')
 
     @property
     def mod_mode(self):
@@ -200,8 +217,9 @@ class Cobolt0601_f2(Cobolt0601):
     @power_mod.setter
     def power_mod(self, value):
         # slmp/glmp? use mW directly (same as Cobolt06MLD), unlike p/p? which use W
-        self._power_mod = float(value)
-        self._safe_query(f'slmp {float(value):.4f}')  # mW, no conversion
+        value = float(value)
+        self._command(f'slmp {value:.4f}')  # mW, no conversion
+        self._power_mod = value
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

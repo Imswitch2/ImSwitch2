@@ -1,11 +1,14 @@
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.interfaces.lantzlasers import LantzLaser
+from imswitch.imcontrol.model.interfaces.lantzlasers import openLantzLaser
 from .LaserManager import LaserManager, normalise_ports
 
 
 class LantzLaserManager(LaserManager):
-    """ Base LaserManager for lasers that are fully digitally controlled using
-    drivers available through Lantz.
+    """Base LaserManager for legacy Lantz-style digitally controlled lasers.
+
+    The current in-tree Cobolt driver is vendored and no longer depends on the
+    external Lantz package, but this manager name is retained for setup-file
+    compatibility.
 
     Manager properties:
 
@@ -17,13 +20,32 @@ class LantzLaserManager(LaserManager):
                  **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
 
-        ports = normalise_ports(laserInfo.managerProperties['digitalPorts'])
+        self._ports = normalise_ports(laserInfo.managerProperties['digitalPorts'])
+        self._driver = driver
 
-        # Init laser
-        self._laser = LantzLaser(driver, ports)
-        self._setConnected("Laser initialized")
-        self._numLasers = len(ports)
-        self.__logger.info(f'Initialized laser, model: {self._laser.idn}')
+        # Open linked lasers atomically. A failed real port causes the complete
+        # logical laser to use mocks rather than creating a real/mock mixture.
+        result = openLantzLaser(driver, self._ports, allowMockFallback=True)
+        self._laser = result.laser
+        self._backendIsMock = bool(result.is_mock)
+        self._backendOpenError = result.error
+        self._numLasers = len(self._ports)
+
+        if self._backendIsMock:
+            self._setConnectionError(
+                result.error or 'Real laser backend unavailable',
+                summary='Laser hardware unavailable; mock fallback active',
+                mock_active=True,
+            )
+        else:
+            self._setConnected('Laser initialized')
+
+        try:
+            self.__logger.info(f'Initialized laser, model: {self._laser.idn}')
+        except Exception as exc:
+            # Identification is diagnostic only here. The concrete manager's
+            # safe initialization/lifecycle path will surface transport errors.
+            self.__logger.warning('Could not read laser identity: %s', exc)
 
         super().__init__(laserInfo, name, isBinary=isBinary, valueUnits=valueUnits,
                          valueDecimals=valueDecimals)
