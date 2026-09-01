@@ -288,6 +288,12 @@ class DeviceLifecycleService:
             self._assertRuntimeTransitionSafe()
             try:
                 result = lifecycle.reconnect()
+            except DeviceLifecycleError:
+                # Expected lifecycle policy failures (for example a detector
+                # still owned by an acquisition lease) should reach the caller
+                # as blocked/not-supported errors, just like the service-level
+                # scan/recording guards above.
+                raise
             except Exception as exc:
                 self.__logger.error(
                     "Unexpected reconnect failure for %r: %s",

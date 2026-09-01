@@ -344,6 +344,16 @@ class IC_Camera:
         err = IC_GrabberDLL.add_frame_filter_to_device(self._handle, frame_filter_handle)
         if err != 1:
             raise IC_Exception(err)
+
+    def clear_frame_filters_from_device(self):
+        """Remove all frame filters from this grabber's device path."""
+        err = IC_GrabberDLL.frame_filter_device_clear(self._handle)
+        if err != 1:
+            raise IC_Exception(err)
+
+    def delete_frame_filter(self, frame_filter_handle):
+        """Release a frame-filter handle after it has been detached."""
+        IC_GrabberDLL.delete_frame_filter(frame_filter_handle)
             
     def frame_filter_get_parameter(self, frame_filter_handle, parameter_name):
         data = c_int()
