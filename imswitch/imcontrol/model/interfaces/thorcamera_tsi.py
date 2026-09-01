@@ -52,10 +52,101 @@ class ThorTSICamera:
         self._serial = target_serial
         logger.info(f"Opened Thorlabs TSI camera: {target_serial}")
         
-        # Default configuration
+        # Default configuration and trigger capability discovery. TSI cameras
+        # do not all expose the same trigger features, so query support from
+        # the SDK instead of assuming Hardware/Bulb/polarity are available.
+        self._last_arm_buffer_size = DEFAULT_FRAME_BUFFER_DEPTH
         self._camera.frames_per_trigger_zero_for_unlimited = 1
+        self._supported_trigger_modes = self._detect_supported_trigger_modes()
+        self._supports_trigger_polarity = self._detect_trigger_polarity_support()
         self._camera.operation_mode = 0  # SOFTWARE_TRIGGER
     
+    def _detect_supported_trigger_modes(self):
+        """Return trigger modes accepted by this camera.
+
+        Unsupported operation modes raise a vendor SDK error. The camera is
+        freshly opened and disarmed here, so probing only changes configuration
+        and is restored before returning.
+        """
+        mode_map = (('software', 0), ('hardware', 1), ('bulb', 2))
+        try:
+            original_mode = self._camera.operation_mode
+        except Exception:
+            original_mode = 0
+
+        supported = []
+        for name, value in mode_map:
+            try:
+                self._camera.operation_mode = value
+            except Exception as exc:
+                logger.debug(
+                    "TSI trigger mode %s is not supported by %s: %s",
+                    name, self.model, exc,
+                )
+            else:
+                supported.append(name)
+
+        try:
+            self._camera.operation_mode = original_mode
+        except Exception:
+            self._camera.operation_mode = 0
+
+        if 'software' not in supported:
+            raise RuntimeError(
+                f"{self.model} does not report support for Software trigger mode"
+            )
+        return tuple(supported)
+
+    def _detect_trigger_polarity_support(self):
+        """Return whether trigger polarity can be configured."""
+        external_mode = next(
+            (mode for mode in ('hardware', 'bulb')
+             if mode in self._supported_trigger_modes),
+            None,
+        )
+        if external_mode is None:
+            return False
+
+        mode_values = {'software': 0, 'hardware': 1, 'bulb': 2}
+        try:
+            original_mode = self._camera.operation_mode
+        except Exception:
+            original_mode = 0
+        try:
+            try:
+                original_polarity = self._camera.trigger_polarity
+            except Exception:
+                original_polarity = 0
+            self._camera.operation_mode = mode_values[external_mode]
+            self._camera.trigger_polarity = original_polarity
+            return True
+        except Exception as exc:
+            logger.debug(
+                "TSI trigger polarity is not configurable on %s: %s",
+                self.model, exc,
+            )
+            return False
+        finally:
+            try:
+                self._camera.operation_mode = original_mode
+            except Exception:
+                self._camera.operation_mode = 0
+
+    @property
+    def supported_trigger_modes(self):
+        """Canonical trigger modes supported by the connected camera."""
+        return self._supported_trigger_modes
+
+    @property
+    def supports_trigger_polarity(self):
+        """Whether the connected camera exposes configurable polarity."""
+        return self._supports_trigger_polarity
+
+    @property
+    def armed_buffer_size(self):
+        """Last SDK ring-buffer depth requested through arm()."""
+        return self._last_arm_buffer_size
+
     @staticmethod
     def _configure_dll_path(dll_directory):
         """Add DLL directory to Windows search path."""
@@ -151,70 +242,64 @@ class ThorTSICamera:
         """Enable or disable frame rate control."""
         self._camera.is_frame_rate_control_enabled = bool(enabled)
     
-    def set_trigger_mode(self, mode):
-        """Set trigger/operation mode.
-
-        The Thorlabs SDK rejects ``operation_mode`` writes while the camera is
-        armed (error 1004, "Invalid operation"). We disarm transparently and
-        re-arm with the previous buffer size so callers can change mode at
-        runtime from the GUI.
-
-        Args:
-            mode: One of 'software', 'hardware', 'bulb'
-        """
-        mode_map = {
-            'software': 0,
-            'hardware': 1,
-            'bulb': 2
-        }
-        if mode not in mode_map:
-            raise ValueError(f"Invalid mode '{mode}'. Use: {list(mode_map.keys())}")
-
-        was_armed = bool(getattr(self._camera, 'is_armed', False))
-        # The depth this wrapper armed with. It used to be read back from
-        # frames_per_trigger_zero_for_unlimited, a different quantity that
-        # happens to be a small integer too: __init__ sets it to 1, so the
-        # first Operation Mode change -- including the one every startup makes
-        # while restoring the saved detector state -- shrank the SDK ring from
-        # four frames to one for the rest of the session.
-        buffer_size = getattr(self, '_armed_buffer_size', None) or DEFAULT_FRAME_BUFFER_DEPTH
+    def _change_while_disarmed(self, change):
+        """Apply a setting that the TSI SDK forbids while armed."""
+        was_armed = self.is_armed
+        buffer_size = getattr(
+            self, '_last_arm_buffer_size', DEFAULT_FRAME_BUFFER_DEPTH
+        )
         if was_armed:
             self._camera.disarm()
+        try:
+            change()
+        finally:
+            if was_armed:
+                self._camera.arm(buffer_size)
 
-        self._camera.operation_mode = mode_map[mode]
+    def set_trigger_mode(self, mode):
+        """Set trigger/operation mode if supported by this camera."""
+        mode_map = {'software': 0, 'hardware': 1, 'bulb': 2}
+        if mode not in mode_map:
+            raise ValueError(f"Invalid mode '{mode}'. Use: {list(mode_map.keys())}")
+        supported_modes = getattr(
+            self, '_supported_trigger_modes', tuple(mode_map.keys())
+        )
+        if mode not in supported_modes:
+            raise ValueError(
+                f"Trigger mode '{mode}' is not supported by {self.model}; "
+                f"supported modes: {', '.join(supported_modes)}"
+            )
+        self._change_while_disarmed(
+            lambda: setattr(self._camera, 'operation_mode', mode_map[mode])
+        )
         logger.debug(f"Set trigger mode: {mode}")
 
-        if was_armed:
-            self._camera.arm(buffer_size)
-    
     def set_trigger_polarity(self, polarity):
-        """Set trigger polarity.
-        
-        Args:
-            polarity: 'active_high' (rising edge) or 'active_low' (falling edge)
-        """
-        polarity_map = {
-            'active_high': 0,
-            'active_low': 1
-        }
+        """Set trigger polarity if supported by this camera."""
+        polarity_map = {'active_high': 0, 'active_low': 1}
         if polarity not in polarity_map:
             raise ValueError(
                 f"Invalid polarity '{polarity}'. Use: {list(polarity_map.keys())}"
             )
-        
-        self._camera.trigger_polarity = polarity_map[polarity]
+        if not self._supports_trigger_polarity:
+            raise ValueError(f"Trigger polarity is not supported by {self.model}")
+        self._change_while_disarmed(
+            lambda: setattr(self._camera, 'trigger_polarity', polarity_map[polarity])
+        )
         logger.debug(f"Set trigger polarity: {polarity}")
     
     def arm(self, buffer_size=DEFAULT_FRAME_BUFFER_DEPTH):
         """Arm the camera for acquisition.
-        
+
         Args:
             buffer_size: Number of frames to buffer internally
         """
+        self._last_arm_buffer_size = int(buffer_size)
         if not self._camera.is_armed:
-            self._camera.arm(buffer_size)
-            self._armed_buffer_size = int(buffer_size)
-            logger.debug(f"Armed camera with buffer size {buffer_size}")
+            self._camera.arm(self._last_arm_buffer_size)
+            logger.debug(
+                f"Armed camera with buffer size {self._last_arm_buffer_size}"
+            )
     
     def disarm(self):
         """Disarm the camera."""
@@ -259,7 +344,10 @@ class ThorTSICamera:
 class MockThorTSICamera:
     """Mock Thorlabs TSI camera for headless testing."""
     
-    def __init__(self, serial=None, dll_directory=None):
+    def __init__(
+        self, serial=None, dll_directory=None, supported_trigger_modes=None,
+        supports_trigger_polarity=None,
+    ):
         self._serial = serial if serial is not None else "MOCK_TSI_12345"
         self._model = "Mock Thorlabs TSI Camera"
         
@@ -273,8 +361,19 @@ class MockThorTSICamera:
         self._frame_rate_enabled = True
         self._trigger_mode = 0  # software
         self._trigger_polarity = 0  # active_high
+        self._supported_trigger_modes = tuple(
+            supported_trigger_modes or ('software', 'hardware', 'bulb')
+        )
+        if 'software' not in self._supported_trigger_modes:
+            raise ValueError("MockThorTSICamera requires software trigger support")
+        if supports_trigger_polarity is None:
+            supports_trigger_polarity = any(
+                mode in self._supported_trigger_modes for mode in ('hardware', 'bulb')
+            )
+        self._supports_trigger_polarity = bool(supports_trigger_polarity)
         
         self._armed = False
+        self._last_arm_buffer_size = DEFAULT_FRAME_BUFFER_DEPTH
         self._frame_count = 0
         
         # Trigger-gated frame production (Phase 0a)
@@ -290,6 +389,18 @@ class MockThorTSICamera:
     @property
     def model(self):
         return self._model
+
+    @property
+    def supported_trigger_modes(self):
+        return self._supported_trigger_modes
+
+    @property
+    def supports_trigger_polarity(self):
+        return self._supports_trigger_polarity
+
+    @property
+    def armed_buffer_size(self):
+        return self._last_arm_buffer_size
     
     @property
     def is_armed(self):
@@ -346,20 +457,26 @@ class MockThorTSICamera:
         mode_map = {'software': 0, 'hardware': 1, 'bulb': 2}
         if mode not in mode_map:
             raise ValueError(f"Invalid mode '{mode}'")
+        if mode not in self._supported_trigger_modes:
+            raise ValueError(
+                f"Trigger mode '{mode}' is not supported by {self.model}"
+            )
         self._trigger_mode = mode_map[mode]
         logger.debug(f"Mock: Set trigger mode: {mode}")
-    
+
     def set_trigger_polarity(self, polarity):
         polarity_map = {'active_high': 0, 'active_low': 1}
         if polarity not in polarity_map:
             raise ValueError(f"Invalid polarity '{polarity}'")
+        if not self._supports_trigger_polarity:
+            raise ValueError(f"Trigger polarity is not supported by {self.model}")
         self._trigger_polarity = polarity_map[polarity]
         logger.debug(f"Mock: Set trigger polarity: {polarity}")
-    
-    def arm(self, buffer_size=2):
+
+    def arm(self, buffer_size=DEFAULT_FRAME_BUFFER_DEPTH):
+        self._last_arm_buffer_size = int(buffer_size)
         self._armed = True
-        self.armed_buffer_size = int(buffer_size)
-        logger.debug(f"Mock: Armed with buffer size {buffer_size}")
+        logger.debug(f"Mock: Armed with buffer size {self._last_arm_buffer_size}")
     
     def disarm(self):
         self._armed = False
