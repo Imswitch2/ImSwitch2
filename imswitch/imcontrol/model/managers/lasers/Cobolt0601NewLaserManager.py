@@ -35,10 +35,22 @@ Safety design (matches the WFS reference at
 
 from functools import wraps
 import threading
+import traceback
+
+from functools import wraps
+import threading
 import time
 import traceback
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices.graph import HardwareDeviceId
+from imswitch.imcontrol.model.devices.lifecycle import (
+    DeviceLifecycleAction,
+    DeviceLifecycleCapabilities,
+    DeviceLifecycleNotSupportedError,
+    DeviceLifecycleResult,
+)
+from imswitch.imcontrol.model.devices.status import DeviceId
 from .LaserManager import LaserManager, normalise_ports
 from .cobolt0601_protocols import (
     AUTO_SELECTION_ORDER,
@@ -50,8 +62,6 @@ from ._protocol import (
     DeviceInitializationError,
     ProtocolError,
 )
-import traceback
-
 
 LEGACY_PROFILE_ID = 'cobolt.legacy'
 SCPI_PROFILE_ID = 'cobolt.scpi-compatible'
@@ -70,6 +80,67 @@ def _as_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ('1', 'true', 'yes', 'on')
     return bool(value)
+
+
+def _synchronized_io(method):
+    """Serialize a manager command sequence against lifecycle reconnect."""
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._io_lock:
+            return method(self, *args, **kwargs)
+
+    return locked
+
+
+class _Cobolt0601Lifecycle:
+    """Runtime reconnect lifecycle for one directly attached Cobolt laser."""
+
+    capabilities = DeviceLifecycleCapabilities(reconnect=True)
+
+    def __init__(self, manager):
+        self._manager = manager
+        self._hardware_id = HardwareDeviceId(
+            category="laser", key=f"laser:{manager.name}"
+        )
+
+    @property
+    def hardware_id(self):
+        return self._hardware_id
+
+    def _unsupported(self, action):
+        raise DeviceLifecycleNotSupportedError(
+            f"Cobolt lifecycle does not yet support {action.value}."
+        )
+
+    def connect(self):
+        return self._unsupported(DeviceLifecycleAction.CONNECT)
+
+    def disconnect(self):
+        return self._unsupported(DeviceLifecycleAction.DISCONNECT)
+
+    def probe(self):
+        return self._unsupported(DeviceLifecycleAction.PROBE)
+
+    def shutdown(self):
+        return self._unsupported(DeviceLifecycleAction.SHUTDOWN)
+
+    def reconnect(self):
+        device_id = DeviceId("laser", self._manager.name)
+        success, details = self._manager._reconnectHardware()
+        summary = (
+            "Cobolt reconnected; emission forced OFF"
+            if success
+            else "Cobolt reconnect failed; mock fallback active"
+        )
+        return DeviceLifecycleResult(
+            hardware_id=self.hardware_id,
+            action=DeviceLifecycleAction.RECONNECT,
+            success=success,
+            summary=summary,
+            details=details,
+            affected_device_ids=(device_id,),
+            deactivated_device_ids=(device_id,),
+        )
 
 
 class Cobolt0601NewLaserManager(LaserManager):
@@ -108,6 +179,10 @@ class Cobolt0601NewLaserManager(LaserManager):
 
     def __init__(self, laserInfo, name, **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
+        # Lifecycle reconnect runs on a worker thread while normal laser
+        # commands originate from controllers/workflows. Keep multi-command
+        # emission transitions atomic with respect to backend replacement.
+        self._io_lock = threading.RLock()
 
         # Lazy import of hardware library
         try:
@@ -261,6 +336,10 @@ class Cobolt0601NewLaserManager(LaserManager):
 
         super().__init__(laserInfo, name, isBinary=False,
                          valueUnits='mW', valueDecimals=0)
+        # Intentional simulation is a user-selected operating mode, not a
+        # failed connection to recover. Startup mock fallback remains
+        # reconnectable so hardware can be promoted in-place later.
+        self._lifecycle = None if self._simulation else _Cobolt0601Lifecycle(self)
 
     def _start_mock(self) -> None:
         """Create the local Cobolt mock without attempting a serial port."""
@@ -329,6 +408,16 @@ class Cobolt0601NewLaserManager(LaserManager):
                 self.__logger.error(
                     f'Cobolt {self._port}: {operation_name} failed with an '
                     f'unknown outcome ({type(exc).__name__}): {exc.message}'
+                )
+            # A rejected command proves the transport answered and is handled
+            # above. Any other protocol failure leaves the command outcome
+            # unknown and is strong runtime evidence that this real connection
+            # is no longer trustworthy. Status reporting remains cached-only;
+            # this merely records the failure observed by a normal command.
+            if self._real_hw:
+                self._setConnectionError(
+                    exc,
+                    summary="Cobolt communication failed",
                 )
             return False
         self._last_failure = None
@@ -665,6 +754,124 @@ class Cobolt0601NewLaserManager(LaserManager):
                 f'({"SCPI" if self._scpi else "legacy"} commands, master off).'
             )
 
+    def getDeviceLifecycle(self):
+        """Return the reconnect lifecycle without performing hardware I/O."""
+        return self._lifecycle
+
+    def _resetProtocolState(self) -> None:
+        """Forget connection-derived protocol/identity state before reopening."""
+        self._profiles = build_profiles(self._scpi_power_unit)
+        self._profile = None
+        self._firmware_version = None
+        self._serial_number = None
+        self._model_number = None
+        self._last_failure = None
+
+    @staticmethod
+    def _knownSerial(serial_number):
+        if serial_number is None:
+            return None
+        value = str(serial_number).strip()
+        if not value or value.upper().startswith('MOCK-'):
+            return None
+        return value
+
+    def _installReconnectMockFallback(self, exc) -> str:
+        """Install a fresh safe mock after a failed real reconnect."""
+        self._close_connection()
+        self._resetProtocolState()
+        self._start_mock()
+        self._mock_fallback = True
+        self._detect_firmware()
+        self._init_safe_state()
+        self._enabled = False
+        details = (
+            f"{exc}. Mock fallback is active. Physical emission state could "
+            f"not be verified; check the laser/shutter before continuing."
+        )
+        self._setConnectionError(
+            details,
+            summary="Cobolt reconnect failed; mock fallback active",
+            mock_active=True,
+        )
+        return details
+
+    def _reconnectHardware(self):
+        """Reopen the serial backend, rediscover it, and force safe OFF.
+
+        The logical setpoint survives the transition, but emission state never
+        does. A previously known real serial number is checked before any
+        mutating initialization command is sent to the replacement connection.
+        """
+        with self._io_lock:
+            requested_setpoint = self._setpoint_mw
+            expected_serial = (
+                self._knownSerial(self._serial_number) if self._real_hw else None
+            )
+
+            # Best-effort darkening of the old connection. It may already be
+            # broken, so failure must not block the reopen attempt.
+            if self._real_hw:
+                try:
+                    self.setEnabled(False)
+                except Exception:
+                    self.__logger.warning(
+                        f'Could not confirm Cobolt {self._port} dark before '
+                        f'reconnect; proceeding with port replacement.'
+                    )
+
+            self._enabled = False
+            self._close_connection()
+            self._resetProtocolState()
+
+            try:
+                self._laser = self._Cobolt06(port=self._port)
+                self._real_hw = False
+                self._mock_fallback = False
+                # Identity/profile discovery is read-only. Do it before safe
+                # initialization so a different laser on the same COM port is
+                # rejected without sending it mutating commands.
+                self._detect_firmware()
+                actual_serial = self._knownSerial(self._serial_number)
+                if (expected_serial is not None and actual_serial is not None
+                        and actual_serial != expected_serial):
+                    raise DeviceInitializationError(
+                        f'Cobolt {self._port}: reconnect found serial '
+                        f'{actual_serial!r}, expected {expected_serial!r}. '
+                        f'Refusing to control a different laser.'
+                    )
+                self._init_safe_state()
+            except Exception as exc:
+                self.__logger.warning(
+                    f'Cobolt {self._port} reconnect failed: {exc}'
+                )
+                try:
+                    details = self._installReconnectMockFallback(exc)
+                except Exception as fallback_exc:
+                    self._enabled = False
+                    self._real_hw = False
+                    self._mock_fallback = True
+                    details = (
+                        f'{exc}. Mock fallback initialization also failed: '
+                        f'{fallback_exc}. Physical emission state could not be '
+                        f'verified.'
+                    )
+                    self._setConnectionError(
+                        details,
+                        summary="Cobolt reconnect and mock fallback failed",
+                        mock_active=True,
+                    )
+                self._setpoint_mw = requested_setpoint
+                return False, details
+
+            self._real_hw = True
+            self._mock_fallback = False
+            self._enabled = False
+            self._setpoint_mw = requested_setpoint
+            self._setConnected("Cobolt reconnected; emission forced OFF")
+            return True, None
+
+    @_synchronized_io
     def setEnabled(self, enabled: bool) -> None:
         """ImSwitch on/off toggle. Fail-closed: ``_enabled`` is only
         updated to True if every command in the on-sequence succeeded.
@@ -767,6 +974,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             self._enter_modulation_mode(self._modulation_power_mw)
         self._enabled = False
 
+    @_synchronized_io
     def setValue(self, power) -> None:
         """Update the constant-power setpoint.
 
@@ -810,6 +1018,7 @@ class Cobolt0601NewLaserManager(LaserManager):
         )
         self.setEnabled(False)
 
+    @_synchronized_io
     def setScanModeActive(self, active: bool) -> None:
         """Switch between continuous (off) and scan/digital-modulation (on).
 
@@ -863,9 +1072,11 @@ class Cobolt0601NewLaserManager(LaserManager):
             # Leave scan mode — back to the saved enable state.
             self.setEnabled(self._enabled)
 
+    @_synchronized_io
     def setModulationEnabled(self, enabled: bool) -> None:
         self._run('set_digital_modulation_enabled', enabled)
 
+    @_synchronized_io
     def setModulationPower(self, power) -> None:
         try:
             value = float(power)
@@ -873,6 +1084,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             return
         self._run('set_modulation_power_mw', value)
 
+    @_synchronized_io
     def getModulationPower(self):
         """Read back the modulation setpoint, falling back to the config value.
 
@@ -903,6 +1115,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             'scpiPowerUnit': 'W' if self._scpi_power_unit == 'w' else 'mW',
         }
 
+    @_synchronized_io
     def finalize(self) -> None:
         """Drive the laser to a safe-off state and release the port.
 

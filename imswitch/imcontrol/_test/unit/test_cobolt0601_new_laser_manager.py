@@ -20,11 +20,17 @@ Tests cover:
 """
 
 import logging
+import threading
 
 import pytest
 
 from imswitch.imcontrol.model.managers.lasers.Cobolt0601NewLaserManager import (
     Cobolt0601NewLaserManager,
+)
+from imswitch.imcontrol.model.devices.lifecycle import DeviceLifecycleAction
+from imswitch.imcontrol.model.devices.status import (
+    DeviceConnectionState,
+    DeviceRuntimeMode,
 )
 from imswitch.imcontrol.model.managers.lasers.cobolt0601_protocols import (
     build_profiles,
@@ -130,6 +136,8 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
     m._model_number = None
     m._last_failure = None
     m._simulation = False
+    m._mock_fallback = False
+    m._io_lock = threading.RLock()
     # Real manager uses name-mangled logger; tests don't need its output.
     import logging
     m._Cobolt0601NewLaserManager__logger = logging.getLogger(
@@ -1401,6 +1409,173 @@ def test_shipped_example_setup_declares_simulation():
     for laser in cobolts:
         assert laser['managerProperties'].get('simulation') is True
 
+
+# ---------------------------------------------------------------------------
+# Runtime lifecycle reconnect
+# ---------------------------------------------------------------------------
+
+
+class FakeCoboltFactory:
+    """Return pre-arranged connections for successive Cobolt opens."""
+
+    def __init__(self, *connections):
+        self._connections = list(connections)
+        self.ports = []
+
+    def __call__(self, *, port):
+        self.ports.append(port)
+        if not self._connections:
+            raise AssertionError('Unexpected extra Cobolt open')
+        connection = self._connections.pop(0)
+        if isinstance(connection, Exception):
+            raise connection
+        return connection
+
+
+def _manager_with_factory(monkeypatch, factory, *, name='488', **properties):
+    from imswitch.imcontrol.model.managers.lasers import PyCoboltManager
+
+    monkeypatch.setattr(PyCoboltManager, 'Cobolt06', factory)
+    return Cobolt0601NewLaserManager(
+        FakeLaserInfo(digitalPorts=['COM24'], **properties),
+        name,
+    )
+
+
+def test_lifecycle_reconnect_reopens_preserves_setpoint_and_forces_off(monkeypatch):
+    first = FakeLaser(firmware='legacy')
+    second = FakeLaser(firmware='legacy')
+    factory = FakeCoboltFactory(first, second)
+    m = _manager_with_factory(monkeypatch, factory)
+    m.setValue(42)
+    m.setEnabled(True)
+
+    result = m.getDeviceLifecycle().reconnect()
+
+    assert result.action is DeviceLifecycleAction.RECONNECT
+    assert result.hardware_id.category == 'laser'
+    assert result.hardware_id.key == 'laser:488'
+    assert result.success is True
+    assert result.deactivated_device_ids[0].name == '488'
+    assert first.disconnected is True
+    assert m._laser is second
+    assert m._setpoint_mw == 42
+    assert m._enabled is False
+    assert m._real_hw is True
+    assert m._mock_fallback is False
+    assert m.connectionState is DeviceConnectionState.CONNECTED
+    assert m.runtimeMode is DeviceRuntimeMode.REAL
+    assert second.cmds[-1] == 'l0'
+
+
+def test_lifecycle_promotes_startup_mock_fallback_to_real(monkeypatch):
+    factory = FakeCoboltFactory(OSError('port unavailable'))
+    m = _manager_with_factory(monkeypatch, factory, name='561')
+    assert m._mock_fallback is True
+    assert m.runtimeMode is DeviceRuntimeMode.MOCK
+
+    real = FakeLaser(firmware='legacy')
+    m._Cobolt06 = FakeCoboltFactory(real)
+    result = m.getDeviceLifecycle().reconnect()
+
+    assert result.success is True
+    assert m._laser is real
+    assert m._real_hw is True
+    assert m._mock_fallback is False
+    assert m.runtimeMode is DeviceRuntimeMode.REAL
+    assert real.cmds[-1] == 'l0'
+
+
+def test_intentional_simulation_does_not_advertise_reconnect():
+    m = Cobolt0601NewLaserManager(
+        FakeLaserInfo(digitalPorts=['COM_UNUSED'], simulation=True),
+        'simulated-lifecycle',
+    )
+
+    assert m.getDeviceLifecycle() is None
+
+
+def test_lifecycle_failed_reconnect_installs_safe_mock_and_reports_unknown_beam(monkeypatch):
+    first = FakeLaser(firmware='legacy')
+    m = _manager_with_factory(monkeypatch, FakeCoboltFactory(first))
+    m.setValue(33)
+    m._Cobolt06 = FakeCoboltFactory(OSError('port disappeared'))
+
+    result = m.getDeviceLifecycle().reconnect()
+
+    assert result.success is False
+    assert result.deactivated_device_ids[0].name == '488'
+    assert 'Physical emission state could not be verified' in result.details
+    assert m._setpoint_mw == 33
+    assert m._enabled is False
+    assert m._real_hw is False
+    assert m._mock_fallback is True
+    assert m.connectionState is DeviceConnectionState.ERROR
+    assert m.runtimeMode is DeviceRuntimeMode.MOCK
+    assert m._laser.cmds[-1] == 'l0'
+
+
+def test_lifecycle_pause_reconnect_never_sends_master_off(monkeypatch):
+    first = FakeLaser(firmware='scpi')
+    second = FakeLaser(firmware='scpi')
+    m = _manager_with_factory(
+        monkeypatch,
+        FakeCoboltFactory(first, second),
+        name='640',
+        emissionControl='pause',
+    )
+
+    result = m.getDeviceLifecycle().reconnect()
+
+    assert result.success is True
+    assert 'l0' not in first.cmds
+    assert 'l0' not in second.cmds
+    assert second.cmds[-1] == 'las:paus 1'
+
+
+def test_lifecycle_reconnect_rediscovers_protocol_profile(monkeypatch):
+    first = FakeLaser(firmware='legacy')
+    second = FakeLaser(firmware='scpi')
+    m = _manager_with_factory(monkeypatch, FakeCoboltFactory(first, second))
+    assert m._profile.profile_id == 'cobolt.legacy'
+
+    result = m.getDeviceLifecycle().reconnect()
+
+    assert result.success is True
+    assert m._profile.profile_id == 'cobolt.scpi-compatible'
+
+
+def test_lifecycle_rejects_different_known_serial_before_mutating_commands(monkeypatch):
+    first = FakeLaser(firmware='legacy')
+    first.serialnumber = 'SERIAL-A'
+    second = FakeLaser(firmware='legacy')
+    second.serialnumber = 'SERIAL-B'
+    m = _manager_with_factory(monkeypatch, FakeCoboltFactory(first, second))
+
+    result = m.getDeviceLifecycle().reconnect()
+
+    assert result.success is False
+    assert "expected 'SERIAL-A'" in result.details
+    assert second.disconnected is True
+    assert '@cobas 0' not in second.cmds
+    assert 'l0' not in second.cmds
+    assert m.runtimeMode is DeviceRuntimeMode.MOCK
+
+
+def test_runtime_protocol_failure_marks_real_connection_error():
+    laser = FakeLaser(
+        firmware='legacy',
+        raise_cmds={'p 0.050000': OSError('cable removed')},
+    )
+    m = _build_manager(laser)
+    m._scpi = False
+    m._enabled = True
+
+    m.setValue(50)
+
+    assert m.connectionState is DeviceConnectionState.ERROR
+    assert m.runtimeMode is DeviceRuntimeMode.REAL
+    assert m.connectionStatusSummary == 'Cobolt communication failed'
 
 def test_mock_cobolt06_send_cmd_scpi_mode_accepts_scpi():
     from imswitch.imcontrol.model.lantzdrivers_mock.cobolt.cobolt0601 import (
