@@ -11,6 +11,7 @@ from .lifecycle import (
     DeviceLifecycleAction,
     DeviceLifecycleBlockedError,
     DeviceLifecycleBusyError,
+    DeviceLifecycleError,
     DeviceLifecycleNotSupportedError,
     DeviceLifecycleResult,
 )
@@ -157,6 +158,37 @@ class DeviceLifecycleService:
                     )
                     break
         return reasons
+
+
+    def registerLifecycle(self, hardware_id, lifecycle) -> None:
+        """Attach a lifecycle owner created after initial manager discovery."""
+        handle = self.getHandle(hardware_id)
+        if getattr(lifecycle, "hardware_id", None) != hardware_id:
+            raise ValueError(
+                f"Lifecycle hardware id {getattr(lifecycle, 'hardware_id', None)!r} "
+                f"does not match {hardware_id!r}"
+            )
+        current = handle.lifecycle
+        if current is lifecycle:
+            return
+        if current is not None:
+            raise DeviceLifecycleError(
+                f"Physical device {hardware_id!r} already has a lifecycle owner"
+            )
+        self._handles[hardware_id] = replace(handle, lifecycle=lifecycle)
+        self._operationLocks.setdefault(hardware_id, threading.Lock())
+        self._reconnectBlockReasons = self._findReconnectBlockReasons(self._graph)
+
+    def unregisterLifecycle(self, hardware_id, lifecycle=None) -> None:
+        """Remove a previously late-registered lifecycle owner."""
+        handle = self.getHandle(hardware_id)
+        current = handle.lifecycle
+        if current is None:
+            return
+        if lifecycle is not None and current is not lifecycle:
+            return
+        self._handles[hardware_id] = replace(handle, lifecycle=None)
+        self._reconnectBlockReasons = self._findReconnectBlockReasons(self._graph)
 
     def getHandle(self, hardware_id) -> DeviceHandle:
         try:

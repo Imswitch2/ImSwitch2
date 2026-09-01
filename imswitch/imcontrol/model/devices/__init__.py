@@ -25,6 +25,7 @@ from .supervisor import (
     DeviceSupervisor, resolveDeviceDescriptor, resolveDeviceStatus,
 )
 from .lifecycle_service import DeviceLifecycleService
+from .slm_lifecycle import SLMSessionLifecycle
 
 __all__ = [
     "DeviceConnectionState",
@@ -63,4 +64,5 @@ __all__ = [
     "DeviceLifecycleProvider",
     "DeviceLifecycleResult",
     "DeviceLifecycleService",
+    "SLMSessionLifecycle",
 ]

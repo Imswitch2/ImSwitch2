@@ -22,6 +22,7 @@ from ..basecontrollers import (
 )
 from imswitch.imcommon.model import dirtools,initLogger, signaltools
 from imswitch.imcontrol.model import configfiletools,getWidgetStatePersistence
+from imswitch.imcontrol.model.devices import SLMSessionLifecycle
 
 
 class SLMsController(StatefulComponentMixin,ImConWidgetController):
@@ -41,6 +42,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
         self._slm_display_names: dict[str,str] = {}
         self._slm_infos: dict[str,Any] = {}
         self._slm_qt_sessions: dict[str,SLMQtSession] = {}
+        self._slm_lifecycles: dict[str,SLMSessionLifecycle] = {}
         self._interaction_settings = DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS
 
         self._initialize_storage()
@@ -309,7 +311,9 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             self._slm_qt_sessions[slm_key] = qt_session
             self._slm_qt_group.add_session(qt_session,key=slm_key)
             self._install_session_signals(slm_key,qt_session)
+            self._register_slm_lifecycle(slm_key,slm_manager,qt_session)
         except Exception:
+            self._unregister_slm_lifecycle(slm_key)
             self._slm_qt_group.remove_session(slm_key)
             self._widget.remove_slm(slm_key)
             self._slm_display_names.pop(slm_key,None)
@@ -340,6 +344,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
 
     def _dispose_slm_sessions(self) -> None:
         for slm_key,qt_session in tuple(self._slm_qt_sessions.items()):
+            self._unregister_slm_lifecycle(slm_key)
             try:
                 self._slm_qt_group.remove_session(slm_key)
             except Exception:
@@ -349,6 +354,35 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             except Exception:
                 self.__logger.error(traceback.format_exc())
         self._slm_qt_sessions.clear()
+        self._slm_lifecycles.clear()
+
+    def _register_slm_lifecycle(
+        self,slm_key: str,slm_manager: Any,qt_session: SLMQtSession,
+    ) -> None:
+        if not bool(getattr(slm_manager,"requires_device_connection",False)):
+            return
+        if bool(getattr(slm_manager,"mockermode",False)):
+            return
+        service = getattr(self._master,"deviceLifecycleService",None)
+        if service is None:
+            return
+        lifecycle = SLMSessionLifecycle(
+            slm_key=slm_key,session=qt_session.application_session,
+        )
+        service.registerLifecycle(lifecycle.hardware_id,lifecycle)
+        self._slm_lifecycles[slm_key] = lifecycle
+
+    def _unregister_slm_lifecycle(self,slm_key: str) -> None:
+        lifecycle = self._slm_lifecycles.pop(slm_key,None)
+        if lifecycle is None:
+            return
+        service = getattr(self._master,"deviceLifecycleService",None)
+        if service is None:
+            return
+        try:
+            service.unregisterLifecycle(lifecycle.hardware_id,lifecycle)
+        except KeyError:
+            pass
 
     def on_control_mode_requested(self,mode: Any) -> None:
         if not self._slm_qt_group.set_control_mode(mode):

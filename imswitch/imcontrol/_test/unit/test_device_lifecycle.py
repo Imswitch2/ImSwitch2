@@ -361,3 +361,22 @@ def test_failed_coolled_reconnect_keeps_mock_fallback_visible():
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
     assert manager.connectionState is DeviceConnectionState.ERROR
     assert "transport unavailable" in result.summary.lower()
+
+
+def test_lifecycle_service_supports_late_registration_and_unregister():
+    master = _master()
+    master.slmsManager = _Group({"slm1": _LifecycleManager(None, name="slm1")})
+    supervisor = DeviceSupervisor(master)
+    service = DeviceLifecycleService(master, supervisor)
+    hardware_id = HardwareDeviceId("slm", "slm:slm1")
+    lifecycle = _Lifecycle(hardware_id)
+
+    assert service.canReconnect(hardware_id) is False
+
+    service.registerLifecycle(hardware_id, lifecycle)
+    assert service.canReconnect(hardware_id) is True
+    assert service.getHandle(hardware_id).lifecycle is lifecycle
+
+    service.unregisterLifecycle(hardware_id, lifecycle)
+    assert service.canReconnect(hardware_id) is False
+    assert service.getHandle(hardware_id).lifecycle is None
