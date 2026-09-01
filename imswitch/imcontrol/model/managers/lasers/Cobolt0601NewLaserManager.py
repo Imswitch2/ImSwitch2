@@ -252,6 +252,19 @@ class Cobolt0601NewLaserManager(LaserManager):
         )
 
         self._laser = MockCobolt06(self._port)
+
+        # Keep protocol discovery/validation meaningful in mock mode. The
+        # shipped mock defaults to the legacy command family, but pause-based
+        # emission control requires the SCPI-compatible profile. Likewise, an
+        # explicitly requested SCPI profile must be represented by an SCPI
+        # mock rather than being rejected simply because real hardware was
+        # unavailable. Explicit legacy requests stay legacy so incompatible
+        # configurations (for example legacy + pause) still fail validation.
+        requested_profile = (self._protocol_profile or 'auto').lower()
+        if (requested_profile == SCPI_PROFILE_ID or
+                (requested_profile == 'auto' and self._pause_mode)):
+            self._laser.firmware = 'scpi'
+
         self._laser.initialize()
         self._real_hw = False
 
