@@ -362,6 +362,16 @@ class DetectorManager(DeviceManagerStatusMixin, SignalInterface):
         """Update cached model identity after an in-place backend replacement."""
         self.__model = model
 
+    def _setFullShape(self, fullShape: Tuple[int, ...]) -> None:
+        """Update cached sensor geometry after an in-place backend replacement.
+
+        Lifecycle implementations may replace a mock backend with real hardware
+        whose authoritative sensor dimensions differ from the startup fallback.
+        Ordinary detector code should continue treating ``fullShape`` as
+        read-only.
+        """
+        self.__fullShape = tuple(fullShape)
+
     @property
     def binning(self) -> int:
         """ Current binning. """
