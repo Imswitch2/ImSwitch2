@@ -18,6 +18,13 @@ from .orientation import (
     orient_localization,
     orientation_permutation,
 )
+from .reference import (
+    PositionReference,
+    PositionReferenceMode,
+    center_weighted_reference_positions,
+    localization_positions_full_px,
+    reference_positions_for_localization,
+)
 from .parameters import (
     INTENSITY_ANALYSIS_PARAMS,
     INTENSITY_FEEDBACK_PARAMS,
@@ -39,7 +46,12 @@ __all__ = [
     "POSITION_CORRECTION_PARAMS",
     "PositionAnalysis",
     "PositionCorrection",
+    "PositionReference",
+    "PositionReferenceMode",
     "RoundEvaluation",
+    "center_weighted_reference_positions",
+    "localization_positions_full_px",
     "orient_localization",
     "orientation_permutation",
+    "reference_positions_for_localization",
 ]

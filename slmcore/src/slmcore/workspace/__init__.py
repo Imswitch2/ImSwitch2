@@ -7,6 +7,7 @@ from .config_store import (
     SLMConfigStore,
 )
 from .correction_store import SLMCorrectionStore
+from .position_reference_store import SLMPositionReferenceStore
 from .workspace import SLMWorkspace
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "SLMConfigMetadata",
     "SLMConfigStore",
     "SLMCorrectionStore",
+    "SLMPositionReferenceStore",
     "SLMWorkspace",
 ]

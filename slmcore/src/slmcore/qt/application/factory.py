@@ -110,6 +110,9 @@ class SLMQtSessionFactory:
         calibration_store = (
             None if workspace is None else workspace.calibration_store
         )
+        position_reference_store = (
+            None if workspace is None else workspace.position_reference_store
+        )
         runtime_factory = SLMRuntimeFactory(
             definition=definition,
             registries=self.registries,
@@ -167,6 +170,7 @@ class SLMQtSessionFactory:
                 configuration_service=configuration_service,
                 current_config_path=startup.config_path,
                 calibration_store=calibration_store,
+                position_reference_store=position_reference_store,
                 startup_preferences=preference_state,
                 display_name=display_name,
                 apply_startup_calibration_defaults=False,

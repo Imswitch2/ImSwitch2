@@ -17,6 +17,7 @@ def analyze_position(
     measurement: FeedbackMeasurement,
     *,
     ideal_positions_kxy: np.ndarray,
+    reference_positions_px: np.ndarray | None=None,
     calibration: Any=None,
     parameters: Mapping[str,Any],
 ) -> PositionAnalysis:
@@ -39,8 +40,12 @@ def analyze_position(
         "Position correction",
     )
 
-    expected = np.asarray(
+    registered = np.asarray(
         localization.expected_positions_px,
+        dtype=np.float64,
+    )
+    reference = np.asarray(
+        registered if reference_positions_px is None else reference_positions_px,
         dtype=np.float64,
     )
     measured = np.asarray(
@@ -52,24 +57,32 @@ def analyze_position(
         dtype=np.float64,
     )
 
-    if ideal.shape != expected.shape:
+    if ideal.shape != registered.shape:
         raise ValueError(
             "Localized spot count does not match target ideal positions"
         )
+    if reference.shape != registered.shape:
+        raise ValueError(
+            "Position-reference spot count does not match localization"
+        )
 
-    # Local residual around the globally registered lattice.
-    error_px = expected - measured
+    # The selected reference defines only where detector-space spots should
+    # land. Passing no explicit reference preserves the historical globally
+    # registered lattice.
+    error_px = reference - measured
 
-    # Fit the detector-pixel -> target-kxy mapping directly from the
-    # registered expected lattice and the corresponding ideal target
-    # positions:
+    # The detector-pixel -> target-kxy mapping must remain tied to the CURRENT
+    # target registration, not to the selected position reference.  A saved
+    # reference is allowed to have a different detector-space span; using it
+    # here would incorrectly rescale the pixel displacement before applying it
+    # to the current target.
     #
-    #     ideal_kxy = linear_px_to_kxy @ expected_px + translation
+    #     ideal_kxy = linear_px_to_kxy @ registered_px + translation
     #
-    # For displacement vectors the translation cancels, so only the
-    # linear part is needed.
+    # For displacement vectors the translation cancels, so only the linear
+    # part is needed.
     linear_px_to_kxy, _translation = _fit_affine(
-        expected,
+        registered,
         ideal,
     )
 

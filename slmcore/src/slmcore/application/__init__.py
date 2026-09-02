@@ -9,7 +9,8 @@ from .configuration import (
 from .control_mode import SLMControlMode
 from .feedback import (
     AutomaticFeedbackRunner,AutomaticFeedbackState,FeedbackParameterUpdateResult,
-    MeasurementDispatcher,MeasurementRequest,SLMFeedbackCallbacks,SLMFeedbackService,
+    MeasurementDispatcher,MeasurementRequest,PositionReferenceContext,
+    PositionReferenceSelection,SLMFeedbackCallbacks,SLMFeedbackService,
 )
 from .runtime_factory import SLMRuntimeFactory
 from .section_layout import PreparedSectionLayoutChange,SLMSectionLayoutService
@@ -30,6 +31,8 @@ __all__ = [
     "PreparedConfigLoad",
     "PreparedPlaneSelection",
     "PreparedSectionLayoutChange",
+    "PositionReferenceContext",
+    "PositionReferenceSelection",
     "SLMCalibrationCallbacks",
     "SLMCalibrationService",
     "SLMConfigurationService",
