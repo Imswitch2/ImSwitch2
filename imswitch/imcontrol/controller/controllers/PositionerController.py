@@ -114,9 +114,11 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         self.setJoystickCheckStatus(enabled)
 
     def _isPositionerShownInWidget(self, pManager):
+        # Visibility is configuration-driven. A configured positioner stays in
+        # the UI even when its hardware is currently unavailable/mock so it can
+        # become usable after a runtime reconnect without rebuilding the widget.
         return bool(
             pManager.forPositioning
-            and getattr(pManager, 'isAvailable', True)
             and not getattr(pManager, 'hide', False)
         )
 
