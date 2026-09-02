@@ -72,6 +72,7 @@ class FocusLockController(ImConWidgetController):
         self._shutdownComplete = False
         self._focusLeaseLock = threading.Lock()
         self._focusCalibrationActive = False
+        self._focusCameraStopPending = False
 
         # Scan arbitration. Depth-counted rather than a boolean: workflows may
         # publish sigScanStarting/sigScanEnded themselves, so a duplicate start
@@ -117,6 +118,9 @@ class FocusLockController(ImConWidgetController):
 
         self._widget.lockButton.clicked.connect(self.toggleFocus)
         self._widget.camDialogButton.clicked.connect(self.cameraDialog)
+        self._widget.cameraAcqButton.toggled.connect(
+            self.toggleFocusCameraAcquisition
+        )
         self._widget.focusCalibButton.clicked.connect(self.focusCalibrationStart)
         self._widget.calibCurveButton.clicked.connect(self.showCalibrationCurve)
 
@@ -153,11 +157,6 @@ class FocusLockController(ImConWidgetController):
         self.setPointData = np.zeros(self.buffer)
         self.timeData = np.zeros(self.buffer)
 
-        # FOCUS lease instead of reaching past the DetectorsManager to the
-        # sub-manager: the camera is now refcounted, so an unrelated global
-        # stop can no longer disarm it underneath the focus lock. FOCUS leases
-        # are excluded from the user-visible acquisition signals.
-        self.__processDataThread = ProcessDataThread(self)
         self.__focusCalibThread = FocusCalibThread(self)
         self.__focusCalibThread.sigCalibrationFinished.connect(
             self._onFocusCalibrationFinished
@@ -166,17 +165,14 @@ class FocusLockController(ImConWidgetController):
             self._onFocusCalibrationThreadFinished
         )
 
-        self._focusAcqHandle = self._master.detectorsManager.acquire(
-            [self.camera], LeasePurpose.FOCUS
-        )
-
-        # Start the frame/estimate worker before the timer that consumes it.
-        self.__processDataThread.start()
-
         self.timer = Timer()
         self.timer.timeout.connect(self.update)
-        self.timer.start(int(self.focusTime))
         self.startTime = perf_counter()
+
+        # Preserve the historical startup behaviour: the focus camera starts
+        # acquiring immediately. It is now an explicit runtime resource that
+        # can be released from the Focus Lock widget when not needed.
+        self._startFocusCameraAcquisition()
 
     def __del__(self):
         try:
@@ -344,6 +340,207 @@ class FocusLockController(ImConWidgetController):
                     )
             finally:
                 self._focusAcqHandle = None
+
+    # ------------------------------------------------------------------
+    # Focus-camera acquisition ownership
+    # ------------------------------------------------------------------
+
+    def focusCameraAcquisitionActive(self) -> bool:
+        """Return whether the focus camera is available to Focus Lock."""
+        return (
+            self.__dict__.get('_focusAcqHandle') is not None
+            and not self.__dict__.get('_focusCameraStopPending', False)
+        )
+
+    def _syncFocusCameraUi(self, active: bool, *, toggleEnabled=None):
+        """Keep camera-acquisition and dependent controls consistent."""
+        widget = self.__dict__.get('_widget')
+        if widget is None:
+            return
+        try:
+            widget.setFocusCameraActive(active)
+        except AttributeError:
+            button = getattr(widget, 'cameraAcqButton', None)
+            if button is not None:
+                try:
+                    button.setChecked(bool(active))
+                except Exception:
+                    pass
+        except Exception:
+            self._logger.error(
+                'Failed to update focus-camera acquisition button',
+                exc_info=True,
+            )
+
+        if toggleEnabled is None:
+            toggleEnabled = not self.__dict__.get(
+                '_focusCalibrationActive', False
+            ) and not self.__dict__.get('_focusCameraStopPending', False)
+        cameraButton = getattr(widget, 'cameraAcqButton', None)
+        if cameraButton is not None:
+            try:
+                cameraButton.setEnabled(bool(toggleEnabled))
+            except Exception:
+                pass
+
+        calibrationActive = self.__dict__.get(
+            '_focusCalibrationActive', False
+        )
+        lockButton = getattr(widget, 'lockButton', None)
+        if lockButton is not None:
+            try:
+                lockButton.setEnabled(bool(active))
+            except Exception:
+                pass
+        calibButton = getattr(widget, 'focusCalibButton', None)
+        if calibButton is not None:
+            try:
+                calibButton.setEnabled(bool(active) and not calibrationActive)
+            except Exception:
+                pass
+
+    def _startFocusCameraAcquisition(self) -> bool:
+        """Acquire the FOCUS lease and start a fresh camera worker.
+
+        ``ProcessDataThread`` is intentionally recreated after every stop. A
+        fresh worker has no stale result or stop event from the previous camera
+        session and mirrors the replaceable-backend semantics used by camera
+        reconnect.
+        """
+        if self.__dict__.get('_shutdownComplete', False):
+            return False
+        if self.__dict__.get('_focusCalibrationActive', False):
+            self._logger.warning(
+                'Focus-camera acquisition cannot be changed while focus '
+                'calibration is running.'
+            )
+            self._syncFocusCameraUi(True, toggleEnabled=False)
+            return False
+        if self.__dict__.get('_focusCameraStopPending', False):
+            self._logger.warning(
+                'Focus-camera acquisition is still stopping; wait for the '
+                'camera worker to finish.'
+            )
+            self._syncFocusCameraUi(False, toggleEnabled=False)
+            return False
+        if self._focusAcqHandle is not None:
+            self._syncFocusCameraUi(True)
+            return True
+
+        try:
+            self._focusAcqHandle = self._master.detectorsManager.acquire(
+                [self.camera], LeasePurpose.FOCUS
+            )
+            processThread = ProcessDataThread(self)
+            self.__processDataThread = processThread
+            processThread.start()
+            self.timer.start(int(self.focusTime))
+        except Exception:
+            self._logger.error(
+                f'Failed to start focus-camera acquisition for {self.camera}',
+                exc_info=True,
+            )
+            thread = self.__dict__.get(
+                '_FocusLockController__processDataThread'
+            )
+            if thread is not None:
+                try:
+                    thread.stop()
+                    thread.quit()
+                except Exception:
+                    pass
+            self.__processDataThread = None
+            self._releaseFocusLease()
+            self._syncFocusCameraUi(False)
+            return False
+
+        self._syncFocusCameraUi(True)
+        return True
+
+    def _finishFocusCameraStop(self):
+        """Release ownership once the frame worker can no longer touch it."""
+        processThread = self.__dict__.get(
+            '_FocusLockController__processDataThread'
+        )
+        if self._threadIsRunning(processThread):
+            return
+        self.__processDataThread = None
+        self._releaseFocusLease()
+        self._focusCameraStopPending = False
+        if not self.__dict__.get('_shutdownComplete', False):
+            self._syncFocusCameraUi(False)
+
+    def _stopFocusCameraAcquisition(self) -> bool:
+        """Stop the camera worker before releasing its FOCUS lease.
+
+        If an SDK read outlives the bounded wait, the lease is deliberately
+        retained and the acquisition button stays disabled until the worker's
+        ``finished`` signal arrives. That keeps detector reconnect blocked
+        while an old backend may still be in use.
+        """
+        if self.__dict__.get('_focusCalibrationActive', False):
+            self._logger.warning(
+                'Focus-camera acquisition cannot be stopped while focus '
+                'calibration is running.'
+            )
+            self._syncFocusCameraUi(True, toggleEnabled=False)
+            return False
+
+        # Turning the camera off is explicit abandonment of any current or
+        # scan-suspended lock intent. A later scan end must not silently relock
+        # against a camera the user deliberately stopped.
+        self.unlockFocus()
+        self._publishFocusLockState()
+
+        timer = self.__dict__.get('timer')
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+
+        processThread = self.__dict__.get(
+            '_FocusLockController__processDataThread'
+        )
+        if processThread is None:
+            self._releaseFocusLease()
+            self._focusCameraStopPending = False
+            self._syncFocusCameraUi(False)
+            return True
+
+        self._focusCameraStopPending = True
+        self._syncFocusCameraUi(False, toggleEnabled=False)
+        try:
+            processThread.stop()
+            processThread.quit()
+            if self._waitForThread(processThread):
+                self._finishFocusCameraStop()
+                return True
+
+            processThread.finished.connect(self._finishFocusCameraStop)
+            if not self._threadIsRunning(processThread):
+                self._finishFocusCameraStop()
+            else:
+                self._logger.warning(
+                    'Focus-camera worker is still stopping; retaining its '
+                    'detector lease until the active camera call returns.'
+                )
+            return False
+        except Exception:
+            self._logger.error(
+                'Failed while stopping focus-camera acquisition',
+                exc_info=True,
+            )
+            if not self._threadIsRunning(processThread):
+                self._finishFocusCameraStop()
+            return False
+
+    def toggleFocusCameraAcquisition(self, active):
+        """Handle the Focus Lock camera acquisition toggle button."""
+        if active:
+            self._startFocusCameraAcquisition()
+        else:
+            self._stopFocusCameraAcquisition()
 
     # ------------------------------------------------------------------
     # Scan arbitration
@@ -638,13 +835,22 @@ class FocusLockController(ImConWidgetController):
         return STATE_UNLOCKED
 
     def waitForFocusReacquired(self, timeoutS: float = 10.0) -> bool:
-        """Block until the lock is re-engaged, or reacquisition gives up.
+        """Block for a requested re-lock; succeed immediately if none exists.
 
         For orchestrators -- a tiling run that must not start the next tile
-        against an unfocused sample. Returns whether the lock is actually
-        holding. Never call this from the GUI thread: the barrier is advanced
-        by ``update``, which runs there.
+        while a previously active lock is still reacquiring. An intentionally
+        unlocked (or camera-off) Focus Lock has nothing to reacquire and must
+        not hold the workflow barrier. Never call this from the GUI thread:
+        the barrier is advanced by ``update``, which runs there.
         """
+        lockWanted = bool(
+            self.locked
+            or self.aboutToLock
+            or self.__dict__.get('_suspendedLock', False)
+            or self.__dict__.get('_reacquireFailed', False)
+        )
+        if not lockWanted:
+            return True
         done = self.__dict__.get('_reacquireDone')
         if done is not None:
             done.wait(timeoutS)
@@ -698,6 +904,10 @@ class FocusLockController(ImConWidgetController):
         self._endReacquire()
 
     def toggleFocus(self):
+        if not self.focusCameraAcquisitionActive():
+            self._setLockButton(checked=False)
+            self._publishFocusLockState()
+            return
         # Abandon any barrier in flight, and release anything waiting on it,
         # before acting on the new intent.
         self._endReacquire(notify=False)
@@ -730,6 +940,11 @@ class FocusLockController(ImConWidgetController):
 
     def focusCalibrationStart(self):
         if self.__dict__.get('_shutdownComplete', False):
+            return
+        if not self.focusCameraAcquisitionActive():
+            self._logger.warning(
+                'Focus calibration requires focus-camera acquisition.'
+            )
             return
         if self.__dict__.get('_scanSuspendDepth', 0) > 0:
             # Calibration sweeps the focus axis with ~20 absolute moves. Doing
@@ -765,18 +980,14 @@ class FocusLockController(ImConWidgetController):
             return
         self.__focusCalibThread.configure(fromVal, toVal)
         self._focusCalibrationActive = True
-        try:
-            self._widget.focusCalibButton.setEnabled(False)
-        except Exception:
-            pass
+        # Calibration depends on the live focus signal. Keep acquisition ON and
+        # make the acquisition toggle unavailable until the sweep has finished.
+        self._syncFocusCameraUi(True, toggleEnabled=False)
         try:
             self.__focusCalibThread.start()
         except Exception:
             self._focusCalibrationActive = False
-            try:
-                self._widget.focusCalibButton.setEnabled(True)
-            except Exception:
-                pass
+            self._syncFocusCameraUi(self.focusCameraAcquisitionActive())
             raise
 
     def _onFocusCalibrationFinished(self, cal_nm):
@@ -789,10 +1000,7 @@ class FocusLockController(ImConWidgetController):
         self._focusCalibrationActive = False
         if self.__dict__.get('_shutdownComplete', False):
             return
-        try:
-            self._widget.focusCalibButton.setEnabled(True)
-        except Exception:
-            pass
+        self._syncFocusCameraUi(self.focusCameraAcquisitionActive())
 
     def showCalibrationCurve(self):
         self._widget.showCalibrationCurve(self.__focusCalibThread.getData())
@@ -814,7 +1022,12 @@ class FocusLockController(ImConWidgetController):
         if self.__dict__.get('_shutdownComplete', False):
             return
 
-        result = self.__processDataThread.takeResult()
+        processThread = self.__dict__.get(
+            '_FocusLockController__processDataThread'
+        )
+        if processThread is None:
+            return
+        result = processThread.takeResult()
         if result is None:
             # No estimate has completed since the last tick — either the camera
             # has not produced a frame yet, or the worker is still busy. Skip
