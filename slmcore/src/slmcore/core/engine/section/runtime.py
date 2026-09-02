@@ -728,7 +728,8 @@ class SLMSectionRuntime:
         return True
 
     def apply_position_correction(
-            self, *, reset_intensity: bool=False,orientation="identity"
+            self, *, reset_intensity: bool=False,orientation="identity",
+            reference_positions_px=None,reference_metadata=None,
         ) -> bool:
         """Calculate/replace the one-shot position correction from ideal positions."""
         candidate = self._cgh_session.clone()
@@ -737,9 +738,22 @@ class SLMSectionRuntime:
             self._build_context(self.state),
             reset_intensity=reset_intensity,
             orientation=orientation,
+            reference_positions_px=reference_positions_px,
+            reference_metadata=reference_metadata,
         )
         self._commit_feedback_session(candidate,effective_changed)
         return effective_changed
+
+    def compute_feedback_position_analysis(
+        self,*,orientation="identity",reference_positions_px=None,
+    ):
+        """Calculate a position-correction preview without mutating section state."""
+        candidate = self._cgh_session.clone()
+        return candidate.compute_feedback_position_analysis(
+            self.state.cgh,self._build_context(self.state),
+            orientation=orientation,
+            reference_positions_px=reference_positions_px,
+        )
 
     def set_position_correction_active(
         self,active: bool,*,reset_intensity: bool=False,

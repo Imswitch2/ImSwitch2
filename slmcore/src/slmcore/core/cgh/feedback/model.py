@@ -168,6 +168,7 @@ class PositionCorrection:
     displacement_kxy: np.ndarray
     corrected_positions_kxy: np.ndarray
     calibration: Mapping[str,Any]
+    reference: Mapping[str,Any] = field(default_factory=dict)
     created_at: str = ""
 
     def __post_init__(self) -> None:
@@ -193,6 +194,7 @@ class PositionCorrection:
         object.__setattr__(self,"displacement_kxy",displacement)
         object.__setattr__(self,"corrected_positions_kxy",corrected)
         object.__setattr__(self,"calibration",_freeze_mapping(self.calibration))
+        object.__setattr__(self,"reference",_freeze_mapping(self.reference))
         object.__setattr__(self,"created_at",_timestamp(self.created_at))
 
     def to_dict(self) -> Mapping[str,Any]:
@@ -204,6 +206,7 @@ class PositionCorrection:
             "displacement_kxy":self.displacement_kxy.tolist(),
             "corrected_positions_kxy":self.corrected_positions_kxy.tolist(),
             "calibration":deepcopy(dict(self.calibration)),
+            "reference":deepcopy(dict(self.reference)),
             "position_parameters":deepcopy(dict(self.analysis.parameters)),
             "localization_parameters":deepcopy(
                 dict(self.measurement.localization.parameters)

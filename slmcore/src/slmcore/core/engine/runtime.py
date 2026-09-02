@@ -531,10 +531,22 @@ class SLMRuntime:
         *,
         reset_intensity: bool=False,
         orientation="identity",
+        reference_positions_px=None,
+        reference_metadata=None,
     ) -> SectionStateTransition | None:
         return self._apply_feedback_resolution_operation(
             key,"apply_position_correction",
             reset_intensity=reset_intensity,orientation=orientation,
+            reference_positions_px=reference_positions_px,
+            reference_metadata=reference_metadata,
+        )
+
+    def compute_section_feedback_position_analysis(
+        self,key: str,*,orientation="identity",reference_positions_px=None,
+    ):
+        return self._get_section(key).compute_feedback_position_analysis(
+            orientation=orientation,
+            reference_positions_px=reference_positions_px,
         )
 
     def set_section_position_correction_active(

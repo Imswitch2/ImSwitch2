@@ -79,6 +79,7 @@ class FeedbackCoordinator(QtCore.QObject):
                     lambda _obj=None,key=section_key:
                         self._windows.pop(key,None)
                 )
+                self._synchronize_position_reference(section_key,window)
             else:
                 window.configure_detectors(sources,current)
                 self.synchronize_section(section_key)
@@ -115,6 +116,7 @@ class FeedbackCoordinator(QtCore.QObject):
             self.service.feedback_orientation(section_key),
             self._feedback_orientation_ui_context(section_key),
         )
+        self._synchronize_position_reference(section_key,window)
         self._configure_automatic_availability(window)
         self._apply_automatic_state_to_window(section_key,window)
 
@@ -143,6 +145,33 @@ class FeedbackCoordinator(QtCore.QObject):
             "change_enabled":context.change_allowed,
             "change_reason":context.change_unavailable_reason,
         }
+
+    def _position_reference_ui_context(
+        self,section_key: str,
+    ) -> dict[str,Any]:
+        context = self.service.position_reference_context(section_key)
+        selection = context.selection
+        return {
+            "mode":selection.mode.value,
+            "center_emphasis":selection.center_emphasis,
+            "saved_name":selection.saved_name,
+            "saved_names":context.saved_names,
+            "plane_name":context.plane_name,
+            "compatible":context.compatible,
+            "compatibility_error":context.compatibility_error,
+            "change_allowed":context.change_allowed,
+            "change_unavailable_reason":context.change_unavailable_reason,
+            "save_allowed":context.save_allowed,
+            "save_unavailable_reason":context.save_unavailable_reason,
+        }
+
+    def _synchronize_position_reference(
+        self,section_key: str,window: CGHSessionWindow,
+    ) -> None:
+        window.set_position_reference_state(
+            self._position_reference_ui_context(section_key),
+            self.service.position_reference_preview(section_key),
+        )
 
     def request_measurement(
         self,
@@ -585,6 +614,21 @@ class FeedbackCoordinator(QtCore.QObject):
             self.reset_intensity_feedback(section_key)
         elif request is MeasurementsAction.POSITION_APPLY:
             self.apply_position_correction(section_key)
+        elif request is MeasurementsAction.POSITION_REFERENCE_SET:
+            self.set_position_reference(
+                section_key,
+                mode=str(values.get("mode") or "global_fit"),
+                center_emphasis=float(values.get("center_emphasis",50.0)),
+                saved_name=values.get("saved_name"),
+            )
+        elif request is MeasurementsAction.POSITION_REFERENCE_SAVE:
+            self.save_position_reference(
+                section_key,str(values.get("name") or "").strip(),
+            )
+        elif request is MeasurementsAction.POSITION_REFERENCE_DELETE:
+            self.delete_position_reference(
+                section_key,str(values.get("name") or "").strip(),
+            )
         elif request is MeasurementsAction.POSITION_SET_ACTIVE:
             self.set_position_active(
                 section_key,bool(values.get("active",False)),
@@ -625,6 +669,70 @@ class FeedbackCoordinator(QtCore.QObject):
                 )
             except Exception as error:
                 self._error("Automatic feedback failed",error)
+
+    def set_position_reference(
+        self,
+        section_key: str,
+        *,
+        mode: str,
+        center_emphasis: float,
+        saved_name: str | None,
+    ) -> None:
+        try:
+            self.controller.flush_section(section_key,propagate=True)
+            self.service.set_position_reference(
+                section_key,
+                mode=mode,
+                center_emphasis=center_emphasis,
+                saved_name=saved_name,
+            )
+        except Exception as error:
+            self._error("Changing position reference failed",error)
+            self.controller.synchronize_section(section_key)
+
+    def save_position_reference(self,section_key: str,name: str) -> None:
+        if not name:
+            return
+        try:
+            self.service.save_position_reference(section_key,name)
+        except FileExistsError:
+            parent = self._windows.get(section_key)
+            answer = QtWidgets.QMessageBox.question(
+                parent,
+                "Replace position reference",
+                'Position reference "%s" already exists for this plane. Replace it?'
+                % name,
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+            try:
+                self.service.save_position_reference(
+                    section_key,name,overwrite=True,
+                )
+            except Exception as error:
+                self._error("Saving position reference failed",error)
+        except Exception as error:
+            self._error("Saving position reference failed",error)
+
+    def delete_position_reference(self,section_key: str,name: str) -> None:
+        if not name:
+            return
+        parent = self._windows.get(section_key)
+        answer = QtWidgets.QMessageBox.question(
+            parent,
+            "Delete position reference",
+            'Delete saved position reference "%s"?' % name,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            self.service.delete_position_reference(section_key,name)
+        except Exception as error:
+            self._error("Deleting position reference failed",error)
 
     def _configure_automatic_availability(self,window: CGHSessionWindow) -> None:
         window.set_automatic_feedback_available(

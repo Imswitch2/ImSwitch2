@@ -51,6 +51,9 @@ class MeasurementsAction(str,Enum):
     INTENSITY_APPLY = "intensity_apply"
     INTENSITY_RESET = "intensity_reset"
     POSITION_APPLY = "position_apply"
+    POSITION_REFERENCE_SET = "position_reference_set"
+    POSITION_REFERENCE_SAVE = "position_reference_save"
+    POSITION_REFERENCE_DELETE = "position_reference_delete"
     POSITION_SET_ACTIVE = "position_set_active"
     POSITION_CLEAR = "position_clear"
     COMPUTE_ADAPTED = "compute_adapted_hologram"
@@ -106,6 +109,20 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._feedback_orientation_saved = FeedbackOrientation.IDENTITY
         self._feedback_orientation_change_enabled = True
         self._feedback_orientation_change_reason = ""
+        self._position_reference_context: dict[str,Any] = {
+            "mode":"global_fit",
+            "center_emphasis":50.0,
+            "saved_name":None,
+            "saved_names":(),
+            "plane_name":None,
+            "compatible":True,
+            "compatibility_error":"",
+            "change_allowed":True,
+            "change_unavailable_reason":"",
+            "save_allowed":False,
+            "save_unavailable_reason":"",
+        }
+        self._position_reference_preview = None
         self._set_feedback_orientation_context_state(feedback_orientation_context)
         self._cgh_computing = False
         self._candidate_current = False
@@ -306,6 +323,17 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         self.measurement_view.sigAcceptRequested.connect(
             self._accept_localization_candidate,
+        )
+        self.position_reference_save_button = QtWidgets.QPushButton(
+            "Save Reference…"
+        )
+        self.position_reference_save_button.setMinimumHeight(23)
+        self.position_reference_save_button.setMinimumWidth(140)
+        self.position_reference_save_button.clicked.connect(
+            self._save_position_reference_requested,
+        )
+        self.measurement_view.add_action_widget(
+            self.position_reference_save_button
         )
 
         layout.addWidget(self.measurement_view,1)
@@ -545,6 +573,57 @@ class CGHSessionWindow(QtWidgets.QDialog):
         controls_layout.addWidget(self.position_status_label)
         controls_layout.addSpacing(3)
 
+        reference_label = QtWidgets.QLabel("Reference")
+        reference_font = reference_label.font()
+        reference_font.setBold(True)
+        reference_label.setFont(reference_font)
+        controls_layout.addWidget(reference_label)
+
+        self.position_reference_combo = QtWidgets.QComboBox()
+        self.position_reference_combo.currentIndexChanged.connect(
+            self._on_position_reference_changed,
+        )
+        controls_layout.addWidget(self.position_reference_combo)
+
+        self.position_reference_emphasis_widget = QtWidgets.QWidget(controls)
+        emphasis_layout = QtWidgets.QHBoxLayout(
+            self.position_reference_emphasis_widget
+        )
+        emphasis_layout.setContentsMargins(0,0,0,0)
+        emphasis_layout.setSpacing(5)
+        emphasis_layout.addWidget(QtWidgets.QLabel("Center emphasis"))
+        self.position_reference_emphasis = QtWidgets.QSpinBox()
+        self.position_reference_emphasis.setRange(0,100)
+        self.position_reference_emphasis.setSingleStep(5)
+        self.position_reference_emphasis.setSuffix("%")
+        self.position_reference_emphasis.setValue(50)
+        self.position_reference_emphasis.setToolTip(
+            "Higher values make central localized spots contribute more strongly "
+            "to the affine reference lattice. Localization itself is unchanged."
+        )
+        self.position_reference_emphasis.valueChanged.connect(
+            self._on_position_reference_emphasis_changed,
+        )
+        emphasis_layout.addWidget(self.position_reference_emphasis)
+        controls_layout.addWidget(self.position_reference_emphasis_widget)
+
+        self.position_reference_info_label = QtWidgets.QLabel()
+        self.position_reference_info_label.setWordWrap(True)
+        self.position_reference_info_label.setStyleSheet(
+            "color: %s;" % _MUTED_COLOR
+        )
+        controls_layout.addWidget(self.position_reference_info_label)
+
+        self.position_reference_delete_button = QtWidgets.QPushButton(
+            "Delete reference"
+        )
+        self.position_reference_delete_button.setFixedHeight(24)
+        self.position_reference_delete_button.clicked.connect(
+            self._delete_position_reference_requested,
+        )
+        controls_layout.addWidget(self.position_reference_delete_button)
+        controls_layout.addSpacing(5)
+
         self.position_apply_button = QtWidgets.QPushButton(
             "Apply adaptation"
         )
@@ -580,6 +659,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         controls_layout.addStretch(1)
         layout.addWidget(controls,0)
+        self._refresh_position_reference_controls()
         return tab
 
     def _make_compute_adapted_button(self) -> QtWidgets.QPushButton:
@@ -725,6 +805,154 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "orientation":self._feedback_orientation.value,
         })
 
+    def set_position_reference_state(
+        self,context: Mapping[str,Any] | None,preview: Any=None,
+    ) -> None:
+        values = dict(context or {})
+        self._position_reference_context.update(values)
+        self._position_reference_preview = preview
+        self._refresh_position_reference_controls()
+        self._refresh_feedback_visualizations()
+        self._refresh_status_controls()
+
+    def _refresh_position_reference_controls(self) -> None:
+        combo = getattr(self,"position_reference_combo",None)
+        if combo is None:
+            return
+        context = dict(self._position_reference_context or {})
+        mode = str(context.get("mode") or "global_fit")
+        saved_name = context.get("saved_name")
+        saved_names = tuple(context.get("saved_names") or ())
+        emphasis = int(round(float(context.get("center_emphasis",50.0))))
+
+        token = (
+            "saved:%s" % saved_name
+            if mode == "saved" and saved_name else mode
+        )
+        blocker = QtCore.QSignalBlocker(combo)
+        try:
+            combo.clear()
+            combo.addItem("Global fit","global_fit")
+            combo.addItem("Center weighted","center_weighted")
+            for name in saved_names:
+                combo.addItem("Saved: %s" % name,"saved:%s" % name)
+            index = combo.findData(token)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            del blocker
+
+        emphasis_widget = getattr(
+            self,"position_reference_emphasis_widget",None
+        )
+        emphasis_editor = getattr(self,"position_reference_emphasis",None)
+        if emphasis_editor is not None:
+            blocker = QtCore.QSignalBlocker(emphasis_editor)
+            try:
+                emphasis_editor.setValue(emphasis)
+            finally:
+                del blocker
+        if emphasis_widget is not None:
+            emphasis_widget.setVisible(mode == "center_weighted")
+
+        change_allowed = bool(
+            context.get("change_allowed",True)
+            and not self._cgh_computing
+            and self._selected_is_current_context()
+        )
+        reason = str(context.get("change_unavailable_reason") or "")
+        combo.setEnabled(change_allowed)
+        combo.setToolTip(reason)
+        if emphasis_editor is not None:
+            emphasis_editor.setEnabled(change_allowed)
+            emphasis_editor.setToolTip(
+                reason or (
+                    "Higher values make central localized spots contribute more "
+                    "strongly to the affine reference lattice."
+                )
+            )
+
+        compatible = bool(context.get("compatible",True))
+        compatibility_error = str(context.get("compatibility_error") or "")
+        plane = str(context.get("plane_name") or "").strip()
+        if mode == "global_fit":
+            info = "Current localization · global affine fit"
+        elif mode == "center_weighted":
+            info = "Current localization · emphasis %d%%" % emphasis
+        elif saved_name:
+            info = "Saved: %s" % saved_name
+        else:
+            info = "Saved reference"
+        if plane:
+            info += " · Plane: %s" % plane
+        if not compatible and compatibility_error:
+            info = compatibility_error
+        self.position_reference_info_label.setText(info)
+        self.position_reference_info_label.setStyleSheet(
+            "color: %s;" % (_WARNING_COLOR if not compatible else _MUTED_COLOR)
+        )
+
+        delete_button = getattr(
+            self,"position_reference_delete_button",None
+        )
+        if delete_button is not None:
+            selected_saved = bool(mode == "saved" and saved_name)
+            delete_button.setVisible(selected_saved)
+            delete_button.setEnabled(selected_saved and change_allowed)
+            delete_button.setToolTip(reason)
+
+        save_button = getattr(self,"position_reference_save_button",None)
+        if save_button is not None:
+            save_reason = str(context.get("save_unavailable_reason") or "")
+            save_allowed = bool(
+                context.get("save_allowed",False)
+                and self._selected_is_current_context()
+                and not self._cgh_computing
+            )
+            save_button.setEnabled(save_allowed)
+            save_button.setToolTip(save_reason)
+
+    def _on_position_reference_changed(self,_index: int) -> None:
+        token = str(self.position_reference_combo.currentData() or "global_fit")
+        if token.startswith("saved:"):
+            mode,saved_name = "saved",token.split(":",1)[1]
+        else:
+            mode,saved_name = token,None
+        self._emit(
+            MeasurementsAction.POSITION_REFERENCE_SET,
+            {
+                "mode":mode,
+                "saved_name":saved_name,
+                "center_emphasis":self.position_reference_emphasis.value(),
+            },
+        )
+
+    def _on_position_reference_emphasis_changed(self,value: int) -> None:
+        if str(self.position_reference_combo.currentData()) != "center_weighted":
+            return
+        self._emit(
+            MeasurementsAction.POSITION_REFERENCE_SET,
+            {"mode":"center_weighted","center_emphasis":int(value)},
+        )
+
+    def _save_position_reference_requested(self,*_args: Any) -> None:
+        name,ok = QtWidgets.QInputDialog.getText(
+            self,"Save position reference","Reference name:"
+        )
+        name = str(name or "").strip()
+        if ok and name:
+            self._emit(
+                MeasurementsAction.POSITION_REFERENCE_SAVE,{"name":name},
+            )
+
+    def _delete_position_reference_requested(self,*_args: Any) -> None:
+        name = str(
+            dict(self._position_reference_context or {}).get("saved_name") or ""
+        ).strip()
+        if name:
+            self._emit(
+                MeasurementsAction.POSITION_REFERENCE_DELETE,{"name":name},
+            )
+
     def configure_detectors(
         self,detectors: Sequence[str],current_detector: str | None=None,
     ) -> None:
@@ -813,6 +1041,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             button.setText(text)
         self._refresh_header()
         self._sync_selected_round()
+        self._refresh_position_reference_controls()
         self._refresh_status_controls()
         if self._automatic_operation_active:
             self._apply_automatic_interaction_lock()
@@ -1345,11 +1574,21 @@ class CGHSessionWindow(QtWidgets.QDialog):
             else self._session_inspection.rounds
         )
 
-        correction = self._session_inspection.position_correction
-        if correction is None:
-            self.position_correction_view.clear()
+        preview = (
+            self._position_reference_preview
+            if self._selected_is_current_context() else None
+        )
+        if preview is not None:
+            self.position_correction_view.set_data(
+                ideal_positions_kxy=preview.get("ideal_positions_kxy"),
+                displacement_kxy=preview.get("displacement_kxy"),
+            )
         else:
-            self.position_correction_view.set_correction(correction)
+            correction = self._session_inspection.position_correction
+            if correction is None:
+                self.position_correction_view.clear()
+            else:
+                self.position_correction_view.set_correction(correction)
 
     def _refresh_status_controls(self) -> None:
         status = self._status
@@ -1362,6 +1601,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         current_context = self._selected_is_current_context()
 
         self._refresh_feedback_orientation_controls()
+        self._refresh_position_reference_controls()
         self.feedback_tabs.setTabEnabled(0,True)
         self.feedback_tabs.setTabEnabled(1,position_available)
         if self.feedback_tabs.currentIndex() == 1 and not position_available:
@@ -1404,16 +1644,28 @@ class CGHSessionWindow(QtWidgets.QDialog):
             and status.localization_total_count > 0
             and status.localization_matched_count == status.localization_total_count
         )
+        reference_compatible = bool(
+            self._position_reference_context.get("compatible",True)
+        )
         self.position_apply_button.setEnabled(
             position_available
             and position_localization_complete
+            and reference_compatible
             and viewing_current
             and not self._cgh_computing
         )
-        self.position_apply_button.setToolTip(
-            "Position correction requires every target spot to be genuinely localized."
-            if localized and not position_localization_complete else ""
-        )
+        if localized and not position_localization_complete:
+            position_tip = (
+                "Position correction requires every target spot to be genuinely localized."
+            )
+        elif not reference_compatible:
+            position_tip = str(
+                self._position_reference_context.get("compatibility_error") or
+                "The selected position reference is incompatible."
+            )
+        else:
+            position_tip = ""
+        self.position_apply_button.setToolTip(position_tip)
         self.position_toggle_button.setEnabled(
             position_available
             and status.position_available

@@ -93,6 +93,7 @@ class SLMSession:
         current_config_path: str | None=None,
         measurement_dispatcher: MeasurementDispatcher | None=None,
         calibration_store=None,
+        position_reference_store=None,
         startup_preferences=None,
         display_name: str="",
         apply_startup_calibration_defaults: bool=False,
@@ -129,6 +130,7 @@ class SLMSession:
             self,
             measurements=measurement_dispatcher,
             callbacks=self._feedback_callbacks(),
+            position_reference_store=position_reference_store,
         )
         self.calibration = SLMCalibrationService(
             self,

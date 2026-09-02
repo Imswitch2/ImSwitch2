@@ -9,10 +9,10 @@ from slmcore.core.engine.section import split_slm_geometry
 from slmcore.host import SLMDeviceProvider,SLMHostServices
 
 
-def _runtime():
+def _runtime(*,serial="SER123"):
     geometry = SLMGeometry(width=64,height=64,pixel_size_um=1.0)
     runtime = SLMRuntime(
-        identity=SLMIdentity("slm","SER123"),
+        identity=SLMIdentity("slm",serial),
         geometry=geometry,
         section_geometries=split_slm_geometry(geometry,1),
         registries=DEFAULT_REGISTRIES,
@@ -265,3 +265,97 @@ def test_feedback_orientation_change_locks_only_after_feedback_cgh_is_computed()
             session.feedback.set_feedback_orientation("sec_0","identity")
     finally:
         runtime.get_section_cgh_status = original_status
+
+
+
+def _attach_reference_localization(runtime,section_key="sec_0"):
+    from slmcore.core.cgh.localization import LocalizationResult
+
+    section = runtime._get_section(section_key)
+    resolution = section._cgh_session.create_target_resolution(
+        section.state.cgh,section._build_context(section.state),
+    )
+    count = int(resolution.lattice_indices.shape[1])
+    image = np.zeros((96,112),dtype=np.float64)
+    measurement = ImageMeasurement(image=image,source="cam",detector="cam")
+    runtime.set_section_feedback_measurement(section_key,measurement)
+    parameters = dict(
+        runtime.get_section_feedback_status(section_key).localization_params
+    )
+    expected = np.array([
+        [12.0,44.0,12.0,44.0],
+        [12.0,12.0,44.0,44.0],
+    ],dtype=np.float64)[:,:count]
+    measured = expected + np.array([[1.0],[2.0]])
+    localization = LocalizationResult(
+        target_type="multi_foci_vector",
+        target_params=dict(resolution.canonical_params),
+        parameters=parameters,
+        lattice_indices=resolution.lattice_indices,
+        crop_coord=(8,72,16,80),
+        cropped_image=np.zeros((64,64),dtype=np.float64),
+        expected_positions_px=expected,
+        measured_positions_px=measured,
+        period_x_px=32.0,
+        period_y_px=32.0,
+        offset_x_px=12.0,
+        offset_y_px=12.0,
+        diagnostics={
+            "measurement_id":measurement.measurement_id,
+            "matched_mask":tuple(True for _ in range(count)),
+            "matched_count":count,
+            "missing_count":0,
+        },
+    )
+    runtime.commit_section_feedback_localization(
+        section_key,localization,parameters,
+    )
+    return localization
+
+
+def test_saved_position_reference_is_shared_but_selection_is_transient(tmp_path):
+    from slmcore import PositionReferenceMode,SLMWorkspace
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime_a = _runtime(serial="SER-A")
+    session_a = SLMSession(
+        runtime=runtime_a,
+        position_reference_store=workspace.position_reference_store,
+    )
+    session_a.calibration.active_plane = lambda _section:"sample"
+    localization = _attach_reference_localization(runtime_a)
+
+    reference = session_a.feedback.save_position_reference(
+        "sec_0","aligned OFF",
+    )
+    assert reference.metadata["source_slm_serial"] == "SER-A"
+    np.testing.assert_allclose(
+        reference.positions_px,
+        localization.measured_positions_px + np.array([[16.0],[8.0]]),
+    )
+    assert session_a.feedback.position_reference_selection(
+        "sec_0"
+    ).mode is PositionReferenceMode.SAVED
+
+    # A different SLM session on the same workspace sees the resource, but it
+    # does not inherit the other session's active selection.
+    runtime_b = _runtime(serial="SER-B")
+    session_b = SLMSession(
+        runtime=runtime_b,
+        position_reference_store=workspace.position_reference_store,
+    )
+    session_b.calibration.active_plane = lambda _section:"sample"
+    context = session_b.feedback.position_reference_context("sec_0")
+    assert context.saved_names == ("aligned OFF",)
+    assert context.selection.mode is PositionReferenceMode.GLOBAL_FIT
+
+    selection = session_b.feedback.set_position_reference(
+        "sec_0",mode="saved",saved_name="aligned OFF",
+    )
+    assert selection.mode is PositionReferenceMode.SAVED
+    # Selecting a saved reference before acquiring/localizing is valid; actual
+    # lattice/image compatibility is checked as soon as localization exists.
+    assert session_b.feedback.position_reference_context("sec_0").compatible
+
+    session_a.dispose()
+    session_b.dispose()

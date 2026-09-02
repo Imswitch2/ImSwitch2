@@ -207,6 +207,10 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
         """Add optional host-specific information beside the result viewer."""
         self._workbench.add_result_widget(widget)
 
+    def add_action_widget(self,widget: QtWidgets.QWidget) -> None:
+        """Add an optional host-specific action beside localization actions."""
+        self._workbench.add_action_widget(widget)
+
     def set_lower_pane_height(self,height: int) -> None:
         """Set the compact lower work-area height in vertical presentation."""
         self._workbench.set_lower_pane_height(height)

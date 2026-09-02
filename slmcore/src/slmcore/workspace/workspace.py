@@ -7,6 +7,7 @@ from ..core.engine.registry import SLMRegistries
 from .calibration_store import SLMCalibrationStore
 from .config_store import SLMConfigStore
 from .correction_store import SLMCorrectionStore
+from .position_reference_store import SLMPositionReferenceStore
 
 
 class SLMWorkspace:
@@ -19,21 +20,34 @@ class SLMWorkspace:
         configs_dir: str | Path | None=None,
         corrections_dir: str | Path | None=None,
         calibrations_dir: str | Path | None=None,
+        position_references_dir: str | Path | None=None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True,exist_ok=True)
         self.configs_root = self._resolve_override(configs_dir,"configs")
         self.corrections_root = self._resolve_override(corrections_dir,"corrections")
         self.calibrations_root = self._resolve_override(calibrations_dir,"calibrations")
+        self.position_references_root = self._resolve_override(
+            position_references_dir,"position_references"
+        )
         self._config_stores: dict[tuple[str,int],SLMConfigStore] = {}
         self._correction_stores: dict[tuple[str,str],SLMCorrectionStore] = {}
         self._calibration_store: SLMCalibrationStore | None = None
+        self._position_reference_store: SLMPositionReferenceStore | None = None
 
     @property
     def calibration_store(self) -> SLMCalibrationStore:
         if self._calibration_store is None:
             self._calibration_store = SLMCalibrationStore(self.calibrations_root)
         return self._calibration_store
+
+    @property
+    def position_reference_store(self) -> SLMPositionReferenceStore:
+        if self._position_reference_store is None:
+            self._position_reference_store = SLMPositionReferenceStore(
+                self.position_references_root
+            )
+        return self._position_reference_store
 
     def config_directory(self,identity: SLMIdentity) -> Path:
         return self.configs_root/self._serial(identity)

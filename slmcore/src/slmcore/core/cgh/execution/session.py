@@ -1003,6 +1003,8 @@ class CGHSession:
         *,
         reset_intensity: bool=False,
         orientation: FeedbackOrientation | str=FeedbackOrientation.IDENTITY,
+        reference_positions_px: np.ndarray | None=None,
+        reference_metadata: Mapping[str,Any] | None=None,
     ):
         self._require_capability(state,FeedbackCapability.POSITION_CORRECTION)
         measurement = self._require_current_measurement()
@@ -1028,6 +1030,7 @@ class CGHSession:
         analysis = analyze_position(
             oriented_measurement,
             ideal_positions_kxy=target.resolution.ideal_spot_positions_kxy,
+            reference_positions_px=reference_positions_px,
             calibration=context.calibration,
             parameters=self._position_params,
         )
@@ -1041,6 +1044,7 @@ class CGHSession:
             calibration=(
                 {} if context.calibration is None else context.calibration.to_dict()
             ),
+            reference=dict(reference_metadata or {}),
         )
         committed = self._committed_target
         if committed is None:
@@ -1069,6 +1073,35 @@ class CGHSession:
         self._position_active = True
         self._reset_intensity_sequence(state,context)
         return correction,changed
+
+    def compute_feedback_position_analysis(
+        self,state: CGHState,context: SectionContext,
+        *,
+        orientation: FeedbackOrientation | str=FeedbackOrientation.IDENTITY,
+        reference_positions_px: np.ndarray | None=None,
+    ) -> PositionAnalysis:
+        """Preview position correction for the current measurement without mutation."""
+        self._require_capability(state,FeedbackCapability.POSITION_CORRECTION)
+        measurement = self._require_current_measurement()
+        if measurement.localization is None:
+            raise RuntimeError(
+                "Localize the feedback image before calculating position correction"
+            )
+        target = self._current_round_target(state,context)
+        oriented_localization = orient_localization(
+            measurement.localization,orientation,
+        )
+        return analyze_position(
+            FeedbackMeasurement(
+                acquisition=measurement.acquisition,
+                localization=oriented_localization,
+                metrics=measurement.metrics,
+            ),
+            ideal_positions_kxy=target.resolution.ideal_spot_positions_kxy,
+            reference_positions_px=reference_positions_px,
+            calibration=context.calibration,
+            parameters=self._position_params,
+        )
 
     def set_position_correction_active(
         self,state: CGHState,context: SectionContext,active: bool,

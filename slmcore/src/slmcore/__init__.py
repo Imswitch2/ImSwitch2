@@ -27,6 +27,8 @@ from .application import (
     CorrectionMismatchPolicy,
     FeedbackParameterUpdateResult,
     MeasurementDispatcher,
+    PositionReferenceContext,
+    PositionReferenceSelection,
     PreparedConfigLoad,
     PreparedPlaneSelection,
     PreparedSectionLayoutChange,
@@ -42,6 +44,7 @@ from .application import (
     StartupRuntime,
     TargetCalibrationState,
 )
+from .core.cgh.feedback import PositionReference,PositionReferenceMode
 from .core.calibration import SLMSectionCalibration
 from .core.config import (
     SectionConfigLoadResult,
@@ -95,6 +98,7 @@ from .workspace import (
     SLMConfigMetadata,
     SLMConfigStore,
     SLMCorrectionStore,
+    SLMPositionReferenceStore,
     SLMWorkspace,
 )
 
@@ -113,6 +117,10 @@ __all__ = [
     "GroupTopology",
     "ImageMeasurement",
     "MeasurementDispatcher",
+    "PositionReference",
+    "PositionReferenceContext",
+    "PositionReferenceMode",
+    "PositionReferenceSelection",
     "PreparedConfigLoad",
     "PreparedPlaneSelection",
     "PreparedSectionLayoutChange",
@@ -141,6 +149,7 @@ __all__ = [
     "SLMConfigurationService",
     "SLMControlMode",
     "SLMCorrectionStore",
+    "SLMPositionReferenceStore",
     "SLMFeedbackService",
     "SLMGeometry",
     "SLMHardwareConfig",
