@@ -1,8 +1,107 @@
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.devices import (
+    DeviceId, DeviceLifecycleAction, DeviceLifecycleCapabilities,
+    DeviceLifecycleNotSupportedError, DeviceLifecycleResult,
+    DeviceRuntimeMode, HardwareDeviceId,
+)
 from .DetectorManager import (
     DetectorManager, DetectorNumberParameter, DetectorListParameter
 )
 import copy
+
+
+_HAMAMATSU_RECONNECT_HINT = (
+    'If the camera was unplugged, keep USB connected, restart the camera, '
+    'wait until it is ready, then press Reconnect again.'
+)
+
+
+class _HamamatsuLifecycle:
+    """Reconnect one Hamamatsu camera without replacing its detector manager."""
+
+    def __init__(self, manager, detectorsManager, detectorName):
+        self._manager = manager
+        self._detectorsManager = detectorsManager
+        self._detectorName = detectorName
+        self.hardware_id = HardwareDeviceId(
+            category='detector', key=f'detector:{detectorName}'
+        )
+        self.capabilities = DeviceLifecycleCapabilities(reconnect=True)
+
+    def _unsupported(self, action):
+        raise DeviceLifecycleNotSupportedError(
+            f'Hamamatsu lifecycle does not yet support {action.value}.'
+        )
+
+    def connect(self):
+        return self._unsupported(DeviceLifecycleAction.CONNECT)
+
+    def disconnect(self):
+        return self._unsupported(DeviceLifecycleAction.DISCONNECT)
+
+    def probe(self):
+        return self._unsupported(DeviceLifecycleAction.PROBE)
+
+    def shutdown(self):
+        return self._unsupported(DeviceLifecycleAction.SHUTDOWN)
+
+    def reconnect(self):
+        device_id = DeviceId('detector', self._detectorName)
+        with self._detectorsManager.detectorLifecycleMaintenance(
+            self._detectorName
+        ):
+            try:
+                hardware_connected = self._manager._reconnectCameraBackend()
+            except Exception as exc:
+                self._manager._setConnectionError(
+                    exc, summary='Hamamatsu camera reconnect failed'
+                )
+                return DeviceLifecycleResult(
+                    hardware_id=self.hardware_id,
+                    action=DeviceLifecycleAction.RECONNECT,
+                    success=False,
+                    summary='Hamamatsu camera reconnect failed',
+                    details=f'{exc} {_HAMAMATSU_RECONNECT_HINT}',
+                    affected_device_ids=(device_id,),
+                )
+
+            self._detectorsManager.clearFaultAfterHardwareReplacement(
+                self._detectorName
+            )
+
+        if hardware_connected:
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id,
+                action=DeviceLifecycleAction.RECONNECT,
+                success=True,
+                summary='Hamamatsu camera reconnected; acquisition remains stopped',
+                affected_device_ids=(device_id,),
+            )
+
+        if self._manager._configuredForMock:
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id,
+                action=DeviceLifecycleAction.RECONNECT,
+                success=True,
+                summary='Mock Hamamatsu camera reinitialized; acquisition remains stopped',
+                affected_device_ids=(device_id,),
+            )
+
+        return DeviceLifecycleResult(
+            hardware_id=self.hardware_id,
+            action=DeviceLifecycleAction.RECONNECT,
+            success=False,
+            summary=(
+                'Hamamatsu hardware reconnect failed; mock fallback active. '
+                'Try restarting the camera with USB plugged in.'
+            ),
+            details=(
+                f'{self._manager.connectionStatusDetails} '
+                f'{_HAMAMATSU_RECONNECT_HINT}'
+            ).strip(),
+            affected_device_ids=(device_id,),
+        )
+
 
 class HamamatsuManager(DetectorManager):
     """ DetectorManager that deals with the Hamamatsu parameters and frame
@@ -24,25 +123,34 @@ class HamamatsuManager(DetectorManager):
         self.__logger = initLogger(self, instanceName=name)
         self.__name = name
 
-        self._camera = self._getCameraObj(detectorInfo.managerProperties['cameraListIndex'])
+        self._cameraId = detectorInfo.managerProperties['cameraListIndex']
+        self._startupCameraProperties = dict(
+            detectorInfo.managerProperties['hamamatsu']
+        )
+        self._mockSensorShape = self._configuredMockSensorShape(
+            self._startupCameraProperties
+        )
+        self._detectorLifecycle = None
+        self._advancedPropertyOverrides = {}
+        # A failed reconnect with DCAM NOCONNECTION marks the legacy
+        # process-global session stale. A later explicit reconnect may rebuild
+        # that session (currently only for a single Hamamatsu camera).
+        self._dcamSessionStale = False
+        self._detectorsManagerForLifecycle = None
+        self._camera = self._getCameraObj(self._cameraId)
         self._binning = 1
 
-        # Let a simulated NIDAQ scan trigger frames on a mock camera the way the
-        # hardware camera TTL would, so scan-once/scan-lapse recordings get the
-        # expected number of frames with no real hardware. No-op for real
-        # cameras (no mockTrigger) or a real NIDAQ (signal never fires).
+        # A simulated scan signal may outlive backend replacement. Connect the
+        # manager callback once and let mockTrigger() decide whether the current
+        # backend supports simulated frame triggers.
         nidaqManager = _lowLevelManagers.get('nidaqManager')
-        if (nidaqManager is not None and getattr(nidaqManager, 'isSimulated', False)
-                and hasattr(self._camera, 'mockTrigger')):
+        if nidaqManager is not None and getattr(nidaqManager, 'isSimulated', False):
             nidaqManager.sigSimScanFrameTrigger.connect(self.__onSimScanFrameTrigger)
 
-        for propertyName, propertyValue in detectorInfo.managerProperties['hamamatsu'].items():
-            self._camera.setPropertyValue(propertyName, propertyValue)
+        self._applyCameraProperties(self._camera, self._startupCameraProperties)
 
-        fullShape = (self._camera.getPropertyValue('image_width')[0],
-                     self._camera.getPropertyValue('image_height')[0])
-
-        model = self._camera.camera_model.decode('utf-8')
+        fullShape = self._cameraSensorShape(self._camera)
+        model = self._cameraModel(self._camera)
 
         # Prepare parameters
         parameters = {
@@ -69,6 +177,59 @@ class HamamatsuManager(DetectorManager):
                          model=model, parameters=parameters, croppable=True)
         self._updatePropertiesFromCamera()
         super().setParameter('Set exposure time', self.parameters['Real exposure time'].value)
+
+    _ADVANCED_RECONNECT_EXCLUDED = frozenset({
+        'exposure_time', 'trigger_source', 'trigger_mode', 'binning',
+        'image_width', 'image_height', 'image_framebytes',
+        'subarray_hpos', 'subarray_vpos', 'subarray_hsize',
+        'subarray_vsize', 'subarray_mode',
+    })
+
+    @staticmethod
+    def _cameraModel(camera):
+        model = getattr(camera, 'camera_model', 'unknown')
+        if isinstance(model, bytes):
+            return model.decode('utf-8', errors='replace')
+        return str(model)
+
+    @staticmethod
+    def _configuredMockSensorShape(properties):
+        """Best available configured sensor size for hardware-free startup."""
+        def positive(name, fallback=None):
+            try:
+                value = int(properties.get(name, fallback))
+            except (TypeError, ValueError):
+                return None
+            return value if value > 0 else None
+
+        width = positive('image_width')
+        height = positive('image_height')
+        if width is None:
+            hpos = positive('subarray_hpos', 0) or 0
+            hsize = positive('subarray_hsize')
+            width = hpos + hsize if hsize is not None else 2048
+        if height is None:
+            vpos = positive('subarray_vpos', 0) or 0
+            vsize = positive('subarray_vsize')
+            height = vpos + vsize if vsize is not None else 2048
+        return int(width), int(height)
+
+    @staticmethod
+    def _cameraSensorShape(camera):
+        """Return authoritative un-cropped sensor dimensions where available."""
+        try:
+            width = int(getattr(camera, 'max_width'))
+            height = int(getattr(camera, 'max_height'))
+            if width > 0 and height > 0:
+                return width, height
+        except (TypeError, ValueError, AttributeError):
+            pass
+        return (int(camera.getPropertyValue('image_width')[0]),
+                int(camera.getPropertyValue('image_height')[0]))
+
+    def _applyCameraProperties(self, camera, properties):
+        for propertyName, propertyValue in properties.items():
+            camera.setPropertyValue(propertyName, propertyValue)
 
     def wait_and_get_NewFrame(self, properFrame=False):
         self.__logger.info("start wait_and_get_NewFrame")
@@ -395,12 +556,31 @@ class HamamatsuManager(DetectorManager):
                 result_value = self._camera.setPropertyValue(propertyName, value)
 
             self._performSafeCameraAction(set_property)
+            if result_value is False:
+                raise RuntimeError(
+                    f'Hamamatsu camera rejected property {propertyName!r}'
+                )
 
-            # Keep internal ROI state in sync when any subarray property is changed.
-            # Without this, _frameStart / _shape would be stale after an advanced-settings
-            # edit, causing crop() and abortROI() to overwrite or misreport the ROI.
+            # Keep the manager's canonical state synchronized for properties
+            # that also have dedicated ImSwitch controls. Other successful
+            # advanced-property writes are remembered explicitly and replayed
+            # after a backend replacement.
             if propertyName.startswith('subarray_'):
                 self._syncSubarrayState()
+            elif propertyName == 'exposure_time':
+                self._updatePropertiesFromCamera()
+                super().setParameter(
+                    'Set exposure time', self.parameters['Real exposure time'].value
+                )
+            elif propertyName in ('trigger_source', 'trigger_mode'):
+                try:
+                    self._updateTriggerSourceFromCamera()
+                except RuntimeError:
+                    pass
+            elif propertyName == 'binning':
+                self._syncBinningFromCamera(result_value)
+            elif propertyName not in self._ADVANCED_RECONNECT_EXCLUDED:
+                self._advancedPropertyOverrides[propertyName] = result_value
 
             # Log success
             self.__logger.info(f'Successfully set {propertyName} to {result_value}')
@@ -438,6 +618,23 @@ class HamamatsuManager(DetectorManager):
             f'Synced subarray state: frameStart={self._frameStart}, shape={self._shape}'
         )
 
+    def _syncBinningFromCamera(self, value=None):
+        if value is None:
+            try:
+                value = self._camera.getPropertyValue('binning')[0]
+            except Exception:
+                return
+        if isinstance(value, bytes):
+            value = value.decode(errors='replace')
+        if isinstance(value, str):
+            value = value.lower().split('x', 1)[0]
+        try:
+            binning = int(round(float(value)))
+        except (TypeError, ValueError):
+            return
+        if binning in self.supportedBinnings:
+            super().setBinning(binning)
+
     def startAcquisition(self):
         self._camera.startAcquisition()
 
@@ -447,35 +644,40 @@ class HamamatsuManager(DetectorManager):
     def _setExposure(self, time):
         self._camera.setPropertyValue('exposure_time', time)
 
-    def _setTriggerSource(self, source):
+    @staticmethod
+    def _setTriggerSourceOnCamera(camera, source):
         if source == 'Internal trigger':
-            def triggerAction():
-                self._camera.setPropertyValue('trigger_source', 1)
-
+            camera.setPropertyValue('trigger_source', 1)
         elif source == 'External "start-trigger"':
-            def triggerAction():
-                self._camera.setPropertyValue('trigger_source', 2)
-                self._camera.setPropertyValue('trigger_mode', 6)
-
+            camera.setPropertyValue('trigger_source', 2)
+            camera.setPropertyValue('trigger_mode', 6)
         elif source == 'External "frame-trigger"':
-            def triggerAction():
-                self._camera.setPropertyValue('trigger_source', 2)
-                self._camera.setPropertyValue('trigger_mode', 1)
+            camera.setPropertyValue('trigger_source', 2)
+            camera.setPropertyValue('trigger_mode', 1)
         else:
             raise ValueError(f'Invalid trigger source "{source}"')
 
-        self._performSafeCameraAction(triggerAction)
+    def _setTriggerSource(self, source):
+        self._performSafeCameraAction(
+            lambda: self._setTriggerSourceOnCamera(self._camera, source)
+        )
 
     def _performSafeCameraAction(self, function):
-        """ This method is used to change those camera properties that need
-        the camera to be idle to be able to be adjusted.
+        """Change a property that may require an idle camera.
+
+        Acquisition ownership is authoritative: if the first write fails,
+        retry after a stop and restart only when a lease says the camera was
+        actually in use. This is also safe during lifecycle maintenance, where
+        the detector necessarily has zero leases and must remain stopped.
         """
+        wasLeased = self.acquisitionLeased
         try:
             function()
         except Exception:
             self.stopAcquisition()
             function()
-            self.startAcquisition()
+            if wasLeased:
+                self.startAcquisition()
 
     def _updatePropertiesFromCamera(self):
         self.setParameter('Real exposure time', self._camera.getPropertyValue('exposure_time')[0])
@@ -514,19 +716,226 @@ class HamamatsuManager(DetectorManager):
         super().setParameter('Trigger source', actual)
         return actual
 
+    @property
+    def _configuredForMock(self):
+        return str(self._cameraId).strip().lower().startswith('mock')
+
+    def _bindDetectorLifecycleHost(self, detectorsManager, detectorName):
+        """Bind the acquisition owner after DetectorsManager construction."""
+        self._detectorsManagerForLifecycle = detectorsManager
+        self._detectorLifecycle = _HamamatsuLifecycle(
+            self, detectorsManager, detectorName
+        )
+
+    def getDeviceLifecycle(self):
+        """Return the already-bound lifecycle without touching hardware."""
+        return self._detectorLifecycle
+
+    @staticmethod
+    def _isDcamNoConnectionError(exc):
+        """Recognize the legacy DCAM NOCONNECTION failure narrowly."""
+        current = exc
+        while current is not None:
+            text = str(current).lower()
+            if '0x80000f07' in text or 'no camera connection' in text:
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
+    def _closeCameraBackend(self, camera):
+        if camera is None:
+            return True
+        try:
+            shutdown = getattr(camera, 'shutdown', None)
+            if callable(shutdown):
+                shutdown()
+            return True
+        except Exception as exc:
+            self.__logger.warning(
+                f'Error while closing Hamamatsu camera '
+                f'{self._cameraModel(camera)}: {exc}'
+            )
+            return False
+
+    def _configuredHamamatsuManagerNames(self):
+        """Return configured Hamamatsu detector names, or ``None`` if unknown."""
+        host = self._detectorsManagerForLifecycle
+        get_names = getattr(host, 'getAllDeviceNames', None)
+        if not callable(get_names):
+            return None
+        return get_names(
+            condition=lambda manager: isinstance(manager, HamamatsuManager)
+        )
+
+    def _resetStaleDcamSessionSingleCamera(self):
+        """Rebuild a stale process-global DCAM session for one camera only."""
+        names = self._configuredHamamatsuManagerNames()
+        if names is None:
+            raise RuntimeError(
+                'Cannot verify single-camera DCAM reset safety: detector host '
+                'inventory is unavailable.'
+            )
+        if len(names) != 1 or names[0] != self.__name:
+            raise RuntimeError(
+                'Automatic DCAM session reset is currently supported only when '
+                f'exactly one Hamamatsu camera is configured; found {names!r}.'
+            )
+
+        from imswitch.imcontrol.model.interfaces.hamamatsu import (
+            resetDcamSessionSingleCamera,
+        )
+        discovered = resetDcamSessionSingleCamera()
+        if discovered < 1:
+            raise RuntimeError(
+                'DCAM session reset completed but no Hamamatsu camera was discovered.'
+            )
+
+        self._dcamSessionStale = False
+        return discovered
+
+    def _makeRealCamera(self):
+        from imswitch.imcontrol.model.interfaces.hamamatsu import HamamatsuCameraMR
+        return HamamatsuCameraMR(self._cameraId)
+
+    def _makeMockCamera(self):
+        from imswitch.imcontrol.model.interfaces.hamamatsu_mock import MockHamamatsu
+        return MockHamamatsu(*self._mockSensorShape)
+
+    def _configureReplacementCamera(
+        self, camera, *, runtimeExposure, runtimeTrigger, runtimeBinning,
+        runtimeAdvanced, oldFrameStart, oldShape, oldFullShape, wasFullFrame
+    ):
+        """Replay ImSwitch-owned state onto one candidate replacement backend."""
+        self._applyCameraProperties(camera, self._startupCameraProperties)
+        newFullShape = self._cameraSensorShape(camera)
+        self._camera = camera
+        self._setFullShape(newFullShape)
+
+        try:
+            # Dedicated manager state is authoritative for properties that have
+            # normal ImSwitch controls. Advanced-property overrides follow.
+            camera.setPropertyValue(
+                'binning', f'{runtimeBinning}x{runtimeBinning}'.encode('ascii')
+            )
+            camera.setPropertyValue('exposure_time', runtimeExposure)
+            self._setTriggerSourceOnCamera(camera, runtimeTrigger)
+            self._applyCameraProperties(camera, runtimeAdvanced)
+
+            if wasFullFrame:
+                self.crop(0, 0, newFullShape[0], newFullShape[1])
+            else:
+                self.crop(
+                    oldFrameStart[0], oldFrameStart[1],
+                    oldShape[0], oldShape[1]
+                )
+
+            self._setModel(self._cameraModel(camera))
+            self._updatePropertiesFromCamera()
+            super().setParameter(
+                'Set exposure time', self.parameters['Real exposure time'].value
+            )
+        except Exception:
+            if self._camera is camera:
+                self._camera = None
+            self._setFullShape(oldFullShape)
+            self._frameStart = oldFrameStart
+            self._shape = oldShape
+            raise
+
+    def _reconnectCameraBackend(self):
+        """Replace the backend and replay runtime state without replacing manager.
+
+        If a reconnect fails with DCAM NOCONNECTION, mark the process-global
+        legacy DCAM3 session stale. The next explicit reconnect rebuilds that
+        session before opening the camera, currently only when exactly one
+        Hamamatsu manager is configured.
+        """
+        runtimeExposure = self.parameters['Set exposure time'].value
+        runtimeTrigger = self.parameters['Trigger source'].value
+        runtimeBinning = self.binning
+        runtimeAdvanced = dict(self._advancedPropertyOverrides)
+        oldFrameStart = tuple(self.frameStart)
+        oldShape = tuple(self.shape)
+        oldFullShape = tuple(self.fullShape)
+        wasFullFrame = oldFrameStart == (0, 0) and oldShape == oldFullShape
+        replay = dict(
+            runtimeExposure=runtimeExposure,
+            runtimeTrigger=runtimeTrigger,
+            runtimeBinning=runtimeBinning,
+            runtimeAdvanced=runtimeAdvanced,
+            oldFrameStart=oldFrameStart,
+            oldShape=oldShape,
+            oldFullShape=oldFullShape,
+            wasFullFrame=wasFullFrame,
+        )
+
+        oldCamera, self._camera = self._camera, None
+
+        if self._configuredForMock:
+            self._closeCameraBackend(oldCamera)
+            camera = self._makeMockCamera()
+            self._configureReplacementCamera(camera, **replay)
+            self._setMockActive('Mock camera configured')
+            return False
+
+        camera = None
+        try:
+            if not self._closeCameraBackend(oldCamera):
+                raise RuntimeError('Could not close the previous Hamamatsu camera.')
+
+            if self._dcamSessionStale:
+                self._resetStaleDcamSessionSingleCamera()
+
+            camera = self._makeRealCamera()
+            self._configureReplacementCamera(camera, **replay)
+        except Exception as exc:
+            if self._isDcamNoConnectionError(exc):
+                self._dcamSessionStale = True
+
+            self.__logger.warning(f'Hamamatsu hardware reconnect failed: {exc}')
+            self._closeCameraBackend(camera)
+
+            camera = self._makeMockCamera()
+            try:
+                self._configureReplacementCamera(camera, **replay)
+            except Exception:
+                self._closeCameraBackend(camera)
+                raise
+
+            detail = f'{exc} {_HAMAMATSU_RECONNECT_HINT}'
+            self._setConnectionError(
+                RuntimeError(detail),
+                summary=(
+                    'Hamamatsu camera reconnect failed; mock fallback active. '
+                    'Try restarting the camera with USB plugged in.'
+                ),
+                mock_active=True,
+            )
+            self.__logger.info(
+                f'Initialized camera, model: {self._cameraModel(camera)}'
+            )
+            return False
+
+        self._dcamSessionStale = False
+        self._setConnected('Hamamatsu camera reconnected')
+        self.__logger.info(
+            f'Initialized camera, model: {self._cameraModel(camera)}'
+        )
+        return True
+
     def _getCameraObj(self, cameraId):
         try:
-            from imswitch.imcontrol.model.interfaces.hamamatsu import HamamatsuCameraMR
-            self.__logger.debug(f'Trying to initialize Hamamatsu camera {cameraId}')
-            camera = HamamatsuCameraMR(cameraId)
+            if str(cameraId).strip().lower().startswith('mock'):
+                raise RuntimeError('Mock camera configured')
+            camera = self._makeRealCamera()
             self._setConnected("Hamamatsu camera initialized")
         except Exception as e:
-            self.__logger.warning(
-                f'Failed to initialize Hamamatsu camera {cameraId}, loading mocker: {e}',
-                exc_info=True
-            )
-            from imswitch.imcontrol.model.interfaces.hamamatsu_mock import MockHamamatsu
-            camera = MockHamamatsu()
+            if not str(cameraId).strip().lower().startswith('mock'):
+                self.__logger.warning(
+                    f'Failed to initialize Hamamatsu camera {cameraId}, loading mocker: {e}',
+                    exc_info=True
+                )
+            camera = self._makeMockCamera()
             if str(cameraId).strip().lower().startswith("mock"):
                 self._setMockActive("Mock camera configured")
             else:
@@ -536,8 +945,20 @@ class HamamatsuManager(DetectorManager):
                     mock_active=True,
                 )
 
-        self.__logger.info(f'Initialized camera, model: {camera.camera_model}')
+        self.__logger.info(f'Initialized camera, model: {self._cameraModel(camera)}')
         return camera
+
+    def finalize(self):
+        self.close()
+
+    def close(self):
+        camera, self._camera = self._camera, None
+        if camera is None:
+            return
+        self.__logger.info(
+            f'Shutting down Hamamatsu camera, model: {self._cameraModel(camera)}'
+        )
+        self._closeCameraBackend(camera)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

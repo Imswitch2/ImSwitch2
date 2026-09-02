@@ -43,6 +43,7 @@
 
 import ctypes
 import ctypes.util
+import threading
 
 import numpy as np
 
@@ -148,20 +149,74 @@ class DCAMException(Exception):
 #
 dcam = None
 n_cameras = -1
+_dcam_state_lock = threading.RLock()
+
 
 
 def initDcam():
     global dcam
     global n_cameras
 
-    if dcam is not None:
-        return
+    with _dcam_state_lock:
+        if n_cameras >= 0:
+            return
 
-    dcam = ctypes.windll.dcamapi
-    temp = ctypes.c_int32(0)
-    if (dcam.dcam_init(None, ctypes.byref(temp), None) != DCAMERR_NOERROR):
-        raise DCAMException("DCAM initialization failed.")
-    n_cameras = temp.value
+        if dcam is None:
+            dcam = ctypes.windll.dcamapi
+
+        temp = ctypes.c_int32(0)
+
+        ret = dcam.dcam_init(None, ctypes.byref(temp), None)
+
+        if ret != DCAMERR_NOERROR:
+            ret_u32 = ctypes.c_uint32(ret).value
+            raise DCAMException(
+                f"DCAM initialization failed: "
+                f"return={ret} "
+                f"(hex=0x{ret_u32:08X}), "
+                f"reported_camera_count={temp.value}"
+            )
+
+        n_cameras = temp.value
+
+
+def resetDcamSessionSingleCamera():
+    """Reset the process-global legacy DCAM3 session for one camera.
+
+    This is intentionally a narrow recovery primitive. The caller must ensure
+    that the application has exactly one configured Hamamatsu camera and that
+    its HDCAM has already been closed. Multi-camera coordination belongs above
+    this low-level wrapper because ``dcam_uninit`` invalidates the entire
+    process-wide DCAM session.
+
+    Returns the number of cameras discovered by the new DCAM session.
+    """
+    global n_cameras
+
+    with _dcam_state_lock:
+        if dcam is None:
+            initDcam()
+            return n_cameras
+
+        if n_cameras >= 0:
+            try:
+                result = dcam.dcam_uninit(None, None)
+            except AttributeError as exc:
+                raise DCAMException(
+                    "This DCAM library does not expose dcam_uninit; "
+                    "cannot reset the DCAM session."
+                ) from exc
+            if result != DCAMERR_NOERROR:
+                result_u32 = ctypes.c_uint32(result).value
+                raise DCAMException(
+                    f"DCAM uninitialization failed: return={result} "
+                    f"(hex=0x{result_u32:08X})"
+                )
+            n_cameras = -1
+
+        initDcam()
+        return n_cameras
+
 
 
 # ## HCamData
@@ -249,18 +304,32 @@ class HamamatsuCamera:
         self.max_backlog = 0
         self.number_image_buffers = 0
 
-        # Initialize camera_handle before any calls to checkStatus (which accesses it on error).
+        # Camera construction is transactional: if opening succeeds but later
+        # property discovery fails, close the partial handle before surfacing
+        # the error so a lifecycle reconnect can retry cleanly.
         self.camera_handle = ctypes.c_void_p(0)
-        self.camera_model = self.getModelInfo(camera_id)
-        self.checkStatus(dcam.dcam_open(ctypes.byref(self.camera_handle),
-                                        ctypes.c_int32(self.camera_id),
-                                        None),
-                         "dcam_open")
-        # Get camera properties.
-        self.properties = self.getCameraProperties()
-        # Get camera max width, height.
-        self.max_width = self.getPropertyValue("image_width")[0]
-        self.max_height = self.getPropertyValue("image_height")[0]
+        try:
+            self.camera_model = self.getModelInfo(camera_id)
+            self.checkStatus(
+                dcam.dcam_open(
+                    ctypes.byref(self.camera_handle),
+                    ctypes.c_int32(self.camera_id),
+                    None,
+                ),
+                "dcam_open",
+            )
+            self.properties = self.getCameraProperties()
+            self.max_width = self.getPropertyValue("image_width")[0]
+            self.max_height = self.getPropertyValue("image_height")[0]
+        except Exception:
+            handle = self.camera_handle
+            if handle is not None and getattr(handle, 'value', 0):
+                try:
+                    dcam.dcam_close(handle)
+                except Exception:
+                    pass
+            self.camera_handle = ctypes.c_void_p(0)
+            raise
 
     # ## captureSetup
     #
@@ -694,11 +763,15 @@ class HamamatsuCamera:
         # Set the property value, return what it was set too.
         prop_id = self.properties[property_name]
         p_value = ctypes.c_double(property_value)
-        self.checkStatus(dcam.dcam_setgetpropertyvalue(self.camera_handle,
-                                                       ctypes.c_int32(prop_id),
-                                                       ctypes.byref(p_value),
-                                                       ctypes.c_int32(DCAM_DEFAULT_ARG)),
-                         "dcam_setgetpropertyvalue")
+        self.checkStatus(
+            dcam.dcam_setgetpropertyvalue(
+                self.camera_handle,
+                ctypes.c_int32(prop_id),
+                ctypes.byref(p_value),
+                ctypes.c_int32(DCAM_DEFAULT_ARG),
+            ),
+            "dcam_setgetpropertyvalue",
+        )
         return p_value.value
 
     # ## getAdvancedPropertyInfo
@@ -862,8 +935,12 @@ class HamamatsuCamera:
     # Close down the connection to the camera.
     #
     def shutdown(self):
-        self.checkStatus(dcam.dcam_close(self.camera_handle),
-                         "dcam_close")
+        handle = self.camera_handle
+        if handle is None or not getattr(handle, 'value', 0):
+            return
+
+        self.checkStatus(dcam.dcam_close(handle), "dcam_close")
+        self.camera_handle = ctypes.c_void_p(0)
 
 
 # ## HamamatsuCameraMR
@@ -894,13 +971,23 @@ class HamamatsuCameraMR(HamamatsuCamera):
     # @param camera_id The id of the camera.
     #
     def __init__(self, camera_id):
-        HamamatsuCamera.__init__(self, camera_id)
+        try:
+            HamamatsuCamera.__init__(self, camera_id)
 
-        self.hcam_data = []
-        self.hcam_ptr = False
-        self.old_frame_bytes = -1
+            self.hcam_data = []
+            self.hcam_ptr = False
+            self.old_frame_bytes = -1
 
-        self.setPropertyValue("output_trigger_kind[0]", 2)
+            self.setPropertyValue("output_trigger_kind[0]", 2)
+        except Exception:
+            # The base camera may already be open when MR-specific setup fails.
+            # Retire that partial handle so a reconnect does not leak a DCAM
+            # camera object. shutdown() is deliberately idempotent.
+            try:
+                self.shutdown()
+            except Exception:
+                pass
+            raise
 
     # ## getFrames
     #
