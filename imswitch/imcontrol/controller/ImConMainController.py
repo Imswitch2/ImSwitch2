@@ -492,11 +492,12 @@ class ImConMainController(MainController):
             if not positionerInfo.forPositioning or getattr(positionerInfo, 'hide', False):
                 continue
             try:
-                pManager = self.__masterController.positionersManager[positionerName]
+                self.__masterController.positionersManager[positionerName]
             except Exception:
                 continue
-            if not getattr(pManager, 'isAvailable', True):
-                continue
+            # Keep shortcuts registered for configured/visible positioners even
+            # when hardware is unavailable at startup. Runtime reconnect can then
+            # make the existing widget + actions usable without rebuilding them.
             visiblePositioners[positionerName] = positionerInfo
 
         jogDefaults = computePositionerJogDefaults(visiblePositioners)

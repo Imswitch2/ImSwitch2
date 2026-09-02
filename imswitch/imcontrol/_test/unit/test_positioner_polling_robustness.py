@@ -53,6 +53,28 @@ def _controller(entries=()):
     return ctrl
 
 
+def test_widget_visibility_is_configuration_driven_when_hardware_unavailable():
+    ctrl = _controller()
+    unavailable = SimpleNamespace(
+        forPositioning=True,
+        hide=False,
+        isAvailable=False,
+    )
+
+    assert ctrl._isPositionerShownInWidget(unavailable) is True
+
+
+def test_widget_visibility_still_respects_hide_and_for_positioning():
+    ctrl = _controller()
+
+    assert ctrl._isPositionerShownInWidget(SimpleNamespace(
+        forPositioning=True, hide=True, isAvailable=False
+    )) is False
+    assert ctrl._isPositionerShownInWidget(SimpleNamespace(
+        forPositioning=False, hide=False, isAvailable=False
+    )) is False
+
+
 def test_live_poll_failure_isolated_per_positioner(monkeypatch):
     bad = SimpleNamespace(name='Bad')
     good = SimpleNamespace(name='Good')
