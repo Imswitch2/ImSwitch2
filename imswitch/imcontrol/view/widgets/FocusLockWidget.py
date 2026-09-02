@@ -35,14 +35,29 @@ class FocusLockWidget(Widget):
         )
         self.twoFociBox = QtWidgets.QCheckBox('Two foci')
 
-        self.lockStateLabel = QtWidgets.QLabel('')
+        self.lockStateLabel = QtWidgets.QLabel('Unlocked')
         self.lockStateLabel.setToolTip(
             'Focus-lock state. "Suspended" means a scan currently owns the '
             'focus axis; "Reacquiring" means it is waiting for the focus '
             'signal to return before correcting again.'
         )
 
-        self.camDialogButton = guitools.BetterPushButton('Camera Dialog')
+        self.camDialogButton = guitools.BetterPushButton('Cam Dialog')
+        self.camDialogButton.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
+                                           QtWidgets.QSizePolicy.Expanding)
+
+        # Focus-camera acquisition is an explicit runtime resource, just like
+        # the main View widget's live acquisition. It defaults ON to preserve
+        # the historical focus-lock behaviour, but can now be stopped when the
+        # focus camera is not needed (for example before reconnecting it).
+        self.cameraAcqButton = guitools.BetterPushButton('Stop Cam')
+        self.cameraAcqButton.setCheckable(True)
+        self.cameraAcqButton.setChecked(True)
+        self.cameraAcqButton.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
+                                           QtWidgets.QSizePolicy.Expanding)
+        self.cameraAcqButton.setToolTip(
+            'Start/stop camera live acquisition.'
+        )
 
         # Focus lock calibration
         self.calibFromLabel = QtWidgets.QLabel('From (µm)')
@@ -88,16 +103,31 @@ class FocusLockWidget(Widget):
         grid.addWidget(self.kiLabel, 2, 3)
         grid.addWidget(self.kiEdit, 2, 4)
         grid.addWidget(self.lockButton, 1, 5, 2, 1)
-        grid.addWidget(self.ScanBlock, 3, 6)
-        grid.addWidget(self.twoFociBox, 2, 6)
+        grid.addWidget(self.ScanBlock, 3, 3,1,2)
+        grid.addWidget(self.twoFociBox, 3, 5)
         grid.addWidget(self.calibFromLabel, 1, 0)
         grid.addWidget(self.calibFromEdit, 1, 1)
         grid.addWidget(self.calibToLabel, 2, 0)
         grid.addWidget(self.calibToEdit, 2, 1)
         grid.addWidget(self.calibCurveButton, 3, 2)
-        grid.addWidget(self.camDialogButton, 1, 6, 1, 2)
-        grid.addWidget(self.lockStateLabel, 2, 7)
+        grid.addWidget(self.cameraAcqButton, 1, 6, 1, 1)
+        grid.addWidget(self.camDialogButton, 2, 6, 1, 1)
+        grid.addWidget(self.lockStateLabel, 3, 6)
 
+    def setFocusCameraActive(self, active):
+        """Sync the acquisition button without re-triggering the controller."""
+        self.cameraAcqButton.blockSignals(True)
+        try:
+            self.cameraAcqButton.setChecked(bool(active))
+        finally:
+            self.cameraAcqButton.blockSignals(False)
+            self._setCamAcqButtonLabel()
+
+    def _setCamAcqButtonLabel(self):
+        if self.cameraAcqButton.isChecked():
+            self.cameraAcqButton.setText("Stop Cam")
+        else:
+            self.cameraAcqButton.setText("Start Cam")
     def setKp(self, kp):
         self.kpEdit.setText(str(kp))
 
