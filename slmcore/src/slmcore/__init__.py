@@ -44,7 +44,9 @@ from .application import (
     StartupRuntime,
     TargetCalibrationState,
 )
-from .core.cgh.feedback import PositionReference,PositionReferenceMode
+from .core.cgh.feedback import (
+    EditablePositionReferenceGeometry,PositionReference,PositionReferenceMode,
+)
 from .core.calibration import SLMSectionCalibration
 from .core.config import (
     SectionConfigLoadResult,
@@ -117,6 +119,7 @@ __all__ = [
     "GroupTopology",
     "ImageMeasurement",
     "MeasurementDispatcher",
+    "EditablePositionReferenceGeometry",
     "PositionReference",
     "PositionReferenceContext",
     "PositionReferenceMode",

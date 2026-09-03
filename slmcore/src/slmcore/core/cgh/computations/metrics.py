@@ -7,6 +7,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..intensity_metrics import evaluate_relative_intensity_statistics
+from .array_backend import to_float
 from .types import CGHIterationMetrics
 
 
@@ -40,4 +41,48 @@ def evaluate_intensity_metrics(
         efficiency=efficiency,
         uniformity=statistics.uniformity,
         normalized_std=statistics.normalized_std,
+    )
+
+def evaluate_intensity_metrics_backend(
+    iteration: int,
+    measured_intensity,
+    desired_intensity,
+    efficiency: float | None,
+    *,
+    xp,
+    using_gpu: bool,
+) -> CGHIterationMetrics:
+    """Evaluate metrics without transferring backend arrays to the CPU.
+
+    This is primarily used by raster GPU GS, where copying the complete target
+    support to NumPy every iteration would erase much of the FFT speedup. Only
+    scalar reductions cross the device boundary.
+    """
+    if measured_intensity.shape != desired_intensity.shape:
+        raise ValueError(
+            "Measured and desired intensity shapes must match, got "
+            f"{measured_intensity.shape} and {desired_intensity.shape}"
+        )
+
+    response = measured_intensity / desired_intensity
+    mean_response = to_float(xp.mean(response),using_gpu)
+    if mean_response <= 0.0:
+        raise ValueError("Measured target response must contain positive power")
+
+    response = response / mean_response
+    maximum = to_float(xp.max(response),using_gpu)
+    minimum = to_float(xp.min(response),using_gpu)
+    denominator = maximum + minimum
+    uniformity = (
+        0.0 if denominator <= 0.0
+        else 1.0 - (maximum - minimum) / denominator
+    )
+    normalized_std = to_float(
+        xp.std(response) / xp.mean(response),using_gpu
+    )
+    return CGHIterationMetrics(
+        iteration=iteration,
+        efficiency=efficiency,
+        uniformity=uniformity,
+        normalized_std=normalized_std,
     )

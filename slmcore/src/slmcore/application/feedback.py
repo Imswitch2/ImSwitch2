@@ -16,11 +16,15 @@ import numpy as np
 
 from ..core.cgh.execution.status import CGHResultState
 from ..core.cgh.feedback import (
+    EditablePositionReferenceGeometry,
     FeedbackCapability,
     FeedbackOrientation,
     PositionReference,
     PositionReferenceMode,
-    center_weighted_reference_positions,
+    fit_center_reference_geometry,
+    editable_position_reference_geometry,
+    editable_reference_center_px,
+    editable_reference_positions,
     localization_positions_full_px,
     orient_localization,
     reference_positions_for_localization,
@@ -36,6 +40,27 @@ if TYPE_CHECKING:
 
 def _noop(*_args,**_kwargs) -> None:
     return None
+
+
+_EDITABLE_POSITION_REFERENCE_LOCK_FIELDS = frozenset({
+    "period_x_px","period_y_px","rotation_deg","lattice_angle_deg",
+})
+
+
+def _normalize_editable_locks(value: Any) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if isinstance(value,Mapping):
+        names = {str(name) for name,locked in value.items() if bool(locked)}
+    else:
+        names = {str(name) for name in value}
+    unknown = names-_EDITABLE_POSITION_REFERENCE_LOCK_FIELDS
+    if unknown:
+        raise ValueError(
+            "Unknown editable reference lock(s): %s"
+            % ", ".join(sorted(unknown))
+        )
+    return frozenset(names)
 
 
 class MeasurementRequest(Protocol):
@@ -115,24 +140,27 @@ class PositionReferenceSelection:
     """Transient per-section/plane position-reference choice."""
 
     mode: PositionReferenceMode=PositionReferenceMode.GLOBAL_FIT
-    center_emphasis: float=50.0
     saved_name: str | None=None
+    editable_geometry: EditablePositionReferenceGeometry | None=None
+    editable_locks: frozenset[str]=frozenset()
 
     def __post_init__(self) -> None:
         mode = PositionReferenceMode.normalize(self.mode)
-        emphasis = float(self.center_emphasis)
-        if not np.isfinite(emphasis) or not 0.0 <= emphasis <= 100.0:
-            raise ValueError("Center emphasis must be between 0 and 100")
         saved_name = (
             None
             if self.saved_name is None or not str(self.saved_name).strip()
             else str(self.saved_name).strip()
         )
+        geometry = self.editable_geometry
+        if geometry is not None and not isinstance(geometry,EditablePositionReferenceGeometry):
+            geometry = EditablePositionReferenceGeometry.from_mapping(geometry)
+        locks = _normalize_editable_locks(self.editable_locks)
         if mode is PositionReferenceMode.SAVED and saved_name is None:
             raise ValueError("Saved position-reference mode requires a name")
         object.__setattr__(self,"mode",mode)
-        object.__setattr__(self,"center_emphasis",emphasis)
         object.__setattr__(self,"saved_name",saved_name)
+        object.__setattr__(self,"editable_geometry",geometry)
+        object.__setattr__(self,"editable_locks",locks)
 
 
 @dataclass(frozen=True)
@@ -148,6 +176,7 @@ class PositionReferenceContext:
     change_unavailable_reason: str=""
     save_allowed: bool=False
     save_unavailable_reason: str=""
+    fit_geometry: EditablePositionReferenceGeometry | None=None
 
 
 @dataclass(frozen=True)
@@ -617,7 +646,8 @@ class SLMFeedbackService:
             )
         ):
             selection = PositionReferenceSelection(
-                center_emphasis=selection.center_emphasis,
+                editable_geometry=selection.editable_geometry,
+                editable_locks=selection.editable_locks,
             )
             self._position_reference_selections[key] = selection
         return selection
@@ -641,11 +671,22 @@ class SLMFeedbackService:
             and inspection.measurement.localization is not None
         )
         try:
-            if selection.mode is PositionReferenceMode.SAVED and has_localization:
+            if has_localization:
                 self._resolve_position_reference(section)
         except Exception as error:
             compatible = False
             compatibility_error = str(error)
+
+        fit_geometry = None
+        if has_localization:
+            try:
+                localization = orient_localization(
+                    inspection.measurement.localization,
+                    self.feedback_orientation(section),
+                )
+                fit_geometry = editable_position_reference_geometry(localization)
+            except Exception:
+                fit_geometry = None
 
         change_reason = self._position_reference_change_reason(section)
         save_reason = self._position_reference_save_reason(section)
@@ -659,6 +700,7 @@ class SLMFeedbackService:
             change_unavailable_reason=change_reason,
             save_allowed=not bool(save_reason),
             save_unavailable_reason=save_reason,
+            fit_geometry=fit_geometry,
         )
 
     def set_position_reference(
@@ -666,18 +708,37 @@ class SLMFeedbackService:
         section_key: str,
         *,
         mode: PositionReferenceMode | str,
-        center_emphasis: float=50.0,
         saved_name: str | None=None,
+        editable_geometry: EditablePositionReferenceGeometry | Mapping[str,Any] | None=None,
+        editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
     ) -> PositionReferenceSelection:
         self._require_editor_mode()
         section = str(section_key)
         reason = self._position_reference_change_reason(section)
         if reason:
             raise RuntimeError(reason)
+        normalized_mode = PositionReferenceMode.normalize(mode)
+        previous = self.position_reference_selection(section)
+        if editable_geometry is None and previous.editable_geometry is not None:
+            editable_geometry = previous.editable_geometry
+        if editable_locks is None:
+            editable_locks = previous.editable_locks
+        if normalized_mode is PositionReferenceMode.EDITABLE and editable_geometry is None:
+            inspection = self.session.runtime.get_section_feedback_inspection(section)
+            measurement = inspection.measurement
+            if measurement is None or measurement.localization is None:
+                raise RuntimeError(
+                    "Accept a localization before editing its reference lattice"
+                )
+            localization = orient_localization(
+                measurement.localization,self.feedback_orientation(section),
+            )
+            editable_geometry = editable_position_reference_geometry(localization)
         selection = PositionReferenceSelection(
-            mode=mode,
-            center_emphasis=center_emphasis,
+            mode=normalized_mode,
             saved_name=saved_name,
+            editable_geometry=editable_geometry,
+            editable_locks=_normalize_editable_locks(editable_locks),
         )
         plane = self._active_feedback_plane(section)
         if selection.mode is PositionReferenceMode.SAVED:
@@ -688,6 +749,42 @@ class SLMFeedbackService:
             if self._position_reference_store is None:
                 raise RuntimeError("Position-reference storage is unavailable")
             self._position_reference_store.load(plane,selection.saved_name)
+        self._position_reference_selections[(section,plane)] = selection
+        self._section_changed(section)
+        return selection
+
+    def fit_position_reference_center(
+        self,section_key: str,
+    ) -> PositionReferenceSelection:
+        """Replace the editable reference with a strong center-prioritized fit."""
+        self._require_editor_mode()
+        section = str(section_key)
+        reason = self._position_reference_change_reason(section)
+        if reason:
+            raise RuntimeError(reason)
+        inspection = self.session.runtime.get_section_feedback_inspection(section)
+        measurement = inspection.measurement
+        if measurement is None or measurement.localization is None:
+            raise RuntimeError(
+                "Accept a localization before fitting its reference lattice"
+            )
+        localization = orient_localization(
+            measurement.localization,self.feedback_orientation(section),
+        )
+        previous = self.position_reference_selection(section)
+        geometry = previous.editable_geometry
+        if geometry is None:
+            geometry = editable_position_reference_geometry(localization)
+        locks = previous.editable_locks
+        selection = PositionReferenceSelection(
+            mode=PositionReferenceMode.EDITABLE,
+            editable_geometry=fit_center_reference_geometry(
+                localization,geometry=geometry,
+                locks={name:(name in locks) for name in _EDITABLE_POSITION_REFERENCE_LOCK_FIELDS},
+            ),
+            editable_locks=locks,
+        )
+        plane = self._active_feedback_plane(section)
         self._position_reference_selections[(section,plane)] = selection
         self._section_changed(section)
         return selection
@@ -734,10 +831,13 @@ class SLMFeedbackService:
             },
         )
         store.save(reference,overwrite=bool(overwrite))
+        previous = self.position_reference_selection(section)
         self._position_reference_selections[(section,plane)] = (
             PositionReferenceSelection(
                 mode=PositionReferenceMode.SAVED,
                 saved_name=reference.name,
+                editable_geometry=previous.editable_geometry,
+                editable_locks=previous.editable_locks,
             )
         )
         self._section_changed(section)
@@ -753,20 +853,51 @@ class SLMFeedbackService:
         self._position_reference_store.delete(plane,str(name))
 
     def position_reference_preview(self,section_key: str):
-        """Return lightweight kxy preview data for the selected reference."""
+        """Return detector-space reference preview plus legacy kxy diagnostics."""
         try:
             status = self.session.runtime.get_section_feedback_status(section_key)
             if not status.localization_available:
                 return None
-            reference_positions,metadata = self._resolve_position_reference(
-                section_key
+            inspection = self.session.runtime.get_section_feedback_inspection(section_key)
+            measurement = inspection.measurement
+            if measurement is None or measurement.localization is None:
+                return None
+            localization = orient_localization(
+                measurement.localization,self.feedback_orientation(section_key),
+            )
+            reference_positions,metadata = self._resolve_position_reference(section_key)
+            reference = (
+                np.asarray(localization.expected_positions_px,dtype=np.float64)
+                if reference_positions is None
+                else np.asarray(reference_positions,dtype=np.float64)
             )
             analysis = self.session.runtime.compute_section_feedback_position_analysis(
                 section_key,
                 orientation=self.feedback_orientation(section_key),
                 reference_positions_px=reference_positions,
             )
+            selection = self.position_reference_selection(section_key)
+            fit_geometry = editable_position_reference_geometry(localization)
+            editable_geometry = selection.editable_geometry
+            center = (
+                editable_reference_center_px(localization,editable_geometry)
+                if selection.mode is PositionReferenceMode.EDITABLE
+                and editable_geometry is not None
+                else np.mean(reference,axis=1)
+            )
             return {
+                "cropped_image":np.asarray(localization.cropped_image,dtype=np.float64),
+                "measured_positions_px":np.asarray(localization.measured_positions_px,dtype=np.float64),
+                "global_positions_px":np.asarray(localization.expected_positions_px,dtype=np.float64),
+                "reference_positions_px":reference,
+                "reference_center_px":np.asarray(center,dtype=np.float64),
+                "fit_center_px":editable_reference_center_px(
+                    localization,fit_geometry,
+                ),
+                "fit_geometry":fit_geometry.to_dict(),
+                "editable_geometry":(
+                    None if editable_geometry is None else editable_geometry.to_dict()
+                ),
                 "ideal_positions_kxy":(
                     np.asarray(analysis.corrected_positions_kxy)
                     - np.asarray(analysis.correction_kxy)
@@ -791,14 +922,14 @@ class SLMFeedbackService:
         selection = self.position_reference_selection(section)
         if selection.mode is PositionReferenceMode.GLOBAL_FIT:
             return None,{"mode":selection.mode.value,"label":"Global fit"}
-        if selection.mode is PositionReferenceMode.CENTER_WEIGHTED:
-            positions = center_weighted_reference_positions(
-                localization,emphasis=selection.center_emphasis,
-            )
-            return positions,{
+        if selection.mode is PositionReferenceMode.EDITABLE:
+            geometry = selection.editable_geometry
+            if geometry is None:
+                geometry = editable_position_reference_geometry(localization)
+            return editable_reference_positions(localization,geometry),{
                 "mode":selection.mode.value,
-                "label":"Center weighted",
-                "center_emphasis":selection.center_emphasis,
+                "label":"Editable lattice",
+                "geometry":geometry.to_dict(),
             }
 
         plane = self._active_feedback_plane(section)
@@ -868,9 +999,7 @@ class SLMFeedbackService:
                         plane,selection.saved_name
                     )
                 ):
-                    self._position_reference_selections[key] = PositionReferenceSelection(
-                        center_emphasis=selection.center_emphasis,
-                    )
+                    self._position_reference_selections[key] = PositionReferenceSelection()
             self._section_changed(section)
 
     def set_feedback_orientation(
@@ -1104,6 +1233,16 @@ class SLMFeedbackService:
             runtime.commit_section_feedback_localization(
                 section_key,localization,parameters,
             )
+            key = self._position_reference_key(section_key)
+            selection = self._position_reference_selections.get(key)
+            if selection is not None and selection.mode is PositionReferenceMode.EDITABLE:
+                oriented = orient_localization(
+                    localization,self.feedback_orientation(section_key),
+                )
+                self._position_reference_selections[key] = PositionReferenceSelection(
+                    mode=PositionReferenceMode.EDITABLE,
+                    editable_geometry=editable_position_reference_geometry(oriented),
+                )
             self._update_committed_analysis(section_key,localization)
             self._section_changed(section_key)
             return True

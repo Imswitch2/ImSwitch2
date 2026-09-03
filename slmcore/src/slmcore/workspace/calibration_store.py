@@ -79,6 +79,19 @@ class SLMCalibrationStore:
         calibration.cam_px_size_um = float(definition["detector_pixel_size_um"])
         return calibration
 
+    def delete_calibration(
+        self,identity: Any,section_key: str,plane_name: str,
+    ) -> str | None:
+        name = str(plane_name or "").strip()
+        self.plane_definition(name)
+        path = _calibration_file_path(
+            self.directory,identity.serial_number,section_key,name,
+        )
+        if not path.is_file():
+            return None
+        path.unlink()
+        return str(path)
+
     def save_calibration(
         self,
         identity: Any,

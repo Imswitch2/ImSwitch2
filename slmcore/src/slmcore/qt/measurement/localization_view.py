@@ -24,6 +24,7 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
     sigInferMissingRequested = QtCore.Signal()
     sigAcceptRequested = QtCore.Signal()
     sigCandidateStateChanged = QtCore.Signal(bool)
+    sigDetectorChanged = QtCore.Signal(object)
 
     def __init__(
         self,
@@ -61,6 +62,9 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
             lambda detector:self.sigAcquireRequested.emit(detector)
         )
         self._workbench.sigLoadRequested.connect(self.sigLoadRequested.emit)
+        self._workbench.measurement_controls.sigDetectorChanged.connect(
+            self.sigDetectorChanged.emit
+        )
         self._workbench.sigRunRequested.connect(
             lambda parameters:self.sigRunRequested.emit(parameters)
         )

@@ -65,6 +65,7 @@ class SectionSettingsManager(QtCore.QObject):
             section_layout_customizable=self.controller.section_layout_available,
             display_mode=self.section_host.display_mode,
             interaction_settings=self.controller.interaction_settings,
+            initial_section_key=self.section_host.current_section_key(),
             title="%s settings" % self.controller.display_name,
             parent=self.section_host,
         )

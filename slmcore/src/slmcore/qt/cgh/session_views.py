@@ -576,6 +576,197 @@ class InspectView(QtWidgets.QWidget):
         )
 
 
+class PositionReferenceView(QtWidgets.QWidget):
+    """Detector-image overlay for measured, fitted and selected reference lattices."""
+
+    sigCenterOffsetRequested = QtCore.Signal(float,float)
+
+    def __init__(self,parent: QtWidgets.QWidget | None=None) -> None:
+        super().__init__(parent)
+        self._preview = None
+        self._reference_positions = None
+        self._measured_positions = None
+        self._fit_center = None
+        self._reference_center = None
+        self._updating_center = False
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
+        layout.setSpacing(4)
+
+        self.graphics = pg.GraphicsLayoutWidget(self)
+        self.graphics.setMinimumHeight(300)
+        self.view_box = self.graphics.addViewBox(row=0,col=0)
+        self.view_box.setAspectLocked(True)
+        self.view_box.invertY(True)
+        self.view_box.setMouseMode(pg.ViewBox.PanMode)
+
+        self.image_item = pg.ImageItem(axisOrder="row-major")
+        self.global_item = pg.ScatterPlotItem(
+            symbol="+",size=10,pen=pg.mkPen("#aaaaaa",width=1.0),
+        )
+        self.measured_item = pg.ScatterPlotItem(
+            symbol="x",size=9,pen=pg.mkPen("#55aa55",width=1.6),
+        )
+        self.reference_item = pg.ScatterPlotItem(
+            symbol="+",size=12,pen=pg.mkPen("#e06cdb",width=1.8),
+        )
+        self.vector_item = pg.PlotCurveItem(
+            pen=pg.mkPen("#ff9966",width=1.1),
+        )
+        self.center_item = pg.TargetItem(
+            movable=True,size=16,
+            pen=pg.mkPen("#e06cdb",width=1.4),
+        )
+        for item in (
+            self.image_item,self.global_item,self.vector_item,
+            self.measured_item,self.reference_item,self.center_item,
+        ):
+            self.view_box.addItem(item)
+        self.center_item.setVisible(False)
+        self.center_item.sigPositionChanged.connect(self._on_center_position_changed)
+        self.center_item.sigPositionChangeFinished.connect(self._on_center_position_finished)
+        layout.addWidget(self.graphics,1)
+
+        footer = QtWidgets.QHBoxLayout()
+        footer.setContentsMargins(0,2,0,0)
+        footer.setSpacing(8)
+        legend = QtWidgets.QLabel(
+            "Measured ×   Global fit +   Reference +   Vector: measured → reference"
+        )
+        legend.setStyleSheet("color: %s;" % _MUTED_COLOR)
+        footer.addWidget(legend)
+        footer.addStretch(1)
+        self.summary_label = QtWidgets.QLabel("")
+        self.summary_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
+        footer.addWidget(self.summary_label)
+        self.reset_button = QtWidgets.QPushButton("Reset View")
+        self.reset_button.setFixedHeight(22)
+        self.reset_button.clicked.connect(self.view_box.autoRange)
+        footer.addWidget(self.reset_button)
+        layout.addLayout(footer)
+        self.clear()
+
+    def set_preview(
+        self,preview: Mapping[str,Any] | None,*,center_editable: bool=False,
+    ) -> None:
+        if not preview:
+            self.clear()
+            return
+        image = np.asarray(preview.get("cropped_image"),dtype=np.float64)
+        measured = np.asarray(preview.get("measured_positions_px"),dtype=np.float64)
+        global_positions = np.asarray(
+            preview.get("global_positions_px"),dtype=np.float64,
+        )
+        reference = np.asarray(
+            preview.get("reference_positions_px"),dtype=np.float64,
+        )
+        if image.ndim != 2:
+            raise ValueError("Position-reference preview image must be two-dimensional")
+        for name,array in (("measured",measured),("global",global_positions),("reference",reference)):
+            if array.ndim != 2 or array.shape[0] != 2:
+                raise ValueError("%s positions must have shape (2, N)" % name)
+        if measured.shape != reference.shape or global_positions.shape != reference.shape:
+            raise ValueError("Position-reference preview point arrays must share shape")
+
+        # Reference-parameter edits (editable geometry or saved-reference
+        # selection) should update the overlay in place without
+        # destroying the user's zoom/pan.  Auto-range only when the measured
+        # localization itself is new.
+        reset_view = (
+            self._preview is None
+            or self._measured_positions is None
+            or self._measured_positions.shape != measured.shape
+            or not np.array_equal(self._measured_positions,measured)
+        )
+
+        self._preview = dict(preview)
+        self._measured_positions = np.array(measured,copy=True)
+        self._reference_positions = np.array(reference,copy=True)
+        self._fit_center = np.asarray(preview.get("fit_center_px"),dtype=np.float64).reshape(2)
+        self._reference_center = np.asarray(
+            preview.get("reference_center_px"),dtype=np.float64,
+        ).reshape(2)
+
+        self.image_item.setImage(image,autoLevels=True)
+        self.global_item.setData(x=global_positions[0],y=global_positions[1])
+        self.measured_item.setData(x=measured[0],y=measured[1])
+        self._set_reference_overlay(reference)
+        self._updating_center = True
+        try:
+            self.center_item.setPos(
+                float(self._reference_center[0]),float(self._reference_center[1]),
+            )
+        finally:
+            self._updating_center = False
+        self.center_item.setVisible(bool(center_editable))
+        self.center_item.movable = bool(center_editable)
+        displacement = reference-measured
+        magnitudes = np.linalg.norm(displacement,axis=0)
+        self.summary_label.setText(
+            "%d spots · Δ median %.3g px · max %.3g px" % (
+                reference.shape[1],
+                float(np.median(magnitudes)) if magnitudes.size else 0.0,
+                float(np.max(magnitudes)) if magnitudes.size else 0.0,
+            )
+        )
+        self.reset_button.setEnabled(True)
+        if reset_view:
+            self.view_box.autoRange()
+
+    def set_center_editable(self,enabled: bool) -> None:
+        visible = bool(enabled and self._preview is not None)
+        self.center_item.setVisible(visible)
+        self.center_item.movable = visible
+
+    def clear(self) -> None:
+        self._preview = None
+        self._reference_positions = None
+        self._measured_positions = None
+        self._fit_center = None
+        self._reference_center = None
+        self.image_item.clear()
+        self.global_item.setData(x=[],y=[])
+        self.measured_item.setData(x=[],y=[])
+        self.reference_item.setData(x=[],y=[])
+        self.vector_item.setData([],[])
+        self.center_item.setVisible(False)
+        self.summary_label.setText("Reference preview unavailable")
+        self.reset_button.setEnabled(False)
+
+    def _set_reference_overlay(self,reference: np.ndarray) -> None:
+        measured = self._measured_positions
+        if measured is None:
+            return
+        self.reference_item.setData(x=reference[0],y=reference[1])
+        count = reference.shape[1]
+        x = np.empty(2*count,dtype=np.float64)
+        y = np.empty(2*count,dtype=np.float64)
+        x[0::2],x[1::2] = measured[0],reference[0]
+        y[0::2],y[1::2] = measured[1],reference[1]
+        self.vector_item.setData(x=x,y=y,connect="pairs")
+
+    def _on_center_position_changed(self,*_args: Any) -> None:
+        if self._updating_center or self._reference_positions is None:
+            return
+        pos = self.center_item.pos()
+        center = np.asarray([float(pos.x()),float(pos.y())],dtype=np.float64)
+        base_center = self._reference_center
+        if base_center is None:
+            return
+        shifted = self._reference_positions + (center-base_center)[:,None]
+        self._set_reference_overlay(shifted)
+
+    def _on_center_position_finished(self,*_args: Any) -> None:
+        if self._updating_center or self._fit_center is None:
+            return
+        pos = self.center_item.pos()
+        self.sigCenterOffsetRequested.emit(
+            float(pos.x())-float(self._fit_center[0]),
+            float(pos.y())-float(self._fit_center[1]),
+        )
+
+
 class PositionCorrectionView(QtWidgets.QWidget):
     """Pan/zoom vector-field view of one sampled position correction.
 
@@ -848,6 +1039,7 @@ __all__ = [
     "FeedbackTargetView",
     "InspectView",
     "PositionCorrectionView",
+    "PositionReferenceView",
     "PropagationView",
     "format_target_summary",
 ]

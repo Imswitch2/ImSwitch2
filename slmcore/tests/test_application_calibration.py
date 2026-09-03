@@ -87,7 +87,7 @@ class _Dispatcher:
         self.pending = []
 
     def available_sources(self,section_key):
-        return ("cam",)
+        return ("cam","cam2")
 
     def preferred_source(self,section_key,available):
         return available[0] if available else None
@@ -118,6 +118,35 @@ def test_plane_selection_is_prepared_then_committed_headlessly(tmp_path):
     assert session.calibration.select_plane(prepared)
     assert session.calibration.active_plane("sec_0") == plane
     assert runtime.get_section_calibration_copy("sec_0").plane == plane
+
+
+def test_uncalibrated_plane_selection_is_independent_from_runtime_calibration(tmp_path):
+    runtime = _runtime()
+    store = SLMCalibrationStore(tmp_path)
+    plane = _plane(store)
+    session = SLMSession(runtime=runtime,calibration_store=store)
+
+    prepared = session.calibration.prepare_plane_selection("sec_0",plane)
+    assert prepared.calibration is None
+    assert session.calibration.select_plane(prepared)
+
+    assert session.calibration.active_plane("sec_0") == plane
+    assert runtime.get_section_calibration_copy("sec_0") is None
+
+
+def test_runtime_replacement_restores_active_plane_from_calibration_provenance(tmp_path):
+    runtime = _runtime()
+    store = SLMCalibrationStore(tmp_path)
+    plane = _plane(store)
+    session = SLMSession(runtime=runtime,calibration_store=store)
+
+    replacement = _runtime()
+    calibration = _save_calibration(store,replacement,plane)
+    replacement.set_section_calibration("sec_0",calibration)
+    session.replace_runtime(replacement)
+
+    assert session.calibration.active_plane("sec_0") == plane
+    assert replacement.get_section_calibration_copy("sec_0").plane == plane
 
 
 def test_plane_geometry_mismatch_defaults_to_reject_but_keep_is_explicit(tmp_path):
@@ -195,6 +224,25 @@ def test_store_catalog_deletion_reconciles_runtime_and_preference(tmp_path):
     assert saved_preferences
 
 
+def test_delete_calibration_keeps_active_plane_and_plane_definition(tmp_path):
+    runtime = _runtime()
+    store = SLMCalibrationStore(tmp_path)
+    plane = _plane(store)
+    _save_calibration(store,runtime,plane)
+    session = SLMSession(runtime=runtime,calibration_store=store)
+    session.calibration.select_plane(
+        session.calibration.prepare_plane_selection("sec_0",plane)
+    )
+
+    deleted = session.calibration.delete_calibration("sec_0")
+
+    assert deleted is not None
+    assert session.calibration.active_plane("sec_0") == plane
+    assert runtime.get_section_calibration_copy("sec_0") is None
+    assert store.has_plane(plane)
+    assert not store.load_calibration(runtime.identity,"sec_0",plane).is_valid()
+
+
 def test_calibration_live_acquisition_uses_host_neutral_dispatcher(tmp_path):
     runtime = _runtime(with_cgh=True)
     store = SLMCalibrationStore(tmp_path)
@@ -238,9 +286,11 @@ def test_calibration_live_acquisition_uses_host_neutral_dispatcher(tmp_path):
     assert availability.available
     assert availability.detector == "cam"
 
-    session.calibration.acquire_target_measurement("sec_0")
+    session.calibration.acquire_target_measurement("sec_0","cam2")
     request = dispatcher.pending[-1][0]
     assert request.active
+    assert dispatcher.pending[-1][4] == "cam2"
+    assert dispatcher.pending[-1][3]["plane_name"] == plane
     assert busy[-1][1] is True
 
     measurement = ImageMeasurement(
