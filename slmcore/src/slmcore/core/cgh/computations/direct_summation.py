@@ -13,9 +13,12 @@ from typing import Any,Mapping
 
 import numpy as np
 
-from ...engine.parameters import ParamSpec, ParamDisplayLevel
+from ...engine.parameters import ParamSpec
 from ...engine.registry import register_cgh_algorithm
 from ..targets.resolution import TargetResolution
+from .array_backend import (
+    CPU_BACKEND,GPU_BACKEND,available_backends,default_backend,get_array_module,to_numpy,
+)
 from .initialization import resolve_initial_phase,validate_initial_field
 from .metrics import evaluate_intensity_metrics,normalize_relative_intensity
 from .types import CGHAlgorithmOutput
@@ -26,6 +29,10 @@ _logger = logging.getLogger(__name__)
 DIRECT_SUMMATION_PARAMS = {
     "n_iterations": ParamSpec(50,int,min_value=1,max_value=300),
     "weighted_gs": ParamSpec(True,bool),
+    "backend": ParamSpec(
+        default_backend(),str,choices=available_backends(),
+        tooltip="Computation backend. GPU is offered only when CUDA/CuPy passed the startup probe.",
+    ),
 }
 
 
@@ -88,15 +95,20 @@ def _direct_spot_wgs(
     if n_iterations <= 0:
         raise ValueError("n_iterations must be >= 1")
 
-    cuda_requested = bool(
-        compute_params.get(
-            "direct_cuda",compute_params.get("cuda",True)
+    backend = compute_params.get("backend")
+    if backend is None:
+        # Compatibility with older programmatic callers. Current configs/UI use
+        # the explicit backend parameter registered above.
+        legacy_cuda = compute_params.get(
+            "direct_cuda",compute_params.get("cuda",None)
         )
-    )
-    xp,using_cuda,backend_name,backend_warning = _get_array_module(
-        cuda_requested
-    )
-    warnings = [backend_warning] if backend_warning else []
+        backend = (
+            GPU_BACKEND if bool(legacy_cuda)
+            else CPU_BACKEND if legacy_cuda is not None
+            else default_backend()
+        )
+    xp,using_cuda,backend_name = get_array_module(backend)
+    warnings = []
 
     dtype_complex = xp.complex64
     dtype_float = xp.float32
@@ -193,7 +205,7 @@ def _direct_spot_wgs(
         measured_intensity = measured_amplitude**2
         measured_phase = xp.angle(spot_field).astype(dtype_float)
 
-        measured_intensity_np = _to_numpy_array(
+        measured_intensity_np = to_numpy(
             measured_intensity,using_cuda
         ).astype(np.float64,copy=False)
         metrics.append(evaluate_intensity_metrics(
@@ -242,7 +254,7 @@ def _direct_spot_wgs(
         phase_slm = xp.angle(field_back).astype(dtype_float)
 
     field = xp.exp(1j * phase_slm).astype(dtype_complex)
-    field_np = _to_numpy_array(field,using_cuda).astype(
+    field_np = to_numpy(field,using_cuda).astype(
         np.complex128,copy=False
     )
 
@@ -285,22 +297,6 @@ def _validate_shape(shape):
     return height,width
 
 
-def _get_array_module(use_cuda):
-    """Return NumPy or CuPy and a recoverable fallback warning."""
-    if not use_cuda:
-        return np,False,"numpy",None
-
-    try:
-        import cupy as cp
-        _ = cp.zeros((1,),dtype=cp.float32)
-        return cp,True,"cupy",None
-    except Exception as error:
-        warning = (
-            "CUDA was requested but CuPy was unavailable or failed; "
-            f"NumPy CPU was used instead: {error}"
-        )
-        return np,False,"numpy",warning
-
 
 def _resolve_kxy_scale(direct_kxy_scale=None):
     """Return diagnostic X/Y scale under cycles-per-SLM-pixel semantics."""
@@ -314,9 +310,3 @@ def _resolve_kxy_scale(direct_kxy_scale=None):
         scale = float(direct_kxy_scale)
         return scale,scale
     return 1.0,1.0
-
-
-def _to_numpy_array(value,using_cuda):
-    if using_cuda:
-        return value.get()
-    return np.asarray(value)

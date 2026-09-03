@@ -121,6 +121,59 @@ def test_slm_sections_settings_dialog_reports_display_mode_change():
         dialog.deleteLater()
 
 
+def test_slm_sections_settings_dialog_opens_requested_section_and_uses_outer_scroll():
+    _app()
+    from qtpy import QtWidgets
+    from slmcore.qt.sections.settings import SLMSectionsSettingsDialog
+
+    runtime = _runtime()
+    dialog = SLMSectionsSettingsDialog(
+        section_snapshots=runtime.get_section_snapshots(),
+        initial_section_key="sec_1",
+    )
+    try:
+        assert dialog.section_tabs.currentIndex() == 1
+        assert dialog.height() >= 620
+        assert dialog._content_scroll.widgetResizable()
+
+        page = dialog.section_tabs.widget(1)
+        assert dialog._editors["sec_1"].parent() is page
+        direct_scrolls = [
+            page.layout().itemAt(index).widget()
+            for index in range(page.layout().count())
+            if isinstance(page.layout().itemAt(index).widget(),QtWidgets.QScrollArea)
+        ]
+        assert direct_scrolls == []
+    finally:
+        dialog.deleteLater()
+
+
+def test_sections_view_host_exposes_current_tab_bar_and_title_notifications():
+    _app()
+    from slmcore.qt import SectionsDisplayMode
+    from slmcore.qt.sections.collection import SectionsCollectionView
+    from slmcore.qt.sections.view_host import SectionsViewHost
+
+    runtime = _runtime()
+    collection = SectionsCollectionView(
+        section_snapshots=runtime.get_section_snapshots(),
+    )
+    host = SectionsViewHost(collection,show_settings=False)
+    title_changes = []
+    host.sigSectionTitlesChanged.connect(lambda:title_changes.append(True))
+    try:
+        assert host.tab_bar() is not None
+        host.set_section_title("sec_1","Right")
+        assert host.tab_bar().tabText(1) == "Right"
+        assert title_changes == [True]
+
+        host.set_display_mode(SectionsDisplayMode.HORIZONTAL)
+        assert host.tab_bar() is None
+    finally:
+        host.deleteLater()
+        collection.deleteLater()
+
+
 def test_sections_view_host_exposes_geometry_and_change_signals():
     _app()
     from slmcore.qt import SectionsDisplayMode

@@ -28,6 +28,7 @@ class SectionsCollectionView(QtCore.QObject):
     sigActivePlaneRequested = QtCore.Signal(str,str)
     sigAddPlaneRequested = QtCore.Signal(str)
     sigDeletePlaneRequested = QtCore.Signal(str,str)
+    sigDeleteCalibrationRequested = QtCore.Signal(str,str)
     sigCalibrationRequested = QtCore.Signal(str)
     sigCghActionRequested = QtCore.Signal(str,str,object)
     sigTargetLockRequested = QtCore.Signal(str,str,object)
@@ -209,6 +210,9 @@ class SectionsCollectionView(QtCore.QObject):
         )
         view.sigDeletePlaneRequested.connect(
             self.sigDeletePlaneRequested.emit,
+        )
+        view.sigDeleteCalibrationRequested.connect(
+            self.sigDeleteCalibrationRequested.emit,
         )
         view.sigCalibrationRequested.connect(
             self.sigCalibrationRequested.emit,

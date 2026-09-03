@@ -15,7 +15,8 @@ from ...calibration.geometry_dialogs import (
     CalibrationMismatchDecision,calibration_mismatch_decision,
 )
 from ...calibration.plane_dialogs import (
-    confirm_plane_deletion,request_plane_definition,
+    confirm_calibration_deletion,confirm_plane_deletion,
+    request_plane_definition,
 )
 
 
@@ -62,6 +63,9 @@ class CalibrationManager(QtCore.QObject):
         collection.sigActivePlaneRequested.connect(self._on_active_plane_requested)
         collection.sigAddPlaneRequested.connect(self._on_add_plane_requested)
         collection.sigDeletePlaneRequested.connect(self._on_delete_plane_requested)
+        collection.sigDeleteCalibrationRequested.connect(
+            self._on_delete_calibration_requested,
+        )
         collection.sigCalibrationRequested.connect(self.open_dialog)
 
     def _disconnect_collection(self) -> None:
@@ -70,6 +74,10 @@ class CalibrationManager(QtCore.QObject):
             (collection.sigActivePlaneRequested,self._on_active_plane_requested),
             (collection.sigAddPlaneRequested,self._on_add_plane_requested),
             (collection.sigDeletePlaneRequested,self._on_delete_plane_requested),
+            (
+                collection.sigDeleteCalibrationRequested,
+                self._on_delete_calibration_requested,
+            ),
             (collection.sigCalibrationRequested,self.open_dialog),
         ):
             try:
@@ -141,7 +149,10 @@ class CalibrationManager(QtCore.QObject):
         ):
             return
         parent = self.controller.section_collection.section_view(section_key)
-        definition = request_plane_definition(parent)
+        detectors,current_detector = self._measurement_sources(section_key)
+        definition = request_plane_definition(
+            parent,detectors=detectors,current_detector=current_detector,
+        )
         if definition is None:
             return
         try:
@@ -151,6 +162,41 @@ class CalibrationManager(QtCore.QObject):
         except Exception as error:
             self.refresh_planes()
             self._error("Add SLM Plane Failed",error)
+
+    @QtCore.Slot(str,str)
+    def _on_delete_calibration_requested(
+        self,section_key: str,plane_name: str,
+    ) -> None:
+        if (
+            not self.controller.editor_writes_allowed
+            or self.controller.automatic_operation_active
+        ):
+            return
+        plane = str(plane_name or "").strip()
+        if not plane or self.service.active_plane(section_key) != plane:
+            self.refresh_planes()
+            return
+        parent = self.controller.section_collection.section_view(section_key)
+        if not confirm_calibration_deletion(plane,parent):
+            return
+        try:
+            deleted = self.service.delete_calibration(section_key)
+            self.close_dialog(section_key)
+            self.refresh_planes()
+            self.controller._restore_section(section_key)
+            self.controller.sigInfo.emit(
+                "SLM Calibration",
+                (
+                    'Deleted calibration for plane "%s".' % plane
+                    if deleted else
+                    'No saved calibration file existed for plane "%s"; '
+                    'the active calibration was cleared.' % plane
+                ),
+            )
+        except Exception as error:
+            self.controller._restore_section(section_key)
+            self.refresh_planes()
+            self._error("Delete SLM Calibration Failed",error)
 
     @QtCore.Slot(str,str)
     def _on_delete_plane_requested(
@@ -203,21 +249,24 @@ class CalibrationManager(QtCore.QObject):
             self._error("SLM Section Calibration",error)
             return
         detector = str(definition.get("detector_name") or "").strip()
+        detectors,current_detector = self._measurement_sources(
+            section_key,preferred=detector,
+        )
 
         dialog = self._dialogs.get(section_key)
         if dialog is None:
             dialog = CalibrationDialog(
                 plane_name=plane,
                 localization_parameters=_default_localization_parameters(),
-                detectors=(detector,) if detector else (),
-                current_detector=detector or None,
+                detectors=detectors,
+                current_detector=current_detector,
                 title="Calibration - %s/%s" % (self.display_name,section_key),
                 parent=self.controller.section_collection.section_view(section_key),
             )
             self._dialogs[section_key] = dialog
             dialog.set_bound_detector(detector)
             dialog.sigAcquireRequested.connect(
-                lambda _source,key=section_key:self.acquire_target_measurement(key)
+                lambda source,key=section_key:self.acquire_target_measurement(key,source)
             )
             dialog.sigLoadRequested.connect(
                 lambda key=section_key:self.load_target_measurement(key)
@@ -243,6 +292,7 @@ class CalibrationManager(QtCore.QObject):
             )
         else:
             dialog.set_plane_name(plane)
+            dialog.configure_detectors(detectors,current_detector)
             dialog.set_bound_detector(detector)
 
         self.render_target_state(section_key)
@@ -250,6 +300,31 @@ class CalibrationManager(QtCore.QObject):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _measurement_sources(
+        self,section_key: str,*,preferred: str | None=None,
+    ) -> tuple[tuple[str,...],str | None]:
+        measurements = self.service.measurements
+        if measurements is None or not measurements.available:
+            return (),None
+        try:
+            sources = tuple(
+                name for name in (str(value).strip() for value in measurements.available_sources(section_key))
+                if name
+            )
+        except Exception:
+            sources = ()
+        preferred = str(preferred or "").strip()
+        if preferred and preferred in sources:
+            return sources,preferred
+        try:
+            current = measurements.preferred_source(section_key,sources)
+        except Exception:
+            current = None
+        current = str(current or "").strip() or None
+        if current not in sources:
+            current = sources[0] if sources else None
+        return sources,current
 
     def _dialog_finished(self,section_key: str) -> None:
         self.service.discard_target_state(section_key)
@@ -301,14 +376,16 @@ class CalibrationManager(QtCore.QObject):
                 self._error("Target localization reference failed",error)
             return None
 
-    def acquire_target_measurement(self,section_key: str) -> None:
+    def acquire_target_measurement(
+        self,section_key: str,detector: str | None=None,
+    ) -> None:
         if not self.controller.editor_writes_allowed:
             return
         dialog = self._dialogs.get(section_key)
         try:
             self.controller.flush_section(section_key,propagate=True)
             self.service.ensure_target_reference(section_key)
-            self.service.acquire_target_measurement(section_key)
+            self.service.acquire_target_measurement(section_key,detector)
         except Exception as error:
             if dialog is not None:
                 dialog.set_target_measurement_error(error)

@@ -25,6 +25,7 @@ from .session_views import (
     FeedbackTargetView,
     InspectView,
     PositionCorrectionView,
+    PositionReferenceView,
     format_target_summary,
 )
 
@@ -52,6 +53,7 @@ class MeasurementsAction(str,Enum):
     INTENSITY_RESET = "intensity_reset"
     POSITION_APPLY = "position_apply"
     POSITION_REFERENCE_SET = "position_reference_set"
+    POSITION_REFERENCE_FIT_CENTER = "position_reference_fit_center"
     POSITION_REFERENCE_SAVE = "position_reference_save"
     POSITION_REFERENCE_DELETE = "position_reference_delete"
     POSITION_SET_ACTIVE = "position_set_active"
@@ -111,9 +113,11 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._feedback_orientation_change_reason = ""
         self._position_reference_context: dict[str,Any] = {
             "mode":"global_fit",
-            "center_emphasis":50.0,
             "saved_name":None,
             "saved_names":(),
+            "editable_geometry":None,
+            "editable_locks":{},
+            "fit_geometry":None,
             "plane_name":None,
             "compatible":True,
             "compatibility_error":"",
@@ -550,20 +554,40 @@ class CGHSessionWindow(QtWidgets.QDialog):
         layout.setContentsMargins(5,7,5,5)
         layout.setSpacing(8)
 
-        # Main visualization.
-        viewer = QtWidgets.QGroupBox("Position correction")
+        # Main visualization: detector-space reference workbench by default,
+        # with the original k-space diagnostic retained as an alternate view.
+        viewer = QtWidgets.QGroupBox("Position reference")
         viewer_layout = QtWidgets.QVBoxLayout(viewer)
         viewer_layout.setContentsMargins(8,7,8,7)
 
+        view_row = QtWidgets.QHBoxLayout()
+        view_row.addWidget(QtWidgets.QLabel("View:"))
+        self.position_view_combo = QtWidgets.QComboBox()
+        self.position_view_combo.addItem("Detector overlay","detector")
+        self.position_view_combo.addItem("k-space correction","kxy")
+        self.position_view_combo.currentIndexChanged.connect(
+            self._on_position_view_changed,
+        )
+        view_row.addWidget(self.position_view_combo)
+        view_row.addStretch(1)
+        viewer_layout.addLayout(view_row)
+
+        self.position_view_stack = QtWidgets.QStackedWidget(viewer)
+        self.position_reference_view = PositionReferenceView(viewer)
+        self.position_reference_view.sigCenterOffsetRequested.connect(
+            self._on_position_reference_center_dragged,
+        )
         self.position_correction_view = PositionCorrectionView(viewer)
-        viewer_layout.addWidget(self.position_correction_view,1)
+        self.position_view_stack.addWidget(self.position_reference_view)
+        self.position_view_stack.addWidget(self.position_correction_view)
+        viewer_layout.addWidget(self.position_view_stack,1)
         layout.addWidget(viewer,1)
 
         # Match the intensity tab: workflow controls live in a narrow vertical
         # panel on the right while the visualization keeps the dominant area.
         controls = QtWidgets.QGroupBox("Position controls")
-        controls.setMinimumWidth(175)
-        controls.setMaximumWidth(220)
+        controls.setMinimumWidth(220)
+        controls.setMaximumWidth(285)
         controls_layout = QtWidgets.QVBoxLayout(controls)
         controls_layout.setContentsMargins(8,7,8,7)
         controls_layout.setSpacing(5)
@@ -585,27 +609,96 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         controls_layout.addWidget(self.position_reference_combo)
 
-        self.position_reference_emphasis_widget = QtWidgets.QWidget(controls)
-        emphasis_layout = QtWidgets.QHBoxLayout(
-            self.position_reference_emphasis_widget
+        self.position_reference_editable_widget = QtWidgets.QWidget(controls)
+        editable_layout = QtWidgets.QVBoxLayout(
+            self.position_reference_editable_widget
         )
-        emphasis_layout.setContentsMargins(0,0,0,0)
-        emphasis_layout.setSpacing(5)
-        emphasis_layout.addWidget(QtWidgets.QLabel("Center emphasis"))
-        self.position_reference_emphasis = QtWidgets.QSpinBox()
-        self.position_reference_emphasis.setRange(0,100)
-        self.position_reference_emphasis.setSingleStep(5)
-        self.position_reference_emphasis.setSuffix("%")
-        self.position_reference_emphasis.setValue(50)
-        self.position_reference_emphasis.setToolTip(
-            "Higher values make central localized spots contribute more strongly "
-            "to the affine reference lattice. Localization itself is unchanged."
+        editable_layout.setContentsMargins(0,0,0,0)
+        editable_layout.setSpacing(4)
+        geometry_form = QtWidgets.QFormLayout()
+        geometry_form.setContentsMargins(0,0,0,0)
+        geometry_form.setHorizontalSpacing(6)
+        geometry_form.setVerticalSpacing(3)
+
+        self.position_reference_period_x = self._make_position_geometry_spinbox(
+            0.01,10000.0,3," px",0.1,
         )
-        self.position_reference_emphasis.valueChanged.connect(
-            self._on_position_reference_emphasis_changed,
+        self.position_reference_period_y = self._make_position_geometry_spinbox(
+            0.01,10000.0,3," px",0.1,
         )
-        emphasis_layout.addWidget(self.position_reference_emphasis)
-        controls_layout.addWidget(self.position_reference_emphasis_widget)
+        self.position_reference_rotation = self._make_position_geometry_spinbox(
+            -180.0,180.0,3,"°",0.1,
+        )
+        self.position_reference_lattice_angle = self._make_position_geometry_spinbox(
+            0.1,179.9,3,"°",0.1,
+        )
+        self.position_reference_offset_x = self._make_position_geometry_spinbox(
+            -10000.0,10000.0,2," px",0.1,
+        )
+        self.position_reference_offset_y = self._make_position_geometry_spinbox(
+            -10000.0,10000.0,2," px",0.1,
+        )
+        lock_rows = (
+            ("Period X",self.position_reference_period_x,"position_reference_period_x_lock"),
+            ("Period Y",self.position_reference_period_y,"position_reference_period_y_lock"),
+            ("Rotation",self.position_reference_rotation,"position_reference_rotation_lock"),
+            ("Lattice angle",self.position_reference_lattice_angle,"position_reference_lattice_angle_lock"),
+        )
+        for label,editor,lock_name in lock_rows:
+            lock = QtWidgets.QCheckBox("Lock")
+            lock.setToolTip(
+                "Keep this value fixed when using Fit center."
+            )
+            setattr(self,lock_name,lock)
+            row = QtWidgets.QWidget()
+            row_layout = QtWidgets.QHBoxLayout(row)
+            row_layout.setContentsMargins(0,0,0,0)
+            row_layout.setSpacing(5)
+            row_layout.addWidget(editor,1)
+            row_layout.addWidget(lock)
+            geometry_form.addRow(label,row)
+            editor.valueChanged.connect(self._on_editable_geometry_changed)
+            lock.toggled.connect(self._on_editable_locks_changed)
+        for label,editor in (
+            ("Offset X",self.position_reference_offset_x),
+            ("Offset Y",self.position_reference_offset_y),
+        ):
+            geometry_form.addRow(label,editor)
+            editor.valueChanged.connect(self._on_editable_geometry_changed)
+        editable_layout.addLayout(geometry_form)
+
+        self.position_reference_fit_center_button = QtWidgets.QPushButton(
+            "Fit center"
+        )
+        self.position_reference_fit_center_button.setToolTip(
+            "Fit the editable lattice to the central localized spots while "
+            "keeping locked geometry values fixed."
+        )
+        self.position_reference_fit_center_button.clicked.connect(
+            self._fit_editable_geometry_center,
+        )
+        self.position_reference_fit_center_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,QtWidgets.QSizePolicy.Fixed,
+        )
+        editable_layout.addWidget(self.position_reference_fit_center_button)
+
+        self.position_reference_reset_fit_button = QtWidgets.QPushButton(
+            "Reset from fit"
+        )
+        self.position_reference_reset_fit_button.clicked.connect(
+            self._reset_editable_geometry_from_fit,
+        )
+        self.position_reference_reset_fit_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,QtWidgets.QSizePolicy.Fixed,
+        )
+        editable_layout.addWidget(self.position_reference_reset_fit_button)
+        editable_hint = QtWidgets.QLabel(
+            "Drag the reference center in the detector view to translate it."
+        )
+        editable_hint.setWordWrap(True)
+        editable_hint.setStyleSheet("color: %s;" % _MUTED_COLOR)
+        editable_layout.addWidget(editable_hint)
+        controls_layout.addWidget(self.position_reference_editable_widget)
 
         self.position_reference_info_label = QtWidgets.QLabel()
         self.position_reference_info_label.setWordWrap(True)
@@ -823,8 +916,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
         mode = str(context.get("mode") or "global_fit")
         saved_name = context.get("saved_name")
         saved_names = tuple(context.get("saved_names") or ())
-        emphasis = int(round(float(context.get("center_emphasis",50.0))))
-
         token = (
             "saved:%s" % saved_name
             if mode == "saved" and saved_name else mode
@@ -833,7 +924,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         try:
             combo.clear()
             combo.addItem("Global fit","global_fit")
-            combo.addItem("Center weighted","center_weighted")
+            combo.addItem("Editable lattice","editable")
             for name in saved_names:
                 combo.addItem("Saved: %s" % name,"saved:%s" % name)
             index = combo.findData(token)
@@ -841,18 +932,17 @@ class CGHSessionWindow(QtWidgets.QDialog):
         finally:
             del blocker
 
-        emphasis_widget = getattr(
-            self,"position_reference_emphasis_widget",None
+        editable_widget = getattr(
+            self,"position_reference_editable_widget",None
         )
-        emphasis_editor = getattr(self,"position_reference_emphasis",None)
-        if emphasis_editor is not None:
-            blocker = QtCore.QSignalBlocker(emphasis_editor)
-            try:
-                emphasis_editor.setValue(emphasis)
-            finally:
-                del blocker
-        if emphasis_widget is not None:
-            emphasis_widget.setVisible(mode == "center_weighted")
+        geometry = context.get("editable_geometry")
+        if mode == "editable" and geometry is None:
+            geometry = context.get("fit_geometry")
+        if geometry:
+            self._set_editable_geometry_controls(geometry)
+        self._set_editable_lock_controls(context.get("editable_locks") or {})
+        if editable_widget is not None:
+            editable_widget.setVisible(mode == "editable")
 
         change_allowed = bool(
             context.get("change_allowed",True)
@@ -862,22 +952,37 @@ class CGHSessionWindow(QtWidgets.QDialog):
         reason = str(context.get("change_unavailable_reason") or "")
         combo.setEnabled(change_allowed)
         combo.setToolTip(reason)
-        if emphasis_editor is not None:
-            emphasis_editor.setEnabled(change_allowed)
-            emphasis_editor.setToolTip(
-                reason or (
-                    "Higher values make central localized spots contribute more "
-                    "strongly to the affine reference lattice."
-                )
+        for editor in self._position_geometry_editors():
+            editor.setEnabled(change_allowed)
+            editor.setToolTip(reason)
+        for lock in self._position_geometry_lock_checkboxes():
+            lock.setEnabled(change_allowed)
+            lock.setToolTip(
+                reason or "Keep this value fixed when using Fit center."
             )
+        button_tooltips = {
+            "position_reference_fit_center_button":(
+                "Fit the editable lattice to the central localized spots while "
+                "keeping locked geometry values fixed."
+            ),
+            "position_reference_reset_fit_button":(
+                "Reset editable lattice geometry to the current global fit and "
+                "unlock all geometry values."
+            ),
+        }
+        for button_name,default_tooltip in button_tooltips.items():
+            button = getattr(self,button_name,None)
+            if button is not None:
+                button.setEnabled(change_allowed)
+                button.setToolTip(reason or default_tooltip)
 
         compatible = bool(context.get("compatible",True))
         compatibility_error = str(context.get("compatibility_error") or "")
         plane = str(context.get("plane_name") or "").strip()
         if mode == "global_fit":
             info = "Current localization · global affine fit"
-        elif mode == "center_weighted":
-            info = "Current localization · emphasis %d%%" % emphasis
+        elif mode == "editable":
+            info = "Current localization · editable affine lattice"
         elif saved_name:
             info = "Saved: %s" % saved_name
         else:
@@ -890,6 +995,12 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_reference_info_label.setStyleSheet(
             "color: %s;" % (_WARNING_COLOR if not compatible else _MUTED_COLOR)
         )
+
+        detector_view = getattr(self,"position_reference_view",None)
+        if detector_view is not None:
+            detector_view.set_center_editable(
+                mode == "editable" and change_allowed
+            )
 
         delete_button = getattr(
             self,"position_reference_delete_button",None
@@ -911,28 +1022,185 @@ class CGHSessionWindow(QtWidgets.QDialog):
             save_button.setEnabled(save_allowed)
             save_button.setToolTip(save_reason)
 
+    def _make_position_geometry_spinbox(
+        self,minimum: float,maximum: float,decimals: int,suffix: str,step: float,
+    ) -> QtWidgets.QDoubleSpinBox:
+        editor = QtWidgets.QDoubleSpinBox()
+        editor.setRange(float(minimum),float(maximum))
+        editor.setDecimals(int(decimals))
+        editor.setSingleStep(float(step))
+        editor.setSuffix(str(suffix))
+        editor.setKeyboardTracking(False)
+        return editor
+
+    def _position_geometry_editors(self) -> tuple[QtWidgets.QDoubleSpinBox,...]:
+        names = (
+            "position_reference_period_x",
+            "position_reference_period_y",
+            "position_reference_rotation",
+            "position_reference_lattice_angle",
+            "position_reference_offset_x",
+            "position_reference_offset_y",
+        )
+        return tuple(
+            editor for editor in (getattr(self,name,None) for name in names)
+            if editor is not None
+        )
+
+    def _position_geometry_lock_checkboxes(self) -> tuple[QtWidgets.QCheckBox,...]:
+        names = (
+            "position_reference_period_x_lock",
+            "position_reference_period_y_lock",
+            "position_reference_rotation_lock",
+            "position_reference_lattice_angle_lock",
+        )
+        return tuple(
+            checkbox for checkbox in (getattr(self,name,None) for name in names)
+            if checkbox is not None
+        )
+
+    def _set_editable_lock_controls(self,locks: Mapping[str,Any]) -> None:
+        values = (
+            ("position_reference_period_x_lock","period_x_px"),
+            ("position_reference_period_y_lock","period_y_px"),
+            ("position_reference_rotation_lock","rotation_deg"),
+            ("position_reference_lattice_angle_lock","lattice_angle_deg"),
+        )
+        for widget_name,key in values:
+            checkbox = getattr(self,widget_name,None)
+            if checkbox is None:
+                continue
+            blocker = QtCore.QSignalBlocker(checkbox)
+            try:
+                checkbox.setChecked(bool(locks.get(key,False)))
+            finally:
+                del blocker
+
+    def _editable_locks_payload(self) -> dict[str,bool]:
+        return {
+            "period_x_px":bool(self.position_reference_period_x_lock.isChecked()),
+            "period_y_px":bool(self.position_reference_period_y_lock.isChecked()),
+            "rotation_deg":bool(self.position_reference_rotation_lock.isChecked()),
+            "lattice_angle_deg":bool(
+                self.position_reference_lattice_angle_lock.isChecked()
+            ),
+        }
+
+    def _set_editable_geometry_controls(
+        self,geometry: Mapping[str,Any],
+    ) -> None:
+        values = (
+            ("position_reference_period_x","period_x_px"),
+            ("position_reference_period_y","period_y_px"),
+            ("position_reference_rotation","rotation_deg"),
+            ("position_reference_lattice_angle","lattice_angle_deg"),
+            ("position_reference_offset_x","offset_x_px"),
+            ("position_reference_offset_y","offset_y_px"),
+        )
+        for widget_name,key in values:
+            editor = getattr(self,widget_name,None)
+            if editor is None or key not in geometry:
+                continue
+            blocker = QtCore.QSignalBlocker(editor)
+            try:
+                editor.setValue(float(geometry[key]))
+            finally:
+                del blocker
+
+    def _editable_geometry_payload(self) -> dict[str,Any]:
+        context = dict(self._position_reference_context or {})
+        geometry = dict(
+            context.get("editable_geometry")
+            or context.get("fit_geometry")
+            or {}
+        )
+        geometry.update({
+            "period_x_px":float(self.position_reference_period_x.value()),
+            "period_y_px":float(self.position_reference_period_y.value()),
+            "rotation_deg":float(self.position_reference_rotation.value()),
+            "lattice_angle_deg":float(
+                self.position_reference_lattice_angle.value()
+            ),
+            "offset_x_px":float(self.position_reference_offset_x.value()),
+            "offset_y_px":float(self.position_reference_offset_y.value()),
+        })
+        geometry.setdefault("handedness",1)
+        return geometry
+
+    def _emit_editable_geometry(self) -> None:
+        if str(self.position_reference_combo.currentData()) != "editable":
+            return
+        self._emit(
+            MeasurementsAction.POSITION_REFERENCE_SET,
+            {
+                "mode":"editable",
+                "editable_geometry":self._editable_geometry_payload(),
+                "editable_locks":self._editable_locks_payload(),
+            },
+        )
+
     def _on_position_reference_changed(self,_index: int) -> None:
         token = str(self.position_reference_combo.currentData() or "global_fit")
         if token.startswith("saved:"):
             mode,saved_name = "saved",token.split(":",1)[1]
         else:
             mode,saved_name = token,None
-        self._emit(
-            MeasurementsAction.POSITION_REFERENCE_SET,
-            {
-                "mode":mode,
-                "saved_name":saved_name,
-                "center_emphasis":self.position_reference_emphasis.value(),
-            },
-        )
+        payload = {
+            "mode":mode,
+            "saved_name":saved_name,
+        }
+        if mode == "editable":
+            geometry = self._position_reference_context.get("editable_geometry")
+            if geometry is not None:
+                payload["editable_geometry"] = dict(geometry)
+            payload["editable_locks"] = dict(
+                self._position_reference_context.get("editable_locks") or {}
+            )
+        self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
-    def _on_position_reference_emphasis_changed(self,value: int) -> None:
-        if str(self.position_reference_combo.currentData()) != "center_weighted":
+    def _fit_editable_geometry_center(self,*_args: Any) -> None:
+        if str(self.position_reference_combo.currentData()) != "editable":
             return
-        self._emit(
-            MeasurementsAction.POSITION_REFERENCE_SET,
-            {"mode":"center_weighted","center_emphasis":int(value)},
+        self._emit(MeasurementsAction.POSITION_REFERENCE_FIT_CENTER,{})
+
+    def _on_editable_geometry_changed(self,*_args: Any) -> None:
+        self._emit_editable_geometry()
+
+    def _on_editable_locks_changed(self,*_args: Any) -> None:
+        self._emit_editable_geometry()
+
+    def _reset_editable_geometry_from_fit(self,*_args: Any) -> None:
+        geometry = dict(
+            self._position_reference_context.get("fit_geometry") or {}
         )
+        if not geometry:
+            return
+        geometry["offset_x_px"] = 0.0
+        geometry["offset_y_px"] = 0.0
+        self._set_editable_geometry_controls(geometry)
+        self._set_editable_lock_controls({})
+        self._emit_editable_geometry()
+
+    def _on_position_reference_center_dragged(
+        self,offset_x: float,offset_y: float,
+    ) -> None:
+        if str(self.position_reference_combo.currentData()) != "editable":
+            return
+        for editor,value in (
+            (self.position_reference_offset_x,offset_x),
+            (self.position_reference_offset_y,offset_y),
+        ):
+            blocker = QtCore.QSignalBlocker(editor)
+            try:
+                editor.setValue(float(value))
+            finally:
+                del blocker
+        self._emit_editable_geometry()
+
+    def _on_position_view_changed(self,index: int) -> None:
+        stack = getattr(self,"position_view_stack",None)
+        if stack is not None:
+            stack.setCurrentIndex(max(0,min(int(index),stack.count()-1)))
 
     def _save_position_reference_requested(self,*_args: Any) -> None:
         name,ok = QtWidgets.QInputDialog.getText(
@@ -1578,12 +1846,28 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._position_reference_preview
             if self._selected_is_current_context() else None
         )
+        mode = str(
+            dict(self._position_reference_context or {}).get("mode")
+            or "global_fit"
+        )
+        change_allowed = bool(
+            dict(self._position_reference_context or {}).get(
+                "change_allowed",True
+            )
+            and not self._cgh_computing
+            and self._selected_is_current_context()
+        )
         if preview is not None:
+            self.position_reference_view.set_preview(
+                preview,
+                center_editable=(mode == "editable" and change_allowed),
+            )
             self.position_correction_view.set_data(
                 ideal_positions_kxy=preview.get("ideal_positions_kxy"),
                 displacement_kxy=preview.get("displacement_kxy"),
             )
         else:
+            self.position_reference_view.clear()
             correction = self._session_inspection.position_correction
             if correction is None:
                 self.position_correction_view.clear()

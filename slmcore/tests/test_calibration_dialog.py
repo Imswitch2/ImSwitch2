@@ -186,12 +186,12 @@ def test_calibration_dialog_target_candidate_enables_set_calibration():
         dialog.deleteLater()
 
 
-def test_calibration_dialog_binds_live_acquisition_to_plane_detector_and_reason():
+def test_calibration_dialog_prefers_plane_detector_but_allows_override_with_warning():
     _app,QtWidgets,CalibrationDialog = _qapp_and_dialog_class()
     dialog = CalibrationDialog(
         plane_name="Sample plane",
         localization_parameters=_localization_defaults(),
-        detectors=("Camera",),
+        detectors=("Camera","Camera 2"),
         current_detector="Camera",
     )
     try:
@@ -207,9 +207,15 @@ def test_calibration_dialog_binds_live_acquisition_to_plane_detector_and_reason(
         assert acquire is not None
         assert not acquire.isEnabled()
         assert "Recompute" in acquire.toolTip()
+        controls = dialog.target_view._workbench.measurement_controls
         assert dialog.target_view.current_detector == "Camera"
-        assert not dialog.target_view._workbench.measurement_controls.detector_combo.isEnabled()
+        assert controls.detector_combo.isEnabled()
         assert "Sample plane" in dialog._plane_label.text()
         assert "Camera" in dialog._detector_label.text()
+
+        controls.detector_combo.setCurrentIndex(1)
+        assert dialog.target_view.current_detector == "Camera 2"
+        assert "using Camera 2" in dialog._detector_label.text()
+        assert dialog._detector_label.styleSheet()
     finally:
         dialog.deleteLater()

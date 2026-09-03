@@ -50,6 +50,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         section_layout_customizable: bool=False,
         display_mode: SectionsDisplayMode | None=None,
         interaction_settings: RuntimeViewInteractionSettings | None=None,
+        initial_section_key: str | None=None,
         title: str="SLM settings",
         parent: QtWidgets.QWidget | None=None,
     ) -> None:
@@ -81,26 +82,51 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         self._layout_range_labels: dict[str, QtWidgets.QLabel] = {}
 
         self.setWindowTitle(title)
-        self.resize(620,620)
+        screen = QtWidgets.QApplication.primaryScreen()
+        available = None if screen is None else screen.availableGeometry()
+        width = 700 if available is None else min(700,max(620,available.width() - 80))
+        height = 760 if available is None else min(760,max(620,available.height() - 80))
+        self.resize(width,height)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(10,10,10,10)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
+
+        self._content_scroll = QtWidgets.QScrollArea(self)
+        self._content_scroll.setWidgetResizable(True)
+        self._content_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._content_scroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAsNeeded,
+        )
+        self._content_scroll.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAsNeeded,
+        )
+
+        content = QtWidgets.QWidget(self._content_scroll)
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(0,0,0,0)
+        content_layout.setSpacing(10)
+        content_layout.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)
 
         if self._interaction_settings_initial is not None:
-            layout.addWidget(self._create_interaction_group())
+            content_layout.addWidget(self._create_interaction_group())
         if self._display_mode_initial is not None:
-            layout.addWidget(self._create_display_group())
-        layout.addWidget(self._create_layout_group())
+            content_layout.addWidget(self._create_display_group())
+        content_layout.addWidget(self._create_layout_group())
 
         description = QtWidgets.QLabel(
             "Choose which interface controls, groups and items are present "
             "in each section."
         )
         description.setWordWrap(True)
-        layout.addWidget(description)
+        content_layout.addWidget(description)
 
         self.section_tabs = QtWidgets.QTabWidget()
+        self.section_tabs.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,QtWidgets.QSizePolicy.Expanding,
+        )
+        self.section_tabs.setMinimumHeight(420)
+        section_keys = tuple(snapshots)
         for section_key,snapshot in snapshots.items():
             editor = SectionTopologyEditor(snapshot=snapshot)
             self._editors[section_key] = editor
@@ -112,17 +138,16 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
             page_layout.addWidget(
                 self._create_interface_group(section_key,snapshot),
             )
-
-            scroll = QtWidgets.QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-            scroll.setWidget(editor)
-            page_layout.addWidget(scroll,1)
+            page_layout.addWidget(editor)
 
             self.section_tabs.addTab(
                 page,self._section_titles[section_key],
             )
-        layout.addWidget(self.section_tabs,1)
+        if initial_section_key in section_keys:
+            self.section_tabs.setCurrentIndex(
+                section_keys.index(initial_section_key),
+            )
+        content_layout.addWidget(self.section_tabs,1)
 
         warning = QtWidgets.QLabel(
             "Disabling a group or removing an item discards its current "
@@ -131,7 +156,10 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #8a6d3b;")
-        layout.addWidget(warning)
+        content_layout.addWidget(warning)
+
+        self._content_scroll.setWidget(content)
+        layout.addWidget(self._content_scroll,1)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok
@@ -590,6 +618,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         section_layout_customizable: bool=False,
         display_mode: SectionsDisplayMode | None=None,
         interaction_settings: RuntimeViewInteractionSettings | None=None,
+        initial_section_key: str | None=None,
         title: str="SLM settings",
         parent: QtWidgets.QWidget | None=None,
     ) -> SLMSectionsSettingsChanges | None:
@@ -600,6 +629,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
             section_layout_customizable=section_layout_customizable,
             display_mode=display_mode,
             interaction_settings=interaction_settings,
+            initial_section_key=initial_section_key,
             title=title,
             parent=parent,
         )

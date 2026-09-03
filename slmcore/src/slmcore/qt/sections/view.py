@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any,Mapping
 
 from qtpy import QtCore,QtWidgets
@@ -35,6 +36,59 @@ def _calibration_data(calibration: Any):
     return serializer() if callable(serializer) else calibration
 
 
+def _calibration_source_label(source: Any) -> str:
+    source = str(source or "").strip()
+    labels = {
+        "linear_phase_test":"Linear phase test",
+        "target_localization":"Target localization",
+    }
+    if source in labels:
+        return labels[source]
+    return source.replace("_"," ").strip().capitalize() or "Unknown"
+
+
+def _calibration_date_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Unknown"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def _calibration_tooltip(
+    calibration: Any,*,geometry_matches: bool=True,
+) -> str:
+    kx = float(getattr(calibration,"kx_per_um",0.0))
+    ky = float(getattr(calibration,"ky_per_um",0.0))
+    lines = [
+        "Method: %s" % _calibration_source_label(
+            getattr(calibration,"source",None)
+        ),
+        "Date: %s" % _calibration_date_label(
+            getattr(calibration,"created_at",None)
+        ),
+        "kx: %.6g 1/px/um" % kx,
+        "ky: %.6g 1/px/um" % ky,
+    ]
+    detector = str(
+        dict(getattr(calibration,"metadata",{}) or {}).get(
+            "measurement_detector",
+            "",
+        ) or ""
+    ).strip()
+    if detector:
+        lines.append("Detector: %s" % detector)
+    if not geometry_matches:
+        lines.extend((
+            "",
+            "Warning: this calibration was measured with a different section geometry.",
+        ))
+    return "\n".join(lines)
+
+
 class SectionView(QtWidgets.QWidget):
     """Retained Qt representation of one backend SLM section.
 
@@ -48,6 +102,7 @@ class SectionView(QtWidgets.QWidget):
     sigActivePlaneRequested = QtCore.Signal(str,str)  # section_key, plane
     sigAddPlaneRequested = QtCore.Signal(str)  # section_key
     sigDeletePlaneRequested = QtCore.Signal(str,str)  # section_key, plane
+    sigDeleteCalibrationRequested = QtCore.Signal(str,str)  # section_key, plane
     sigCalibrationRequested = QtCore.Signal(str)  # section_key
     sigCghActionRequested = QtCore.Signal(str,str,object)
     sigTargetLockRequested = QtCore.Signal(str,str,object)
@@ -95,6 +150,7 @@ class SectionView(QtWidgets.QWidget):
         self.plane_more_button: QtWidgets.QToolButton | None = None
         self.add_plane_action: QtWidgets.QAction | None = None
         self.delete_plane_action: QtWidgets.QAction | None = None
+        self.delete_calibration_action: QtWidgets.QAction | None = None
         self.topology_settings_button: QtWidgets.QPushButton | None = None
         if (
             self.render_policy.show_unit_controls
@@ -216,6 +272,10 @@ class SectionView(QtWidgets.QWidget):
                 "Add plane...",
                 lambda:self.sigAddPlaneRequested.emit(self.section_key),
             )
+            self.delete_calibration_action = menu.addAction(
+                "Delete calibration...",
+                self._request_delete_calibration,
+            )
             self.delete_plane_action = menu.addAction(
                 "Delete plane...",
                 self._request_delete_plane,
@@ -244,6 +304,13 @@ class SectionView(QtWidgets.QWidget):
         self.sigActivePlaneRequested.emit(
             self.section_key,str(plane_name or ""),
         )
+
+    def _request_delete_calibration(self) -> None:
+        plane_name = self.get_active_plane()
+        if plane_name and _has_valid_calibration(self.calibration):
+            self.sigDeleteCalibrationRequested.emit(
+                self.section_key,plane_name,
+            )
 
     def _request_delete_plane(self) -> None:
         plane_name = self.get_active_plane()
@@ -425,7 +492,6 @@ class SectionView(QtWidgets.QWidget):
             )
 
         self._sync_unit_buttons(self.unit_mode)
-        self._sync_plane_from_calibration()
         self._refresh_unit_controls()
         self._refresh_calibration_controls()
         self._refresh_presentation_controls()
@@ -519,7 +585,6 @@ class SectionView(QtWidgets.QWidget):
             self.set_unit_mode(SLM_UNIT)
         for group_view in self.groups.values():
             group_view.refresh_conversions()
-        self._sync_plane_from_calibration()
         self._refresh_unit_controls()
         self._refresh_calibration_controls()
         self._refresh_presentation_controls()
@@ -565,18 +630,6 @@ class SectionView(QtWidgets.QWidget):
         if combo is None or combo.currentIndex() < 0:
             return None
         return combo.currentText().strip() or None
-
-    def _sync_plane_from_calibration(self) -> None:
-        combo = self.active_plane_combo
-        if combo is None:
-            return
-        plane = getattr(self.calibration,"plane",None)
-        index = combo.findText(str(plane)) if plane else -1
-        blocker = QtCore.QSignalBlocker(combo)
-        try:
-            combo.setCurrentIndex(index)
-        finally:
-            del blocker
 
     def set_unit_mode(self,mode: str) -> bool:
         if mode not in (SLM_UNIT,METRIC_UNIT):
@@ -651,34 +704,35 @@ class SectionView(QtWidgets.QWidget):
 
         if label is not None:
             if valid:
-                kx = float(getattr(self.calibration,"kx_per_um",0.0))
-                ky = float(getattr(self.calibration,"ky_per_um",0.0))
                 matches = calibration_geometry_matches(
                     self.calibration,self._snapshot.geometry,
                 )
-                prefix = "Calibration" if matches else "⚠ Calibration"
-                suffix = "" if matches else " (section geometry differs)"
-                label.setText(
-                    f"{prefix}: kx={kx:.6g}, ky={ky:.6g} 1/px/um{suffix}"
-                )
+                label.setText("Calibrated")
                 label.setStyleSheet(
-                    "color: #286b2d;" if matches else "color: #a66;"
+                    """
+                    QLabel { color: #286b2d; }
+                    QToolTip { color: white; }
+                    """
                 )
-                if matches:
-                    label.setToolTip("")
-                else:
-                    label.setToolTip(
-                        "This calibration was measured with a different section geometry."
+                label.setToolTip(
+                    _calibration_tooltip(
+                        self.calibration,
+                        geometry_matches=matches,
                     )
+                )
             elif plane:
-                label.setText("Calibration: not calibrated")
+                label.setText("Not calibrated")
                 label.setStyleSheet("color: #888;")
+                label.setToolTip("")
             else:
-                label.setText("Calibration: no plane selected")
+                label.setText("No plane selected")
                 label.setStyleSheet("color: #888;")
+                label.setToolTip("")
 
         if self.calibration_button is not None:
             self.calibration_button.setEnabled(bool(plane))
+        if self.delete_calibration_action is not None:
+            self.delete_calibration_action.setEnabled(bool(plane) and valid)
         if self.delete_plane_action is not None:
             self.delete_plane_action.setEnabled(bool(plane))
 

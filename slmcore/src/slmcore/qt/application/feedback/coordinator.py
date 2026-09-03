@@ -153,9 +153,23 @@ class FeedbackCoordinator(QtCore.QObject):
         selection = context.selection
         return {
             "mode":selection.mode.value,
-            "center_emphasis":selection.center_emphasis,
             "saved_name":selection.saved_name,
             "saved_names":context.saved_names,
+            "editable_geometry":(
+                None if selection.editable_geometry is None
+                else selection.editable_geometry.to_dict()
+            ),
+            "editable_locks":{
+                name:(name in selection.editable_locks)
+                for name in (
+                    "period_x_px","period_y_px",
+                    "rotation_deg","lattice_angle_deg",
+                )
+            },
+            "fit_geometry":(
+                None if context.fit_geometry is None
+                else context.fit_geometry.to_dict()
+            ),
             "plane_name":context.plane_name,
             "compatible":context.compatible,
             "compatibility_error":context.compatibility_error,
@@ -618,9 +632,12 @@ class FeedbackCoordinator(QtCore.QObject):
             self.set_position_reference(
                 section_key,
                 mode=str(values.get("mode") or "global_fit"),
-                center_emphasis=float(values.get("center_emphasis",50.0)),
                 saved_name=values.get("saved_name"),
+                editable_geometry=values.get("editable_geometry"),
+                editable_locks=values.get("editable_locks"),
             )
+        elif request is MeasurementsAction.POSITION_REFERENCE_FIT_CENTER:
+            self.fit_position_reference_center(section_key)
         elif request is MeasurementsAction.POSITION_REFERENCE_SAVE:
             self.save_position_reference(
                 section_key,str(values.get("name") or "").strip(),
@@ -675,19 +692,29 @@ class FeedbackCoordinator(QtCore.QObject):
         section_key: str,
         *,
         mode: str,
-        center_emphasis: float,
         saved_name: str | None,
+        editable_geometry: Mapping[str,Any] | None=None,
+        editable_locks: Mapping[str,Any] | None=None,
     ) -> None:
         try:
             self.controller.flush_section(section_key,propagate=True)
             self.service.set_position_reference(
                 section_key,
                 mode=mode,
-                center_emphasis=center_emphasis,
                 saved_name=saved_name,
+                editable_geometry=editable_geometry,
+                editable_locks=editable_locks,
             )
         except Exception as error:
             self._error("Changing position reference failed",error)
+            self.controller.synchronize_section(section_key)
+
+    def fit_position_reference_center(self,section_key: str) -> None:
+        try:
+            self.controller.flush_section(section_key,propagate=True)
+            self.service.fit_position_reference_center(section_key)
+        except Exception as error:
+            self._error("Fitting center reference failed",error)
             self.controller.synchronize_section(section_key)
 
     def save_position_reference(self,section_key: str,name: str) -> None:

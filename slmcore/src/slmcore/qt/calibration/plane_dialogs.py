@@ -11,6 +11,9 @@ def _exec(dialog: QtWidgets.QDialog) -> int:
 
 def request_plane_definition(
     parent: QtWidgets.QWidget | None=None,
+    *,
+    detectors: tuple[str,...]=(),
+    current_detector: str | None=None,
 ) -> dict[str, Any] | None:
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Add plane")
@@ -19,7 +22,18 @@ def request_plane_definition(
     layout = QtWidgets.QVBoxLayout(dialog)
     form = QtWidgets.QFormLayout()
     name_edit = QtWidgets.QLineEdit()
-    detector_edit = QtWidgets.QLineEdit()
+    detector_combo = QtWidgets.QComboBox()
+    detector_combo.setEditable(not bool(detectors))
+    for detector in detectors:
+        name = str(detector).strip()
+        if name:
+            detector_combo.addItem(name,name)
+    if current_detector:
+        index = detector_combo.findData(str(current_detector))
+        if index < 0:
+            index = detector_combo.findText(str(current_detector))
+        if index >= 0:
+            detector_combo.setCurrentIndex(index)
     pixel_size_edit = QtWidgets.QLineEdit()
     validator = QtGui.QDoubleValidator(pixel_size_edit)
     validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
@@ -29,7 +43,7 @@ def request_plane_definition(
     description_edit = QtWidgets.QLineEdit()
 
     form.addRow("Plane name:",name_edit)
-    form.addRow("Detector name:",detector_edit)
+    form.addRow("Detector name:",detector_combo)
     form.addRow("Detector pixel size (um):",pixel_size_edit)
     form.addRow("Description:",description_edit)
     layout.addLayout(form)
@@ -45,7 +59,7 @@ def request_plane_definition(
     while _exec(dialog) == QtWidgets.QDialog.Accepted:
         try:
             name = name_edit.text().strip()
-            detector = detector_edit.text().strip()
+            detector = detector_combo.currentText().strip()
             if not name:
                 raise ValueError("Plane name is required.")
             if not detector:
@@ -80,4 +94,23 @@ def confirm_plane_deletion(
     return answer == QtWidgets.QMessageBox.Yes
 
 
-__all__ = ["confirm_plane_deletion","request_plane_definition"]
+def confirm_calibration_deletion(
+    plane_name: str,parent: QtWidgets.QWidget | None=None,
+) -> bool:
+    answer = QtWidgets.QMessageBox.question(
+        parent,
+        "Delete calibration",
+        (
+            "Permanently delete the calibration for plane '%s'?\n\n"
+            "The plane definition will be kept. This cannot be undone."
+        ) % plane_name,
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        QtWidgets.QMessageBox.No,
+    )
+    return answer == QtWidgets.QMessageBox.Yes
+
+
+__all__ = [
+    "confirm_calibration_deletion","confirm_plane_deletion",
+    "request_plane_definition",
+]

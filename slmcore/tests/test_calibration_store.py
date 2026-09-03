@@ -42,6 +42,12 @@ def test_calibration_store_owns_plane_catalog_and_section_files(tmp_path):
     assert loaded.cam_px_size_um == pytest.approx(0.0777)
     assert loaded.section_geometry == section_geometry_to_dict(geometry)
 
+    deleted_calibration = store.delete_calibration(identity,"sec_0",plane)
+    assert deleted_calibration is not None
+    assert not store.load_calibration(identity,"sec_0",plane).is_valid()
+    assert store.has_plane(plane)
+
+    store.save_calibration(identity,"sec_0",plane,saved)
     deleted = store.delete_plane(plane)
     assert store.plane_names == ()
     assert len(deleted) == 1

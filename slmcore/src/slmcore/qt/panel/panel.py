@@ -23,6 +23,139 @@ from .policy import (
 )
 
 
+class _StickySectionTabs(QtCore.QObject):
+    """Mirror section tabs at the scroll viewport edge once they scroll away."""
+
+    _GEOMETRY_EVENTS = {
+        QtCore.QEvent.Resize,
+        QtCore.QEvent.Move,
+        QtCore.QEvent.Show,
+        QtCore.QEvent.Hide,
+        QtCore.QEvent.LayoutRequest,
+    }
+
+    def __init__(
+        self,scroll: QtWidgets.QScrollArea,section_host: SectionsViewHost,
+    ) -> None:
+        super().__init__(scroll)
+        self._scroll = scroll
+        self._section_host = section_host
+        self._observed_tab_bar: QtWidgets.QTabBar | None = None
+        self._keys: tuple[str,...] = ()
+        self._refresh_pending = False
+
+        self.widget = QtWidgets.QWidget(scroll.viewport())
+        self.widget.setObjectName("SLMStickySectionTabs")
+        self.widget.setAutoFillBackground(True)
+        row = QtWidgets.QHBoxLayout(self.widget)
+        row.setContentsMargins(0,0,0,0)
+        row.setSpacing(0)
+        self.tab_bar = QtWidgets.QTabBar(self.widget)
+        self.tab_bar.setDocumentMode(True)
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.currentChanged.connect(self._on_current_changed)
+        row.addWidget(self.tab_bar)
+        row.addStretch(1)
+        self.widget.hide()
+
+        scroll.viewport().installEventFilter(self)
+        content = scroll.widget()
+        if content is not None:
+            content.installEventFilter(self)
+        section_host.installEventFilter(self)
+        scroll.verticalScrollBar().valueChanged.connect(self.refresh)
+        scroll.horizontalScrollBar().valueChanged.connect(self.refresh)
+        section_host.sigCurrentSectionChanged.connect(self.refresh)
+        section_host.sigSectionsChanged.connect(self.schedule_refresh)
+        section_host.sigDisplayModeChanged.connect(self.schedule_refresh)
+        section_host.sigSectionTitlesChanged.connect(self.schedule_refresh)
+        self.schedule_refresh()
+
+    def eventFilter(self,watched,event):
+        if event.type() in self._GEOMETRY_EVENTS:
+            self.schedule_refresh()
+        return super().eventFilter(watched,event)
+
+    def schedule_refresh(self,*_ignored) -> None:
+        if self._refresh_pending:
+            return
+        self._refresh_pending = True
+        QtCore.QTimer.singleShot(0,self._scheduled_refresh)
+
+    def _scheduled_refresh(self) -> None:
+        self._refresh_pending = False
+        self.refresh()
+
+    def refresh(self,*_ignored) -> None:
+        canonical = self._section_host.tab_bar()
+        self._observe_tab_bar(canonical)
+        self._sync_tabs()
+
+        if (
+            canonical is None
+            or self._section_host.display_mode != SectionsDisplayMode.TABS
+            or self._section_host.isHidden()
+            or canonical.isHidden()
+        ):
+            self.widget.hide()
+            return
+
+        viewport = self._scroll.viewport()
+        top = canonical.mapTo(viewport,QtCore.QPoint(0,0)).y()
+        if top >= 0:
+            self.widget.hide()
+            return
+
+        height = max(canonical.height(),self.tab_bar.sizeHint().height())
+        self.widget.setGeometry(0,0,viewport.width(),max(1,height))
+        self.widget.show()
+        self.widget.raise_()
+
+    def _observe_tab_bar(self,tab_bar: QtWidgets.QTabBar | None) -> None:
+        if tab_bar is self._observed_tab_bar:
+            return
+        if self._observed_tab_bar is not None:
+            try:
+                self._observed_tab_bar.removeEventFilter(self)
+            except RuntimeError:
+                pass
+        self._observed_tab_bar = tab_bar
+        if tab_bar is not None:
+            tab_bar.installEventFilter(self)
+
+    def _sync_tabs(self) -> None:
+        keys = tuple(self._section_host.section_keys)
+        if keys != self._keys:
+            blocker = QtCore.QSignalBlocker(self.tab_bar)
+            try:
+                while self.tab_bar.count():
+                    self.tab_bar.removeTab(0)
+                for key in keys:
+                    self.tab_bar.addTab(self._section_host.section_title(key))
+            finally:
+                del blocker
+            self._keys = keys
+        else:
+            for index,key in enumerate(keys):
+                title = self._section_host.section_title(key)
+                if self.tab_bar.tabText(index) != title:
+                    self.tab_bar.setTabText(index,title)
+
+        current_key = self._section_host.current_section_key()
+        index = -1 if current_key not in keys else keys.index(current_key)
+        if self.tab_bar.currentIndex() != index:
+            blocker = QtCore.QSignalBlocker(self.tab_bar)
+            try:
+                self.tab_bar.setCurrentIndex(index)
+            finally:
+                del blocker
+
+    def _on_current_changed(self,index: int) -> None:
+        keys = tuple(self._section_host.section_keys)
+        if 0 <= index < len(keys):
+            self._section_host.set_current_section_key(keys[index])
+
+
 class SLMPanel(QtWidgets.QWidget):
     """Reusable standard Qt composition for one SLM.
 
@@ -50,6 +183,7 @@ class SLMPanel(QtWidgets.QWidget):
         self.layout_policy = layout_policy
         self.body_splitter: QtWidgets.QSplitter | None = None
         self.sections_widget: QtWidgets.QWidget | None = None
+        self._sticky_section_tabs: list[_StickySectionTabs] = []
 
         section_render_policy = replace(
             render_policy,show_topology_settings=False,
@@ -176,6 +310,7 @@ class SLMPanel(QtWidgets.QWidget):
         self.sections_widget = self.section_host
         middle_layout.addStretch(1)
         scroll.setWidget(middle)
+        self._install_sticky_section_tabs(scroll)
         return scroll
 
     def _create_sections_scroll(self) -> QtWidgets.QScrollArea:
@@ -186,7 +321,19 @@ class SLMPanel(QtWidgets.QWidget):
         scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         scroll.setWidget(self.section_host)
         self.sections_widget = scroll
+        self._install_sticky_section_tabs(scroll)
         return scroll
+
+    def _install_sticky_section_tabs(
+        self,scroll: QtWidgets.QScrollArea,
+    ) -> None:
+        self._sticky_section_tabs.append(
+            _StickySectionTabs(scroll,self.section_host),
+        )
+
+    def _refresh_sticky_section_tabs(self) -> None:
+        for sticky in self._sticky_section_tabs:
+            sticky.schedule_refresh()
 
     def _create_split_body(self) -> QtWidgets.QSplitter:
         policy = self.layout_policy
@@ -278,6 +425,7 @@ class SLMPanel(QtWidgets.QWidget):
             self.preview_view.set_section_highlight_enabled(
                 (not config_only) and self.layout_policy.highlight_active_section
             )
+        self._refresh_sticky_section_tabs()
         self.updateGeometry()
 
     def compact_height_hint(self) -> int:

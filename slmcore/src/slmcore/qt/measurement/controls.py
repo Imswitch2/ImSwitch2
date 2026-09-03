@@ -26,6 +26,7 @@ class MeasurementControls(QtWidgets.QWidget):
 
     sigAcquireRequested = QtCore.Signal(str)
     sigLoadRequested = QtCore.Signal()
+    sigDetectorChanged = QtCore.Signal(object)
 
     def __init__(
         self,parent: QtWidgets.QWidget | None=None,
@@ -47,6 +48,9 @@ class MeasurementControls(QtWidgets.QWidget):
         self.detector_combo.setMinimumWidth(150)
         self.detector_combo.setSizeAdjustPolicy(
             QtWidgets.QComboBox.AdjustToContentsOnFirstShow,
+        )
+        self.detector_combo.currentIndexChanged.connect(
+            lambda _index:self.sigDetectorChanged.emit(self.current_detector)
         )
         layout.addWidget(self.detector_combo)
 

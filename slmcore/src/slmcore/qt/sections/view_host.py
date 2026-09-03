@@ -27,6 +27,7 @@ class SectionsViewHost(QtWidgets.QWidget):
 
     sigSettingsRequested = QtCore.Signal()
     sigSectionTitleChanged = QtCore.Signal(str,str)
+    sigSectionTitlesChanged = QtCore.Signal()
     sigCurrentSectionChanged = QtCore.Signal(str)
     sigSectionsChanged = QtCore.Signal()
     sigDisplayModeChanged = QtCore.Signal(object)
@@ -118,6 +119,11 @@ class SectionsViewHost(QtWidgets.QWidget):
         label = self._title_labels.get(section_key)
         if label is not None:
             label.set_full_text(text)
+        self.sigSectionTitlesChanged.emit()
+
+    def tab_bar(self) -> QtWidgets.QTabBar | None:
+        """Return the mounted tab bar when sections are shown as tabs."""
+        return None if self._tabs is None else self._tabs.tabBar()
 
     def current_section_key(self) -> str | None:
         if self._tabs is not None and self._collection is not None:

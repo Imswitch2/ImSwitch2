@@ -116,6 +116,7 @@ class SLMCalibrationService:
         self._callbacks = callbacks or SLMCalibrationCallbacks()
         self._states: dict[str,TargetCalibrationState] = {}
         self._requests: dict[str,MeasurementRequest] = {}
+        self._active_planes: dict[str,str] = {}
         self._generation = 0
         self._store_change_pending = False
         self._disposed = False
@@ -126,6 +127,7 @@ class SLMCalibrationService:
                     "SLM calibration",
                     "Could not load plane definitions: %s" % self.store.last_load_error,
                 )
+        self._synchronize_active_planes_from_runtime()
 
     def set_callbacks(self,callbacks: SLMCalibrationCallbacks | None) -> None:
         self._callbacks = callbacks or SLMCalibrationCallbacks()
@@ -151,11 +153,34 @@ class SLMCalibrationService:
 
     def active_plane(self,section_key: str) -> str | None:
         self._require_section(section_key)
-        calibration = self.session.runtime.get_section_calibration_copy(section_key)
-        plane = str(getattr(calibration,"plane",None) or "").strip()
+        plane = str(self._active_planes.get(section_key) or "").strip()
         if plane and self.store is not None and self.store.has_plane(plane):
             return plane
         return None
+
+    def _synchronize_active_planes_from_runtime(self) -> None:
+        """Reconcile independent plane selection after construction/runtime replacement."""
+        runtime = self.session.runtime
+        previous = dict(self._active_planes)
+        active: dict[str,str] = {}
+        for section_key in runtime.section_keys:
+            calibration = runtime.get_section_calibration_copy(section_key)
+            plane = str(getattr(calibration,"plane",None) or "").strip()
+            if plane and self.store is not None and self.store.has_plane(plane):
+                active[section_key] = plane
+                continue
+            prior = str(previous.get(section_key) or "").strip()
+            if prior and self.store is not None and self.store.has_plane(prior):
+                active[section_key] = prior
+                continue
+            preferred = (
+                None if self.preferences is None
+                else self.preferences.default_plane(section_key)
+            )
+            preferred = str(preferred or "").strip()
+            if preferred and self.store is not None and self.store.has_plane(preferred):
+                active[section_key] = preferred
+        self._active_planes = active
 
     def prepare_plane_selection(
         self,section_key: str,plane_name: str | None,
@@ -170,6 +195,8 @@ class SLMCalibrationService:
                 self.session.runtime.identity,section_key,plane,
             )
         )
+        if calibration is not None and not calibration.is_valid():
+            calibration = None
         mismatches = calibration_geometry_mismatches(((
             section_key,
             self.session.runtime.get_section_geometry(section_key),
@@ -210,6 +237,10 @@ class SLMCalibrationService:
         previous_active = self.active_plane(section_key)
         try:
             self.session.set_section_calibration(section_key,prepared.calibration)
+            if prepared.plane_name is None:
+                self._active_planes.pop(section_key,None)
+            else:
+                self._active_planes[section_key] = prepared.plane_name
             if self.preferences is not None:
                 self.preferences.set_default_plane(section_key,prepared.plane_name)
             if prepared.plane_name != previous_active:
@@ -219,6 +250,10 @@ class SLMCalibrationService:
         except Exception:
             try:
                 self.session.set_section_calibration(section_key,previous_calibration)
+                if previous_active is None:
+                    self._active_planes.pop(section_key,None)
+                else:
+                    self._active_planes[section_key] = previous_active
                 if self.preferences is not None:
                     self.preferences.set_default_plane(section_key,previous_default)
             except Exception as rollback_error:
@@ -233,6 +268,36 @@ class SLMCalibrationService:
     def delete_plane(self,plane_name: str) -> tuple[str,...]:
         self._require_editor_mode()
         return self._require_store().delete_plane(plane_name)
+
+    def delete_calibration(self,section_key: str) -> str | None:
+        """Delete only the active plane calibration, preserving plane selection."""
+        self._require_editor_mode()
+        self._require_section(section_key)
+        store = self._require_store()
+        plane = self.active_plane(section_key)
+        if not plane:
+            raise RuntimeError("Select a calibration plane before deleting calibration.")
+        runtime = self.session.runtime
+        previous_calibration = runtime.get_section_calibration_copy(section_key)
+        try:
+            deleted = store.delete_calibration(
+                runtime.identity,section_key,plane,
+            )
+            self.session.set_section_calibration(section_key,None)
+            self.discard_target_state(section_key)
+            self._callbacks.on_planes_changed()
+            return deleted
+        except Exception:
+            if previous_calibration is not None and previous_calibration.is_valid():
+                try:
+                    restored = store.save_calibration(
+                        runtime.identity,section_key,plane,previous_calibration,
+                    )
+                    self.session.set_section_calibration(section_key,restored)
+                except Exception as rollback_error:
+                    self._error("SLM calibration deletion rollback failed",rollback_error)
+            self._callbacks.on_planes_changed()
+            raise
 
     def apply_startup_defaults(self) -> None:
         if self.store is None or self.preferences is None:
@@ -252,6 +317,8 @@ class SLMCalibrationService:
                 calibration = self.store.load_calibration(
                     runtime.identity,section_key,plane,
                 )
+                if not calibration.is_valid():
+                    calibration = None
                 mismatches = calibration_geometry_mismatches(((
                     section_key,runtime.get_section_geometry(section_key),calibration,
                 ),))
@@ -266,6 +333,7 @@ class SLMCalibrationService:
                 self.session.set_section_calibration(
                     section_key,calibration,publish_frame=False,
                 )
+                self._active_planes[section_key] = plane
             except Exception as error:
                 self._warning(
                     "SLM calibration",
@@ -401,7 +469,9 @@ class SLMCalibrationService:
             )
         return CalibrationAcquisitionAvailability(True,detector=detector)
 
-    def acquire_target_measurement(self,section_key: str) -> bool:
+    def acquire_target_measurement(
+        self,section_key: str,detector: str | None=None,
+    ) -> bool:
         self._require_editor_mode()
         self.ensure_target_reference(section_key)
         availability = self.acquisition_availability(section_key)
@@ -410,7 +480,9 @@ class SLMCalibrationService:
         measurements = self.measurements
         if measurements is None:
             raise RuntimeError("No host measurement provider is configured.")
-        detector = str(availability.detector or "")
+        detector = str(detector or availability.detector or "").strip()
+        if not detector:
+            raise RuntimeError("Select a detector before acquisition.")
         plane = self.active_plane(section_key)
         self.cancel_request(section_key)
         generation = self._generation
@@ -569,6 +641,7 @@ class SLMCalibrationService:
             None if self.preferences is None
             else self.preferences.default_plane(section_key)
         )
+        previous_active = self.active_plane(section_key)
         try:
             definition = store.plane_definition(plane_name)
             value = SLMSectionCalibration.from_dict(calibration).copy()
@@ -581,6 +654,7 @@ class SLMCalibrationService:
             value = store.save_calibration(
                 runtime.identity,section_key,plane_name,value,
             )
+            self._active_planes[section_key] = plane_name
             if self.preferences is not None:
                 self.preferences.set_default_plane(section_key,plane_name)
             self._callbacks.on_planes_changed()
@@ -588,6 +662,10 @@ class SLMCalibrationService:
         except Exception:
             try:
                 self.session.set_section_calibration(section_key,previous_calibration)
+                if previous_active is None:
+                    self._active_planes.pop(section_key,None)
+                else:
+                    self._active_planes[section_key] = previous_active
                 if self.preferences is not None:
                     self.preferences.set_default_plane(section_key,previous_default)
             except Exception as rollback_error:
@@ -613,6 +691,7 @@ class SLMCalibrationService:
         self._states.clear()
 
     def runtime_replaced(self) -> None:
+        self._synchronize_active_planes_from_runtime()
         if self._store_change_pending:
             self.reconcile_pending_catalog_changes()
         self._callbacks.on_planes_changed()
@@ -650,11 +729,16 @@ class SLMCalibrationService:
                         preferred = self.preferences.default_plane(section_key)
                         if preferred and not self.store.has_plane(preferred):
                             self.preferences.set_default_plane(section_key,None)
-                    calibration = runtime.get_section_calibration_copy(section_key)
-                    active = str(getattr(calibration,"plane",None) or "").strip()
+                    active = str(self._active_planes.get(section_key) or "").strip()
                     if active and not self.store.has_plane(active):
-                        self.session.set_section_calibration(section_key,None)
+                        self._active_planes.pop(section_key,None)
                         self.discard_target_state(section_key)
+                    calibration = runtime.get_section_calibration_copy(section_key)
+                    calibration_plane = str(
+                        getattr(calibration,"plane",None) or ""
+                    ).strip()
+                    if calibration_plane and not self.store.has_plane(calibration_plane):
+                        self.session.set_section_calibration(section_key,None)
         except Exception as error:
             self._error("SLM plane catalog synchronization failed",error)
         self._callbacks.on_planes_changed()

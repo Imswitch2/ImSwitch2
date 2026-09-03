@@ -278,3 +278,50 @@ def test_section_highlight_tracks_runtime_section_geometry_replacement():
         assert updated.height() == 5
     finally:
         panel.deleteLater()
+
+
+def test_collapsible_top_panel_keeps_section_tabs_visible_after_scrolling():
+    app = _app()
+    from qtpy import QtWidgets
+    from slmcore.qt import SectionsDisplayMode,SLMPanel
+
+    runtime = _runtime_two_sections()
+    panel = SLMPanel(
+        section_snapshots=runtime.get_section_snapshots(),
+        initial_frame=runtime.artifacts.eightbit,
+    )
+    try:
+        panel.resize(600,320)
+        panel.section_host.setMinimumHeight(700)
+        panel.show()
+        app.processEvents()
+
+        scroll = panel.body_widget
+        assert isinstance(scroll,QtWidgets.QScrollArea)
+        assert scroll.verticalScrollBar().maximum() > 0
+        sticky = panel._sticky_section_tabs[0]
+        assert not sticky.widget.isVisible()
+
+        scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+        app.processEvents()
+        sticky.refresh()
+
+        assert sticky.widget.isVisible()
+        assert sticky.tab_bar.count() == 2
+        assert sticky.tab_bar.tabText(0) == panel.section_host.section_title("sec_0")
+
+        sticky.tab_bar.setCurrentIndex(1)
+        app.processEvents()
+        assert panel.section_host.current_section_key() == "sec_1"
+
+        panel.section_host.set_section_title("sec_1","Right")
+        app.processEvents()
+        sticky.refresh()
+        assert sticky.tab_bar.tabText(1) == "Right"
+
+        panel.section_host.set_display_mode(SectionsDisplayMode.HORIZONTAL)
+        app.processEvents()
+        sticky.refresh()
+        assert not sticky.widget.isVisible()
+    finally:
+        panel.deleteLater()

@@ -103,6 +103,9 @@ class CalibrationDialog(QtWidgets.QDialog):
             detectors,
             current_detector,
         )
+        self.target_view.sigDetectorChanged.connect(
+            self._refresh_detector_binding_warning,
+        )
         self._stack.addWidget(self._linear_page)
         self._stack.addWidget(self._target_page)
         layout.addWidget(self._stack,1)
@@ -160,13 +163,32 @@ class CalibrationDialog(QtWidgets.QDialog):
         detector = str(detector_name or "").strip()
         self._bound_detector = detector
         self._detector_label.setText(
-            "Live acquisition detector: %s" % detector
-            if detector else "Live acquisition detector: none"
+            "Plane detector: %s" % detector
+            if detector else "Plane detector: none"
         )
-        self.target_view.configure_detectors(
-            (detector,) if detector else (),detector or None,
-        )
-        self.target_view.set_detector_selection_enabled(False)
+        self.target_view.set_detector_selection_enabled(True)
+        self._refresh_detector_binding_warning()
+
+    def _refresh_detector_binding_warning(self,*_args) -> None:
+        selected = str(self.target_view.current_detector or "").strip()
+        bound = self._bound_detector
+        if bound and selected and selected != bound:
+            self._detector_label.setText(
+                'Plane detector: %s  —  using %s for this acquisition.' % (bound,selected)
+            )
+            self._detector_label.setStyleSheet("color: #a66a00;")
+            self._detector_label.setToolTip(
+                'The selected detector differs from the detector stored for this plane. '
+                'Acquisition is allowed and the measurement records the selected detector.'
+            )
+        elif bound:
+            self._detector_label.setText("Plane detector: %s" % bound)
+            self._detector_label.setStyleSheet("")
+            self._detector_label.setToolTip("")
+        else:
+            self._detector_label.setText("Plane detector: none")
+            self._detector_label.setStyleSheet("")
+            self._detector_label.setToolTip("")
 
     def set_live_acquisition_available(
         self,available: bool,reason: str="",
@@ -177,6 +199,7 @@ class CalibrationDialog(QtWidgets.QDialog):
         self,detectors: Sequence[str],current_detector: str | None=None,
     ) -> None:
         self.target_view.configure_detectors(detectors,current_detector)
+        self._refresh_detector_binding_warning()
 
     def set_target_available(self,available: bool,text: str="") -> None:
         self._target_available = bool(available)
