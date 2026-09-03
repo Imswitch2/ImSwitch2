@@ -93,6 +93,27 @@ def compute_position_correction_signature(value: Any) -> CGHSignature | None:
     return _compute_signature(payload)
 
 
+def compute_position_layers_signature(
+    *,fov_calibration: Any=None,position_correction: Any=None,
+) -> CGHSignature | None:
+    """Return a stable signature for persistent + transient position layers.
+
+    Preserve the historical signature exactly when no FOV calibration is
+    active so existing saved CGH snapshots remain compatible.
+    """
+    position = compute_position_correction_signature(position_correction)
+    if fov_calibration is None:
+        return position
+    payload = (
+        fov_calibration.to_dict()
+        if hasattr(fov_calibration,"to_dict") else fov_calibration
+    )
+    return _compute_signature({
+        "fov_position_calibration":payload,
+        "position_correction_signature":position,
+    })
+
+
 def _compute_signature(input_values: Any) -> CGHSignature:
     """Normalize nested input values and hash their deterministic JSON form."""
     payload = _normalize_signature_value(input_values)

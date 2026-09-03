@@ -80,6 +80,7 @@ class FeedbackCoordinator(QtCore.QObject):
                         self._windows.pop(key,None)
                 )
                 self._synchronize_position_reference(section_key,window)
+                self._synchronize_fov_position_calibration(section_key,window)
             else:
                 window.configure_detectors(sources,current)
                 self.synchronize_section(section_key)
@@ -117,6 +118,7 @@ class FeedbackCoordinator(QtCore.QObject):
             self._feedback_orientation_ui_context(section_key),
         )
         self._synchronize_position_reference(section_key,window)
+        self._synchronize_fov_position_calibration(section_key,window)
         self._configure_automatic_availability(window)
         self._apply_automatic_state_to_window(section_key,window)
 
@@ -185,6 +187,14 @@ class FeedbackCoordinator(QtCore.QObject):
         window.set_position_reference_state(
             self._position_reference_ui_context(section_key),
             self.service.position_reference_preview(section_key),
+        )
+
+    def _synchronize_fov_position_calibration(
+        self,section_key: str,window: CGHSessionWindow,
+    ) -> None:
+        window.set_fov_position_calibration_state(
+            self.service.fov_position_calibration_context(section_key),
+            self.service.fov_position_calibration_preview(section_key),
         )
 
     def request_measurement(
@@ -646,6 +656,18 @@ class FeedbackCoordinator(QtCore.QObject):
             self.delete_position_reference(
                 section_key,str(values.get("name") or "").strip(),
             )
+        elif request is MeasurementsAction.FOV_CALIBRATION_FIT:
+            self.fit_fov_position_calibration(
+                section_key,
+                model=str(values.get("model") or "polynomial"),
+                degree=int(values.get("degree") or 2),
+            )
+        elif request is MeasurementsAction.FOV_CALIBRATION_SAVE:
+            self.save_fov_position_calibration(
+                section_key,str(values.get("name") or "").strip(),
+            )
+        elif request is MeasurementsAction.FOV_CALIBRATION_REPLACE:
+            self.replace_applied_fov_position_calibration(section_key)
         elif request is MeasurementsAction.POSITION_SET_ACTIVE:
             self.set_position_active(
                 section_key,bool(values.get("active",False)),
@@ -760,6 +782,70 @@ class FeedbackCoordinator(QtCore.QObject):
             self.service.delete_position_reference(section_key,name)
         except Exception as error:
             self._error("Deleting position reference failed",error)
+
+    def fit_fov_position_calibration(
+        self,section_key: str,*,model: str="polynomial",degree: int=2,
+    ) -> None:
+        try:
+            self.controller.flush_section(section_key,propagate=True)
+            self.service.fit_fov_position_calibration(
+                section_key,model=model,degree=degree,
+            )
+            self.controller.synchronize_section(section_key)
+        except Exception as error:
+            self._error("Fitting FOV calibration failed",error)
+            self.controller.synchronize_section(section_key)
+
+    def save_fov_position_calibration(self,section_key: str,name: str) -> None:
+        if not name:
+            return
+        try:
+            self.service.save_fov_position_calibration(section_key,name)
+        except FileExistsError:
+            parent = self._windows.get(section_key)
+            answer = QtWidgets.QMessageBox.question(
+                parent,"Replace FOV calibration",
+                'FOV calibration "%s" already exists for this SLM/section/plane. Replace it?'
+                % name,
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+            try:
+                self.service.save_fov_position_calibration(
+                    section_key,name,overwrite=True,
+                )
+            except Exception as error:
+                self._error("Saving FOV calibration failed",error)
+        except Exception as error:
+            self._error("Saving FOV calibration failed",error)
+        self.controller.synchronize_section(section_key)
+
+    def replace_applied_fov_position_calibration(self,section_key: str) -> None:
+        parent = self._windows.get(section_key)
+        context = self.service.fov_position_calibration_context(section_key)
+        name = context.get("selected_name")
+        if not name:
+            return
+        warning = self.service.fov_position_calibration_replacement_warning(
+            section_key
+        )
+        text = 'Replace applied FOV calibration "%s" with the current fit?' % name
+        if warning:
+            text += "\n\n" + warning
+        answer = QtWidgets.QMessageBox.question(
+            parent,"Replace applied FOV calibration",text,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            self.service.replace_applied_fov_position_calibration(section_key)
+        except Exception as error:
+            self._error("Replacing FOV calibration failed",error)
+        self.controller.synchronize_section(section_key)
 
     def _configure_automatic_availability(self,window: CGHSessionWindow) -> None:
         window.set_automatic_feedback_available(

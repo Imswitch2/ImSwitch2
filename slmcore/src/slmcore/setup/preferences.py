@@ -56,6 +56,42 @@ class FeedbackOrientationPreferences:
 
 
 @dataclass(frozen=True)
+class FOVPositionCalibrationPreferences:
+    """Persistent default FOV calibration names by measurement plane."""
+
+    planes: Mapping[str,str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        planes = {}
+        for plane,value in dict(self.planes or {}).items():
+            plane_name = str(plane or "").strip()
+            calibration_name = str(value or "").strip()
+            if plane_name and calibration_name:
+                planes[plane_name] = calibration_name
+        object.__setattr__(self,"planes",MappingProxyType(planes))
+
+    def to_dict(self) -> dict[str,Any]:
+        return {"planes":dict(self.planes)}
+
+    @classmethod
+    def from_value(cls,value: Any) -> "FOVPositionCalibrationPreferences":
+        if isinstance(value,cls):
+            return value
+        if value is None:
+            return cls()
+        if not isinstance(value,Mapping):
+            raise TypeError(
+                "startup_preferences.fov_position_calibrations entries must be mappings"
+            )
+        planes = value.get("planes",value) or {}
+        if not isinstance(planes,Mapping):
+            raise TypeError(
+                "startup_preferences.fov_position_calibrations.*.planes must be a mapping"
+            )
+        return cls(planes=dict(planes))
+
+
+@dataclass(frozen=True)
 class SLMStartupPreferences:
     """Persistent defaults applied when constructing an SLM session."""
 
@@ -65,6 +101,9 @@ class SLMStartupPreferences:
     feedback_orientations: Mapping[str,FeedbackOrientationPreferences] = field(
         default_factory=dict,
     )
+    fov_position_calibrations: Mapping[
+        str,FOVPositionCalibrationPreferences
+    ] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         startup = str(self.startup_config or "").strip() or None
@@ -88,6 +127,16 @@ class SLMStartupPreferences:
         object.__setattr__(
             self,"feedback_orientations",MappingProxyType(orientations),
         )
+        fov_defaults = {}
+        for section,value in dict(self.fov_position_calibrations or {}).items():
+            section_key = str(section or "").strip()
+            if section_key:
+                fov_defaults[section_key] = FOVPositionCalibrationPreferences.from_value(
+                    value
+                )
+        object.__setattr__(
+            self,"fov_position_calibrations",MappingProxyType(fov_defaults),
+        )
 
     def to_dict(self) -> dict[str,Any]:
         return {
@@ -97,6 +146,10 @@ class SLMStartupPreferences:
             "feedback_orientations":{
                 section:value.to_dict()
                 for section,value in self.feedback_orientations.items()
+            },
+            "fov_position_calibrations":{
+                section:value.to_dict()
+                for section,value in self.fov_position_calibrations.items()
             },
         }
 
@@ -116,9 +169,15 @@ class SLMStartupPreferences:
         orientations = data.get("feedback_orientations",{}) or {}
         if not isinstance(orientations,Mapping):
             raise TypeError("startup_preferences.feedback_orientations must be a mapping")
+        fov_defaults = data.get("fov_position_calibrations",{}) or {}
+        if not isinstance(fov_defaults,Mapping):
+            raise TypeError(
+                "startup_preferences.fov_position_calibrations must be a mapping"
+            )
         return cls(
             startup_config=data.get("startup_config"),
             default_planes=dict(planes),
             section_display_mode=data.get("section_display_mode","tabs"),
             feedback_orientations=dict(orientations),
+            fov_position_calibrations=dict(fov_defaults),
         )

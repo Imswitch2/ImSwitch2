@@ -549,6 +549,16 @@ class SLMRuntime:
             reference_positions_px=reference_positions_px,
         )
 
+    def get_section_fov_position_context(self,key: str):
+        return self._get_section(key).get_fov_position_context()
+
+    def set_section_fov_position_calibration(
+        self,key: str,calibration,
+    ) -> SectionStateTransition | None:
+        return self._apply_feedback_resolution_operation(
+            key,"set_fov_position_calibration",calibration,
+        )
+
     def set_section_position_correction_active(
         self,key: str,active: bool,*,reset_intensity: bool=False,
     ) -> SectionStateTransition | None:

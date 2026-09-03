@@ -170,6 +170,7 @@ class PositionCorrection:
     calibration: Mapping[str,Any]
     reference: Mapping[str,Any] = field(default_factory=dict)
     created_at: str = ""
+    baseline_positions_kxy: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         indices = _freeze_array(self.lattice_indices,"lattice_indices",ndim=2)
@@ -183,9 +184,19 @@ class PositionCorrection:
             self.corrected_positions_kxy,"corrected_positions_kxy",ndim=2,
             dtype=np.float64,
         )
+        baseline = (
+            ideal if self.baseline_positions_kxy is None else _freeze_array(
+                self.baseline_positions_kxy,"baseline_positions_kxy",ndim=2,
+                dtype=np.float64,
+            )
+        )
         if indices.shape[0] != 2:
             raise ValueError("lattice_indices must have shape (2, N)")
-        if ideal.shape != displacement.shape or ideal.shape != corrected.shape:
+        if (
+            ideal.shape != displacement.shape
+            or ideal.shape != corrected.shape
+            or ideal.shape != baseline.shape
+        ):
             raise ValueError("Position-correction arrays must share shape (2, N)")
         if ideal.shape[1] != indices.shape[1]:
             raise ValueError("Position correction spot count mismatch")
@@ -193,6 +204,7 @@ class PositionCorrection:
         object.__setattr__(self,"ideal_positions_kxy",ideal)
         object.__setattr__(self,"displacement_kxy",displacement)
         object.__setattr__(self,"corrected_positions_kxy",corrected)
+        object.__setattr__(self,"baseline_positions_kxy",baseline)
         object.__setattr__(self,"calibration",_freeze_mapping(self.calibration))
         object.__setattr__(self,"reference",_freeze_mapping(self.reference))
         object.__setattr__(self,"created_at",_timestamp(self.created_at))
@@ -205,6 +217,7 @@ class PositionCorrection:
             "ideal_positions_kxy":self.ideal_positions_kxy.tolist(),
             "displacement_kxy":self.displacement_kxy.tolist(),
             "corrected_positions_kxy":self.corrected_positions_kxy.tolist(),
+            "baseline_positions_kxy":self.baseline_positions_kxy.tolist(),
             "calibration":deepcopy(dict(self.calibration)),
             "reference":deepcopy(dict(self.reference)),
             "position_parameters":deepcopy(dict(self.analysis.parameters)),

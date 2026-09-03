@@ -8,6 +8,7 @@ from .calibration_store import SLMCalibrationStore
 from .config_store import SLMConfigStore
 from .correction_store import SLMCorrectionStore
 from .position_reference_store import SLMPositionReferenceStore
+from .fov_position_calibration_store import SLMFOVPositionCalibrationStore
 
 
 class SLMWorkspace:
@@ -21,6 +22,7 @@ class SLMWorkspace:
         corrections_dir: str | Path | None=None,
         calibrations_dir: str | Path | None=None,
         position_references_dir: str | Path | None=None,
+        fov_position_calibrations_dir: str | Path | None=None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True,exist_ok=True)
@@ -30,10 +32,14 @@ class SLMWorkspace:
         self.position_references_root = self._resolve_override(
             position_references_dir,"position_references"
         )
+        self.fov_position_calibrations_root = self._resolve_override(
+            fov_position_calibrations_dir,"fov_position_calibrations"
+        )
         self._config_stores: dict[tuple[str,int],SLMConfigStore] = {}
         self._correction_stores: dict[tuple[str,str],SLMCorrectionStore] = {}
         self._calibration_store: SLMCalibrationStore | None = None
         self._position_reference_store: SLMPositionReferenceStore | None = None
+        self._fov_position_calibration_store: SLMFOVPositionCalibrationStore | None = None
 
     @property
     def calibration_store(self) -> SLMCalibrationStore:
@@ -48,6 +54,14 @@ class SLMWorkspace:
                 self.position_references_root
             )
         return self._position_reference_store
+
+    @property
+    def fov_position_calibration_store(self) -> SLMFOVPositionCalibrationStore:
+        if self._fov_position_calibration_store is None:
+            self._fov_position_calibration_store = SLMFOVPositionCalibrationStore(
+                self.fov_position_calibrations_root
+            )
+        return self._fov_position_calibration_store
 
     def config_directory(self,identity: SLMIdentity) -> Path:
         return self.configs_root/self._serial(identity)

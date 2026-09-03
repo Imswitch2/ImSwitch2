@@ -37,6 +37,14 @@ _POSITION_NOT_CORRECTED = "not_corrected"
 _POSITION_CORRECTED = "corrected"
 
 
+def _format_float(value: Any) -> str:
+    try:
+        return "%.3g" % float(value)
+    except Exception:
+        return "—"
+
+
+
 class MeasurementsAction(str,Enum):
     """Host operations requested by :class:`MeasurementsCorrectionsWindow`."""
 
@@ -56,6 +64,9 @@ class MeasurementsAction(str,Enum):
     POSITION_REFERENCE_FIT_CENTER = "position_reference_fit_center"
     POSITION_REFERENCE_SAVE = "position_reference_save"
     POSITION_REFERENCE_DELETE = "position_reference_delete"
+    FOV_CALIBRATION_FIT = "fov_calibration_fit"
+    FOV_CALIBRATION_SAVE = "fov_calibration_save"
+    FOV_CALIBRATION_REPLACE = "fov_calibration_replace"
     POSITION_SET_ACTIVE = "position_set_active"
     POSITION_CLEAR = "position_clear"
     COMPUTE_ADAPTED = "compute_adapted_hologram"
@@ -127,6 +138,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "save_unavailable_reason":"",
         }
         self._position_reference_preview = None
+        self._fov_calibration_context: dict[str,Any] = {}
+        self._fov_calibration_preview = None
         self._set_feedback_orientation_context_state(feedback_orientation_context)
         self._cgh_computing = False
         self._candidate_current = False
@@ -564,7 +577,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         view_row.addWidget(QtWidgets.QLabel("View:"))
         self.position_view_combo = QtWidgets.QComboBox()
         self.position_view_combo.addItem("Detector overlay","detector")
-        self.position_view_combo.addItem("k-space correction","kxy")
+        self.position_view_combo.addItem("Position correction","kxy")
+        self.position_view_combo.addItem("FOV calibration","fov")
         self.position_view_combo.currentIndexChanged.connect(
             self._on_position_view_changed,
         )
@@ -578,8 +592,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._on_position_reference_center_dragged,
         )
         self.position_correction_view = PositionCorrectionView(viewer)
+        self.fov_calibration_view = PositionCorrectionView(viewer)
         self.position_view_stack.addWidget(self.position_reference_view)
         self.position_view_stack.addWidget(self.position_correction_view)
+        self.position_view_stack.addWidget(self.fov_calibration_view)
         viewer_layout.addWidget(self.position_view_stack,1)
         layout.addWidget(viewer,1)
 
@@ -594,8 +610,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         self.position_status_label = QtWidgets.QLabel("No correction")
         self.position_status_label.setWordWrap(True)
-        controls_layout.addWidget(self.position_status_label)
-        controls_layout.addSpacing(3)
 
         reference_label = QtWidgets.QLabel("Reference")
         reference_font = reference_label.font()
@@ -715,40 +729,113 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._delete_position_reference_requested,
         )
         controls_layout.addWidget(self.position_reference_delete_button)
-        controls_layout.addSpacing(5)
+        controls_layout.addSpacing(7)
 
-        self.position_apply_button = QtWidgets.QPushButton(
-            "Apply adaptation"
-        )
+        correction_label = QtWidgets.QLabel("Position correction")
+        correction_font = correction_label.font()
+        correction_font.setBold(True)
+        correction_label.setFont(correction_font)
+        controls_layout.addWidget(correction_label)
+        controls_layout.addWidget(self.position_status_label)
+
+        correction_actions = QtWidgets.QHBoxLayout()
+        correction_actions.setContentsMargins(0,0,0,0)
+        correction_actions.setSpacing(5)
+        self.position_apply_button = QtWidgets.QPushButton("Apply correction")
         self.position_apply_button.setFixedHeight(24)
         self.position_apply_button.clicked.connect(
             lambda _checked=False:self._emit(
                 MeasurementsAction.POSITION_APPLY
             )
         )
-        controls_layout.addWidget(self.position_apply_button)
+        correction_actions.addWidget(self.position_apply_button,1)
 
         compute_button = self._make_compute_adapted_button()
+        compute_button.setText("Compute")
         compute_button.setFixedHeight(24)
-        controls_layout.addWidget(compute_button)
+        correction_actions.addWidget(compute_button,1)
+        controls_layout.addLayout(correction_actions)
+
+        self.position_clear_button = QtWidgets.QPushButton("Clear correction")
+        self.position_clear_button.setFixedHeight(24)
+        self.position_clear_button.clicked.connect(
+            lambda _checked=False:self._emit(MeasurementsAction.POSITION_CLEAR)
+        )
+        controls_layout.addWidget(self.position_clear_button)
 
         controls_layout.addSpacing(5)
+        separator = QtWidgets.QFrame(controls)
+        separator.setFrameShape(QtWidgets.QFrame.HLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        controls_layout.addWidget(separator)
+        controls_layout.addSpacing(2)
 
-        self.position_toggle_button = QtWidgets.QPushButton("Enable")
-        self.position_clear_button = QtWidgets.QPushButton("Clear")
-        for button in (
-            self.position_toggle_button,
-            self.position_clear_button,
-        ):
-            button.setFixedHeight(24)
-            controls_layout.addWidget(button)
+        fov_label = QtWidgets.QLabel("FOV calibration")
+        fov_font = fov_label.font()
+        fov_font.setBold(True)
+        fov_label.setFont(fov_font)
+        controls_layout.addWidget(fov_label)
 
-        self.position_toggle_button.clicked.connect(self._toggle_position)
-        self.position_clear_button.clicked.connect(
+        self.fov_calibration_state_label = QtWidgets.QLabel("No calibration loaded")
+        self.fov_calibration_state_label.setWordWrap(True)
+        self.fov_calibration_state_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
+        controls_layout.addWidget(self.fov_calibration_state_label)
+
+        fov_form = QtWidgets.QFormLayout()
+        fov_form.setContentsMargins(0,0,0,0)
+        self.fov_calibration_model_combo = QtWidgets.QComboBox()
+        self.fov_calibration_model_combo.addItem("Polynomial","polynomial")
+        self.fov_calibration_model_combo.setEnabled(False)
+        self.fov_calibration_degree_combo = QtWidgets.QComboBox()
+        self.fov_calibration_degree_combo.addItem("Quadratic (2)",2)
+        self.fov_calibration_degree_combo.setEnabled(False)
+        fov_form.addRow("Model",self.fov_calibration_model_combo)
+        fov_form.addRow("Degree",self.fov_calibration_degree_combo)
+        controls_layout.addLayout(fov_form)
+
+        self.fov_calibration_fit_button = QtWidgets.QPushButton(
+            "Build fit from current feedback"
+        )
+        self.fov_calibration_fit_button.setFixedHeight(24)
+        self.fov_calibration_fit_button.setToolTip(
+            "Build a candidate FOV calibration. If a position correction has "
+            "already been applied, its accepted correction is used even after "
+            "computing the adapted hologram."
+        )
+        self.fov_calibration_fit_button.clicked.connect(
             lambda _checked=False:self._emit(
-                MeasurementsAction.POSITION_CLEAR
+                MeasurementsAction.FOV_CALIBRATION_FIT,{
+                    "model":self.fov_calibration_model_combo.currentData(),
+                    "degree":self.fov_calibration_degree_combo.currentData(),
+                },
             )
         )
+        controls_layout.addWidget(self.fov_calibration_fit_button)
+
+        fov_save_row = QtWidgets.QHBoxLayout()
+        fov_save_row.setContentsMargins(0,0,0,0)
+        fov_save_row.setSpacing(5)
+        self.fov_calibration_save_button = QtWidgets.QPushButton("Save as new…")
+        self.fov_calibration_save_button.setFixedHeight(24)
+        self.fov_calibration_save_button.clicked.connect(
+            self._save_fov_calibration_requested
+        )
+        fov_save_row.addWidget(self.fov_calibration_save_button,1)
+
+        self.fov_calibration_replace_button = QtWidgets.QPushButton(
+            "Replace…"
+        )
+        self.fov_calibration_replace_button.setToolTip(
+            "Replace the currently applied FOV calibration with this candidate fit."
+        )
+        self.fov_calibration_replace_button.setFixedHeight(24)
+        self.fov_calibration_replace_button.clicked.connect(
+            lambda _checked=False:self._emit(
+                MeasurementsAction.FOV_CALIBRATION_REPLACE,{}
+            )
+        )
+        fov_save_row.addWidget(self.fov_calibration_replace_button,1)
+        controls_layout.addLayout(fov_save_row)
 
         controls_layout.addStretch(1)
         layout.addWidget(controls,0)
@@ -756,7 +843,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         return tab
 
     def _make_compute_adapted_button(self) -> QtWidgets.QPushButton:
-        button = QtWidgets.QPushButton("Compute adapted hologram")
+        button = QtWidgets.QPushButton("Compute")
         button.setMinimumHeight(28)
         button.clicked.connect(
             lambda _checked=False:self._emit(MeasurementsAction.COMPUTE_ADAPTED)
@@ -897,6 +984,78 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._emit(MeasurementsAction.FEEDBACK_ORIENTATION_SAVE,{
             "orientation":self._feedback_orientation.value,
         })
+
+    def set_fov_position_calibration_state(
+        self,context: Mapping[str,Any] | None,preview: Mapping[str,Any] | None,
+    ) -> None:
+        self._fov_calibration_context = dict(context or {})
+        self._fov_calibration_preview = None if preview is None else dict(preview)
+        self._refresh_fov_calibration_controls()
+        self._refresh_feedback_visualizations()
+
+    def _refresh_fov_calibration_controls(self) -> None:
+        label = getattr(self,"fov_calibration_state_label",None)
+        if label is None:
+            return
+        context = dict(self._fov_calibration_context or {})
+        preview = self._fov_calibration_preview
+        candidate = context.get("candidate")
+        calibration = context.get("calibration")
+        if preview is not None and preview.get("source") == "candidate":
+            text = (
+                "Viewing current fit — not saved\n"
+                "%s degree %s · %d samples · RMS %s · max %s"
+                % (
+                    str(preview.get("model") or "polynomial").title(),
+                    preview.get("degree","—"),
+                    int(preview.get("sample_count",0) or 0),
+                    _format_float(preview.get("rms_residual_kxy")),
+                    _format_float(preview.get("max_residual_kxy")),
+                )
+            )
+        elif calibration is not None:
+            text = (
+                "Loaded: %s%s\n%s degree %s · %d samples · RMS %s · max %s"
+                % (
+                    calibration.name,
+                    " (applied)" if context.get("applied") else "",
+                    calibration.model.title(),calibration.degree,
+                    calibration.sample_count,
+                    _format_float(calibration.rms_residual_kxy),
+                    _format_float(calibration.max_residual_kxy),
+                )
+            )
+        else:
+            text = "No FOV calibration loaded"
+        extrapolated = int(context.get("extrapolated_count",0) or 0)
+        if extrapolated:
+            text += "\nWarning: extrapolating %d/%d current spots." % (
+                extrapolated,int(context.get("target_count",0) or 0),
+            )
+        label.setText(text)
+        label.setStyleSheet(
+            "color: %s;" % (_WARNING_COLOR if extrapolated else _MUTED_COLOR)
+        )
+        fit = getattr(self,"fov_calibration_fit_button",None)
+        save = getattr(self,"fov_calibration_save_button",None)
+        replace = getattr(self,"fov_calibration_replace_button",None)
+        current = self._selected_is_current_context() and not self._cgh_computing
+        if fit is not None:
+            fit.setEnabled(bool(
+                context.get("supported",False)
+                and (
+                    self._status.position_available
+                    or self._status.localization_available
+                )
+                and current
+            ))
+        if save is not None:
+            save.setEnabled(bool(candidate is not None and current))
+        if replace is not None:
+            replace.setEnabled(bool(
+                candidate is not None and context.get("applied")
+                and context.get("selected_name") and current
+            ))
 
     def set_position_reference_state(
         self,context: Mapping[str,Any] | None,preview: Any=None,
@@ -1212,6 +1371,14 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 MeasurementsAction.POSITION_REFERENCE_SAVE,{"name":name},
             )
 
+    def _save_fov_calibration_requested(self,*_args: Any) -> None:
+        name,ok = QtWidgets.QInputDialog.getText(
+            self,"Save FOV calibration","Calibration name:"
+        )
+        name = str(name or "").strip()
+        if ok and name:
+            self._emit(MeasurementsAction.FOV_CALIBRATION_SAVE,{"name":name})
+
     def _delete_position_reference_requested(self,*_args: Any) -> None:
         name = str(
             dict(self._position_reference_context or {}).get("saved_name") or ""
@@ -1303,7 +1470,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._cgh_computing = bool(computing)
         text = (
             "Computing..." if self._cgh_computing
-            else "Compute adapted hologram"
+            else "Compute"
         )
         for button in self._compute_adapted_buttons:
             button.setText(text)
@@ -1863,7 +2030,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 center_editable=(mode == "editable" and change_allowed),
             )
             self.position_correction_view.set_data(
-                ideal_positions_kxy=preview.get("ideal_positions_kxy"),
+                ideal_positions_kxy=preview.get(
+                    "baseline_positions_kxy",preview.get("ideal_positions_kxy")
+                ),
                 displacement_kxy=preview.get("displacement_kxy"),
             )
         else:
@@ -1873,6 +2042,15 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 self.position_correction_view.clear()
             else:
                 self.position_correction_view.set_correction(correction)
+
+        fov_preview = self._fov_calibration_preview
+        if fov_preview is None:
+            self.fov_calibration_view.clear()
+        else:
+            self.fov_calibration_view.set_data(
+                ideal_positions_kxy=fov_preview.get("current_positions_kxy"),
+                displacement_kxy=fov_preview.get("current_displacements_kxy"),
+            )
 
     def _refresh_status_controls(self) -> None:
         status = self._status
@@ -1886,6 +2064,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         self._refresh_feedback_orientation_controls()
         self._refresh_position_reference_controls()
+        self._refresh_fov_calibration_controls()
         self.feedback_tabs.setTabEnabled(0,True)
         self.feedback_tabs.setTabEnabled(1,position_available)
         if self.feedback_tabs.currentIndex() == 1 and not position_available:
@@ -1906,19 +2085,13 @@ class CGHSessionWindow(QtWidgets.QDialog):
             and status.pending_feedback_change is FeedbackChangeKind.POSITION
         )
         if position_pending:
-            if status.position_active:
-                position_text = "Correction active · hologram pending"
-            elif status.position_available:
-                position_text = "Correction disabled · hologram pending"
-            else:
-                position_text = "Correction cleared · hologram pending"
-            position_color = _WARNING_COLOR
-        elif status.position_active:
-            position_text,position_color = "Correction applied",_OK_COLOR
-        elif status.position_available:
-            position_text,position_color = (
-                "Correction available · disabled",_WARNING_COLOR
+            position_text = (
+                "Correction ready · hologram pending"
+                if status.position_available else "Correction cleared · hologram pending"
             )
+            position_color = _WARNING_COLOR
+        elif status.position_available:
+            position_text,position_color = "Correction applied",_OK_COLOR
         else:
             position_text,position_color = "No correction",_MUTED_COLOR
         self.position_status_label.setText(position_text)
@@ -1950,15 +2123,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
         else:
             position_tip = ""
         self.position_apply_button.setToolTip(position_tip)
-        self.position_toggle_button.setEnabled(
-            position_available
-            and status.position_available
-            and current_context
-            and not self._cgh_computing
-        )
-        self.position_toggle_button.setText(
-            "Disable" if status.position_active else "Enable"
-        )
         self.position_clear_button.setEnabled(
             position_available
             and status.position_available

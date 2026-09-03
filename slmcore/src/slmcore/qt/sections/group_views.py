@@ -45,6 +45,10 @@ class CghAction(str,Enum):
     PROPAGATION = "propagation"
     CLEAR_CGH_SESSION = "clear_cgh_session"
     OPEN_MEASUREMENTS_CORRECTIONS = "open_measurements_corrections"
+    FOV_CALIBRATION_SELECT = "fov_calibration_select"
+    FOV_CALIBRATION_APPLY = "fov_calibration_apply"
+    FOV_CALIBRATION_SET_DEFAULT = "fov_calibration_set_default"
+    FOV_CALIBRATION_DELETE = "fov_calibration_delete"
 
 
 def visible_specs(
@@ -366,6 +370,13 @@ class CghGroupView(BaseGroupView):
         self._status: Any = None
         self._feedback_status: FeedbackStatus | None = None
         self._target_presentation: dict[str, Any] = {}
+        self._fov_calibration_context: dict[str,Any] = {}
+        self.fov_calibration_checkbox: QtWidgets.QCheckBox | None = None
+        self.fov_calibration_combo: QtWidgets.QComboBox | None = None
+        self.fov_calibration_more_button: QtWidgets.QToolButton | None = None
+        self.fov_calibration_set_default_action: QtWidgets.QAction | None = None
+        self.fov_calibration_delete_action: QtWidgets.QAction | None = None
+        self.fov_calibration_info_label: QtWidgets.QLabel | None = None
         self._target_param_specs: dict[str, Mapping[str, ParamSpec]] = {}
         self._unit_mode = SLM_UNIT
         self._computing = False
@@ -744,13 +755,148 @@ class CghGroupView(BaseGroupView):
         self.clear_button = clear
         grid.addWidget(clear,1,3)
 
+        fov_title = QtWidgets.QLabel("FOV calibration:")
+        grid.addWidget(fov_title,2,0,alignment=QtCore.Qt.AlignVCenter)
+
+        fov_cell = QtWidgets.QWidget()
+        fov_layout = QtWidgets.QHBoxLayout(fov_cell)
+        fov_layout.setContentsMargins(0,0,0,0)
+        fov_layout.setSpacing(5)
+        fov_apply = QtWidgets.QCheckBox("Apply")
+        fov_apply.toggled.connect(
+            lambda value:self._emit_action(
+                CghAction.FOV_CALIBRATION_APPLY,{"applied":bool(value)},
+            )
+        )
+        fov_combo = QtWidgets.QComboBox()
+        fov_combo.setMinimumWidth(135)
+        fov_combo.currentIndexChanged.connect(self._on_fov_calibration_selected)
+
+        fov_more = QtWidgets.QToolButton()
+        fov_more.setText("⋯")
+        fov_more.setFixedSize(24,18)
+        fov_more.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        fov_more.setToolTip("FOV calibration actions")
+        fov_menu = QtWidgets.QMenu(fov_more)
+        fov_default_action = fov_menu.addAction("Set as default")
+        fov_delete_action = fov_menu.addAction("Delete calibration…")
+        fov_default_action.triggered.connect(
+            lambda _checked=False:self._emit_action(
+                CghAction.FOV_CALIBRATION_SET_DEFAULT,
+            )
+        )
+        fov_delete_action.triggered.connect(
+            self._delete_fov_calibration_requested
+        )
+        fov_more.setMenu(fov_menu)
+
+        fov_layout.addWidget(fov_apply)
+        fov_layout.addWidget(fov_combo,1)
+        fov_layout.addWidget(fov_more)
+        grid.addWidget(fov_cell,2,1,1,2)
+
+        fov_info = QtWidgets.QLabel("")
+        fov_info.setStyleSheet("color: #888;")
+        grid.addWidget(fov_info,2,3,1,2)
+
+        self.fov_calibration_checkbox = fov_apply
+        self.fov_calibration_combo = fov_combo
+        self.fov_calibration_more_button = fov_more
+        self.fov_calibration_set_default_action = fov_default_action
+        self.fov_calibration_delete_action = fov_delete_action
+        self.fov_calibration_info_label = fov_info
+
         self._feedback_controls = FeedbackControls(
             container=widget,
             status_value_label=status_value,
             feedback_summary_label=feedback_summary,
             open_button=open_button,
         )
+        self._refresh_fov_calibration_controls()
         return widget
+
+    def set_fov_position_calibration_context(
+        self,context: Mapping[str,Any] | None,
+    ) -> None:
+        self._fov_calibration_context = dict(context or {})
+        self._refresh_fov_calibration_controls()
+
+    def _on_fov_calibration_selected(self,_index: int) -> None:
+        combo = self.fov_calibration_combo
+        if combo is None:
+            return
+        self._emit_action(
+            CghAction.FOV_CALIBRATION_SELECT,{"name":combo.currentData()},
+        )
+
+    def _delete_fov_calibration_requested(self,*_args: Any) -> None:
+        context = dict(self._fov_calibration_context or {})
+        name = str(context.get("selected_name") or "").strip()
+        if not name:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self.widget,
+            "Delete FOV calibration",
+            'Delete FOV calibration "%s"?\n\nThis cannot be undone.' % name,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer == QtWidgets.QMessageBox.Yes:
+            self._emit_action(CghAction.FOV_CALIBRATION_DELETE)
+
+    def _refresh_fov_calibration_controls(self) -> None:
+        checkbox = self.fov_calibration_checkbox
+        combo = self.fov_calibration_combo
+        more = self.fov_calibration_more_button
+        default_action = self.fov_calibration_set_default_action
+        delete_action = self.fov_calibration_delete_action
+        info = self.fov_calibration_info_label
+        if (
+            checkbox is None or combo is None or more is None
+            or default_action is None or delete_action is None or info is None
+        ):
+            return
+        context = dict(self._fov_calibration_context or {})
+        supported = bool(context.get("supported",False))
+        names = tuple(context.get("available_names",()) or ())
+        selected = context.get("selected_name")
+        blocker = QtCore.QSignalBlocker(combo)
+        try:
+            combo.clear()
+            combo.addItem("None",None)
+            for name in names:
+                combo.addItem(str(name),str(name))
+            index = combo.findData(selected)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            del blocker
+        blocker = QtCore.QSignalBlocker(checkbox)
+        try:
+            checkbox.setChecked(bool(context.get("applied",False)))
+        finally:
+            del blocker
+        manageable = bool(context.get("plane_name")) and not self._computing
+        combo.setEnabled(manageable)
+        checkbox.setEnabled(manageable and supported and bool(selected))
+        more.setEnabled(manageable and bool(selected))
+        default_action.setEnabled(manageable and bool(selected))
+        delete_action.setEnabled(manageable and bool(selected))
+        default = context.get("default_name")
+        extrapolated = int(context.get("extrapolated_count",0) or 0)
+        if not supported:
+            text = "Not supported by current target"
+        elif extrapolated:
+            text = "Extrapolating %d/%d spots" % (
+                extrapolated,int(context.get("target_count",0) or 0),
+            )
+        elif selected and default == selected:
+            text = "Default"
+        else:
+            text = ""
+        info.setText(text)
+        info.setStyleSheet(
+            "color: #a66a00;" if extrapolated else "color: #888;"
+        )
 
     def auto_recompute_enabled(self) -> bool:
         checkbox = self.auto_recompute_checkbox
@@ -976,6 +1122,7 @@ class CghGroupView(BaseGroupView):
     def set_computing(self,computing: bool) -> None:
         self._computing = bool(computing)
         self._refresh_action_controls()
+        self._refresh_fov_calibration_controls()
 
     def _refresh_compute_button_presentation(self) -> None:
         button = self.compute_button

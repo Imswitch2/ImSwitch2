@@ -695,18 +695,17 @@ def test_position_tab_uses_right_controls_and_pending_position_is_actionable():
         assert position_tab.layout().count() == 2
 
         controls_parent = window.position_apply_button.parentWidget()
-        assert controls_parent is window.position_toggle_button.parentWidget()
         assert controls_parent is window.position_clear_button.parentWidget()
+        assert not hasattr(window,"position_toggle_button")
         assert controls_parent.minimumWidth() == 175
         assert controls_parent.maximumWidth() == 220
 
         assert (
             window.position_status_label.text()
-            == "Correction active · hologram pending"
+            == "Correction ready · hologram pending"
         )
         assert not window.position_apply_button.isEnabled()
         assert window._compute_adapted_buttons[1].isEnabled()
-        assert window.position_toggle_button.isEnabled()
         assert window.position_clear_button.isEnabled()
 
         legend_texts = [

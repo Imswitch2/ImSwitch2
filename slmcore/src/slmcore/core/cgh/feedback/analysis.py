@@ -17,6 +17,7 @@ def analyze_position(
     measurement: FeedbackMeasurement,
     *,
     ideal_positions_kxy: np.ndarray,
+    baseline_positions_kxy: np.ndarray | None=None,
     reference_positions_px: np.ndarray | None=None,
     calibration: Any=None,
     parameters: Mapping[str,Any],
@@ -56,10 +57,18 @@ def analyze_position(
         ideal_positions_kxy,
         dtype=np.float64,
     )
+    baseline = np.asarray(
+        ideal if baseline_positions_kxy is None else baseline_positions_kxy,
+        dtype=np.float64,
+    )
 
     if ideal.shape != registered.shape:
         raise ValueError(
             "Localized spot count does not match target ideal positions"
+        )
+    if baseline.shape != ideal.shape:
+        raise ValueError(
+            "Position-correction baseline does not match target ideal positions"
         )
     if reference.shape != registered.shape:
         raise ValueError(
@@ -90,7 +99,7 @@ def analyze_position(
         linear_px_to_kxy @ error_px
     )
 
-    corrected = ideal + correction_kxy
+    corrected = baseline + correction_kxy
 
     # Physical units are diagnostic only. They are available when the
     # section calibration carries a valid detector pixel size, but are

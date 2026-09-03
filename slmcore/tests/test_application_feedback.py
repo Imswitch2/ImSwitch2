@@ -359,3 +359,333 @@ def test_saved_position_reference_is_shared_but_selection_is_transient(tmp_path)
 
     session_a.dispose()
     session_b.dispose()
+
+
+def _fov_calibration_for_runtime(runtime,name,displacement=(0.01,-0.02)):
+    from slmcore import FOVPositionCalibration
+
+    section = runtime._get_section("sec_0")
+    resolution = section._cgh_session.create_target_resolution(
+        section.state.cgh,section._build_context(section.state),
+    )
+    ideal = np.asarray(resolution.ideal_spot_positions_kxy,dtype=np.float64)
+    delta = np.repeat(
+        np.asarray(displacement,dtype=np.float64).reshape(2,1),
+        ideal.shape[1],axis=1,
+    )
+    return FOVPositionCalibration.fit(
+        name=name,
+        slm_serial=runtime.identity.serial_number,
+        section_key="sec_0",
+        plane_name="sample",
+        ideal_positions_kxy=ideal,
+        total_displacements_kxy=delta,
+        degree=1,
+    )
+
+
+def test_fov_default_is_plane_scoped_and_apply_off_is_temporary(tmp_path):
+    from slmcore import SLMStartupPreferences,SLMWorkspace
+    from slmcore.application.startup_preferences import StartupPreferencesState
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime = _runtime()
+    calibration = _fov_calibration_for_runtime(runtime,"field A")
+    workspace.fov_position_calibration_store.save(calibration)
+    saved = []
+    preferences = StartupPreferencesState(
+        SLMStartupPreferences(fov_position_calibrations={
+            "sec_0":{"planes":{"sample":"field A"}},
+        }),
+        saved.append,
+    )
+    session = SLMSession(
+        runtime=runtime,
+        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        startup_preferences=preferences,
+    )
+    session.calibration.active_plane = lambda _section:"sample"
+
+    session.feedback.apply_startup_fov_position_calibration_defaults()
+    context = session.feedback.fov_position_calibration_context("sec_0")
+    assert context["selected_name"] == "field A"
+    assert context["applied"] is True
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field A"
+
+    session.feedback.set_fov_position_calibration_applied("sec_0",False)
+    context = session.feedback.fov_position_calibration_context("sec_0")
+    assert context["applied"] is False
+    assert context["default_name"] == "field A"
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert saved == []
+
+    session.dispose()
+
+
+def test_fov_selection_swap_while_applied_updates_runtime_and_keeps_default(tmp_path):
+    from slmcore import SLMStartupPreferences,SLMWorkspace
+    from slmcore.application.startup_preferences import StartupPreferencesState
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime = _runtime()
+    first = _fov_calibration_for_runtime(runtime,"field A",(0.01,-0.02))
+    second = _fov_calibration_for_runtime(runtime,"field B",(-0.03,0.04))
+    store = workspace.fov_position_calibration_store
+    store.save(first); store.save(second)
+    saved = []
+    preferences = StartupPreferencesState(SLMStartupPreferences(),saved.append)
+    session = SLMSession(
+        runtime=runtime,fov_position_calibration_store=store,
+        startup_preferences=preferences,
+    )
+    session.calibration.active_plane = lambda _section:"sample"
+    session.feedback.refresh_fov_position_calibration_contexts()
+
+    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+    session.feedback.set_default_fov_position_calibration("sec_0")
+    assert saved[-1].fov_position_calibrations["sec_0"].planes["sample"] == "field A"
+
+    session.feedback.select_fov_position_calibration("sec_0","field B")
+    context = session.feedback.fov_position_calibration_context("sec_0")
+    assert context["applied"] is True
+    assert context["selected_name"] == "field B"
+    assert context["default_name"] == "field A"
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field B"
+
+    session.dispose()
+
+
+def test_switching_fov_calibration_clears_transient_position_feedback(tmp_path):
+    from slmcore import SLMWorkspace
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime = _runtime()
+    store = workspace.fov_position_calibration_store
+    first = _fov_calibration_for_runtime(runtime,"field A")
+    second = _fov_calibration_for_runtime(runtime,"field B",(0.02,0.01))
+    store.save(first); store.save(second)
+    session = SLMSession(runtime=runtime,fov_position_calibration_store=store)
+    session.calibration.active_plane = lambda _section:"sample"
+    session.feedback.refresh_fov_position_calibration_contexts()
+    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+
+    _attach_reference_localization(runtime)
+    session.feedback.apply_position_correction("sec_0")
+    assert runtime.get_section_feedback_status("sec_0").position_active is True
+
+    session.feedback.select_fov_position_calibration("sec_0","field B")
+    status = runtime.get_section_feedback_status("sec_0")
+    assert status.position_active is False
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field B"
+
+    session.dispose()
+
+
+def test_fov_preview_falls_back_to_saved_samples_without_cgh_target(tmp_path):
+    from slmcore import FOVPositionCalibration,SLMWorkspace
+
+    geometry = SLMGeometry(width=64,height=64,pixel_size_um=1.0)
+    runtime = SLMRuntime(
+        identity=SLMIdentity("slm","SER123"),geometry=geometry,
+        section_geometries=split_slm_geometry(geometry,1),
+        registries=DEFAULT_REGISTRIES,
+    )
+    points = np.array([
+        [-0.2,0.0,0.2,-0.2,0.0,0.2],
+        [-0.2,-0.2,-0.2,0.2,0.2,0.2],
+    ])
+    displacement = np.repeat(np.array([[0.01],[-0.02]]),points.shape[1],axis=1)
+    calibration = FOVPositionCalibration.fit(
+        name="field A",slm_serial="SER123",section_key="sec_0",
+        plane_name="sample",ideal_positions_kxy=points,
+        total_displacements_kxy=displacement,degree=1,
+    )
+    workspace = SLMWorkspace(tmp_path)
+    workspace.fov_position_calibration_store.save(calibration)
+    session = SLMSession(
+        runtime=runtime,
+        fov_position_calibration_store=workspace.fov_position_calibration_store,
+    )
+    session.calibration.active_plane = lambda _section:"sample"
+    session.feedback.refresh_fov_position_calibration_contexts()
+    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+
+    preview = session.feedback.fov_position_calibration_preview("sec_0")
+    assert preview is not None
+    np.testing.assert_allclose(preview["current_positions_kxy"],points)
+    assert preview["current_positions_kxy"].shape[1] > 0
+    session.dispose()
+
+
+def test_plane_switch_clears_previous_runtime_fov_when_new_plane_has_no_selection(tmp_path):
+    from slmcore import FOVPositionCalibration,SLMWorkspace
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime = _runtime()
+    calibration = _fov_calibration_for_runtime(runtime,"field A")
+    workspace.fov_position_calibration_store.save(calibration)
+    session = SLMSession(
+        runtime=runtime,
+        fov_position_calibration_store=workspace.fov_position_calibration_store,
+    )
+    active = {"plane":"sample"}
+    session.calibration.active_plane = lambda _section:active["plane"]
+    session.feedback.refresh_fov_position_calibration_contexts()
+    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field A"
+
+    active["plane"] = "other"
+    session.feedback.refresh_fov_position_calibration_contexts()
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert session.feedback.fov_position_calibration_context("sec_0")["applied"] is False
+    session.dispose()
+
+
+def test_reading_fov_context_does_not_mutate_runtime_before_explicit_startup_apply(tmp_path):
+    from slmcore import SLMStartupPreferences,SLMWorkspace
+    from slmcore.application.startup_preferences import StartupPreferencesState
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime = _runtime()
+    calibration = _fov_calibration_for_runtime(runtime,"field A")
+    workspace.fov_position_calibration_store.save(calibration)
+    preferences = StartupPreferencesState(
+        SLMStartupPreferences(fov_position_calibrations={
+            "sec_0":{"planes":{"sample":"field A"}},
+        }),
+        lambda _preferences:None,
+    )
+    transitions = []
+    session = SLMSession(
+        runtime=runtime,
+        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        startup_preferences=preferences,
+        callbacks=SLMSessionCallbacks(
+            on_transition_committed=lambda key,transition:transitions.append((key,transition)),
+        ),
+    )
+    session.calibration.active_plane = lambda _section:"sample"
+
+    context = session.feedback.fov_position_calibration_context("sec_0")
+    assert context["selected_name"] == "field A"
+    assert context["applied"] is True
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert transitions == []
+
+    session.feedback.apply_startup_fov_position_calibration_defaults()
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field A"
+    assert len(transitions) == 1
+    session.dispose()
+
+
+def test_fov_replacement_warning_detects_shifted_equal_area_coverage(tmp_path):
+    from slmcore import FOVPositionCalibration,SLMWorkspace
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime = _runtime()
+    old = _fov_calibration_for_runtime(runtime,"field A")
+    workspace.fov_position_calibration_store.save(old)
+    session = SLMSession(
+        runtime=runtime,
+        fov_position_calibration_store=workspace.fov_position_calibration_store,
+    )
+    session.calibration.active_plane = lambda _section:"sample"
+    session.feedback.refresh_fov_position_calibration_contexts()
+    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+
+    shifted = np.array(old.sample_positions_kxy,copy=True)
+    shifted[0] += 0.05
+    candidate = FOVPositionCalibration.fit(
+        name="Current candidate",slm_serial=runtime.identity.serial_number,
+        section_key="sec_0",plane_name="sample",
+        ideal_positions_kxy=shifted,
+        total_displacements_kxy=np.array(old.sample_displacements_kxy,copy=True),
+        degree=1,
+    )
+    session.feedback._fov_position_calibration_candidates[("sec_0","sample")] = candidate
+    warning = session.feedback.fov_position_calibration_replacement_warning("sec_0")
+    assert "coverage differs" in warning
+    assert "outside" in warning
+    session.dispose()
+
+
+def test_fov_fit_uses_accepted_position_correction_after_apply(tmp_path):
+    from slmcore import SLMWorkspace
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime = _runtime()
+    session = SLMSession(
+        runtime=runtime,
+        fov_position_calibration_store=workspace.fov_position_calibration_store,
+    )
+    session.calibration.active_plane = lambda _section:"sample"
+    session.feedback.refresh_fov_position_calibration_contexts()
+    _attach_reference_localization(runtime)
+    session.feedback.apply_position_correction("sec_0")
+
+    inspection = runtime.get_section_cgh_session_inspection("sec_0")
+    correction = inspection.position_correction
+    assert correction is not None
+    expected = (
+        np.asarray(correction.corrected_positions_kxy)
+        - np.asarray(correction.ideal_positions_kxy)
+    )
+
+    # Once accepted, fitting must no longer depend on re-running the current
+    # localization analysis. This is what keeps the fit available after an
+    # adapted hologram has been computed and experimentally checked.
+    original = runtime.compute_section_feedback_position_analysis
+    runtime.compute_section_feedback_position_analysis = lambda *args,**kwargs: (
+        (_ for _ in ()).throw(AssertionError("fresh analysis should not run"))
+    )
+    try:
+        candidate = session.feedback.fit_fov_position_calibration(
+            "sec_0",degree=1,
+        )
+    finally:
+        runtime.compute_section_feedback_position_analysis = original
+
+    np.testing.assert_allclose(candidate.sample_displacements_kxy,expected)
+    assert candidate.provenance["source"] == "accepted_position_correction"
+    session.dispose()
+
+
+def test_delete_fov_calibration_clears_selection_runtime_and_default(tmp_path):
+    from slmcore import SLMStartupPreferences,SLMWorkspace
+    from slmcore.application.startup_preferences import StartupPreferencesState
+
+    workspace = SLMWorkspace(tmp_path)
+    runtime = _runtime()
+    calibration = _fov_calibration_for_runtime(runtime,"field A")
+    store = workspace.fov_position_calibration_store
+    store.save(calibration)
+    saved = []
+    preferences = StartupPreferencesState(SLMStartupPreferences(),saved.append)
+    session = SLMSession(
+        runtime=runtime,
+        fov_position_calibration_store=store,
+        startup_preferences=preferences,
+    )
+    session.calibration.active_plane = lambda _section:"sample"
+    session.feedback.refresh_fov_position_calibration_contexts()
+    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+    session.feedback.set_default_fov_position_calibration("sec_0")
+    assert preferences.default_fov_position_calibration("sec_0","sample") == "field A"
+
+    deleted = session.feedback.delete_fov_position_calibration("sec_0")
+
+    assert deleted == "field A"
+    assert not store.exists(runtime.identity,"sec_0","sample","field A")
+    context = session.feedback.fov_position_calibration_context("sec_0")
+    assert context["selected_name"] is None
+    assert context["applied"] is False
+    assert context["default_name"] is None
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert saved[-1].fov_position_calibrations == {}
+    session.dispose()

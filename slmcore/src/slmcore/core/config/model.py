@@ -710,6 +710,9 @@ def _position_correction_to_dict(
         "corrected_positions_kxy":np.array(
             value.corrected_positions_kxy,copy=True,
         ),
+        "baseline_positions_kxy":np.array(
+            value.baseline_positions_kxy,copy=True,
+        ),
         "calibration":deepcopy(dict(value.calibration)),
         "reference":deepcopy(dict(value.reference)),
     }
@@ -729,5 +732,9 @@ def _position_correction_from_dict(
         displacement_kxy=np.asarray(data["displacement_kxy"]),
         corrected_positions_kxy=np.asarray(data["corrected_positions_kxy"]),
         calibration=data.get("calibration",{}),
+        baseline_positions_kxy=(
+            None if data.get("baseline_positions_kxy") is None
+            else np.asarray(data["baseline_positions_kxy"])
+        ),
         reference=data.get("reference",{}),
     )
