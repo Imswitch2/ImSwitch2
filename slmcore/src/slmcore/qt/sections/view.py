@@ -760,6 +760,13 @@ class SectionView(QtWidgets.QWidget):
             if isinstance(group_view,CghGroupView):
                 group_view.apply_feedback_status(status)
 
+    def set_fov_position_calibration_context(
+        self,context: Mapping[str,Any] | None,
+    ) -> None:
+        for group_view in self.groups.values():
+            if isinstance(group_view,CghGroupView):
+                group_view.set_fov_position_calibration_context(context)
+
     def set_snapshot(self,snapshot: SLMSectionSnapshot) -> None:
         calibration_changed = (
             _calibration_data(self.calibration)

@@ -29,6 +29,7 @@ from .reference import (
     localization_positions_full_px,
     reference_positions_for_localization,
 )
+from .fov_calibration import FOVPositionCalibration
 from .parameters import (
     INTENSITY_ANALYSIS_PARAMS,
     INTENSITY_FEEDBACK_PARAMS,
@@ -42,6 +43,7 @@ __all__ = [
     "FeedbackMeasurement",
     "FeedbackStatus",
     "FeedbackOrientation",
+    "FOVPositionCalibration",
     "base_cgh_recompute_would_discard_feedback",
     "INTENSITY_ANALYSIS_PARAMS",
     "INTENSITY_FEEDBACK_PARAMS",

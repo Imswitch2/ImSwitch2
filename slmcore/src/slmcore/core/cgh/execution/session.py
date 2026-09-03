@@ -18,6 +18,7 @@ from ..feedback import (
     FeedbackOrientation,
     IntensityAdaptation,
     PositionCorrection,
+    FOVPositionCalibration,
     RoundEvaluation,
     orient_localization,
 )
@@ -59,6 +60,7 @@ from ..signature import (
     compute_context_signature,
     compute_feedback_target_signature,
     compute_position_correction_signature,
+    compute_position_layers_signature,
 )
 from .spec import CGHSpec
 from .status import CGHResultState,CGHStatus
@@ -85,6 +87,7 @@ class CGHSession:
         self._position_params = _default_values(POSITION_CORRECTION_PARAMS)
         self._localization_reference = None
         self._position_correction: PositionCorrection | None = None
+        self._fov_position_calibration: FOVPositionCalibration | None = None
         self._position_reference_round: CGHRound | None = None
         self._position_active = False
         self._prefer_previous_initialization = False
@@ -97,6 +100,10 @@ class CGHSession:
     @property
     def target(self) -> Target | None:
         return self._target.clone() if self._target is not None else None
+
+    @property
+    def fov_position_calibration(self) -> FOVPositionCalibration | None:
+        return self._fov_position_calibration
 
     @property
     def session_snapshot(self) -> CGHSessionSnapshot | None:
@@ -131,6 +138,7 @@ class CGHSession:
         candidate._position_params = dict(self._position_params)
         candidate._localization_reference = self._localization_reference
         candidate._position_correction = self._position_correction
+        candidate._fov_position_calibration = self._fov_position_calibration
         candidate._position_reference_round = self._position_reference_round
         candidate._position_active = self._position_active
         candidate._prefer_previous_initialization = self._prefer_previous_initialization
@@ -1027,9 +1035,12 @@ class CGHSession:
             localization=oriented_localization,
             metrics=measurement.metrics,
         )
+        ideal_positions = target.resolution.ideal_spot_positions_kxy
+        baseline_positions = self._fov_baseline_positions(target)
         analysis = analyze_position(
             oriented_measurement,
-            ideal_positions_kxy=target.resolution.ideal_spot_positions_kxy,
+            ideal_positions_kxy=ideal_positions,
+            baseline_positions_kxy=baseline_positions,
             reference_positions_px=reference_positions_px,
             calibration=context.calibration,
             parameters=self._position_params,
@@ -1038,13 +1049,14 @@ class CGHSession:
             measurement=oriented_measurement,
             analysis=analysis,
             lattice_indices=target.resolution.lattice_indices,
-            ideal_positions_kxy=target.resolution.ideal_spot_positions_kxy,
+            ideal_positions_kxy=ideal_positions,
             displacement_kxy=analysis.correction_kxy,
             corrected_positions_kxy=analysis.corrected_positions_kxy,
             calibration=(
                 {} if context.calibration is None else context.calibration.to_dict()
             ),
             reference=dict(reference_metadata or {}),
+            baseline_positions_kxy=baseline_positions,
         )
         committed = self._committed_target
         if committed is None:
@@ -1098,6 +1110,7 @@ class CGHSession:
                 metrics=measurement.metrics,
             ),
             ideal_positions_kxy=target.resolution.ideal_spot_positions_kxy,
+            baseline_positions_kxy=self._fov_baseline_positions(target),
             reference_positions_px=reference_positions_px,
             calibration=context.calibration,
             parameters=self._position_params,
@@ -1564,10 +1577,12 @@ class CGHSession:
     ) -> CGHSignature:
         return compute_feedback_target_signature(
             target_signature=target_state.target_signature,
-            position_signature=(
-                compute_position_correction_signature(
+            position_signature=compute_position_layers_signature(
+                fov_calibration=self._fov_position_calibration,
+                position_correction=(
                     self._position_correction
-                ) if include_position and self._position_active else None
+                    if include_position and self._position_active else None
+                ),
             ),
             round_index=round_index,
             intensities=intensities,
@@ -1692,17 +1707,111 @@ class CGHSession:
                 "Stored intensity feedback is incompatible with target resolution"
             )
         positions = None
-        if (
-            include_position
-            and self._position_active
-            and self._position_correction is not None
-        ):
-            positions = self._position_correction.corrected_positions_kxy
+        if FeedbackCapability.POSITION_CORRECTION in set(target.feedback_capabilities):
+            positions = self._fov_baseline_positions(target)
+            if (
+                include_position
+                and self._position_active
+                and self._position_correction is not None
+            ):
+                positions = self._position_correction.corrected_positions_kxy
+            if np.array_equal(positions,base.spot_positions_kxy):
+                positions = None
         return target.with_resolution_updates(
             base,
             spot_positions_kxy=positions,
             spot_intensities=intensities,
         )
+
+    def _fov_baseline_positions(self,target: Target) -> np.ndarray:
+        base = target.resolution
+        ideal = np.asarray(base.ideal_spot_positions_kxy,dtype=np.float64)
+        calibration = self._fov_position_calibration
+        if calibration is None:
+            return ideal
+        if FeedbackCapability.POSITION_CORRECTION not in set(target.feedback_capabilities):
+            return ideal
+        return calibration.corrected_positions(ideal)
+
+    def fov_position_context(
+        self,state: CGHState,context: SectionContext,
+    ) -> Mapping[str,Any]:
+        calibration = self._fov_position_calibration
+        if state.selected_target is None:
+            empty = np.empty((2,0),dtype=np.float64)
+            return {
+                "supported":False,
+                "ideal_positions_kxy":empty,
+                "baseline_positions_kxy":np.array(empty,copy=True),
+                "displacement_kxy":np.array(empty,copy=True),
+                "outside_mask":np.empty((0,),dtype=bool),
+                "max_extrapolation_kxy":0.0,
+                "coverage_tolerance_kxy":0.0,
+                "calibration":calibration,
+            }
+        target_state = self._resolve_requested_target_state(state,context)
+        target = self._build_target(target_state,context)
+        supported = FeedbackCapability.POSITION_CORRECTION in set(
+            target.feedback_capabilities
+        )
+        ideal = np.asarray(target.resolution.ideal_spot_positions_kxy,dtype=np.float64)
+        if calibration is None or not supported:
+            baseline = ideal
+            outside = np.zeros(ideal.shape[1],dtype=bool)
+            maximum = tolerance = 0.0
+        else:
+            baseline = calibration.corrected_positions(ideal)
+            outside,maximum,tolerance = calibration.coverage_extrapolation(ideal)
+        return {
+            "supported":supported,
+            "ideal_positions_kxy":np.array(ideal,copy=True),
+            "baseline_positions_kxy":np.array(baseline,copy=True),
+            "displacement_kxy":np.array(baseline-ideal,copy=True),
+            "outside_mask":np.array(outside,copy=True),
+            "max_extrapolation_kxy":float(maximum),
+            "coverage_tolerance_kxy":float(tolerance),
+            "calibration":calibration,
+        }
+
+    def set_fov_position_calibration(
+        self,state: CGHState,context: SectionContext,
+        calibration: FOVPositionCalibration | None,
+    ) -> bool:
+        if calibration is not None and not isinstance(
+            calibration,FOVPositionCalibration
+        ):
+            raise TypeError(
+                "calibration must be an FOVPositionCalibration or None"
+            )
+        effective_changed = (
+            FeedbackCapability.POSITION_CORRECTION
+            in self._feedback_capabilities(state)
+        )
+        previous = self._fov_position_calibration
+        if (
+            previous is calibration
+            or (previous is not None and calibration is not None
+                and previous.to_dict() == calibration.to_dict())
+        ):
+            return False
+        self._fov_position_calibration = calibration
+        if not effective_changed:
+            # Keep the selected/default calibration ready for a future compatible
+            # target, but do not disturb an intensity-only or non-CGH session.
+            return False
+
+        self.invalidate_prepared_compute()
+        self._position_correction = None
+        self._position_reference_round = None
+        self._position_active = False
+        self._working_round = None
+        if self._rounds:
+            base = self._rounds[0].with_evaluation(None)
+            self._rounds = (base,)
+        self._localization_reference = None
+        self._prefer_previous_initialization = False
+        self._requires_fresh_initialization = True
+        return True
 
     @staticmethod
     def _validate_position_correction_for_resolution(
@@ -1722,6 +1831,10 @@ class CGHSession:
         ):
             raise RuntimeError(
                 "Position correction ideal positions do not match target resolution"
+            )
+        if correction.baseline_positions_kxy.shape != base.spot_positions_kxy.shape:
+            raise RuntimeError(
+                "Position correction baseline is incompatible with target resolution"
             )
         if correction.corrected_positions_kxy.shape != base.spot_positions_kxy.shape:
             raise RuntimeError(

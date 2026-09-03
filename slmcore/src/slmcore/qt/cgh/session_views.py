@@ -840,10 +840,10 @@ class PositionCorrectionView(QtWidgets.QWidget):
         legend.addWidget(self.magnitude_range_label,0,2)
 
         vector_legend = QtWidgets.QLabel(
-            "Vector: ideal ●  →  ○ displayed endpoint"
+            "Vector: baseline ●  →  ○ displayed endpoint"
         )
         vector_legend.setToolTip(
-            "Vectors start at ideal target positions. The light endpoint is "
+            "Vectors start at the current correction baseline. The light endpoint is "
             "the corrected position after applying the display-only vector scale."
         )
         legend.addWidget(vector_legend,0,3)
@@ -893,7 +893,8 @@ class PositionCorrectionView(QtWidgets.QWidget):
             return
         self.set_data(
             ideal_positions_kxy=getattr(
-                correction,"ideal_positions_kxy",None,
+                correction,"baseline_positions_kxy",
+                getattr(correction,"ideal_positions_kxy",None),
             ),
             displacement_kxy=getattr(
                 correction,"displacement_kxy",None,

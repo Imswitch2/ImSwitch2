@@ -113,6 +113,9 @@ class SLMQtSessionFactory:
         position_reference_store = (
             None if workspace is None else workspace.position_reference_store
         )
+        fov_position_calibration_store = (
+            None if workspace is None else workspace.fov_position_calibration_store
+        )
         runtime_factory = SLMRuntimeFactory(
             definition=definition,
             registries=self.registries,
@@ -171,10 +174,28 @@ class SLMQtSessionFactory:
                 current_config_path=startup.config_path,
                 calibration_store=calibration_store,
                 position_reference_store=position_reference_store,
+                fov_position_calibration_store=fov_position_calibration_store,
                 startup_preferences=preference_state,
                 display_name=display_name,
                 apply_startup_calibration_defaults=False,
             )
+            # Apply persistent FOV defaults before the Qt binding captures section
+            # revisions.  FOV selection is external to CGH configs but changes the
+            # effective CGH target, so applying it later through a read-only UI
+            # synchronization could leave the retained SectionView one revision
+            # behind the runtime.
+            initial_revisions = {
+                key:snapshot.revision
+                for key,snapshot in panel.section_collection.get_section_snapshots().items()
+            }
+            application_session.feedback.apply_startup_fov_position_calibration_defaults()
+            synchronized_snapshots = application_session.runtime.get_section_snapshots()
+            if any(
+                initial_revisions.get(key) != snapshot.revision
+                for key,snapshot in synchronized_snapshots.items()
+            ):
+                panel.replace_sections(synchronized_snapshots)
+
             session = SLMQtSession(
                 application_session=application_session,
                 panel=panel,

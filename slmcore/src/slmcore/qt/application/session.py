@@ -728,6 +728,20 @@ class SLMQtSession(QtCore.QObject):
             self.clear_cgh_session(section_key)
         elif cgh_action is CghAction.OPEN_MEASUREMENTS_CORRECTIONS:
             self._feedback.open_window(section_key)
+        elif cgh_action is CghAction.FOV_CALIBRATION_SELECT:
+            self.feedback_service.select_fov_position_calibration(
+                section_key,values.get("name"),
+            )
+        elif cgh_action is CghAction.FOV_CALIBRATION_APPLY:
+            self.feedback_service.set_fov_position_calibration_applied(
+                section_key,bool(values.get("applied",False)),
+            )
+        elif cgh_action is CghAction.FOV_CALIBRATION_SET_DEFAULT:
+            self.feedback_service.set_default_fov_position_calibration(
+                section_key
+            )
+        elif cgh_action is CghAction.FOV_CALIBRATION_DELETE:
+            self.feedback_service.delete_fov_position_calibration(section_key)
 
     def _on_application_transition_committed(
         self,section_key: str,transition: SectionStateTransition,
@@ -946,6 +960,11 @@ class SLMQtSession(QtCore.QObject):
     def synchronize_section(self,section_key: str) -> None:
         status = self.runtime.get_section_feedback_status(section_key)
         self.section_collection.set_feedback_status(section_key,status)
+        self.section_collection.set_fov_position_calibration_context(
+            section_key,self.feedback_service.fov_position_calibration_context(
+                section_key
+            ),
+        )
         self.section_collection.set_cgh_target_presentation(
             section_key,self._main_cgh_presentation_summary(section_key),
         )

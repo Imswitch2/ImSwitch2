@@ -8,6 +8,7 @@ from .config_store import (
 )
 from .correction_store import SLMCorrectionStore
 from .position_reference_store import SLMPositionReferenceStore
+from .fov_position_calibration_store import SLMFOVPositionCalibrationStore
 from .workspace import SLMWorkspace
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "SLMConfigStore",
     "SLMCorrectionStore",
     "SLMPositionReferenceStore",
+    "SLMFOVPositionCalibrationStore",
     "SLMWorkspace",
 ]

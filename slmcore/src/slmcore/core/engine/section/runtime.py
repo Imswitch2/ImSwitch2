@@ -755,6 +755,19 @@ class SLMSectionRuntime:
             reference_positions_px=reference_positions_px,
         )
 
+    def get_fov_position_context(self):
+        return self._cgh_session.fov_position_context(
+            self.state.cgh,self._build_context(self.state),
+        )
+
+    def set_fov_position_calibration(self,calibration) -> bool:
+        candidate = self._cgh_session.clone()
+        effective_changed = candidate.set_fov_position_calibration(
+            self.state.cgh,self._build_context(self.state),calibration,
+        )
+        self._commit_feedback_session(candidate,effective_changed)
+        return effective_changed
+
     def set_position_correction_active(
         self,active: bool,*,reset_intensity: bool=False,
     ) -> bool:

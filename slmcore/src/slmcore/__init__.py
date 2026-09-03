@@ -45,7 +45,8 @@ from .application import (
     TargetCalibrationState,
 )
 from .core.cgh.feedback import (
-    EditablePositionReferenceGeometry,PositionReference,PositionReferenceMode,
+    EditablePositionReferenceGeometry,FOVPositionCalibration,
+    PositionReference,PositionReferenceMode,
 )
 from .core.calibration import SLMSectionCalibration
 from .core.config import (
@@ -90,6 +91,7 @@ from .setup import (
     SLMHardwareConfig,
     SLMSectionsDefinition,
     FeedbackOrientationPreferences,
+    FOVPositionCalibrationPreferences,
     SLMStartupPreferences,
     load_slm_setup_file,
     save_slm_startup_preferences,
@@ -101,6 +103,7 @@ from .workspace import (
     SLMConfigStore,
     SLMCorrectionStore,
     SLMPositionReferenceStore,
+    SLMFOVPositionCalibrationStore,
     SLMWorkspace,
 )
 
@@ -120,6 +123,7 @@ __all__ = [
     "ImageMeasurement",
     "MeasurementDispatcher",
     "EditablePositionReferenceGeometry",
+    "FOVPositionCalibration",
     "PositionReference",
     "PositionReferenceContext",
     "PositionReferenceMode",
@@ -153,6 +157,7 @@ __all__ = [
     "SLMControlMode",
     "SLMCorrectionStore",
     "SLMPositionReferenceStore",
+    "SLMFOVPositionCalibrationStore",
     "SLMFeedbackService",
     "SLMGeometry",
     "SLMHardwareConfig",
@@ -171,6 +176,7 @@ __all__ = [
     "SLMSessionCallbacks",
     "SLMDefinition",
     "FeedbackOrientationPreferences",
+    "FOVPositionCalibrationPreferences",
     "SLMStartupPreferences",
     "SLMWorkspace",
     "StartupPreferencesState",

@@ -95,6 +95,7 @@ class SLMSession:
         measurement_dispatcher: MeasurementDispatcher | None=None,
         calibration_store=None,
         position_reference_store=None,
+        fov_position_calibration_store=None,
         startup_preferences=None,
         display_name: str="",
         apply_startup_calibration_defaults: bool=False,
@@ -132,6 +133,7 @@ class SLMSession:
             measurements=measurement_dispatcher,
             callbacks=self._feedback_callbacks(),
             position_reference_store=position_reference_store,
+            fov_position_calibration_store=fov_position_calibration_store,
         )
         self.calibration = SLMCalibrationService(
             self,
@@ -963,6 +965,7 @@ class SLMSession:
         # Preserve transient test values while the plane is unchanged, but
         # discard them when the active plane context actually changes.
         self.feedback.refresh_feedback_orientation_contexts()
+        self.feedback.refresh_fov_position_calibration_contexts()
         self._notify("on_calibration_planes_changed")
 
     def _calibration_callbacks(self) -> SLMCalibrationCallbacks:

@@ -131,6 +131,39 @@ class StartupPreferencesState:
         )
         self._commit(replace(self._value,feedback_orientations=orientations))
 
+    def default_fov_position_calibration(
+        self,section_key: str,plane_name: str | None,
+    ) -> str | None:
+        plane = str(plane_name or "").strip()
+        if not plane:
+            return None
+        settings = self._value.fov_position_calibrations.get(str(section_key))
+        if settings is None:
+            return None
+        return settings.planes.get(plane)
+
+    def set_default_fov_position_calibration(
+        self,section_key: str,plane_name: str,name: str | None,
+    ) -> None:
+        from ..setup import FOVPositionCalibrationPreferences
+        section = str(section_key)
+        plane = str(plane_name or "").strip()
+        if not plane:
+            raise ValueError("plane_name must not be empty")
+        calibration_name = str(name or "").strip() or None
+        values = dict(self._value.fov_position_calibrations)
+        previous = values.get(section,FOVPositionCalibrationPreferences())
+        planes = dict(previous.planes)
+        if calibration_name is None:
+            planes.pop(plane,None)
+        else:
+            planes[plane] = calibration_name
+        if planes:
+            values[section] = FOVPositionCalibrationPreferences(planes=planes)
+        else:
+            values.pop(section,None)
+        self._commit(replace(self._value,fov_position_calibrations=values))
+
     # Compatibility helper for the first pre-release section-only behavior.
     def set_feedback_orientation(self,section_key: str,value: Any) -> None:
         self.set_feedback_orientation_default(section_key,value)
