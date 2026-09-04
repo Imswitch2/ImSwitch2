@@ -39,16 +39,45 @@ def recorded_snouty_geometry(data_obj: Any) -> tuple[int, int, int | None] | Non
     ``None`` when the source cannot describe itself, which leaves the widget
     and attribute values in charge.
     """
+    from imswitch.imcommon.model.acquisition_layout import (
+        UnconsumedLoopError,
+        select_loops,
+    )
+
     resolved = getattr(data_obj, "acquisition_layout", None)
     layout = getattr(resolved, "layout", None)
     if layout is None or getattr(resolved, "confidence", None) == "low":
         return None
-    loops = {loop.kind: loop for loop in layout.event_loops}
-    cycle, plane = loops.get("cycle"), loops.get("plane")
-    if cycle is None or plane is None:
+    authoritative = bool(getattr(resolved, "is_authoritative", False))
+    try:
+        selected = select_loops(
+            layout,
+            consumer="SNOUTY restack",
+            roles={"cycle": "cycle", "plane": "plane", "time": "time"},
+            required=("cycle", "plane"),
+        )
+    except UnconsumedLoopError as error:
+        # A declared layout this path cannot restack is refused; an inferred
+        # one is declined so the widget and attribute values stay in charge.
+        if authoritative:
+            raise ValueError(str(error)) from error
         return None
-    time = loops.get("time")
-    return cycle.count, plane.count, time.count if time is not None else 1
+    if selected is None:
+        return None
+    # restack_interleaved reads frames as plane-fastest within each cycle
+    # (``block[plane::planes_in_cycle]``), so the plane loop must sit
+    # immediately inside the cycle loop; counts alone cannot tell.
+    kinds = [loop.kind for loop in layout.event_loops]
+    if kinds.index("plane") != kinds.index("cycle") + 1:
+        message = (
+            "SNOUTY restacking assumes the plane loop immediately inside the "
+            f"cycle loop, but this layout orders its loops {kinds}"
+        )
+        if authoritative:
+            raise ValueError(message)
+        _logger.warning("%s; leaving the widget values in charge", message)
+        return None
+    return selected.count("cycle"), selected.count("plane"), selected.count("time")
 
 
 def snouty_param_overrides_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:

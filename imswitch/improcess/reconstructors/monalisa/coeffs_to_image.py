@@ -15,6 +15,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     PAYLOAD_DETECTOR_FRAME_STREAM,
     AcquisitionLayout,
     iter_physical_coordinates,
+    select_loops,
 )
 
 _logger = initLogger('MonalisaCoeffsToImage')
@@ -44,10 +45,6 @@ class LayoutPlacement:
     @property
     def folds_condition_into_time(self) -> bool:
         return self.n_conditions > 1
-
-
-def _loops_by_kind(layout: AcquisitionLayout) -> dict:
-    return {loop.kind: loop for loop in layout.event_loops}
 
 
 def linestep_conditions_interleave_per_line(layout: AcquisitionLayout | None) -> bool:
@@ -81,14 +78,27 @@ def placement_from_layout(layout: AcquisitionLayout | None) -> LayoutPlacement |
     """
     if layout is None or layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
         return None
-    loops = _loops_by_kind(layout)
-    fast, slow = loops.get('scan_x'), loops.get('scan_y')
-    if fast is None or slow is None:
+    # Every loop is either placed here or refused: a 'repeat' loop (two camera
+    # pulses per position) used to fall through the index arithmetic as two
+    # slots per position, the second overwriting the first, without a word.
+    selected = select_loops(
+        layout,
+        consumer='MoNaLISA placement',
+        roles={
+            'fast': 'scan_x',
+            'slow': 'scan_y',
+            'depth': 'scan_z',
+            'condition': 'condition',
+            'time': 'time',
+        },
+        required=('fast', 'slow'),
+    )
+    if selected is None:
         return None
-
-    depth = loops.get('scan_z')
-    condition = loops.get('condition')
-    time = loops.get('time')
+    fast, slow = selected['fast'], selected['slow']
+    depth = selected['depth']
+    condition = selected['condition']
+    time = selected['time']
     n_conditions = condition.count if condition is not None else 1
     n_time = time.count if time is not None else 1
 

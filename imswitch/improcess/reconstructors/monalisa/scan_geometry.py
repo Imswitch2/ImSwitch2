@@ -338,17 +338,42 @@ def scan_params_from_layout(resolved, axis_labels: dict) -> dict | None:
     if layout is None or not getattr(resolved, "is_usable", False):
         return None
 
+    from imswitch.imcommon.model.acquisition_layout import (
+        UnconsumedLoopError,
+        select_loops,
+    )
+
     kind_to_label = {
         "scan_x": axis_labels["r_l_text"],
         "scan_y": axis_labels["u_d_text"],
         "scan_z": axis_labels["b_f_text"],
         "time": axis_labels["timepoints_text"],
     }
+    # The dialog has slots for three scan axes, timepoints and (via
+    # n_linesteps) line-step conditions. A layout with any other loop cannot
+    # be expressed by it, and a pre-fill that silently ignores a loop
+    # reproduces a different scan, so it is declined instead.
+    try:
+        selected = select_loops(
+            layout,
+            consumer="MoNaLISA scan dialog",
+            roles={
+                "fast": "scan_x",
+                "slow": "scan_y",
+                "depth": "scan_z",
+                "time": "time",
+                "condition": "condition",
+            },
+        )
+    except UnconsumedLoopError:
+        return None
+    placed = [
+        selected[role] for role in ("fast", "slow", "depth", "time")
+        if selected[role] is not None
+    ]
     # event_loops run outermost to innermost; the dialog lists the fast axis
     # first, which is the same order reversed.
-    loops = [
-        loop for loop in reversed(layout.event_loops) if loop.kind in kind_to_label
-    ]
+    loops = [loop for loop in reversed(layout.event_loops) if loop in placed]
     if not any(loop.kind.startswith("scan_") for loop in loops):
         return None
 

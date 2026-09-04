@@ -7,6 +7,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.acquisition_layout import UnconsumedLoopError
 from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
@@ -291,7 +292,16 @@ class MonalisaReconstructor(StreamingReconstructor):
                 'Acquisition layout is low-confidence; using the scan dialog.'
             )
             return None
-        placement = placement_from_layout(resolved.layout)
+        try:
+            placement = placement_from_layout(resolved.layout)
+        except UnconsumedLoopError as error:
+            if resolved.is_authoritative:
+                raise ValueError(str(error)) from error
+            self._logger.info(
+                'Acquisition layout is inferred and has a loop MoNaLISA cannot '
+                f'place; using the scan dialog. {error}'
+            )
+            return None
         if placement is None:
             return None
         if len(placement.slots) != frames:
@@ -597,7 +607,14 @@ class MonalisaReconstructor(StreamingReconstructor):
         if not resolved.is_usable:
             return None
         layout = resolved.layout
-        placement = placement_from_layout(layout)
+        try:
+            placement = placement_from_layout(layout)
+        except UnconsumedLoopError as error:
+            # A loop this path cannot place: refuse a declared layout, decline
+            # an inferred one so the older ladder still gets its chance.
+            if resolved.is_authoritative:
+                raise ValueError(str(error)) from error
+            return None
         if placement is None:
             return None
 

@@ -234,14 +234,20 @@ def _frames_per_stack_from_layout(resolved: Any) -> int | None:
     frames one stack holds, rather than this module re-deriving it from the
     same attributes with its own arithmetic.
     """
+    from imswitch.imcommon.model.acquisition_layout import (
+        recorded_frames_per_time_point,
+    )
+
     layout = getattr(resolved, "layout", None)
     if layout is None or not resolved.is_usable:
         return None
-    loops = {loop.kind: loop for loop in layout.event_loops}
-    fast, slow = loops.get("scan_x"), loops.get("scan_y")
-    if fast is None or slow is None:
+    kinds = {loop.kind for loop in layout.event_loops}
+    if "scan_x" not in kinds or "scan_y" not in kinds:
         return None
-    return fast.count * slow.count
+    # A stack is what one time point produces -- conditions, a Z axis, a
+    # repeat loop and a gated detector's spans included. ``scan_x * scan_y``
+    # dropped all of those, so the reader waited for the wrong frame count.
+    return recorded_frames_per_time_point(layout)
 
 
 def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:

@@ -672,3 +672,178 @@ def test_direction_is_refused_on_a_non_spatial_loop():
     assert "DIRECTION_ON_NON_SPATIAL_LOOP" in codes
     # And the helper would not mirror it even if validation were bypassed.
     assert physical_orientation_flips(layout) == frozenset({"scan_x"})
+
+
+# ----------------------------------------------------------------------
+# One loop-consumption helper (audit condition 4)
+# ----------------------------------------------------------------------
+
+
+def _consumer_layout(*loops, spans=None):
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+    )
+
+    return AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="Cam",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=tuple(loops),
+        recorded_event_spans=spans,
+    )
+
+
+def test_select_loops_fills_roles_and_reports_optional_ones_as_none():
+    from imswitch.imcommon.model.acquisition_layout import AcquisitionLoop, select_loops
+
+    layout = _consumer_layout(
+        AcquisitionLoop("t", "time", 2),
+        AcquisitionLoop("y", "scan_y", 3),
+        AcquisitionLoop("x", "scan_x", 4),
+    )
+    selected = select_loops(
+        layout,
+        consumer="test",
+        roles={"fast": "scan_x", "slow": "scan_y", "depth": "scan_z", "time": "time"},
+        required=("fast", "slow"),
+    )
+
+    assert selected["fast"].id == "x" and selected["slow"].id == "y"
+    assert selected["depth"] is None
+    assert selected.count("depth") == 1
+    assert selected.count("time") == 2
+    assert selected.folded == ()
+
+
+def test_select_loops_returns_none_when_a_required_role_is_absent():
+    from imswitch.imcommon.model.acquisition_layout import AcquisitionLoop, select_loops
+
+    layout = _consumer_layout(AcquisitionLoop("t", "time", 6))
+    assert (
+        select_loops(
+            layout,
+            consumer="test",
+            roles={"fast": "scan_x", "slow": "scan_y", "time": "time"},
+            required=("fast", "slow"),
+        )
+        is None
+    )
+
+
+def test_select_loops_refuses_a_loop_the_consumer_neither_places_nor_folds():
+    """The two-pulse regression: a 'repeat' loop used to be dropped silently."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        AcquisitionLoop,
+        UnconsumedLoopError,
+        select_loops,
+    )
+
+    layout = _consumer_layout(
+        AcquisitionLoop("y", "scan_y", 3),
+        AcquisitionLoop("x", "scan_x", 4),
+        AcquisitionLoop("repeat", "repeat", 2),
+    )
+    with pytest.raises(UnconsumedLoopError) as raised:
+        select_loops(
+            layout,
+            consumer="MoNaLISA placement",
+            roles={"fast": "scan_x", "slow": "scan_y"},
+            required=("fast", "slow"),
+        )
+    message = str(raised.value)
+    assert "MoNaLISA placement" in message
+    assert "'repeat'" in message and "count 2" in message
+
+
+def test_select_loops_hands_back_explicitly_folded_loops():
+    from imswitch.imcommon.model.acquisition_layout import AcquisitionLoop, select_loops
+
+    layout = _consumer_layout(
+        AcquisitionLoop("t", "time", 2),
+        AcquisitionLoop("y", "scan_y", 3),
+        AcquisitionLoop("x", "scan_x", 4),
+        AcquisitionLoop("repeat", "repeat", 2),
+    )
+    selected = select_loops(
+        layout,
+        consumer="SMLM",
+        roles={"fast": "scan_x", "slow": "scan_y"},
+        fold=("time", "repeat"),
+    )
+    assert [loop.id for loop in selected.folded] == ["t", "repeat"]
+
+
+def test_select_loops_refuses_two_loops_of_one_kind_and_conflicting_role_maps():
+    from imswitch.imcommon.model.acquisition_layout import (
+        AcquisitionLoop,
+        UnconsumedLoopError,
+        select_loops,
+    )
+
+    layout = _consumer_layout(
+        AcquisitionLoop("coarse", "scan_x", 2),
+        AcquisitionLoop("fine", "scan_x", 4),
+    )
+    with pytest.raises(UnconsumedLoopError, match="already fills role"):
+        select_loops(layout, consumer="test", roles={"fast": "scan_x"})
+    with pytest.raises(ValueError, match="mapped to both roles"):
+        select_loops(layout, consumer="test", roles={"a": "scan_x", "b": ("scan_x",)})
+
+
+def test_recorded_frame_counts_honour_spans_and_every_inner_loop():
+    from imswitch.imcommon.model.acquisition_layout import (
+        AcquisitionLoop,
+        RecordedEventSpan,
+        recorded_frame_count,
+        recorded_frames_per_time_point,
+    )
+
+    full = _consumer_layout(
+        AcquisitionLoop("t", "time", 3),
+        AcquisitionLoop("z", "scan_z", 2),
+        AcquisitionLoop("y", "scan_y", 3),
+        AcquisitionLoop("c", "condition", 2),
+        AcquisitionLoop("x", "scan_x", 4),
+        AcquisitionLoop("r", "repeat", 2),
+    )
+    assert recorded_frame_count(full) == 3 * 2 * 3 * 2 * 4 * 2
+    # A stack is everything one time point produces -- not scan_x * scan_y.
+    assert recorded_frames_per_time_point(full) == 2 * 3 * 2 * 4 * 2
+
+    # A detector gated to condition 1 only: per time point, half the frames.
+    per_time = 2 * 3 * 2 * 4 * 2
+    gated = _consumer_layout(
+        AcquisitionLoop("t", "time", 3),
+        AcquisitionLoop("z", "scan_z", 2),
+        AcquisitionLoop("y", "scan_y", 3),
+        AcquisitionLoop("c", "condition", 2),
+        AcquisitionLoop("x", "scan_x", 4),
+        AcquisitionLoop("r", "repeat", 2),
+        spans=(RecordedEventSpan(start=8, count=8, period=16, repeats=3 * 2 * 3),),
+    )
+    assert recorded_frame_count(gated) == per_time * 3 // 2
+    assert recorded_frames_per_time_point(gated) == per_time // 2
+
+    no_time = _consumer_layout(
+        AcquisitionLoop("y", "scan_y", 3), AcquisitionLoop("x", "scan_x", 4)
+    )
+    assert recorded_frames_per_time_point(no_time) == 12
+
+
+def test_every_registered_loop_kind_is_pinned_as_positional_or_not():
+    """A new kind must say whether it advances the scan; it cannot default."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        LOOP_KIND_ADVANCES_POSITION,
+        NON_POSITIONAL_LOOP_KINDS,
+        REGISTERED_LOOP_KINDS,
+    )
+
+    assert set(LOOP_KIND_ADVANCES_POSITION) == set(REGISTERED_LOOP_KINDS)
+    assert NON_POSITIONAL_LOOP_KINDS == {
+        kind for kind, advances in LOOP_KIND_ADVANCES_POSITION.items() if not advances
+    }
+    # The two the gate has always excluded stay excluded.
+    assert {"condition", "repeat"} <= NON_POSITIONAL_LOOP_KINDS

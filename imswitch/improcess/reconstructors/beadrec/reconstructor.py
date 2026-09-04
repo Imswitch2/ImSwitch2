@@ -30,7 +30,9 @@ from imswitch.imcommon.algorithms.bead_fits import FIT_MODELS
 from imswitch.imcommon.model.acquisition_layout import (
     PAYLOAD_DETECTOR_FRAME_STREAM,
     AcquisitionLayout,
+    UnconsumedLoopError,
     iter_physical_coordinates,
+    select_loops,
 )
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.reconstructors.base import (
@@ -71,16 +73,34 @@ def infer_scan_dims(n_frames, scan_x=0, scan_y=0):
     return None
 
 
-def _scan_loops(layout: AcquisitionLayout) -> dict[str, object]:
-    """Index the scan/condition loops of a frame-stream layout by kind."""
-    return {
-        loop.kind: loop
-        for loop in layout.event_loops
-        if loop.kind in {"scan_x", "scan_y", "condition"}
-    }
+#: BeadRec builds one raster image per condition from X and Y. Every other
+#: loop -- a Z axis, a time lapse, a repeat -- is a dimension it has no image
+#: for, and is refused rather than folded into the same raster.
+_BEADREC_ROLES = {"fast": "scan_x", "slow": "scan_y", "condition": "condition"}
 
 
-def raster_geometry_from_layout(layout: AcquisitionLayout | None):
+def _select_raster_loops(layout: AcquisitionLayout, *, authoritative: bool = True):
+    """The X/Y/condition loops, or ``None`` when this is not a raster.
+
+    A declared layout with a loop BeadRec cannot place is an error; an
+    inferred one is declined so the manual entries stay in charge.
+    """
+    try:
+        return select_loops(
+            layout,
+            consumer="BeadRec",
+            roles=_BEADREC_ROLES,
+            required=("fast", "slow"),
+        )
+    except UnconsumedLoopError as error:
+        if authoritative:
+            raise ValueError(str(error)) from error
+        return None
+
+
+def raster_geometry_from_layout(
+    layout: AcquisitionLayout | None, *, authoritative: bool = True
+):
     """Return ``(scan_dims, step_sizes, condition_loop)`` recorded by a scan.
 
     ``None`` when the layout does not describe a two-dimensional raster, which
@@ -88,14 +108,14 @@ def raster_geometry_from_layout(layout: AcquisitionLayout | None):
     """
     if layout is None or layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
         return None
-    loops = _scan_loops(layout)
-    fast, slow = loops.get("scan_x"), loops.get("scan_y")
-    if fast is None or slow is None:
+    selected = _select_raster_loops(layout, authoritative=authoritative)
+    if selected is None:
         return None
+    fast, slow = selected["fast"], selected["slow"]
     steps = tuple(
         float(loop.step) if loop.step else 0.0 for loop in (fast, slow)
     )
-    return (fast.count, slow.count), steps, loops.get("condition")
+    return (fast.count, slow.count), steps, selected["condition"]
 
 
 def _condition_labels(loop) -> tuple[str, ...]:
@@ -119,20 +139,19 @@ def raster_positions_from_layout(
     imcommon helper every image-building consumer shares, so this plugin and
     MoNaLISA cannot disagree about the same file.
     """
+    selected = _select_raster_loops(layout, authoritative=True)
+    if selected is None:
+        raise ValueError("BeadRec raster positions need scan_x and scan_y loops")
+    fast, slow, condition = selected["fast"], selected["slow"], selected["condition"]
     x_pixels = scan_dims[0]
     positions = []
     for coordinates in iter_physical_coordinates(layout):
-        condition = 0
-        raster_x = raster_y = 0
-        for loop in layout.event_loops:
-            value = coordinates[loop.id]
-            if loop.kind == "scan_x":
-                raster_x = value
-            elif loop.kind == "scan_y":
-                raster_y = value
-            elif loop.kind == "condition":
-                condition = value
-        positions.append((condition, raster_y * x_pixels + raster_x))
+        positions.append(
+            (
+                coordinates[condition.id] if condition is not None else 0,
+                coordinates[slow.id] * x_pixels + coordinates[fast.id],
+            )
+        )
     return positions
 
 
@@ -269,7 +288,10 @@ class BeadRecReconstructor(Reconstructor):
 
         resolved = self._resolved_layout(data_obj)
         layout = resolved.layout if resolved is not None else None
-        recorded = raster_geometry_from_layout(layout)
+        recorded = raster_geometry_from_layout(
+            layout,
+            authoritative=bool(resolved is not None and resolved.is_authoritative),
+        )
         manual_dims = infer_scan_dims(
             n_frames, params.get("scan_x", 0), params.get("scan_y", 0)
         )

@@ -47,8 +47,32 @@ REGISTERED_LOOP_KINDS = frozenset(
     }
 )
 
+#: Whether each registered loop kind advances the producer's scan position --
+#: i.e. multiplies ``getNumScanPositions()`` at the recording gate -- or
+#: repeats within one position. Pinned for EVERY registered kind and enforced
+#: by a test, because the previous ``{condition, repeat}`` set was "the kinds
+#: seen so far": any new kind silently counted as a position. ``time`` is
+#: positional because firmware-run time lapses (RESOLFT) report their
+#: timepoints inside ``getNumScanPositions()``; a controller-run lapse carries
+#: time as a partition, not a loop. ``tcspc_bin`` is a payload axis of a
+#: time-resolved detector, never a stage move.
+LOOP_KIND_ADVANCES_POSITION: Mapping[str, bool] = {
+    "scan_x": True,
+    "scan_y": True,
+    "scan_z": True,
+    "cycle": True,
+    "plane": True,
+    "time": True,
+    "tile": True,
+    "position": True,
+    "condition": False,
+    "repeat": False,
+    "tcspc_bin": False,
+}
 #: Loop kinds that repeat within one scan position instead of advancing it.
-NON_POSITIONAL_LOOP_KINDS = frozenset({"condition", "repeat"})
+NON_POSITIONAL_LOOP_KINDS = frozenset(
+    kind for kind, advances in LOOP_KIND_ADVANCES_POSITION.items() if not advances
+)
 
 VALID_PROVENANCE = frozenset(
     {
@@ -1396,6 +1420,146 @@ def iter_physical_coordinates(layout: AcquisitionLayout) -> Iterator[Mapping[str
     """Yield physically oriented coordinates for every stored frame in storage order."""
     for coordinates in iter_recorded_coordinates(layout):
         yield _physical_coordinates(layout, coordinates)
+
+
+class UnconsumedLoopError(AcquisitionLayoutError):
+    """A consumer met an event loop it neither places nor declared folded.
+
+    Raised instead of dropping the loop: a loop the consumer does not know
+    about is a whole dimension of the recording, and folding it silently is
+    how a two-pulse scan came out with every second frame overwriting the
+    first. The message names the consumer and the loop so the fix is obvious:
+    either place the loop, or say what folding it means.
+    """
+
+
+@dataclass(frozen=True)
+class LoopSelection:
+    """The loops one consumer placed, by role, and the ones it folded.
+
+    ``by_role`` maps each requested role to the loop that fills it, or
+    ``None`` for an optional role the layout does not have. ``folded`` holds
+    the loops the consumer declared it collapses on purpose, in layout order.
+    """
+
+    by_role: Mapping[str, AcquisitionLoop | None]
+    folded: tuple[AcquisitionLoop, ...] = ()
+
+    def __getitem__(self, role: str) -> AcquisitionLoop | None:
+        return self.by_role[role]
+
+    def count(self, role: str, default: int = 1) -> int:
+        """Loop count for ``role``, or ``default`` when the role is absent."""
+        loop = self.by_role.get(role)
+        return int(loop.count) if loop is not None else default
+
+
+def select_loops(
+    layout: AcquisitionLayout,
+    *,
+    consumer: str,
+    roles: Mapping[str, str | Sequence[str]],
+    required: Iterable[str] = (),
+    fold: Iterable[str] = (),
+) -> LoopSelection | None:
+    """Pick the loops a consumer places, and refuse the ones it cannot.
+
+    This is the one way a consumer reads ``event_loops``. ``roles`` maps a
+    consumer-side role (``"fast"``, ``"slow"``, ``"depth"``, ``"time"``...)
+    to the loop kind -- or kinds, first match wins -- that fills it. A kind
+    fills at most one role; a layout with two loops of one kind cannot be
+    placed by roles and is refused. ``required`` names the roles without
+    which the layout is simply not this consumer's kind of scan: the result
+    is then ``None`` and the caller falls back, exactly as before. ``fold``
+    names the kinds the consumer collapses deliberately -- SMLM flattening
+    ``time`` and ``repeat`` into one blinking trace, say -- and those loops
+    are returned in :attr:`LoopSelection.folded` so the consumer can do the
+    collapsing explicitly.
+
+    Every other loop raises :class:`UnconsumedLoopError`. That is the whole
+    point: a consumer used to select the kinds it knew and let the rest fall
+    through its index arithmetic, so a ``repeat`` loop the producer emitted
+    for a two-pulse scan produced two slots per position and the second pulse
+    overwrote the first, with no message anywhere. Registered kinds are an
+    open vocabulary, so the refusal is for loops the *consumer* does not
+    handle, not for kinds this module does not know.
+    """
+    kind_to_role: dict[str, str] = {}
+    for role, kinds in roles.items():
+        for kind in ((kinds,) if isinstance(kinds, str) else tuple(kinds)):
+            if kind in kind_to_role and kind_to_role[kind] != role:
+                raise ValueError(
+                    f"{consumer}: kind {kind!r} is mapped to both roles "
+                    f"{kind_to_role[kind]!r} and {role!r}"
+                )
+            kind_to_role[kind] = role
+    fold_kinds = frozenset(fold)
+
+    by_role: dict[str, AcquisitionLoop | None] = {role: None for role in roles}
+    folded: list[AcquisitionLoop] = []
+    unconsumed: list[AcquisitionLoop] = []
+    for loop in layout.event_loops:
+        role = kind_to_role.get(loop.kind)
+        if role is not None:
+            if by_role[role] is not None:
+                raise UnconsumedLoopError(
+                    f"{consumer} cannot place loop {loop.id!r}: kind "
+                    f"{loop.kind!r} already fills role {role!r} (loop "
+                    f"{by_role[role].id!r}). Two loops of one kind need "
+                    f"distinct kinds -- see the contract's note on one "
+                    f"physical axis driven by two loops."
+                )
+            by_role[role] = loop
+        elif loop.kind in fold_kinds:
+            folded.append(loop)
+        else:
+            unconsumed.append(loop)
+
+    if unconsumed:
+        described = ", ".join(
+            f"{loop.id!r} (kind {loop.kind!r}, count {loop.count})" for loop in unconsumed
+        )
+        raise UnconsumedLoopError(
+            f"{consumer} does not place event loop(s) {described}, and does "
+            f"not declare how to fold them. Folding a loop silently mixes "
+            f"unrelated frames into one output; place it, or fold it on "
+            f"purpose. Loops this consumer places: "
+            f"{sorted(kind_to_role)}; folds: {sorted(fold_kinds)}."
+        )
+    for role in required:
+        if by_role.get(role) is None:
+            return None
+    return LoopSelection(by_role=by_role, folded=tuple(folded))
+
+
+def recorded_frame_count(layout: AcquisitionLayout) -> int:
+    """Number of stored frames the layout describes: its spans, else every event."""
+    _raise_for_invalid_coordinates(layout)
+    if layout.recorded_event_spans is None:
+        return _producer_event_count(layout)
+    return sum(span.count * span.repeats for span in layout.recorded_event_spans)
+
+
+def recorded_frames_per_time_point(layout: AcquisitionLayout) -> int:
+    """Stored frames in the first time point, exactly, spans included.
+
+    A "stack" to a live reader is what one time point produces. Multiplying
+    ``scan_x`` by ``scan_y`` -- the previous definition -- silently dropped
+    every other loop inside the time loop (conditions, a Z axis, a ``repeat``)
+    and ignored a gated detector's spans, so the reader waited for the wrong
+    number of frames. Without a ``time`` loop the whole layout is one stack.
+    """
+    _raise_for_invalid_coordinates(layout)
+    time_ids = [loop.id for loop in layout.event_loops if loop.kind == "time"]
+    if not time_ids:
+        return recorded_frame_count(layout)
+    time_id = time_ids[0]
+    count = 0
+    for coordinates in iter_recorded_coordinates(layout):
+        if coordinates[time_id] != 0:
+            break
+        count += 1
+    return count
 
 
 def unfold_frame_axis(

@@ -106,6 +106,8 @@ class MonalisaLiveSession(StreamingSession):
         *inferred* from legacy metadata is declined instead, so a file that
         used to open still opens through the older ladder below.
         """
+        from imswitch.imcommon.model.acquisition_layout import UnconsumedLoopError
+
         from .coeffs_to_image import (
             linestep_conditions_interleave_per_line,
             placement_from_layout,
@@ -115,7 +117,12 @@ class MonalisaLiveSession(StreamingSession):
         if resolved is None or not resolved.is_usable:
             return None
         layout = resolved.layout
-        placement = placement_from_layout(layout)
+        try:
+            placement = placement_from_layout(layout)
+        except UnconsumedLoopError as error:
+            if resolved.is_authoritative:
+                raise ValueError(str(error)) from error
+            return None
         if placement is None:
             return None
 
