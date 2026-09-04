@@ -57,9 +57,16 @@ class TriggerScopeScanGeometryMixin:
         """Camera TTL pulses per scan position, per detector.
 
         These modes drive at most one camera, named by the ``CameraTTL`` role,
-        with one pulse per position. An empty mapping means "no detector has a
-        non-default pulse count", which the RecordingManager reads as one pulse
-        each — the right answer for a mode with no camera role configured.
+        with one pulse per position. The firmware gates that camera on a fixed
+        line the software never chooses, so this is a *declaration* of which
+        detector receives that pulse, not a decision about it.
+
+        An empty mapping therefore means the mode has no camera declared, and
+        a scan-mode recording of a camera is refused rather than assumed to
+        get one pulse per position. That assumption used to be made here and,
+        identically, by the recording gate, so the cross-check between the two
+        compared a default with itself and a free-running camera was recorded
+        as a certain, complete scan.
         """
         _, deviceParameters = self._triggerScopeGeometryParameters()
         device = deviceParameters.get('CameraTTL')
@@ -69,16 +76,37 @@ class TriggerScopeScanGeometryMixin:
 
     def getAcquisitionLayouts(self, detectorNames):
         """Return the firmware's time/cycle/plane event order."""
-        scanParameters, _ = self._triggerScopeGeometryParameters()
-        return build_triggerscope_resolft_layouts(
-            detectorNames,
-            scan_parameters=scanParameters,
-            scan_source=type(self).__name__,
-            pulse_counts=self.getNumCamTTL(),
-            scan_driven_detectors=scan_driven_detector_names(
-                self, detectorNames
-            ),
-        )
+        scanParameters, deviceParameters = self._triggerScopeGeometryParameters()
+        pulseCounts = self.getNumCamTTL()
+        try:
+            return build_triggerscope_resolft_layouts(
+                detectorNames,
+                scan_parameters=scanParameters,
+                scan_source=type(self).__name__,
+                pulse_counts=pulseCounts,
+                scan_driven_detectors=scan_driven_detector_names(
+                    self, detectorNames
+                ),
+            )
+        except ValueError as error:
+            if pulseCounts:
+                raise
+            # The generic refusal tells the user to gate the detector in the
+            # scan's TTL cycle, which in these modes is not something they
+            # can do: the firmware owns the camera line. What they can do is
+            # say which detector is wired to it, so name that control.
+            declared = deviceParameters.get('CameraTTL')
+            reason = (
+                f'the selected camera {declared!r} is not a detector in this '
+                'setup' if declared else 'no camera is selected'
+            )
+            raise ValueError(
+                f'{error} In this TriggerScope mode the firmware gates the '
+                f'camera on a fixed line, so the scan cannot add a pulse for '
+                f'it -- it can only be told which detector receives that '
+                f'pulse. Set "Camera used for detection" in the scan panel '
+                f'({reason}).'
+            ) from error
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

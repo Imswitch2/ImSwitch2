@@ -129,8 +129,12 @@ consequence: the basic pLS-RESOLFT and galvo-detection panels gained a
 **Camera used for detection** selector (the multicolor panel already had one).
 The firmware gates the camera on a fixed line in those modes, so the selector
 does not choose the camera, it *declares* which detector receives that pulse.
-**Do:** leave it unset once and confirm the recording is refused with that
-code; then set it to the camera wired to the firmware's camera line and record.
+**Do:** leave it unset once and confirm the recording is refused, with a
+message naming the selector; then set it to the camera wired to the firmware's
+camera line and record. If the camera is **not in the list**, that is a setup
+question, not a bug: the selector lists detectors that declare a `digitalLine`,
+so add the firmware's camera line to that detector's entry in the setup file
+before the session rather than during it.
 **Check:** `recording:discarded_frames` is 0 in the file. A non-zero value
 means the detector produced more frames than the scan declared — free-running,
 or pulsed more often than declared — and the surplus was dropped, with a

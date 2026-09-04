@@ -140,6 +140,55 @@ def test_camera_ttl_ignores_a_ttl_line_that_is_not_a_detector():
     assert controller.getNumCamTTL() == {}
 
 
+def test_an_undeclared_camera_is_refused_by_naming_the_control_that_fixes_it():
+    """The generic refusal sends the operator to the wrong place.
+
+    It says to gate the detector in the scan's TTL cycle, which in these modes
+    is not something the software can do: the firmware owns the camera line.
+    The only action available is declaring which detector is wired to it, so
+    the message has to name that control -- at the rig, in the middle of a
+    session, is the worst possible time to go looking for a TTL setting that
+    does not exist.
+    """
+    controller = _Controller(
+        {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
+        {},
+        detectors=('Camera',),
+    )
+
+    with pytest.raises(ValueError) as error:
+        controller.getAcquisitionLayouts(('Camera',))
+
+    message = str(error.value)
+    assert 'Camera used for detection' in message
+    assert 'no camera is selected' in message
+    # The original refusal is kept: it names the detector and the rule.
+    assert "'Camera'" in message
+
+
+def test_a_camera_role_pointing_at_a_non_detector_says_which_name_was_wrong():
+    controller = _Controller(
+        {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
+        {'CameraTTL': 'SomeTTLLine'},
+        detectors=('Camera',),
+    )
+
+    with pytest.raises(ValueError) as error:
+        controller.getAcquisitionLayouts(('Camera',))
+
+    assert "'SomeTTLLine' is not a detector in this setup" in str(error.value)
+
+
+def test_a_declared_camera_still_builds_its_layout():
+    """The mode-specific message must not swallow a genuine builder failure."""
+    layouts = _controller().getAcquisitionLayouts(('Camera',))
+
+    assert set(layouts) == {'Camera'}
+    assert [loop.kind for loop in layouts['Camera'].event_loops] == [
+        'time', 'cycle', 'plane'
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Adoption                                                                     #
 # --------------------------------------------------------------------------- #
