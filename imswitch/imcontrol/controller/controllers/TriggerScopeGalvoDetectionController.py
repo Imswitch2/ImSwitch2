@@ -59,6 +59,7 @@ class TriggerScopeGalvoDetectionController(
         self._widget.onLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.offLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.roLaserEdit.addItems(self.TTLDevices.keys())
+        self._widget.CameraTTLEdit.addItems(self.TTLDevices.keys())
         self._widget.roScanDeviceEdit.addItems(self.positioners.keys())
         self._widget.galvoScanDeviceEdit.addItems(self.positioners.keys())
         self._widget.cycleScanDeviceEdit.addItems(self.positioners.keys())
@@ -141,6 +142,8 @@ class TriggerScopeGalvoDetectionController(
             self._widget.setRoScanDevice(self._deviceParameterDict['roScanDevice'])
             self._widget.setGalvoScanDevice(self._deviceParameterDict['galvoScanDevice'])
             self._widget.setCycleScanDevice(self._deviceParameterDict['cycleScanDevice'])
+            # Older saved states and scan files predate the camera role.
+            self._widget.setCameraTTL(self._deviceParameterDict.get('CameraTTL', ''))
         finally:
             self.settingParameters = False
 
@@ -236,6 +239,7 @@ class TriggerScopeGalvoDetectionController(
         self._deviceParameterDict['onLaser'] = self._widget.getOnLaser()
         self._deviceParameterDict['offLaser'] = self._widget.getOffLaser()
         self._deviceParameterDict['roLaser'] = self._widget.getRoLaser()
+        self._deviceParameterDict['CameraTTL'] = self._widget.getCameraTTL()
         self._deviceParameterDict['roScanDevice'] = self._widget.getRoScanDevice()
         self._deviceParameterDict['galvoScanDevice'] = self._widget.getGalvoScanDevice()
         # Cycle scan reuses the RO device (widget selector is disabled and
@@ -356,8 +360,10 @@ class TriggerScopeGalvoDetectionController(
         offLaser = deviceParameterDict.get('offLaser')
         roLaser = deviceParameterDict.get('roLaser')
 
+        cameraTTL = deviceParameterDict.get('CameraTTL')
+
         missingTTLDevices = []
-        for device in [onLaser, offLaser, roLaser]:
+        for device in [onLaser, offLaser, roLaser, cameraTTL]:
             if device and device not in self.TTLDevices:
                 missingTTLDevices.append(device)
 

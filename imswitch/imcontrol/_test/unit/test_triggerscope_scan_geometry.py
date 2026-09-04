@@ -116,11 +116,11 @@ def test_camera_ttl_reports_one_pulse_for_the_configured_camera():
 
 
 def test_camera_ttl_is_empty_without_a_camera_role():
-    """pLS-RESOLFT and galvo-detection configure no CameraTTL device. An empty
-    map means "this scan gates no detector": a scan-mode recording of a camera
-    from such a mode is refused at arm (DETECTOR_PULSES_UNDECLARED) rather
-    than defaulted to one pulse per position, until the mode declares its
-    camera."""
+    """A mode whose widget declares no CameraTTL device yields an empty map,
+    which means "this scan gates no detector": a scan-mode recording of a
+    camera from it is refused at arm (DETECTOR_PULSES_UNDECLARED) rather than
+    defaulted to one pulse per position. Every TriggerScope RESOLFT mode now
+    has a 'Camera used for detection' combo for exactly this reason."""
     controller = _Controller(
         {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
         {},
@@ -339,3 +339,37 @@ def test_capable_source_names_are_offered_for_the_chooser():
     assert CommunicationChannel.getRecordingScanSourceNames(channel) == [
         'TriggerScopeRaster', 'TriggerScopeScan'
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Every RESOLFT-family panel can declare its camera                            #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize('widget_module, widget_class', [
+    ('TriggerScopePLSRWidget', 'TriggerScopePLSRWidget'),
+    ('TriggerScopeGalvoDetectionWidget', 'TriggerScopeGalvoDetectionWidget'),
+    ('TriggerScopePLSRMulticolorWidget', 'TriggerScopePLSRMulticolorWidget'),
+])
+def test_every_resolft_panel_declares_its_camera(qtbot, widget_module, widget_class):
+    """The firmware gates the camera on a fixed line in these modes; the
+    software must still say WHICH detector is on it, or a scan recording cannot
+    tie frames to positions and is refused at arm. The multicolor panel always
+    had the combo; the basic pLS-RESOLFT and galvo-detection panels gained it."""
+    import importlib
+
+    module = importlib.import_module(
+        f'imswitch.imcontrol.view.widgets.{widget_module}'
+    )
+    widget = getattr(module, widget_class)(None)
+    qtbot.addWidget(widget)
+
+    widget.CameraTTLEdit.addItems(['OrcaStraight', 'WidefieldCamera'])
+    widget.setCameraTTL('OrcaStraight')
+    assert widget.getCameraTTL() == 'OrcaStraight'
+
+    controller = _Controller(
+        {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
+        {'CameraTTL': widget.getCameraTTL()},
+        detectors=('OrcaStraight', 'WidefieldCamera'),
+    )
+    assert controller.getNumCamTTL() == {'OrcaStraight': 1}
