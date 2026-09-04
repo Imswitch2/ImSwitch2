@@ -1,8 +1,13 @@
 # Acquisition layout: rig validation guide
 
 **Branch:** `codex/acquisition-layout-schema`
-**Status of the work:** software-verified only — 2800 ImControl/ImCommon tests
-and 1288 ImProcess tests pass, and nothing has ever run against real hardware.
+**Status of the work:** software-verified only — the ImControl/ImCommon and
+ImProcess suites pass, the seven must-do conditions of the
+[direction audit](design/plans/acquisition-layout-direction-audit.md) are done
+(2026-09-04), and nothing has ever run against real hardware. The last
+software step was a seam test that records through every real stage under the
+simulated DAQ (`test_acquisition_layout_recording_seam.py`); what remains is
+whether the producers' assertions match what the hardware delivers.
 **What this guide is for:** settling the assumptions that only a microscope can
 settle, and catching the recordings this branch will now refuse.
 
@@ -106,6 +111,20 @@ than one pulse per position.
 **Check:** each detector's frame count matches its recorded spans, and each
 reconstructs only its own condition.
 
+Pulses per position are now **declared, never defaulted**. A camera the scan
+does not gate — no entry in the scan source's `getNumCamTTL()` — is refused at
+arm with `DETECTOR_PULSES_UNDECLARED`. For the TriggerScope this has a visible
+consequence: the basic pLS-RESOLFT and galvo-detection panels gained a
+**Camera used for detection** selector (the multicolor panel already had one).
+The firmware gates the camera on a fixed line in those modes, so the selector
+does not choose the camera, it *declares* which detector receives that pulse.
+**Do:** leave it unset once and confirm the recording is refused with that
+code; then set it to the camera wired to the firmware's camera line and record.
+**Check:** `recording:discarded_frames` is 0 in the file. A non-zero value
+means the detector produced more frames than the scan declared — free-running,
+or pulsed more often than declared — and the surplus was dropped, with a
+warning in the log.
+
 ### 3.5 Scan-driven detectors
 
 Detectors that assemble their own image are recorded as `assembled-image` with
@@ -128,6 +147,9 @@ wrong answer, but each turns a previously "working" action into an error.
 | Analyse a STARSS file whose name has no `_h`/`_v` and no recorded role | Error | It used to assume H, silently inverting the anisotropy |
 | Run Fast Gauss MoNaLISA on an interleaved line-step scan | Error pointing at the standard method | The fast path stacks contiguous X/Y blocks, which interleaved conditions are not |
 | Open the MoNaLISA scan dialog on a file with no geometry | Fields are left alone | It used to pre-fill `sqrt(frames)` on both axes |
+| Record a scan from a TriggerScope panel with no camera declared (pLS-RESOLFT, galvo detection) | **Recording is blocked** at arm: `DETECTOR_PULSES_UNDECLARED` | Producer and gate both defaulted an undeclared camera to one pulse per position and compared the default with itself |
+| Record a TriggerScope RESOLFT scan with a missing or unreadable `roSteps`/`cycleSteps`/`timeLapsePoints` | Error naming the counter | Each was silently read as `1`, arming for a fraction of the scan |
+| Record an LS-XY-RESOLFT scan | Records with **no layout** (warning at arm), frames still counted as `rasterXSteps x rasterYSteps` | The firmware's raster loop order has not been traced; a guessed layout would be a certain, wrong one |
 
 If one of these fires on a recording you believe is valid, that is a finding —
 capture the file and the inspector output rather than working around it.
@@ -136,6 +158,18 @@ capture the file and the inspector output rather than working around it.
 
 Each step is independent; stop and capture at the first surprise.
 
+0. **The scan that started this: multicolor pLS-RESOLFT, 10 cycles × 20 RO
+   steps**, on `main` it aborted with *"readChunk consumer 'RecordingManager'
+   fell behind by more than 1000 frames"* while 1 cycle × 200 steps worked.
+   The cause was a sixteen-frame raw-queue cap meant for point detectors being
+   applied to cameras; the branch fixes it, and the message now quotes the cap
+   actually in force. Run exactly that scan first. **Check:** it completes;
+   `recording:discarded_frames` is 0; and watch the log for the new
+   *producer stall* warning (`RecordingManager` reports when a detector's
+   frames stopped arriving for more than a second while the scan ran). On
+   `main` the log showed a ~2 s gap before the abort that the software could
+   not attribute — writer/disk or the second detector — and this warning is
+   what answers that. If it fires, capture the log; the scan still completes.
 1. **Plain point scan**, small, known sample. Record → inspect → BeadRec.
    Confirms geometry, pitch and `geometry_source: layout`.
 2. **Advanced Scan, 2 line steps** (§3.2). Record → inspect → MoNaLISA.
@@ -165,6 +199,11 @@ For every recording:
 For anything that fails: the full error text. These errors are deliberately
 specific and name the conflicting numbers; that text is usually enough to
 locate the cause without the file.
+
+For every scan recording, also the log lines from arm to finalize: the layout
+gate logs what it skipped and why (a pulse cross-check it could not run, a loop
+kind it could not classify), the worker warns once per detector about surplus
+frames, and the producer-stall warning names the detector and the gap.
 
 ## 7. Known-unverified, beyond the above
 
