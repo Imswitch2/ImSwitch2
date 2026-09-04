@@ -595,6 +595,59 @@ def build_triggerscope_raster_layouts(
     )
 
 
+#: The RESOLFT-family firmware counters, outermost to innermost, as
+#: ``(parameter key, loop kind, step-size key)``. This ONE table feeds both the
+#: recording's frame expectation (``TriggerScopeScanGeometryMixin.
+#: getNumScanPositions``) and the layout (:func:`build_triggerscope_resolft_
+#: layouts``), so the two cannot drift apart -- which also means the arm-time
+#: ``SCAN_POSITION_COUNT_MISMATCH`` check is structurally vacuous for this
+#: family: only a firmware trace (rig-validation §3.1) can falsify the order or
+#: the counts. Until one exists, a missing or unreadable counter is refused
+#: rather than silently read as one step inside a layout stamped ``recorded``.
+RESOLFT_COUNTERS: tuple[tuple[str, str, str | None], ...] = (
+    ("timeLapsePoints", "time", None),
+    ("cycleSteps", "cycle", "cycleStepSizeUm"),
+    ("roSteps", "plane", "roStepSizeUm"),
+)
+
+
+def resolft_counter(scan_parameters: Mapping[str, Any], key: str) -> int:
+    """One firmware counter as an ``int >= 1``, or a ``ValueError`` naming it.
+
+    Widget spin boxes hand over ints, but a value restored from a scan file or
+    a saved component state can arrive as a string or a float, and a key can
+    be missing altogether. Each of those used to become ``1`` -- and a layout
+    with a 1-count loop, stamped ``recorded`` and ``certain``, matched a frame
+    expectation built from the same default. Nothing is defaulted here.
+    """
+    if key not in scan_parameters:
+        raise ValueError(
+            f"RESOLFT scan parameter {key!r} is missing, so the number of "
+            f"scan positions cannot be determined."
+        )
+    raw = scan_parameters[key]
+    try:
+        count = int(float(raw))
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"RESOLFT scan parameter {key!r} is {raw!r}, which is not a number."
+        ) from None
+    if count < 1:
+        raise ValueError(
+            f"RESOLFT scan parameter {key!r} is {count}; every counter must be "
+            f"at least 1."
+        )
+    return count
+
+
+def resolft_position_count(scan_parameters: Mapping[str, Any]) -> int:
+    """Product of every RESOLFT counter -- the frames one firmware run triggers."""
+    positions = 1
+    for key, _kind, _step in RESOLFT_COUNTERS:
+        positions *= resolft_counter(scan_parameters, key)
+    return positions
+
+
 def build_triggerscope_resolft_layouts(
     detector_names: Sequence[str],
     *,
@@ -611,34 +664,24 @@ def build_triggerscope_resolft_layouts(
     firmware triggered it.
     """
 
-    def count(key: str) -> int:
-        try:
-            return max(1, int(float(scan_parameters.get(key, 1))))
-        except (TypeError, ValueError):
-            return 1
-
-    def step(key: str) -> float | None:
+    def step(key: str | None) -> float | None:
+        if key is None:
+            return None
         try:
             return abs(float(scan_parameters[key]))
         except (KeyError, TypeError, ValueError):
             return None
 
-    loops = (
-        AcquisitionLoop("time", "time", count("timeLapsePoints")),
+    # The same table the recording's frame expectation is built from.
+    loops = tuple(
         AcquisitionLoop(
-            "cycle",
-            "cycle",
-            count("cycleSteps"),
-            step=step("cycleStepSizeUm"),
-            unit="um" if step("cycleStepSizeUm") is not None else None,
-        ),
-        AcquisitionLoop(
-            "plane",
-            "plane",
-            count("roSteps"),
-            step=step("roStepSizeUm"),
-            unit="um" if step("roStepSizeUm") is not None else None,
-        ),
+            kind,
+            kind,
+            resolft_counter(scan_parameters, key),
+            step=step(step_key),
+            unit="um" if step(step_key) is not None else None,
+        )
+        for key, kind, step_key in RESOLFT_COUNTERS
     )
     scan_driven = set(scan_driven_detectors)
     layouts = {}

@@ -8,6 +8,7 @@ from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._acquisition_layout_source import resolft_counter, resolft_position_count
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
@@ -18,6 +19,33 @@ class TriggerScopeLSXYRController(
     ImConWidgetController,
 ):
     """Linked to TriggerScopeLSXYRWidget."""
+
+    #: LS-XY-RESOLFT steps the RESOLFT counters inside an X/Y raster. How the
+    #: firmware nests the two is not established by a trace (rig-validation
+    #: §3.1), so this controller declares NO acquisition layout: a recording
+    #: from it is layout-less rather than stamped with a guessed order. The
+    #: frame *count* is order-independent and is declared correctly below.
+    getAcquisitionLayouts = None
+
+    #: Raster counters the firmware steps in addition to the RESOLFT ones.
+    _RASTER_COUNT_KEYS = ('rasterXSteps', 'rasterYSteps')
+
+    def getNumScanPositions(self) -> int:
+        """Camera frames per run: the RESOLFT counters times the X/Y raster.
+
+        The raster counters were in neither the frame expectation nor the
+        layout, so an LS-XY-RESOLFT recording armed for one raster position.
+        """
+        scanParameters, _ = self._triggerScopeGeometryParameters()
+        positions = resolft_position_count(scanParameters)
+        for key in self._RASTER_COUNT_KEYS:
+            positions *= resolft_counter(scanParameters, key)
+        self._logger.warning(
+            'LS-XY-RESOLFT: the firmware frame order is not established, so '
+            'this recording carries no acquisition layout; only its frame '
+            f'count ({positions}) is declared. See rig-validation §3.1.'
+        )
+        return positions
 
     componentName = 'Scan'
     stateSchemaVersion = 1

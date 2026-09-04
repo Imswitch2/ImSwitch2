@@ -1130,15 +1130,27 @@ def adapt_snouty_metadata(
                 ),
             ),
         )
+    # Same loop, same pitch, as the producer: the cycle DAC steps by
+    # cycleStepSizeUm and the readout by roStepSizeUm. This adapter used to put
+    # the cycle pitch on the plane loop, so a consumer reading loop.step from
+    # a legacy file and from a fresh recording got different geometries.
+    cycle_step = _number(normalized.get("MS-RESOLFT_Scan:cycleStepSizeUm"))
+    plane_step = _number(normalized.get("MS-RESOLFT_Scan:roStepSizeUm"))
     loops.extend(
         (
-            AcquisitionLoop("cycle", "cycle", cycles),
+            AcquisitionLoop(
+                "cycle",
+                "cycle",
+                cycles,
+                step=cycle_step,
+                unit="um" if cycle_step is not None else None,
+            ),
             AcquisitionLoop(
                 "plane",
                 "plane",
                 planes,
-                step=_number(normalized.get("MS-RESOLFT_Scan:cycleStepSizeUm")),
-                unit="um" if normalized.get("MS-RESOLFT_Scan:cycleStepSizeUm") is not None else None,
+                step=plane_step,
+                unit="um" if plane_step is not None else None,
             ),
         )
     )

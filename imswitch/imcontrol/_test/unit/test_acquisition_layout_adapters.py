@@ -601,3 +601,81 @@ def test_declared_pulse_counts_reach_every_builder_as_a_repeat_loop():
     )["OrcaStraight"]
     assert [loop.kind for loop in resolft.event_loops] == ["time", "cycle", "plane"]
     assert planned_frame_count(resolft) == 6
+
+
+# ----------------------------------------------------------------------
+# Audit condition 6: one RESOLFT counter table, no defaulted counter
+# ----------------------------------------------------------------------
+
+
+def test_resolft_counters_are_refused_when_missing_or_unreadable():
+    from imswitch.imcontrol.controller.controllers._acquisition_layout_source import (
+        resolft_counter,
+        resolft_position_count,
+    )
+
+    params = {"timeLapsePoints": 2, "cycleSteps": "3", "roSteps": 4.0}
+    assert resolft_position_count(params) == 24
+    with pytest.raises(ValueError, match="'roSteps' is missing"):
+        resolft_position_count({"timeLapsePoints": 2, "cycleSteps": 3})
+    with pytest.raises(ValueError, match="not a number"):
+        resolft_counter({"cycleSteps": "three"}, "cycleSteps")
+    with pytest.raises(ValueError, match="at least 1"):
+        resolft_counter({"cycleSteps": 0}, "cycleSteps")
+    # The builder reads the same table and refuses the same way -- it used to
+    # read a missing counter as one step inside a layout stamped 'recorded'.
+    with pytest.raises(ValueError, match="'roSteps' is missing"):
+        build_triggerscope_resolft_layouts(
+            ("Cam",),
+            scan_parameters={"timeLapsePoints": 1, "cycleSteps": 3},
+            scan_source="TriggerScopeScanController",
+            pulse_counts={"Cam": 1},
+        )
+
+
+def test_frame_expectation_and_layout_come_from_one_table():
+    """The mixin's position count is the layout's loop product, by construction."""
+    from imswitch.imcontrol.controller.controllers._triggerscope_scan_geometry import (
+        TriggerScopeScanGeometryMixin,
+    )
+
+    class _Controller(TriggerScopeScanGeometryMixin):
+        def __init__(self, params):
+            self._scanParameterDict = params
+            self._deviceParameterDict = {"CameraTTL": "Cam"}
+            self._setupInfo = SimpleNamespace(detectors={"Cam": object()})
+            self._master = SimpleNamespace(detectorsManager={})
+
+        def getParameters(self):
+            pass
+
+    params = {"timeLapsePoints": 2, "cycleSteps": 3, "roSteps": 4,
+              "cycleStepSizeUm": 0.2, "roStepSizeUm": 1.5}
+    controller = _Controller(params)
+    layout = controller.getAcquisitionLayouts(("Cam",))["Cam"]
+
+    assert controller.getNumScanPositions() == 24 == planned_frame_count(layout)
+    assert [(loop.kind, loop.count, loop.step) for loop in layout.event_loops] == [
+        ("time", 2, None), ("cycle", 3, 0.2), ("plane", 4, 1.5),
+    ]
+    with pytest.raises(ValueError, match="'cycleSteps' is missing"):
+        _Controller({"timeLapsePoints": 2, "roSteps": 4}).getNumScanPositions()
+
+
+def test_lsxyr_counts_its_raster_and_declares_no_layout():
+    from imswitch.imcontrol.controller.controllers.TriggerScopeLSXYRController import (
+        TriggerScopeLSXYRController,
+    )
+
+    assert not callable(getattr(TriggerScopeLSXYRController, "getAcquisitionLayouts", None))
+
+    controller = TriggerScopeLSXYRController.__new__(TriggerScopeLSXYRController)
+    controller._scanParameterDict = {
+        "timeLapsePoints": 1, "cycleSteps": 2, "roSteps": 3,
+        "rasterXSteps": 4, "rasterYSteps": 5,
+    }
+    controller._deviceParameterDict = {}
+    controller._logger = SimpleNamespace(warning=lambda *a, **k: None)
+    controller.getParameters = lambda: None
+
+    assert controller.getNumScanPositions() == 1 * 2 * 3 * 4 * 5

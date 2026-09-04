@@ -83,12 +83,15 @@ def test_frame_count_is_the_product_of_the_firmware_counters():
 
 
 @pytest.mark.parametrize('value', [0, -4, None, '', 'not-a-number'])
-def test_an_unusable_counter_counts_as_one_step(value):
-    """A missing or nonsensical counter must not collapse the whole
-    expectation to zero, which would arm a recording for no frames at all."""
+def test_an_unusable_counter_is_refused_not_read_as_one_step(value):
+    """A nonsensical counter used to count as one step -- here AND in the
+    layout builder, from two copies of the same list -- so a recording armed
+    for a fraction of the scan with a 'recorded', 'certain' layout to match.
+    Nothing is defaulted now; the counter is named in the refusal."""
     controller = _controller(cycleSteps=value)
 
-    assert controller.getNumScanPositions() == 10
+    with pytest.raises(ValueError, match="'cycleSteps'"):
+        controller.getNumScanPositions()
 
 
 def test_counters_restored_as_text_still_multiply():
@@ -97,10 +100,11 @@ def test_counters_restored_as_text_still_multiply():
     assert controller.getNumScanPositions() == 30
 
 
-def test_a_missing_counter_key_is_a_single_step():
+def test_a_missing_counter_key_is_refused():
     controller = _Controller({'roSteps': 7}, {})
 
-    assert controller.getNumScanPositions() == 7
+    with pytest.raises(ValueError, match="'timeLapsePoints' is missing"):
+        controller.getNumScanPositions()
 
 
 # --------------------------------------------------------------------------- #
@@ -113,8 +117,10 @@ def test_camera_ttl_reports_one_pulse_for_the_configured_camera():
 
 def test_camera_ttl_is_empty_without_a_camera_role():
     """pLS-RESOLFT and galvo-detection configure no CameraTTL device. An empty
-    map means "nothing overrides the default", which the RecordingManager
-    reads as one pulse per position."""
+    map means "this scan gates no detector": a scan-mode recording of a camera
+    from such a mode is refused at arm (DETECTOR_PULSES_UNDECLARED) rather
+    than defaulted to one pulse per position, until the mode declares its
+    camera."""
     controller = _Controller(
         {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
         {},

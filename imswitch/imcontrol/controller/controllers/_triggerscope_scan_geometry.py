@@ -13,28 +13,18 @@ not from these counters.
 """
 
 from ._acquisition_layout_source import (
+    RESOLFT_COUNTERS,
     build_triggerscope_resolft_layouts,
+    resolft_counter,
+    resolft_position_count,
     scan_driven_detector_names,
 )
 
 
 #: Firmware counters whose product is the number of camera frames in one run.
-_FRAME_COUNT_KEYS = ('roSteps', 'cycleSteps', 'timeLapsePoints')
-
-
-def _positiveCount(value) -> int:
-    """Coerce a widget counter to a frame count of at least one.
-
-    Widget spin boxes return ints, but a parameter restored from a scan file or
-    a saved component state can arrive as a string or a float. A counter that
-    cannot be read as a number is treated as a single step, which keeps the
-    product honest instead of collapsing the whole expectation to zero.
-    """
-    try:
-        count = int(float(value))
-    except (TypeError, ValueError):
-        return 1
-    return max(count, 1)
+#: Derived from the one table the layout builder uses, so the frame
+#: expectation and the layout cannot disagree about which counters exist.
+_FRAME_COUNT_KEYS = tuple(key for key, _kind, _step in RESOLFT_COUNTERS)
 
 
 class TriggerScopeScanGeometryMixin:
@@ -58,10 +48,10 @@ class TriggerScopeScanGeometryMixin:
         the number of frames to record.
         """
         scanParameters, _ = self._triggerScopeGeometryParameters()
-        positions = 1
-        for key in _FRAME_COUNT_KEYS:
-            positions *= _positiveCount(scanParameters.get(key))
-        return positions
+        # No counter is defaulted: a missing or unreadable one used to count
+        # as a single step here AND in the layout, so the recording armed for
+        # the wrong frame count with a certain layout to match.
+        return resolft_position_count(scanParameters)
 
     def getNumCamTTL(self) -> dict:
         """Camera TTL pulses per scan position, per detector.

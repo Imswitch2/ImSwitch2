@@ -533,3 +533,29 @@ def test_strict_preflight_rejects_payload_without_registered_validator():
     }
 
     assert "UNVALIDATED_ACQUISITION_PAYLOAD" in issues
+
+
+def test_snouty_adapter_puts_each_pitch_on_the_same_loop_as_the_producer():
+    """cycleStepSizeUm belongs to the cycle loop, roStepSizeUm to the plane loop."""
+    from imswitch.imcontrol.controller.controllers._acquisition_layout_source import (
+        build_triggerscope_resolft_layouts,
+    )
+
+    params = {
+        "timeLapsePoints": 1, "cycleSteps": 3, "roSteps": 5,
+        "cycleStepSizeUm": 0.21, "roStepSizeUm": 2.0,
+    }
+    produced = build_triggerscope_resolft_layouts(
+        ("Cam",), scan_parameters=params,
+        scan_source="TriggerScopeScanController", pulse_counts={"Cam": 1},
+    )["Cam"]
+    adapted = resolve_acquisition_layout(
+        {f"MS-RESOLFT_Scan:{key}": value for key, value in params.items()},
+        shape=(15, 2, 3), detector="Cam",
+    )
+    assert adapted.source == "snouty-legacy"
+
+    def pitches(layout):
+        return {loop.kind: loop.step for loop in layout.event_loops if loop.kind != "time"}
+
+    assert pitches(produced) == pitches(adapted.layout) == {"cycle": 0.21, "plane": 2.0}
