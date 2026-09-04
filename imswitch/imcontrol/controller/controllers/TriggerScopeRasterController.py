@@ -519,6 +519,7 @@ class TriggerScopeRasterController(
             detectorNames,
             dimensions=self.getBeadRecScanDims(),
             step_sizes=self.getBeadRecStepSizes(),
+            pulse_counts=self.getNumCamTTL(),
             scan_source=type(self).__name__,
             scan_driven_detectors=scan_driven_detector_names(
                 self, detectorNames

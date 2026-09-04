@@ -177,6 +177,17 @@ class Storer(abc.ABC):
         self._set_ome_annotations(detectorName, completed)
         return completed
 
+    def noteDiscardedFrames(self, discarded: Dict[str, int]) -> None:
+        """Frames the producer received beyond the plan and did not write.
+
+        Recorded per detector as ``recording:discarded_frames`` at finalize,
+        so a file whose camera ran free or was pulsed more often than the
+        scan declared does not look like a clean scan to a reader.
+        """
+        self._discardedFrames = {
+            str(k): int(v) for k, v in (discarded or {}).items() if int(v) > 0
+        }
+
     def _finalize_recording_attrs(
         self,
         currentFrames: Dict[str, int],
@@ -184,10 +195,12 @@ class Storer(abc.ABC):
         """Add final counts/outcomes without changing writer-liveness markers."""
         finalized: Dict[str, Dict[str, Any]] = {}
         source = getattr(self, "_attrs", {}) or {}
+        discarded = getattr(self, "_discardedFrames", {}) or {}
         detector_names = set(source) | set(currentFrames)
         for detectorName in detector_names:
             attrs = dict(source.get(detectorName, {}) or {})
             actual_frames = int(max(0, currentFrames.get(detectorName, 0)))
+            attrs["recording:discarded_frames"] = int(discarded.get(detectorName, 0))
             planned_frames = attrs.get("recording:planned_frames")
             try:
                 planned_frames = int(planned_frames) if planned_frames is not None else None
@@ -1918,20 +1931,51 @@ class RecordingManager(SignalInterface):
                         and plannedFrames % producerPositions == 0
                     ):
                         layoutPulses = plannedFrames // producerPositions
-                        configuredPulses = int(
-                            (numCamTTL or {}).get(detectorName, 1)
-                        )
-                        if layoutPulses != configuredPulses:
+                        declared = (numCamTTL or {}).get(detectorName)
+                        if declared is None and not scanDriven:
+                            # The producer and this gate both used to default
+                            # an undeclared detector to one pulse per position,
+                            # so the check below compared a default with
+                            # itself and a free-running camera was recorded as
+                            # a certain, complete scan.
+                            issues.append(
+                                LayoutIssue(
+                                    'error',
+                                    'DETECTOR_PULSES_UNDECLARED',
+                                    f'The scan declares no TTL pulse per '
+                                    f'position for detector {detectorName!r} '
+                                    f'(getNumCamTTL has no entry), so its '
+                                    f'frames cannot be tied to scan '
+                                    f'positions. Gate it in the scan, '
+                                    f'deselect it, or record it in a '
+                                    f'non-scan mode.',
+                                    'recorded_event_spans',
+                                )
+                            )
+                        elif declared is not None and layoutPulses != int(declared):
                             issues.append(
                                 LayoutIssue(
                                     'error',
                                     'DETECTOR_PULSE_COUNT_MISMATCH',
                                     f'Layout selects {layoutPulses} detector '
                                     f'frame(s) per scan position but numCamTTL '
-                                    f'is {configuredPulses}',
+                                    f'is {int(declared)}',
                                     'recorded_event_spans',
                                 )
                             )
+                    elif producerPositions is not None and producerPositions > 0:
+                        # A per-expanded-line mask can select a frame count
+                        # that is not a multiple of the position count; that
+                        # is legitimate, but the pulse cross-check cannot run
+                        # on it and used to say nothing at all.
+                        self.__logger.warning(
+                            f'Skipping the pulses-per-position cross-check for '
+                            f'{detectorName!r}: the layout selects '
+                            f'{plannedFrames} frame(s) over {producerPositions} '
+                            f'scan position(s), which is not a whole number of '
+                            f'pulses per position (numCamTTL says '
+                            f'{(numCamTTL or {}).get(detectorName)!r}).'
+                        )
 
             self.__reportLayoutDisagreements(
                 detectorName, layout, (attrs or {}).get(detectorName)
@@ -2667,6 +2711,8 @@ class WriterThread(threading.Thread):
         
         # Track total frames written per detector
         self._currentFrames = {detectorName: 0 for detectorName in detectorNames}
+        # Frames the producer discarded beyond the plan, reported at finalize.
+        self._discardedFrames: Dict[str, int] = {}
         
         # Handshake for openStream completion (success or exception)
         self._opened_event = threading.Event()
@@ -2845,6 +2891,9 @@ class WriterThread(threading.Thread):
                                 self._saveMode,
                             )
                         else:
+                            noteDiscarded = getattr(self._storer, 'noteDiscardedFrames', None)
+                            if callable(noteDiscarded):
+                                noteDiscarded(dict(self._discardedFrames))
                             self._storer.finalizeStream(
                                 self._currentFrames,
                                 self._filePaths,
@@ -2992,6 +3041,10 @@ class WriterThread(threading.Thread):
                     )
                 continue
     
+    def noteDiscardedFrames(self, discarded: Dict[str, int]) -> None:
+        """Record how many frames the producer dropped beyond the plan."""
+        self._discardedFrames = {k: int(v) for k, v in (discarded or {}).items() if int(v) > 0}
+
     def finish(self):
         """Signal end of recording and wait for writer thread to complete.
         
@@ -3357,6 +3410,16 @@ class RecordingWorker(Worker):
         if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse) and \
                 self._isScanDrivenDetector(detectorName):
             return 1
+        if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse):
+            declared = numCamTTL.get(detectorName)
+            if declared is None:
+                raise ValueError(
+                    f'The scan declares no TTL pulse per position for detector '
+                    f'{detectorName!r}, so the number of frames to record '
+                    f'cannot be derived. Gate it in the scan, deselect it, or '
+                    f'record it in a non-scan mode.'
+                )
+            return recFrames * int(declared)
         return recFrames * numCamTTL.get(detectorName, 1)
 
     def _stallReferenceTimeFor(self, detectorName, lastFrameTime):
@@ -3397,6 +3460,10 @@ class RecordingWorker(Worker):
         
         # Frame counters and stall watchdog timestamps
         currentFrame = {detectorName: 0 for detectorName in self.detectorNames}
+        # Frames delivered beyond the plan, per detector (see the clip below).
+        discardedFrames: Dict[str, int] = {}
+        discardWarned: set = set()
+        self.discardedFrames = discardedFrames
         lastFrameTime = {detectorName: time.time() for detectorName in self.detectorNames}
         
         # Prepare shapes for storer
@@ -3583,6 +3650,28 @@ class RecordingWorker(Worker):
                         ]:
                             remaining = nFramesPerDetector[detectorName] - currentFrame[detectorName]
                             if n > remaining:
+                                # Frames beyond the plan are not written; say
+                                # so, and record it, rather than finalising a
+                                # file that looks exactly like a clean scan. A
+                                # surplus means the detector produced frames
+                                # the scan did not account for -- free-running,
+                                # or pulsed more often than declared.
+                                surplus = n - remaining
+                                discardedFrames[detectorName] = (
+                                    discardedFrames.get(detectorName, 0) + surplus
+                                )
+                                if detectorName not in discardWarned:
+                                    discardWarned.add(detectorName)
+                                    self.__logger.warning(
+                                        f'Detector {detectorName!r} delivered '
+                                        f'{surplus} frame(s) beyond the '
+                                        f'{nFramesPerDetector[detectorName]} '
+                                        f'planned for this recording; they are '
+                                        f'not written. The recording is not the '
+                                        f'clean scan its metadata describes -- '
+                                        f'check numCamTTL and the camera '
+                                        f'trigger mode.'
+                                    )
                                 newFrames = newFrames[:remaining]
                                 n = remaining
                         
@@ -3706,6 +3795,7 @@ class RecordingWorker(Worker):
                 if aborting:
                     writerThread.abort()
                 else:
+                    writerThread.noteDiscardedFrames(discardedFrames)
                     writerThread.finish()
             except Exception as error:
                 cleanupErrors.append(error)

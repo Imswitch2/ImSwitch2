@@ -38,6 +38,28 @@ from imswitch.improcess.reconstructors.monalisa.coeffs_to_image import (
 )
 
 
+class _OnePulseEach(dict):
+    """Test stand-in for getNumCamTTL(): every detector is gated, one pulse per position.
+
+    The builders no longer default an undeclared detector to one pulse -- that
+    default is what let the recording gate compare a number with itself -- so
+    a test that means "plain camera, one exposure per position" says so.
+    """
+
+    def __contains__(self, key):
+        return True
+
+    def __getitem__(self, key):
+        return 1
+
+    def get(self, key, default=None):
+        return 1
+
+
+ONE_PULSE_EACH = _OnePulseEach()
+
+
+
 def _advanced_scan_info(x=18, y=18, linesteps=2):
     return {
         "img_dims": [x, y],
@@ -156,17 +178,31 @@ def test_advanced_scan_refuses_a_detector_it_cannot_describe(tmp_path):
 
 
 def test_a_single_line_step_scan_still_needs_no_mask(tmp_path):
-    """With one line step there is no condition dimension to lose."""
+    """With one line step there is no condition dimension to lose.
+
+    A mask is still not needed -- but the scan must still say it gates the
+    detector. An undeclared detector used to be described as one pulse per
+    position by default; now it is refused, one line step or many.
+    """
     layout = build_advanced_scan_layouts(
         _advanced_scan_info(4, 3, 1),
         ("CAM",),
         scan_source="ScanControllerAdvanced",
         detector_masks={},
-        pulse_counts_by_condition={},
+        pulse_counts_by_condition={"CAM": [1]},
     )["CAM"]
 
     assert [loop.kind for loop in layout.event_loops] == ["scan_y", "scan_x"]
     assert _gate(layout, recFrames=12, numCamTTL=1) == [True]
+
+    with pytest.raises(ValueError, match="does not gate it"):
+        build_advanced_scan_layouts(
+            _advanced_scan_info(4, 3, 1),
+            ("CAM",),
+            scan_source="ScanControllerAdvanced",
+            detector_masks={},
+            pulse_counts_by_condition={},
+        )
 
 
 def test_gated_detector_survives_the_whole_seam(tmp_path):
@@ -202,6 +238,7 @@ def test_point_scan_survives_the_whole_seam(tmp_path):
         },
         ("CAM",),
         scan_source="ScanControllerPointScan",
+        pulse_counts=ONE_PULSE_EACH,
     )["CAM"]
 
     assert _gate(layout, recFrames=rows * cols, numCamTTL=1) == [True]
@@ -224,6 +261,7 @@ def test_triggerscope_raster_survives_the_whole_seam(tmp_path):
         dimensions=(cols, rows),
         step_sizes=(0.1, 0.2),
         scan_source="TriggerScopeRasterController",
+        pulse_counts=ONE_PULSE_EACH,
     )["CAM"]
 
     data_obj = _record(tmp_path, layout, _ramp(rows * cols))
@@ -288,6 +326,7 @@ def test_live_stack_size_comes_from_the_resolved_layout(tmp_path):
         },
         ("CAM",),
         scan_source="ScanControllerPointScan",
+        pulse_counts=ONE_PULSE_EACH,
     )["CAM"]
 
     path = tmp_path / "live.zarr"
@@ -565,6 +604,7 @@ def test_the_layout_records_which_stage_drove_each_axis():
         ("CAM",),
         scan_source="ScanControllerPointScan",
         devices={"scan_x": "StageX", "scan_y": "StageY"},
+        pulse_counts=ONE_PULSE_EACH,
     )["CAM"]
     assert {loop.kind: loop.device for loop in produced.event_loops} == {
         "scan_x": "StageX",
@@ -609,6 +649,7 @@ def test_a_layout_disagreeing_with_its_legacy_attributes_is_reported(caplog):
         },
         ("CAM",),
         scan_source="ScanControllerPointScan",
+        pulse_counts=ONE_PULSE_EACH,
     )["CAM"]
 
     from imswitch.imcontrol.model import RecMode, RecordingManager, SaveMode
@@ -655,6 +696,7 @@ def test_a_recording_from_a_newer_imswitch_stays_viewable(tmp_path):
         {"img_dims": [4, 3], "img_axes_phys": ["x", "y"], "pixel_sizes": [0.1, 0.1]},
         ("CAM",),
         scan_source="ScanControllerPointScan",
+        pulse_counts=ONE_PULSE_EACH,
     )["CAM"]
     document = json.loads(encode_acquisition_layout(layout))
     document["schema"] = "imswitch.acquisition-layout/2"
@@ -727,6 +769,7 @@ def test_a_scan_lapse_reconstructs_the_same_way_in_every_partition(tmp_path):
         {"img_dims": [cols, rows], "img_axes_phys": ["x", "y"], "pixel_sizes": [0.1, 0.1]},
         ("CAM",),
         scan_source="ScanControllerPointScan",
+        pulse_counts=ONE_PULSE_EACH,
     )["CAM"]
 
     images = []
@@ -807,6 +850,7 @@ def test_an_unreadable_layout_falls_back_to_readable_legacy_attributes():
         {"img_dims": [10, 10], "img_axes_phys": ["x", "y"], "pixel_sizes": [0.05, 0.05]},
         ("CAM",),
         scan_source="ScanControllerPointScan",
+        pulse_counts=ONE_PULSE_EACH,
     )["CAM"]
     document = json.loads(encode_acquisition_layout(layout))
     document["schema"] = "imswitch.acquisition-layout/2"
@@ -867,6 +911,7 @@ def test_z_only_scan_is_described_as_scan_z_not_scan_x(tmp_path):
         scan_source="ScanControllerPointScan",
         devices={"scan_x": "ND-PiezoZ"},
         kind_overrides=overrides,
+        pulse_counts=ONE_PULSE_EACH,
     )["APD"]
     assert [(l.kind, l.count, l.device) for l in layout.event_loops] == [
         ("scan_z", 200, "ND-PiezoZ")

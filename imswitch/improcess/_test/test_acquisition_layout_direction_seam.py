@@ -47,6 +47,28 @@ from imswitch.improcess.reconstructors.monalisa.scan_geometry import (
     scan_params_from_layout,
 )
 
+
+class _OnePulseEach(dict):
+    """Test stand-in for getNumCamTTL(): every detector is gated, one pulse per position.
+
+    The builders no longer default an undeclared detector to one pulse -- that
+    default is what let the recording gate compare a number with itself -- so
+    a test that means "plain camera, one exposure per position" says so.
+    """
+
+    def __contains__(self, key):
+        return True
+
+    def __getitem__(self, key):
+        return 1
+
+    def get(self, key, default=None):
+        return 1
+
+
+ONE_PULSE_EACH = _OnePulseEach()
+
+
 ROWS, COLS = 4, 5
 FRAMES = ROWS * COLS
 
@@ -137,6 +159,7 @@ def test_the_scan_source_builder_emits_forward_for_a_negative_axis():
         ('Cam',),
         scan_source='ScanControllerPointScan',
         directions={'scan_x': 1, 'scan_y': -1, 'scan_z': 1},
+        pulse_counts=ONE_PULSE_EACH,
     )['Cam']
 
     by_kind = {loop.kind: loop for loop in layout.event_loops}

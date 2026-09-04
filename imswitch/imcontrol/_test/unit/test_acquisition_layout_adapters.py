@@ -29,6 +29,28 @@ from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
 )
 
 
+class _OnePulseEach(dict):
+    """Test stand-in for getNumCamTTL(): every detector is gated, one pulse per position.
+
+    The builders no longer default an undeclared detector to one pulse -- that
+    default is what let the recording gate compare a number with itself -- so
+    a test that means "plain camera, one exposure per position" says so.
+    """
+
+    def __contains__(self, key):
+        return True
+
+    def __getitem__(self, key):
+        return 1
+
+    def get(self, key, default=None):
+        return 1
+
+
+ONE_PULSE_EACH = _OnePulseEach()
+
+
+
 def _scan_info(x=3, y=2, z=None, *, conditions=1):
     dims = [x, y]
     axes = ["x", "y"]
@@ -289,6 +311,7 @@ def test_point_and_raster_builders_publish_actual_3d_and_x_fast_order():
         dimensions=(3, 2),
         step_sizes=(0.1, 0.2),
         scan_source="TriggerScopeRasterController",
+        pulse_counts=ONE_PULSE_EACH,
     )["Camera"]
     assert [loop.kind for loop in raster.event_loops] == ["scan_y", "scan_x"]
     assert recorded_frame_coordinates(raster, 2)["scan_x"] == 2
@@ -319,6 +342,7 @@ def test_scan_driven_and_resolft_layouts_map_loops_to_assembled_axes():
         },
         scan_source="TriggerScopeScanController",
         scan_driven_detectors=("PMT",),
+        pulse_counts=ONE_PULSE_EACH,
     )["PMT"]
     assert [loop.kind for loop in resolft.event_loops] == [
         "time", "cycle", "plane"
@@ -332,6 +356,7 @@ def test_lapse_partitions_restart_with_only_the_index_varying(single_file):
         _scan_info(),
         ("Camera",),
         scan_source="ScanControllerPointScan",
+        pulse_counts=ONE_PULSE_EACH,
     )["Camera"]
     first = with_time_partition(
         base, index=0, planned_count=2, single_file=single_file
@@ -524,3 +549,55 @@ def test_y_first_line_steps_follow_the_designers_own_signal(designer):
     assert np.allclose(x_per_line[0::2], x_per_line[1::2], atol=0.05), x_per_line
     assert [c["scan_x"] for c in coordinates[::3]] == [0, 0, 1, 1, 0, 0, 1, 1]
     assert [c["scan_z"] for c in coordinates[::3]] == [0, 0, 0, 0, 1, 1, 1, 1]
+
+
+# ----------------------------------------------------------------------
+# Audit condition 5: a builder describes only what the scan gates
+# ----------------------------------------------------------------------
+
+
+def test_builders_refuse_a_detector_the_scan_does_not_gate():
+    with pytest.raises(ValueError, match="does not gate it"):
+        build_point_scan_layouts(
+            _scan_info(3, 2), ("Camera",),
+            scan_source="ScanControllerPointScan", pulse_counts={},
+        )
+    with pytest.raises(ValueError, match="no TTL pulse per position"):
+        build_point_scan_layouts(
+            _scan_info(3, 2), ("Camera",),
+            scan_source="ScanControllerPointScan", pulse_counts={"Camera": 0},
+        )
+    with pytest.raises(ValueError, match="does not gate it"):
+        build_triggerscope_raster_layouts(
+            ("Camera", "Widefield"),
+            dimensions=(3, 2), step_sizes=(0.1, 0.2),
+            scan_source="TriggerScopeRasterController",
+            pulse_counts={"Camera": 1},
+        )
+    with pytest.raises(ValueError, match="does not gate it"):
+        build_triggerscope_resolft_layouts(
+            ("OrcaStraight", "WidefieldCamera"),
+            scan_parameters={"timeLapsePoints": 1, "cycleSteps": 2, "roSteps": 3},
+            scan_source="TriggerScopeScanController",
+            pulse_counts={"OrcaStraight": 1},
+        )
+
+
+def test_declared_pulse_counts_reach_every_builder_as_a_repeat_loop():
+    raster = build_triggerscope_raster_layouts(
+        ("Camera",),
+        dimensions=(3, 2), step_sizes=(0.1, 0.2),
+        scan_source="TriggerScopeRasterController",
+        pulse_counts={"Camera": 2},
+    )["Camera"]
+    assert [loop.kind for loop in raster.event_loops] == ["scan_y", "scan_x", "repeat"]
+    assert planned_frame_count(raster) == 12
+
+    resolft = build_triggerscope_resolft_layouts(
+        ("OrcaStraight",),
+        scan_parameters={"timeLapsePoints": 1, "cycleSteps": 2, "roSteps": 3},
+        scan_source="TriggerScopeScanController",
+        pulse_counts={"OrcaStraight": 1},
+    )["OrcaStraight"]
+    assert [loop.kind for loop in resolft.event_loops] == ["time", "cycle", "plane"]
+    assert planned_frame_count(resolft) == 6

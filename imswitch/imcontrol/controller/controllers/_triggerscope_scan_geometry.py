@@ -84,6 +84,7 @@ class TriggerScopeScanGeometryMixin:
             detectorNames,
             scan_parameters=scanParameters,
             scan_source=type(self).__name__,
+            pulse_counts=self.getNumCamTTL(),
             scan_driven_detectors=scan_driven_detector_names(
                 self, detectorNames
             ),

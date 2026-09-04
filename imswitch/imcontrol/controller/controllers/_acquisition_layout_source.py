@@ -284,12 +284,42 @@ def _assembled_layout(
     )
 
 
+def declared_pulses_per_position(pulse_counts: Mapping[str, int], detector: str) -> int:
+    """Pulses the scan gives ``detector`` per position, as the scan declared.
+
+    ``pulse_counts`` is ``getNumCamTTL()``: the detectors the scan gates, with
+    their rising edges per position. A detector absent from it is not gated by
+    this scan, so a scan-mode recording of it would stamp free-running frames
+    as scan positions -- and a detector gated with no pulse records nothing.
+    Both used to be quietly turned into "one frame per position", the same
+    number the recording gate defaulted to on its side, so the cross-check
+    between the two compared a default with itself and a mis-triggered camera
+    was recorded as a certain, complete scan.
+    """
+    if detector not in pulse_counts:
+        raise ValueError(
+            f"Detector {detector!r} is selected for this scan recording, but the "
+            f"scan does not gate it: getNumCamTTL() declares no pulse per "
+            f"position for it. Recording an ungated detector in scan mode would "
+            f"label free-running frames as scan positions. Deselect it, gate it "
+            f"in the scan's TTL cycle, or record it in a non-scan mode."
+        )
+    repeats = int(pulse_counts[detector])
+    if repeats <= 0:
+        raise ValueError(
+            f"Detector {detector!r} is gated by this scan but receives no TTL "
+            f"pulse per position ({repeats}); nothing would be recorded for it. "
+            f"Give it a pulse in the TTL cycle or deselect it."
+        )
+    return repeats
+
+
 def build_point_scan_layouts(
     scan_info: Mapping[str, Any],
     detector_names: Sequence[str],
     *,
     scan_source: str,
-    pulse_counts: Mapping[str, int] | None = None,
+    pulse_counts: Mapping[str, int],
     scan_driven_detectors: Sequence[str] = (),
     directions: Mapping[str, int] | None = None,
     devices: Mapping[str, str] | None = None,
@@ -301,7 +331,6 @@ def build_point_scan_layouts(
         scan_info, directions=directions, devices=devices, kind_overrides=kind_overrides
     )
     scan_driven = set(scan_driven_detectors)
-    pulse_counts = pulse_counts or {}
     layouts = {}
     for raw_detector in detector_names:
         detector = str(raw_detector)
@@ -314,7 +343,7 @@ def build_point_scan_layouts(
                 modality=modality,
             )
             continue
-        repeats = max(1, int(pulse_counts.get(detector, 1)))
+        repeats = declared_pulses_per_position(pulse_counts, detector)
         loops = physical
         if repeats > 1:
             loops = (*loops, AcquisitionLoop("repeat", "repeat", repeats))
@@ -479,11 +508,19 @@ def build_advanced_scan_layouts(
                     f"the detector's TTL for this scan, or record it with a "
                     f"single-line-step scan."
                 )
+            # A single-line-step detector without a mask is described as a
+            # plain point scan -- but only if the scan gates it at all.
+            declared = {
+                name: sum(int(v) for v in values)
+                for name, values in pulse_counts_by_condition.items()
+                if values is not None
+            }
             layouts.update(
                 build_point_scan_layouts(
                     scan_info,
                     (detector,),
                     scan_source=scan_source,
+                    pulse_counts=declared,
                     directions=directions,
                     devices=devices,
                     kind_overrides=kind_overrides,
@@ -536,6 +573,7 @@ def build_triggerscope_raster_layouts(
     dimensions: Sequence[int],
     step_sizes: Sequence[float],
     scan_source: str,
+    pulse_counts: Mapping[str, int],
     scan_driven_detectors: Sequence[str] = (),
     directions: Mapping[str, int] | None = None,
 ) -> dict[str, AcquisitionLayout]:
@@ -551,6 +589,7 @@ def build_triggerscope_raster_layouts(
         info,
         detector_names,
         scan_source=scan_source,
+        pulse_counts=pulse_counts,
         scan_driven_detectors=scan_driven_detectors,
         directions=directions,
     )
@@ -561,9 +600,16 @@ def build_triggerscope_resolft_layouts(
     *,
     scan_parameters: Mapping[str, Any],
     scan_source: str,
+    pulse_counts: Mapping[str, int],
     scan_driven_detectors: Sequence[str] = (),
 ) -> dict[str, AcquisitionLayout]:
-    """Build the established firmware order: time outer, plane innermost."""
+    """Build the established firmware order: time outer, plane innermost.
+
+    ``pulse_counts`` is the controller's ``getNumCamTTL()``: the one camera the
+    ``CameraTTL`` role gates, with one pulse per position. Any other detector
+    selected for the recording is refused rather than described as if the
+    firmware triggered it.
+    """
 
     def count(key: str) -> int:
         try:
@@ -607,14 +653,18 @@ def build_triggerscope_resolft_layouts(
                 modality="snouty",
             )
         else:
+            repeats = declared_pulses_per_position(pulse_counts, detector)
+            detector_loops = loops
+            if repeats > 1:
+                detector_loops = (*loops, AcquisitionLoop("repeat", "repeat", repeats))
             layouts[detector] = _validated(
                 AcquisitionLayout(
                     schema=ACQUISITION_LAYOUT_SCHEMA,
                     payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
                     detector=detector,
                     storage_axes=("frame", "detector_y", "detector_x"),
-                    event_loops=loops,
-                    traversal=_traversal(loops),
+                    event_loops=detector_loops,
+                    traversal=_traversal(detector_loops),
                     modality="snouty",
                     scan_source=scan_source,
                     provenance="recorded",

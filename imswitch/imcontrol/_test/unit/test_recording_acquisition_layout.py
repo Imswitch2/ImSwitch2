@@ -29,6 +29,28 @@ from imswitch.imcontrol.model import (
 from . import detectorInfosBasic
 
 
+class _OnePulseEach(dict):
+    """Test stand-in for getNumCamTTL(): every detector is gated, one pulse per position.
+
+    The builders no longer default an undeclared detector to one pulse -- that
+    default is what let the recording gate compare a number with itself -- so
+    a test that means "plain camera, one exposure per position" says so.
+    """
+
+    def __contains__(self, key):
+        return True
+
+    def __getitem__(self, key):
+        return 1
+
+    def get(self, key, default=None):
+        return 1
+
+
+ONE_PULSE_EACH = _OnePulseEach()
+
+
+
 def _manager_with_prepare_counter():
     manager = RecordingManager(
         DetectorsManager(detectorInfosBasic, updatePeriod=100)
@@ -49,6 +71,7 @@ def _point_layout(*, detector="CAM", x=3, y=2):
         },
         (detector,),
         scan_source="ScanControllerPointScan",
+        pulse_counts=ONE_PULSE_EACH,
     )[detector]
 
 
@@ -305,3 +328,66 @@ def test_recording_controller_reindexes_the_layout_for_each_lapse_partition():
     assert first.partitions[0].index == 0
     assert second.partitions[0].index == 1
     assert replace(second, partitions=first.partitions) == first
+
+
+# ----------------------------------------------------------------------
+# Audit condition 5: pulses per position are declared, never defaulted
+# ----------------------------------------------------------------------
+
+
+def test_undeclared_detector_pulses_are_rejected_before_prepare():
+    """numCamTTL without an entry used to mean 'one pulse', on both sides.
+
+    The producer defaulted an undeclared detector to one pulse per position
+    and so did this gate, so DETECTOR_PULSE_COUNT_MISMATCH compared a default
+    with itself and a free-running camera recorded as a certain, complete scan.
+    """
+    manager, prepareCalls = _manager_with_prepare_counter()
+    layout = _point_layout()
+
+    with pytest.raises(AcquisitionLayoutError) as error:
+        manager.startRecording(
+            detectorNames=["CAM"],
+            recMode=RecMode.ScanOnce,
+            savename="must_not_open",
+            saveMode=SaveMode.RAM,
+            attrs={"CAM": {}},
+            recFrames=6,
+            numCamTTL={},
+            acquisitionLayouts={"CAM": layout},
+        )
+
+    assert "DETECTOR_PULSES_UNDECLARED" in {issue.code for issue in error.value.issues}
+    assert prepareCalls == []
+
+
+def test_expected_frames_refuse_an_undeclared_detector_in_scan_modes_only():
+    manager, _ = _manager_with_prepare_counter()
+    worker = manager._RecordingManager__recordingWorker
+
+    worker.recMode = RecMode.ScanOnce
+    with pytest.raises(ValueError, match="declares no TTL pulse per position"):
+        worker._expectedFramesFor("CAM", 6, {})
+    assert worker._expectedFramesFor("CAM", 6, {"CAM": 2}) == 12
+
+    # A plain frame-count recording has no scan to gate the camera.
+    worker.recMode = RecMode.SpecFrames
+    assert worker._expectedFramesFor("CAM", 6, {}) == 6
+
+
+def test_discarded_frames_are_recorded_at_finalize():
+    """Surplus frames are not written; the file says so instead of looking clean."""
+    from imswitch.imcontrol.model.managers.RecordingManager import Storer
+
+    storer = Storer("unused", None)
+    storer._attrs = {
+        "CAM": {"recording:planned_frames": 6},
+        "APD": {"recording:planned_frames": 1},
+    }
+    storer.noteDiscardedFrames({"CAM": 4, "APD": 0})
+
+    finalized = storer._finalize_recording_attrs({"CAM": 6, "APD": 1})
+
+    assert finalized["CAM"]["recording:discarded_frames"] == 4
+    assert finalized["CAM"]["recording:completion_outcome"] == "complete"
+    assert finalized["APD"]["recording:discarded_frames"] == 0
