@@ -707,6 +707,9 @@ def test_hamamatsu_mock_scan_once_recording_reaches_rec_frames(tmp_path):
         saveFormat=SaveFormat.HDF5,
         attrs={'Camera': {}},
         recFrames=4,
+        # The scan source declares the pulses per position (getNumCamTTL);
+        # this test drives the manager directly, so it declares them itself.
+        numCamTTL={'Camera': 1},
         stallTimeout=1.0,
     )
     assert recording.waitForAcquisitionStarted(2.0)

@@ -59,6 +59,98 @@ def numeric_columns(columns: list[str], records: list[dict]) -> list[str]:
     return result
 
 
+#: Length units the table understands, as multiples of a metre. Rows measured
+#: in different ones can be compared only after conversion; rows measured in
+#: something not on this list cannot be compared at all.
+_LENGTH_UNITS = {
+    "m": 1.0,
+    "cm": 1e-2,
+    "mm": 1e-3,
+    "um": 1e-6,
+    "µm": 1e-6,
+    "μm": 1e-6,
+    "nm": 1e-9,
+    "pm": 1e-12,
+    "A": 1e-10,
+    "Å": 1e-10,
+}
+
+#: Column that records what a row's calibrated values are in.
+UNIT_COLUMN = "spatial_unit"
+
+
+def _unit_kind(column: str) -> str:
+    """Whether a calibrated column is a length or an area, from its name."""
+    if column.endswith("_cal"):
+        return "area" if column.startswith("area") or "int_den" in column else "length"
+    return ""
+
+
+def harmonize_units(records: list[dict], columns) -> list[dict]:
+    """Rows with their calibrated columns converted to one common unit.
+
+    Rows from a nm result and a µm result share the column ``area_cal``, and
+    the generic plot builders would happily draw them on one axis. Here the
+    rows are converted to the smallest unit present, or the request is refused
+    by name — a silent factor of a thousand is worse than no plot (A-20).
+
+    Rows with no ``spatial_unit`` are left alone: a table that never recorded
+    one is not a table with a conflict in it.
+    """
+    wanted = [column for column in columns if column and _unit_kind(column)]
+    if not wanted:
+        return records
+
+    units = {
+        str(record.get(UNIT_COLUMN) or "").strip()
+        for record in records
+        if record.get(UNIT_COLUMN)
+    }
+    units.discard("")
+    if len(units) <= 1:
+        return records
+    # "px" is deliberately *not* discarded before the conflict check. It is a
+    # unit like any other here, and the one thing it certainly is not is
+    # convertible to micrometres — so a table holding both must be refused,
+    # not silently plotted on one axis.
+
+    unknown = sorted(unit for unit in units if unit not in _LENGTH_UNITS)
+    if unknown:
+        raise ValueError(
+            "Rows are measured in different units that cannot be converted "
+            f"({', '.join(sorted(units))}); plot them separately."
+        )
+
+    target = min(units, key=lambda unit: _LENGTH_UNITS[unit])
+    converted = []
+    for record in records:
+        unit = str(record.get(UNIT_COLUMN) or "").strip()
+        factor = _LENGTH_UNITS.get(unit)
+        if not factor or unit == target:
+            converted.append(record)
+            continue
+        ratio = factor / _LENGTH_UNITS[target]
+        row = dict(record)
+        for column in wanted:
+            value = row.get(column)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            row[column] = float(value) * (ratio ** (2 if _unit_kind(column) == "area" else 1))
+        row[UNIT_COLUMN] = target
+        converted.append(row)
+    return converted
+
+
+def _plotted_columns(spec: dict[str, Any]) -> list[str]:
+    """The columns a spec will read, whatever kind of plot it asks for."""
+    named = [
+        str(spec.get(key, "") or "")
+        for key in ("column", "x_column", "y_column")
+    ]
+    named.extend(str(column) for column in (spec.get("columns") or ()))
+    return [column for column in named if column]
+
+
 def build_plot_payloads(
     columns: list[str], records: list[dict], spec: dict[str, Any]
 ) -> list[PlotPayload]:
@@ -69,6 +161,9 @@ def build_plot_payloads(
     builder = _BUILDERS.get(kind)
     if builder is None:
         raise ValueError(f"Unknown plot kind: {spec.get('kind')!r}")
+    # Done here rather than in each builder, so every panel that plots a table
+    # inherits the rule instead of each one remembering it.
+    records = harmonize_units(records, _plotted_columns(spec))
     return builder(records, spec)
 
 

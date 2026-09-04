@@ -1,3 +1,4 @@
+import contextlib
 from dataclasses import dataclass
 from typing import Any, List, Tuple, Dict
 
@@ -47,6 +48,11 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
 
         self.settingAttr = False
         self.allParams = {}
+
+        # Set while the widget is being refreshed FROM the detector, so the
+        # param handlers below can tell a readback from a user edit. See
+        # _writebackSuppressed().
+        self._suppressWriteback = False
 
         if not self._master.detectorsManager.hasDevices():
             return
@@ -387,27 +393,56 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
 
     def updateBinning(self):
         """ Update a new binning to the detector. """
+        if self._suppressWriteback:
+            return
         self.getDetectorManagerFrameExecFunc()(
             lambda c: c.setBinning(int(self.allParams[c.name].binning.value()))
         )
         self.updateSharedAttrs()
+
+    @contextlib.contextmanager
+    def _writebackSuppressed(self):
+        """ Write the widget without letting it write back to hardware.
+
+        A pyqtgraph param emits "user intent" regardless of who set it, so a
+        plain readback re-enters setDetectorParameter/updateBinning/updateFrame
+        and pushes values back at the detector -- often the *displayed* one
+        rather than the one being read back.
+
+        The obvious defence, ``param.setValue(v, blockSignal=True)``, is wrong:
+        in pyqtgraph >= 0.14 ``blockSignal`` suppresses ``sigValueChanged``, and
+        that signal is also what tells the tree item to repaint. Blocking it
+        leaves the parameter holding the new value while the spinbox on screen
+        still shows the old one -- the widget then misreports the hardware, and
+        the next edit pushes the stale number it is displaying back into the
+        detector. Suppress our own handlers instead and let the view update. """
+
+        previous = self._suppressWriteback
+        self._suppressWriteback = True
+        try:
+            yield
+        finally:
+            self._suppressWriteback = previous
 
     def updateParamsFromDetector(self, *, detector, blockSignals=False):
         """ Update the parameter values from the detector.
 
         This is a pure readback: the widget is a view of the detector's actual
         state. Pass ``blockSignals=True`` when the caller has already configured
-        the detector itself (state restore) -- the widget params emit "user
-        intent" regardless of who wrote them, so an unblocked readback re-enters
-        setDetectorParameter/updateBinning and writes back to hardware. """
+        the detector itself (state restore), so the readback does not travel
+        back to hardware -- see _writebackSuppressed(). """
 
+        if blockSignals:
+            with self._writebackSuppressed():
+                self._updateParamsFromDetector(detector)
+        else:
+            self._updateParamsFromDetector(detector)
+
+    def _updateParamsFromDetector(self, detector):
         params = self.allParams[detector.name]
 
         def setValue(param, value):
-            if blockSignals:
-                param.setValue(value, blockSignal=True)
-            else:
-                param.setValue(value)
+            param.setValue(value)
 
         # Detector parameters
         for parameterName, parameter in detector.parameters.items():
@@ -447,6 +482,12 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
 
     def updateFrame(self, *, detector=None):
         """ Change the image frame size and position in the sensor. """
+
+        if self._suppressWriteback:
+            # A readback wrote the frame mode; the caller applies the field
+            # state and button visibility itself. Starting an interactive ROI
+            # session here would overwrite the geometry just read back.
+            return
 
         if detector is None:
             self.getDetectorManagerFrameExecFunc()(lambda c: self.updateFrame(detector=c))
@@ -511,6 +552,10 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         self._widget.selectNextDetector()
 
     def syncFrameParams(self, doAdjustFrame=True, doUpdateFrameActionButtons=True):
+        if self._suppressWriteback:
+            # Readback of one detector's frame; copying it across every
+            # detector is the opposite of reading hardware back.
+            return
         currentParams = self.getCurrentParams()
         shouldSync = currentParams.allDetectorsFrame.value()
 
@@ -600,7 +645,8 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         # opens an interactive 64x64 ROI overlay whose geometry is written
         # straight back over the caller-supplied frame -- and, for a detector
         # that isn't the displayed one, over the *current* detector's fields.
-        params.frameMode.setValue('Custom', blockSignal=True)
+        with self._writebackSuppressed():
+            params.frameMode.setValue('Custom')
         self._applyFrameModeFieldState(detector)
         self.updateFrameActionButtons(detector=detector)
 
@@ -614,6 +660,9 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
     def setDetectorParameter(self, detectorName: str, parameterName: str, value: Any) -> None:
         """ Sets the specified detector-specific parameter to the specified
         value. """
+
+        if self._suppressWriteback:
+            return
 
         if (parameterName in ['Trigger source'] and
                 self.getCurrentParams().allDetectorsFrame.value()):
@@ -965,7 +1014,8 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                     frameMode = detector_state.get('frame_mode')
                     if frameMode is not None:
                         try:
-                            params.frameMode.setValue(frameMode, blockSignal=True)
+                            with self._writebackSuppressed():
+                                params.frameMode.setValue(frameMode)
                         except Exception as e:
                             warnings.append(f'Could not restore frame mode for {detectorName}: {e}')
                     # The hardware is already configured at this point, so a

@@ -59,6 +59,9 @@ class LabelMorphologyProcessor(Processor):
     name = "Label morphology"
     id = "label-morphology"
     category = "Segmentation"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
     kinds = ("labels",)
 
     @property

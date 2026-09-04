@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **In implementation.** Plan settled at round 5; tracks A+B are the committed scope (Q-13a). **P-0 ✅ done · P-T ✅ done** (uncommitted). Next: P-F. See §15 for progress |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13) · **P-7 ✅** (§15.14) · **P-R ✅** (§15.15). Branch reviewed end to end (§15.16). Only P-F2 remains. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1546,7 +1546,7 @@ F-20; `test_shape_descriptors_for_disc_and_square`;
 | **P-4.2** | *Multi Measure* over the stack axis, long form (Q-02a), on P-J's worker. |
 | **P-4.3** | *Multi Plot* → `sigPlotPushed`, reusing the Z-profile axis selection. |
 | **P-4.4** | *Measure across results*, gated by the A-13 ladder and the Q-08 preflight. |
-| **P-4.5** | Retire the panel-local CSV/JSON export buttons in favour of the Results dock. |
+| **P-4.5** | *(revised during implementation)* **Keep** the panel-local CSV/JSON buttons and make them export what the panel holds. Retiring them, as this task originally said, would have removed the only way to get the wide-form Multi Measure table out — the Results dock is long-form by construction (Q-02a) — and the only export that does not require the dock to be open. What is retired is the **fixed statistics list** they used to write. |
 | **P-4.6** | **Result-list lifecycle wiring** (C-11): subscribe follower panels exposing `setAvailableResults` to `sigResultsChanged`, mirroring `ResultProcessorController:14`. |
 | **P-4.7** | Wide-form CSV export of a Multi Measure table (Q-02). |
 | **P-4.8** *(new, A-20)* | Unit-aware plotting: a plot request over `*_cal` columns converts or refuses on mixed `spatial_unit`. |
@@ -1554,7 +1554,9 @@ F-20; `test_shape_descriptors_for_disc_and_square`;
 **Acceptance:** *Measure* with no selection measures all; 3 planes × 2 ROIs → 6
 rows, plane-major; loading a new reconstruction updates the across-results list
 without reopening the panel; a `clippable` batch **stops and opens the preflight**
-rather than measuring (Q-08); plotting mixed-unit rows converts or refuses.
+rather than measuring (Q-08); plotting mixed-unit rows converts or refuses;
+every pushed row carries `frame_uid`, `roi_uid` and `roi_revision` (§4.8) and a
+`geometry_match` that was actually computed.
 
 **Tests:** `test_result_list_changes_reach_the_roi_manager` ← F-07,
 `test_clippable_batch_requires_preflight_optin` ← Q-08,
@@ -1795,11 +1797,18 @@ spinbox (Q-06, separate task — though P-G.4 already unifies those panels'
 | --- | --- |
 | **P-0** | ✅ **Implemented** — see §15 |
 | **P-T** | ✅ **Implemented** — see §15 |
-| **P-F** | Ready — A-13's decision tree and A-27's identity lifetime resolve the blockers; container writes are out (P-F2) |
-| **P-G** | Ready — depends on P-0 and P-F only |
-| **P-1** | Ready — A-05b no longer depends on `get_value` semantics |
-| **P-2, P-J, P-3, P-4** | Ready |
-| **P-5, P-S, P-U, P-6, P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
+| **P-F** | ✅ **Implemented** — see §15 |
+| **P-G** | ✅ **Implemented** — see §15 |
+| **P-1** | ✅ **Implemented** — see §15.2 |
+| **P-2, P-J, P-3, P-4** | ✅ **Implemented** — see §15.3, §15.4, §15.6, §15.7 |
+| **P-5** | ✅ **Implemented** — see §15.9 (first roadmap phase delivered) |
+| **P-S** | ✅ **Implemented** — see §15.10 |
+| **P-6** | ✅ **Implemented** — see §15.11 (the Fiji fixture corpus needs a Fiji run) |
+| **P-U** | ✅ **Implemented** — see §15.12 |
+| **P-P** | ✅ **Implemented** — see §15.13 |
+| **P-7** | ✅ **Implemented** — see §15.14 |
+| **P-R** | ✅ **Implemented** — see §15.15 |
+| **P-F2** | Roadmap (Q-13a) — blocked on a central save path (21 independent `save()` implementations) |
 
 Suggested first commits, in order: **P-0.6** (the mutation helper — the guard
 that makes every later field addition safe), then P-0.1/0.2/0.4/0.5/0.7, then
@@ -1808,6 +1817,743 @@ P-T.
 ---
 
 ## 15. Implementation progress
+
+### 15.1 Track A stabilization — status correction
+
+An earlier revision of this section claimed Track A was complete. That was
+wrong: the phases were *implemented*, not *stabilized*, and review found
+correctness gaps in three of the four. The honest position:
+
+| Phase | Status | Outstanding |
+| --- | --- | --- |
+| **P-0** defects | ✅ complete | — |
+| **P-T** tool broker | ✅ stabilized | — (`target_image_layer` wired by P-1) |
+| **P-F** provenance | ✅ stabilized | multi-input processors keep only their primary input's lineage (documented, not a defect) |
+| **P-G** geometry/model | ✅ stabilized | line *sampling* remains unimplemented — line ROIs refuse to be measured as areas rather than returning a wrong number (P-3.7) |
+
+Two of these were **P0**: unrelated same-shaped layers could share an inferred
+coordinate space (so they compared `pixel-compatible` when the whole point of
+the ladder was to reject them), and a line or unknown ROI type was silently
+measured as a filled rectangle — a plausible, wrong number, which is the exact
+failure mode D-11 existed to remove.
+
+#### Stabilization pass — what was fixed
+
+| # | Issue | Fix |
+| --- | --- | --- |
+| **P0-1** | Inferred coordinate space derived from layer name + shape, so two "Reconstruction" layers at 512×512 compared `pixel-compatible` | Unknown provenance now **mints** a per-layer identity, cached on the layer. Two unknown layers are `incompatible`; the same layer keeps its identity. The View-only content fingerprint (a sampled sum that also materialised lazy data) is replaced by a **source** identity — path + size + mtime — and pathless data gets minted ids rather than an invented equivalence |
+| **P0-2** | `roi_mask_local` filled the box for lines, polylines, paths, unknown types and rotated rectangles; clipped ellipses were rebuilt from clipped bounds | New `UnsupportedROIGeometry`, raised per ROI (so the batch survives and the row says why). Vertices now win over the type name, so a rotated rectangle measures rotated. Ellipses are built over their own bounds and then cropped |
+| **P1-3** | Affine hand-composed (missing rotate/shear); capture divided by `scale`, ignoring translate | Both sides go through napari's public `data_to_world` / `world_to_data`. `_visible_pixel_scales` is gone from both panels |
+| **P1-4** | Provenance covered 3 processors; display-layer components minted fresh ids | `Processor.preserves_grid` + central `attach_provenance` at the controller call sites, so a processor only declares intent; declared on 11 same-grid processors. `DisplayLayerProcessingResult.from_spec` inherits its parent (with a per-spec grid override). Projection's `Auto` on 2D no longer claims a shared grid |
+| **P1-5** | Widget bypassed `CommandLog`; rows keyed by name; `update()` could rewrite a uid or collide | Add / Rename / Delete / Duplicate run through the log; rows key on **uid**; `update()` refuses identity changes and name collisions; `get_by_uid` added |
+| **P1-6** | Ownership by mutable indices; `dims` callbacks unreleased; a preempted token could retake the tool | Ownership keyed by shape geometry (stable when the user deletes a shape in napari); `on_viewer_event` registers viewer callbacks for release; `set_mode` requires being the active owner |
+| **P2-7** | Per-ROI full-image `float64` conversion undid the local-mask design | Slice → mask → cast. Colocalization casts slices; PSF batch converts once outside the loop |
+| **P2-8** | `nbytes` ignored, negative runs accepted, no zlib EOF/trailing check, codec chosen by estimate | All validated and typed; codec chosen on **measured** serialised size |
+
+The carried item — `target_image_layer` having no consumers — is closed by
+**P-1** below: the panel now follows `sigTargetLayerChanged` and aligns the
+overlay to it.
+
+### 15.2 P-1 — Show All / Labels ✅
+
+D-02 is closed: the committed ROI set is drawn in the viewer.
+
+| Task | Outcome |
+| --- | --- |
+| P-1.1 | `NapariROISetOverlay` in `naparitools.py` (C-01: in `imcommon`, so the `add_*` guard stays meaningful). Multipart rendering, per-part `features={roi_uid, part_index}`, one label per ROI on its largest part, zoom-compensated edge width, lazy/safe layer creation |
+| P-1.2 | `"ROI Manager"` joins `ANNOTATION_LAYER_NAMES` in `layer_selection`, so the overlay can never be measured as an image |
+| P-1.3 | *Show All* / *Labels* checkboxes; the overlay redraws on every model change; hidden ROIs are not drawn |
+| P-1.4 | Hit testing is **ours** (A-05b): bbox candidates → `roi_hit_test` → smallest-area tie-break. `get_value` is not used. Click selects the row; row selection highlights the shape |
+| P-1.5 | `ROIStyle` overrides, otherwise a colour cycle; group members share a colour |
+| P-1.6 | `editable=False` (which also forces `pan_zoom`), plus a data-change handler that re-renders from the records if anything mutates the layer |
+| P-1.7 | `setup.cfg` capped to `napari>=0.7.0,<0.8`; `test_napari_shapes_contract.py` exercises a **real** `napari.layers.Shapes` in a subprocess on the ordinary PR lane — `features`, `text`, `editable`→`pan_zoom`, mouse callbacks, per-shape `edge_color` |
+
+Two things the implementation forced that the plan had not anticipated:
+
+* **Grab tolerance must not close holes.** The overlay derives its tolerance
+  from zoom, and at 2 px a click in the middle of a small annulus was landing
+  within grab distance of the hole's rim, so the hole "selected" the ring.
+  `roi_hit_test` now distinguishes *inside a hole* from *just outside the
+  shape* (via a filled-mask comparison) and refuses the former regardless of
+  tolerance.
+* **The name `NapariROIOverlay` was already taken** by imcontrol's single
+  detector-ROI rectangle. Defining a second class under that name shadowed it
+  and broke 28 imcontrol tests. Renamed to `NapariROISetOverlay`, with a guard
+  test asserting the two remain distinct.
+
+### 15.3 P-2 — Capture, segmentation payloads, positions ✅
+
+D-07 and D-08 are closed.
+
+| Task | Outcome |
+| --- | --- |
+| P-2.3 | `SegmentationRegion` encodes a `MaskPayload` **at the construction site** — built straight from the `np.nonzero` arrays, so a megapixel region never becomes a million tuples. `pixels` survives as an on-demand property for callers written against the old field. Per C-09, `test_segmentation_processor.py` now asserts extent through the shared rasteriser instead of a tuple count |
+| P-2.4 | `roi_from_shape` captures rectangle / ellipse / polygon / freehand / line, and the panel adds **every** shape it owns rather than the first. Points are refused with a clear error (C-08 — a Shapes layer has no point type) |
+| P-2.5 | Axis-labelled `position` from `plane_position()`, behind an *Associate with slices* checkbox (off by default, as in ImageJ), plus *Remove Slice Info* |
+| P-2.6 | `rectangle_roi_from_vertices` keeps its signature and delegates to `roi_from_shape` |
+| P-2.7 | `frame_uid` attached at capture from `frame_from_layer()` |
+
+Two decisions worth recording:
+
+* **An axis-aligned rectangle stores only its bounds; everything else keeps
+  its vertices.** That is what makes a *rotated* rectangle measure as the
+  rotated shape — dropping its vertices would silently turn it into the
+  axis-aligned box that encloses it.
+* **Segmentation output keeps `roi_type="mask"`.** `"composite"` is the 2.0
+  vocabulary and both rasterise identically, but renaming would change
+  serialised records for no behavioural gain, so the existing name stays and
+  the two are treated as synonyms.
+
+### 15.4 P-J — Background measurement jobs ✅
+
+`analysis/roi_jobs.py`, pure and importable without Qt or napari (asserted).
+
+| Task | Outcome |
+| --- | --- |
+| P-J.0 | `ImagePlaneSource` protocol + `ArrayPlaneSource` / `LazyPlaneSource`. Planes are indexed **by axis label**, never positionally. A live array is snapshotted at construction (`live=True`) or the run is refused (`refuse_live=True`) — never measured opportunistically |
+| P-J.1 | `MeasurementJob` freezes `token_at_start` at creation; the measure function is injected, so the module runs a measurement without knowing what one is |
+| P-J.2 | `CancellationToken` checked per ROI and per plane; progress reported per step; `LazyPlaneSource` reads one plane at a time (asserted: a 6-plane run does 6 reads) |
+| P-J.3 | Supersession — a slow job started first cannot publish over a quick one started after — plus a mid-run token change marking results stale |
+| P-J.4 | `MeasurementCache` keyed `(frame_uid, token_at_start, plane, roi_uid, roi_revision, config_revision)`. Moving an ROI invalidates it; **renaming one does not**. No token ⇒ no caching |
+
+`MeasurementRunner` gained `wait()` and `shutdown()`, so a measurement thread
+cannot outlive the panel that started it.
+
+**This phase surfaced a real defect in P-T.** Adding the module made the suite
+segfault in an unrelated Qt test, four runs in six. The cause was not the job
+code: `ViewerToolService` held **strong references to panels' bound methods**,
+so a panel destroyed without calling `release` stayed reachable and kept being
+notified — and calling a Qt widget whose C++ side has been deleted is a
+segfault, not an exception. Handlers are now held through `weakref.WeakMethod`
+and dropped when their panel goes. Six consecutive clean runs afterwards, with
+two regression tests (`test_a_destroyed_panels_handler_is_not_called`,
+`test_the_broker_does_not_keep_a_panel_alive`).
+
+The threading contract is exercised in a subprocess, for the same reason the
+napari Shapes contract is: real OS threads inside a suite holding Qt, napari
+and vispy destabilise teardown, and isolating them proves the same behaviour
+without that cost.
+
+### 15.5 Round-7 review — gaps closed in P-1, P-2, P-J and P-T
+
+A review of the delivered phases found eleven gaps. One item on the list —
+"P-3.1–P-3.8 are absent" — is not a defect: **P-3 has not been started**, and
+`ddof=1` belongs to it. Everything else was a genuine gap in work called
+complete, and all of it is now fixed.
+
+| Gap | Fix |
+| --- | --- |
+| **Mutation tokens were not mutation tokens** — derived from buffer address, shape and dtype, all of which survive an in-place write, so stale rows could be served as current | Sources no longer invent tokens. The caller supplies one from something that tracks change (result uid + revision); empty means unknown, which disables caching and forces snapshot-or-refuse. A snapshot may carry one, because nothing can write to it |
+| **Invalid positions silently measured another plane** — unknown labels ignored, indices clamped, unpinned axes resolved to zero | `PositionError`. An unknown label, an out-of-range index, or an unpinned non-plane axis is refused, matching what A-13 already said about incompatible positions |
+| **No active `ROISet`** | The panel owns one; capture calls `with_frame()`, so frames are stored once per set and an ROI's `frame_uid` resolves |
+| **`target_image_layer` never assigned** | The panel seeds the broker once and reads the target from it thereafter, so clicking the overlay cannot redirect measurement |
+| **`MeasurementRunner` not Qt-ready** | `on_done` is now strictly the *publish* hook — a cancelled or superseded run goes to `on_discarded`; every worker is tracked (not just the newest), so `shutdown()` joins all of them; the worker-thread contract is documented on `submit` and asserted |
+| **A run cancelled during its last measurement reported itself complete** | Found by a new test: the token is checked once more before declaring success |
+| **The single-shape rule contradicted "capture every drawn shape"** | Opt-in `set_multi_shape()`; the ROI manager keeps several, Profile and ROI statistics keep the one-region limit. `test_all_drawn_shapes_are_added` now exists at the widget level |
+| **Ownership keyed by a geometry hash** — two panels drawing the same rectangle collided | Per-shape ids that disambiguate duplicates, so identical shapes stay distinct |
+| **Multipart labels mismatched the shape count** | napari's text is per-shape: the name sits on the ROI's largest part and other parts carry an empty string, asserted against the shape count |
+| **P-1.5 implemented only `stroke_color`** | Full `ROIStyle` — stroke colour and **per-shape** width, fill colour/opacity, label colour/visibility — plus `ROISet.default_style` |
+| **Overlay lifecycle incomplete** | `remove()` disconnects the zoom handler, the layer data handler and the click handler |
+| **Overlay fixed at `ndim=2` copied an nD transform, failures swallowed** | Only the displayed plane's components are copied, rotation/shear via the affine's 2×2 block, and failures are recorded in `overlay.failures` instead of ignored |
+| **Visibility, Clear and Remove Slice Info bypassed the command log** | `SetVisible`, `ClearROIs`, `RemoveSliceInfo` commands, all undoable |
+
+Track B continued with **P-3** and **P-4**, both now complete (§15.6, §15.7).
+Of the roadmap, **P-5** (§15.9), **P-S** (§15.10), **P-6** (§15.11),
+**P-U** (§15.12), **P-P** (§15.13), **P-7** (§15.14) and **P-R** (§15.15) are
+done too. **Only P-F2 has not started** — it waits on a central save path,
+which Q-14b put out of scope.
+
+### 15.6 P-3 — The measurement set ✅
+
+`analysis/roi_measurements.py` is a registry: 54 measurements across Basic (10),
+Intensity (6), Position (16), Shape (19) and Line (3), ten on by default. A
+measurement declares its id, label, group, domain (`pixel` or `calibrated`),
+unit kind and an optional note; `measure()` computes the selected ones from a
+`MeasurementContext` (local mask, local image, ROI, scales, unit, plane,
+threshold, geometry match). Nothing else in the codebase knows what the set of
+measurements is.
+
+| Task | Outcome |
+| --- | --- |
+| P-3.1 | The registry, with a `@measurement` decorator. A measurement that fails takes **its own column** down, not the row: one unfittable ellipse must not cost the mean beside it |
+| P-3.2 | `roi_stats.py` is now a shim over the registry, so the legacy eight statistics and the new columns cannot drift apart. **`ddof=1`, `n < 2 → NaN`** (Q-12a) — a behaviour change from the old `ddof=0`, noted below |
+| P-3.3 | The panel's columns come from the selection, not a fixed list: `Visible / Name / Type`, then one column per selected measurement, then `Note`. `column_label()` is the **only** place a unit is rendered, so a cell is a bare number and the header says what it is in |
+| P-3.4 | `ROIMeasurementsDialog` — ImageJ's *Set Measurements*, rendered from `groups()`. Decimals and scientific notation are display-only; the value behind a cell, which sorts and exports, is never rounded. Persisted on the set's `MeasurementConfig` |
+| P-3.5 | A 120 ms coalescing timer, so dragging a dims slider costs one measurement pass rather than one per plane crossed; plus the P-J cache, consulted per ROI |
+| P-3.6–3.8 | Always-on `spatial_unit` and `geometry_match` columns; a `shape_note` when pixels are anisotropic; analytic perimeters for rectangle and ellipse |
+
+**Calibration.** `plane_scales(frame)` reads the two displayed axes **by
+label**, not by position — the displayed pair is view-mode dependent, so taking
+the last two descriptors would calibrate a YZ view with the Y and X scales. A
+frame with no calibration reports `px` rather than claiming micrometres nobody
+supplied, which keeps `area_cal` honestly equal to `area_px` instead of scaled
+by an invented number.
+
+**One shared cache key.** `roi_jobs.cache_key()` is now the single definition,
+used by both the background runner and the panel's synchronous refresh. Two key
+builders that agree by inspection are two key builders that will one day
+disagree, and that failure mode is a stale number displayed as a fresh one.
+
+**Where the mutation token comes from.** P-J established that a source must
+never invent one. The renderer supplies it: `ReconstructionViewController`
+mints a per-render-pass token into the layer's metadata, and **withholds it for
+any result that has arrived as a live update** — a live array can be rewritten
+in place between passes, so a token there would certify data that had changed.
+No token simply switches caching off, which is the safe direction.
+
+**Behaviour change to note in the changelog.** ROI standard deviation is now
+the sample standard deviation (`ddof=1`), matching ImageJ; a single-pixel ROI
+reports NaN rather than 0. A 5-pixel ROI that read 1.118 before reads 1.291
+now.
+
+*Tests:* `test_roi_measurements.py` (29) covers the registry — including the
+plan's fixture criteria, disc circularity ≈ 1.0 and square ≈ π/4 —
+`test_roi_panel_measurements.py` (17) covers the panel's columns, calibration,
+precision, debounce and cache, and `test_roi_manager_p0.py` gained three
+cache-key tests. Two tests on the controller pin the token contract.
+
+### 15.7 P-4 — Measure, Multi Measure, Multi Plot ✅
+
+| Task | Outcome |
+| --- | --- |
+| P-4.1 | *Measure* → `sigResultPushed`, and `roi-manager` registered in `_connectResultPusher` on both the startup and the runtime-dock path (D-10). No selection measures all, as in ImageJ; hidden ROIs are skipped; one unmeasurable ROI costs its own row |
+| P-4.2 | *Multi Measure* over a chosen stack axis, long form (Q-02a), on P-J's runner. Progress bar and Cancel; the runner's callbacks reach the GUI through queued signals, which is the marshalling `submit()` documents as the caller's job |
+| P-4.3 | *Multi Plot* → `sigPlotPushed`: one series per ROI against the stepped axis, y-axis labelled with the unit |
+| P-4.4 | *Across Results*, gated by the A-13 ladder. `frame_from_result()` builds a frame for a result that was never displayed, so the verdict does not depend on what happens to be on screen |
+| P-4.5 | The panel-local CSV export now writes what the panel actually holds — the registry columns, or the wide form after a Multi Measure — instead of the retired fixed statistics list |
+| P-4.6 | A follower panel exposing `setAvailableResults` is subscribed to `sigResultsChanged` (C-11), so loading a reconstruction reaches a panel that is already open |
+| P-4.7 | Wide form derived on export (`roi_report.wide_form`), never stored beside the long form |
+| P-4.8 | `harmonize_units()` in the shared table-plot path: rows in different length units are converted to the smallest present (squared for areas), and a unit that cannot be converted is refused **by name** |
+
+**Q-08, per row, not per batch.** `ROIPreflightDialog` lists every (result, ROI)
+pair with its verdict and what would be lost. Rows that are `exact` or
+`pixel-compatible` are pre-ticked; `clippable` is unticked and opt-in;
+`incompatible` and `registered` are shown but cannot be ticked at all — hiding
+them would leave the user wondering which ROIs went missing. The opt-in is
+recorded on the row as `geometry_match`, so a clipped measurement says so in
+the table it lands in.
+
+**A row is not a number.** `analysis/roi_report.py` owns the published row
+shape: identity columns first (`source`, `kind`, `roi`, `roi_uid`), then one
+column per stepped axis, then the measurements. Measure, Multi Measure, Across
+Results and the CSV export all go through it, so they cannot disagree about
+what a row is.
+
+*Tests:* `test_roi_report.py` (10) for the row, plot and wide-form shapes
+without a viewer; `test_roi_panel_measure.py` (25) for the panel — including
+the acceptance criteria (3 planes × 2 ROIs → 6 plane-major rows; a `clippable`
+batch stops and asks; an `incompatible` pair is never measured even when
+ticked), the worker-to-GUI marshalling, and that closing the panel stops its
+measurement thread. `test_table_plots.py` gained six unit-rule tests and
+`test_result_provider.py` two for the result-list wiring.
+
+### 15.8 Round-8 review — correctness pass over P-3 and P-4
+
+A static review of the delivered P-3/P-4 work found eight correctness problems
+and a set of completion gaps. All are fixed; the two that were closest to
+silently wrong are first.
+
+| Finding | Fix |
+| --- | --- |
+| **Live measurements could publish mixed-time data.** A live result deliberately has no mutation token, and `_plane_source()` neither snapshotted nor refused it — so a Multi Measure could read plane 1 from before a live update and plane 40 from after it, and the end-of-run staleness check compared `"" == ""` and passed it. Exactly what A-22 exists to prevent | No token now *means* snapshot-or-refuse: the source is snapshotted (and carries the snapshot's own token, which is sound because nothing else can write to a copy), or refused above `MAX_SNAPSHOT_BYTES` with a message saying why |
+| **The shared cache held two incompatible payloads.** The table's refresh cached bare measurement values; Multi Measure cached fully decorated rows — under the same keys, in the same cache. A cached row served to the table carried a `source` and an ROI name into the value dict; a cached value dict served to Multi Measure lost them. And because a rename deliberately does not bump the ROI's revision, a cached row kept the *old name* after a rename | `run_job` now takes `measure` (values, cached) and `decorate` (row, never cached) as separate injections. The cache holds only measurement values, so a rename is free *and* correct |
+| **A worker exception stranded the panel busy.** `run_job` had no per-ROI guard and `MeasurementRunner._work` had no error path, so one raising ROI — every line ROI, among others — killed the thread with the other rows unpublished and the progress bar still showing | Per-ROI failures go to a new `on_error` and cost their own row only; `_work` is wrapped so exactly one of `on_done`/`on_discarded` always fires. `MeasurementResult` gained `failed`, kept apart from `cancelled` because reporting a crash as "cancelled" tells the user they did something they did not do |
+| **P-3.7 was unreachable.** `measure_roi()` always called the area rasteriser, which refuses a line — so the implemented line length and angle could not be produced through Measure or Multi Measure at all | A line takes a sampling path: `imcommon/algorithms/line_sampling.py` is now the one sampler, used by the Profile panel *and* the measurements. Added `line_mean`/`line_min`/`line_max`/`line_std` and a configurable `line_width` on `MeasurementConfig`. Measurements declare `line_safe`; anything that is not returns NaN for a line, because a straight line's circularity was being reported as 0.0 |
+| **Frame and slice semantics were enforced only in Across Results.** Measure and Multi Measure defaulted every row to `geometry_match="exact"` without comparing anything; Multi Measure applied a slice-bound ROI to every plane; Across Results validated `roi.position` in the preflight and then measured plane 0 regardless | The A-13 ladder runs per ROI on every path, with a new `unverified` verdict for an ROI whose capture frame the set does not know — "we did not check" must not read as "it matched". `roi_belongs_on_plane()` binds a positioned ROI to its slice, and a `measure` returning `None` is a skip rather than a failure. Across Results measures the ROI's own plane, the one the verdict was earned on |
+| **Calibration was wrong for anisotropic pixels.** `major_cal`, `minor_cal`, both Feret lengths and the mask perimeter multiplied a pixel answer by the *mean* axis scale. That is not a length in any frame: for a 10×20 bar at 1.0/0.1 µm the long axis actually runs the other way in world units, which no scalar factor can express | Geometry is scaled **before** it is measured: one `_axis_lengths()` (verified to match scikit-image exactly on the pixel grid) and a `scaled=` Feret both work on scaled coordinates, and an anisotropic mask perimeter is re-measured on the scaled boundary. Added the missing `feret_x_cal`/`feret_y_cal`, and the pairing test's whitelist for them is gone |
+| **`_cal` columns appeared without a calibration**, identical to the `_px` column beside them — a claim of calibration | `applicable_selection(selection, unit=…)` drops calibrated measurements on an uncalibrated frame, used for the columns and the measurement so the two agree |
+| **`harmonize_units()` discarded `px` before checking for a conflict**, so a table holding px rows and µm rows plotted them on one axis | `px` is a unit like any other there, and is not convertible: a mixed table is refused by name |
+| **The legacy statistics still drifted.** `roi_stats.py` used the registry, but `compute_stats(selection=None)` reached a second copy of the eight statistics in `roi_manager.py` that still used `ddof=0` | That copy is gone; the legacy path goes through `stats_from_values`, so there is one definition of standard deviation in the panel |
+| **Rows did not meet §4.8.** `frame_uid` and `roi_revision` were missing | Both are identity columns now, and `label` (ImageJ's *Display label*) is an opt-in eleventh |
+
+Completion gaps closed with them: the active `ROISet` now holds its ROIs
+(`_set.rois` was always empty); the dialog gained *Display label*, line width
+and threshold seeding from the Segmentation panel; an explicitly **empty**
+selection stays empty instead of springing back to the defaults
+(`MeasurementConfig.selected` is `None` when unconfigured and `()` when the
+user unticked everything); Across Results reads planes lazily instead of
+`np.asarray`-ing a whole result to take one slice out of it; the `ddof` change
+is in the changelog under **Behaviour Changes**; and P-4.5's contradiction is
+resolved in the task table — the panel-local exports are **kept**, because the
+Results dock is long-form by construction and retiring them would have removed
+the only way to export the wide form.
+
+**Across Results stays synchronous, deliberately.** It reads one plane per
+(ROI, result) rather than sweeping a stack, so the work is bounded by the
+number of loaded results, and the reads are now lazy. It shows a progress bar
+and a wait cursor. Moving it onto the worker would need a plane source that
+fans out across results, which is a larger change than the responsiveness it
+would buy — noted here rather than left as an unstated limitation.
+
+### 15.9 P-5 — Set and selection operations ✅
+
+`imcommon/algorithms/roi_ops.py`, pure and local by construction.
+
+| Task | Outcome |
+| --- | --- |
+| P-5.1 | `combine(rois, op)` for AND / OR / XOR / SUBTRACT over the **union of the operands' boxes**, and `split()` into connected components. Combining ROIs from two different planes is refused: their pixel indices do not refer to the same grid, so the arithmetic would be on unrelated coordinates |
+| P-5.2 | `enlarge`, `make_band`, `to_bounding_box`, `convex_hull`, `translate`, and `make_inverse` as the one A-17 exception |
+| P-5.3 | Deferred, as Q-07 decided |
+| P-5.4 | A *More* menu on the panel; every operation goes through the command log as one `ReplaceROIs`, so all of them are undoable |
+| P-5.5 | `frame_mapping()` + `rescale_to_frame()`: the explicit counterpart to A-13's refusal to measure through a transform. Composed as `inv(target.affine) @ edge @ source.affine` — through world coordinates, the only place two pixel grids are comparable |
+
+**Locality is asserted, not asserted-to.** `test_only_the_a17_operations_ever_build_an_image_sized_mask`
+walks the module's AST and fails if any function other than `make_inverse`
+calls `roi_mask`. The criterion in §9 is a property of the code now rather than
+a claim about it.
+
+**Enlarge grows by distance, not by dilation steps.** Iterated binary dilation
+— the obvious implementation — grows in a diamond: enlarging by 2 reaches two
+pixels sideways but only one diagonally, so a circle comes out a lozenge. It is
+a Euclidean distance transform, which is both what the words mean and what
+ImageJ does; corners come out rounded, correctly, because the pixel diagonally
+two away from a corner is 2.83 pixels from the ROI.
+
+**Rescaling is honest about what it costs.** A vector ROI maps exactly. A
+rectangle whose mapping rotates or shears becomes the polygon it actually is,
+rather than an axis-aligned box quietly larger than the shape. A rasterised ROI
+is resampled and comes back a composite, because a mask has no sub-pixel truth
+to recover and pretending otherwise would be the third way this plan has found
+to report a bounding box as a measurement.
+
+The panel's table is now **extended-selection**: a set operation cannot be
+expressed on a table that only lets one row be chosen.
+
+*Tests:* `test_roi_ops.py` (30) — the full boolean truth table, Split's union
+equalling the original, the A-17 guard refusing with a size in MiB, and the
+rescaling cases including a registered edge and a refused cross-plane mapping.
+`test_roi_panel_measure.py` gained 9 for the menu, the command log and the
+refusal messages.
+
+### 15.10 P-S — Multiple named ROI sets ✅
+
+The set selector, New / Duplicate / Rename / Delete, **Merge from…** and
+**Compare with…**. `merge_sets()` and `compare_sets()` are pure functions on
+`ROISet`; the panel holds a list of sets and `_set` is a property onto the
+active one, so every existing `self._set = …` writes back into the collection
+and there is no second copy to keep in step.
+
+**Identity does the merging.** An ROI present in both sets under the same uid
+*is* the same ROI: identical when its geometry matches, a conflict when it does
+not — the same region edited two different ways. A different uid that happens
+to share a name is only a name collision, resolved by renaming, because a name
+is display text and was never the identity. Comparing by name would report a
+rename as two unrelated ROIs, which is the opposite of what a comparison is
+for.
+
+**A conflict is the only case that can lose work**, so it is the only one that
+asks. `skip` (the default) keeps this set's version, `replace` takes the
+other's, `keep-both` admits the incoming one **under a fresh uid** — two
+different regions cannot share a uid without one of them becoming unreachable.
+The dialog appears only when there is a real conflict; a merge that finds none
+just reports what it did. And a display-only difference — a changed colour — is
+not a conflict: the comparison is over the measurement-affecting fields, so a
+decision is never put in front of the user for nothing.
+
+**Frames travel with the ROIs that point at them**, still stored once per set.
+An incoming `frame_uid` that resolved to nothing would read as "no provenance"
+rather than as the missing-data bug it is.
+
+**Switching sets clears the undo log.** Commands hold ROI *names*, which mean
+different things in different sets, so an undo after a switch would either fail
+or — worse — succeed against the wrong ROI. A cross-set history is P-U's
+problem, and pretending to have one here would be the expensive kind of wrong.
+
+*Tests:* `test_roi_sets.py` (27) — the three conflict policies, name-vs-uid
+collisions, the frame-carrying and frame-deduplication criteria, and the panel
+side: two sets keeping their own frames and their own measurement
+configuration, duplicate preserving ROI identity (without which comparing the
+copy says nothing), and the undo log not reaching across a switch.
+
+### 15.11 P-6 — Interop and persistence ✅
+
+| Task | Outcome |
+| --- | --- |
+| P-6.1 | ImageJ `.roi` / `RoiSet.zip` through `roifile`, imported lazily. Declared as the `imagej` extra; without it the menu entries are **disabled with the reason on them** rather than absent, because a missing entry looks like the feature does not exist |
+| P-6.2 | `imcommon/algorithms/roi_set_io.py`: the envelope, migrations hook, unknown-version refusal, semantic validation, atomic write |
+| P-6.3 | `improcess/model/roi_persistence.py` + a controller-owned `_ROIManagerStateAdapter` (A-09), under A-25's storage order |
+| P-6.4 | *Create Selection* (labels → ROIs) and *Create Mask* (ROIs → a `ProcessingResult`, the A-17 exception) |
+| P-6.6 | A structured `InteropReport` on every conversion — see below |
+
+**The version is refused, never guessed.** A file from a future schema is not
+"mostly readable": loading it half-correctly puts ROIs at plausible-looking
+wrong coordinates, which is worse than an error. The envelope also records the
+*coordinate convention*, because pixel indices alone do not say whether `(0,0)`
+is a corner or a centre — two programs disagreeing about that produce a
+half-pixel offset nothing in the data reveals.
+
+**The frame uid is recomputed on load, not read.** A stored uid that disagreed
+with its own content would be the more trustworthy-looking of the two answers
+and the wrong one (A-27).
+
+**Interop reports what it could not carry.** Styles, arbitrary ROI properties,
+non-C/Z/T position axes, and the parts of a disconnected composite beyond the
+largest all come back as named losses rather than silence — a silent lossy
+export is how someone discovers six months later that their groups never made
+it. A loss is recorded once, not once per ROI.
+
+**Two real bugs the round-trip tests caught**, both invisible without the
+library present: `roiwrite` decides between a `.roi` and a zip by what it is
+*given*, so passing a one-element list wrote a zip called `.roi` that Fiji then
+refused; and ImageJ's type enum says `RECT`, so a map keyed on `"rectangle"`
+silently fell through to the polygon default for every rectangle ever exported.
+
+**Persistence has a cap, and the spill is one file.** Saving state serialises
+the payload twice — once to check it is serialisable, then again to write it —
+so a five-thousand-ROI set would make closing ImProcess visibly slow. Under the
+cap everything stays in the state store; over it the sets spill to
+`improcess_roi_sets.json` and the store keeps **only a marker and a checksum**.
+Two copies in two places is how they come to disagree; an edited spill file is
+refused rather than half-loaded, and a missing one names the sets it lost.
+
+**Restoring is deliberately more forgiving than opening a file.** A *file* with
+a dangling frame reference is malformed and refused whole; a *saved session*
+that lost one frame must not cost the user the other ROIs at startup, so the
+restore path drops the orphans and says how many. Writing the strict check
+first made the tolerant path unreachable — the tests found it — and the
+tolerance now lives in exactly one place.
+
+**A panel can publish and follow at once.** Giving the ROI manager a
+`sigResultProduced` for *Create Mask* rerouted it to the producing-panel branch
+of the controller and silently cost it the follower wiring, so its
+across-results list would have gone stale the moment it gained a publish path.
+Producing and following are not alternatives.
+
+**What is not here:** the P-6.6 corpus of *Fiji-produced* fixtures. Files
+written by this code and read back prove the conversion is self-consistent,
+which is not the same as proving it matches what Fiji writes. Generating
+fixtures by hand would encode my own reading of the format as the reference —
+the one thing a corpus exists to avoid. It needs a Fiji run.
+
+*Tests:* `test_roi_set_io.py` (17), `test_roi_imagej.py` (19 + 1 skipped
+without `roifile`), `test_roi_persistence.py` (17), plus P-6.4 coverage in
+`test_roi_ops.py` and `test_roi_panel_measure.py`.
+
+### 15.12 P-U — Undo stack, recovery, advanced commands ✅
+
+The command framework landed in P-G.6 and every mutation has gone through it
+since; this phase adds the parts that make it visible and safe.
+
+| Piece | Outcome |
+| --- | --- |
+| Undo/Redo UI | Buttons that **say what they would undo** — "Undo Delete", not "Undo", so the user can decide rather than try it to find out |
+| Shortcuts | `roi.undo` / `roi.redo` in the config-driven catalog, bound to the panel when it is built rather than at startup, since it is runtime-loaded |
+| `ImportROIs` | Transactional, with skip / rename / replace conflict resolution |
+| `SetProperties` | Batch display-only edits, one step of undo for a fifty-ROI restyle |
+| Autosave | Debounced, into the **existing state store** (C-13/A-25) |
+
+**`Ctrl+Shift+Z` was already taken.** The catalog's own collision test caught
+it: `image.channels` holds the usual redo binding, and taking it would have
+made one of the two silently unreachable. Redo is `Ctrl+Y`, the other
+conventional one, which was free.
+
+**A batch change may not touch geometry.** `SetProperties` refuses anything
+outside style / group / properties / visibility, because a batch that can move
+geometry is a batch that can silently ruin a set — and because none of the
+permitted fields bumps a measurement revision, so restyling fifty ROIs does not
+invalidate fifty cached measurements.
+
+**Half an import is the worst outcome**: the user cannot tell which of two
+hundred arrived, and undoing means finding them by hand. `ImportROIs` decides
+the conflict policy before touching anything and restores the set wholesale if
+any record is rejected. `add_rois` now goes through it, so every import path —
+ImageJ, JSON, segmentation — is one step of undo rather than N.
+
+**Autosave writes where shutdown writes.** A recovery file of its own would
+raise the question of which of the two is newer; there is one payload, and it
+already has a storage policy. It is debounced by five seconds, so drawing ten
+ROIs costs one save, and a failure is logged rather than shown — losing an
+autosave is a shame, a dialog mid-edit is worse.
+
+**Delete and Duplicate now act on the whole selection.** They took the current
+row, which was right when the table was single-selection; P-5 made it
+extended, and a Delete that removed one of five highlighted rows is the
+surprising reading of "delete the selected ROIs".
+
+*Tests:* `test_roi_undo.py` (21) — including the acceptance criteria: undo
+restoring geometry, style and position field for field; a failed import leaving
+the set untouched; the stack bounded; and an assertion, over the live command
+objects, that **no command holds a numpy array**. `test_roi_persistence.py`
+gained two for the autosave path.
+
+### 15.13 P-P — Points and multipoint ✅
+
+`point` and `multipoint` records, a Points drawing mode on the broker (C-08),
+twelve point measurements, and ImageJ point interop.
+
+**Points are stored in `vertices`, like every other vector geometry.** A
+multipoint is simply an ROI with several of them, so coordinates live in one
+place rather than in a parallel field every consumer would have to know about.
+`roi_points()` returns them, and returns *empty* for a non-point ROI, so a
+caller can ask without branching on the type first.
+
+**Two bugs the tests found, both from treating a point as ordinary geometry:**
+
+* `roi_bounds()` derived a point's box as `floor(min)..ceil(max)`, which for a
+  single point is **empty** — and an empty box turns every bounds check, clip
+  and hit test into "outside". Points get a half-open box around themselves.
+* `roi_hit_test()`'s bounding-box early-out rejected every click that was not
+  exactly on the pixel, because a point's clickable marker extends well beyond
+  its one-pixel box. The point branch now runs first. `POINT_GRAB_RADIUS` is
+  one constant for both the marker and the grab distance, so what is drawn is
+  what can be hit.
+
+**A point ROI carries `samples` too** — the intensities *at* its points — so
+`is_line` could no longer mean "has samples". A line is a context with samples
+and no points; getting that wrong made every point measurement return NaN while
+the intensity statistics quietly worked.
+
+**Intensity at a point is read by nearest neighbour, not interpolated.**
+Interpolating invents a number that is in no pixel of the image, which is not
+what "the intensity at this point" means. (The line sampler interpolates,
+correctly — a profile runs *between* pixels.)
+
+**Captured as one multipoint, not one ROI per point.** A fiducial set is a
+thing: splitting it would make counting the points, measuring their spacing, or
+naming the set as a whole impossible. Split it afterwards if the individual
+points are wanted.
+
+The Points layer is adopted rather than created blindly, like the Shapes layer
+and for the same reason. Switching to point mode stands the Shapes layer down —
+two layers both in an add mode is how a click lands on whichever napari happens
+to consider active.
+
+*Tests:* `test_roi_points.py` (25), and a **real-napari Points contract** in a
+subprocess beside the Shapes one, which pins the `edge_color` → `border_color`
+rename the tool inspects for.
+
+### 15.14 P-7 — UX to match the feature set ✅
+
+| Task | Outcome |
+| --- | --- |
+| P-7.1 | The button row is grouped the way ImageJ groups them — draw, edit, measure, files — over two rows with separators, rather than one row of twenty buttons in the order they were written |
+| P-7.2 | Extended selection (landed in P-5) plus **Deselect** |
+| P-7.3 | `T`, `Del`, `F2`, `Ctrl+D` and undo/redo in the config-driven catalog |
+| P-7.4 | **Update**, **Sort**, **Specify…**, **Properties…** (the full `ROIStyle`, F-22) |
+| P-7.5 | A name filter over the table |
+| P-7.6 | A context menu on the rows |
+
+**Properties cannot move an ROI.** The dialog has no geometry fields at all —
+*Specify…* is where numeric coordinates are entered, and its title says so. It
+is the one dialog most likely to be opened by someone who meant to nudge a
+region, and the safest thing it can do is not offer that.
+
+**Every control has an explicit "leave alone" state.** A batch edit over five
+ROIs with different colours has to be able to set the group without flattening
+the colours into one, so `changes()` returns only what was actually touched,
+and the panel *merges* a style change onto each ROI's own rather than replacing
+it. An untouched batch dialog returns `{}`.
+
+**Update keeps identity.** It is the same region redrawn, so rows pushed
+earlier still refer to it; the revision bumps, so nothing serves a cached
+number for the new shape.
+
+**Sort orders the model, not the view.** Sorting a column is a view; this is
+what gets exported, saved, and measured in order — and it is undoable like
+every other operation.
+
+**The filter hides, it never removes.** Deleting "everything" with a filter on
+would delete rows the user cannot see, which is the way this feature usually
+goes wrong. It is reapplied after every table rebuild, since the rows are new
+objects each time.
+
+*Tests:* `test_roi_panel_ux.py` (23), including the two that pin the design
+rather than the code: an untouched batch dialog changing nothing, and a batch
+style change leaving two different stroke colours different.
+
+### 15.15 P-R — ROI-aware processor protocol ✅
+
+A processor written against "an image" should not have to learn about ROIs to
+be usable on one, so the restriction is applied **around** it: the input is
+narrowed, the processor runs on an ordinary result, and the outputs are told
+what they were narrowed to. Declaring `accepts_roi = True` is the whole of what
+a processor has to do.
+
+| Piece | Outcome |
+| --- | --- |
+| The parameter | One well-known key (`roi_restriction`), read by the run path, honoured **only** for processors that declared they accept one — so a UI cannot make an ROI-unaware processor ROI-aware by guessing |
+| Two modes | **crop** (the region on its own smaller grid) and **mask** (the whole frame, everything else set aside). Neither is a superset of the other |
+| Frame propagation | A cropped output gets a **fresh coordinate space**, whatever the processor declares about preserving the grid |
+| Provenance | The output records the set uid, name and **revision**, the mode, the ROI names and uids, and the crop offset |
+| Integration | `filter`, `denoise`, `subtract-background`, `math` and `segmentation` |
+
+**Crop is not a cheaper mask.** A crop moves every pixel index, so an ROI drawn
+on the input measures different pixels on the output; that is why a cropped
+result is never allowed to claim its source's grid. Masking moves nothing, so
+it keeps the grid it was given, and the two are offered in a different order
+per processor: a filter wants `mask` first (its output stays aligned),
+segmentation wants `crop` (the smaller grid is the point).
+
+**The fill is NaN, not zero.** Zero says "measured, and dark", which is a
+different and usually false claim. A masked integer image therefore comes back
+as floats — silently casting NaN to 0 would be exactly the claim the fill
+exists to avoid.
+
+**PSF resolution and colocalization are deliberately not integrated.** They are
+already ROI-native in a different sense: they measure *per ROI*, producing one
+row each, rather than restricting one input. Adding the restriction would give
+them two ways in, and two ways in is one thing that later disagrees with the
+other. Drift correction is left out for a different reason — over a crop it is
+a *different measurement*, not a cheaper one, and offering it would invite a
+result nobody can interpret. Both exclusions have tests, so they are decisions
+rather than omissions.
+
+*Tests:* `test_roi_restriction.py` (24), covering both modes, the clipping and
+refusal rules, the untouched source, the grid reset, and the two exclusions.
+
+### 15.16 Final review of the branch — six defects found and fixed
+
+A pass over the whole branch, hunting for the class of fault that only appears
+once several phases are stacked: a later phase quietly breaking an earlier
+one's invariant.
+
+| # | Defect | Why it mattered |
+| --- | --- | --- |
+| 1 | The P-R wiring loop swept `self.__dict__` gated on `self.docks` being non-empty | Two unrelated things: a dock dict says nothing about whether a processor panel exists, so the wiring could be skipped entirely — and when it ran it called `getattr` on every string and layout on the view. Now iterated over the runtime tool registry |
+| 2 | `restrict_result`'s shallow copy shared `roi_provenance` with its source | The narrowed copy is meant to be an implementation detail that never existed outside the call; sharing a mutable attribute let a run write through it into the user's actual result |
+| 3 | A **crop materialised the whole array** before slicing | Exactly the fault fixed in `_resultPlane` during P-6, reintroduced: it made the cheaper of the two modes the more expensive one, on precisely the lazily-backed results where the difference matters |
+| 4 | **The Points layer was not an annotation layer** | A napari Points layer's `data` *is* an `(n, 2)` float ndarray, so `is_image_layer()` accepted it — and point mode makes it the active layer. Drawing points could redirect measurement onto an array of coordinates. The same class of bug A-05/F-16 fixed once for Shapes |
+| 5 | The restriction travelled into `apply()` | A parameter no processor needs, holding the ROIs themselves — so a processor that keeps its params (segmentation does) retained their mask payloads, and put a non-serialisable object anywhere params are later written |
+| 6 | **Closing the ROI panel and quitting erased every saved set** | The A-09 adapter guarded "never opened" but not "opened then closed": a destroyed panel raises from every method, so the save fell through to an empty stash and wrote it over everything |
+
+**#4 and #6 are the two that would have cost real work**, and both are
+recurrences rather than novelties — an annotation layer mistaken for an image,
+and a save path that treats "cannot read" as "nothing to save". Each now has a
+test naming the mechanism, and #4 additionally has a guard asserting that
+*every* layer the tool manager creates appears in the exclusion list, since the
+two live in different packages.
+
+The adapter keeps a **last-known payload** now, fed by both a restore and every
+successful read, and the panel publishes its final state from `closeEvent` —
+the last moment there is anything to ask.
+
+Also checked and found sound: no `imcommon` → `improcess` import (F-11); every
+`_px` measurement paired with a `_cal` one; no measurement id colliding with an
+identity column; an empty selection still emitting the always-on columns; no
+stale references to renamed API; no exported name unreferenced outside its own
+module; the panel releasing its viewer callbacks and joining its measurement
+thread on close; and every acceptance criterion in this plan resolving to a
+named test.
+
+### 15.17 Rig feedback — ROI outlines far too thick
+
+First real-image run: everything worked, but the outlines were enormous and
+napari's own layer controls would not change them. Both halves have the same
+root.
+
+**The width.** napari measures a shape's ``edge_width`` in **data** units and
+multiplies it by the layer's scale *and* the camera zoom. The overlay computed
+``PIXEL_WIDTH / zoom`` — correct for a layer at scale 1, which is what the
+drawing-tool layer is. But the overlay **copies the target image's scale**
+(`_align_to_target`, added so ROI coordinates line up with a calibrated image),
+so both terms are in play and the two zoom terms cancel:
+
+> on-screen thickness = (PIXEL_WIDTH / zoom) x scale x zoom = **PIXEL_WIDTH x
+> scale**, at every zoom level.
+
+Right by accident on uncalibrated data; 0.2 px on a 0.1 µm/px camera; **200 px
+on a 100 nm/px result calibrated in nm**, which is most of this application's
+data. The fix divides by the scale as well, and `ROIStyle.stroke_width` — long
+documented as *screen* pixels — goes through the same conversion instead of
+being passed through as a data-unit width. A zoom now rescales each ROI's width
+separately rather than assigning one value to the layer, which would have
+discarded every per-ROI width the moment the user zoomed.
+
+Worth naming as a pattern: this was introduced not by writing the width
+formula wrongly, but by a *later* fix (alignment) adding a term the formula
+never knew about. The tool layer's identical-looking formula is still correct
+precisely because that layer stays at scale 1.
+
+**The controls.** They cannot work, by design: the overlay is a managed,
+read-only layer re-rendered from the records, so an edit there is overwritten
+by the next redraw — the same property that stops a dragged vertex from
+desynchronising the model. The width belongs where the model does, so
+**Sets ▸ Default appearance…** now edits `ROISet.default_style` through the
+same Properties dialog, which is one place to set the outline for a whole set.
+
+*Tests:* five in `test_roi_overlay.py`, parametrised over the calibrations
+above and asserting the *arithmetic* — `edge_width x scale x zoom` — rather
+than that the code ran.
+
+### 15.18 Crop from an ROI
+
+Rig feedback: the Crop/Substack dialog and the ROI manager did not know about
+each other. A *Crop from* chooser now lists the set's area ROIs beside
+**Manual**, and picking one fills the Y and X ranges from its bounding box.
+
+**The ranges stay the single source of truth.** An ROI *fills* them rather
+than replacing them: they remain visible and editable, touching one returns the
+chooser to Manual, and what is applied is always what is on screen. The
+alternative — an ROI mode where the numbers are derived and hidden — has two
+representations of one crop, and they disagree the moment the ROI moves.
+
+Details that are decisions rather than defaults:
+
+* **Axes matched by label**, so an ROI drawn on a YX view cannot fill a YZ
+  view's ranges. Same rule as `plane_scales`, for the same reason.
+* **Only area ROIs are offered.** A crop is rectangular; a line or a point has
+  no rectangle to crop to, so offering them would invite a question with no
+  answer.
+* **A polygon crops to its box**, which is what a crop *is*. Pretending the
+  shape was applied would be the fourth way this plan has found to report a
+  bounding box as something finer. The shape-aware path already exists: P-R's
+  crop-mode restriction on a processor.
+* **The crop records which ROI it came from** (`roi_uid`/`roi_name` in the
+  params), so it leaves a trace rather than being a UI convenience.
+
+---
+
+## 16. Next: a processing footprint in result metadata (roadmap)
+
+Requested after the first rig runs, and deliberately **not started here** — it
+wants its own branch off this one, after the pull request.
+
+**The ask.** Every reconstruction and processor applied to a result should
+leave a footprint in that result's metadata: reconstruct a raw MoNaLISA
+measurement and the reconstruction's parameters and the source file are
+recorded; crop it and that step is appended, with the ROI and its coordinates.
+A result should be able to say how it was made, end to end.
+
+**What already exists and should be built on rather than duplicated.** Most of
+the vocabulary is in place from Track A and P-R:
+
+* `lineage`, `result_uid`, `dataset_uid` and `coordinate_space_uid` (A-10) —
+  *which* results a result derives from, and whether they share a pixel grid.
+* `attach_provenance` / `preserves_grid` — applied centrally in
+  `normalize_processor_output`, so every processor already contributes without
+  opting in.
+* `roi_provenance` (P-R) — the ROI set, revision, mode and offset behind a
+  restricted run, and now the ROI behind a crop.
+
+What is missing is the **step list**: an ordered record of *what was done*, with
+each step's parameters, rather than only what the result descends from. The
+natural shape is a list of entries appended by the same central hook that
+already attaches provenance, so a processor stays unaware of it.
+
+**The blocker is the same one P-F2 has.** Metadata that lives only in memory
+does not survive a save, and there is **no central save path** — 21 independent
+`save()` implementations call tifffile/h5py directly. Q-14b put container
+writes out of scope for exactly this reason. So the honest sequencing is:
+
+1. a central save hook (the P-F2 prerequisite), then
+2. the step list written through it, then
+3. readers — the Metadata panel already renders arbitrary container metadata,
+   so it should need little.
+
+Doing (2) before (1) produces a footprint that is complete on screen and absent
+in every file, which is the worst of the three states.
+
+
+
+
+
+
+
+
+
+
+
+
 
 ### P-0 — Defect fixes ✅ *(uncommitted)*
 
@@ -1850,12 +2596,70 @@ would have made D-14 worse rather than better.
 (`test_clearing_one_owner_keeps_another_owners_shapes`), per-owner limits, stale
 tokens, preemption and callback teardown.
 
+### P-T follow-up fixes ✅ *(review round 5)*
+
+Four issues found on review of the first P-T cut, all fixed:
+
+| Issue | Fix |
+| --- | --- |
+| `release()` deleted an owner's shapes, contradicting "a reopened panel reclaims its shapes" — and the test never did a real close/reopen | `release(token, *, discard_shapes=False)` keeps shapes by default; `test_closed_and_reopened_panel_reclaims_its_shapes` now releases and re-registers |
+| Nothing consumed `sigToolPreempted`, so preempted panels kept reacting to other panels' drawing | Owner-scoped `on_shapes_changed(token, handler)`; only the owner holding the tool is called |
+| The weak registry could not release a viewer — its value strongly owned the service, which owns the manager, which owns the viewer | The registry stores a **weakref to the service**; `test_registry_does_not_retain_the_viewer` asserts collection |
+| All three panels acquired during construction, so startup panels preempted each other before any user action | `register()` (identity only) at construction; `acquire()` on user intent. The shapes layer is no longer created at startup either |
+
+### P-F — Spatial provenance ✅ *(uncommitted)*
+
+`imcommon/algorithms/spatial_frame.py`: `AxisDescriptor`, `SpatialFrame`,
+`TransformEdge`/`TransformRegistry`, and `compatibility()` **as the decision
+tree** — coordinate space checked before any shape comparison, so unrelated
+same-shaped data is rejected (F-29). `identity_kind` caps inferred identities at
+`pixel-compatible`. `ProcessingResult` gained `result_uid` / `dataset_uid` /
+`coordinate_space_uid` / `lineage`, propagated onto layer metadata by the render
+path, with `adopt_identity_from(source, same_grid=)` wired into projection,
+segmentation and stack-subset. Loaded data gets deterministic content-digest ids
+marked `derived` — **no result-container writes** (Q-14b honoured; P-F2 remains
+roadmap).
+
+One deviation worth flagging: `compatibility()` takes `positions=` rather than
+an `ROIRecord`, so `spatial_frame` stays independent of the ROI type. It is
+strictly better layering than the plan's signature and avoids a P-F→record
+dependency.
+
+*Tests:* `test_spatial_frame.py` (28), `test_result_identity.py` (10).
+
+### P-G — Record contract, geometry, identity, set, commands ✅ *(uncommitted)*
+
+* **P-G.0** — the whole 2.0 contract in one step: `roi_payload.py` (adaptive
+  `MaskPayload`: `rle` / `bits` / `bits-zlib`, chosen by measured size, with
+  validation and a bounded decompress), `roi_style.py`, the full `ROIRecord`
+  field set, `roi_set.py` (`ROISet` + `MeasurementConfig`).
+* **P-G.1** — `roi_geometry.py`: `roi_mask_local` (bounding-box sized),
+  `roi_mask` (explicit full-frame), multipart `roi_outline`, pure
+  `roi_hit_test` (holes fall through), `roi_capabilities`.
+* **P-G.2/.4** — the ROI manager, **PSF resolution and colocalization** all
+  read pixels through `roi_values`/`roi_mask_local`; both bespoke
+  `pixels`-or-`bounds` readers deleted. D-11 closed.
+* **P-G.3** — uuid4 identity assigned on every ingestion path; `revision`
+  advances only for measurement-affecting changes.
+* **P-G.5** — `roi_frame_adapter.frame_from_layer()`, the one napari-aware
+  side, reading everything from a single layer.
+* **P-G.6** — `roi_commands.py`: Add / Delete / Rename / Update with `undo()`
+  and a bounded `CommandLog`. No UI yet (that is P-U), but every mutation has
+  gone through one audited path from the start.
+
+*Tests:* `test_roi_geometry.py` (28), `test_roi_commands.py` (11).
+
 ### Suite status
 
-`imswitch/improcess/_test` — **1132 passed** (`-p no:napari`,
+`imswitch/improcess/_test` — **1364 passed** (3 consecutive clean runs) (`-p no:napari`,
 `QT_QPA_PLATFORM=offscreen`, `test_snouty.py` ignored as CI does).
-`test_layering_boundaries.py` and `test_result_pipeline_generality.py` green;
-ruff clean.
+`imswitch/imcontrol/_test/unit` + controller + no-hardware profile —
+**2645 passed, 4 skipped** (re-validated after the `fb6efb91` merge). `test_layering_boundaries.py` (extended with the
+A-26 guard, now enumerated from the package) and
+`test_result_pipeline_generality.py` green; ruff clean.
+
+**Track A stabilized. Next: P-1** (Show All / Labels overlay), then P-2, P-J,
+P-3, P-4 to complete the committed scope.
 
 ---
 

@@ -65,6 +65,21 @@ _SIGNAL_SPECS = (
     ("image.make-rgb", "Make RGB", None, "sigImageMakeRgbRequested"),
 )
 
+#: (actionId, display name, default key) for actions the ROI manager owns.
+#: Registered against the panel rather than the view, because they act on the
+#: panel's own command log and mean nothing when it is not open.
+_ROI_SPECS = (
+    ("roi.add", "Add ROI", "T", "add_current_rectangle"),
+    ("roi.delete", "Delete ROI", "Del", "delete_selected"),
+    ("roi.rename", "Rename ROI", "F2", "rename_selected"),
+    ("roi.deselect", "Deselect ROIs", "Ctrl+D", "deselect"),
+    ("roi.undo", "Undo ROI edit", "Ctrl+Z", "undo"),
+    # Ctrl+Shift+Z is the usual redo everywhere else, and is already this
+    # catalog's "Channels" — taking it would have made one of the two silently
+    # unreachable. Ctrl+Y is the other conventional redo, and is free.
+    ("roi.redo", "Redo ROI edit", "Ctrl+Y", "redo"),
+)
+
 #: (actionId, display name, default key or None, runtime tool id)
 _PANEL_SPECS = (
     ("panel.graph", "Graph panel", "Ctrl+H", "graph"),
@@ -81,6 +96,7 @@ def improcess_shortcut_defaults() -> dict[str, str | None]:
     """Return actionId -> default key sequence for every catalogued action."""
     defaults = {aid: key for aid, _name, key, _sig in _SIGNAL_SPECS}
     defaults.update({aid: key for aid, _name, key, _tool in _PANEL_SPECS})
+    defaults.update({aid: key for aid, _name, key, _method in _ROI_SPECS})
     defaults["panel.results-table"] = None
     return defaults
 
@@ -118,6 +134,37 @@ def register_improcess_shortcuts(manager, mainView) -> None:
     )
 
 
+def register_roi_manager_shortcuts(manager, panel, owner=None) -> None:
+    """Register undo/redo against a live ROI manager panel.
+
+    Called when the panel is built rather than at startup: it is
+    runtime-loaded, so at startup there is usually nothing to bind to. The
+    callbacks resolve the method by name on each press, so a panel that has
+    been closed and reopened does not leave a shortcut pointing at a dead one.
+    """
+    import weakref
+
+    reference = weakref.ref(panel)
+
+    def _call(method_name):
+        target = reference()
+        if target is None:
+            return
+        method = getattr(target, method_name, None)
+        if callable(method):
+            method()
+
+    for action_id, display_name, default_key, method_name in _ROI_SPECS:
+        manager.registerAction(
+            actionId=action_id,
+            displayName=display_name,
+            callback=lambda name=method_name: _call(name),
+            defaultKeySequence=default_key,
+            scope=ShortcutScope.Window,
+            owner=owner if owner is not None else panel,
+        )
+
+
 def _shortcuts_file_path() -> str:
     return os.path.join(dirtools.UserFileDirs.Root, SHORTCUTS_FILENAME)
 
@@ -148,6 +195,7 @@ def save_shortcut_overrides(overrides: dict) -> None:
 
 __all__ = [
     "SHORTCUTS_FILENAME",
+    "register_roi_manager_shortcuts",
     "improcess_shortcut_defaults",
     "load_shortcut_overrides",
     "register_improcess_shortcuts",
