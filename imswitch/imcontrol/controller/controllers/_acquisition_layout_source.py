@@ -247,13 +247,17 @@ def _physical_loops(
 
 
 def _traversal(loops: Sequence[AcquisitionLoop]) -> tuple[TraversalRule, ...]:
-    return tuple(
-        TraversalRule(
-            loop.id,
-            "reverse" if loop.direction == -1 else "forward",
-        )
-        for loop in loops
-    )
+    """Chronology only: every designer here steps each axis monotonically.
+
+    A negative stage direction is *not* a reverse traversal. The loop's
+    ``direction`` already says the stage stepped the other way; encoding it a
+    second time as ``reverse`` made the core flip the logical index and left
+    consumers to guess whether they still had to apply the sign -- one did,
+    one did not, and the same file reconstructed as mirror images.
+    ``physical_orientation_flips`` in imcommon is the one place the sign is
+    applied. ``reverse`` stays reserved for a genuine retrace.
+    """
+    return tuple(TraversalRule(loop.id, "forward") for loop in loops)
 
 
 def _assembled_layout(

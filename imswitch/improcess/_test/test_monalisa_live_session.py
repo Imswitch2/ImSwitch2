@@ -1136,3 +1136,56 @@ def test_live_session_invalid_data_shape():
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_live_session_orients_from_data_and_cross_checks_the_layout(synthetic_stack):
+    """Direction is not applied on top of the detected orientation.
+
+    The eight orientation candidates already include every mirror, so a
+    negative stage direction is resolved empirically; applying the layout's
+    sign as well would flip twice. The layout is a cross-check: a recording
+    that *claims* a negative Y while the data is plainly +y gets a warning,
+    the detected orientation is used, and the result says so.
+    """
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+        TraversalRule,
+    )
+
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="detector_0",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", ny_s, step=0.05, unit="um", direction=-1),
+            AcquisitionLoop("scan_x", "scan_x", nx_s, step=0.05, unit="um", direction=1),
+        ),
+        traversal=(TraversalRule("scan_y", "forward"), TraversalRule("scan_x", "forward")),
+        scan_source="ScanControllerPointScan",
+    )
+    init_obj = StreamInit(
+        name="negative-y",
+        dataset_name="detector_0",
+        data=stack,
+        attrs=attrs,
+        stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
+    )
+    session = MonalisaReconstructor().make_session()
+    warnings = []
+    session._logger.warning = lambda message, *args, **kwargs: warnings.append(str(message))
+
+    session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+
+    assert session.detected_orientation is not None
+    assert session.scan_params["unidirectional"] is True
+    detected_y = session.scan_params["directions"][1]
+    if detected_y == "+":
+        assert any("disagrees with the recorded layout" in w for w in warnings), warnings
+    else:
+        assert not any("disagrees" in w for w in warnings)
+    assert (session.nx_s, session.ny_s, session.num_linesteps) == (nx_s, ny_s, 1)

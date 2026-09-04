@@ -23,6 +23,41 @@ except ImportError:
     cp = None
 
 
+
+def directions_from_orientation(orientation: str) -> list[str]:
+    """``['+'|'-', ...]`` per dialog axis (x, y, z, t) from a detected orientation.
+
+    Orientation strings are ``"+x+y"``-style: each axis letter is preceded by
+    its sign, in either order (``"+y-x"`` is a transposed candidate). Only the
+    sign per axis is reported here; z and t are never mirrored by this path.
+    """
+    signs = {"x": "+", "y": "+"}
+    for index, char in enumerate(orientation):
+        if char in signs and index > 0 and orientation[index - 1] in "+-":
+            signs[char] = orientation[index - 1]
+    return [signs["x"], signs["y"], "+", "+"]
+
+
+def expected_orientation_signs(layout) -> dict[str, str] | None:
+    """Per-axis sign the recorded layout implies, or ``None`` without a layout.
+
+    Derived from ``physical_orientation_flips`` -- the one place the layout's
+    ``direction`` is interpreted -- for the ``scan_x``/``scan_y`` loops.
+    """
+    if layout is None:
+        return None
+    from imswitch.imcommon.model.acquisition_layout import physical_orientation_flips
+
+    flips = physical_orientation_flips(layout)
+    signs = {}
+    for loop in layout.event_loops:
+        if loop.kind == "scan_x":
+            signs["x"] = "-" if loop.id in flips else "+"
+        elif loop.kind == "scan_y":
+            signs["y"] = "-" if loop.id in flips else "+"
+    return signs or None
+
+
 class MonalisaLiveSession(StreamingSession):
     """
     Streaming reconstruction session for MoNaLISA fast-Gauss live pipeline.
@@ -40,6 +75,7 @@ class MonalisaLiveSession(StreamingSession):
         self.nx_c = None
         self.ny_c = None
         self.num_linesteps = 1
+        self.detected_orientation = None
         self.num_frames_per_condition = None
         self.num_frames_in_stack = None
         self.use_gpu = False
@@ -113,6 +149,32 @@ class MonalisaLiveSession(StreamingSession):
             placement.n_time,
             placement.n_conditions,
         )
+
+    def _cross_check_orientation_against_layout(self, orientation, resolved) -> None:
+        """Warn when the data-detected orientation contradicts the layout.
+
+        The detection is authoritative for this path; the layout's sign is
+        what every metadata-placing consumer uses, so a disagreement means
+        either a mis-detection on a featureless first stack or a wrong
+        ``isPositiveDirection`` in the setup file -- both worth a line in the
+        log before the images from two methods come out mirrored.
+        """
+        layout = getattr(resolved, "layout", None)
+        if layout is None or not getattr(resolved, "is_usable", False):
+            return
+        expected = expected_orientation_signs(layout)
+        if not expected:
+            return
+        detected = dict(zip(("x", "y"), directions_from_orientation(orientation)[:2]))
+        mismatched = [axis for axis, sign in expected.items() if detected.get(axis) != sign]
+        if mismatched:
+            self._logger.warning(
+                f"Detected scan orientation {orientation!r} disagrees with the "
+                f"recorded layout on axis {', '.join(mismatched)} (layout says "
+                f"{expected}); using the detected orientation. If the layout is "
+                f"right, check the first stack; if the detection is right, check "
+                f"isPositiveDirection in the setup file."
+            )
 
     def begin(self, init_obj, params: dict) -> StreamPlan:
         """
@@ -272,6 +334,15 @@ class MonalisaLiveSession(StreamingSession):
             )
             self._logger.info(f"Detected scan orientation: {orientation}")
 
+        # Orientation is decided from the data, not from metadata: the eight
+        # candidates already include every mirror, so a negative stage
+        # direction is resolved here empirically and the layout's sign must
+        # NOT be applied on top. The layout is a cross-check.
+        self.detected_orientation = orientation
+        self._cross_check_orientation_against_layout(
+            orientation, getattr(init_obj.stack_info, "acquisition_layout", None)
+        )
+
         self.processor.update_frame_inds(
             loc_result.nx_c, loc_result.ny_c, self.nx_s, self.ny_s, orientation
         )
@@ -292,11 +363,14 @@ class MonalisaLiveSession(StreamingSession):
 
         self.scan_params = {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
-            "directions": ["+", "+", "+", "+"],
+            # What was actually used to assemble the image, not a placeholder.
+            "directions": directions_from_orientation(orientation),
             "steps": [self.nx_s, self.ny_s, 1, num_output_conditions],
             "step_sizes": [float(step_x_nm), float(step_y_nm), 1.0, 1.0],
             "n_linesteps": self.num_linesteps,
-            "unidirectional": False,
+            # This path assembles contiguous stacks: a unidirectional raster,
+            # never a snake scan (a serpentine layout is refused above).
+            "unidirectional": True,
         }
 
         self._logger.info(

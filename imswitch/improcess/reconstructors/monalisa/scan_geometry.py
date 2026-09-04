@@ -382,17 +382,42 @@ def scan_params_from_layout(resolved, axis_labels: dict) -> dict | None:
     # timepoints slot -- ``T = timepoints x conditions`` -- exactly as
     # ``coeffs_to_image`` reads it back, and ``n_linesteps`` says how to
     # de-interleave them. Leaving the condition loop out entirely made the
-    # dialog claim one timepoint for a 648-frame 18x18x2 scan.
+    # dialog claim one timepoint for a 648-frame 18x18x2 scan. The dialog's
+    # arithmetic only knows conditions interleaved per line, so any other
+    # placement of the condition loop is declined rather than pre-filled with
+    # values that cannot reproduce the layout.
+    from .coeffs_to_image import linestep_conditions_interleave_per_line
+
     condition = next(
         (loop for loop in layout.event_loops if loop.kind == "condition"), None
     )
+    if condition is not None and not linestep_conditions_interleave_per_line(layout):
+        return None
     n_linesteps = int(condition.count) if condition is not None else 1
     time_index = dimensions.index(axis_labels["timepoints_text"])
     steps[time_index] = str(int(steps[time_index]) * n_linesteps)
+
+    # ``unidirectional`` is the dialog's word for "not a snake scan". The only
+    # bidirectional order the dialog can express is a serpentine fast axis
+    # whose parity is the (row, condition) pair coeffs_to_image assumes.
+    fast_id = next(loop.id for loop in layout.event_loops if loop.kind == "scan_x")
+    allowed_parity = {
+        loop.id for loop in layout.event_loops if loop.kind in ("scan_y", "condition")
+    }
+    unidirectional = True
+    for rule in layout.traversal:
+        if rule.order == "serpentine" and rule.loop_id == fast_id:
+            if not set(rule.parity_loops) <= allowed_parity:
+                return None
+            unidirectional = False
+        elif rule.order != "forward":
+            # A retrace, or a serpentine on any other loop, is not a dialog scan.
+            return None
     return {
         "dimensions": dimensions[:4],
         "directions": directions[:3],
         "steps": steps[:4],
         "step_sizes": step_sizes[:4],
         "n_linesteps": n_linesteps,
+        "unidirectional": unidirectional,
     }

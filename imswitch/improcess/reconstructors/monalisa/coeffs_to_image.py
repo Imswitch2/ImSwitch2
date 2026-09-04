@@ -14,7 +14,7 @@ from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.model.acquisition_layout import (
     PAYLOAD_DETECTOR_FRAME_STREAM,
     AcquisitionLayout,
-    iter_recorded_coordinates,
+    iter_physical_coordinates,
 )
 
 _logger = initLogger('MonalisaCoeffsToImage')
@@ -92,22 +92,17 @@ def placement_from_layout(layout: AcquisitionLayout | None) -> LayoutPlacement |
     n_conditions = condition.count if condition is not None else 1
     n_time = time.count if time is not None else 1
 
-    # A negative physical direction means the logical index runs against the
-    # stage, so flip it to keep the reconstructed image in physical order.
-    flip = {
-        loop.id: loop
-        for loop in layout.event_loops
-        if loop.direction == -1
-    }
-
+    # Output pixels increase with physical position. The layout's ``direction``
+    # is applied by exactly one helper, in imcommon; this module never re-reads
+    # it. A second flip here is how MoNaLISA classic came to disagree with
+    # BeadRec and the scan dialog about the same file.
     def coordinate(coordinates, loop):
         if loop is None:
             return 0
-        value = coordinates[loop.id]
-        return loop.count - 1 - value if loop.id in flip else value
+        return coordinates[loop.id]
 
     slots = []
-    for coordinates in iter_recorded_coordinates(layout):
+    for coordinates in iter_physical_coordinates(layout):
         condition_index = coordinate(coordinates, condition)
         time_index = coordinate(coordinates, time)
         slots.append(
@@ -184,7 +179,8 @@ def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str
               line. Values greater than one mean the recorded frame order is
               ``line 0 / condition 0, line 0 / condition 1, ...`` rather than
               one complete image per condition.
-            - 'unidirectional': bool (True for snake scan, False for raster)
+            - 'unidirectional': bool (True for a unidirectional raster; False
+              for a bidirectional/snake scan, which reverses every other line)
         axis_labels: Dict mapping semantic names to dimension names, e.g.:
             - 'r_l_text': 'Right-Left'
             - 'u_d_text': 'Up-Down'

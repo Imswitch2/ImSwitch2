@@ -411,11 +411,24 @@ class MonalisaReconstructor(StreamingReconstructor):
         try:
             first_stack = data[:frames_per_stack]
             session_params = self._fast_gauss_session_params(params)
+            stack_info = None
+            if recorded_geometry is not None:
+                # Same resolved contract the live path consumes, so the session
+                # sizes itself from the layout and cross-checks its detected
+                # orientation against it.
+                from imswitch.improcess.reconstructors.base import StackInfo
+
+                stack_info = StackInfo(
+                    frame_shape=tuple(int(v) for v in data.shape[-2:]),
+                    dtype=np.dtype(data.dtype),
+                    acquisition_layout=resolved,
+                )
             init_obj = StreamInit(
                 name=name,
                 dataset_name='offline',
                 data=first_stack,
                 attrs=geometry['attrs'],
+                stack_info=stack_info,
             )
             session.begin(init_obj, session_params)
 
@@ -438,10 +451,16 @@ class MonalisaReconstructor(StreamingReconstructor):
                 float(np.percentile(finite_data, 99.9)),
             )
 
+        # The image was assembled with the orientation the session detected;
+        # say so instead of carrying the geometry's '+' placeholders.
+        result_scan_params = dict(geometry.get('scan_params', scan_params))
+        if getattr(session, 'scan_params', None):
+            result_scan_params['directions'] = list(session.scan_params['directions'])
+            result_scan_params['unidirectional'] = session.scan_params['unidirectional']
         result = MonalisaProcessingResult(
             name=name,
             data=live_result.data,
-            scan_params=geometry.get('scan_params', scan_params),
+            scan_params=result_scan_params,
             display_levels=display_levels,
             output_pixel_size_nm=out_px,
             axis_label_map=self._axis_labels,

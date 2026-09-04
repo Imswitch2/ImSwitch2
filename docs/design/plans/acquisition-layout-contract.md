@@ -519,6 +519,56 @@ Traversal maps chronological producer counters to logical indices;
 `direction`, `step`, and `unit` then calibrate those logical indices. A
 serpentine reversal must never be encoded as a constant physical direction.
 
+**Direction is applied exactly once, and never as traversal (settled
+2026-09-04, audit condition 1).** `direction` is the orientation of a loop's
+*logical index axis* against the physical axis: with `direction == -1`,
+logical index 0 sits at the *highest* physical coordinate and the index
+decreases with position. It is not a traversal order, and it is not defined
+as "the sign of the stage step" -- the two coincide only when logical index 0
+is the first position visited, i.e. for `forward` and `serpentine` loops,
+which is every in-tree producer. A producer that emits a genuine `reverse`
+(logical index 0 is then the *last* position visited) must set `direction`
+for the index axis, i.e. negate the stage sign. The rules that follow:
+
+- A producer or legacy adapter that stepped an axis monotonically emits
+  `forward` for it whatever its direction. `reverse` is reserved for a genuine
+  retrace (chronology against the index), and `serpentine` for bidirectional
+  scanning. Encoding a negative direction as `reverse` *and* keeping
+  `direction = -1` described one fact twice, and consumers disagreed on how
+  many times to apply it.
+- Only physical scan axes (`scan_*` kinds) carry a direction; validation
+  refuses it elsewhere (`DIRECTION_ON_NON_SPATIAL_LOOP`), so a time, condition
+  or repeat axis is never mirrored.
+- Consumers that assemble an image whose pixels increase with physical
+  position take their coordinates from `iter_physical_coordinates` /
+  `physical_frame_coordinates` (imcommon), which apply
+  `physical_orientation_flips` -- the only code that interprets the sign.
+  Consumers that reason about chronology use `iter_recorded_coordinates`;
+  `unfold_frame_axis` yields logical axes and its caller mirrors per the same
+  helper. No consumer re-reads `direction` itself.
+- The scan dialog path is the one legitimate second reading: it converts
+  `direction` to its own `pos`/`neg` field, and `coeffs_to_image` applies that
+  field once. The seam test asserts the dialog path, MoNaLISA placement and
+  BeadRec placement put every frame in the same pixel for a forward,
+  canonically ordered layout; the dialog cannot express a parity loop other
+  than `(scan_y, condition)` or a condition loop that is not immediately
+  outside `scan_x`, so `scan_params_from_layout` declines those rather than
+  pre-filling values that cannot reproduce the layout.
+- The fast-Gauss offline and live paths do not place frames by metadata at
+  all: they detect the scan orientation from the data (eight flip/transpose
+  candidates, minimum total variation), which already resolves a negative
+  stage direction empirically. They therefore do not apply the helper -- that
+  would flip twice -- but cross-check the detected orientation against
+  `physical_orientation_flips` and warn on disagreement, and record the
+  detected orientation in the result's `directions`.
+
+Mapping to [scan-acquisition-order-spec.md](scan-acquisition-order-spec.md):
+v2 carries no per-loop direction. A v1 `direction = -1` migrates to the L2
+counter-to-index map of §3.1 as weight `-1` with offset `count - 1` -- the
+index space stays mirrored exactly as `iter_physical_coordinates` produces it
+today -- with the traversal unchanged and the L3 scale (§11) positive. It
+never becomes a `reverse` rule, which remains chronology (§15).
+
 For the motivating example, a camera stream uses:
 
 ```json

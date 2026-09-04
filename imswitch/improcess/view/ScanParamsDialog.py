@@ -96,9 +96,12 @@ class ScanParamsDialog(QtWidgets.QDialog):
             self.dim2DimEdit.setCurrentIndex(self.dim2DimEdit.findText(parDict['dimensions'][2]))
             self.dim0Changed()
 
+            # One combo per axis. All three used to be set from directions[0],
+            # so a negative second or third axis pre-filled from the recorded
+            # layout was shown -- and read back on OK -- as positive.
             self.dim0DirEdit.setCurrentIndex(self.dim0DirEdit.findText(parDict['directions'][0]))
-            self.dim1DirEdit.setCurrentIndex(self.dim1DirEdit.findText(parDict['directions'][0]))
-            self.dim2DirEdit.setCurrentIndex(self.dim2DirEdit.findText(parDict['directions'][0]))
+            self.dim1DirEdit.setCurrentIndex(self.dim1DirEdit.findText(parDict['directions'][1]))
+            self.dim2DirEdit.setCurrentIndex(self.dim2DirEdit.findText(parDict['directions'][2]))
 
 
 

@@ -664,10 +664,13 @@ def _legacy_confidence(issues: Sequence[LayoutIssue]) -> str | None:
 
 
 def _scan_traversal(loops: Sequence[AcquisitionLoop]) -> tuple[TraversalRule, ...]:
-    return tuple(
-        TraversalRule(loop.id, "reverse" if loop.direction == -1 else "forward")
-        for loop in loops
-    )
+    """Chronology only. Legacy scans stepped every axis monotonically.
+
+    ``ScanStage:positive_direction`` lands on the loop's ``direction``; it is a
+    physical sign, applied once by ``physical_orientation_flips`` in imcommon,
+    never a ``reverse`` traversal (see the producer's ``_traversal``).
+    """
+    return tuple(TraversalRule(loop.id, "forward") for loop in loops)
 
 
 def _detector_linestep_mask(

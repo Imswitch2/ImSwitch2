@@ -963,6 +963,19 @@ def validate_acquisition_layout(
                 f"event_loops[{index}].direction",
                 loop.id,
             )
+        elif loop.direction is not None and not (
+            isinstance(loop.kind, str) and loop.kind.startswith("scan_")
+        ):
+            # Direction orients a physical scan axis. On a time, condition or
+            # repeat loop it has no meaning, and an image-building consumer
+            # would mirror its T or condition axis on it.
+            _issue(
+                issues,
+                "DIRECTION_ON_NON_SPATIAL_LOOP",
+                f"Loop {loop.id!r} of kind {loop.kind!r} cannot carry a direction",
+                f"event_loops[{index}].direction",
+                loop.id,
+            )
         if not isinstance(loop.labels, tuple) or any(
             not isinstance(label, str) for label in loop.labels
         ):
@@ -1325,6 +1338,66 @@ def iter_recorded_coordinates(layout: AcquisitionLayout) -> Iterator[Mapping[str
         yield _producer_event_coordinates_unchecked(layout, ordinal)
 
 
+def physical_orientation_flips(layout: AcquisitionLayout) -> frozenset[str]:
+    """IDs of the scan-axis loops whose logical index runs against the physical axis.
+
+    ``AcquisitionLoop.direction`` is the orientation of a loop's *logical
+    index axis* against the physical axis: with ``direction == -1``, logical
+    index 0 sits at the highest physical coordinate and the index decreases
+    with position. It is not a traversal order. For a ``forward`` or
+    ``serpentine`` loop -- every in-tree producer -- that is the same thing as
+    the sign of the stage step, because logical index 0 is the first position
+    visited. For a genuine ``reverse`` retrace logical index 0 is the *last*
+    position visited, so a producer emitting ``reverse`` must set
+    ``direction`` for the index axis, i.e. negate the stage sign. The two
+    compose: traversal maps chronology to the index, this helper maps the
+    index to physical orientation.
+
+    Only physical scan axes (``scan_*`` kinds) carry an orientation;
+    validation refuses ``direction`` on any other kind, so a time, condition
+    or repeat loop is never mirrored.
+
+    This is the only place the sign is interpreted. Producers and legacy
+    adapters never encode a negative direction as a ``reverse`` traversal,
+    and consumers never re-read ``direction`` themselves -- doing both is how
+    one recording came to reconstruct as mirror images in two reconstructors.
+    """
+    return frozenset(
+        loop.id
+        for loop in layout.event_loops
+        if loop.direction == -1 and isinstance(loop.kind, str) and loop.kind.startswith("scan_")
+    )
+
+
+def _physical_coordinates(
+    layout: AcquisitionLayout, coordinates: Mapping[str, int]
+) -> Mapping[str, int]:
+    flips = physical_orientation_flips(layout)
+    if not flips:
+        return coordinates
+    count_by_id = {loop.id: loop.count for loop in layout.event_loops}
+    return {
+        loop_id: (count_by_id[loop_id] - 1 - value if loop_id in flips else value)
+        for loop_id, value in coordinates.items()
+    }
+
+
+def physical_frame_coordinates(layout: AcquisitionLayout, frame_index: int) -> Mapping[str, int]:
+    """Map a stored frame to indices that increase with physical position.
+
+    :func:`recorded_frame_coordinates` with :func:`physical_orientation_flips`
+    applied. Use this to place a frame in an image; use the logical form to
+    reason about chronology.
+    """
+    return _physical_coordinates(layout, recorded_frame_coordinates(layout, frame_index))
+
+
+def iter_physical_coordinates(layout: AcquisitionLayout) -> Iterator[Mapping[str, int]]:
+    """Yield physically oriented coordinates for every stored frame in storage order."""
+    for coordinates in iter_recorded_coordinates(layout):
+        yield _physical_coordinates(layout, coordinates)
+
+
 def unfold_frame_axis(
     array: Any,
     layout: AcquisitionLayout,
@@ -1337,6 +1410,11 @@ def unfold_frame_axis(
     Cartesian subset of the producer lattice. Irregular masks remain usable
     through :func:`iter_recorded_coordinates`, but cannot be represented by a
     regular ndarray without inventing a missing-value policy.
+
+    The unfolded loop axes are in *logical* order (index 0 first along the
+    loop's index axis), not physical orientation: a ``direction == -1`` axis
+    comes out mirrored relative to physical position. A caller assembling an
+    image reverses those axes per :func:`physical_orientation_flips`.
     """
     if copy_policy not in VALID_COPY_POLICIES:
         raise ValueError(f"copy_policy must be one of {sorted(VALID_COPY_POLICIES)}")

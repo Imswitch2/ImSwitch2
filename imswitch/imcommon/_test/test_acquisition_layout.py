@@ -561,3 +561,114 @@ def test_an_unrelated_schema_is_still_rejected_by_validation() -> None:
     assert "UNSUPPORTED_SCHEMA" in {
         issue.code for issue in validate_acquisition_layout(decoded)
     }
+
+
+# ----------------------------------------------------------------------
+# Direction is a physical sign, applied exactly once (audit condition 1)
+# ----------------------------------------------------------------------
+
+
+def _direction_layout(*, direction_y, traversal=()):
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+
+    return AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="Cam",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", 3, direction=direction_y),
+            AcquisitionLoop("scan_x", "scan_x", 2, direction=1),
+        ),
+        traversal=tuple(traversal),
+    )
+
+
+def test_logical_coordinates_ignore_direction_and_physical_ones_mirror_it():
+    """Logical index 0 is the first position visited; physical mirrors a -1 axis."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        iter_physical_coordinates,
+        iter_recorded_coordinates,
+        physical_frame_coordinates,
+        physical_orientation_flips,
+        recorded_frame_coordinates,
+    )
+
+    layout = _direction_layout(direction_y=-1)
+
+    assert physical_orientation_flips(layout) == frozenset({"scan_y"})
+    logical = [dict(c) for c in iter_recorded_coordinates(layout)]
+    physical = [dict(c) for c in iter_physical_coordinates(layout)]
+    assert logical[0] == {"scan_y": 0, "scan_x": 0}
+    assert physical[0] == {"scan_y": 2, "scan_x": 0}
+    assert [c["scan_y"] for c in logical] == [0, 0, 1, 1, 2, 2]
+    assert [c["scan_y"] for c in physical] == [2, 2, 1, 1, 0, 0]
+    assert [c["scan_x"] for c in physical] == [c["scan_x"] for c in logical]
+    assert dict(physical_frame_coordinates(layout, 5)) == {"scan_y": 0, "scan_x": 1}
+    assert dict(recorded_frame_coordinates(layout, 5)) == {"scan_y": 2, "scan_x": 1}
+
+
+def test_a_positive_axis_has_identical_logical_and_physical_coordinates():
+    from imswitch.imcommon.model.acquisition_layout import (
+        iter_physical_coordinates,
+        iter_recorded_coordinates,
+        physical_orientation_flips,
+    )
+
+    layout = _direction_layout(direction_y=1)
+
+    assert physical_orientation_flips(layout) == frozenset()
+    assert list(map(dict, iter_physical_coordinates(layout))) == list(
+        map(dict, iter_recorded_coordinates(layout))
+    )
+
+
+def test_a_genuine_reverse_traversal_and_a_negative_direction_compose():
+    """Traversal is chronology, direction is sign: a retrace on a -1 axis is both."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        TraversalRule,
+        iter_physical_coordinates,
+        iter_recorded_coordinates,
+    )
+
+    layout = _direction_layout(
+        direction_y=-1, traversal=(TraversalRule("scan_y", "reverse"),)
+    )
+
+    # The retrace reverses the logical index ...
+    assert [c["scan_y"] for c in iter_recorded_coordinates(layout)] == [2, 2, 1, 1, 0, 0]
+    # ... and the negative direction mirrors it again on top.
+    assert [c["scan_y"] for c in iter_physical_coordinates(layout)] == [0, 0, 1, 1, 2, 2]
+
+
+def test_direction_is_refused_on_a_non_spatial_loop():
+    """A time/condition/repeat axis has no orientation to mirror."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+        physical_orientation_flips,
+        validate_acquisition_layout,
+    )
+
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="Cam",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("condition", "condition", 2, direction=-1),
+            AcquisitionLoop("scan_x", "scan_x", 2, direction=-1),
+        ),
+    )
+
+    codes = {issue.code for issue in validate_acquisition_layout(layout)}
+    assert "DIRECTION_ON_NON_SPATIAL_LOOP" in codes
+    # And the helper would not mirror it even if validation were bypassed.
+    assert physical_orientation_flips(layout) == frozenset({"scan_x"})

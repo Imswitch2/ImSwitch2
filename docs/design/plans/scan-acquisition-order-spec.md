@@ -623,6 +623,20 @@ loop-targeted traversal is exactly §3.1, and its producer-lattice-plus-spans
 structure is exactly the producer-domain order of §3 — draft 3's
 recorded-domain explicit order contradicted it, and review #2 caught that.
 
+One v1 field has no v2 counterpart: the per-loop `direction`. v1 settled
+(2026-09-04) that it is the orientation of a loop's logical index axis
+against the physical axis (index 0 at the highest physical coordinate when
+`-1`), applied exactly once by one imcommon helper, and that a monotonically
+stepped axis is always a `forward` traversal whatever its direction. Under
+this model a v1 `direction = -1` migrates to the L2 counter-to-index map of
+§3.1 as weight `-1` with offset `count - 1`: the index space stays mirrored
+exactly as v1's `iter_physical_coordinates` produces it, the traversal is
+unchanged, and the L3 scale (§11) stays positive. It never becomes a
+`reverse` rule, which remains chronology. (The alternative — index
+unmirrored, sign pushed into a negative L3 scale — would be a different
+index space and is not the migration.) Nothing in a v1 file needs rewriting;
+the weight is derived at read time.
+
 The machinery around the schema — resolver and precedence, legacy adapters
 for pre-contract files, the usable/authoritative rule, transport across four
 formats, the recording gate, the seam tests — is independent of the model

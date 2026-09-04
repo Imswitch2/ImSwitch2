@@ -30,7 +30,7 @@ from imswitch.imcommon.algorithms.bead_fits import FIT_MODELS
 from imswitch.imcommon.model.acquisition_layout import (
     PAYLOAD_DETECTOR_FRAME_STREAM,
     AcquisitionLayout,
-    iter_recorded_coordinates,
+    iter_physical_coordinates,
 )
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.reconstructors.base import (
@@ -111,14 +111,17 @@ def raster_positions_from_layout(
 ) -> list[tuple[int, int]]:
     """Map each stored frame to its ``(condition, raster index)`` slot.
 
-    Placement follows the resolved logical coordinates rather than arrival
-    order, so serpentine traversal, a detector recorded for only some
-    conditions, and per-expanded-line enable masks all land in the right pixel
-    without this plugin repeating the index arithmetic.
+    Placement follows the resolved coordinates rather than arrival order, so
+    serpentine traversal, a detector recorded for only some conditions, and
+    per-expanded-line enable masks all land in the right pixel without this
+    plugin repeating the index arithmetic. Coordinates are physically
+    oriented -- a negative stage direction mirrors that axis -- by the one
+    imcommon helper every image-building consumer shares, so this plugin and
+    MoNaLISA cannot disagree about the same file.
     """
     x_pixels = scan_dims[0]
     positions = []
-    for coordinates in iter_recorded_coordinates(layout):
+    for coordinates in iter_physical_coordinates(layout):
         condition = 0
         raster_x = raster_y = 0
         for loop in layout.event_loops:

@@ -275,7 +275,10 @@ def test_point_and_raster_builders_publish_actual_3d_and_x_fast_order():
     assert [loop.kind for loop in point.event_loops] == [
         "scan_z", "scan_y", "scan_x", "repeat"
     ]
-    assert point.traversal[2].order == "reverse"
+    # A negative stage direction is a physical sign on the loop, never a
+    # reverse traversal: the designer stepped X monotonically.
+    assert point.event_loops[2].direction == -1
+    assert [rule.order for rule in point.traversal] == ["forward"] * 4
     assert planned_frame_count(point) == 24
 
     raster = build_triggerscope_raster_layouts(
