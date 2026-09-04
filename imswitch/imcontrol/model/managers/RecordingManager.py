@@ -64,6 +64,10 @@ RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
 WRITER_QUEUE_MAXSIZE = 64  # Bounded queue size for backpressure (blocks acquisition when full)
 WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
 WRITER_OPEN_TIMEOUT_S = 30.0
+#: How long the acquisition loop may sit blocked on a full writer queue before
+#: it says so. Well under any detector's chunk-queue budget, so the stall is
+#: reported before the overflow it causes rather than after it.
+PRODUCER_STALL_WARN_S = 1.0
 # SWMR requires HDF5 1.10+ object formats, but libver='latest' maps to
 # ('v200', 'v200') with HDF5 2.x. Pin the writer to the oldest SWMR-capable
 # format so Fiji/HDFView builds that do not understand HDF5 2.0 can still open
@@ -2932,7 +2936,15 @@ class WriterThread(threading.Thread):
         Blocks while the queue is full (intended backpressure), but NEVER
         forever: if the writer thread has died, raises so the failure surfaces
         on the acquisition thread instead of deadlocking the producer.
+
+        A long block here is invisible in a log otherwise: the acquisition loop
+        simply stops draining, and what gets reported is the *consequence* --
+        a detector's chunk consumer overflowing, filled meanwhile by the
+        live-view poller. Say that the producer stalled, and for how long, so
+        the writer is a candidate rather than a deduction.
         """
+        blockedSince = None
+        stallReported = False
         while True:
             self._raise_if_failed()
             if not self.is_alive():
@@ -2951,6 +2963,12 @@ class WriterThread(threading.Thread):
                         'RecordingWriterThread stopped while frames were being '
                         'enqueued'
                     )
+                if stallReported:
+                    logger.warning(
+                        f'Recording producer resumed for "{detectorName}" '
+                        f'after {time.time() - blockedSince:.1f}s blocked on '
+                        f'the writer queue.'
+                    )
                 return
             except queue.Full:
                 self._raise_if_failed()
@@ -2960,6 +2978,18 @@ class WriterThread(threading.Thread):
                         'enqueued; recording aborted'
                     ) from self._write_exception
                 # Writer still alive and draining - keep applying backpressure.
+                if blockedSince is None:
+                    blockedSince = time.time()
+                elif (not stallReported
+                        and time.time() - blockedSince >= PRODUCER_STALL_WARN_S):
+                    stallReported = True
+                    logger.warning(
+                        f'Recording producer has been blocked for '
+                        f'{PRODUCER_STALL_WARN_S:g}s enqueuing frames for '
+                        f'"{detectorName}": the writer is not draining fast '
+                        f'enough. Frames arriving meanwhile are held in the '
+                        f'detector\'s chunk queue, which is bounded.'
+                    )
                 continue
     
     def finish(self):

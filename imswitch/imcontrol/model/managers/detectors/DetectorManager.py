@@ -74,11 +74,16 @@ CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
 #: draining; bounds the memory leak in that case.
 MAX_QUEUED_CONSUMER_FRAMES = 1000
 
-#: The same cap for a RAW consumer. A raw frame from a line-step 3-D scan is
-#: ``S x Nz`` planes where a display frame is one, so an identical frame count
-#: would mean a wildly different number of bytes. Kept small deliberately: a
-#: raw consumer receives one frame per completed scan, not one per boundary,
-#: so falling a thousand behind is not a backlog, it is a leak.
+#: The cap for a consumer whose raw frame is a whole *deferred* volume: a
+#: line-step 3-D scan publishes ``S x Nz`` planes as one frame, so an identical
+#: frame count would mean a wildly different number of bytes. Kept small
+#: deliberately: such a consumer receives one frame per completed scan, not one
+#: per boundary, so falling a thousand behind is not a backlog, it is a leak.
+#:
+#: It is selected by ``rawFrameIsDeferred``, NOT by ``ChunkKind.RAW`` alone --
+#: see :meth:`DetectorManager._chunkQueueCap`. The kind says which
+#: representation a consumer asked for; only the detector knows how big that is
+#: and how often it arrives.
 MAX_QUEUED_RAW_FRAMES = 16
 
 
@@ -592,9 +597,24 @@ class DetectorManager(SignalInterface):
                 kinds.setdefault(consumerKey, ChunkKind.DISPLAY)
             self._distributeChunkLocked(self.drainChunk())
             if consumerKey in self._chunkConsumersOverflowed:
+                # Quote the cap that actually tripped, and name the detector.
+                # This message used to hardcode the display cap whatever the
+                # consumer's kind, so a recording that fell 17 frames behind
+                # reported 1000 -- which sent the one field diagnosis it ever
+                # had looking for a catastrophic backlog instead of a hiccup.
+                cap = self._chunkQueueCap(
+                    (kinds or {}).get(consumerKey, ChunkKind.DISPLAY)
+                )
+                # The logger prefixes the detector name; a propagated
+                # exception carries no such prefix, and the traceback alone
+                # does not say which detector lost the stream.
+                try:
+                    detector = f'{self.name}: '
+                except Exception:
+                    detector = ''
                 raise ChunkConsumerOverflowError(
-                    f'readChunk consumer "{consumerKey}" fell behind by more '
-                    f'than {MAX_QUEUED_CONSUMER_FRAMES} frames; its stream is '
+                    f'{detector}readChunk consumer "{consumerKey}" fell '
+                    f'behind by more than {cap} frames; its stream is '
                     f'incomplete'
                 )
             frames = list(queue)
@@ -654,6 +674,33 @@ class DetectorManager(SignalInterface):
                 self.__image = frame
             return frame
 
+    def _chunkQueueCap(self, kind) -> int:
+        """How many frames one consumer's queue retains before it is failed.
+
+        The small RAW cap is a *memory* budget, and memory is a property of the
+        payload rather than of the kind. For a scan-driven detector one raw
+        frame is a whole volume, so a thousand of them is a leak; for a camera
+        the raw frame IS the display frame -- one per exposure -- so the same
+        number is a fifth of a second of jitter. Keying the cap on
+        ``ChunkKind.RAW`` alone gave every camera recording a 16-frame budget
+        and turned any writer or disk hiccup longer than that into an aborted
+        recording. ``rawFrameIsDeferred`` is the property that actually says
+        "one fat frame per completed scan", so that is what selects the cap.
+
+        The defensive read mirrors :meth:`_chunkKinds`: a manager may mirror
+        the broker's state without inheriting this class, and
+        ``SignalInterface`` answers a missing attribute with a ``RuntimeError``
+        that a ``getattr`` default does not catch. Such a manager gets the
+        ordinary cap, which is what it had before kinds existed.
+        """
+        if kind is not ChunkKind.RAW:
+            return MAX_QUEUED_CONSUMER_FRAMES
+        try:
+            deferred = bool(self.rawFrameIsDeferred)
+        except Exception:
+            deferred = False
+        return MAX_QUEUED_RAW_FRAMES if deferred else MAX_QUEUED_CONSUMER_FRAMES
+
     def _distributeChunkLocked(self, payload) -> None:
         """Fan one drain out, per consumer's kind; caller holds the lock.
 
@@ -688,8 +735,7 @@ class DetectorManager(SignalInterface):
                 continue
 
             consumerQueue.extend(newFrames)
-            cap = (MAX_QUEUED_RAW_FRAMES if kind is ChunkKind.RAW
-                   else MAX_QUEUED_CONSUMER_FRAMES)
+            cap = self._chunkQueueCap(kind)
             excess = len(consumerQueue) - cap
             if excess <= 0:
                 continue
