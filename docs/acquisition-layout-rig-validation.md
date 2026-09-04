@@ -51,10 +51,10 @@ point of the layout work. If that path is not the checkout you mean to
 validate, everything below it describes the wrong software.
 
 A container holding several datasets prints one block per dataset. That is what
-a lapse recorded as a single file looks like: ``scan0/Camera``, ``scan1/Camera``,
+a lapse recorded as a single file looks like: `scan0/Camera`, `scan1/Camera`,
 each with its own partition line.
 
-That table is the check. Everything else in this branch follows from it. On the
+The frame table is the check. Everything else in this branch follows from it. On the
 motivating 18×18 two-line-step scan it should read:
 
 ```
@@ -162,7 +162,8 @@ wrong answer, but each turns a previously "working" action into an error.
 | Analyse a STARSS file whose name has no `_h`/`_v` and no recorded role | Error | It used to assume H, silently inverting the anisotropy |
 | Run Fast Gauss MoNaLISA on an interleaved line-step scan | Error pointing at the standard method | The fast path stacks contiguous X/Y blocks, which interleaved conditions are not |
 | Open the MoNaLISA scan dialog on a file with no geometry | Fields are left alone | It used to pre-fill `sqrt(frames)` on both axes |
-| Record a scan from a TriggerScope panel with no camera declared (pLS-RESOLFT, galvo detection) | **Recording is blocked** at arm: `DETECTOR_PULSES_UNDECLARED` | Producer and gate both defaulted an undeclared camera to one pulse per position and compared the default with itself |
+| Record a scan from a TriggerScope panel with no camera declared (pLS-RESOLFT, galvo detection) | **Recording is blocked** at arm, with a message naming the *Camera used for detection* selector | Producer and gate both defaulted an undeclared camera to one pulse per position and compared the default with itself |
+| Record any other scan whose source gates no pulse for a selected detector | **Recording is blocked** at arm: `DETECTOR_PULSES_UNDECLARED` | Same defaulting, on the paths where the fix is to gate the detector or deselect it |
 | Record a TriggerScope RESOLFT scan with a missing or unreadable `roSteps`/`cycleSteps`/`timeLapsePoints` | Error naming the counter | Each was silently read as `1`, arming for a fraction of the scan |
 | Record an LS-XY-RESOLFT scan | Records with **no layout** (warning at arm), frames still counted as `rasterXSteps x rasterYSteps` | The firmware's raster loop order has not been traced; a guessed layout would be a certain, wrong one |
 
@@ -180,11 +181,14 @@ Each step is independent; stop and capture at the first surprise.
    applied to cameras; the branch fixes it, and the message now quotes the cap
    actually in force. Run exactly that scan first. **Check:** it completes;
    `recording:discarded_frames` is 0; and watch the log for the new
-   *producer stall* warning (`RecordingManager` reports when a detector's
-   frames stopped arriving for more than a second while the scan ran). On
-   `main` the log showed a ~2 s gap before the abort that the software could
-   not attribute — writer/disk or the second detector — and this warning is
-   what answers that. If it fires, capture the log; the scan still completes.
+   *producer stall* warning. It fires when the acquisition loop sits blocked
+   for a second handing frames to the writer, and it names the detector: the
+   writer is not draining fast enough, so frames pile up in that detector's
+   bounded chunk queue. On `main` the log showed a ~2 s gap before the abort
+   that could not be attributed to either the writer or the second detector,
+   and this is the line that will say which. It is a warning, not a failure;
+   the scan still completes. If it fires, capture the log — a stall that is
+   real but no longer fatal is worth knowing about before it grows.
 1. **Plain point scan**, small, known sample. Record → inspect → BeadRec.
    Confirms geometry, pitch and `geometry_source: layout`.
 2. **Advanced Scan, 2 line steps** (§3.2). Record → inspect → MoNaLISA.
