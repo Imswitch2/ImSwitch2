@@ -169,6 +169,12 @@ axes mapping straight to the array.
 **Check:** the inspector reports `payload: assembled-image` and no frame table,
 and the image is not transposed.
 
+**Save these as HDF5 or Zarr.** OME-TIFF has no axis for line steps and
+projects the condition axis onto `T`; the layout survives and the resolver
+reports the projection as lossy, but the container itself no longer says what
+the extra axis was. The pixels and the layout are both recoverable, so a TIFF
+recorded by mistake is not lost.
+
 ## 4. Recordings this branch will now refuse
 
 This is the list most likely to interrupt your session. Each replaces a silently

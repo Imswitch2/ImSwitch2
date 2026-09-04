@@ -230,6 +230,24 @@ def tiff_dataset_names(file: tiff.TiffFile) -> list[str]:
     return names or ["default"]
 
 
+#: Prefix of the per-timepoint groups a single-file lapse recording writes.
+_LAPSE_ITEM_PREFIX = "scan"
+
+
+def _lapse_item_order(name: str) -> tuple[int, int, str]:
+    """Sort key putting ``scan2`` before ``scan10``.
+
+    The groups are numbered, so ordering them as text reads a twelve-point
+    lapse back as 0, 1, 10, 11, 2, ... The picker shows that order and the
+    multi-data list is built in it, while the live readers sort the same groups
+    numerically -- two layers disagreeing about the order of one file.
+    """
+    ordinal = name[len(_LAPSE_ITEM_PREFIX):]
+    if name.startswith(_LAPSE_ITEM_PREFIX) and ordinal.isdigit():
+        return (0, int(ordinal), "")
+    return (1, 0, name)
+
+
 def _lapse_item_dataset_names(node: Any) -> list[str]:
     """Detector names one level inside a single-file lapse item group.
 
@@ -243,28 +261,44 @@ def _lapse_item_dataset_names(node: Any) -> list[str]:
     holds detector groups, so this recognizes the lapse layout without turning
     the discovery into a general tree walk that would surface arrays the
     storers never meant as datasets.
+
+    This is the first code in the open path that dereferences nodes it did not
+    write, so a child that cannot be resolved -- a dangling link, a group whose
+    backing file is gone -- is skipped rather than allowed to fail the whole
+    container. Discovery answers "what can be opened here"; one unreadable
+    neighbour is not an answer of "nothing".
     """
     if not (isinstance(node, h5py.Group) or is_zarr_group(node)):
         return []
     if is_structured_detector_group(node):
         return []
-    return [
-        name for name in sorted(node.keys())
-        if is_structured_detector_group(node[name])
-    ]
+    names = []
+    for name in sorted(node.keys()):
+        try:
+            child = node[name]
+        except Exception:
+            continue
+        if is_structured_detector_group(child):
+            names.append(name)
+    return names
 
 
 def _hdf5_dataset_names(group: h5py.Group) -> list[str]:
     names = []
+    nested = []
     for name in group.keys():
-        node = group[name]
+        try:
+            node = group[name]
+        except Exception:
+            continue
         if is_array_node(node) or is_structured_detector_group(node):
             names.append(name)
             continue
-        names.extend(
-            f"{name}/{child}" for child in _lapse_item_dataset_names(node)
+        nested.extend(
+            (name, child) for child in _lapse_item_dataset_names(node)
         )
-    return names
+    nested.sort(key=lambda item: (_lapse_item_order(item[0]), item[1]))
+    return names + [f"{item}/{child}" for item, child in nested]
 
 
 def _resolve_hdf5_image(
@@ -472,8 +506,12 @@ def _zarr_dataset_names(group: Any) -> list[str]:
         return [root_image.name]
 
     names = []
+    nested = []
     for name in sorted(group.keys()):
-        node = group[name]
+        try:
+            node = group[name]
+        except Exception:
+            continue
         if (
             is_array_node(node)
             or is_structured_detector_group(node)
@@ -481,10 +519,11 @@ def _zarr_dataset_names(group: Any) -> list[str]:
         ):
             names.append(name)
             continue
-        names.extend(
-            f"{name}/{child}" for child in _lapse_item_dataset_names(node)
+        nested.extend(
+            (name, child) for child in _lapse_item_dataset_names(node)
         )
-    return names
+    nested.sort(key=lambda item: (_lapse_item_order(item[0]), item[1]))
+    return names + [f"{item}/{child}" for item, child in nested]
 
 
 def _resolve_zarr_image(

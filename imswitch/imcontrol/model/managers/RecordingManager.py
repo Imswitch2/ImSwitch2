@@ -8,7 +8,7 @@ import threading
 import queue
 from datetime import datetime, timezone
 from io import BytesIO
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import h5py
@@ -159,6 +159,39 @@ class Storer(abc.ABC):
         meta = (getattr(self, "omeMeta", None) or {}).get(detectorName)
         if meta is not None:
             meta.annotations.update(self._ome_annotation_attrs(attrs))
+
+    def _collapse_layout_frame_axis(self, detectorName: str) -> None:
+        """Drop the leading ``frame`` axis from the layout this file embeds.
+
+        A single-frame OME-TIFF stores the plane itself rather than a
+        one-element stack, so the container has one axis fewer than the layout
+        declares. The layout is then rejected outright -- an explicit layout
+        that disagrees with the container is never fallen back from, by design,
+        so a scan-driven detector's recording became unreadable rather than
+        merely unannotated. The frame axis is the one the storer dropped, so
+        the recorded layout drops it too and goes on describing what is
+        actually there.
+        """
+        meta = (getattr(self, "omeMeta", None) or {}).get(detectorName)
+        if meta is None:
+            return
+        encoded = meta.annotations.get("AcquisitionLayout:json")
+        if not encoded:
+            return
+        try:
+            layout = decode_acquisition_layout(encoded)
+            if not layout.storage_axes or layout.storage_axes[0] != "frame":
+                return
+            collapsed = replace(layout, storage_axes=layout.storage_axes[1:])
+            meta.annotations["AcquisitionLayout:json"] = (
+                encode_acquisition_layout(collapsed)
+            )
+        except Exception as error:
+            logger.warning(
+                f"Could not adapt the acquisition layout of {detectorName!r} "
+                f"to the collapsed single-frame TIFF axis; the file will carry "
+                f"a layout that does not match its rank: {error}"
+            )
 
     def _snapshot_attrs(
         self,
@@ -1477,6 +1510,7 @@ class TiffStorer(Storer):
                 frame_shape = self._spatial[detectorName]
                 meta = self._meta_for(detectorName, n_frames=n)
                 if n == 1 and len(meta.axes) == len(frame_shape):
+                    self._collapse_layout_frame_axis(detectorName)
                     stored_meta = meta
                     shape = frame_shape
                 else:

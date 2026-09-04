@@ -653,7 +653,78 @@ def _scan_geometry_candidates(
                 device=device,
             )
         )
-    return tuple(loops), tuple(assumptions)
+
+    loops, collision_issues = _resolve_axis_kind_collisions(loops)
+    return tuple(loops), (*assumptions, *collision_issues)
+
+
+def _resolve_axis_kind_collisions(
+    loops: Sequence[AcquisitionLoop],
+) -> tuple[list[AcquisitionLoop], tuple[LayoutIssue, ...]]:
+    """Settle two legacy axes whose device names guess the same physical axis.
+
+    ``ScanStage:target_device`` lists every positioner on the rig, not only the
+    ones a scan moved, and the kind is guessed from a substring of the device
+    name. Two stages therefore collide on real, shipped configurations --
+    ``ND-PiezoZ`` beside ``PiezoZ``, or ``Mock Kinesis XY`` beside ``Mock X``.
+    Both loops were then given the same id and the whole layout was rejected as
+    invalid, which took the file's *pixels* down with it: every caller of
+    ``acquisition_layout`` saw an exception rather than a decline.
+
+    An axis at a single position did not move, so it is not part of the
+    geometry and is dropped -- that is the collision as it actually occurs,
+    since the spare stage is the one standing still. A collision between axes
+    that both moved is a guess this adapter cannot make, and it says so rather
+    than picking one.
+    """
+    by_kind: dict[str, list[AcquisitionLoop]] = {}
+    for loop in loops:
+        by_kind.setdefault(loop.kind, []).append(loop)
+    if all(len(group) == 1 for group in by_kind.values()):
+        return list(loops), ()
+
+    dropped: list[AcquisitionLoop] = []
+    for kind, group in by_kind.items():
+        if len(group) == 1:
+            continue
+        moved = [loop for loop in group if loop.count > 1]
+        if len(moved) > 1:
+            names = ", ".join(
+                repr(loop.device or loop.kind) for loop in moved
+            )
+            raise AcquisitionLayoutResolutionError(
+                "Legacy scan axes cannot be told apart",
+                (
+                    _issue(
+                        "error",
+                        "AMBIGUOUS_LEGACY_AXIS_DEVICES",
+                        f"Devices {names} both scan {kind!r} by name, and both "
+                        f"moved, so which physical axis each drove cannot be "
+                        f"recovered from this file",
+                        "ScanStage:target_device",
+                        kind,
+                    ),
+                ),
+            )
+        keep = moved[0] if moved else group[0]
+        dropped.extend(loop for loop in group if loop is not keep)
+
+    if not dropped:
+        return list(loops), ()
+    issues = tuple(
+        _issue(
+            "warning",
+            "LEGACY_INACTIVE_AXIS_DROPPED",
+            f"Device {loop.device or loop.kind!r} was listed as a scan axis at "
+            f"a single position and shares its guessed axis {loop.kind!r} with "
+            f"another device; it did not move, so it was left out of the "
+            f"geometry",
+            "ScanStage:target_device",
+            loop.kind,
+        )
+        for loop in dropped
+    )
+    return [loop for loop in loops if loop not in dropped], issues
 
 
 def _legacy_confidence(issues: Sequence[LayoutIssue]) -> str | None:
@@ -990,7 +1061,22 @@ def adapt_scan_stage_metadata(
     if timepoints is not None and timepoints > 1:
         return None
 
+    source_shape = _shape_tuple(shape)
     try:
+        if source_shape is not None and len(source_shape) == 2:
+            # A point detector's assembled image, from a rig that named no
+            # modality. Reachable here rather than only from the TriggerScope
+            # adapter, which now requires a file that actually says
+            # TriggerScope: an assembled raster is a property of the payload,
+            # not of one firmware.
+            return _adapt_assembled_raster(
+                normalized,
+                shape=source_shape,
+                detector=detector,
+                scan_source="scan-stage-legacy",
+                source="scan-stage-legacy-assembled",
+                confidence="medium",
+            )
         return _adapt_frame_scan(
             normalized,
             shape=shape,
@@ -1002,6 +1088,67 @@ def adapt_scan_stage_metadata(
         )
     except AcquisitionLayoutResolutionError:
         return None
+
+
+def _adapt_assembled_raster(
+    normalized: Mapping[str, Any],
+    *,
+    shape: tuple[int, ...],
+    detector: str,
+    scan_source: str,
+    source: str,
+    confidence: str | None = None,
+) -> ResolvedAcquisitionLayout:
+    """Describe a 2D image a point detector assembled over a stage raster.
+
+    A scan-driven detector stores one image whose axes *are* the scan, so the
+    layout is assembled-image with the Y/X loops mapped straight onto the
+    array. Nothing about that is specific to one firmware -- it follows from
+    the payload being an assembled image over stage geometry -- so both the
+    TriggerScope adapter and the plain stage adapter reach it, and each names
+    itself.
+    """
+    physical, assumptions = _scan_geometry_candidates(
+        normalized,
+        observed_events=math.prod(shape),
+        multiplier=1,
+    )
+    by_kind = {loop.kind: loop for loop in physical}
+    x_loop = by_kind.get("scan_x")
+    y_loop = by_kind.get("scan_y")
+    if x_loop is None or y_loop is None or shape != (y_loop.count, x_loop.count):
+        raise AcquisitionLayoutResolutionError(
+            "Legacy raster geometry does not match the assembled image",
+            (
+                _issue(
+                    "error",
+                    "LEGACY_RASTER_SHAPE_MISMATCH",
+                    "Raster Y/X dimensions do not match the stored image",
+                    "shape",
+                ),
+            ),
+        )
+    loops = (
+        replace(y_loop, storage_axis="scan_y"),
+        replace(x_loop, storage_axis="scan_x"),
+    )
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_ASSEMBLED_IMAGE,
+        detector=detector,
+        storage_axes=("scan_y", "scan_x"),
+        event_loops=loops,
+        traversal=_scan_traversal(loops),
+        scan_source=scan_source,
+        provenance="legacy-adapter",
+    )
+    return _validated_result(
+        layout,
+        source=source,
+        shape=shape,
+        issues=assumptions,
+        confidence=confidence or _legacy_confidence(assumptions),
+    )
 
 
 def adapt_triggerscope_raster_metadata(
@@ -1021,59 +1168,33 @@ def adapt_triggerscope_raster_metadata(
             ),
         )
     ).lower()
-    trigger_signature = "triggerscope" in source_hint or (
-        "ScanTTL:sequence_time" in normalized
-        and "ScanTTL:n_linesteps" not in normalized
-        and "ScanTTL:Nx" not in normalized
-    )
+    # Only a file that names TriggerScope is read as TriggerScope. The wider
+    # signature this used to accept -- a sequence time, no line steps, no Nx --
+    # is what every point-scan and MoNaLISA controller publishes for every
+    # recording on the rig, scan or not, so this adapter claimed files from
+    # other modalities, named TriggerScope as their scan source, and (running
+    # before the honest stage adapter) reported "high" confidence for a guess.
+    trigger_signature = "triggerscope" in source_hint
     if not trigger_signature or "ScanStage:axis_length" not in normalized:
+        return None
+
+    # Configured stage extents describe what the rig could scan, not what this
+    # recording did. A timelapse on a scan rig carries them, and its frame
+    # count can coincide with the configured position product; reading that as
+    # a raster invents geometry. The same guard the stage adapter already has.
+    timepoints = _positive_int(
+        normalized.get("recording:num_timepoints")
+    ) or _positive_int(normalized.get("Rec:LapseTime"))
+    if timepoints is not None and timepoints > 1:
         return None
     source_shape = _shape_tuple(shape)
     if source_shape is not None and len(source_shape) == 2:
-        physical, assumptions = _scan_geometry_candidates(
+        return _adapt_assembled_raster(
             normalized,
-            observed_events=math.prod(source_shape),
-            multiplier=1,
-        )
-        by_kind = {loop.kind: loop for loop in physical}
-        x_loop = by_kind.get("scan_x")
-        y_loop = by_kind.get("scan_y")
-        if (
-            x_loop is None
-            or y_loop is None
-            or source_shape != (y_loop.count, x_loop.count)
-        ):
-            raise AcquisitionLayoutResolutionError(
-                "TriggerScope raster geometry does not match the assembled image",
-                (
-                    _issue(
-                        "error",
-                        "TRIGGERSCOPE_RASTER_SHAPE_MISMATCH",
-                        "Raster Y/X dimensions do not match the stored image",
-                        "shape",
-                    ),
-                ),
-            )
-        loops = (
-            replace(y_loop, storage_axis="scan_y"),
-            replace(x_loop, storage_axis="scan_x"),
-        )
-        layout = AcquisitionLayout(
-            schema=ACQUISITION_LAYOUT_SCHEMA,
-            payload_kind=PAYLOAD_ASSEMBLED_IMAGE,
-            detector=detector,
-            storage_axes=("scan_y", "scan_x"),
-            event_loops=loops,
-            traversal=_scan_traversal(loops),
-            scan_source="triggerscope-raster-legacy",
-            provenance="legacy-adapter",
-        )
-        return _validated_result(
-            layout,
-            source="triggerscope-raster-legacy-assembled",
             shape=source_shape,
-            issues=assumptions,
-            confidence=_legacy_confidence(assumptions),
+            detector=detector,
+            scan_source="triggerscope-raster-legacy",
+            source="triggerscope-raster-legacy-assembled",
         )
     return _adapt_frame_scan(
         normalized,

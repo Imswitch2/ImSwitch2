@@ -152,8 +152,19 @@ class ViewOnlyReconstructor(Reconstructor):
         A source that declares its own axes keeps them. A source that declares
         nothing used to be labelled from rank alone, which called a plain 3D
         camera stack ``C, Y, X`` -- channel data, on no evidence at all.
+
+        A file whose acquisition metadata cannot be resolved still has pixels,
+        and this reconstructor's whole promise is that it never refuses data.
+        ``getattr`` with a default swallows only ``AttributeError``, so a
+        resolution error propagated out of ``process`` and the user got no
+        image at all -- for a *naming* decision with a perfectly good fallback.
+        ``inspect_source`` reports the failure, so nothing is hidden by
+        continuing here.
         """
-        resolved = getattr(data_obj, "acquisition_layout", None)
+        try:
+            resolved = data_obj.acquisition_layout
+        except Exception:
+            resolved = None
         layout = getattr(resolved, "layout", None)
         inferred = layout is None or layout.provenance in self._INFERRED_PROVENANCE
 

@@ -35,8 +35,10 @@ def _describe(resolved) -> None:
     print(f"  source      : {resolved.source}")
     print(f"  confidence  : {resolved.confidence}")
     print(f"  provenance  : {layout.provenance}")
-    print(f"  usable      : {resolved.is_usable}   (geometry may be taken from it)")
-    print(f"  authoritative: {resolved.is_authoritative}   (may refuse a reconstruction)")
+    print(f"  usable      : {resolved.is_usable}"
+          f"   ({'geometry may be taken from it' if resolved.is_usable else 'geometry must not be taken from it'})")
+    print(f"  authoritative: {resolved.is_authoritative}"
+          f"   ({'may refuse a reconstruction' if resolved.is_authoritative else 'cannot refuse a reconstruction'})")
     print(f"  payload     : {layout.payload_kind}")
     print(f"  detector    : {layout.detector}")
     print(f"  modality    : {layout.modality}    scan source: {layout.scan_source}")
@@ -79,7 +81,48 @@ def _describe(resolved) -> None:
         print("  issues      : none")
 
 
-def _frame_table(layout, limit: int) -> None:
+def _describe_lifecycle(data_obj) -> None:
+    """Whether the recording finished, and how much of the plan it holds.
+
+    Without this the frame table below is describing a plan, and a recording
+    that stopped early looks exactly like one that completed.
+    """
+    try:
+        lifecycle = data_obj.recording_lifecycle
+    except Exception as error:
+        print(f"  lifecycle   : unavailable ({type(error).__name__})")
+        return
+    if lifecycle is None:
+        return
+    parts = [f"writer={lifecycle.writer_state}"]
+    if lifecycle.completion_outcome:
+        parts.append(f"outcome={lifecycle.completion_outcome}")
+    if lifecycle.actual_frames is not None or lifecycle.planned_frames is not None:
+        parts.append(
+            f"frames={lifecycle.actual_frames} of {lifecycle.planned_frames}"
+        )
+    if lifecycle.actual_partitions is not None:
+        parts.append(
+            f"partitions={lifecycle.actual_partitions} of "
+            f"{lifecycle.planned_partitions}"
+        )
+    print(f"  lifecycle   : {'  '.join(parts)}")
+    for issue in lifecycle.issues:
+        print(f"    [{issue.severity}] {issue.code}: {issue.message}")
+
+
+def _stored_frame_count(data_obj, layout) -> int | None:
+    """Frames actually in the container, from the array's shape alone."""
+    if not layout.storage_axes or layout.storage_axes[0] != "frame":
+        return None
+    try:
+        shape = data_obj.data.shape
+    except Exception:
+        return None
+    return int(shape[0]) if shape else None
+
+
+def _frame_table(layout, limit: int, stored: int | None = None) -> None:
     """The check that matters: stored frame index -> logical coordinates."""
     from imswitch.imcommon.model.acquisition_layout import (
         PAYLOAD_DETECTOR_FRAME_STREAM,
@@ -89,12 +132,34 @@ def _frame_table(layout, limit: int) -> None:
     if layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
         print("\n  (assembled payload: axes map directly to the array, no frame table)")
         return
-    print(f"\n  first {limit} stored frames:")
-    for index, coordinates in enumerate(iter_recorded_coordinates(layout)):
+
+    coordinates = list(iter_recorded_coordinates(layout))
+    planned = len(coordinates)
+    # The layout describes the scan that was planned. When the recording
+    # stopped early the file holds fewer frames than that, and printing the
+    # remainder under the heading "stored frames" states that data exists which
+    # does not -- for the one output a rig session is told to trust.
+    held = planned if stored is None else min(stored, planned)
+
+    print(f"\n  first {min(limit, held)} stored frames:")
+    for index, coordinate in enumerate(coordinates[:held]):
         if index >= limit:
             break
-        pretty = "  ".join(f"{name}={value}" for name, value in coordinates.items())
+        pretty = "  ".join(f"{name}={value}" for name, value in coordinate.items())
         print(f"    frame {index:<5} -> {pretty}")
+
+    if stored is not None and stored > planned:
+        print(f"    ({stored - planned} frame(s) beyond the {planned} the layout "
+              f"describes are stored and unaccounted for)")
+    elif held < planned:
+        missing = coordinates[held:]
+        preview = "; ".join(
+            "  ".join(f"{name}={value}" for name, value in coordinate.items())
+            for coordinate in missing[:3]
+        )
+        more = "" if len(missing) <= 3 else f", and {len(missing) - 3} more"
+        print(f"    ({len(missing)} planned frame(s) were never recorded: "
+              f"{preview}{more})")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,14 +186,24 @@ def main(argv: list[str] | None = None) -> int:
               "checkout, and check the path printed above.")
         return 1
 
+    try:
+        available = list(DataObj.getDatasetNames(args.path))
+    except Exception as error:
+        print(f"  CANNOT LIST DATASETS: {type(error).__name__}: {error}")
+        return 1
+
     if args.detector is not None:
+        if available and args.detector not in available:
+            # DataObj falls back to the only dataset when the requested name is
+            # unknown, so a typo used to be answered with a different
+            # detector's layout and a zero exit code -- the reading looks
+            # authoritative and describes the wrong data.
+            print(f"  NO SUCH DATASET: {args.detector!r}. This file holds: "
+                  f"{', '.join(available)}")
+            return 1
         names = [args.detector]
     else:
-        try:
-            names = list(DataObj.getDatasetNames(args.path)) or [None]
-        except Exception as error:
-            print(f"  CANNOT LIST DATASETS: {type(error).__name__}: {error}")
-            return 1
+        names = available or [None]
         if len(names) > 1:
             # A lapse recorded as one file holds one dataset per timepoint
             # (`scan0/Camera`, `scan1/Camera`), and each carries its own
@@ -140,8 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in names:
         if len(names) > 1:
             print(f"\n  --- {name} ---")
+        data_obj = DataObj(args.path, name, path=args.path)
         try:
-            resolved = DataObj(args.path, name, path=args.path).acquisition_layout
+            resolved = data_obj.acquisition_layout
         except Exception as error:
             print(f"  RESOLUTION FAILED: {type(error).__name__}: {error}")
             for issue in getattr(error, "issues", ()):
@@ -150,8 +226,13 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         _describe(resolved)
+        _describe_lifecycle(data_obj)
         try:
-            _frame_table(resolved.layout, args.frames)
+            _frame_table(
+                resolved.layout,
+                args.frames,
+                _stored_frame_count(data_obj, resolved.layout),
+            )
         except Exception as error:
             print(f"  frame table unavailable: {type(error).__name__}: {error}")
     print()

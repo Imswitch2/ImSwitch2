@@ -174,3 +174,110 @@ def test_a_recording_without_a_stage_position_is_unchanged():
     )
 
     assert 'Plane' not in meta.tiff_metadata((10, 64, 64))
+
+
+def test_a_single_frame_tiff_records_the_layout_of_what_it_stored(detman, tmp_path):
+    """The storer drops the frame axis, so the layout it embeds must too.
+
+    A scan-driven detector emits one assembled frame, and a one-frame OME-TIFF
+    stores the plane itself rather than a one-element stack. The layout still
+    declared the ``frame`` axis, so the container had one axis fewer than the
+    recorded layout claimed -- and an explicit layout that disagrees with its
+    container is refused outright by design, never fallen back from. The
+    recording was therefore unreadable rather than merely unannotated.
+    """
+    import tifffile as tiff
+
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_ASSEMBLED_IMAGE,
+        AcquisitionLayout,
+        AcquisitionLoop,
+        decode_acquisition_layout,
+        encode_acquisition_layout,
+    )
+
+    rows, cols, conditions = 2, 3, 2
+    loops = (
+        AcquisitionLoop('scan_y', 'scan_y', rows, storage_axis='scan_y'),
+        AcquisitionLoop(
+            'condition', 'condition', conditions, storage_axis='condition'
+        ),
+        AcquisitionLoop('scan_x', 'scan_x', cols, storage_axis='scan_x'),
+    )
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_ASSEMBLED_IMAGE,
+        detector='Cam',
+        storage_axes=('frame', 'condition', 'scan_y', 'scan_x'),
+        event_loops=loops,
+        provenance='recorded',
+    )
+
+    path = str(tmp_path / 'assembled_Cam.tiff')
+    storer = TiffStorer(str(tmp_path / 'assembled'), detman)
+    # A scan-driven detector's frame carries the line-step axis, so its OME
+    # metadata describes three axes and the storer stores the plane itself.
+    storer.omeMeta = {'Cam': build_ome_image_meta(
+        'Cam', MODE_SNAP, 1, pixel_size_yx_um=(0.2, 0.1), dtype=np.uint16
+    ).padded_to(3)}
+    attrs = {'Cam': {
+        'AcquisitionLayout:schema': ACQUISITION_LAYOUT_SCHEMA,
+        'AcquisitionLayout:json': encode_acquisition_layout(layout),
+    }}
+    storer.openStream({'Cam': path}, ['Cam'], {'Cam': (rows, cols)}, attrs,
+                      singleMultiDetectorFile=False, singleLapseFile=False,
+                      saveMode=None)
+    storer.writeFrames(
+        'Cam', np.ones((1, conditions, rows, cols), np.uint16)
+    )
+    storer.finalizeStream({'Cam': 1}, {'Cam': path}, None, None)
+
+    with tiff.TiffFile(path) as file:
+        embedded = file.ome_metadata or ''
+    assert 'AcquisitionLayout:json' in embedded
+
+    stored = storer.omeMeta['Cam'].annotations['AcquisitionLayout:json']
+    recovered = decode_acquisition_layout(stored)
+    assert recovered.storage_axes == ('condition', 'scan_y', 'scan_x')
+    # Only the axis the storer actually dropped: the loops are untouched.
+    assert recovered.event_loops == layout.event_loops
+
+
+def test_a_multi_frame_tiff_keeps_its_frame_axis(detman, tmp_path):
+    """The collapse must follow the storer, not fire on every recording."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+        decode_acquisition_layout,
+        encode_acquisition_layout,
+    )
+
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector='Cam',
+        storage_axes=('frame', 'detector_y', 'detector_x'),
+        event_loops=(AcquisitionLoop('scan_x', 'scan_x', 4),),
+        provenance='recorded',
+    )
+    path = str(tmp_path / 'stream_Cam.tiff')
+    storer = TiffStorer(str(tmp_path / 'stream'), detman)
+    storer.omeMeta = {'Cam': build_ome_image_meta(
+        'Cam', MODE_TIMELAPSE, 4, pixel_size_yx_um=(0.2, 0.1), dtype=np.uint16)}
+    storer.openStream(
+        {'Cam': path}, ['Cam'], {'Cam': (8, 8)},
+        {'Cam': {
+            'AcquisitionLayout:schema': ACQUISITION_LAYOUT_SCHEMA,
+            'AcquisitionLayout:json': encode_acquisition_layout(layout),
+        }},
+        singleMultiDetectorFile=False, singleLapseFile=False, saveMode=None)
+    storer.writeFrames('Cam', np.ones((4, 8, 8), np.uint16))
+    storer.finalizeStream({'Cam': 4}, {'Cam': path}, None, None)
+
+    stored = storer.omeMeta['Cam'].annotations['AcquisitionLayout:json']
+    assert decode_acquisition_layout(stored).storage_axes == (
+        'frame', 'detector_y', 'detector_x'
+    )
