@@ -230,7 +230,12 @@ Each step is independent; stop and capture at the first surprise.
    *single file* mode as well as one-file-per-timepoint, not only if
    convenient: single-file lapse recordings could not be opened at all until
    this was found in preparation for this session, so the mode has never been
-   read back from real data.
+   read back from real data. Two things worth doing while you are there,
+   because both were broken until this week and neither has met hardware:
+   run one lapse with **Save on disk and keep in memory** (that combination
+   used to abort at the second timepoint and delete the first), and run the
+   same lapse **twice** (the second run used to append into the first run's
+   file). Expect two files, each with its own timepoints.
 7. **A recording you stop early.** Should finalize as `stopped_early`, remain
    openable and viewable, and be refused by strict reconstructors with an exact
    count.

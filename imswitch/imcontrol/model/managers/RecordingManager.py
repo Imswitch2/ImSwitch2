@@ -1106,6 +1106,13 @@ class HDF5Storer(Storer):
         self._singleMultiDetectorFile = singleMultiDetectorFile
         self._singleLapseFile = singleLapseFile
         self._groupPaths = {}  # Track group paths for lapse files
+        # Files that were already on disk when this session opened. A lapse
+        # appends into one, and the timepoints already in it are complete
+        # recordings that an abort of a *later* timepoint must not destroy.
+        self._preexistingFiles = {
+            dest for dest in fileDests.values()
+            if isinstance(dest, str) and os.path.exists(dest)
+        }
         self._saveMode = saveMode
         self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
         self._swmr_enabled = set()  # Track files for which SWMR mode was enabled
@@ -1359,8 +1366,22 @@ class HDF5Storer(Storer):
             # is then a normal, completed HDF5 file for external viewers too.
             for name, filePath, savedToDisk in pending_disk_memory_signals:
                 try:
-                    readFile = h5py.File(filePath, 'r', libver=HDF5_STREAM_LIBVER)
-                except OSError as e:
+                    if self._singleLapseFile:
+                        # Every later timepoint of this lapse reopens this very
+                        # path for append, and HDF5 refuses that while any read
+                        # handle is open. The consumer keeps the handle for the
+                        # life of the recording, so a read handle here made the
+                        # next timepoint fail to open -- and the abort that
+                        # followed removed the file, taking the timepoints
+                        # already recorded with it. Hand over a detached copy,
+                        # which is what the RAM mode gives consumers anyway.
+                        with open(filePath, 'rb') as sourceFile:
+                            readFile = h5py.File(BytesIO(sourceFile.read()), 'r')
+                    else:
+                        readFile = h5py.File(
+                            filePath, 'r', libver=HDF5_STREAM_LIBVER
+                        )
+                except (OSError, MemoryError) as e:
                     logger.warning(f'HDF5 finalize: could not reopen {filePath} for memory hand-off: {e}')
                     continue
                 recordingManager.sigMemoryRecordingAvailable.emit(
@@ -1368,7 +1389,13 @@ class HDF5Storer(Storer):
                 )
 
     def abortStream(self, filePaths, fileDests, saveMode):
-        """Close HDF5 files and remove the partial on-disk file(s)."""
+        """Close HDF5 files and remove this session's partial output.
+
+        A single-lapse file is shared with the timepoints already recorded into
+        it, which are complete and are not this session's to discard. Aborting
+        one timepoint of a lapse therefore leaves the file alone; only a file
+        this session created is removed.
+        """
         processed = set()
         for file in getattr(self, '_files', {}).values():
             if id(file) in processed:
@@ -1379,7 +1406,14 @@ class HDF5Storer(Storer):
             except Exception as e:
                 logger.warning(f'HDF5 abort: failed to close file: {e}')
         if saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+            preexisting = getattr(self, '_preexistingFiles', set())
             for path in set(filePaths.values()):
+                if path in preexisting:
+                    logger.info(
+                        f'HDF5 abort: keeping {path}; it holds timepoints '
+                        f'recorded before this one.'
+                    )
+                    continue
                 try:
                     if os.path.exists(path):
                         os.remove(path)
@@ -1687,6 +1721,9 @@ class RecordingManager(SignalInterface):
         self.__logger = initLogger(self)
         self.__storerMap = storerMap or DEFAULT_STORER_MAP
         self._memRecordings = {}  # { filePath: bytesIO }
+        # Where the current single-file lapse is writing, resolved once at its
+        # first timepoint: { requested base path: path actually opened }.
+        self._lapseFilePaths = {}
         self.__detectorsManager = detectorsManager
         self.__record = False
         self.__abort = False
@@ -3274,11 +3311,28 @@ class RecordingWorker(Worker):
             else:
                 baseFilePath = f'{self.savename}_{detectorName}.{extension}'
             
+            # A lapse resolves its destination ONCE, at its first timepoint,
+            # and every later timepoint reuses what that resolved to. The
+            # exemption from de-duplication exists so timepoints 1..N-1 can
+            # append to the file timepoint 0 created; expressed as "this path
+            # may always be overwritten", it also swallowed the first timepoint
+            # of the NEXT run, which then appended into the previous run's file
+            # with group numbering that continued from it while every recorded
+            # time-partition index restarted at 0.
+            pinned = self.__recordingManager._lapseFilePaths
+            isLaterLapseItem = singleLapseFile and int(
+                getattr(self, 'recLapseIndex', 0) or 0
+            ) > 0
+            if isLaterLapseItem and baseFilePath in pinned:
+                filePaths[detectorName] = pinned[baseFilePath]
+                continue
             filePaths[detectorName] = self.__recordingManager.getSaveFilePath(
                 baseFilePath,
-                allowOverwriteDisk=singleLapseFile and self.saveMode != SaveMode.RAM,
-                allowOverwriteMem=singleLapseFile and self.saveMode == SaveMode.RAM
+                allowOverwriteDisk=isLaterLapseItem and self.saveMode != SaveMode.RAM,
+                allowOverwriteMem=isLaterLapseItem and self.saveMode == SaveMode.RAM
             )
+            if singleLapseFile:
+                pinned[baseFilePath] = filePaths[detectorName]
         
         # Determine file destinations (path or BytesIO)
         for detectorName in self.detectorNames:

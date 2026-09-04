@@ -521,3 +521,204 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
             ).acquisition_layout
             assert opened.is_authoritative
             assert opened.layout == resolved.layout
+
+
+def test_a_disk_and_ram_lapse_keeps_every_timepoint(qt_app, tmp_path):
+    """Handing the finished file to memory must not lock the next timepoint.
+
+    "Save on disk and keep in memory" reopens each finished file read-only and
+    hands the live handle to the app, which keeps it. For a lapse written as a
+    single file that is the same path the next timepoint opens for append, and
+    HDF5 refuses that while any read handle is open -- so timepoint 1 failed to
+    open, the recording aborted, and the abort removed the file, destroying the
+    timepoints already acquired. A ten-point lapse produced no file at all.
+
+    The sink here is what makes the test real: the app stores the handle, so a
+    test whose listener drops it cannot see the fault.
+    """
+    setup = _galvo_setup({'Camera': CAMERA_JSON})
+    nidaq = NidaqManager(setup)
+    camera = HamamatsuManager(setup.detectors['Camera'], 'Camera', nidaqManager=nidaq)
+    detectors = _ManualDetectorsManager({'Camera': camera})
+    recording = RecordingManager(detectors)
+
+    held = {}
+    recording.sigMemoryRecordingAvailable.connect(
+        lambda name, file, path, saved: held.__setitem__(name, file)
+    )
+    ended = []
+    recording.sigRecordingEndedDetailed.connect(lambda generation: ended.append(generation))
+    failures = []
+    recording.sigRecordingFailed.connect(failures.append)
+
+    parameters, sig_dict, scan_info = _galvo_scan(setup, linesteps=1)
+    signals = _camera_ttl(setup, scan_info, linesteps=1)
+    controller = _PointScanController(
+        setup, detectors, parameters, sig_dict, scan_info, pulses={'Camera': 1}
+    )
+    base = build_controller_point_scan_layouts(controller, ('Camera',))['Camera']
+
+    total = 3
+    try:
+        for index in range(total):
+            recording.startRecording(
+                detectorNames=['Camera'],
+                recMode=RecMode.ScanLapse,
+                savename=str(tmp_path / 'lapse'),
+                saveMode=SaveMode.DiskAndRAM,
+                saveFormat=SaveFormat.HDF5,
+                singleLapseFile=True,
+                attrs={'Camera': {}},
+                recFrames=POSITIONS,
+                numCamTTL=controller.getNumCamTTL(),
+                stallTimeout=1.0,
+                recLapseTotal=total,
+                recLapseIndex=index,
+                acquisitionLayouts={'Camera': with_time_partition(
+                    base, index=index, planned_count=total, single_file=True
+                )},
+            )
+            assert recording.waitForAcquisitionStarted(2.0)
+            nidaq.runScan(
+                {'scanSignalsDict': sig_dict, 'TTLCycleSignalsDict': signals},
+                scan_info,
+            )
+            assert _wait_for(
+                lambda: len(ended) == index + 1 or failures, timeout=3.0
+            )
+            assert not failures, failures
+            recording.endRecording(emitSignal=False, wait=True)
+    finally:
+        recording.endRecording(emitSignal=False, wait=True)
+        nidaq.finalize()
+
+    path = tmp_path / 'lapse_Camera.hdf5'
+    assert path.exists()
+    with h5py.File(path, 'r') as h5file:
+        assert sorted(h5file.keys()) == ['scan0', 'scan1', 'scan2']
+    assert DataObj.getDatasetNames(str(path)) == [
+        'scan0/Camera', 'scan1/Camera', 'scan2/Camera'
+    ]
+    # What the app was handed is a readable copy, still open, and holding no
+    # claim on the path the later timepoints had to write.
+    assert held, 'the memory hand-off never happened'
+    for handle in held.values():
+        assert isinstance(handle, h5py.File)
+        assert list(handle.keys())
+
+
+def test_aborting_one_lapse_timepoint_keeps_the_ones_already_recorded(tmp_path):
+    """A shared lapse file is not this session's to delete.
+
+    The abort path removed the on-disk file outright, which for a single-file
+    lapse is the file holding every timepoint recorded so far.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer
+
+    existing = tmp_path / 'lapse_Camera.hdf5'
+    with h5py.File(existing, 'w') as h5file:
+        h5file.create_group('scan0').create_group('Camera').create_dataset(
+            'data', data=np.zeros((2, 4, 4), dtype=np.uint16)
+        )
+    fresh = tmp_path / 'other_Camera.hdf5'
+
+    storer = HDF5Storer(str(tmp_path / 'lapse'), _ManualDetectorsManager({}))
+    storer.openStream(
+        {'Camera': str(existing), 'Other': str(fresh)},
+        [], {}, {},
+        singleMultiDetectorFile=False, singleLapseFile=True, saveMode=SaveMode.Disk,
+    )
+    with open(fresh, 'wb') as handle:
+        handle.write(b'partial')
+
+    storer.abortStream(
+        {'Camera': str(existing), 'Other': str(fresh)}, {}, SaveMode.Disk
+    )
+
+    assert existing.exists(), 'an abort destroyed earlier timepoints'
+    assert not fresh.exists(), 'this session\'s own partial file should go'
+
+
+def _record_single_file_lapse(recording, nidaq, controller, base, tmp_path, total):
+    """One complete single-file scan lapse into ``tmp_path/'lapse'``."""
+    ended = []
+    connection = recording.sigRecordingEndedDetailed.connect(
+        lambda generation: ended.append(generation)
+    )
+    parameters, sig_dict, scan_info = controller._analogParameterDict, None, None
+    for index in range(total):
+        recording.startRecording(
+            detectorNames=['Camera'],
+            recMode=RecMode.ScanLapse,
+            savename=str(tmp_path / 'lapse'),
+            saveMode=SaveMode.Disk,
+            saveFormat=SaveFormat.HDF5,
+            singleLapseFile=True,
+            attrs={'Camera': {}},
+            recFrames=POSITIONS,
+            numCamTTL=controller.getNumCamTTL(),
+            stallTimeout=1.0,
+            recLapseTotal=total,
+            recLapseIndex=index,
+            acquisitionLayouts={'Camera': with_time_partition(
+                base, index=index, planned_count=total, single_file=True
+            )},
+        )
+        assert recording.waitForAcquisitionStarted(2.0)
+        nidaq.runScan(
+            {
+                'scanSignalsDict': controller._scan_signals,
+                'TTLCycleSignalsDict': controller._ttl_signals,
+            },
+            controller._scan_info,
+        )
+        assert _wait_for(lambda: len(ended) == index + 1, timeout=3.0)
+        recording.endRecording(emitSignal=False, wait=True)
+    recording.sigRecordingEndedDetailed.disconnect(connection)
+
+
+def test_a_second_lapse_run_does_not_append_to_the_first_ones_file(qt_app, tmp_path):
+    """Each run of a single-file lapse gets its own file.
+
+    The exemption that lets timepoints 1..N-1 append to the file timepoint 0
+    created was expressed as "this path may always be overwritten", which is
+    also true of the first timepoint of the *next* run. A repeated lapse
+    therefore appended into the previous run's file, with group numbering that
+    continued from it -- scan2, scan3 -- while every recorded time-partition
+    index restarted at 0, so two groups in one file claimed to be timepoint 0
+    of the same lapse.
+    """
+    setup = _galvo_setup({'Camera': CAMERA_JSON})
+    nidaq = NidaqManager(setup)
+    camera = HamamatsuManager(setup.detectors['Camera'], 'Camera', nidaqManager=nidaq)
+    detectors = _ManualDetectorsManager({'Camera': camera})
+    parameters, sig_dict, scan_info = _galvo_scan(setup, linesteps=1)
+    signals = _camera_ttl(setup, scan_info, linesteps=1)
+    controller = _PointScanController(
+        setup, detectors, parameters, sig_dict, scan_info, pulses={'Camera': 1}
+    )
+    controller._scan_signals = sig_dict
+    controller._ttl_signals = signals
+    controller._scan_info = scan_info
+    base = build_controller_point_scan_layouts(controller, ('Camera',))['Camera']
+
+    total = 2
+    try:
+        for _ in range(2):
+            recording = RecordingManager(detectors)
+            _record_single_file_lapse(
+                recording, nidaq, controller, base, tmp_path, total
+            )
+            recording.endRecording(emitSignal=False, wait=True)
+    finally:
+        nidaq.finalize()
+
+    files = sorted(path.name for path in tmp_path.iterdir() if path.is_file())
+    assert files == ['lapse_Camera.hdf5', 'lapse_Camera_1.hdf5'], files
+    for name in files:
+        with h5py.File(tmp_path / name, 'r') as h5file:
+            assert sorted(h5file.keys()) == ['scan0', 'scan1']
+            for index, group in enumerate(['scan0', 'scan1']):
+                dataset = h5file[group]['Camera']['data']
+                assert dataset.attrs['recording:lapse_index'] == index
+
