@@ -161,11 +161,34 @@ class ReconstructorManagerController(ImProcessWidgetController):
             setter = getattr(widget, 'set_source_inspection', None)
             if callable(setter):
                 setter(inspection)
+            else:
+                # Most parameter widgets cannot show an inspection, including
+                # the one the default view-only reconstructor uses -- so what
+                # the inspection had to say was discarded entirely, and a scan
+                # that stopped at 4 of 6 positions opened as an ordinary
+                # four-frame stack. Until a widget shows it, say it in the log
+                # rather than nowhere.
+                self._logSourceInspection(data_obj, reconstructor, inspection)
         except Exception as exc:
             self._logger.warning(
                 f"Could not inspect {getattr(data_obj, 'name', 'source')} "
                 f"for {reconstructor.id}: {exc}"
             )
+
+    def _logSourceInspection(self, data_obj, reconstructor, inspection) -> None:
+        """Report what the source inspection found, when nothing displays it."""
+        if inspection is None:
+            return
+        name = getattr(data_obj, 'name', 'source')
+        warning = getattr(inspection, 'warning', None)
+        if warning:
+            self._logger.warning(f"{name}: {warning}")
+        for issue in getattr(inspection, 'issues', ()) or ():
+            message = f"{name}: [{issue.code}] {issue.message}"
+            if getattr(issue, 'severity', 'warning') == 'error':
+                self._logger.error(message)
+            else:
+                self._logger.warning(message)
 
     def _on_user_changed_reconstructor(self, plugin_id: str):
         """Slot for view-side picker: swap the active reconstructor and

@@ -2698,6 +2698,21 @@ class RecordingManager(SignalInterface):
             dtype=det.dtype, annotations=annotations or {},
             stage_position_um=stagePositionUm)
 
+    @staticmethod
+    def _splitRecordingSuffix(path):
+        """Split a recording path into its name and its full suffix.
+
+        ``os.path.splitext`` splits on the last dot only, so an OME-TIFF's
+        two-part suffix came apart in the middle and a de-duplicated file was
+        named ``rec_Camera.ome_1.tiff``: it neither sorts beside its siblings
+        nor matches the ``*.ome.tiff`` glob anyone would write.
+        """
+        lowered = path.lower()
+        for suffix in ('.ome.tiff', '.ome.tif'):
+            if lowered.endswith(suffix):
+                return path[:-len(suffix)], path[-len(suffix):]
+        return os.path.splitext(path)
+
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path
         numExisting = 0
@@ -2711,7 +2726,7 @@ class RecordingManager(SignalInterface):
 
         while existsFunc(newPath):
             numExisting += 1
-            pathWithoutExt, pathExt = os.path.splitext(path)
+            pathWithoutExt, pathExt = self._splitRecordingSuffix(path)
             newPath = f'{pathWithoutExt}_{numExisting}{pathExt}'
         return newPath
 

@@ -238,7 +238,13 @@ Each step is independent; stop and capture at the first surprise.
    file). Expect two files, each with its own timepoints.
 7. **A recording you stop early.** Should finalize as `stopped_early`, remain
    openable and viewable, and be refused by strict reconstructors with an exact
-   count.
+   count. **Read this one with the inspector**, not by eye: the default view
+   has no place to show incompleteness yet, so a truncated scan looks like an
+   ordinary short stack on screen. The inspector's `lifecycle` line names the
+   outcome and the actual-against-planned counts, and its frame table now
+   stops at what the file holds and lists the positions that were never
+   recorded. The same information also goes to the log when the file is
+   opened.
 8. **An old recording** made before this branch. Must still open, with
    `source: *-legacy`, a lower confidence, and its assumptions listed.
 

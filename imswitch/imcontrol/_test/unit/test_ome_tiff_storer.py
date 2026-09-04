@@ -281,3 +281,25 @@ def test_a_multi_frame_tiff_keeps_its_frame_axis(detman, tmp_path):
     assert decode_acquisition_layout(stored).storage_axes == (
         'frame', 'detector_y', 'detector_x'
     )
+
+
+def test_a_deduplicated_ome_tiff_keeps_its_two_part_suffix(tmp_path):
+    """``rec_1.ome.tiff``, not ``rec.ome_1.tiff``.
+
+    ``os.path.splitext`` splits on the last dot only, so the counter landed
+    inside the suffix: the file sorted away from its siblings and matched no
+    ``*.ome.tiff`` glob anyone would write.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import RecordingManager
+
+    manager = RecordingManager.__new__(RecordingManager)
+    manager._memRecordings = {}
+
+    taken = tmp_path / 'rec_Camera.ome.tiff'
+    taken.write_bytes(b'')
+
+    assert manager.getSaveFilePath(str(taken)).endswith('rec_Camera_1.ome.tiff')
+
+    plain = tmp_path / 'rec_Camera.hdf5'
+    plain.write_bytes(b'')
+    assert manager.getSaveFilePath(str(plain)).endswith('rec_Camera_1.hdf5')
