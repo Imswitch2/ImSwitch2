@@ -50,6 +50,29 @@ def _loops_by_kind(layout: AcquisitionLayout) -> dict:
     return {loop.kind: loop for loop in layout.event_loops}
 
 
+def linestep_conditions_interleave_per_line(layout: AcquisitionLayout | None) -> bool:
+    """True when every line-step condition repeats each fast-axis line.
+
+    The fast-Gauss paths (offline and live) consume one interleaved stack per
+    timepoint -- ``[line 0 / condition 0][line 0 / condition 1][line 1 / ...``
+    -- and de-interleave it by ``n_linesteps``. That is the chronology the
+    Advanced producer and its legacy adapter both record: the ``condition``
+    loop sits immediately outside ``scan_x``. A layout with no condition loop
+    trivially qualifies. Any other placement of the condition loop -- one
+    complete image per condition, say -- is a frame order those paths cannot
+    reassemble and must be declined rather than reshaped.
+    """
+    if layout is None:
+        return False
+    kinds = [loop.kind for loop in layout.event_loops]
+    if 'condition' not in kinds:
+        return True
+    if 'scan_x' not in kinds:
+        return False
+    fast = kinds.index('scan_x')
+    return fast > 0 and kinds[fast - 1] == 'condition'
+
+
 def placement_from_layout(layout: AcquisitionLayout | None) -> LayoutPlacement | None:
     """Resolve output coordinates for every stored frame, or ``None``.
 
@@ -157,6 +180,10 @@ def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str
             - 'dimensions': list of 4 dimension names in scan order (e.g., ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'])
             - 'directions': list of 3 direction strings ('pos' or 'neg')
             - 'steps': list of 4 step counts as strings
+            - 'n_linesteps': optional number of conditions acquired per scan
+              line. Values greater than one mean the recorded frame order is
+              ``line 0 / condition 0, line 0 / condition 1, ...`` rather than
+              one complete image per condition.
             - 'unidirectional': bool (True for snake scan, False for raster)
         axis_labels: Dict mapping semantic names to dimension names, e.g.:
             - 'r_l_text': 'Right-Left'
@@ -174,7 +201,15 @@ def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str
     dim0Side = int(scan_params['steps'][0])
     dim1Side = int(scan_params['steps'][1])
     dim2Side = int(scan_params['steps'][2])
-    dim3Side = int(scan_params['steps'][3])  # Always timepoints
+    dim3Side = int(scan_params['steps'][3])  # Output T (timepoints/conditions)
+    num_linesteps = int(scan_params.get('n_linesteps', 1))
+    if num_linesteps < 1:
+        raise ValueError('n_linesteps must be at least 1')
+    if dim3Side % num_linesteps != 0:
+        raise ValueError(
+            f'Time/condition steps ({dim3Side}) must be divisible by '
+            f'n_linesteps ({num_linesteps})'
+        )
     
     if frames != dim0Side * dim1Side * dim2Side * dim3Side:
         _logger.error(f'Wrong dimensional data: {frames} frames != {dim0Side}*{dim1Side}*{dim2Side}*{dim3Side}')
@@ -193,15 +228,25 @@ def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str
     )
     
     for i in range(coeffs.shape[0]):
-        t = int(np.floor(i / (frames / dim3Side)))
-        
-        slow = int(np.mod(i, frames / timepoints) / (dim0Side * dim1Side))
-        mid = int(np.mod(i, dim0Side * dim1Side) / dim0Side)
-        fast = np.mod(i, dim0Side)
+        # Advanced scans repeat every physical line once per condition.  The
+        # line-step axis therefore sits between the fast and middle spatial
+        # axes in the recorded stream:
+        #   [line0/A][line0/B][line1/A][line1/B] ...
+        # Keep the public result shape unchanged by folding real timepoints and
+        # line-step conditions into the output T axis.
+        fast = i % dim0Side
+        expanded_line = i // dim0Side
+        linestep = expanded_line % num_linesteps
+        mid = (expanded_line // num_linesteps) % dim1Side
+        slow = (expanded_line // (num_linesteps * dim1Side)) % dim2Side
+        acquisition = expanded_line // (num_linesteps * dim1Side * dim2Side)
+        t = acquisition * num_linesteps + linestep
         
         # Bidirectional scan handling (snake pattern)
         if not scan_params['unidirectional']:
-            oddMidStep = np.mod(mid, 2)
+            # Each repeated line is a separate fast-axis traversal, so its
+            # line-step index participates in the alternating direction.
+            oddMidStep = np.mod(mid * num_linesteps + linestep, 2)
             fast = (1 - oddMidStep) * fast + oddMidStep * (dim0Side - 1 - fast)
         
         # Direction handling (positive vs negative)

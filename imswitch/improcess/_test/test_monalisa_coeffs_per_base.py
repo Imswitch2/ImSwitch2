@@ -193,10 +193,83 @@ def test_coeffs_to_image_bidirectional_reverses_fast_axis_with_fast_length():
     )
 
 
+def test_coeffs_to_image_deinterleaves_18_by_18_linestep_conditions():
+    """648 frames are two per-line conditions, not two complete 324-frame scans."""
+    rows = cols = 18
+    num_linesteps = 2
+    frames = rows * cols * num_linesteps
+    coeffs = np.arange(frames, dtype=np.float32).reshape(frames, 1, 1)
+    scan_params = _scan_params(rows, cols, t=num_linesteps)
+    scan_params['n_linesteps'] = num_linesteps
+
+    im = coeffs_to_image(coeffs, scan_params, _AXIS_LABELS)
+
+    assert im.shape == (2, 1, 18, 18)
+    # Condition A consists of the first 18 frames of every repeated line.
+    np.testing.assert_array_equal(im[0, 0, 0], np.arange(0, 18))
+    np.testing.assert_array_equal(im[0, 0, 1], np.arange(36, 54))
+    np.testing.assert_array_equal(im[0, 0, -1], np.arange(612, 630))
+    # Condition B consists of the next 18 frames of every repeated line.
+    np.testing.assert_array_equal(im[1, 0, 0], np.arange(18, 36))
+    np.testing.assert_array_equal(im[1, 0, 1], np.arange(54, 72))
+    np.testing.assert_array_equal(im[1, 0, -1], np.arange(630, 648))
+
+
 def test_coeffs_to_image_rejects_mismatched_frame_count():
     coeffs = np.zeros((7, 3, 3), dtype=np.float32)  # 7 frames doesn't fit 4x5
     with pytest.raises(ValueError, match='Coefficient frame count'):
         coeffs_to_image(coeffs, _scan_params(rows=4, cols=5), _AXIS_LABELS)
+
+
+def test_recorded_linestep_metadata_sets_physical_grid_and_condition_count():
+    """The UI-side metadata adapter must not infer sqrt(648)=25 for an 18x18 scan."""
+    from imswitch.improcess.controller.MoNaLISAController import MoNaLISAController
+
+    emitted = []
+    controller = MoNaLISAController.__new__(MoNaLISAController)
+    controller._widget = SimpleNamespace(
+        r_l_text='Right-Left',
+        u_d_text='Up-Down',
+        b_f_text='Back-Front',
+        timepoints_text='Timepoints',
+        p_text='pos',
+        n_text='neg',
+    )
+    controller._commChannel = SimpleNamespace(
+        sigScanParamsUpdated=SimpleNamespace(
+            emit=lambda *args: emitted.append(args)
+        )
+    )
+    controller._scanParDict = _scan_params(rows=35, cols=35)
+    attrs = {
+        'ScanStage:target_device': [b'X', b'Y', b'Z'],
+        'ScanStage:positive_direction': [True, True, True],
+        'ScanStage:axis_length': [0.9, 0.9, 1.0],
+        'ScanStage:axis_step_size': [0.05, 0.05, 1.0],
+        'ScanTTL:Nx': 18,
+        'ScanTTL:Ny': 18,
+        'ScanTTL:n_linesteps': 2,
+    }
+    # On this branch the dialog is filled from the resolved layout, which the
+    # legacy adapter infers from exactly these attributes; the controller no
+    # longer re-parses them itself.
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+
+    data_obj = SimpleNamespace(
+        numFrames=648,
+        attrs=attrs,
+        acquisition_layout=resolve_acquisition_layout(
+            attrs, shape=(648, 8, 8), detector='Cam'
+        ),
+    )
+
+    controller.parseScanParamsFromAttrs(data_obj)
+
+    assert controller._scanParDict['steps'] == ['18', '18', '1', '2']
+    assert controller._scanParDict['n_linesteps'] == 2
+    assert emitted
 
 
 # --- Full process() via a stub SignalExtractor -----------------------------

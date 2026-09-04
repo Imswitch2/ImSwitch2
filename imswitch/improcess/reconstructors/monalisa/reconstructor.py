@@ -11,7 +11,10 @@ from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
 )
 from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
-from .coeffs_to_image import placement_from_layout
+from .coeffs_to_image import (
+    linestep_conditions_interleave_per_line,
+    placement_from_layout,
+)
 from .live_session import MonalisaLiveSession
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
@@ -149,6 +152,23 @@ class MonalisaReconstructor(StreamingReconstructor):
         finally:
             if not preloaded:
                 data_obj.checkAndUnloadData()
+
+        recorded_linesteps = MonalisaLiveSession._coerce_positive_int(
+            data_attrs.get('ScanTTL:n_linesteps')
+        )
+        if recorded_linesteps is not None:
+            # Recorded metadata is authoritative for frame order. Keep the
+            # existing result contract by folding conditions into its T axis.
+            scan_params = copy.deepcopy(scan_params)
+            scan_params['n_linesteps'] = recorded_linesteps
+            try:
+                spatial_frames = int(np.prod(
+                    np.asarray(scan_params['steps'][:3], dtype=int)
+                ))
+                if spatial_frames > 0 and data.shape[0] % spatial_frames == 0:
+                    scan_params['steps'][3] = str(data.shape[0] // spatial_frames)
+            except (KeyError, TypeError, ValueError):
+                pass
         
         # Validate data shape
         if data.ndim != 3:
@@ -369,10 +389,10 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         if recorded_geometry is not None:
             geometry = recorded_geometry
-            frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+            frames_per_stack = geometry['frames_per_stack']
         else:
             geometry = self._fast_gauss_geometry_from_scan_params(scan_params)
-            frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+            frames_per_stack = geometry['frames_per_stack']
             expected_frames = frames_per_stack * geometry['num_timepoints']
             if data.shape[0] != expected_frames:
                 metadata_geometry = self._fast_gauss_geometry_from_attrs(
@@ -385,7 +405,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                         f'{geometry["num_timepoints"]} timepoints), got {data.shape[0]}'
                     )
                 geometry = metadata_geometry
-                frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+                frames_per_stack = geometry['frames_per_stack']
 
         session = self.make_session()
         try:
@@ -490,6 +510,15 @@ class MonalisaReconstructor(StreamingReconstructor):
         nx_s = steps[x_index]
         ny_s = steps[y_index]
         num_timepoints = steps[time_index]
+        num_linesteps = int(scan_params.get('n_linesteps', 1))
+        if num_linesteps < 1:
+            raise ValueError('Fast Gauss MoNaLISA n_linesteps must be at least 1')
+        if num_timepoints % num_linesteps != 0:
+            raise ValueError(
+                'Fast Gauss MoNaLISA time/condition steps must be divisible by '
+                f'n_linesteps ({num_timepoints} vs {num_linesteps})'
+            )
+        num_timepoints //= num_linesteps
         step_x_nm = step_sizes[x_index]
         step_y_nm = step_sizes[y_index]
         normalized_dimensions = list(dimensions)
@@ -499,6 +528,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         normalized_dimensions[time_index] = time_label
         normalized_scan_params = dict(scan_params)
         normalized_scan_params['dimensions'] = normalized_dimensions
+        normalized_scan_params['n_linesteps'] = num_linesteps
         attrs = {
             'ScanStage:axis_startpos': [0.0, 0.0, 0.0],
             'ScanStage:axis_length': [
@@ -508,12 +538,16 @@ class MonalisaReconstructor(StreamingReconstructor):
             ],
             'ScanStage:axis_step_size': [step_x_nm, step_y_nm, 1.0],
             'ScanStage:axis_step_size_unit': 'nm',
+            'ScanTTL:n_linesteps': num_linesteps,
+            'recording:frames_per_stack': nx_s * ny_s * num_linesteps,
             'recording:num_timepoints': num_timepoints,
         }
         return {
             'attrs': attrs,
             'nx_s': nx_s,
             'ny_s': ny_s,
+            'n_linesteps': num_linesteps,
+            'frames_per_stack': nx_s * ny_s * num_linesteps,
             'num_timepoints': num_timepoints,
             'step_x_nm': step_x_nm,
             'step_y_nm': step_y_nm,
@@ -525,12 +559,19 @@ class MonalisaReconstructor(StreamingReconstructor):
     ) -> dict | None:
         """Derive fast-Gauss geometry from the recorded layout, or ``None``.
 
-        The fast path assembles contiguous X/Y stacks, one per timepoint. That
-        is only the real frame order for a plain forward raster, so anything
-        the recording says it cannot honour -- interleaved line-step
-        conditions, serpentine traversal, a gated detector, a Z loop -- is
-        rejected here. Reassembling those as if they were timepoints is what
-        turned an 18x18 two-condition scan into two 324-frame time blocks.
+        The fast path assembles one contiguous stack per timepoint. Line-step
+        conditions are part of that stack when they are interleaved per line
+        -- ``[line 0 / A][line 0 / B][line 1 / A]...`` -- which is the order
+        the Advanced producer and its legacy adapter record; the session
+        de-interleaves by ``n_linesteps``. Anything else the recording says
+        the path cannot honour -- conditions laid out any other way,
+        serpentine traversal, a gated detector, a Z loop -- is rejected here.
+        Reassembling those as if they were timepoints is what turned an 18x18
+        two-condition scan into two 324-frame time blocks.
+
+        A layout with conditions used to be declined outright, which sent
+        every legacy line-step file to the attribute ladder; the ladder then
+        sized stacks as ``nx * ny`` and reproduced exactly that bug.
         """
         if not isinstance(resolved, ResolvedAcquisitionLayout):
             return None
@@ -542,9 +583,13 @@ class MonalisaReconstructor(StreamingReconstructor):
             return None
 
         unsupported = []
-        if placement.n_conditions > 1:
+        if (
+            placement.n_conditions > 1
+            and not linestep_conditions_interleave_per_line(layout)
+        ):
             unsupported.append(
-                f'{placement.n_conditions} line-step conditions interleaved per row'
+                f'{placement.n_conditions} line-step conditions that are not '
+                f'interleaved per line'
             )
         if placement.slices > 1:
             unsupported.append(f'{placement.slices} Z slices')
@@ -571,7 +616,11 @@ class MonalisaReconstructor(StreamingReconstructor):
                 f'but this source has {num_frames}.'
             )
         return self._fast_gauss_geometry_from_counts(
-            attrs, placement.cols, placement.rows, num_frames
+            attrs,
+            placement.cols,
+            placement.rows,
+            num_frames,
+            num_linesteps=placement.n_conditions,
         )
 
     def _fast_gauss_geometry_from_attrs(
@@ -617,15 +666,19 @@ class MonalisaReconstructor(StreamingReconstructor):
             frame_hint = session._coerce_positive_int(
                 attrs.get('recording:frames_per_stack')
             )
+            num_linesteps = (
+                session._coerce_positive_int(attrs.get('ScanTTL:n_linesteps'))
+                or 1
+            )
             if frame_hint is not None:
                 for nx_s, ny_s in unique_candidates:
-                    if nx_s * ny_s == frame_hint:
+                    if nx_s * ny_s * num_linesteps == frame_hint:
                         return self._fast_gauss_geometry_from_counts(
                             attrs, nx_s, ny_s, num_frames
                         )
 
             for nx_s, ny_s in unique_candidates:
-                frames_per_stack = nx_s * ny_s
+                frames_per_stack = nx_s * ny_s * num_linesteps
                 if frames_per_stack > 0 and num_frames % frames_per_stack == 0:
                     return self._fast_gauss_geometry_from_counts(
                         attrs, nx_s, ny_s, num_frames
@@ -641,8 +694,19 @@ class MonalisaReconstructor(StreamingReconstructor):
         nx_s: int,
         ny_s: int,
         num_frames: int,
+        num_linesteps: int | None = None,
     ) -> dict | None:
-        frames_per_stack = nx_s * ny_s
+        # The layout's condition count outranks the ScanTTL attribute it may
+        # have been derived from; the attribute is only for sources with no
+        # usable layout.
+        if num_linesteps is None:
+            num_linesteps = (
+                MonalisaLiveSession._coerce_positive_int(
+                    attrs.get('ScanTTL:n_linesteps')
+                )
+                or 1
+            )
+        frames_per_stack = nx_s * ny_s * num_linesteps
         if frames_per_stack <= 0 or num_frames % frames_per_stack != 0:
             return None
 
@@ -653,6 +717,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
 
         geometry_attrs = dict(attrs)
+        geometry_attrs['ScanTTL:n_linesteps'] = num_linesteps
         geometry_attrs['recording:frames_per_stack'] = frames_per_stack
         geometry_attrs['recording:num_timepoints'] = num_timepoints
 
@@ -664,14 +729,17 @@ class MonalisaReconstructor(StreamingReconstructor):
                 self._axis_labels['timepoints_text'],
             ],
             'directions': ['+', '+', '+', '+'],
-            'steps': [nx_s, ny_s, 1, num_timepoints],
+            'steps': [nx_s, ny_s, 1, num_timepoints * num_linesteps],
             'step_sizes': [step_x_nm, step_y_nm, 1.0, 1.0],
+            'n_linesteps': num_linesteps,
             'unidirectional': False,
         }
         return {
             'attrs': geometry_attrs,
             'nx_s': nx_s,
             'ny_s': ny_s,
+            'n_linesteps': num_linesteps,
+            'frames_per_stack': frames_per_stack,
             'num_timepoints': num_timepoints,
             'step_x_nm': step_x_nm,
             'step_y_nm': step_y_nm,

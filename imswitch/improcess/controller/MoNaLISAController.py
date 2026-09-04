@@ -38,6 +38,7 @@ class MoNaLISAController(ImProcessWidgetController):
             'directions': [self._widget.p_text, self._widget.p_text, self._widget.p_text],
             'steps': ['35', '35', '1', '1'],
             'step_sizes': ['35', '35', '35', '1'],
+            'n_linesteps': 1,
             'unidirectional': True
         }
 
@@ -105,15 +106,18 @@ class MoNaLISAController(ImProcessWidgetController):
             return
 
         dimensionMap = {
-            b'X': self._widget.r_l_text,
-            b'Y': self._widget.u_d_text,
-            b'Z': self._widget.b_f_text
+            'X': self._widget.r_l_text,
+            'Y': self._widget.u_d_text,
+            'Z': self._widget.b_f_text
         }
         try:
             targetsAttr = attrs['ScanStage:target_device']
             for i in range(0, min(3, len(targetsAttr))):
-                self._scanParDict['dimensions'][i] = dimensionMap[targetsAttr[i]]
-        except (KeyError, TypeError):
+                target = targetsAttr[i]
+                if isinstance(target, (bytes, np.bytes_)):
+                    target = target.decode(errors='ignore')
+                self._scanParDict['dimensions'][i] = dimensionMap[str(target).upper()]
+        except (KeyError, TypeError, AttributeError):
             pass
 
         try:

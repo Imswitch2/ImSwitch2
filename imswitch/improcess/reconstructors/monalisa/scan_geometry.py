@@ -377,9 +377,22 @@ def scan_params_from_layout(resolved, axis_labels: dict) -> dict | None:
             directions.append(axis_labels["p_text"])
             steps.append("1")
             step_sizes.append("1")
+
+    # The dialog has no condition axis. Line-step conditions ride on the
+    # timepoints slot -- ``T = timepoints x conditions`` -- exactly as
+    # ``coeffs_to_image`` reads it back, and ``n_linesteps`` says how to
+    # de-interleave them. Leaving the condition loop out entirely made the
+    # dialog claim one timepoint for a 648-frame 18x18x2 scan.
+    condition = next(
+        (loop for loop in layout.event_loops if loop.kind == "condition"), None
+    )
+    n_linesteps = int(condition.count) if condition is not None else 1
+    time_index = dimensions.index(axis_labels["timepoints_text"])
+    steps[time_index] = str(int(steps[time_index]) * n_linesteps)
     return {
         "dimensions": dimensions[:4],
         "directions": directions[:3],
         "steps": steps[:4],
         "step_sizes": step_sizes[:4],
+        "n_linesteps": n_linesteps,
     }

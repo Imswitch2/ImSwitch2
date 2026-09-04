@@ -378,7 +378,10 @@ def test_live_session_geometry_comes_from_an_inferred_layout_too():
         ),
     )
 
-    assert MonalisaLiveSession._geometry_from_recorded_layout(stack_info) == (10, 10, 1)
+    # (nx_s, ny_s, timepoints, linesteps): a plain raster has one condition.
+    assert MonalisaLiveSession._geometry_from_recorded_layout(stack_info) == (
+        10, 10, 1, 1,
+    )
 
 
 def test_an_inferred_shape_the_fast_path_cannot_hold_is_declined_not_refused():
