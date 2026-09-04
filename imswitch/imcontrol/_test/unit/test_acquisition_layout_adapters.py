@@ -679,3 +679,75 @@ def test_lsxyr_counts_its_raster_and_declares_no_layout():
     controller.getParameters = lambda: None
 
     assert controller.getNumScanPositions() == 1 * 2 * 3 * 4 * 5
+
+
+def test_galvo_z_only_line_steps_follow_the_designers_own_signal():
+    """Z-only, two line steps, checked against the waveform, not the counts.
+
+    Owed since audit condition 2 and possible now that main's single-axis
+    Galvo fix is on the branch: the designer is asked for a single-axis Z
+    scan, the TTL designer gates a camera on it, and the analog Z at every
+    rising edge says where each frame was taken. The layout built with the
+    physical override (dimension 0 -> scan_z) must put each frame at that
+    position and condition.
+    """
+    import numpy as np
+
+    setup = _galvo_setup()
+    # The controller always lists every scanning positioner; an axis with no
+    # length is inactive, and the designer scans only the active ones.
+    parameters = {
+        "target_device": ["X", "Y", "Z"],
+        "axis_length": [0, 0, 4],
+        "axis_step_size": [1, 1, 1],
+        "axis_centerpos": [0, 0, 0],
+        "axis_startpos": [[0], [0], [0]],
+        "sequence_time": 0.001,
+        "phase_delay": 0,
+        "d3step_delay": 100,
+        "n_linesteps": 2,
+    }
+    sig_dict, _, scan_info = GalvoScanDesigner().make_signal(parameters, setup)
+    assert list(scan_info["img_dims"]) == [4]
+    assert list(scan_info["img_axes_phys"]) == ["x"]  # the designer's label
+    assert list(scan_info["axis_names"]) == ["Z"]     # the stage that moved
+
+    ttl_parameters = {
+        "target_device": ["Camera"],
+        "n_linesteps": 2,
+        "linestep_enable": {"Camera": [True, True]},
+        "pulse_starts_s": {"Camera": [[0], [0]]},
+        "pulse_ends_s": {"Camera": [[0.0005], [0.0005]]},
+        "sequence_time": 0.001,
+        "advanced_mode": True,
+    }
+    signals, _ = AdvancedScanTTLCycleDesigner().make_signal(
+        ttl_parameters, setup, scan_info
+    )
+    layout = build_advanced_scan_layouts(
+        scan_info,
+        ("Camera",),
+        scan_source="ScanControllerAdvanced",
+        detector_masks=ttl_parameters["linestep_enable"],
+        pulse_counts_by_condition={"Camera": [1, 1]},
+        kind_overrides={"scan_x": "scan_z"},
+    )["Camera"]
+
+    assert [loop.kind for loop in layout.event_loops] == ["condition", "scan_z"]
+    validate_detector_edge_counts({"Camera": layout}, signals)
+
+    camera = np.asarray(signals["Camera"], dtype=bool)
+    edges = np.flatnonzero(camera[1:] & ~camera[:-1]) + 1
+    if camera[0]:
+        edges = np.concatenate([[0], edges])
+    assert edges.size == 8
+    z_at_edges = np.asarray(sig_dict["Z"], dtype=float)[edges]
+
+    coordinates = [recorded_frame_coordinates(layout, index) for index in range(8)]
+    assert [c["condition"] for c in coordinates] == [0, 0, 0, 0, 1, 1, 1, 1]
+    for condition in (0, 1):
+        frames = slice(condition * 4, condition * 4 + 4)
+        assert np.all(np.diff(z_at_edges[frames]) > 0), z_at_edges[frames]
+        assert [c["scan_z"] for c in coordinates[frames]] == [0, 1, 2, 3]
+    # The second condition re-traces the same physical line.
+    assert np.allclose(z_at_edges[:4], z_at_edges[4:], atol=0.05), z_at_edges
