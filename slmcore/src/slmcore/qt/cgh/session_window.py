@@ -57,6 +57,10 @@ class MeasurementsAction(str,Enum):
     FEEDBACK_PARAMETERS = "feedback_parameters"
     FEEDBACK_ORIENTATION = "feedback_orientation"
     FEEDBACK_ORIENTATION_SAVE = "feedback_orientation_save"
+    GEOMETRY_CALIBRATION_COMPUTE = "geometry_calibration_compute"
+    GEOMETRY_CALIBRATION_ANALYZE = "geometry_calibration_analyze"
+    GEOMETRY_CALIBRATION_SAVE = "geometry_calibration_save"
+    GEOMETRY_CALIBRATION_FINISH = "geometry_calibration_finish"
     INTENSITY_APPLY = "intensity_apply"
     INTENSITY_RESET = "intensity_reset"
     POSITION_APPLY = "position_apply"
@@ -119,6 +123,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._feedback_orientation = FeedbackOrientation.normalize(feedback_orientation)
         self._feedback_orientation_plane: str | None = None
         self._feedback_orientation_plane_override = False
+        self._feedback_orientation_calibrated = False
         self._feedback_orientation_saved = FeedbackOrientation.IDENTITY
         self._feedback_orientation_change_enabled = True
         self._feedback_orientation_change_reason = ""
@@ -140,6 +145,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._position_reference_preview = None
         self._fov_calibration_context: dict[str,Any] = {}
         self._fov_calibration_preview = None
+        self._geometry_calibration_context: dict[str,Any] = {}
+        self._normal_localization_context = dict(localization_context or {})
         self._set_feedback_orientation_context_state(feedback_orientation_context)
         self._cgh_computing = False
         self._candidate_current = False
@@ -316,6 +323,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 MeasurementsAction.ACQUIRE,{
                     "detector":str(detector),
                     "reuse_previous_localization":self._reuse_previous_localization(),
+                    "geometry_calibration":self._geometry_mode_active(),
                 },
             )
         )
@@ -323,13 +331,14 @@ class CGHSessionWindow(QtWidgets.QDialog):
             lambda:self._emit(
                 MeasurementsAction.LOAD,{
                     "reuse_previous_localization":self._reuse_previous_localization(),
+                    "geometry_calibration":self._geometry_mode_active(),
                 },
             )
         )
         self.measurement_view.sigRunRequested.connect(
             lambda parameters:self._emit(
                 MeasurementsAction.LOCALIZATION_RUN,
-                {"parameters":dict(parameters)},
+                {"parameters":dict(parameters),"geometry_calibration":self._geometry_mode_active()},
             )
         )
         self.measurement_view.sigCandidateStateChanged.connect(
@@ -360,6 +369,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         # visualization. Calibration/standalone localization simply do not add
         # this optional widget.
         analysis_widget = QtWidgets.QWidget()
+        self.measurement_analysis_widget = analysis_widget
         analysis_layout = QtWidgets.QVBoxLayout(analysis_widget)
         analysis_layout.setContentsMargins(0,0,0,0)
         analysis_layout.setSpacing(4)
@@ -416,50 +426,126 @@ class CGHSessionWindow(QtWidgets.QDialog):
         layout.setContentsMargins(8,10,8,8)
         layout.setSpacing(7)
 
-        orientation_row = QtWidgets.QHBoxLayout()
-        orientation_row.setContentsMargins(0,0,0,0)
-        orientation_row.setSpacing(6)
-        orientation_row.addWidget(QtWidgets.QLabel("Feedback orientation"))
-        self.feedback_orientation_combo = QtWidgets.QComboBox()
-        for label,value in (
-            ("Identity",FeedbackOrientation.IDENTITY),
-            ("Flip horizontal",FeedbackOrientation.FLIP_HORIZONTAL),
-            ("Flip vertical",FeedbackOrientation.FLIP_VERTICAL),
-            ("Rotate 180°",FeedbackOrientation.ROTATE_180),
-            ("Rotate 90° CW",FeedbackOrientation.ROTATE_90_CW),
-            ("Rotate 90° CCW",FeedbackOrientation.ROTATE_90_CCW),
-            ("Transpose",FeedbackOrientation.TRANSPOSE),
-            ("Anti-transpose",FeedbackOrientation.ANTI_TRANSPOSE),
-        ):
-            self.feedback_orientation_combo.addItem(label,value.value)
-        self.feedback_orientation_combo.currentIndexChanged.connect(
-            self._on_feedback_orientation_changed,
-        )
-        orientation_row.addWidget(self.feedback_orientation_combo)
-        self.feedback_orientation_scope_label = QtWidgets.QLabel()
-        orientation_row.addWidget(self.feedback_orientation_scope_label)
-        self.feedback_orientation_save_button = QtWidgets.QPushButton()
-        self.feedback_orientation_save_button.setFixedHeight(24)
-        self.feedback_orientation_save_button.clicked.connect(
-            self._on_feedback_orientation_save_requested,
-        )
-        orientation_row.addWidget(self.feedback_orientation_save_button)
-        orientation_row.addStretch(1)
-        layout.addLayout(orientation_row)
-        self.set_feedback_orientation(self._feedback_orientation)
-        self._refresh_feedback_orientation_controls()
-
         self.feedback_tabs = QtWidgets.QTabWidget()
         self.feedback_tabs.addTab(self._build_intensity_tab(status),"Intensity")
         self.feedback_tabs.addTab(self._build_position_tab(),"Position")
+        self.feedback_tabs.addTab(self._build_geometry_tab(),"Geometry")
+        self.feedback_tabs.currentChanged.connect(self._on_feedback_tab_changed)
         layout.addWidget(self.feedback_tabs,1)
+        self.set_feedback_orientation(self._feedback_orientation)
+        self._refresh_feedback_orientation_controls()
         return panel
+
+    def _make_geometry_warning(self) -> QtWidgets.QLabel:
+        label=QtWidgets.QLabel('<a href="geometry">⚠ Geometry not calibrated</a>')
+        label.setTextFormat(QtCore.Qt.RichText)
+        label.setTextInteractionFlags(QtCore.Qt.TextBrowserInteraction)
+        label.setOpenExternalLinks(False)
+        label.setStyleSheet('QLabel { color: %s; } QLabel a { color: %s; text-decoration: none; }' % (_WARNING_COLOR,_WARNING_COLOR))
+        label.setToolTip(
+            "Geometry orientation has not been calibrated for this section and plane. "
+            "Feedback localization may be mapped incorrectly. Open the Geometry tab to calibrate it."
+        )
+        label.linkActivated.connect(lambda _link:self.feedback_tabs.setCurrentIndex(2))
+        label.setVisible(False)
+        return label
+
+    def _build_geometry_tab(self) -> QtWidgets.QWidget:
+        tab=QtWidgets.QWidget()
+        layout=QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(5,7,5,5); layout.setSpacing(8)
+
+        target_box=QtWidgets.QGroupBox("Geometry orientation calibration")
+        target_layout=QtWidgets.QVBoxLayout(target_box)
+        self.geometry_calibration_status_label=QtWidgets.QLabel("Status: Not calibrated")
+        self.geometry_calibration_status_label.setWordWrap(True)
+        target_layout.addWidget(self.geometry_calibration_status_label)
+
+        form=QtWidgets.QGridLayout(); form.setHorizontalSpacing(6); form.setVerticalSpacing(5)
+        form.addWidget(QtWidgets.QLabel("Grid X"),0,0)
+        self.geometry_grid_x_spin=QtWidgets.QSpinBox(); self.geometry_grid_x_spin.setRange(3,31); self.geometry_grid_x_spin.setValue(5)
+        form.addWidget(self.geometry_grid_x_spin,0,1)
+        form.addWidget(QtWidgets.QLabel("Grid Y"),0,2)
+        self.geometry_grid_y_spin=QtWidgets.QSpinBox(); self.geometry_grid_y_spin.setRange(3,31); self.geometry_grid_y_spin.setValue(4)
+        form.addWidget(self.geometry_grid_y_spin,0,3)
+        self.geometry_period_x_label=QtWidgets.QLabel("Period X (µm)")
+        form.addWidget(self.geometry_period_x_label,1,0)
+        self.geometry_period_x_spin=QtWidgets.QDoubleSpinBox(); self.geometry_period_x_spin.setRange(0.0001,1e6); self.geometry_period_x_spin.setDecimals(4)
+        form.addWidget(self.geometry_period_x_spin,1,1)
+        self.geometry_period_y_label=QtWidgets.QLabel("Period Y (µm)")
+        form.addWidget(self.geometry_period_y_label,1,2)
+        self.geometry_period_y_spin=QtWidgets.QDoubleSpinBox(); self.geometry_period_y_spin.setRange(0.0001,1e6); self.geometry_period_y_spin.setDecimals(4)
+        form.addWidget(self.geometry_period_y_spin,1,3)
+        target_layout.addLayout(form)
+
+        target_buttons=QtWidgets.QHBoxLayout()
+        self.geometry_compute_button=QtWidgets.QPushButton("Compute calibration target")
+        self.geometry_compute_button.clicked.connect(self._on_geometry_compute_requested)
+        target_buttons.addWidget(self.geometry_compute_button)
+        self.geometry_finish_button=QtWidgets.QPushButton("Finish calibration")
+        self.geometry_finish_button.setEnabled(False)
+        self.geometry_finish_button.setToolTip(
+            "Restore the authoritative current experiment CGH on the SLM. "
+            "The calibration measurement and saved calibration are kept."
+        )
+        self.geometry_finish_button.clicked.connect(
+            lambda _checked=False:self._emit(
+                MeasurementsAction.GEOMETRY_CALIBRATION_FINISH
+            )
+        )
+        target_buttons.addWidget(self.geometry_finish_button)
+        target_buttons.addStretch(1)
+        target_layout.addLayout(target_buttons)
+        self.geometry_target_display_label=QtWidgets.QLabel(
+            "Compute a calibration target to begin."
+        )
+        self.geometry_target_display_label.setWordWrap(True)
+        target_layout.addWidget(self.geometry_target_display_label)
+        layout.addWidget(target_box)
+
+        analysis_box=QtWidgets.QGroupBox("Analysis")
+        analysis_layout=QtWidgets.QVBoxLayout(analysis_box)
+        self.geometry_analysis_label=QtWidgets.QLabel("Acquire/load and localize the calibration target first.")
+        self.geometry_analysis_label.setWordWrap(True); analysis_layout.addWidget(self.geometry_analysis_label)
+        buttons=QtWidgets.QHBoxLayout()
+        self.geometry_analyze_button=QtWidgets.QPushButton("Analyze"); self.geometry_analyze_button.setEnabled(False)
+        self.geometry_analyze_button.clicked.connect(lambda _checked=False:self._emit(MeasurementsAction.GEOMETRY_CALIBRATION_ANALYZE))
+        buttons.addWidget(self.geometry_analyze_button)
+        self.geometry_save_button=QtWidgets.QPushButton("Validate & Save"); self.geometry_save_button.setEnabled(False)
+        self.geometry_save_button.clicked.connect(lambda _checked=False:self._emit(MeasurementsAction.GEOMETRY_CALIBRATION_SAVE))
+        buttons.addWidget(self.geometry_save_button); buttons.addStretch(1)
+        analysis_layout.addLayout(buttons); layout.addWidget(analysis_box)
+
+        manual=QtWidgets.QGroupBox("Manual orientation")
+        manual_layout=QtWidgets.QHBoxLayout(manual); manual_layout.setContentsMargins(8,7,8,7); manual_layout.setSpacing(6)
+        self.feedback_orientation_combo=QtWidgets.QComboBox()
+        for label,value in (("Identity",FeedbackOrientation.IDENTITY),("Flip horizontal",FeedbackOrientation.FLIP_HORIZONTAL),("Flip vertical",FeedbackOrientation.FLIP_VERTICAL),("Rotate 180°",FeedbackOrientation.ROTATE_180),("Rotate 90° CW",FeedbackOrientation.ROTATE_90_CW),("Rotate 90° CCW",FeedbackOrientation.ROTATE_90_CCW),("Transpose",FeedbackOrientation.TRANSPOSE),("Anti-transpose",FeedbackOrientation.ANTI_TRANSPOSE)):
+            self.feedback_orientation_combo.addItem(label,value.value)
+        self.feedback_orientation_combo.currentIndexChanged.connect(self._on_feedback_orientation_changed)
+        manual_layout.addWidget(self.feedback_orientation_combo)
+        self.feedback_orientation_scope_label=QtWidgets.QLabel(); manual_layout.addWidget(self.feedback_orientation_scope_label)
+        self.feedback_orientation_save_button=QtWidgets.QPushButton(); self.feedback_orientation_save_button.setFixedHeight(24)
+        self.feedback_orientation_save_button.clicked.connect(self._on_feedback_orientation_save_requested)
+        manual_layout.addWidget(self.feedback_orientation_save_button); manual_layout.addStretch(1)
+        layout.addWidget(manual); layout.addStretch(1)
+        return tab
+
+    def _on_geometry_compute_requested(self,*_args: Any) -> None:
+        metric=bool(self._geometry_calibration_context.get("metric_periods_available",False))
+        self._emit(MeasurementsAction.GEOMETRY_CALIBRATION_COMPUTE,{
+            "grid_x":self.geometry_grid_x_spin.value(),"grid_y":self.geometry_grid_y_spin.value(),
+            "period_x":self.geometry_period_x_spin.value(),"period_y":self.geometry_period_y_spin.value(),
+            "period_unit":"um" if metric else "reference_px",
+            "detector":self.measurement_view.current_detector or "",
+        })
 
     def _build_intensity_tab(self,status: FeedbackStatus) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
         layout.setContentsMargins(5,7,5,5)
         layout.setSpacing(7)
+        self.intensity_geometry_warning=self._make_geometry_warning()
+        layout.addWidget(self.intensity_geometry_warning)
 
         top = QtWidgets.QWidget(tab)
         top_layout = QtWidgets.QHBoxLayout(top)
@@ -563,9 +649,16 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
     def _build_position_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(tab)
-        layout.setContentsMargins(5,7,5,5)
+        outer_layout = QtWidgets.QVBoxLayout(tab)
+        outer_layout.setContentsMargins(5,7,5,5)
+        outer_layout.setSpacing(7)
+        self.position_geometry_warning=self._make_geometry_warning()
+        outer_layout.addWidget(self.position_geometry_warning)
+        content=QtWidgets.QWidget(tab)
+        layout=QtWidgets.QHBoxLayout(content)
+        layout.setContentsMargins(0,0,0,0)
         layout.setSpacing(8)
+        outer_layout.addWidget(content,1)
 
         # Main visualization: detector-space reference workbench by default,
         # with the original k-space diagnostic retained as an alternate view.
@@ -898,6 +991,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._feedback_orientation_saved = FeedbackOrientation.normalize(
             values.get("saved_orientation","identity")
         )
+        self._feedback_orientation_calibrated = bool(values.get("calibrated",False))
         self._feedback_orientation_change_enabled = bool(
             values.get("change_enabled",True)
         )
@@ -937,6 +1031,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if plane is None:
             label.setText("Applied to: Section default")
             save_button.setText("Set as default")
+        elif self._feedback_orientation_calibrated:
+            label.setText("Applied to: %s (calibrated)" % plane)
+            save_button.setText("Save for plane")
         else:
             suffix = "" if self._feedback_orientation_plane_override else " (using default)"
             label.setText("Applied to: %s%s" % (plane,suffix))
@@ -962,14 +1059,21 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         save_button.setEnabled(
             save_needed
+            and not self._feedback_orientation_calibrated
             and self._selected_is_current_context()
             and not self._cgh_computing
         )
-        save_button.setToolTip(
-            "Persist this orientation for the active plane."
-            if plane is not None
-            else "Persist this orientation as the section default."
-        )
+        if self._feedback_orientation_calibrated:
+            save_button.setToolTip(
+                "A validated geometry calibration is authoritative for this plane. "
+                "The manual orientation can still be tested transiently; recalibrate to change the persisted mapping."
+            )
+        else:
+            save_button.setToolTip(
+                "Persist this orientation for the active plane."
+                if plane is not None
+                else "Persist this orientation as the section default."
+            )
 
     def _on_feedback_orientation_changed(self,_index: int) -> None:
         value = self.feedback_orientation_combo.currentData()
@@ -984,6 +1088,105 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._emit(MeasurementsAction.FEEDBACK_ORIENTATION_SAVE,{
             "orientation":self._feedback_orientation.value,
         })
+
+    def _geometry_mode_active(self) -> bool:
+        tabs=getattr(self,'feedback_tabs',None)
+        return bool(tabs is not None and tabs.currentIndex() == 2)
+
+    def _on_feedback_tab_changed(self,_index: int) -> None:
+        geometry=self._geometry_mode_active()
+        analysis_widget=getattr(self,'measurement_analysis_widget',None)
+        if analysis_widget is not None:analysis_widget.setVisible(not geometry)
+        save_reference=getattr(self,'position_reference_save_button',None)
+        if save_reference is not None:save_reference.setVisible(not geometry)
+        if geometry:
+            self._apply_geometry_measurement_state()
+        else:
+            self.measurement_view.set_context(self._normal_localization_context)
+            self._sync_selected_round(force=True)
+        self._refresh_localization_commit_controls()
+
+    def set_geometry_orientation_calibration_state(self,context: Mapping[str,Any] | None) -> None:
+        self._geometry_calibration_context=dict(context or {})
+        calibrated=bool(self._geometry_calibration_context.get('calibrated',False))
+        for warning in (getattr(self,'intensity_geometry_warning',None),getattr(self,'position_geometry_warning',None)):
+            if warning is not None:warning.setVisible(not calibrated)
+        calibration=self._geometry_calibration_context.get('calibration')
+        plane=self._geometry_calibration_context.get('plane_name')
+        if calibration is not None:
+            self.geometry_calibration_status_label.setText(
+                'Status: Calibrated for %s — %s' % (plane or 'active plane',make_display_name(calibration.orientation.value))
+            )
+        elif plane:
+            self.geometry_calibration_status_label.setText('Status: Not calibrated for %s' % plane)
+        else:
+            self.geometry_calibration_status_label.setText('Status: No measurement plane selected')
+        gx=int(self._geometry_calibration_context.get('grid_x',5)); gy=int(self._geometry_calibration_context.get('grid_y',4))
+        for spin,value in ((self.geometry_grid_x_spin,gx),(self.geometry_grid_y_spin,gy)):
+            blocker=QtCore.QSignalBlocker(spin); spin.setValue(value); del blocker
+        metric=bool(self._geometry_calibration_context.get('metric_periods_available',False))
+        px=self._geometry_calibration_context.get('period_x_um' if metric else 'period_x_px')
+        py=self._geometry_calibration_context.get('period_y_um' if metric else 'period_y_px')
+        self.geometry_period_x_label.setText('Period X (µm)' if metric else 'Period X (reference px)')
+        self.geometry_period_y_label.setText('Period Y (µm)' if metric else 'Period Y (reference px)')
+        if px is not None:self.geometry_period_x_spin.setValue(float(px))
+        if py is not None:self.geometry_period_y_spin.setValue(float(py))
+        analysis=self._geometry_calibration_context.get('analysis')
+        if analysis is None:
+            self.geometry_analysis_label.setText('Acquire/load and localize the calibration target first.' if not self._geometry_calibration_context.get('localization') else 'Localization ready. Click Analyze.')
+        else:
+            verdict='Accepted' if analysis.accepted else 'Ambiguous — do not save'
+            self.geometry_analysis_label.setText('%s: %s · score %.3f · confidence margin %.3f' % (verdict,make_display_name(analysis.orientation.value),analysis.score,analysis.confidence_margin))
+        self.geometry_analyze_button.setEnabled(bool(self._geometry_calibration_context.get('analyze_enabled',False)) and not self._cgh_computing)
+        self.geometry_save_button.setEnabled(bool(self._geometry_calibration_context.get('save_enabled',False)) and not self._cgh_computing)
+        self.geometry_compute_button.setEnabled(bool(plane) and not self._cgh_computing)
+        frame_active=bool(self._geometry_calibration_context.get('frame_active',False))
+        any_frame_active=bool(self._geometry_calibration_context.get('any_frame_active',frame_active))
+        self.geometry_finish_button.setEnabled(any_frame_active and not self._cgh_computing)
+        if frame_active:
+            self.geometry_target_display_label.setText(
+                'Calibration target is currently displayed on the SLM. '
+                'Acquire/load and localize manually; click Finish calibration '
+                'when you want to restore the experiment CGH.'
+            )
+        elif any_frame_active:
+            active_plane=self._geometry_calibration_context.get('active_frame_plane')
+            self.geometry_target_display_label.setText(
+                'A geometry calibration target%s is still displayed on the SLM. '
+                'Click Finish calibration to restore the experiment CGH, or '
+                'compute a target for the current plane.'
+                % ('' if not active_plane else ' for %s' % active_plane)
+            )
+        elif self._geometry_calibration_context.get('computed'):
+            self.geometry_target_display_label.setText(
+                'Calibration target is not displayed. Compute it again before '
+                'acquiring another calibration image.'
+            )
+        else:
+            self.geometry_target_display_label.setText(
+                'Compute a calibration target to begin.'
+            )
+        if self._geometry_mode_active():self._apply_geometry_measurement_state()
+
+    def _apply_geometry_measurement_state(self) -> None:
+        context=dict(self._geometry_calibration_context or {})
+        # Geometry calibration temporarily owns the shared localization workbench.
+        # Do not inherit the normal round's read-only state while the user is
+        # acquiring/tuning a calibration localization.
+        self.measurement_view.set_read_only(
+            bool(self._cgh_computing or self._automatic_operation_active)
+        )
+        self.measurement_view.set_context(context.get('localization_context') or {})
+        measurement=context.get('measurement')
+        if measurement is None:
+            self.measurement_view.clear_measurement(); self.measurement_view.clear_localization_result()
+        else:
+            self.measurement_view.set_measurement(measurement)
+            localization=context.get('localization')
+            params=context.get('localization_parameters') or {}
+            if localization is None:self.measurement_view.clear_localization_result()
+            else:self.measurement_view.set_result(localization,params)
+        self.measurement_view.set_accept_enabled(False)
 
     def set_fov_position_calibration_state(
         self,context: Mapping[str,Any] | None,preview: Mapping[str,Any] | None,
@@ -1422,23 +1625,28 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self.set_feedback_orientation_context(feedback_orientation_context)
         if feedback_orientation is not None:
             self.set_feedback_orientation(feedback_orientation)
-        self.measurement_view.set_context(localization_context)
+        self._normal_localization_context=dict(localization_context or {})
+        if not self._geometry_mode_active():
+            self.measurement_view.set_context(self._normal_localization_context)
         self.intensity_form.set_values(status.intensity_params,emit=False)
         self._populate_position_selector()
         self._populate_round_selector(follow_latest=follow_latest)
         self._refresh_header()
-        self._sync_selected_round()
+        if self._geometry_mode_active():
+            self._apply_geometry_measurement_state()
+        else:
+            self._sync_selected_round()
         self._refresh_status_controls()
         self._refresh_feedback_visualizations()
         if self._automatic_operation_active:
             self._apply_automatic_interaction_lock()
 
     def set_measurement_busy(self,busy: bool,text: str="") -> None:
-        if self._selected_is_current_context():
+        if self._geometry_mode_active() or self._selected_is_current_context():
             self.measurement_view.set_measurement_busy(busy,text)
 
     def set_measurement_error(self,error: Any) -> None:
-        if self._selected_is_current_context():
+        if self._geometry_mode_active() or self._selected_is_current_context():
             self.measurement_view.set_measurement_error(error)
 
     def set_localization_result(
@@ -1455,7 +1663,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._refresh_metrics_display()
 
     def set_localization_error(self,error: Any) -> None:
-        if not self._selected_is_current_context():
+        if not (self._geometry_mode_active() or self._selected_is_current_context()):
             return
         self._candidate_metrics = None
         self.measurement_view.set_error(error)
@@ -1475,7 +1683,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
         for button in self._compute_adapted_buttons:
             button.setText(text)
         self._refresh_header()
-        self._sync_selected_round()
+        if self._geometry_mode_active():
+            self.set_geometry_orientation_calibration_state(self._geometry_calibration_context)
+        else:
+            self._sync_selected_round()
         self._refresh_position_reference_controls()
         self._refresh_status_controls()
         if self._automatic_operation_active:
@@ -1555,7 +1766,16 @@ class CGHSessionWindow(QtWidgets.QDialog):
             )
             self.loop_run_button.setEnabled(False)
         else:
-            self._sync_selected_round()
+            if self._geometry_mode_active():
+                # The shared measurement/localization workbench belongs to the
+                # geometry workflow while this tab is active. Re-applying the
+                # normal selected round here would clear the freshly acquired
+                # geometry image and disable Run Localization.
+                self.set_geometry_orientation_calibration_state(
+                    self._geometry_calibration_context
+                )
+            else:
+                self._sync_selected_round()
             self._refresh_status_controls()
             self._refresh_localization_commit_controls()
             self._refresh_automatic_controls()
@@ -2163,6 +2383,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._refresh_cgh_summary()
 
     def _refresh_measurement_status(self) -> None:
+        if self._geometry_mode_active():
+            # Geometry workflow status is managed by its compute/acquire/localize
+            # actions and must not be replaced with normal round status text.
+            return
         selected = self._selected_round()
         text = ""
         if selected is None:
@@ -2266,7 +2490,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         viewing_current = self._viewing_current_measurement()
         source_editable = self._selected_is_interactive()
         self.measurement_view.set_accept_enabled(
-            source_editable
+            (not self._geometry_mode_active())
+            and source_editable
             and self._candidate_current
             and not self._cgh_computing
         )
@@ -2312,6 +2537,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._refresh_localization_commit_controls()
 
     def _infer_missing_localization_candidate(self,*_args: Any) -> None:
+        if self._geometry_mode_active():
+            return
         if (
             not self._selected_is_interactive()
             or not self.measurement_view.candidate_is_current
@@ -2328,6 +2555,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
 
     def _accept_localization_candidate(self,*_args: Any) -> None:
+        if self._geometry_mode_active():
+            return
         if (
             not self._selected_is_interactive()
             or not self.measurement_view.candidate_is_current
