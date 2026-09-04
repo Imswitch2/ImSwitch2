@@ -508,6 +508,30 @@ class SLMRuntime:
         """Prepare a fresh base CGH transactionally."""
         return self._get_section(key).prepare_base_cgh()
 
+    def prepare_section_geometry_orientation_cgh(
+        self,
+        key: str,
+        *,
+        grid_x: int,
+        grid_y: int,
+        period_x_px: float,
+        period_y_px: float,
+    ):
+        """Return detached section candidate + job for geometry calibration."""
+        return self._get_section(key).prepare_geometry_orientation_cgh(
+            grid_x=grid_x,grid_y=grid_y,
+            period_x_px=period_x_px,period_y_px=period_y_px,
+        )
+
+    def compose_transient_section_frame(self,key: str,section: SLMSectionRuntime) -> np.ndarray:
+        """Compose one detached section candidate into a full-SLM frame."""
+        current=self._get_section(key)
+        if section.geometry != current.geometry:
+            raise ValueError("Transient section geometry does not match runtime section")
+        return np.array(
+            self._compose({key:section},frame_changed_keys=(key,)).eightbit,copy=True,
+        )
+
     def prepare_section_adapted_cgh(self,key: str) -> CGHJob:
         """Prepare exactly the pending feedback-adapted round."""
         return self._get_section(key).prepare_adapted_cgh()

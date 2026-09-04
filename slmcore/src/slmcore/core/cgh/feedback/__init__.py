@@ -30,6 +30,13 @@ from .reference import (
     reference_positions_for_localization,
 )
 from .fov_calibration import FOVPositionCalibration
+from .geometry_calibration import (
+    GEOMETRY_ORIENTATION_PROTOCOL,
+    GeometryOrientationAnalysis,
+    GeometryOrientationCalibration,
+    analyze_geometry_orientation,
+    geometry_orientation_code,
+)
 from .parameters import (
     INTENSITY_ANALYSIS_PARAMS,
     INTENSITY_FEEDBACK_PARAMS,
@@ -44,6 +51,11 @@ __all__ = [
     "FeedbackStatus",
     "FeedbackOrientation",
     "FOVPositionCalibration",
+    "GEOMETRY_ORIENTATION_PROTOCOL",
+    "GeometryOrientationAnalysis",
+    "GeometryOrientationCalibration",
+    "analyze_geometry_orientation",
+    "geometry_orientation_code",
     "base_cgh_recompute_would_discard_feedback",
     "INTENSITY_ANALYSIS_PARAMS",
     "INTENSITY_FEEDBACK_PARAMS",

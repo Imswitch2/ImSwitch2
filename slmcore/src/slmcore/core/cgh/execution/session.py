@@ -201,6 +201,33 @@ class CGHSession:
             CGHPreparedPurpose.TARGET_REPLACEMENT,0,intensities,None,
         )
 
+    def prepare_base_with_intensity_factory(
+        self,
+        state: CGHState,
+        context: SectionContext,
+        intensity_factory: Callable[[TargetResolution],Any],
+    ) -> CGHJob:
+        """Prepare an isolated base target with caller-defined spot intensities.
+
+        This is used by calibration workflows that need the normal target and
+        computation stack without mutating the persistent CGH/feedback session.
+        """
+        if not callable(intensity_factory):
+            raise TypeError("intensity_factory must be callable")
+        target_state = self._resolve_requested_target_state(state,context)
+        target = self._build_target(target_state,context)
+        intensities = np.asarray(
+            intensity_factory(target.resolution),dtype=np.float64,
+        )
+        if intensities.shape != target.resolution.spot_intensities.shape:
+            raise ValueError(
+                "Transient target intensities must align with target resolution"
+            )
+        return self._prepare_job(
+            state,context,target_state,target,
+            CGHPreparedPurpose.TARGET_REPLACEMENT,0,intensities,None,
+        )
+
     def prepare_adapted(self,state: CGHState,context: SectionContext) -> CGHJob:
         """Prepare exactly the pending feedback-created working round."""
         target_state = self._resolve_requested_target_state(state,context)

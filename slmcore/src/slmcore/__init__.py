@@ -46,6 +46,7 @@ from .application import (
 )
 from .core.cgh.feedback import (
     EditablePositionReferenceGeometry,FOVPositionCalibration,
+    GeometryOrientationAnalysis,GeometryOrientationCalibration,
     PositionReference,PositionReferenceMode,
 )
 from .core.calibration import SLMSectionCalibration
@@ -104,6 +105,7 @@ from .workspace import (
     SLMCorrectionStore,
     SLMPositionReferenceStore,
     SLMFOVPositionCalibrationStore,
+    SLMGeometryOrientationCalibrationStore,
     SLMWorkspace,
 )
 
@@ -124,6 +126,8 @@ __all__ = [
     "MeasurementDispatcher",
     "EditablePositionReferenceGeometry",
     "FOVPositionCalibration",
+    "GeometryOrientationAnalysis",
+    "GeometryOrientationCalibration",
     "PositionReference",
     "PositionReferenceContext",
     "PositionReferenceMode",
@@ -158,6 +162,7 @@ __all__ = [
     "SLMCorrectionStore",
     "SLMPositionReferenceStore",
     "SLMFOVPositionCalibrationStore",
+    "SLMGeometryOrientationCalibrationStore",
     "SLMFeedbackService",
     "SLMGeometry",
     "SLMHardwareConfig",

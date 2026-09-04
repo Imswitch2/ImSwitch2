@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import numpy as np
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any,Callable,Mapping
@@ -96,6 +96,7 @@ class SLMSession:
         calibration_store=None,
         position_reference_store=None,
         fov_position_calibration_store=None,
+        geometry_orientation_calibration_store=None,
         startup_preferences=None,
         display_name: str="",
         apply_startup_calibration_defaults: bool=False,
@@ -134,6 +135,7 @@ class SLMSession:
             callbacks=self._feedback_callbacks(),
             position_reference_store=position_reference_store,
             fov_position_calibration_store=fov_position_calibration_store,
+            geometry_orientation_calibration_store=geometry_orientation_calibration_store,
         )
         self.calibration = SLMCalibrationService(
             self,
@@ -723,6 +725,88 @@ class SLMSession:
             preparation_title="Adapted CGH preparation failed",
             on_finished=on_finished,
         )
+
+    def compute_geometry_orientation_cgh(
+        self,
+        section_key: str,
+        *,
+        grid_x: int,
+        grid_y: int,
+        period_x_px: float,
+        period_y_px: float,
+        on_finished: Callable[[bool,Exception | None,Mapping[str,Any] | None],None] | None=None,
+    ) -> bool:
+        """Compute an isolated calibration CGH without committing experiment state."""
+        self._require_active()
+        self._require_editor_mode()
+        self._require_section(section_key)
+        if self.is_cgh_computing(section_key):
+            if on_finished is not None:
+                on_finished(False,RuntimeError("CGH computation is already running"),None)
+            return False
+        executor=self._cgh_executor
+        if executor is None:
+            error=RuntimeError("No CGH executor is configured")
+            if on_finished is not None:on_finished(False,error,None)
+            return False
+        try:
+            candidate,job=self.runtime.prepare_section_geometry_orientation_cgh(
+                section_key,grid_x=grid_x,grid_y=grid_y,
+                period_x_px=period_x_px,period_y_px=period_y_px,
+            )
+        except Exception as error:
+            if on_finished is not None:on_finished(False,error,None)
+            return False
+
+        self._request_counter += 1
+        request_id=self._request_counter
+        active=_ActiveCGHRequest(
+            request_id=request_id,generation=int(job.generation),on_finished=None,
+        )
+        self._active_cgh_requests[section_key]=active
+        self._notify("on_cgh_computing_changed",section_key,True)
+
+        def finish(success,error,payload=None):
+            current=self._active_cgh_requests.get(section_key)
+            if current is None or current.request_id != request_id:
+                return
+            self._finish_cgh_request(section_key,request_id)
+            if on_finished is not None:
+                on_finished(bool(success),error,payload)
+
+        def result_callback(result):
+            try:
+                if not candidate.commit_cgh(result):
+                    raise RuntimeError("Transient geometry CGH could not be committed")
+                frame=self.runtime.compose_transient_section_frame(section_key,candidate)
+                payload={
+                    "frame":frame,
+                    "localization_context":candidate.get_feedback_localization_context(),
+                    "target_intensities":np.array(job.resolution.spot_intensities,copy=True),
+                    "lattice_indices":np.array(job.resolution.lattice_indices,copy=True),
+                    "target_type":job.spec.target_type,
+                    "target_params":dict(job.spec.target_params),
+                    "resolution":job.resolution,
+                    "calibration":candidate.calibration,
+                }
+                finish(True,None,payload)
+            except Exception as error:
+                finish(False,error,None)
+
+        def error_callback(error):
+            if not isinstance(error,Exception):
+                error=RuntimeError(str(error))
+            finish(False,error,None)
+
+        try:
+            handle=executor.submit(job,result_callback,error_callback)
+            current=self._active_cgh_requests.get(section_key)
+            if current is not None and current.request_id == request_id:
+                current.handle=handle
+        except Exception as error:
+            finish(False,error,None)
+            return False
+        return True
 
     def _start_cgh_compute(
         self,

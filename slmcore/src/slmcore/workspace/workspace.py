@@ -9,6 +9,7 @@ from .config_store import SLMConfigStore
 from .correction_store import SLMCorrectionStore
 from .position_reference_store import SLMPositionReferenceStore
 from .fov_position_calibration_store import SLMFOVPositionCalibrationStore
+from .geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
 
 
 class SLMWorkspace:
@@ -23,6 +24,7 @@ class SLMWorkspace:
         calibrations_dir: str | Path | None=None,
         position_references_dir: str | Path | None=None,
         fov_position_calibrations_dir: str | Path | None=None,
+        geometry_orientation_calibrations_dir: str | Path | None=None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True,exist_ok=True)
@@ -35,11 +37,15 @@ class SLMWorkspace:
         self.fov_position_calibrations_root = self._resolve_override(
             fov_position_calibrations_dir,"fov_position_calibrations"
         )
+        self.geometry_orientation_calibrations_root = self._resolve_override(
+            geometry_orientation_calibrations_dir,"geometry_orientation_calibrations"
+        )
         self._config_stores: dict[tuple[str,int],SLMConfigStore] = {}
         self._correction_stores: dict[tuple[str,str],SLMCorrectionStore] = {}
         self._calibration_store: SLMCalibrationStore | None = None
         self._position_reference_store: SLMPositionReferenceStore | None = None
         self._fov_position_calibration_store: SLMFOVPositionCalibrationStore | None = None
+        self._geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None = None
 
     @property
     def calibration_store(self) -> SLMCalibrationStore:
@@ -62,6 +68,14 @@ class SLMWorkspace:
                 self.fov_position_calibrations_root
             )
         return self._fov_position_calibration_store
+
+    @property
+    def geometry_orientation_calibration_store(self) -> SLMGeometryOrientationCalibrationStore:
+        if self._geometry_orientation_calibration_store is None:
+            self._geometry_orientation_calibration_store = SLMGeometryOrientationCalibrationStore(
+                self.geometry_orientation_calibrations_root
+            )
+        return self._geometry_orientation_calibration_store
 
     def config_directory(self,identity: SLMIdentity) -> Path:
         return self.configs_root/self._serial(identity)
