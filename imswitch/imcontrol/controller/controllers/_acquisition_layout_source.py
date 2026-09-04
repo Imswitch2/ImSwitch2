@@ -347,12 +347,22 @@ def _condition_loop(count: int, *, storage: bool = False) -> AcquisitionLoop:
 def _insert_condition(
     physical: Sequence[AcquisitionLoop], condition: AcquisitionLoop
 ) -> tuple[AcquisitionLoop, ...]:
+    """Place the condition loop where the designers repeat lines.
+
+    Both Advanced designers repeat every *fast-axis line* (ScanInfo dimension
+    0) once per line step: the middle axis holds for ``n_linesteps`` lines,
+    so the chronology is ``(..., dim 1, condition, dim 0)``. ``physical`` is
+    outermost-to-innermost, so dimension 0 is its last loop and the condition
+    goes immediately outside it -- whatever that loop's kind. Keying this on
+    the kind string ``'scan_x'`` (as it used to be) broke as soon as
+    ``physical_kind_overrides`` renamed a Z-only dimension 0 to ``scan_z`` or
+    a Y-first scan's dimension 0 to ``scan_y``: the condition loop then landed
+    innermost or one level too far out, and every count still added up.
+    """
     loops = list(physical)
-    x_index = next(
-        (index for index, loop in enumerate(loops) if loop.kind == "scan_x"),
-        len(loops),
-    )
-    loops.insert(x_index, condition)
+    if not loops:
+        return (condition,)
+    loops.insert(len(loops) - 1, condition)
     return tuple(loops)
 
 
@@ -364,20 +374,21 @@ def _advanced_spans(
     pulse_counts: Sequence[int],
     repeat_count: int,
 ) -> tuple[RecordedEventSpan, ...]:
-    x_count = next(
-        (loop.count for loop in physical if loop.kind == "scan_x"),
-        1,
-    )
-    y_count = next(
-        (loop.count for loop in physical if loop.kind == "scan_y"),
-        1,
-    )
-    row_count = math.prod(
-        loop.count for loop in physical if loop.kind != "scan_x"
-    )
+    """Selected frames per (expanded line, condition), by dimension index.
+
+    A "row" is one position of every loop outside dimension 0; an expanded
+    line is a row repeated for one condition. Per-expanded-line masks are
+    indexed by dimension 1 (the loop the designers hold while repeating), so
+    the arithmetic here uses ``physical[-1]`` and ``physical[-2]`` rather
+    than the kinds ``scan_x``/``scan_y`` those dimensions usually carry.
+    """
+    x_count = physical[-1].count if physical else 1
+    y_count = physical[-2].count if len(physical) > 1 else 1
+    row_count = math.prod(loop.count for loop in physical[:-1])
     if len(mask) not in {condition_count, condition_count * y_count}:
         raise ValueError(
-            "Advanced detector mask must be per-condition or per-expanded-Y-line"
+            "Advanced detector mask must be per-condition or per-expanded-line "
+            "(one entry per condition of every dimension-1 position)"
         )
 
     spans = []
