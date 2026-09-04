@@ -13,6 +13,28 @@ settle, and catching the recordings this branch will now refuse.
 
 ---
 
+## 0. Before the session: run the right code
+
+Everything below assumes the instrument computer is running **this branch at
+its current tip**, which is not the same thing as `codex/acquisition-layout-schema`
+as published. At the time of writing the published tip predates all seven audit
+conditions *and* the chunk-queue fix for the failure that started this work, so
+a rig fetching the branch name alone would validate none of it.
+
+Two checks, both before the sample goes on:
+
+1. `git log --oneline -1` in the checkout the rig will run, and compare the
+   commit with the one you mean to test.
+2. The inspector's `interpreted by:` line (§2) on the first file you record.
+   It says which ImSwitch actually read that file, which on a machine with a
+   release install beside a working checkout is the question that matters.
+
+If ImSwitch is installed rather than run from the checkout, reinstall it from
+the checkout before the session. A session run against the wrong code produces
+results that look valid and mean nothing.
+
+---
+
 ## 1. Why this needs a rig at all
 
 The whole effort replaces *inferred* frame semantics with *recorded* ones. Every
