@@ -43,6 +43,17 @@ Metadata only — no pixels are read, so it is fast and safe on big files. It
 prints the resolved layout and, crucially, a **frame table**: which logical
 coordinate each stored frame index maps to.
 
+Its first line of output says **which ImSwitch interpreted the file**. Check it
+once at the start of the session. An instrument computer usually has more than
+one copy — a release install and the branch under test — and the answer to
+"what does this file say" depends on which one is asked, which is the whole
+point of the layout work. If that path is not the checkout you mean to
+validate, everything below it describes the wrong software.
+
+A container holding several datasets prints one block per dataset. That is what
+a lapse recorded as a single file looks like: ``scan0/Camera``, ``scan1/Camera``,
+each with its own partition line.
+
 That table is the check. Everything else in this branch follows from it. On the
 motivating 18×18 two-line-step scan it should read:
 
@@ -178,8 +189,12 @@ Each step is independent; stop and capture at the first surprise.
 4. **Bidirectional over ≥2 Z planes** (§3.3), if you scan bidirectionally.
 5. **TriggerScope RESOLFT** (§3.1) → SNOUTY. Highest risk; worth doing even if
    short on time.
-6. **Scan lapse**, ≥2 timepoints, both storage modes if convenient. Each file
-   should show `partition: time index=N of M` and reconstruct identically.
+6. **Scan lapse**, ≥2 timepoints, **both storage modes**. Each item should show
+   `partition: time index=N of M` and reconstruct identically. Do the
+   *single file* mode as well as one-file-per-timepoint, not only if
+   convenient: single-file lapse recordings could not be opened at all until
+   this was found in preparation for this session, so the mode has never been
+   read back from real data.
 7. **A recording you stop early.** Should finalize as `stopped_early`, remain
    openable and viewable, and be refused by strict reconstructors with an exact
    count.

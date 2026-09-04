@@ -101,6 +101,19 @@ The design direction is right and should not be re-litigated: a producer-authore
 11. GUI status label (contract §10: Recorded / Legacy inferred / User override / Ambiguous / Invalid) with resolver issues; warn at arm when a pinned source lacks `getAcquisitionLayouts` (RecordingController.py:1219-1223).
 12. Neighbouring defaults: `completion_outcome` dtype from `max(len(VALID_COMPLETION_OUTCOMES))` (RecordingManager.py:929); partition counts from lapseTotal (3278, 197-198); tiling modality `tiling` vs id `tiling-mosaic` (resolver:1187, tiling/reconstructor.py:394); contract loop-kind list and `AcquisitionLoop.device` synced; a "how to add a kind / producer / counter" checklist in the contract.
 
+**What condition 7 turned up outside the contract.** Recording through the real
+storers and reading back through the real reader immediately found two defects
+that no amount of work *inside* the layout contract would have reached: a scan
+lapse saved as a single file could not be opened by ImProcess at all (discovery
+looked only at the container root, while that mode writes `scan0/Camera/data`),
+and the rig-validation tool bound itself to whichever ImSwitch was installed on
+the machine rather than to the checkout it ships with. Both are fixed. Both are
+the audit's own thesis restated: the fault was never inside a layer, it was in
+what each layer assumed about its neighbour. Note that the seam test as first
+written would not have caught the reader defect either — it checked the
+resolver against attributes read out of the file by hand, which is the same
+mistake one level up; it now opens the file the way a user does.
+
 ## What the audit did not cover
 
 - Handled well, no findings: literal magic numbers (one `MAX_INLINE_LAYOUT_BYTES`, pinned); canonicalization and overlap arithmetic; sidecar override degradation; storer symmetry across formats; abort/stall never producing a mislabelled file.

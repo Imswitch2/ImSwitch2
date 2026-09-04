@@ -16,7 +16,18 @@ be confidently wrong in the same way.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+
+# Bind to the ImSwitch this script ships with, not to whatever is installed.
+# Python puts *this file's* directory on sys.path, never the working
+# directory, so an editable install elsewhere on the machine wins by default
+# -- and then the tool reports how *that* checkout would read the file, which
+# is the one thing it must never do. A rig with several checkouts (a release
+# install plus the branch under test) is the normal case, not the exotic one.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.isdir(os.path.join(_REPO_ROOT, "imswitch")):
+    sys.path.insert(0, _REPO_ROOT)
 
 
 def _describe(resolved) -> None:
@@ -95,25 +106,56 @@ def main(argv: list[str] | None = None) -> int:
                         help="how many stored frames to map (default 12)")
     args = parser.parse_args(argv)
 
+    import imswitch
     from imswitch.improcess.model import DataObj
 
-    data_obj = DataObj(args.path, args.detector, path=args.path)
     print(f"\n{args.path}")
-    try:
-        resolved = data_obj.acquisition_layout
-    except Exception as error:
-        print(f"  RESOLUTION FAILED: {type(error).__name__}: {error}")
-        for issue in getattr(error, "issues", ()):
-            print(f"    [{issue.severity}] {issue.code}: {issue.message}")
+    # Which code is doing the interpreting. Two checkouts read the same file
+    # differently -- that is the whole point of the layout work -- so an
+    # output without this line cannot be attributed to a version.
+    print(f"  interpreted by: {os.path.dirname(os.path.abspath(imswitch.__file__))}")
+    if not hasattr(DataObj, "acquisition_layout"):
+        print("  RESOLUTION FAILED: this ImSwitch predates the acquisition-layout "
+              "contract, so it cannot report a layout at all.")
+        print("  Run the tool from a checkout that has it, or install that "
+              "checkout, and check the path printed above.")
         return 1
 
-    _describe(resolved)
-    try:
-        _frame_table(resolved.layout, args.frames)
-    except Exception as error:
-        print(f"  frame table unavailable: {type(error).__name__}: {error}")
+    if args.detector is not None:
+        names = [args.detector]
+    else:
+        try:
+            names = list(DataObj.getDatasetNames(args.path)) or [None]
+        except Exception as error:
+            print(f"  CANNOT LIST DATASETS: {type(error).__name__}: {error}")
+            return 1
+        if len(names) > 1:
+            # A lapse recorded as one file holds one dataset per timepoint
+            # (`scan0/Camera`, `scan1/Camera`), and each carries its own
+            # partition. Reporting only the first would describe a fraction of
+            # the recording as if it were the whole of it.
+            print(f"  datasets    : {len(names)} -> {', '.join(map(str, names))}")
+
+    failures = 0
+    for name in names:
+        if len(names) > 1:
+            print(f"\n  --- {name} ---")
+        try:
+            resolved = DataObj(args.path, name, path=args.path).acquisition_layout
+        except Exception as error:
+            print(f"  RESOLUTION FAILED: {type(error).__name__}: {error}")
+            for issue in getattr(error, "issues", ()):
+                print(f"    [{issue.severity}] {issue.code}: {issue.message}")
+            failures += 1
+            continue
+
+        _describe(resolved)
+        try:
+            _frame_table(resolved.layout, args.frames)
+        except Exception as error:
+            print(f"  frame table unavailable: {type(error).__name__}: {error}")
     print()
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

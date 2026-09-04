@@ -65,6 +65,7 @@ from imswitch.imcontrol.model.signaldesigners.AdvancedScanTTLCycleDesigner impor
 from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
     GalvoScanDesigner,
 )
+from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.acquisition_layout_resolver import (
     resolve_acquisition_layout,
 )
@@ -486,6 +487,14 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
     path = tmp_path / 'lapse_Camera.hdf5'
     assert path.exists()
     assert not (tmp_path / 'lapse_Camera_1.hdf5').exists(), 'lapse items must share one file'
+
+    # Through the reader a user actually opens the file with, not only through
+    # h5py. Reading the attributes of a dataset found by hand proves the
+    # resolver understands them; it does not prove ImProcess can find the
+    # dataset at all, and for a single-file lapse it could not -- discovery
+    # looked only at the container root, where a lapse recording has no
+    # datasets, and reported every one of these files as empty.
+    assert DataObj.getDatasetNames(str(path)) == ['scan0/Camera', 'scan1/Camera']
     with h5py.File(path, 'r') as h5file:
         assert sorted(h5file.keys()) == ['scan0', 'scan1']
         for index in range(total):
@@ -506,3 +515,9 @@ def test_single_file_lapse_writes_one_group_per_partition_that_resolves_back(qt_
                 ),
             )
             assert replace(resolved.layout, partitions=()) == base
+
+            opened = DataObj(
+                str(path), f'scan{index}/Camera', path=str(path)
+            ).acquisition_layout
+            assert opened.is_authoritative
+            assert opened.layout == resolved.layout

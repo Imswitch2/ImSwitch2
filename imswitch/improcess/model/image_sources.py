@@ -230,12 +230,40 @@ def tiff_dataset_names(file: tiff.TiffFile) -> list[str]:
     return names or ["default"]
 
 
+def _lapse_item_dataset_names(node: Any) -> list[str]:
+    """Detector names one level inside a single-file lapse item group.
+
+    A lapse recorded as one file writes each timepoint into its own group --
+    ``scan0/Camera/data``, ``scan1/Camera/data`` -- so the detector groups the
+    readers look for sit one level deeper than in every other recording. A
+    reader that only looks at the root finds no datasets at all and reports the
+    file as empty, which is what made single-file lapse recordings unopenable.
+
+    Exactly one extra level is descended, and only through a plain group that
+    holds detector groups, so this recognizes the lapse layout without turning
+    the discovery into a general tree walk that would surface arrays the
+    storers never meant as datasets.
+    """
+    if not (isinstance(node, h5py.Group) or is_zarr_group(node)):
+        return []
+    if is_structured_detector_group(node):
+        return []
+    return [
+        name for name in sorted(node.keys())
+        if is_structured_detector_group(node[name])
+    ]
+
+
 def _hdf5_dataset_names(group: h5py.Group) -> list[str]:
     names = []
     for name in group.keys():
         node = group[name]
         if is_array_node(node) or is_structured_detector_group(node):
             names.append(name)
+            continue
+        names.extend(
+            f"{name}/{child}" for child in _lapse_item_dataset_names(node)
+        )
     return names
 
 
@@ -452,6 +480,10 @@ def _zarr_dataset_names(group: Any) -> list[str]:
             or _ngff_image(node, name, validate_layout_metadata=False) is not None
         ):
             names.append(name)
+            continue
+        names.extend(
+            f"{name}/{child}" for child in _lapse_item_dataset_names(node)
+        )
     return names
 
 
