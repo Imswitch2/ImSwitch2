@@ -114,6 +114,50 @@ written would not have caught the reader defect either — it checked the
 resolver against attributes read out of the file by hand, which is the same
 mistake one level up; it now opens the file the way a user does.
 
+## The pre-rig probe (2026-09-04)
+
+With the seven conditions closed, a second multi-agent run asked a different
+question: not "is the contract self-consistent" but "can every shape this
+software can *write* be *read back*". Eight agents each took one recording
+shape or rig-session step, produced real files through the real managers under
+the simulated DAQ, and read them back the way a user does; every serious claim
+was then handed to a second agent told to refute it. Eleven defects survived
+verification, seven were refuted, twelve were minor. Every shape probed had at
+least one finding -- there were no clean shapes.
+
+All eleven are fixed. Roughly half were introduced by this branch, and the
+other half predate it but sit directly in the session's path:
+
+| Introduced here | Pre-existing but in the session's path |
+|---|---|
+| A legacy adapter claimed files from other modalities and reported "high" confidence for a guessed raster | A single-file lapse saved with *keep in memory* aborted at the second timepoint and deleted the first |
+| A frame count that did not match the configured stage area could not be resolved at all | Running the same lapse twice appended the second run into the first run's file |
+| Two positioners whose names guess the same axis made a file unresolvable -- and both failures took the *pixels* down with them in the display path | A lapse recorded to memory reached ImProcess as unopenable rows |
+| An OME-TIFF of a scan-driven detector could not have its layout resolved | A de-duplicated OME-TIFF was named `rec.ome_1.tiff` |
+| The inspector printed frames a stopped-early file does not contain | |
+| Lapse timepoints were ordered as text, so `scan10` came before `scan2` | |
+
+The pattern is worth stating because it is the audit's thesis a second time.
+Every one of the branch-introduced faults is a layer *refusing* where it should
+*decline* -- a legacy inference treated as a declaration, an exception crossing
+from metadata into display, a plan printed as if it were storage. The contract
+draws that line correctly ("declared -> refuse, inferred -> decline") and the
+consumers had not all been held to it. And the fault that started the whole
+effort has the same shape as the ones found here: not a wrong fact, but a fact
+right for the case it was written for and silently wrong for its neighbour.
+
+**Follow-ups not fixed** (none blocks a session; each has a reproduction in the
+probe transcript): OME-TIFF cannot express a line-step axis and projects it
+onto `T` -- record scan-driven detectors as HDF5 or Zarr; a lapse item stopped
+before its first frame leaves an unopenable stub whose error contradicts
+itself; SMLM's loop selection raises a bare `IndexError` on a stopped-early
+stack; `Hdf5LapseSource` never reports a stopped-early lapse as complete; the
+line-step detector-gating fallback in the legacy adapter is unreachable and
+reports the wrong error when it fails. The one that deserves a real fix rather
+than a note is the display of incompleteness: only one parameter widget in the
+tree can show a source inspection, so a truncated recording still opens looking
+ordinary, and the warning now only reaches the log.
+
 ## What the audit did not cover
 
 - Handled well, no findings: literal magic numbers (one `MAX_INLINE_LAYOUT_BYTES`, pinned); canonicalization and overlap arithmetic; sidecar override degradation; storer symmetry across formats; abort/stall never producing a mislabelled file.
