@@ -1,0 +1,108 @@
+# Acquisition layout branch — direction audit
+
+**Status:** Reference — audit of `codex/acquisition-layout-schema` at `8fb56d6a`; conditions 1–7 open
+**Date:** 2026-09-03
+**Scope:** Whether the acquisition-layout contract, its producers, transport and consumers are "the one clean solution" to scan acquisition geometry/order, or would be reopened later by a magic number, a duplicated truth, a silent fallback, an assumed convention or an acquisition the model cannot describe
+**Amends:** [acquisition-layout-contract.md](acquisition-layout-contract.md) (conditions below gate rig validation), [scan-acquisition-order-spec.md](scan-acquisition-order-spec.md) (§15 v1→v2 mapping), [acquisition-metadata-channel-retirement.md](acquisition-metadata-channel-retirement.md) (P3/P4 blocked by R8)
+
+## How this was produced
+
+A structured multi-agent review, not a single read: six readers mapped the
+design docs, core model, producers, transport, consumers and tests; eight
+finders each hunted one failure dimension (magic numbers, duplicated truths,
+silent fallbacks, producer coverage, description/transport split, versioning,
+rig-convention leakage, "add a new scan type" ergonomics), yielding 77 raw and
+56 deduplicated findings; the five critical findings were adversarially
+re-checked against the code (all five stood, none refuted); two independent
+judges scored the branch and a synthesis wrote the report below.
+
+**Coverage caveat.** Only the critical findings were adversarially verified;
+the remaining 51 are carried with the finder's own `file:line` evidence and are
+labelled *unverified* where cited. One claim was additionally checked by hand:
+`git merge-base --is-ancestor 2463e9d6 HEAD` returns 1 on the branch (R3).
+Line numbers refer to the branch at `8fb56d6a`.
+
+The motivating incident, for context: a camera scan recording on the Snouty
+rig aborted because a queue cap sized for point-detector volumes
+(`MAX_QUEUED_RAW_FRAMES = 16`) was selected by `ChunkKind` instead of by the
+property that decides payload size (`rawFrameIsDeferred`); the exception
+quoted a different constant; the only test double modelled the case the
+number was written for. That shape — right for the case it was written for,
+silently wrong for the neighbour, untested at the seam — is what the finders
+were told to hunt.
+
+---
+
+
+## Verdict
+
+The design direction is right and should not be re-litigated: a producer-authored, per-detector/per-partition chronology (nested loops + loop-targeted traversal + canonical spans + partitions), pulled only from the pinned scan source, validated before any writer opens, transported as the same two attrs into HDF5/Zarr/OME-TIFF, and resolved through one fixed precedence with an explicit usable/authoritative split. Both judges agree on that (7.5–8 for the model alone) and both agree the v2 spec confirms v1 is a strict special case for loops, spans, parity and partitions. Both also agree the branch as it stands is **not** "the one clean solution": it scores 5.5 (contract purist) and 6 (maintainer-in-a-year), with no dissent on the reasons. Three verified defects have exactly the shape you said you will not tolerate — a fact encoded twice with consumers disagreeing (direction), a producer decision keyed on the wrong predicate (condition placement by kind string, not scan-dim index), and the motivating 648-frame bug still reproduced for every pre-branch file because main's fix 2463e9d6 is not on the branch (`git merge-base --is-ancestor` returns 1) — plus a recurring pattern of private loop-kind whitelists and "default to 1" seams that stamp `recorded`/`certain` on wrong descriptions. None of these touches the model, precedence or transport; all are bounded producer/consumer/contract-wording fixes. Proceed to rig validation only after conditions 1–7 below; the remaining conditions can follow, and after 1–7 stop dwelling on the design.
+
+## What the branch gets right
+
+- One pull path, pinned to the controller that will run: `_applyProducerAcquisitionLayouts` (RecordingController.py:1217-1237) takes layouts only from `_recordingScanSource` (2194-2212), never the CommunicationChannel once pinned, and refuses a mapping that is not exactly the selected detector set (1224-1235).
+- Gate before writer: `__normalizeAcquisitionLayouts` (RecordingManager.py:1814-1953) runs before `__prepareRecordingThread` (2020-2028); `DETECTOR_PAYLOAD_MISMATCH` (1864-1880) pins `payload_kind` to `isScanDriven` so the worker's layout-keyed frame target (3344-3356) and the isScanDriven-keyed watchdog cannot disagree for in-tree producers; stall and abort delete output rather than mislabel it (3664, 3687-3696).
+- The incident-class fix is real: a mask-less line-step detector is refused, not approximated (_acquisition_layout_source.py:451-466); the layout is authoritative for the per-detector frame target and `recording:planned_frames`/`expected_frames`/`frames_per_stack` derive from it (3273-3277).
+- Transport is solved once: identical `AcquisitionLayout:schema/json` in HDF5 (904-906), Zarr (493-494, 549-550), OME-TIFF MapAnnotation (141-156; recording_metadata.py:334-365) and the workflow helper (acquisition_output.py:77); one `MAX_INLINE_LAYOUT_BYTES` (acquisition_layout.py:21) enforced at encode/decode/validate/arm and pinned by tests. A new producer touches no storer, reader, gate or tool.
+- Resolver precedence is fixed and an invalid explicit layout never falls through (acquisition_layout_resolver.py:1404-1417); `is_usable` vs `is_authoritative` are defined once (63-87); the legacy size/endpoint ambiguity is reported (`AMBIGUOUS_LEGACY_TRAILING_AXIS`, 620-635) not guessed; live sources and the resolver were unified on `round()` (live/sources.py:227; resolver:561).
+- The core module is dependency-free, frozen, deterministic (sort_keys canonical JSON, 441-447), with exact gcd/modular-inverse overlap tests (820-830, 706-732), a 4e9-event non-expansion guard (test_acquisition_layout.py:206-229) and validate-once memoization (1253-1274). Its traversal pseudo-code is what the v2 spec adopts as normative (spec §3.1, §15).
+- Forward-compat mechanics are careful: version check before field parsing (acquisition_layout.py:509-529), unknown same-version fields named as warnings (479-506), newer version refused at decode and demoted to viewable in the resolver (291-304), sidecar override with its own schema that only ever degrades to the file (414-487).
+- The docs are unusually honest: rig-validation.md §3 ranks the five hardware-only assumptions; contract.md:134-142 names the composite-axis limit; :144-158 admits nothing legacy is retired.
+
+## What would reopen the topic
+
+**R1 — F01/F46 (confirmed): one physical fact encoded twice; consumers disagree.** Producer `_traversal` emits `TraversalRule('reverse')` from `direction == -1` while keeping `direction=-1` on the loop (_acquisition_layout_source.py:249-256; legacy adapter resolver:666-670). The core already flips for `reverse` (acquisition_layout.py:1247-1249); `placement_from_layout` flips again on `direction` (coeffs_to_image.py:72-84); BeadRec does not (beadrec/reconstructor.py:119-133); the legacy dialog path flips once (coeffs_to_image.py:208-214). Contract says direction is "physical, not traversal order" (contract.md:343, 485-487) and v2 has no per-loop direction at all. Failure: a rig with `isPositiveDirection:false` (SetupInfo.py:95) records a certain layout from which MoNaLISA classic and BeadRec produce mirror images, and fast-Gauss refuses outright (live_session.py:84-96). Fix: traversal = chronology only, direction = calibration applied by exactly one layer; delete one of the two emissions; one test running direction=-1 through both placements and the dialog path.
+
+**R2 — F02 (confirmed): Advanced condition loop keyed on the kind string, designers key on dimension index.** `_insert_condition` inserts before `kind == 'scan_x'` (_acquisition_layout_source.py:343-352); `_advanced_spans` reads x/y counts by kind with default 1 (363-370). Designers repeat scan-dim index 1 whatever its axis (GalvoScanDesigner.py:174-178; BetaScanDesigner.py:131-141). `physical_kind_overrides` (128-150), added for the single-axis convergence the contract advertises (contract.md:160-166), breaks the coincidence: Y-first or Z-only line-step scans record `(condition, scan_x, scan_y)` / `(scan_z, condition)` for a `(scan_x, condition, scan_y)` / `(condition, scan_z)` chronology. Gate, position count and edge totals all pass (59-79). Fix: compute insertion and span arithmetic from ScanInfo indices before renaming; test against the designer timeline sample-by-sample, not totals.
+
+**R3 — F23 (confirmed, regression vs main): fast-Gauss still produces the motivating wrong image for every legacy file.** `_fast_gauss_geometry_from_layout` returns `None` for a non-authoritative layout with conditions (monalisa/reconstructor.py:555-560), the ladder then computes `frames_per_stack = nx*ny`, `num_timepoints = frames // that` (646-650); live path identical (live_session.py:87-89, 147-160). main's 2463e9d6 de-interleave is absent on HEAD. Fix: drive fast-Gauss/live from `placement_from_layout` slots for any `is_usable` layout (as the classic path already does, 257-283) or cherry-pick 2463e9d6; add a seam test feeding a legacy-adapter 18x18x2 layout and asserting condition-0 frames `[0..17, 36..53, ...]`.
+
+**R4 — F24/F04/F07/F18/F05 (F24 confirmed; same root cause): consumers select loops by private whitelists and silently fold the rest.** `placement_from_layout` reads only scan_x/y/z/condition/time (coeffs_to_image.py:59-66); a producer-emitted `repeat` loop (_acquisition_layout_source.py:326-328, 492-493) yields two slots per position, second pulse overwrites the first (130-135). `_frames_per_stack_from_layout` returns `scan_x*scan_y` only (live/sources.py:230-244), dropping condition/repeat/scan_z; snouty takes cycle/plane from any non-low layout with no order check (snouty/metadata.py:42-50) while restack assumes plane-inner from counts alone (restack.py:58-64). Seven such whitelists exist (also beadrec:92-126, scan_geometry.py:342, view_only:112-116, smlm/localizer.py:33). `NON_POSITIONAL_LOOP_KINDS={condition,repeat}` (acquisition_layout.py:51) is the same pattern on the gate side. Fix: one imcommon helper that raises when an event loop is neither consumed nor explicitly folded; frames-per-stack from planned frame count of the partition; per-kind positional table pinned for every registered kind.
+
+**R5 — F06/F27/F44 (unverified, evidence concrete): pulses-per-position defaults to 1 on both sides of the seam.** Producer `pulse_counts.get(detector, 1)` (_acquisition_layout_source.py:313) and gate `numCamTTL.get(detectorName, 1)` (RecordingManager.py:1921-1923) are the same default, so the cross-check compares a number with itself; the pulse check is skipped without a log when `plannedFrames % positions != 0` (1915-1919); the worker clips surplus frames (3579-3584) and finalizes `complete`. A free-running or mis-triggered camera is recorded as a certain scan-locked layout with no trace. Fix: refuse a scan-mode detector that is neither in numCamTTL nor declared untriggered; log the skip; record discarded frames as an attr and warning.
+
+**R6 — F08/F30/F34/F51/F35/F12 (unverified; F41 confirmed-adjacent): RESOLFT family asserts from one hand-written list and coerces to 1.** `_FRAME_COUNT_KEYS` (_triggerscope_scan_geometry.py:22) feeds both `getNumScanPositions` and the builder loops (_acquisition_layout_source.py:565-581), so `SCAN_POSITION_COUNT_MISMATCH` cannot fire; missing/unparseable counters become 1 inside a certain layout (553-557; `_positiveCount` :25-38); LSXYR `rasterXSteps/rasterYSteps` (TriggerScopeLSXYRController.py:216-282) are in neither; adapter puts `cycleStepSizeUm` on `plane` while the producer puts it on `cycle` (resolver:1140 vs source:567-580); v1 cannot express cycle and plane sharing one stage. Fix: one table per firmware mode feeding both; refuse on missing counter; captured trace fixture before any RESOLFT file is stamped `recorded`.
+
+**R7 — F41 (confirmed, lowered to high) + F42/F45 (unverified): four detector predicates, none asserted to agree.** `isScanDriven`, `rawFrameIsDeferred`, the `drainChunk` override and `payload_kind` live in four places; SwabianTimeTagger has `isScanDriven=True` (SwabianTimeTaggerManager.py:962) but default `drainChunk`/1 s previews (988-992, 1196-1217), so a >1 s scan records a partial preview stamped assembled-image/certain/complete. Pre-existing on main; the branch hardens it. Fix: arm-time assertion `payload_kind==assembled <=> rawFrameIsDeferred`, give the TT the APD pattern (APDManager.py:760-835).
+
+**R8 — F16/F17/F03/F21/F22 (unverified, concrete): step size and axes still multi-truth.** Fast-Gauss reads `attrs['ScanStage:axis_step_size']` unguarded on the layout path (monalisa/reconstructor.py:650); `begin` hard-requires `ScanStage:axis_startpos` before consulting the layout (live_session.py:132-135); those attrs come from whichever widget changed last (RecordingController.py:335-339, 943-947); GalvoScanDesigner indexes `pixel_sizes` by list position (GalvoScanDesigner.py:159) and the layout now records that as a certain step; OME axes/PhysicalSize come from recMode+scanDims (RecordingManager.py:2549-2584); `__reportLayoutDisagreements` compares only `ScanTTL:Nx/Ny/n_linesteps` (1965-1970), Advanced-only keys. Retirement P3/P4 would break fast-Gauss outright.
+
+**R9 — F26/F47/F48/F49 (unverified, concrete): versioning makes a newer schema a confident legacy guess.** `UNSUPPORTED_SCHEMA_VERSION` is demoted to a warning and the adapters run at usable confidence (resolver:291-304, 1423-1434); no feature gate exists (acquisition_layout.py:479-506), so any meaning-changing addition forces a version bump that discards the readable subset; tolerance is family-scoped (518-523). spec §15 says the schema "should be settled before merge"; the contract header calls it done; which governs merge is unstated.
+
+## Findings that are real but already deliberate
+
+- Composite axes (x=2k+p, SNOUTY cycle/plane transpose) outside v1; `restack_interleaved` outside the layout — contract.md:134-142. The plan (v2 affine weights, spec §3.1) closes it only if v1 direction semantics are settled first (R1), since v2 delegates sign to L3.
+- Nothing legacy retired; six ImProcess modules still parse ScanStage/ScanTTL — contract.md:144-158; retirement.md:124-148, P3/P4 not implemented (`writeLegacyScanMetadata` absent from the tree). The plan does **not** close it: R8 shows fast-Gauss cannot survive P3.
+- No hardware run; RESOLFT order from the controller contract — contract.md:56-61, 777-786; rig-validation.md:63-74. Closed only by the rig session plus retained trace fixtures.
+- cwstarss/time_resolved layouts owed — contract.md:97-101. Open by admission.
+- MoNaLISA conditions folded into T — contract.md:62-65, 1020-1026. Documented projection; acceptable.
+- SMLM gating inside `process()` rather than `acquisition_requirements` — contract.md:78-82. Acceptable, but the streaming session never reads the layout (smlm/live_session.py, grep empty) — not documented.
+- 'Inference must not veto' policy — resolver:74-87. Deliberate, but its safety rests on an issue display that does not exist (F25, ReconstructorManagerController.py:153).
+
+## Conditions to call it clean
+
+**Must-do before rig time**
+
+1. Settle direction vs traversal in schema/1 now (no real file carries it): producers/adapters emit `forward` for a negative-direction axis; exactly one shared imcommon helper applies `direction`; remove the second flip in coeffs_to_image.py:72-84; fast-Gauss/live accept a direction-only layout; one test through `placement_from_layout`, `raster_positions_from_layout` and the dialog path asserting identical slots; state the rule in contract §3.1 and the v1->v2 mapping in spec §15.
+2. Re-key `build_advanced_scan_layouts` on ScanInfo dimension index before `physical_kind_overrides`; tests with swapped x/y overrides and Z-only 2-line-step on both designers comparing per-frame coordinates against TTL-edge-sample vs analog-position.
+3. Restore 2463e9d6 (or drive fast-Gauss/live from `placement_from_layout` for any `is_usable` layout); seam test with a legacy-adapter line-step layout.
+4. One loop-consumption helper; route the seven whitelists through it; `_frames_per_stack_from_layout` from the partition's planned frame count; reconstructor tests with a `repeat` loop from both builders; per-kind positional table pinned for every `REGISTERED_LOOP_KINDS` entry.
+5. Pulses-per-position declared, not defaulted: refuse undeclared scan-mode detectors at arm; warning-level log for the skipped pulse check (RecordingManager.py:1915-1919); surplus-frame discard recorded and warned (3579-3584).
+6. RESOLFT: one (key, kind, step) table shared by `_FRAME_COUNT_KEYS` and `build_triggerscope_resolft_layouts`; refuse on missing/unparseable counter; add LSXYR raster counters or refuse LSXYR recording until a trace fixture exists; align adapter step assignment (resolver:1136-1142) with the producer and test it.
+7. Controller-level seam tests: real `getAcquisitionLayouts` per family -> `startRecording` -> real `RecordingWorker` -> storer -> DataObj/resolver, including one scan-driven detector (assert `DETECTOR_PAYLOAD_MISMATCH`/`EMPTY_FRAME_SELECTION` fire) and one single-file lapse `one-group-per-item` round trip.
+
+**Can follow rig validation**
+
+8. Arm-time assertion `payload_kind==assembled <=> rawFrameIsDeferred`; TT gets the APD pattern; test double with `isScanDriven=True` and default `drainChunk`.
+9. Single-source step/unit: fast-Gauss/live take step from the layout when present (drop live_session.py:132 hard requirement); `scan_params_from_layout` (scan_geometry.py:366) and BeadRec honour `loop.unit`; fix GalvoScanDesigner.py:159 indexing; extend `__reportLayoutDisagreements` to ScanStage length/step for every producer.
+10. Versioning: route `UNSUPPORTED_SCHEMA_VERSION` to generic-fallback (low), add a `required_features` list to v1, decide v1-as-is vs v2 naming before merge, pass an issues list at the five decode sites that drop `UNKNOWN_LAYOUT_FIELD` (RecordingManager.py:1845, 3286; image_sources.py:91; resolver:482, 1361).
+11. GUI status label (contract §10: Recorded / Legacy inferred / User override / Ambiguous / Invalid) with resolver issues; warn at arm when a pinned source lacks `getAcquisitionLayouts` (RecordingController.py:1219-1223).
+12. Neighbouring defaults: `completion_outcome` dtype from `max(len(VALID_COMPLETION_OUTCOMES))` (RecordingManager.py:929); partition counts from lapseTotal (3278, 197-198); tiling modality `tiling` vs id `tiling-mosaic` (resolver:1187, tiling/reconstructor.py:394); contract loop-kind list and `AcquisitionLoop.device` synced; a "how to add a kind / producer / counter" checklist in the contract.
+
+## What the audit did not cover
+
+- Handled well, no findings: literal magic numbers (one `MAX_INLINE_LAYOUT_BYTES`, pinned); canonicalization and overlap arithmetic; sidecar override degradation; storer symmetry across formats; abort/stall never producing a mislabelled file.
+- No findings were refuted; F41 was lowered to high (pre-existing, rig-only, visibly terminates for a TT-only recording).
+- Unverified medium/low leads worth a glance, by root cause: transport counts (F13 S13 dtype, F14/F20 partitions always 1, F43 HDF5 `actual_frames=0` when SWMR reopen fails, F19 no shape check at finalize); silent-degradation surfaces (F25 no GUI, F28/F39/F52 layout-less Base widget and workflows, F29 unknown-kind skip at info level, F31 fingerprint mismatch, F32/F33 swallowed errors); truncations (F10 raster to two dims, F09 point-scan pulse count from the stationary TTL sequence, F38 TimeTagger rank under Beta); naming (F36 every lapse item is `time`, F40 modality `snouty` hard-coded, F53/F56 modality and name overloads); F42 32-frame chunk on volumes, F45 camera watchdog blind to scan duration; F15 device-name substring guess; F11 dialog um-only.
+- Not probed: whether any producer's `_digitalParameterDict` actually carries `Nx/Ny/n_linesteps` outside Advanced; PayloadLocator.axes consumers (F55); Fiji/OMERO reading of the OME MapAnnotation; the >64 KiB HDF5 attribute under 1.8 readers.
+- Rig-only: RESOLFT firmware order and LSXYR raster framing; Advanced delivered order; serpentine parity (no in-tree producer scans bidirectionally, so §3.3 is unfalsifiable); TT scan recording; `stopped_early` from a real interruption; scan-driven assembled orientation.

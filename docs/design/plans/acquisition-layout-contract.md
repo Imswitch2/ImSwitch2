@@ -141,6 +141,39 @@ point, line and camera detector are described identically.
 [scan-acquisition-order-spec.md](scan-acquisition-order-spec.md) drafts the
 portable generalization; this contract is a strict special case of it.
 
+### What v1 leaves open on purpose (2026-09-03)
+
+Three shapes of scan came up while reviewing the model. None is a v1 feature,
+and none is closed by v1; they are recorded here so that nothing in the v1 code
+or its consumers is allowed to close them.
+
+- **A single-axis scan, including Z only.** `scan_z` is a registered kind and
+  no validation rule requires `scan_x`/`scan_y`; `physical_kind_overrides()`
+  turns the designer's first-dimension label into the driving stage's physical
+  axis when that positioner has exactly one. Open today. The Advanced
+  line-step case is subject to audit condition 2 (condition placement must key
+  on scan-dimension index, not on the kind string).
+- **The same physical axis driven by two loops** (coarse + fine, or a second
+  pass). Loop identity is `id`, not kind or device, so this is expressible and
+  already used: the RESOLFT builder puts `cycle` and `plane` on the same stage.
+  Rules: the two loops carry *distinct kinds* (consumers index by kind), and
+  both keep `device`. What v1 cannot state is the physical composite
+  `position = coarse·step₁ + fine·step₂`; that is the v2 affine map (spec
+  §3.1), never a v1 loop field.
+- **Explicit, producer-supplied orders and positions** -- a workflow naming the
+  axes, which is fastest, and an array of values per event. Not a v1 loop:
+  `AcquisitionLoop` describes a regular lattice only. This is the v2 explicit
+  order array `(P, n_scan_axes)` (spec §3.2) plus the coordinate table (spec
+  §7), stored as named companion arrays beside the partition in HDF5/Zarr; a
+  plain-TIFF writer must sidecar. v1 is a strict special case, so this is an
+  addition rather than a change -- provided direction vs. traversal is settled
+  first (audit condition 1): v2 carries no per-loop `direction`, sign lives in
+  the transform. The execution side (a scan source that accepts position
+  arrays) is producer work the model does not constrain.
+
+See [acquisition-layout-direction-audit.md](acquisition-layout-direction-audit.md)
+for the conditions referenced.
+
 ### What is still not "clean"
 
 The layout is authoritative *when present*, but nothing was retired. ImProcess
