@@ -442,10 +442,11 @@ def test_the_camera_selector_offers_a_detector_with_no_digital_line():
     import ast
     from pathlib import Path
 
+    # The multicolor panel is deliberately excluded: it programs the camera's
+    # line into the firmware, so there it must be a device that has one.
     for filename in (
         'TriggerScopePLSRController.py',
         'TriggerScopeGalvoDetectionController.py',
-        'TriggerScopePLSRMulticolorController.py',
     ):
         source = (CONTROLLER_DIR / filename).read_text()
         tree = ast.parse(source)
@@ -468,3 +469,56 @@ def test_the_camera_selector_offers_a_detector_with_no_digital_line():
                 f'{filename} still requires a software TTL line to name the '
                 f'camera; Snouty\'s has none'
             )
+
+
+def test_the_multicolor_panel_only_offers_a_camera_the_firmware_can_be_told_about():
+    """That mode programs ``CameraTTLChan``, so the line has to exist.
+
+    Widening the selector to every detector was right for the panels that only
+    *declare* which detector receives the pulse. The multicolor mode also
+    *sets* the line, through ``deviceInfo`` -- built solely from devices whose
+    setup entry names a ``Triggerscope/TTL<n>`` -- so offering a camera
+    without one moved the failure from arm time to five parameters into the
+    scan, as a bare ``KeyError``.
+    """
+    import ast
+
+    source = (CONTROLLER_DIR / 'TriggerScopePLSRMulticolorController.py').read_text()
+    calls = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'addItems'
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == 'CameraTTLEdit'
+    ]
+
+    assert calls, 'the multicolor panel does not populate its camera selector'
+    for call in calls:
+        rendered = ast.dump(call)
+        assert 'TTLDevices' in rendered, (
+            'the multicolor panel offers cameras the firmware cannot be told '
+            'about; its scan sets CameraTTLChan from the TriggerScope registry'
+        )
+
+
+def test_a_device_without_a_triggerscope_line_is_named_not_a_key_error():
+    from types import SimpleNamespace
+
+    from imswitch.imcontrol.model.managers.ScanManagerTriggerScope import (
+        ScanManagerTriggerScope,
+    )
+
+    manager = ScanManagerTriggerScope.__new__(ScanManagerTriggerScope)
+    manager._ts = SimpleNamespace(deviceInfo={'OrcaStraight': {'TTLLine': '3'}})
+
+    assert manager._lineTTL('OrcaStraight', 'camera') == '3'
+
+    with pytest.raises(ValueError) as error:
+        manager._lineTTL('WidefieldCamera', 'camera')
+
+    message = str(error.value)
+    assert 'WidefieldCamera' in message
+    assert 'Triggerscope/TTL' in message
+    assert 'camera' in message
+

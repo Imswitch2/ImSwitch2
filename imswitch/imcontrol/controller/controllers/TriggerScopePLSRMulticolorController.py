@@ -59,13 +59,15 @@ class TriggerScopePLSRMulticolorController(
         self._widget.onLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.offLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.roLaserEdit.addItems(self.TTLDevices.keys())
-        # Every detector, not only the ones with a digitalLine. The firmware
-        # owns the camera line in these modes -- the software never drives it
-        # -- so this names which detector receives that pulse rather than
-        # commanding one, and requiring a software TTL line to say so left the
-        # box empty on exactly the rigs that need it: Snouty's camera is wired
-        # to the TriggerScope directly and declares no line to ImSwitch.
-        self._widget.CameraTTLEdit.addItems(self._setupInfo.detectors.keys())
+        # This mode is the exception among the RESOLFT panels: it *programs*
+        # the camera line into the firmware (``CameraTTLChan``), so the chosen
+        # detector has to have a TriggerScope line for the scan to run at all.
+        # Offering one without a line would arm the recording and then fail
+        # part-way through uploading parameters.
+        self._widget.CameraTTLEdit.addItems(
+            name for name in self._setupInfo.detectors
+            if name in self.TTLDevices
+        )
         self._widget.Laser2Edit.addItems(self.TTLDevices.keys())
         self._widget.Laser3Edit.addItems(self.TTLDevices.keys())
         self._widget.roScanDeviceEdit.addItems(self.positioners.keys())
@@ -394,8 +396,12 @@ class TriggerScopePLSRMulticolorController(
         laser2 = deviceParameterDict.get('Laser2')
         laser3 = deviceParameterDict.get('Laser3')
 
+        cameraTTL = deviceParameterDict.get('CameraTTL')
+
         missingTTLDevices = []
-        for device in [onLaser, offLaser, roLaser, laser2, laser3]:
+        # The camera belongs in this list for the multicolor mode alone: it is
+        # the one that programs the camera's line into the firmware.
+        for device in [onLaser, offLaser, roLaser, laser2, laser3, cameraTTL]:
             if device and device not in self.TTLDevices:
                 missingTTLDevices.append(device)
 

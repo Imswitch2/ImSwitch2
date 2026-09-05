@@ -205,3 +205,52 @@ def test_view_only_displays_a_file_whose_layout_cannot_be_resolved(tmp_path, att
     assert result is not None
     assert result.data.shape == (FRAMES, HEIGHT, WIDTH)
     assert result.axis_labels == ["Frame", "Y", "X"]
+
+
+# ----------------------------------------------------------------------
+# Structured legacy attributes are stored as JSON behind a sentinel
+# ----------------------------------------------------------------------
+
+
+def test_a_json_encoded_line_step_mask_is_read():
+    """HDF5 attributes hold scalars, so structured ones are JSON strings.
+
+    ``ScanTTL:linestep_enable`` -- which detector was enabled on which line
+    step -- is written behind the ``__imswitch_json__:`` sentinel, and only
+    ``SharedAttributes`` decoded it. Every reader that went to the file
+    directly saw the raw string, so the legacy adapter's per-detector gating
+    retry could never find a mask and an old line-step recording whose
+    detector was gated onto part of the scan failed to resolve at all: a
+    previously readable file made unopenable by this branch.
+    """
+    import json
+
+    from imswitch.imcommon.model.SharedAttributes import JSON_ATTR_PREFIX
+
+    attrs = _attrs(**{
+        "ScanTTL:n_linesteps": 2,
+        "ScanTTL:linestep_enable": JSON_ATTR_PREFIX + json.dumps(
+            {"Camera": [True, False]}
+        ),
+    })
+
+    resolved = _resolve(attrs)
+
+    assert resolved.source == "advanced-scan-legacy"
+    assert [loop.kind for loop in resolved.layout.event_loops] == [
+        "scan_y", "condition", "scan_x"
+    ]
+    # The detector ran on the first line step only, so half the events.
+    assert resolved.layout.recorded_event_spans is not None
+    assert sum(
+        span.count * span.repeats
+        for span in resolved.layout.recorded_event_spans
+    ) == FRAMES
+
+
+def test_a_plain_string_attribute_is_left_alone():
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        _normalized_attrs,
+    )
+
+    assert _normalized_attrs({"ScanStage:note": "hello"})["ScanStage:note"] == "hello"

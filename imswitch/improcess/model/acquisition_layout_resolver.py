@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from imswitch.imcommon.model.SharedAttributes import JSON_ATTR_PREFIX
 from imswitch.imcommon.model.acquisition_layout import (
     ACQUISITION_LAYOUT_SCHEMA,
     PAYLOAD_ASSEMBLED_IMAGE,
@@ -102,7 +103,26 @@ def _issue(
 
 
 def _native(value: Any) -> Any:
-    if isinstance(value, (str, bytes, bytearray, bool, int, float)) or value is None:
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode()
+        except (UnicodeDecodeError, AttributeError):
+            return value
+    if isinstance(value, str):
+        # Structured attributes -- a per-detector line-step mask, a per-device
+        # timing map -- are stored as JSON behind a sentinel, because HDF5
+        # attributes hold scalars and flat arrays. Only SharedAttributes
+        # decoded it, so every reader that goes to the file directly saw the
+        # raw string: the legacy adapter's per-detector gating retry could
+        # never find a mask, and an old line-step recording whose detector was
+        # gated onto part of the scan failed to resolve at all.
+        if value.startswith(JSON_ATTR_PREFIX):
+            try:
+                return json.loads(value[len(JSON_ATTR_PREFIX):])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return value
+        return value
+    if isinstance(value, (bool, int, float)) or value is None:
         return value
     item = getattr(value, "item", None)
     if callable(item):
