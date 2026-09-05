@@ -134,6 +134,25 @@ def _processor_classes_in(module) -> list[type]:
     return classes
 
 
+def _napari_endpoints_in(module, path: str, errors: list) -> int:
+    """Register a plugin file's ``NAPARI_ENDPOINTS`` adapters; returns how many.
+
+    A drop-in file may describe napari endpoints instead of (or as well as)
+    processors: a list of ``NapariEndpoint`` objects or of the dict form the
+    setup file uses. They are handed to the endpoint registry so the next
+    discovery offers them as verified adapters.
+    """
+    items = getattr(module, "NAPARI_ENDPOINTS", None)
+    if not items:
+        return 0
+    from imswitch.improcess.model.napari_endpoints import register_user_endpoints
+
+    registered, problems = register_user_endpoints(items, source=path)
+    for problem in problems:
+        errors.append(PluginLoadError(path=path, message=problem))
+    return registered
+
+
 def discover_processor_plugins(
     directory: str | None = None,
 ) -> tuple[dict[str, type], list[PluginLoadError]]:
@@ -167,11 +186,15 @@ def discover_processor_plugins(
             continue
 
         found = _processor_classes_in(module)
-        if not found:
+        endpoints = _napari_endpoints_in(module, path, errors)
+        if not found and not endpoints:
             errors.append(
                 PluginLoadError(
                     path=path,
-                    message="No Processor subclass defined in this file.",
+                    message=(
+                        "No Processor subclass (or NAPARI_ENDPOINTS list) "
+                        "defined in this file."
+                    ),
                 )
             )
             continue

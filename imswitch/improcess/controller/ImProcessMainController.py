@@ -63,6 +63,20 @@ class ImProcessMainController(MainController):
             self.__mainView,
             self.mainViewController.reconstructionController,
         )
+        self.napariEndpointController = None
+        try:
+            from .NapariEndpointController import NapariEndpointController
+
+            self.napariEndpointController = NapariEndpointController(
+                self.__commChannel,
+                self.__mainView,
+                self.mainViewController.reconstructionController,
+                processing_config=getattr(self, '_processingConfigLoaded', None),
+            )
+        except Exception:
+            # Endpoints are an extra on top of the viewer; a broken npe2
+            # environment must not keep ImProcess from starting.
+            self.__logger.exception("Could not set up napari endpoints")
         self._resultProcessorControllers = {}
         # Runtime panels that publish their own results (multi-action producers
         # like Multicolor) expose sigResultProduced; we forward it to the comm
@@ -171,7 +185,10 @@ class ImProcessMainController(MainController):
         processing_config = self.__processingConfig
         if processing_config is None:
             processing_config = load_processing_config(self.__logger)
-        
+        # Kept for controllers built later that read their own keys from the
+        # same block (napari endpoints).
+        self._processingConfigLoaded = dict(processing_config or {})
+
         reconstructor_ids, processor_ids, has_plugin_config = plugin_ids_from_config(
             processing_config
         )

@@ -712,6 +712,17 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._pluginsToolbar.addAction(store_action)
         self._pluginsToolbar.addAction(reload_action)
 
+        # Installed napari plugins as one-way endpoints for results. The menu
+        # is populated by NapariEndpointController when it opens, so that
+        # what it offers reflects the current result and the installed set.
+        self._pluginsMenu.addSeparator()
+        self._napariPluginsMenu = self._pluginsMenu.addMenu('napari plugins')
+        self._napariPluginsMenu.setToolTipsVisible(True)
+
+    def napariPluginsMenu(self) -> QtWidgets.QMenu:
+        """The submenu the napari endpoint controller fills in."""
+        return self._napariPluginsMenu
+
     def _openUserPluginsFolder(self) -> None:
         """Open the drop-in plugins directory in the system file browser."""
         from imswitch.improcess.plugins import user_plugins_directory

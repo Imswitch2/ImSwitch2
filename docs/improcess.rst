@@ -1454,5 +1454,7 @@ See also
 
 * ``docs/design/plans/imreconstruct-2-0.md`` — unified Milestone 12 design
   and per-layer audits
+* :doc:`improcess-napari-plugins` — sending results to installed napari
+  plugins (dock widgets and readers), and taking layers back
 * :doc:`gui` — main GUI overview (Imcontrol)
 * :doc:`modules` — list of Imswitch2 modules

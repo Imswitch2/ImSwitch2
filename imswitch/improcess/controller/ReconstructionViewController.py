@@ -54,6 +54,11 @@ class ReconstructionViewController(ImProcessWidgetController):
             return []
         return [(getattr(current, "name", "result"), current)]
 
+    def getNapariViewer(self):
+        """The embedded napari viewer, for code that adds layers of its own
+        (napari endpoint sessions). ``None`` when the view has no viewer."""
+        return getattr(self._widget, "napariViewer", None)
+
     def _resultsChanged(self) -> None:
         """Announce that the loaded set or the selection moved."""
         self._commChannel.sigResultsChanged.emit()

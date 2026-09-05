@@ -46,6 +46,7 @@ config files).
     gui
     advanced-scanning
     improcess
+    improcess-napari-plugins
     tiling
     use-cases
     scripting

@@ -89,11 +89,15 @@ def load_user_plugins(directory: str | None = None) -> tuple[list[str], list]:
 
     Returns ``(loaded_ids, errors)``. Never raises — discovery is tolerant.
     """
+    from imswitch.improcess.model.napari_endpoints import clear_user_endpoints
     from imswitch.improcess.plugins.user_plugins import (
         PluginLoadError,
         discover_processor_plugins,
     )
 
+    # Endpoint adapters contributed by plugin files are re-collected on
+    # every scan, so a removed file's adapters disappear with it.
+    clear_user_endpoints()
     classes, errors = discover_processor_plugins(directory)
     errors = list(errors)
     _USER_PROCESSOR_CLASSES.clear()
