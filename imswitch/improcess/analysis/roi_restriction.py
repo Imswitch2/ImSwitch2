@@ -68,6 +68,46 @@ class ROIRestriction:
     def active(self) -> bool:
         return bool(self.rois)
 
+    def encode_provenance(self) -> dict:
+        """The restriction with its geometry, so a replay can apply it again.
+
+        :meth:`provenance` names the ROIs; this carries them. ``fill`` is kept
+        as text because JSON has no NaN and "not measured" is the usual value.
+        """
+        rois = []
+        for roi in self.rois:
+            to_dict = getattr(roi, "to_dict", None)
+            rois.append(to_dict() if callable(to_dict) else {"name": str(getattr(roi, "name", ""))})
+        return {
+            "mode": self.mode,
+            "fill": repr(float(self.fill)),
+            "offset": [int(self.offset[0]), int(self.offset[1])],
+            "set": {
+                "uid": self.set_uid,
+                "name": self.set_name,
+                "revision": int(self.set_revision),
+            },
+            "rois": rois,
+        }
+
+    @classmethod
+    def from_provenance(cls, encoded: dict) -> "ROIRestriction":
+        """Inverse of :meth:`encode_provenance`."""
+        from imswitch.imcommon.algorithms.roi import ROIRecord
+
+        rois = tuple(ROIRecord.from_dict(item) for item in encoded.get("rois", []))
+        roi_set = encoded.get("set") or {}
+        offset = encoded.get("offset") or (0, 0)
+        return cls(
+            rois=rois,
+            mode=str(encoded.get("mode", "crop")),
+            set_uid=str(roi_set.get("uid", "")),
+            set_name=str(roi_set.get("name", "")),
+            set_revision=int(roi_set.get("revision", 0) or 0),
+            fill=float(encoded.get("fill", "nan")),
+            offset=(int(offset[0]), int(offset[1])),
+        )
+
     def provenance(self) -> dict:
         """What the output records about where its region came from."""
         return {

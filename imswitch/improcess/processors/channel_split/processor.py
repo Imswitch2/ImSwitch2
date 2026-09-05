@@ -9,6 +9,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_labels_for_result,
     resolve_axis,
     shape_for_result,
+    split_port_keys,
     split_result,
 )
 from imswitch.improcess.processors.base import Processor, ProcessorOutput
@@ -54,7 +55,8 @@ class ChannelSplitProcessor(Processor):
             preferred_labels=_CHANNEL_LABELS,
             require_label_match=True,
         )
-        return ProcessorOutput(split_result(result, axis, operation=self.id))
+        outputs = split_result(result, axis, operation=self.id)
+        return ProcessorOutput(outputs, keys=split_port_keys(outputs))
 
     @staticmethod
     def _has_channel_axis(result: ProcessingResult) -> bool:

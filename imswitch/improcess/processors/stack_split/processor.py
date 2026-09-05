@@ -5,7 +5,7 @@ from typing import Callable
 from qtpy import QtWidgets
 
 from imswitch.improcess.model.result import ProcessingResult
-from imswitch.improcess.processors._axis_split import resolve_axis, split_result
+from imswitch.improcess.processors._axis_split import resolve_axis, split_port_keys, split_result
 from imswitch.improcess.processors.base import Processor, ProcessorOutput
 
 
@@ -42,4 +42,5 @@ class StackSplitProcessor(Processor):
             params.get("axis", "Auto"),
             preferred_labels=("Z", "T", "C", "Base", "Dataset", "projection"),
         )
-        return ProcessorOutput(split_result(result, axis, operation=self.id))
+        outputs = split_result(result, axis, operation=self.id)
+        return ProcessorOutput(outputs, keys=split_port_keys(outputs))

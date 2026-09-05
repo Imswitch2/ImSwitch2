@@ -11,19 +11,36 @@ from imswitch.improcess.model.result import ProcessingResult, result_kind
 
 @dataclass(frozen=True)
 class ProcessorOutput:
-    """One or more ProcessingResults returned by a processor."""
+    """One or more ProcessingResults returned by a processor.
+
+    ``keys`` names the outputs, one per result, in order. They are the
+    **output ports** recorded in the provenance graph, so a later step can say
+    "the background from that subtraction" rather than "one of its results".
+    A processor with several outputs should name them; unnamed ones fall back
+    to ``out0, out1, …``, which are distinct but say nothing.
+    """
 
     results: tuple[ProcessingResult, ...]
+    keys: tuple[str, ...] | None = None
 
-    def __init__(self, results):
+    def __init__(self, results, keys=None):
         normalized = tuple(results)
         if not all(isinstance(result, ProcessingResult) for result in normalized):
             raise TypeError("ProcessorOutput results must be ProcessingResult objects")
+        named = tuple(str(key) for key in keys) if keys is not None else None
+        if named is not None:
+            if len(named) != len(normalized):
+                raise ValueError(
+                    f"ProcessorOutput got {len(named)} keys for {len(normalized)} results"
+                )
+            if len(set(named)) != len(named):
+                raise ValueError(f"ProcessorOutput keys are not unique: {named}")
         object.__setattr__(self, "results", normalized)
+        object.__setattr__(self, "keys", named)
 
 
 def attach_provenance(
-    results, source, processor, params=None, inputs=()
+    results, source, processor, params=None, inputs=(), ports=None, restriction=None
 ) -> tuple[ProcessingResult, ...]:
     """Record on each result what it was derived from.
 
@@ -43,7 +60,7 @@ def attach_provenance(
     results = tuple(results)
     # The footprint is recorded even for a source-less run: "cropped with these
     # ranges" is worth keeping whether or not the input is still identifiable.
-    record_step(results, source, processor, params, inputs)
+    record_step(results, source, processor, params, inputs, ports, restriction)
     if source is None:
         return results
     same_grid = bool(getattr(processor, "preserves_grid", None))
@@ -55,22 +72,30 @@ def attach_provenance(
 
 
 def normalize_processor_output(
-    output, source=None, processor=None, params=None, inputs=()
+    output, source=None, processor=None, params=None, inputs=(), restriction=None
 ) -> tuple[ProcessingResult, ...]:
     """Normalize a processor return value to a tuple of results.
 
     When ``source`` and ``processor`` are given, provenance is attached here so
     every processor inherits it without having to opt in. ``params`` are what
     the run was asked for, and become the footprint step's settings.
+    ``restriction`` is the ROI restriction the run path applied around the
+    processor, recorded on the step by the runner rather than as a parameter.
     """
     if isinstance(output, ProcessorOutput):
-        return attach_provenance(output.results, source, processor, params, inputs)
+        return attach_provenance(
+            output.results, source, processor, params, inputs, output.keys, restriction
+        )
     if isinstance(output, ProcessingResult):
-        return attach_provenance((output,), source, processor, params, inputs)
+        return attach_provenance(
+            (output,), source, processor, params, inputs, None, restriction
+        )
     if isinstance(output, (list, tuple)):
         results = tuple(output)
         if all(isinstance(result, ProcessingResult) for result in results):
-            return attach_provenance(results, source, processor, params, inputs)
+            return attach_provenance(
+                results, source, processor, params, inputs, None, restriction
+            )
     raise TypeError(
         "Processor output must be a ProcessingResult, ProcessorOutput, "
         "or a sequence of ProcessingResult objects"

@@ -149,29 +149,32 @@ def set_history(result, history) -> None:
     metadata[HISTORY_KEY] = list(history)
 
 
-def record_step(results, source, processor, params: dict | None = None, inputs=()):
-    """Append one step to each result's inherited chain; returns ``results``.
+def record_step(
+    results,
+    source,
+    processor,
+    params: dict | None = None,
+    inputs=(),
+    ports=None,
+    restriction=None,
+):
+    """Record one step on each result; returns ``results``.
 
     Called from the one place every processor output passes through, so a
     processor records its footprint without knowing this module exists -- the
     same reasoning as the spatial provenance attached alongside it. Twenty-odd
     processors each remembering to add a line is a footprint that is mostly
     missing.
+
+    The step is recorded on the provenance graph (:mod:`.provenance`), and the
+    linear chain this module reads is derived from it. ``ports`` names the
+    outputs when a processor produced several.
     """
-    if processor is None:
-        return results
-    operation = getattr(processor, "id", "") or type(processor).__name__
-    label = getattr(processor, "name", "") or operation
-    sources = list(inputs) or ([source] if source is not None else [])
-    inherited = history_of(source) if source is not None else []
-    step = make_step(operation, label=label, params=params, inputs=sources)
-    for result in results:
-        if result is source:
-            # A processor that returns its input unchanged (a no-op crop, a
-            # view) must not append a step to the very history it inherited.
-            continue
-        set_history(result, [*inherited, step])
-    return results
+    from imswitch.improcess.model.provenance import record_process
+
+    return record_process(
+        results, source, processor, params, inputs, ports, restriction
+    )
 
 
 def history_json(result) -> str:

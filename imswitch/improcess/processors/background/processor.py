@@ -91,7 +91,8 @@ class SubtractBackgroundProcessor(Processor):
         if not params.get("output_background", False):
             return output
         return ProcessorOutput(
-            [output, _result(f"{result.name} (background r={radius:g})", background)]
+            [output, _result(f"{result.name} (background r={radius:g})", background)],
+            keys=("signal", "background"),
         )
 
 

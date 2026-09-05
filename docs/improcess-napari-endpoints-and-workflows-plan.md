@@ -1,0 +1,349 @@
+# ImProcess upgrade plan: napari plugin endpoints + headless workflows
+
+Status: PLAN v4 (WIP markdown; durable docs land as `.rst` when implemented).
+Branch: `feat/improcess-napari-endpoints-workflows`, worktree
+`../Imswitch2-improcess-workflows`, based on `main` @ 87b3e3b5 (2026-09-05).
+
+v2–v4 answer three rounds of critical review; every finding was verified
+against the code. The "Review response" tables at the end map findings to
+changes. **Phase 0 is implemented** (see Phasing).
+
+Terminology: "GUI-independent" means *no widget is constructed and no
+QApplication is required*; the plugin base modules still import `qtpy`.
+
+Two deliverables, one shared foundation:
+
+* **A. Verified napari plugins as one-way endpoints** for an ImProcess
+  result. Improcess → plugin only. Supported: npe2 **dock-widget**
+  contributions (auto-discovered, marked unverified until an adapter vouches
+  for them) and **reader** contributions with an adapter-declared
+  exporter/reader schema pair. Writer contributions are export formats.
+* **B. ImProcess workflows**: GUI-independent, testable, batchable pipelines
+  chaining a reconstructor with processors, plus **replay** from the
+  provenance graph saved in an output file, with a strict source policy.
+
+---
+
+## 0. Ground truth (what the code does today)
+
+Verified against the tree on 2026-09-05.
+
+### Viewer
+`EmbeddedNapari` is a real `napari.Viewer` subclass; npe2 dock widgets
+attach to it and see its layers (spike, A.5). napari 0.7.1, npe2 0.8.3.
+Precedent: `smlm_export.open_in_napari_storm` (export → detached viewer).
+
+### Results
+`ProcessingResult` carries `kind`, axes/scales/unit, `metadata`, identities,
+`display_layers()`. It stores **scale only**: no translate, rotation, shear
+or affine. `LocalizationResult.data` is a lazy histogram **preview binned
+relative to `(x_min, y_min)`**; the payload is `locs` in absolute nm, with
+`pixel_size_nm` and optional `z_step_nm`. Its CSV writer emits a plain
+first-line column header. Multi-output processors: `background`,
+`stack_split`, `channel_split` (ports are data-derived: axis label + index).
+`multicolor-registration` writes an alignment file from `params["save_path"]`.
+
+### Writers (20 concrete implementations)
+Shared writer (6): `array_result`, `make_composite`, `make_rgb`,
+`multicolor_apply`, `projection`, `view_only`. **Bypassing (14):**
+`localization_result` (CSV; Picasso HDF5 + YAML via export),
+`roi_mask_result`, `colocalization`, `denoise`, `drift_correct` (TIFF +
+`.drift.npy`), `frc`, `multicolor_registration`, `psf_resolution`,
+`segmentation`, `monalisa` (ImageJ TZCYX fold), `snouty`,
+`snouty_projections`, `tiling` (one mosaic TIFF), `widefield_starss`.
+(`ProcessingResult.save` is abstract; `DisplayLayerProcessingResult.save`
+refuses by design; neither is a writer.)
+
+### Execution paths that produce results (all must record provenance)
+| Path | Call | Source object |
+|---|---|---|
+| Inline reconstruct (`ReconstructorManagerController`) | `process(data_obj, params)` | `DataObj` (file) |
+| Worker reconstruct (`ReconstructionWorker`) | `process(job.data_obj, job.params, context)` | `DataObj` |
+| Consolidation | `consolidate(results)` | N results |
+| Legacy MoNaLISA (`MoNaLISAController.runLegacyReconstruct`) | own load/bleach/extract/build, no `process()` | `DataObj` |
+| **Live streaming** (`LiveReconstructionController`) | `session.begin(init, params)` / `push(chunk)` / `result()` snapshots / `finish()` | live source + `StackInfo` |
+| **Live batch fallback** (`LiveReconstructionController._run_batch_fallback`) | `process(InMemoryStackWrapper, params)` | in-memory stack |
+| **RAM recording** (`MemoryLiveController`) | `process(InMemoryStackWrapper, params)` | in-memory stack |
+| Headless runner (B.4) | `process` / `consolidate` | `SourceSpec` |
+
+ROI geometry is serialisable (`ROIRecord.to_dict/from_dict`); `DataObj._open`
+**requires a dataset name** for multi-dataset containers; tiling depends on
+`sourceKind` + manifest metadata.
+
+---
+
+## A. napari plugins as endpoints
+
+### A.1 Scope, descriptors, gating
+
+| npe2 contribution | Lane | Support |
+|---|---|---|
+| `widgets` | `dock` | Auto-discovered as **unverified**; verified when an adapter declares `kinds` (and optionally an output mapping, A.3). |
+| `readers` | `reader` / `detached` | **Verified pairs only**: an adapter declares which exporter schema the reader understands. Filename-pattern compatibility (`iter_compatible_readers`) is a precondition, never the proof. No auto-discovered reader endpoints. |
+| `writers` | export format | Separate descriptor `NapariWriterFormat(plugin_name, writer_id, layer_types, extension)`; used to export **this session's layers** via `napari.save_layers(path, layers, plugin=…)`. |
+| commands, sample data, themes, menus | — | Out of scope. |
+
+```python
+@dataclass(frozen=True)
+class NapariEndpoint:
+    id: str; label: str
+    lane: str                        # "dock" | "reader" | "detached"
+    plugin_name: str
+    widget_name: str | None          # dock
+    reader_plugin: str | None        # reader / detached
+    export_format: str | None        # reader / detached: an exporter id (A.2 table)
+    kinds: tuple[str, ...]           # () only for unverified docks
+    verified: bool
+    output_mapping: OutputMapping | None = None   # A.3, dock lane
+```
+
+Gating: `dock` → `result.kind in LAYERABLE_KINDS` and (unverified or
+`kind in kinds`). `reader`/`detached` → adapter pair exists for
+`(result.kind, export_format, reader_plugin)`. Table/curve results reach
+no endpoint; they are exported to files by the ordinary save path, and a
+plugin that reads such a file needs a verified pair like any other.
+
+### A.2 Result → napari layers, by kind
+`LAYERABLE_KINDS = ("image", "composite", "rgb", "labels", "localization")`.
+image/composite/rgb → Image layers (from `display_layers()` or the primary
+array); labels → Labels; localization → **Points from `locs`**: 2D coords
+`(y_nm/px, x_nm/px)`, `scale=(px, px)`; 3D coords `(z_nm/z_scale, y_nm/px,
+x_nm/px)`, `scale=(z_scale, px, px)`, `z_scale=z_step_nm`, fallback
+`pixel_size_nm` flagged `z_scale_assumed`; `properties` from all other
+columns; `metadata["coordinate_transform"]` documented. The optional
+**context preview** layer gets `translate=(y_min, x_min)` in world units,
+because the histogram is binned from the minimum, not the origin. Tests:
+2D, 3D, anisotropic z, assumed z, **non-zero-minimum preview overlay**.
+table/curve → `NotLayerable`.
+
+Exporter ids for the reader lane: `ome-tiff`, `hdf5`, `ome-zarr`, `labels-tiff`,
+`picasso-hdf5`, `localizations-csv`, plus adapter-provided custom exporters.
+
+### A.3 Reverse direction (explicit, user- or adapter-selected, fresh grid)
+Import is never inferred from layer-added events. Two ways in:
+1. **Adapter output mapping**: `OutputMapping(layer_name_pattern, layer_type,
+   result_kind, source_role)` declared by a verified dock adapter.
+2. **Explicit user selection**: the user picks the output layer *and* the
+   source result in the import dialog.
+
+Mapping: Image → `ArrayProcessingResult`; Labels → `LabelsResult`; Points →
+`PointsTableResult` (kind table; never promoted to localizations without the
+explicit `table-to-localizations` processor); Shapes → ROI manager; others
+refused. **Grid**: fresh coordinate space by default. Inheritance only when
+the adapter declares `preserves_grid=True` **and** the layer has the same
+`ndim` and axis order, equal `scale`, `translate == 0`, `rotate == identity`,
+`shear == 0`, `affine == identity`, and the selected source result is the one
+the layers were sent from. `ProcessingResult` cannot represent any other
+transform, so nothing else may claim its grid. Every import records a
+`napari-import` node (Phase 0 interface).
+
+### A.4 Endpoint sessions
+`EndpointSession(endpoint_session_uid)` owns the export temp dir and files,
+the exact layer objects it added, the dock widget (closed by the session),
+the detached viewer (strong ref), and the export worker. Only export
+computation runs in the worker; `viewer.open`, dock creation, layer
+mutation and plugin interaction run on the GUI thread. Writer formats
+receive only the session's layers. Cleanup on explicit close, removal of all
+session layers, detached viewer close, or exit. Failure → status bar + log +
+immediate cleanup.
+
+### A.5 Spike (DONE 2026-09-05)
+Dock lane works inside `EmbeddedNapari`'s window; reader lane works in our
+viewer; `napari.current_viewer()` is ours; discovery via `iter_widgets()` /
+`iter_compatible_readers()`; `napari-skimage-regionprops` 0.10.1 resolves
+cleanly; napari injects the viewer only into class `__init__`s or magicgui
+factories. `EmbeddedNapari` segfaults under `QT_QPA_PLATFORM=offscreen` on
+macOS; worktree scripts need `PYTHONPATH=<worktree>`.
+
+### A.6 Docs + examples, A.7 Tests
+`docs/improcess-napari-plugins.rst` (scope, lanes, gating, mapping tables,
+import rules, sessions, worked examples regionprops + napari-storm, agent
+recipe, troubleshooting); `examples/improcess_napari_endpoints/`. Tests in
+three tiers: GUI-independent units; stubbed controller (offscreen);
+guarded native smoke (`IMSWITCH_NATIVE_GUI_TESTS=1`).
+
+---
+
+## B. ImProcess workflows
+
+### B.0 Provenance graph — IMPLEMENTED (Phase 0)
+`model/provenance.py`: versioned DAG under `metadata["provenance"]`
+(`schema`, `imswitch_version`, `output {node, port}`, `nodes`). Node ops:
+`source | reconstruct | consolidate | process | napari-import | opaque`.
+Nodes carry plugin id/version/`params_version`, strictly encoded `params`,
+ordered `inputs`, named `outputs`, `replayable` + `reasons`, and for
+process nodes a runner-level **`restriction`** (ROI geometry via
+`ROIRestriction.encode_provenance()`, by reference above 256 KB → non-
+replayable). Transitive node union per result, `merge_nodes` conflict
+detection, `describe_source` fingerprint (shape, dtype, size, mtime, attrs
+digest, manifest), `validate_graph` for untrusted graphs (schema, ≤10 000
+nodes, ≤8 MB, refs, ports, acyclic), `derive_history` → the old linear
+list. `ProcessorOutput.keys` → ports. Saves are **not** nodes: a written
+file carries an `artifact` record (B.3). Compatibility of the derived
+history is **schema compatibility**: same step dict shape (`operation`,
+`label`, `time`, `params`, `inputs`, plus `step_id`); it now also lists
+reconstruction and import steps, which processor-only readers ignore.
+
+### B.1 Parameter codec (Phase 2)
+`Processor`/`Reconstructor` gain `params_version`, `encode_params`,
+`decode_params(encoded, ctx)`, `migrate_params`, `default_params`. The
+strict default is what Phase 0 already applies. Plugin versions are derived
+by the runtime, not read from optional class attributes: built-ins →
+`importlib.metadata.version("imswitch")`; entry-point plugins → their
+distribution version; drop-in files → sha256 of the file. The runtime
+stamps `plugin_version` when it registers the plugin.
+
+### B.2 Reconstruction provenance: every producing path (Phase 2)
+* `reconstructors/run.py::run_reconstruction(reconstructor, source, params,
+  context=None) -> ReconstructionRun` wraps `process()` + `record_reconstruction`.
+  `source` is a `DataObj` **or** an `InMemoryStackWrapper`; `describe_source`
+  gains `kind: "file" | "memory" | "live"`. A memory/live source without a
+  file path records name, dataset, shape/dtype and attrs digest and marks the
+  node **non-replayable** ("source was not persisted") unless the wrapper
+  reports the path the recording was also written to.
+  Call sites: inline, worker, **batch-live fallback**, **RAM recording**,
+  headless runner.
+* **Streaming**: `record_streaming(result, reconstructor, session_id, params,
+  stack_info, completion)` is called on every `result()` snapshot and on
+  `finish()`. The node is `reconstruct` with `mode: "streaming"` and a
+  `completion` record `{status: "partial" | "complete" | "stalled" | "failed",
+  frames_committed, expected_frames}`; snapshots reuse the session's step id
+  so the graph does not grow per chunk; `replayable` is true only when
+  `status == "complete"` and the source is a file.
+* Consolidation → `record_consolidation`. Legacy MoNaLISA → extracted into
+  `LegacyMonalisaReconstructor` (id `monalisa-legacy`) with its own codec;
+  per-source nodes before its consolidation node; regression test on a
+  recorded coefficient set. `scan_params_from_attrs(attrs)` extracted as a
+  pure function. `_publishPluginResult` untouched.
+* Exit test: a table-driven test enumerating **every row of the §0 path
+  table**, each producing a result with a `reconstruct` node.
+
+### B.3 Writers: staged, atomic, receipted (Phase 2)
+Protocol, replacing "save returns a receipt then embed it":
+1. `plan = result.plan_save(path, fmt) -> SavePlan(primary, companions,
+   fmt, view)` — every file the writer will produce, known **before**
+   writing (`supported_formats` per type).
+2. **No-clobber preflight** over every planned path (unless overwrite).
+3. **Stage** all files into a temp directory beside the target.
+4. **Embed** the `artifact` manifest (node, port, fmt, planned file list
+   with relative names) into the staged primary — the manifest is derived
+   from the plan, not from a receipt, so nothing is rewritten.
+5. **Publish** companions, then the primary **last**, each by rename; on
+   any failure remove every staged and already-published file of this plan.
+6. Return `SaveReceipt(files, primary, fmt, node, port)` = what was published.
+Containers: OME-TIFF annotation/ImageDescription, HDF5 attrs, OME-NGFF
+attrs, Picasso HDF5 attrs inline; **CSV stays plain CSV** and gets a listed
+`<name>.provenance.json` companion (the one sidecar, because CSV has no
+metadata slot and its first line is a column-header contract). MoNaLISA
+keeps its TZCYX fold through `serialization_view()` → OME-TIFF; ImageJ
+writer one release as opt-in. All 14 bypassing writers migrate.
+**Processor side effects are removed**: `multicolor-registration` returns
+the alignment inside its result and the file is written by a `Save` step;
+the `save_path` param is deprecated in the GUI (writes through the same
+save protocol) and rejected by the headless runner.
+Reader: `read_provenance(path) -> ProvenanceDocument(graph, artifact)`;
+tests compare `graph` only. Exit test over every type × format, asserting
+the receipt equals the files on disk and the document round-trips.
+
+### B.4 GUI-independent core (Phase 3)
+* `runtime.bootstrap_registry(config=None, user_plugins=True) -> PluginRegistry`
+  returns a **fresh** registry (not the process-wide singleton), rejects
+  duplicate ids, stamps plugin versions (B.1).
+* `SourceSpec(path, dataset, source_kind, metadata, fingerprint)`; a
+  workflow `Source` step holds one; manifests have `path` and `dataset`
+  columns per source id; `--bind <id>=<path>[::<dataset>]`; relocation via
+  `--source-root`; tiling manifests bind as `source_kind="tiling-manifest"`.
+* Steps: `Source`, `Reconstruct`, `Consolidate`, `Process`, `Save(input,
+  fmt, path_template)`; refs `step_id[.port]`.
+* **Ports contract**: `Processor.output_spec(params, input_specs) ->
+  OutputSpec(ports=(…) | pattern="C{i}")`. Static validation accepts a
+  declared pattern; runtime validation after execution checks the produced
+  ports against the spec; replay uses the concrete recorded ports.
+* Two run modes, named: **`run`** binds sources freely (apply this recipe to
+  new data); **`replay`** (B.5) verifies sources.
+* Outputs through the B.3 protocol (atomic, no-clobber unless `--overwrite`).
+* `RunReport` context manager releases `DataObj` handles on close.
+* CLI: `python -m imswitch.improcess.workflows run|replay|validate …`.
+
+### B.5 Replay (Phase 4)
+`workflow_from_provenance(document) -> Workflow` maps nodes 1:1
+(`Consolidate` explicit), decodes params, emits a parameterised `Save`.
+**Replay policy**: fails by default on dataset name, shape/dtype, size/mtime
+or manifest mismatch and on non-replayable nodes; `--allow-drift` downgrades
+source mismatches to warnings; `--verify-hash` adds a full digest. A run
+that bound different sources is a `run`, never a "successful replay". LLM
+guide for the gaps; GUI "Export workflow…" / "Run workflow…".
+
+### B.6 Docs + examples, B.7 Tests
+As v3, plus: a per-path provenance exit test (B.2), the staged-save protocol
+test (crash between companion and primary leaves no orphan), CSV companion
+listing, `output_spec` static+runtime validation, non-zero-minimum preview
+overlay, replay strict-policy failures and `--allow-drift`.
+
+---
+
+## Phasing (sequential)
+
+| Phase | Scope | Exit criterion |
+|---|---|---|
+| 0 | **DONE 2026-09-05.** Spike; `processors/run.py`; `model/provenance.py` incl. runner-level restriction codec; `footprint.record_step` → graph; `ProcessorOutput.keys`; `split_port_keys`; generic annotations exclude the graph until B.3 | improcess suite 1916 passed; 25 graph tests |
+| 1 | **DONE 2026-09-05.** `model/napari_layers.py` (per-kind LayerData incl. localization Points + translated preview, portable colormaps), `model/napari_endpoints.py` (descriptors, exporters, built-in adapters, config + drop-in `NAPARI_ENDPOINTS` hook, npe2 discovery incl. npe1 adapters, gating, availability, writer formats), `model/napari_import.py` + `LabelsResult` + `PointsTableResult` (explicit import, identity-transform grid rule, shapes → ROIs), `model/napari_sessions.py` (ownership by object, temp-dir lifetime), `controller/NapariEndpointController.py` (menu under Plugins → napari plugins, three lanes, threaded export, GUI-thread viewer work, layer-removal auto-close, import dialog, plugin-manager hook), `view/NapariImportDialog.py`, `docs/improcess-napari-plugins.rst` + toctree, `examples/improcess_napari_endpoints/` | 64 GUI-independent + stubbed tests green (suite 1980 passed); **native smoke test PASSED on macOS** (dock inside embedded window, reader in our viewer, clean teardown) |
+| 2 | B.1 codec + version stamping; B.2 every-path provenance incl. streaming, live-batch, RAM, legacy adapter; B.3 staged writers, receipts, CSV companion, reader | per-path exit test; type × format exit test |
+| 3 | B.4 runtime, `SourceSpec`, steps, `output_spec`, runner, batch, CLI, examples, cookbook | run → save → read graph equality; examples on synthetic data |
+| 4 | B.5 replay with strict policy + LLM guide + GUI hooks | replay round-trip; strict-policy tests |
+| 5 | Rig/GUI check; changelog; PR | |
+
+## Decisions (Lenny, 2026-09-05)
+1. MoNaLISA/SNOUTY → OME-TIFF via `serialization_view()`; ImageJ opt-in one release.
+2. Explicit `default_params()` + widget sync test; strict codec is the replay contract.
+3. Python-first workflows, YAML serialisation.
+4. Reverse import in Phase 1, explicit selection or adapter mapping, fresh grid.
+5. Dock example: ~~`napari-skimage-regionprops`~~ → **`napari-skimage`**
+   (changed during Phase 1: regionprops 0.10.1 has no `napari.yaml`; its
+   only npe1 hook is `provide_function`, and its dock entries come from
+   `napari-tools-menu`, i.e. napari's own Tools menu, which is outside the
+   endpoint table by A.1. `napari-skimage` 0.7.1 is a pure npe2 plugin from
+   the napari org with "Gaussian filter" / "Automated Threshold" / "Label
+   connected components" widgets that consume an Image and add Labels,
+   which also exercises the reverse-import mapping.) Two more findings from
+   the native run: ImProcess's private `grayclip` colormap must be mapped to
+   `gray` on layers leaving ImProcess (done: `portable_colormap`), and
+   napari's `remove_dock_widget` only hides the dock, so the session deletes
+   it (done).
+6. CLI: `python -m imswitch.improcess.workflows` only.
+
+## Risks
+Own-window plugins; Qt-binding mismatches; graph size on long sessions;
+legacy MoNaLISA extraction touches a live path (regression test); streaming
+snapshots must not leak per-chunk nodes (same step id per session);
+`multicolor-registration` behaviour change for GUI users (deprecation note).
+
+## Review response
+
+### Round 3 (v3 → v4)
+| Finding | Change |
+|---|---|
+| P1 Live paths missing | §0 path table (8 rows); B.2 `run_reconstruction` over `DataObj`/`InMemoryStackWrapper`, `record_streaming` with `completion` status and per-session step id, per-path exit test. |
+| P1 Source info lost | B.4 `SourceSpec(path, dataset, source_kind, metadata, fingerprint)`; manifests/`--bind` carry dataset and kind. |
+| P1 ROI codec never sees geometry | **Implemented in Phase 0**: restriction is a runner-level node field encoded by `ROIRestriction.encode_provenance()` (geometry via `ROIRecord.to_dict`), by reference above 256 KB → non-replayable; `run_restricted` no longer puts a summary into params; derived history keeps `region`. |
+| P1 Writer protocol circular/non-atomic | B.3 `SavePlan → preflight → stage → embed manifest → publish companions → primary last → receipt`, rollback on failure; processor side effects removed. |
+| P1 CSV header change | B.3: CSV unchanged; listed `.provenance.json` companion. |
+| P1 Dynamic ports vs static validation | B.4 `output_spec` with port patterns; runtime validation; replay uses recorded ports. |
+| P1 Spatial round-trip | A.3 inheritance only for identity transform (translate 0, rotate/affine identity, shear 0, equal scale/ndim/order) + selected source; A.2 preview `translate=(y_min, x_min)` + test. |
+| P1 Endpoint compatibility/ownership | A.1 verified exporter/reader pairs only, CSV-to-table claim removed; A.3 explicit user selection or adapter output mapping, no inference from layer events. |
+| P1 Replay vs run fingerprint policy | B.4/B.5 two named modes; replay fails on drift by default, `--allow-drift`, `--verify-hash`. |
+| P2 Writer descriptor | A.1 `NapariWriterFormat`. |
+| P2 Inventory count | §0: 20 concrete writers, 6 shared / 14 bypassing; tiling writes one mosaic TIFF. |
+| P2 Typed read result | B.3 `ProvenanceDocument(graph, artifact)`; compare `graph`. |
+| P2 Compatibility + bootstrap semantics | B.0 schema compatibility stated; B.4 fresh registry, duplicate ids rejected; B.1 versions from package/file metadata. |
+
+### Round 2 (v2 → v3)
+Artifact roots instead of save nodes; explicit `Consolidate`; `(z, y, x)`
+localization transform; fresh-grid imports; full writer inventory; legacy
+MoNaLISA adapter; phase dependencies fixed; gating; session ownership and
+thread affinity; replay safety and lifetimes; "GUI-independent".
+
+### Round 1 (v1 → v2)
+Versioned DAG; per-plugin codec; execution-point provenance; MoNaLISA
+serialization view; per-kind layer mapping; narrowed promise; three test
+tiers; endpoint sessions.

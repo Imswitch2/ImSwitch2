@@ -34,6 +34,7 @@ from imswitch.imcommon.model.ome_metadata import (
     build_ome_xml,
 )
 from imswitch.improcess.model.footprint import HISTORY_KEY, history_of
+from imswitch.improcess.model.provenance import PROVENANCE_KEY
 
 #: Suffix -> canonical format name. The canonical names are what `save(fmt=)`
 #: takes, and what the file dialog's filters resolve to.
@@ -143,7 +144,12 @@ def result_annotations(result, extra: dict | None = None) -> dict[str, Any]:
     annotations: dict[str, Any] = {}
     metadata = getattr(result, "metadata", None)
     if isinstance(metadata, dict):
-        annotations.update({k: v for k, v in metadata.items() if k != HISTORY_KEY})
+        # The provenance graph is written by its own path (Phase 2 of the
+        # workflows plan), not flattened through json_safe, which would
+        # truncate its nested nodes into summaries.
+        annotations.update(
+            {k: v for k, v in metadata.items() if k not in (HISTORY_KEY, PROVENANCE_KEY)}
+        )
     if extra:
         annotations.update({str(k): v for k, v in extra.items()})
     for attribute in ("result_uid", "dataset_uid", "coordinate_space_uid", "kind"):
