@@ -147,18 +147,6 @@ def _validate_marker_bool(
     return value
 
 
-def _positive_or_zero_int(value: Any) -> int | None:
-    """A non-negative integer attribute, or ``None`` when it is absent."""
-    value = _native_scalar(value)
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return None
-    return number if number >= 0 else None
-
-
 def normalize_recording_lifecycle(
     attrs: Mapping[str, Any],
     markers: RecordingLifecycleMarkers,
@@ -351,8 +339,8 @@ def normalize_recording_lifecycle(
     # scan declared -- and the outcome vocabulary has no word for that, so it
     # read as "complete". The count is on the file; this is where a reader
     # finds out, because nothing consulted it before.
-    discarded_frames = _positive_or_zero_int(
-        attrs.get("recording:discarded_frames")
+    discarded_frames = _read_count(
+        attrs, "recording:discarded_frames", issues, positive=False
     )
     if discarded_frames:
         issues.append(

@@ -26,7 +26,16 @@ def _pairing_signature(layout):
               for rule in (layout.traversal or ())}
     return (
         tuple(
-            (loop.kind, int(loop.count), orders.get(loop.id, ("forward", ())))
+            (
+                loop.kind,
+                int(loop.count),
+                # Labels name the states, and their order is the order the
+                # frames arrive in. ("signal", "background") against
+                # ("background", "signal") is the same shape and the opposite
+                # pairing, which counts alone cannot see.
+                tuple(loop.labels or ()),
+                orders.get(loop.id, ("forward", ())),
+            )
             for loop in layout.event_loops
         ),
         layout.recorded_event_spans,
@@ -35,8 +44,13 @@ def _pairing_signature(layout):
 
 def _describe_signature(signature) -> str:
     loops, spans = signature
-    described = ", ".join(f"{kind}={count}" for kind, count, _order in loops)
-    return f"[{described}]" + (" with a gated selection" if spans else "")
+    parts = []
+    for kind, count, labels, _order in loops:
+        named = f"{kind}={count}"
+        if labels:
+            named += f" ({', '.join(labels)})"
+        parts.append(named)
+    return f"[{', '.join(parts)}]" + (" with a gated selection" if spans else "")
 
 
 class WidefieldStarssReconstructor(Reconstructor):

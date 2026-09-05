@@ -14,6 +14,7 @@ from imswitch.imcommon.model.acquisition_metadata import (
     RecordingLifecycleMarkers,
     normalize_recording_lifecycle,
 )
+from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
     resolve_acquisition_layout,
@@ -247,7 +248,18 @@ def _frames_per_stack_from_layout(resolved: Any) -> int | None:
     # A stack is what one time point produces -- conditions, a Z axis, a
     # repeat loop and a gated detector's spans included. ``scan_x * scan_y``
     # dropped all of those, so the reader waited for the wrong frame count.
-    return recorded_frames_per_time_point(layout)
+    try:
+        return recorded_frames_per_time_point(layout)
+    except ValueError as error:
+        # A layout that has no single stack size -- time repeated inside a
+        # spatial axis, or a gated selection that differs between time points
+        # -- is not something this reader can follow, and guessing a number
+        # would make it slice frames from several time points into one stack.
+        initLogger("LiveSource").warning(
+            f"This recording has no single stack size, so the live reader "
+            f"cannot follow it from its layout: {error}"
+        )
+        return None
 
 
 def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:

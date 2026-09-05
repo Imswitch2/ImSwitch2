@@ -722,6 +722,31 @@ def _span_runs(span: RecordedEventSpan) -> Iterator[tuple[int, int, int]]:
         yield span.start + repetition * period, span.stride, span.count
 
 
+def _span_progressions(span: RecordedEventSpan) -> Iterator[tuple[int, int, int]]:
+    """The same events as ``_span_runs``, in the fewer arithmetic progressions.
+
+    A span is a grid: ``start + i*period + j*stride`` over ``repeats`` by
+    ``count``. It can be cut into progressions along either edge, and the two
+    cuts describe exactly the same events, so taking the shorter one costs
+    nothing and bounds the work by ``min(repeats, count)`` rather than by
+    ``repeats`` alone.
+
+    That distinction is the difference between validating a layout and hanging
+    on one. Two spans of three frames per position over a hundred-thousand
+    position scan are ordinary, and cutting them per repetition built six
+    hundred thousand runs -- seventy megabytes and a second and a half -- to
+    answer a question about six progressions.
+    """
+    period = span.period or 0
+    if span.repeats <= span.count:
+        yield from _span_runs(span)
+        return
+    # Cut the other way: one progression per offset within a run, stepping by
+    # the period instead of the stride.
+    for offset in range(span.count):
+        yield span.start + offset * span.stride, period, span.repeats
+
+
 def _run_last(run: tuple[int, int, int]) -> int:
     start, stride, count = run
     return start + (count - 1) * stride
@@ -759,14 +784,15 @@ def _runs_share_a_value(
 def _spans_share_an_event(spans: Sequence[RecordedEventSpan]) -> bool:
     """True when two spans select the same producer event.
 
-    This works on compressed arithmetic runs, so a periodic span is never
-    expanded into its individual ordinals. Cost follows the number of runs,
-    which canonicalization keeps small, rather than the number of selected
-    frames -- expanding the latter cost seconds and hundreds of megabytes on
-    large point-scan selections.
+    This works on compressed arithmetic progressions, so a periodic span is
+    never expanded into its individual ordinals, and each span is cut along
+    its shorter edge -- see :func:`_span_progressions` -- so the cost follows
+    ``min(repeats, count)`` rather than the number of selected frames or the
+    number of repetitions. Both of the wider measures reach hundreds of
+    megabytes on ordinary point-scan selections.
     """
     runs = sorted(
-        (run for span in spans for run in _span_runs(span)),
+        (run for span in spans for run in _span_progressions(span)),
         key=lambda run: run[0],
     )
     active: list[tuple[int, int, int]] = []
@@ -1564,21 +1590,55 @@ def recorded_frames_per_time_point(layout: AcquisitionLayout) -> int:
     number of frames. Without a ``time`` loop the whole layout is one stack.
 
     Counting until the time coordinate first changed was the next mistake: it
-    assumed the time loop is outermost and runs forward. It is neither by
-    definition -- a layout may nest time inside a spatial axis, and a
-    traversal may run it in reverse -- and both cases returned a number the
-    reader would then wait forever to reach. Every frame is tallied against
-    its own time coordinate instead, and a layout whose time points differ in
-    size has no single answer, so it says so rather than picking one.
+    assumed the time loop is outermost, and returned half a stack when time
+    was nested inside a spatial axis and nothing at all when the traversal ran
+    it backwards.
+
+    Counting correctly is still not enough, because a single number only
+    describes the stream if each time point's frames are *consecutive* in it.
+    They are exactly when the time loop is the outermost one; nested inside a
+    spatial axis the acquisition returns to earlier time points again and
+    again, so the first N frames span several of them and no stack size exists
+    to be returned. That is refused rather than answered with a number a
+    reader would slice the wrong frames with.
     """
     _raise_for_invalid_coordinates(layout)
-    time_ids = [loop.id for loop in layout.event_loops if loop.kind == "time"]
-    if not time_ids:
+    time_index = next(
+        (
+            index
+            for index, loop in enumerate(layout.event_loops)
+            if loop.kind == "time"
+        ),
+        None,
+    )
+    if time_index is None:
         return recorded_frame_count(layout)
-    time_id = time_ids[0]
+    time_loop = layout.event_loops[time_index]
+    if time_index != 0:
+        outer = ", ".join(
+            f"{loop.kind}={loop.count}"
+            for loop in layout.event_loops[:time_index]
+        )
+        raise ValueError(
+            f"This acquisition repeats its time points inside {outer}, so the "
+            f"frames of one time point are not consecutive in the recorded "
+            f"stream and no single stack size describes it. Read it through "
+            f"its recorded coordinates instead."
+        )
+
+    if layout.recorded_event_spans is None:
+        # Time outermost and every event kept: the stack is simply what one
+        # pass over the inner loops produces. Deriving it arithmetically
+        # matters -- walking the coordinates took seconds on a scan of a few
+        # million frames, just to state a number the loop counts already give.
+        total = 1
+        for loop in layout.event_loops:
+            total *= loop.count
+        return total // time_loop.count
+
     per_point: dict[int, int] = {}
     for coordinates in iter_recorded_coordinates(layout):
-        value = coordinates[time_id]
+        value = coordinates[time_loop.id]
         per_point[value] = per_point.get(value, 0) + 1
     if not per_point:
         return 0

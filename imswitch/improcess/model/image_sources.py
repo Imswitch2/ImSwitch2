@@ -503,6 +503,9 @@ def _ome_map_annotation_attrs(file: tiff.TiffFile, image_index: int) -> dict[str
                 "recording:actual_frames",
                 "recording:planned_partitions",
                 "recording:actual_partitions",
+                # Left out, this came back as text and the strict count parser
+                # rejected the very field that says frames were thrown away.
+                "recording:discarded_frames",
             }:
                 try:
                     annotations[key] = int(value)

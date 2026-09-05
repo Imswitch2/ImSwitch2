@@ -366,6 +366,20 @@ def test_localizer_params_widget_get_values(qapp):
     widget = localizer.make_param_widget(None)
     values = widget.get_values()
     assert values["method"] == "gausslq"
-    assert values["pixel_size_nm"] == pytest.approx(100.0)
     assert values["roi"] == 7
+    # No pixel size unless one was chosen. Sending the spinbox's default on
+    # every run meant the recording's own calibration was never consulted and
+    # an anisotropic one could not object, because the localizer could not
+    # tell a default from a decision.
+    assert values["pixel_size_nm"] is None
     assert localizer.make_metadata_dialog(None) is None
+
+
+def test_localizer_params_widget_sends_a_chosen_pixel_size(qapp):
+    widget = SmlmLocalizer().make_param_widget(None)
+    calibration = widget.p.param("Calibration")
+
+    calibration.param("Pixel size").setValue("Enter below")
+    calibration.param("Pixel size (nm)").setValue(65.0)
+
+    assert widget.get_values()["pixel_size_nm"] == pytest.approx(65.0)
