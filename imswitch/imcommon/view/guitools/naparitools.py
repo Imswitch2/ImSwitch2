@@ -103,6 +103,20 @@ def addNapariGrayclipColormap():
         pass
 
 
+def removeUnprotectedLayers(layers):
+    """Remove every layer from ``layers`` that is not marked ``protected``.
+
+    What ``clear()`` has to mean on a layer list that refuses to delete some
+    of its members. ``MutableSequence.clear`` is a ``pop()`` loop that runs
+    until the list raises ``IndexError`` -- and a list that silently keeps a
+    protected layer never does, so the loop spins forever at full CPU. Walking
+    a snapshot and removing by identity terminates whatever the list declines.
+    """
+    for layer in list(layers):
+        if not getattr(layer, 'protected', False):
+            layers.remove(layer)
+
+
 class EmbeddedNapari(napari.Viewer):
     """ Napari viewer to be embedded in non-napari windows. Also includes a
     feature to protect certain layers from being removed when added using
@@ -123,6 +137,18 @@ class EmbeddedNapari(napari.Viewer):
             return indices
 
         self.layers._delitem_indices = newDelitemIndices
+
+        # clear() cannot be left to MutableSequence once deletion can decline:
+        # it pops until IndexError, which a protected layer never lets happen.
+        def newClear():
+            batched = getattr(self.layers, 'batched_update', None)
+            if batched is None:
+                removeUnprotectedLayers(self.layers)
+                return
+            with batched():
+                removeUnprotectedLayers(self.layers)
+
+        self.layers.clear = newClear
 
         # Make menu bar not native
         self.window._qt_window.menuBar().setNativeMenuBar(False)

@@ -16,10 +16,13 @@ GL reports a skip rather than a failure.
 **Deselected by default.** A live GL context does not survive alongside the
 rest of the suite in one process — it segfaults the interpreter reproducibly,
 with or without clean teardown — so these carry the ``glviewer`` marker and
-``addopts`` excludes it. Run them on their own::
+``addopts`` excludes it. Run them on their own, on a real display::
 
     pytest -m glviewer
 
+Not under ``QT_QPA_PLATFORM=offscreen``: napari's canvas queries GL texture
+limits while it is built, and the offscreen platform has no GL to answer
+with, so the interpreter segfaults before any test body runs.
 """
 
 from __future__ import annotations

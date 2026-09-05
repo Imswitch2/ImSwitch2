@@ -27,7 +27,9 @@ select = ["E9", "F63", "F7", "F82"]
 # glviewer tests are deselected by default: they build a real napari viewer,
 # and a live GL context does not survive alongside the rest of the suite in one
 # process — it segfaults the interpreter reproducibly, with or without clean
-# teardown. Run them on their own with:  pytest -m glviewer
+# teardown. Run them on their own, on a real display (not
+# QT_QPA_PLATFORM=offscreen, which segfaults in napari's canvas init):
+#     pytest -m glviewer
 addopts = "--import-mode=importlib -m 'not glviewer'"
 testpaths = ["imswitch"]
 markers = [
