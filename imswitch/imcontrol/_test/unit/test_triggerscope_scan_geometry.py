@@ -422,3 +422,49 @@ def test_every_resolft_panel_declares_its_camera(qtbot, widget_module, widget_cl
         detectors=('OrcaStraight', 'WidefieldCamera'),
     )
     assert controller.getNumCamTTL() == {'OrcaStraight': 1}
+
+
+# --------------------------------------------------------------------------- #
+# Declaring the camera on a rig whose camera has no software TTL line          #
+# --------------------------------------------------------------------------- #
+
+def test_the_camera_selector_offers_a_detector_with_no_digital_line():
+    """Snouty's camera is wired to the TriggerScope, not driven by ImSwitch.
+
+    The firmware owns the camera line in these modes, so the setup file has no
+    reason to give the detector a ``digitalLine`` -- and the shipped Snouty
+    configuration does not. Filling the selector from the software's TTL
+    devices therefore left it empty on exactly the rig that needs it, and every
+    scan-mode camera recording was refused at arm with no way to fix it in the
+    UI. The role names which detector receives the firmware's pulse; that is a
+    question about detectors.
+    """
+    import ast
+    from pathlib import Path
+
+    for filename in (
+        'TriggerScopePLSRController.py',
+        'TriggerScopeGalvoDetectionController.py',
+        'TriggerScopePLSRMulticolorController.py',
+    ):
+        source = (CONTROLLER_DIR / filename).read_text()
+        tree = ast.parse(source)
+        populated = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'addItems'
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == 'CameraTTLEdit'
+        ]
+        assert populated, f'{filename} does not populate the camera selector'
+        for call in populated:
+            rendered = ast.dump(call)
+            assert 'detectors' in rendered, (
+                f'{filename} fills the camera selector from something other '
+                f'than the setup\'s detectors'
+            )
+            assert 'TTLDevices' not in rendered, (
+                f'{filename} still requires a software TTL line to name the '
+                f'camera; Snouty\'s has none'
+            )

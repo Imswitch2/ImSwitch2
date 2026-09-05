@@ -153,10 +153,11 @@ The firmware gates the camera on a fixed line in those modes, so the selector
 does not choose the camera, it *declares* which detector receives that pulse.
 **Do:** leave it unset once and confirm the recording is refused, with a
 message naming the selector; then set it to the camera wired to the firmware's
-camera line and record. If the camera is **not in the list**, that is a setup
-question, not a bug: the selector lists detectors that declare a `digitalLine`,
-so add the firmware's camera line to that detector's entry in the setup file
-before the session rather than during it.
+camera line and record. On Snouty that is `OrcaStraight`, the Hamamatsu on
+TTL3 — not `WidefieldCamera`, which free-runs and is never hardware-triggered
+(see `triggerscope_firmware_quirks.md` §3). The selector lists every detector
+in the setup, because the firmware owns that line and ImSwitch never drives
+it; nothing needs adding to the setup file to make the camera appear.
 **Check:** `recording:discarded_frames` is 0 in the file. A non-zero value
 means the detector produced more frames than the scan declared — free-running,
 or pulsed more often than declared — and the surplus was dropped, with a

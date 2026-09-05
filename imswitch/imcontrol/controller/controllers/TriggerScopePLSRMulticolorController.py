@@ -59,14 +59,13 @@ class TriggerScopePLSRMulticolorController(
         self._widget.onLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.offLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.roLaserEdit.addItems(self.TTLDevices.keys())
-        # Detectors only. The role names which detector receives the
-        # firmware's camera pulse, and a laser chosen here reads back as
-        # "no camera declared", which now refuses the recording at arm
-        # rather than silently defaulting to one pulse per position.
-        self._widget.CameraTTLEdit.addItems(
-            device for device in self.TTLDevices
-            if device in self._setupInfo.detectors
-        )
+        # Every detector, not only the ones with a digitalLine. The firmware
+        # owns the camera line in these modes -- the software never drives it
+        # -- so this names which detector receives that pulse rather than
+        # commanding one, and requiring a software TTL line to say so left the
+        # box empty on exactly the rigs that need it: Snouty's camera is wired
+        # to the TriggerScope directly and declares no line to ImSwitch.
+        self._widget.CameraTTLEdit.addItems(self._setupInfo.detectors.keys())
         self._widget.Laser2Edit.addItems(self.TTLDevices.keys())
         self._widget.Laser3Edit.addItems(self.TTLDevices.keys())
         self._widget.roScanDeviceEdit.addItems(self.positioners.keys())
