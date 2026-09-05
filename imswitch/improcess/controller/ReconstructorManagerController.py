@@ -161,19 +161,41 @@ class ReconstructorManagerController(ImProcessWidgetController):
             setter = getattr(widget, 'set_source_inspection', None)
             if callable(setter):
                 setter(inspection)
-            else:
-                # Most parameter widgets cannot show an inspection, including
-                # the one the default view-only reconstructor uses -- so what
-                # the inspection had to say was discarded entirely, and a scan
-                # that stopped at 4 of 6 positions opened as an ordinary
-                # four-frame stack. Until a widget shows it, say it in the log
-                # rather than nowhere.
-                self._logSourceInspection(data_obj, reconstructor, inspection)
+            # Shown for every reconstructor, not only the one plugin whose own
+            # widget implements the hook above. Without this the inspection
+            # that knows a scan stopped at four of six positions was assembled
+            # and thrown away, and the recording opened looking ordinary.
+            self._showSourceInspection(inspection)
+            self._logSourceInspection(data_obj, reconstructor, inspection)
         except Exception as exc:
             self._logger.warning(
                 f"Could not inspect {getattr(data_obj, 'name', 'source')} "
                 f"for {reconstructor.id}: {exc}"
             )
+
+    def _showSourceInspection(self, inspection) -> None:
+        """Put the inspection's warnings in the Parameters dock."""
+        show = getattr(self._widget, 'setSourceInspection', None)
+        if not callable(show):
+            return
+        lines = []
+        severity = 'warning'
+        if inspection is not None:
+            issues = getattr(inspection, 'issues', ()) or ()
+            for issue in issues:
+                lines.append(str(issue.message))
+                if getattr(issue, 'severity', 'warning') == 'error':
+                    severity = 'error'
+            if not issues:
+                # ``warning`` is derived from the issues when there are any, so
+                # it is only its own message when there are none.
+                warning = getattr(inspection, 'warning', None)
+                if warning:
+                    lines.append(str(warning))
+        try:
+            show("\n".join(lines), severity)
+        except Exception as exc:
+            self._logger.debug(f"Could not display the source inspection: {exc}")
 
     def _logSourceInspection(self, data_obj, reconstructor, inspection) -> None:
         """Report what the source inspection found, when nothing displays it."""

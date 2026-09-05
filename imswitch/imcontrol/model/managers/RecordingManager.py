@@ -779,6 +779,40 @@ class ZarrStorer(Storer):
                 if isinstance(key, str) and key.startswith("recording:"):
                     dataset.attrs[key] = self._zarr_attr_value(value)
 
+        # A detector that delivered nothing has no array -- creation is lazy --
+        # so the store it leaves behind said nothing at all about which
+        # detector it was for or that a recording had been interrupted.
+        for detectorName, dest in self._fileDests.items():
+            if self._datasets.get(detectorName) is not None:
+                continue
+            if int(currentFrames.get(detectorName, 0)) > 0:
+                continue
+            root = self._roots.get(dest)
+            if root is None:
+                continue
+            attrs = finalized_attrs.get(detectorName, {}) or {}
+            try:
+                root.attrs['recording:detector_name'] = str(detectorName)
+                for key in (
+                    'recording:planned_frames',
+                    'recording:lapse_index',
+                    'recording:num_timepoints',
+                ):
+                    if key in attrs:
+                        root.attrs[key] = self._zarr_attr_value(attrs[key])
+                root.attrs['recording:completion_outcome'] = 'stopped_early'
+                root.attrs['recording:actual_frames'] = 0
+            except Exception as error:
+                logger.warning(
+                    f'Zarr finalize: could not describe the empty recording '
+                    f'for {detectorName!r}: {error}'
+                )
+            else:
+                logger.info(
+                    f'Recording for {detectorName!r} finalized with no frames; '
+                    f'the store holds no image and is marked stopped_early.'
+                )
+
         if saveMode == SaveMode.DiskAndRAM:
             for detectorName in self._datasets:
                 filePath = filePaths[detectorName]
@@ -1303,6 +1337,14 @@ class HDF5Storer(Storer):
                 else:  # DiskAndRAM
                     pending_disk_memory_signals.append((name, filePath, True))
 
+        # A detector that never delivered a frame has no dataset -- creation is
+        # lazy -- so nothing above ran for it and the file it left behind said
+        # nothing at all: not which detector, not that a recording had been
+        # stopped, not how much of the plan was missing. Stamp the file itself,
+        # so a stub is recognisable as an interrupted recording rather than as
+        # a corrupt file.
+        self._stamp_empty_files(currentFrames, finalized_attrs)
+
         # Only close/flush each unique file once (handles singleMultiDetectorFile mode).
         processed_files = set()
         for file in self._files.values():
@@ -1386,6 +1428,42 @@ class HDF5Storer(Storer):
                     continue
                 recordingManager.sigMemoryRecordingAvailable.emit(
                     name, readFile, filePath, savedToDisk
+                )
+
+    def _stamp_empty_files(self, currentFrames, finalized_attrs) -> None:
+        """Describe a file whose detectors delivered nothing."""
+        stamped = set()
+        for detectorName, file in self._files.items():
+            if self._datasets.get(detectorName) is not None:
+                continue
+            if int(currentFrames.get(detectorName, 0)) > 0:
+                continue
+            if id(file) in stamped:
+                continue
+            stamped.add(id(file))
+            attrs = finalized_attrs.get(detectorName, {}) or {}
+            try:
+                file.attrs['recording:detector_name'] = str(detectorName)
+                for key in (
+                    'recording:completion_outcome',
+                    'recording:actual_frames',
+                    'recording:planned_frames',
+                    'recording:lapse_index',
+                    'recording:num_timepoints',
+                ):
+                    if key in attrs:
+                        self._set_hdf5_attr(file, key, attrs[key], 'recording')
+                file.attrs['recording:completion_outcome'] = 'stopped_early'
+                file.attrs['recording:actual_frames'] = 0
+            except Exception as error:
+                logger.warning(
+                    f'HDF5 finalize: could not describe the empty recording '
+                    f'for {detectorName!r}: {error}'
+                )
+            else:
+                logger.info(
+                    f'Recording for {detectorName!r} finalized with no frames; '
+                    f'the file holds no image and is marked stopped_early.'
                 )
 
     def abortStream(self, filePaths, fileDests, saveMode):

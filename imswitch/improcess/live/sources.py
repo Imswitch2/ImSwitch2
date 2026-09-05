@@ -1776,8 +1776,36 @@ class Hdf5LapseSource(LiveSource):
                 
                 if not self._writing and self._local_cursor >= readable_length:
                     return True
-        
+
+        # A timepoint that finalized as stopped_early is the last one: an
+        # interrupted acquisition writes no further groups. Without this the
+        # source waits for timepoints that will never be written, and the only
+        # way out was the stall timeout, which reports a deliberate stop as a
+        # crashed writer after a delay.
+        if self._stopped_early_group_is_drained():
+            return True
+
         return False
+
+    def _stopped_early_group_is_drained(self) -> bool:
+        """Whether the group being read was cut short and has been consumed."""
+        if not self._scan_groups or self._current_group_index >= len(self._scan_groups):
+            return False
+        try:
+            self._refresh_current_dataset()
+            group = self._file[self._scan_groups[self._current_group_index]]
+            _, attrs = self._open_detector_dataset(group, self._resolved_detector_name)
+        except Exception:
+            return False
+        outcome = attrs.get("recording:completion_outcome")
+        if isinstance(outcome, bytes):
+            outcome = outcome.decode()
+        if str(outcome) != "stopped_early":
+            return False
+        self._refresh_state_from_attrs(attrs)
+        if self._writing:
+            return False
+        return self._local_cursor >= int(self._current_dataset.shape[0])
 
     def close(self) -> None:
         """Release source resources."""

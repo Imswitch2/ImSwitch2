@@ -722,3 +722,56 @@ def test_a_second_lapse_run_does_not_append_to_the_first_ones_file(qt_app, tmp_p
                 dataset = h5file[group]['Camera']['data']
                 assert dataset.attrs['recording:lapse_index'] == index
 
+
+
+def test_a_recording_that_produced_no_frames_still_says_what_it_was(qt_app, tmp_path):
+    """A stub file must be recognisable as an interrupted recording.
+
+    Stopping a recording before its first frame arrives still leaves a file:
+    the storers create the dataset lazily, and finalize only walks datasets
+    that exist. What was left behind said nothing at all -- not the detector,
+    not that a recording had been stopped, not how much of the plan was
+    missing -- so it read as a corrupt file rather than an empty one.
+    """
+    setup = _galvo_setup({'Camera': CAMERA_JSON})
+    nidaq = NidaqManager(setup)
+    camera = HamamatsuManager(setup.detectors['Camera'], 'Camera', nidaqManager=nidaq)
+    detectors = _ManualDetectorsManager({'Camera': camera})
+    recording = RecordingManager(detectors)
+
+    parameters, sig_dict, scan_info = _galvo_scan(setup, linesteps=1)
+    controller = _PointScanController(
+        setup, detectors, parameters, sig_dict, scan_info, pulses={'Camera': 1}
+    )
+    layouts = build_controller_point_scan_layouts(controller, ('Camera',))
+
+    recording.startRecording(
+        detectorNames=['Camera'],
+        recMode=RecMode.ScanOnce,
+        savename=str(tmp_path / 'stopped'),
+        saveMode=SaveMode.Disk,
+        saveFormat=SaveFormat.HDF5,
+        attrs={'Camera': {}},
+        recFrames=POSITIONS,
+        numCamTTL=controller.getNumCamTTL(),
+        stallTimeout=1.0,
+        acquisitionLayouts=layouts,
+    )
+    assert recording.waitForAcquisitionStarted(2.0)
+    # Stopped before the scan ever ran: no frame is ever delivered.
+    recording.endRecording(emitSignal=False, wait=True)
+    nidaq.finalize()
+
+    path = tmp_path / 'stopped_Camera.hdf5'
+    assert path.exists()
+    with h5py.File(path, 'r') as h5file:
+        assert list(h5file.keys()) == [], 'an empty recording has no dataset'
+        attrs = dict(h5file.attrs)
+    assert _text(attrs['recording:detector_name']) == 'Camera'
+    assert _text(attrs['recording:completion_outcome']) == 'stopped_early'
+    assert int(attrs['recording:actual_frames']) == 0
+    assert int(attrs['recording:planned_frames']) == POSITIONS
+
+    # And the reader says the honest thing rather than offering a dataset.
+    with pytest.raises(RuntimeError, match='does not contain any datasets'):
+        DataObj.getDatasetNames(str(path))

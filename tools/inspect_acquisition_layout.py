@@ -81,6 +81,38 @@ def _describe(resolved) -> None:
         print("  issues      : none")
 
 
+def _describe_empty_container(path: str) -> None:
+    """Report what a container with no dataset says about itself."""
+    attrs = {}
+    try:
+        import h5py
+
+        if h5py.is_hdf5(path):
+            with h5py.File(path, "r") as file:
+                attrs = dict(file.attrs)
+    except Exception:
+        attrs = {}
+    if not attrs:
+        try:
+            import zarr
+
+            attrs = dict(zarr.open(path, mode="r").attrs)
+        except Exception:
+            attrs = {}
+    recording = {
+        key: value for key, value in attrs.items()
+        if isinstance(key, str) and key.startswith("recording:")
+    }
+    if not recording:
+        return
+    print("  the container describes itself as:")
+    for key in sorted(recording):
+        value = recording[key]
+        if isinstance(value, bytes):
+            value = value.decode()
+        print(f"    {key} = {value}")
+
+
 def _describe_lifecycle(data_obj) -> None:
     """Whether the recording finished, and how much of the plan it holds.
 
@@ -190,6 +222,11 @@ def main(argv: list[str] | None = None) -> int:
         available = list(DataObj.getDatasetNames(args.path))
     except Exception as error:
         print(f"  CANNOT LIST DATASETS: {type(error).__name__}: {error}")
+        # A recording stopped before its first frame leaves a container with no
+        # image in it. That is a legitimate outcome, not a corrupt file, and
+        # the container says which recording it was: report that rather than
+        # leaving the operator with an error and nothing else.
+        _describe_empty_container(args.path)
         return 1
 
     if args.detector is not None:

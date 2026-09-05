@@ -239,6 +239,20 @@ class SmlmLocalizer(StreamingReconstructor):
             raise ValueError(f"No frames match the selection {selection}")
         flat = np.asarray(data)
         flat = flat.reshape(-1, *flat.shape[-2:])
+        # The range check above is against the layout, which describes the scan
+        # that was *planned*. A recording stopped early holds fewer frames than
+        # that, so a selection its own validator accepts can still point past
+        # the end of the array -- and did, as a bare numpy IndexError naming an
+        # axis, with nothing to say the position was never acquired.
+        beyond = [index for index in indices if index >= len(flat)]
+        if beyond:
+            raise ValueError(
+                f"The selection {selection} names scan position(s) this "
+                f"recording does not contain: the layout plans "
+                f"{len(indices)} frame(s) at indices up to {max(indices)}, "
+                f"but only {len(flat)} were recorded. The acquisition was "
+                f"stopped before reaching them."
+            )
         return flat[indices], selection
 
     @staticmethod

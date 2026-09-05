@@ -222,12 +222,25 @@ def resolve_image(
 
 
 def tiff_dataset_names(file: tiff.TiffFile) -> list[str]:
+    """Series names, or nothing at all for a file that holds no image.
+
+    Stopping a recording before its first frame leaves a header-only TIFF. The
+    invented ``"default"`` name this used to return made the two halves of the
+    reader contradict each other: discovery offered a dataset, and opening it
+    failed with *Dataset "default" was not found in TIFF series ['default']* --
+    naming the dataset in the list it claims not to contain. An empty list
+    gives the same accurate refusal HDF5 and Zarr already give, and the
+    operator learns the file holds nothing rather than that the reader is
+    confused.
+    """
     names = []
     series_count = len(file.series)
     for index, series in enumerate(file.series):
         name = _tiff_series_name(series, index, series_count)
         names.append(name)
-    return names or ["default"]
+    if names:
+        return names
+    return ["default"] if file.pages else []
 
 
 #: Prefix of the per-timepoint groups a single-file lapse recording writes.

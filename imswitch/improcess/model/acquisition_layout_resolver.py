@@ -588,6 +588,27 @@ def _scan_geometry_candidates(
         if observed_events is None or event_count == observed_events:
             matching.append(counts)
     matching = list(dict.fromkeys(matching))
+    convention_issues: list[LayoutIssue] = []
+    if observed_events is None and len(matching) > 1:
+        # Without a frame count to arbitrate, the size and endpoint
+        # conventions cannot be told apart -- and every scan controller writes
+        # ``axis_startpos``, which is what makes them differ, so this mode
+        # raised on every real file. That made its only caller unreachable:
+        # the detector-gating retry inside the Advanced adapter, which exists
+        # precisely to explain a line-step file whose frame count the plain
+        # geometry cannot. Take the size convention, which is what the
+        # designers compute from, and say that it was a choice.
+        matching = matching[:1]
+        convention_issues.append(
+            _issue(
+                "warning",
+                "LEGACY_SCAN_CONVENTION_ASSUMED",
+                "Legacy size and endpoint conventions disagree and no frame "
+                "count was available to choose between them; the size "
+                "convention was assumed",
+                "ScanStage:axis_startpos",
+            )
+        )
     if len(matching) != 1:
         raise AcquisitionLayoutResolutionError(
             "Legacy scan geometry is ambiguous",
@@ -602,7 +623,7 @@ def _scan_geometry_candidates(
         )
 
     counts = matching[0]
-    assumptions = [
+    assumptions = [*convention_issues, 
         _issue(
             "warning",
             "LEGACY_SCAN_GEOMETRY_ASSUMPTION",
@@ -815,7 +836,23 @@ def adapt_advanced_scan_metadata(
     source_shape = _shape_tuple(shape)
     if source_shape is None or len(source_shape) < 3:
         return None
-    if source_shape[0] == condition_count:
+    # The writer stores a scan-driven detector's assembled image as
+    # ``(T, C, Y, X)`` with a singleton leading frame, while a reader handed
+    # only ``(C, Y, X)`` describes the same acquisition. Recognising just the
+    # second shape is why the two-line-step APD recordings this very adapter
+    # exists for fell through to the frame-stream path and were then reported
+    # as ambiguous geometry.
+    assembled_shape = source_shape
+    frame_wrapper = ()
+    if (
+        len(source_shape) >= 4
+        and source_shape[0] == 1
+        and source_shape[1] == condition_count
+    ):
+        assembled_shape = source_shape[1:]
+        frame_wrapper = ("frame",)
+    if assembled_shape[0] == condition_count:
+        source_shape = assembled_shape
         physical, assumptions = _scan_geometry_candidates(
             normalized,
             observed_events=math.prod(source_shape),
@@ -845,7 +882,7 @@ def adapt_advanced_scan_metadata(
                 schema=ACQUISITION_LAYOUT_SCHEMA,
                 payload_kind=PAYLOAD_ASSEMBLED_IMAGE,
                 detector=detector,
-                storage_axes=("condition", "scan_y", "scan_x"),
+                storage_axes=(*frame_wrapper, "condition", "scan_y", "scan_x"),
                 event_loops=assembled_loops,
                 traversal=_scan_traversal(assembled_loops),
                 modality=_text(
@@ -858,7 +895,7 @@ def adapt_advanced_scan_metadata(
             return _validated_result(
                 layout,
                 source="advanced-scan-legacy-assembled",
-                shape=source_shape,
+                shape=(*(1,) * len(frame_wrapper), *source_shape),
                 issues=assumptions,
                 confidence=_legacy_confidence(assumptions),
             )

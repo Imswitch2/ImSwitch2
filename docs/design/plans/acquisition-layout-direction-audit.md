@@ -146,17 +146,24 @@ consumers had not all been held to it. And the fault that started the whole
 effort has the same shape as the ones found here: not a wrong fact, but a fact
 right for the case it was written for and silently wrong for its neighbour.
 
-**Follow-ups not fixed** (none blocks a session; each has a reproduction in the
-probe transcript): OME-TIFF cannot express a line-step axis and projects it
-onto `T` -- record scan-driven detectors as HDF5 or Zarr; a lapse item stopped
-before its first frame leaves an unopenable stub whose error contradicts
-itself; SMLM's loop selection raises a bare `IndexError` on a stopped-early
-stack; `Hdf5LapseSource` never reports a stopped-early lapse as complete; the
-line-step detector-gating fallback in the legacy adapter is unreachable and
-reports the wrong error when it fails. The one that deserves a real fix rather
-than a note is the display of incompleteness: only one parameter widget in the
-tree can show a source inspection, so a truncated recording still opens looking
-ordinary, and the warning now only reaches the log.
+**The follow-ups are done too** (2026-09-04). Incompleteness is now shown in
+the Parameters dock for every reconstructor rather than for the one plugin that
+implemented a hook; the SMLM selection names the positions an interrupted scan
+never reached instead of raising a NumPy `IndexError`; a stub file left by a
+recording stopped before its first frame carries its detector, outcome and
+planned count, and a page-less OME-TIFF refuses accurately rather than
+inventing a dataset name; `Hdf5LapseSource` recognises a `stopped_early`
+timepoint as the last one, and the stall message no longer asserts a writer
+crash it cannot know about; and the legacy geometry helper's no-frame-count
+mode is reachable at last, which lets the line-step detector-gating fallback
+run and the Advanced adapter recognise the `(T, C, Y, X)` shape the writer
+actually produces.
+
+**The one thing left is a container limitation, not a defect:** OME-TIFF has no
+axis for line steps and projects the condition axis onto `T`. The layout
+survives and the resolver reports the projection as lossy, so nothing is lost
+or silently wrong, but scan-driven detectors with line steps should be recorded
+as HDF5 or Zarr.
 
 ## What the audit did not cover
 
