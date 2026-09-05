@@ -238,13 +238,15 @@ Each step is independent; stop and capture at the first surprise.
    file). Expect two files, each with its own timepoints.
 7. **A recording you stop early.** Should finalize as `stopped_early`, remain
    openable and viewable, and be refused by strict reconstructors with an exact
-   count. **Read this one with the inspector**, not by eye: the default view
-   has no place to show incompleteness yet, so a truncated scan looks like an
-   ordinary short stack on screen. The inspector's `lifecycle` line names the
-   outcome and the actual-against-planned counts, and its frame table now
-   stops at what the file holds and lists the positions that were never
-   recorded. The same information also goes to the log when the file is
-   opened.
+   count. **Check:** the Parameters dock shows a line saying how many frames
+   the file holds against how many the layout planned, whichever reconstructor
+   is active. The inspector says the same from the file: a `lifecycle` line
+   with the outcome and the counts, and a frame table that stops at what was
+   stored and then lists the positions that were never recorded.
+   Worth doing twice, because the two are different code paths: stop it
+   **during** a scan, and stop it **before the first frame**. The second leaves
+   a file with no image in it, which should report its detector, its outcome
+   and its planned count rather than looking corrupt.
 8. **An old recording** made before this branch. Must still open, with
    `source: *-legacy`, a lower confidence, and its assumptions listed.
 
