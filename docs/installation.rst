@@ -47,6 +47,7 @@ Option B: Install from source (recommended for developers)
    # Optional extras
    pip install -e ".[hardware]"   # NI-DAQ, pyVISA, vendor drivers
    pip install -e ".[full]"       # also napari, OpenCV, vispy
+   pip install -e ".[storm]"      # napari-storm GPU point-cloud viewer for SMLM results
 
    # Developer toolchain (tests, lint, docs)
    pip install -r requirements-dev.txt

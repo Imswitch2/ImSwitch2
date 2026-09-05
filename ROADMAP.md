@@ -446,6 +446,18 @@ initial scope.
   dark-frame tolerance) — each a `Processor` on `LocalizationResult`
   (`analysis/smlm_tables.py` pure-numpy core), gated by the `localization`
   result kind.
+- ✅ **napari-storm embedded viewer** (2026-09, `feat/napari-storm-viewer`).
+  napari-storm is on PyPI (2.1.0) and installed by the `storm` extra; with
+  `napariStormViewer` on, `LocalizationResult`s draw as GPU summed Gaussians
+  through a retained display channel (`view/NapariStormDisplay.py`) that
+  reads our nm recarray in place, gated by headless contract tests against
+  the released package. Render-controls panel (`smlmRenderPanel`): width
+  mode, colour-by-depth, render range, appearance.
+- ✅ **Localization import + precision columns** (2026-09). ThunderSTORM
+  CSV, Picasso HDF5 and mapped generic CSV open straight into the results
+  list (`analysis/smlm_import.py`, `LocalizationImportDialog`); schema gained
+  `lp_*_nm` localization precision beside `sigma_*_nm` PSF width, filled by
+  the localizer via Thompson/Mortensen and preferred for rendering.
 - ⬜ **Future phases (out of initial scope):** COMET/RCC all-pairs drift
   refinement (GPU-optional), 3D (astigmatism/PSF) fitting,
   throughput-oriented (vectorized/GPU) localization.
