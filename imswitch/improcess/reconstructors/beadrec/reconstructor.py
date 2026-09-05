@@ -27,6 +27,7 @@ from imswitch.imcommon.algorithms.bead_recognition import (
     rescale_reconstruction_to_pixel_size,
 )
 from imswitch.imcommon.algorithms.bead_fits import FIT_MODELS
+from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.model.acquisition_layout import (
     PAYLOAD_DETECTOR_FRAME_STREAM,
     AcquisitionLayout,
@@ -295,6 +296,21 @@ class BeadRecReconstructor(Reconstructor):
         manual_dims = infer_scan_dims(
             n_frames, params.get("scan_x", 0), params.get("scan_y", 0)
         )
+        authoritative = bool(resolved is not None and resolved.is_authoritative)
+        if recorded is not None and not authoritative and manual_dims is not None:
+            # An inferred layout is a reading of the file, not a statement by
+            # the acquisition, so it may not overrule what the user typed. It
+            # used to: a legacy 4x3 inference refused a valid manual 6x2 on the
+            # same twelve frames, which is exactly the "inference must never
+            # refuse previously usable data" rule the contract sets out.
+            if tuple(manual_dims) != tuple(recorded[0]):
+                initLogger(self).info(
+                    f"Using the manual {manual_dims[0]}x{manual_dims[1]} raster "
+                    f"over the {recorded[0][0]}x{recorded[0][1]} inferred from "
+                    f"legacy metadata; nothing in this file declares its scan."
+                )
+                recorded = None
+
         if recorded is not None:
             # The recording is authoritative. A stale spinbox must not quietly
             # reshape a scan whose geometry was recorded; the supported way to

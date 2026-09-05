@@ -853,7 +853,21 @@ def _validate_spans(
                 )
                 needs_cross_span_check = False
 
-    if needs_cross_span_check and _spans_share_an_event(spans):
+    # Only spans that fit inside the producer's own event count are worth
+    # comparing, and this is where they are known to. The sweep below builds
+    # one run per repetition, so running it first let a layout of a few
+    # hundred bytes -- two spans claiming three hundred thousand repetitions
+    # of a scan that has six events -- allocate hundreds of megabytes while
+    # opening a file, to compare spans that are invalid either way.
+    out_of_range = any(
+        span.start < 0
+        or span.start
+        + (span.repeats - 1) * (span.period or 0)
+        + (span.count - 1) * span.stride
+        >= producer_event_count
+        for span in spans
+    )
+    if needs_cross_span_check and not out_of_range and _spans_share_an_event(spans):
         _issue(
             issues,
             "DUPLICATE_PRODUCER_EVENT",
@@ -1541,25 +1555,42 @@ def recorded_frame_count(layout: AcquisitionLayout) -> int:
 
 
 def recorded_frames_per_time_point(layout: AcquisitionLayout) -> int:
-    """Stored frames in the first time point, exactly, spans included.
+    """Stored frames belonging to one time point, exactly, spans included.
 
     A "stack" to a live reader is what one time point produces. Multiplying
-    ``scan_x`` by ``scan_y`` -- the previous definition -- silently dropped
+    ``scan_x`` by ``scan_y`` -- the original definition -- silently dropped
     every other loop inside the time loop (conditions, a Z axis, a ``repeat``)
     and ignored a gated detector's spans, so the reader waited for the wrong
     number of frames. Without a ``time`` loop the whole layout is one stack.
+
+    Counting until the time coordinate first changed was the next mistake: it
+    assumed the time loop is outermost and runs forward. It is neither by
+    definition -- a layout may nest time inside a spatial axis, and a
+    traversal may run it in reverse -- and both cases returned a number the
+    reader would then wait forever to reach. Every frame is tallied against
+    its own time coordinate instead, and a layout whose time points differ in
+    size has no single answer, so it says so rather than picking one.
     """
     _raise_for_invalid_coordinates(layout)
     time_ids = [loop.id for loop in layout.event_loops if loop.kind == "time"]
     if not time_ids:
         return recorded_frame_count(layout)
     time_id = time_ids[0]
-    count = 0
+    per_point: dict[int, int] = {}
     for coordinates in iter_recorded_coordinates(layout):
-        if coordinates[time_id] != 0:
-            break
-        count += 1
-    return count
+        value = coordinates[time_id]
+        per_point[value] = per_point.get(value, 0) + 1
+    if not per_point:
+        return 0
+    counts = set(per_point.values())
+    if len(counts) > 1:
+        raise ValueError(
+            f"This layout's time points do not hold the same number of "
+            f"frames ({sorted(counts)}), so there is no single stack size. "
+            f"A gated detector selecting different frames per time point has "
+            f"to be read through its recorded coordinates."
+        )
+    return counts.pop()
 
 
 def unfold_frame_axis(

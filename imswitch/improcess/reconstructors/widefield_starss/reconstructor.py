@@ -19,6 +19,26 @@ if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
 
 
+
+def _pairing_signature(layout):
+    """Everything that has to match for two stacks to be paired frame by frame."""
+    orders = {rule.loop_id: (rule.order, tuple(rule.parity_loops or ()))
+              for rule in (layout.traversal or ())}
+    return (
+        tuple(
+            (loop.kind, int(loop.count), orders.get(loop.id, ("forward", ())))
+            for loop in layout.event_loops
+        ),
+        layout.recorded_event_spans,
+    )
+
+
+def _describe_signature(signature) -> str:
+    loops, spans = signature
+    described = ", ".join(f"{kind}={count}" for kind, count, _order in loops)
+    return f"[{described}]" + (" with a gated selection" if spans else "")
+
+
 class WidefieldStarssReconstructor(Reconstructor):
     """Analyze a WidefieldSTARSS H/V acquisition pair."""
 
@@ -170,11 +190,21 @@ class WidefieldStarssReconstructor(Reconstructor):
         if len(recorded) == 2:
             current_kinds = [loop.kind for loop in recorded[0].event_loops]
             other_kinds = [loop.kind for loop in recorded[1].event_loops]
-            if current_kinds != other_kinds:
+            # Kinds alone said two stacks corresponded when they did not: a
+            # time=2, condition=6 acquisition and a time=3, condition=4 one
+            # have the same loop names and the same frame count, and pairing
+            # them frame by frame silently compares different states. What
+            # makes frame *n* of one stack the counterpart of frame *n* of the
+            # other is the whole event structure -- counts, the order they are
+            # traversed in, and which frames a gated detector actually kept.
+            current_shape = _pairing_signature(recorded[0])
+            other_shape = _pairing_signature(recorded[1])
+            if current_shape != other_shape:
                 raise ValueError(
-                    f"The two polarization stacks were acquired with different "
-                    f"loop structures ({current_kinds} against {other_kinds}), "
-                    f"so their frames do not correspond."
+                    f"The two polarization stacks were acquired differently "
+                    f"({_describe_signature(current_shape)} against "
+                    f"{_describe_signature(other_shape)}), so frame n of one "
+                    f"is not the counterpart of frame n of the other."
                 )
             pairing["acquisition_loops"] = tuple(current_kinds)
         elif recorded:

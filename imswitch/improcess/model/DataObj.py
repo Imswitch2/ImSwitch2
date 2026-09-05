@@ -203,6 +203,9 @@ class DataObj:
             dataset_path = None
             explicit_axes = False
 
+        # Remember what resolution was keyed on, so a persisted override can
+        # be written against the same identity it will be read back with.
+        self._acquisitionLayoutDetector = str(detector)
         self._acquisitionLayoutResolution = resolve_acquisition_layout(
             attrs,
             shape=shape,
@@ -233,13 +236,27 @@ class DataObj:
             return
         if self.dataPath is None:
             raise ValueError("Cannot persist a layout override without a source path")
+        # The identity the *resolver* will use when it reads the sidecar back,
+        # not the one the layout happens to declare. They differ whenever the
+        # container names its data something else -- a TIFF series is
+        # ``Image0`` while the layout says ``Camera`` -- and the override was
+        # then rejected as targeting a different detector the moment the file
+        # was reopened, silently restoring the metadata it was written to
+        # correct.
         persist_layout_override(
             self.dataPath,
             resolved.layout,
-            detector=resolved.layout.detector,
+            detector=self._resolutionDetectorName(resolved),
             dataset_path=(self._source_info or {}).get("dataset_path"),
             fingerprint=self.sourceFingerprint,
         )
+
+    def _resolutionDetectorName(self, resolved) -> str:
+        """The detector name resolution is keyed on for this source."""
+        name = self.__dict__.get("_acquisitionLayoutDetector")
+        if name:
+            return str(name)
+        return str(getattr(resolved.layout, "detector", "") or "unknown")
 
     @property
     def dataLoaded(self):

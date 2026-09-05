@@ -35,21 +35,67 @@ FRAME_LOOP_KINDS = frozenset({"time", "repeat", "frame"})
 _UNIT_TO_NM = {"nm": 1.0, "um": 1000.0, "µm": 1000.0, "micron": 1000.0, "mm": 1e6}
 
 
-def source_pixel_size_nm(data_obj: Any) -> float | None:
-    """Camera pixel pitch in nm from the source's own calibration, or ``None``."""
+class AnisotropicPixelSize(ValueError):
+    """The source declares a different pitch along Y than along X."""
+
+    def __init__(self, y_nm: float, x_nm: float):
+        self.y_nm = float(y_nm)
+        self.x_nm = float(x_nm)
+        super().__init__(
+            f"This recording is calibrated {self.y_nm:g} nm along Y and "
+            f"{self.x_nm:g} nm along X. SMLM localizes in one pixel pitch, so "
+            f"applying either would scale the other axis wrongly -- every Y "
+            f"coordinate and sigma would be reported in X's units. Enter a "
+            f"pixel size explicitly if one of them is right, or resample the "
+            f"stack to square pixels."
+        )
+
+
+def source_pixel_sizes_nm(data_obj: Any) -> tuple[float, float] | None:
+    """``(y, x)`` pixel pitch in nm from the source's calibration, or ``None``."""
     labels = list(getattr(data_obj, "axis_labels", None) or [])
     scales = list(getattr(data_obj, "axis_scales", None) or [])
     factor = _UNIT_TO_NM.get(str(getattr(data_obj, "scale_unit", "") or "").lower())
-    if factor is None or "X" not in labels:
+    if factor is None:
         return None
-    index = labels.index("X")
-    if index >= len(scales):
+
+    def pitch(axis: str) -> float | None:
+        if axis not in labels:
+            return None
+        index = labels.index(axis)
+        if index >= len(scales):
+            return None
+        try:
+            value = float(scales[index])
+        except (TypeError, ValueError):
+            return None
+        return value * factor if value > 0 else None
+
+    x_nm = pitch("X")
+    if x_nm is None:
         return None
-    try:
-        value = float(scales[index])
-    except (TypeError, ValueError):
+    # An absent Y calibration is not evidence of a square pixel, but it is the
+    # only reading available, so X stands for both and the caller is none the
+    # wiser -- which is what the source itself says.
+    return (pitch("Y") or x_nm), x_nm
+
+
+def source_pixel_size_nm(data_obj: Any) -> float | None:
+    """The camera's pixel pitch in nm, when one number describes both axes.
+
+    Reading X alone and using it for both axes reported every Y coordinate and
+    every Y sigma in X's units on an anisotropically calibrated recording --
+    silently, since the number looked perfectly ordinary. Anisotropy is
+    refused rather than averaged or picked from: which axis is right is a
+    question about the microscope, not about this file.
+    """
+    sizes = source_pixel_sizes_nm(data_obj)
+    if sizes is None:
         return None
-    return value * factor if value > 0 else None
+    y_nm, x_nm = sizes
+    if abs(y_nm - x_nm) > 1e-6 * max(y_nm, x_nm):
+        raise AnisotropicPixelSize(y_nm, x_nm)
+    return x_nm
 
 
 def non_frame_loops(layout: Any) -> tuple:
@@ -258,9 +304,18 @@ class SmlmLocalizer(StreamingReconstructor):
     @staticmethod
     def _pixel_size_nm(data_obj: "DataObj", params: dict) -> tuple[float, dict]:
         """Prefer the source's own calibration; record which one was used."""
-        recorded = source_pixel_size_nm(data_obj)
         manual = params.get("pixel_size_nm")
         manual = float(manual) if manual else None
+        try:
+            recorded = source_pixel_size_nm(data_obj)
+        except AnisotropicPixelSize:
+            # A pixel size the user typed is a deliberate answer to exactly
+            # this question, so it settles it. Without one there is nothing to
+            # localize with, and guessing an axis would be the silent wrong
+            # answer this refusal exists to prevent.
+            if manual is None:
+                raise
+            return manual, {"pixel_size_source": "manual-anisotropic-source"}
         if recorded is not None:
             calibration = {"pixel_size_source": "source"}
             if manual is not None and abs(manual - recorded) > 1e-9:

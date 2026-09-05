@@ -858,14 +858,13 @@ def adapt_advanced_scan_metadata(
             observed_events=math.prod(source_shape),
             multiplier=condition_count,
         )
-        by_kind = {loop.kind: loop for loop in physical}
-        x_loop = by_kind.get("scan_x")
-        y_loop = by_kind.get("scan_y")
-        if (
-            x_loop is not None
-            and y_loop is not None
-            and source_shape[-2:] == (y_loop.count, x_loop.count)
-        ):
+        # The stored axes after the condition are the scan's own, slowest
+        # first. Naming only Y and X described a 3D scan with one axis too
+        # few, and an explicit layout that disagrees with its container is
+        # refused outright -- so a perfectly good (condition, Z, Y, X)
+        # point-detector recording could not be resolved at all.
+        spatial = _assembled_spatial_loops(physical, assembled_shape[1:])
+        if spatial is not None:
             condition = AcquisitionLoop(
                 "condition",
                 "condition",
@@ -875,14 +874,17 @@ def adapt_advanced_scan_metadata(
             )
             assembled_loops = (
                 condition,
-                replace(y_loop, storage_axis="scan_y"),
-                replace(x_loop, storage_axis="scan_x"),
+                *(replace(loop, storage_axis=loop.kind) for loop in spatial),
             )
             layout = AcquisitionLayout(
                 schema=ACQUISITION_LAYOUT_SCHEMA,
                 payload_kind=PAYLOAD_ASSEMBLED_IMAGE,
                 detector=detector,
-                storage_axes=(*frame_wrapper, "condition", "scan_y", "scan_x"),
+                storage_axes=(
+                    *frame_wrapper,
+                    "condition",
+                    *(loop.kind for loop in spatial),
+                ),
                 event_loops=assembled_loops,
                 traversal=_scan_traversal(assembled_loops),
                 modality=_text(
@@ -1125,6 +1127,29 @@ def adapt_scan_stage_metadata(
         )
     except AcquisitionLayoutResolutionError:
         return None
+
+
+def _assembled_spatial_loops(
+    physical: Sequence[AcquisitionLoop], dims: Sequence[int]
+) -> tuple[AcquisitionLoop, ...] | None:
+    """Order the scan's loops onto the stored spatial axes, or decline.
+
+    ``_scan_geometry_candidates`` returns loops fastest first, as the ScanInfo
+    dimensions are indexed; an assembled image stores them the other way
+    round. A legacy file also lists every configured axis, so a stage that
+    stood still appears as a count-1 loop with no stored axis of its own --
+    those are dropped from the outside in until what remains matches the
+    container.
+    """
+    ordered = list(reversed(list(physical)))
+    dims = [int(size) for size in dims]
+    while len(ordered) > len(dims) and ordered and ordered[0].count == 1:
+        ordered.pop(0)
+    if len(ordered) != len(dims):
+        return None
+    if [loop.count for loop in ordered] != dims:
+        return None
+    return tuple(ordered)
 
 
 def _adapt_assembled_raster(

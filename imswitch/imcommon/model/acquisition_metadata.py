@@ -40,6 +40,7 @@ class RecordingLifecycle:
     planned_partitions: int | None = None
     actual_partitions: int | None = None
     frames_committed: int | None = None
+    discarded_frames: int | None = None
     issues: tuple[LayoutIssue, ...] = ()
 
 
@@ -144,6 +145,18 @@ def _validate_marker_bool(
         )
         return None
     return value
+
+
+def _positive_or_zero_int(value: Any) -> int | None:
+    """A non-negative integer attribute, or ``None`` when it is absent."""
+    value = _native_scalar(value)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
 
 
 def normalize_recording_lifecycle(
@@ -332,6 +345,29 @@ def normalize_recording_lifecycle(
             )
         )
 
+    # Frames the detector produced beyond the plan and the writer dropped.
+    # A recording can meet its planned count exactly and still have discarded
+    # a surplus -- a camera that ran free, or was pulsed more often than the
+    # scan declared -- and the outcome vocabulary has no word for that, so it
+    # read as "complete". The count is on the file; this is where a reader
+    # finds out, because nothing consulted it before.
+    discarded_frames = _positive_or_zero_int(
+        attrs.get("recording:discarded_frames")
+    )
+    if discarded_frames:
+        issues.append(
+            LayoutIssue(
+                "warning",
+                "DISCARDED_SURPLUS_FRAMES",
+                f"{discarded_frames} frame(s) arrived beyond the "
+                f"{planned_frames if planned_frames is not None else 'planned'} "
+                f"this recording planned and were not written. The detector "
+                f"produced more than the scan accounted for, so the frames "
+                f"that were kept may not be the ones the layout describes.",
+                "recording:discarded_frames",
+            )
+        )
+
     return RecordingLifecycle(
         writer_state=writer_state,
         completion_outcome=outcome,
@@ -340,5 +376,6 @@ def normalize_recording_lifecycle(
         planned_partitions=planned_partitions,
         actual_partitions=actual_partitions,
         frames_committed=frames_committed,
+        discarded_frames=discarded_frames,
         issues=tuple(issues),
     )

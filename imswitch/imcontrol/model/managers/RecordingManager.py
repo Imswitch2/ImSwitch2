@@ -145,6 +145,10 @@ class Storer(abc.ABC):
             "recording:actual_frames",
             "recording:planned_partitions",
             "recording:actual_partitions",
+            # Without this an OME-TIFF was the one format that could not tell
+            # a reader its camera had produced frames the scan did not account
+            # for -- the single fact this field exists to carry.
+            "recording:discarded_frames",
         }
         return {
             key: value
