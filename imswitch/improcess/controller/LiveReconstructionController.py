@@ -255,6 +255,17 @@ class LiveReconstructionController(QtCore.QObject):
             self._finish_without_result()
             return
 
+        # Provenance for every snapshot and the final result: what was
+        # reconstructed, with which settings, from which stream. A stall is
+        # forwarded so the final record says "stalled", not "complete".
+        setter = getattr(self._process_worker, "setProvenance", None)
+        if callable(setter):
+            setter(
+                self._reconstructor, self._params, init_obj,
+                expected_frames=getattr(stack_info, "expected_frames", None),
+            )
+            self._stream_worker.sigStalled.connect(self._process_worker.markStalled)
+
         # Wire the remainder only after begin() succeeds, then release the gate.
         self._stream_worker.sigChunkReady.connect(self._process_worker.processChunk)
         self._stream_worker.sigStackComplete.connect(self._process_worker.finalize)
@@ -332,7 +343,9 @@ class LiveReconstructionController(QtCore.QObject):
         )
 
         try:
-            result = self._reconstructor.process(wrapper, self._params)
+            from imswitch.improcess.reconstructors.run import run_reconstruction
+
+            result = run_reconstruction(self._reconstructor, wrapper, self._params).result
             self._on_stack_finished(result)
         except Exception as e:
             self._logger.error(f"Batch reconstruction failed: {e}")

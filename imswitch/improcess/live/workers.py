@@ -249,6 +249,35 @@ class LiveProcessWorker(QtCore.QObject):
         self._update_cadence = update_cadence
         self._chunk_count = 0
         self._logger = initLogger(self, tryInheritParent=False)
+        # Provenance context: set once the controller has begun the session,
+        # so every snapshot and the final result record where they came from.
+        self._provenance = None
+        self._frames_committed = 0
+        self._stalled = False
+
+    def setProvenance(self, reconstructor, params: dict, source, expected_frames=None) -> None:
+        """Tell the worker what it is reconstructing, for the provenance record."""
+        self._provenance = (reconstructor, dict(params or {}), source, expected_frames)
+
+    @QtCore.Slot(float)
+    def markStalled(self, _seconds_waited: float = 0.0) -> None:
+        """The stream worker gave up waiting for frames; the final result is partial."""
+        self._stalled = True
+
+    def _record(self, result, status: str) -> None:
+        if self._provenance is None or result is None:
+            return
+        reconstructor, params, source, expected = self._provenance
+        try:
+            from imswitch.improcess.reconstructors.run import record_snapshot
+
+            record_snapshot(
+                result, reconstructor, params, source,
+                session=self._session, status=status,
+                frames_committed=self._frames_committed, expected_frames=expected,
+            )
+        except Exception:
+            self._logger.debug("Could not record streaming provenance", exc_info=True)
 
     @QtCore.Slot(object)
     def processChunk(self, chunk: Chunk) -> None:
@@ -259,9 +288,11 @@ class LiveProcessWorker(QtCore.QObject):
         try:
             self._session.push(chunk.data, chunk.start, chunk.end)
             self._chunk_count += 1
+            self._frames_committed = max(self._frames_committed, int(chunk.end))
 
             if self._chunk_count % self._update_cadence == 0:
                 result = self._session.result()
+                self._record(result, "partial")
                 self.sigResultUpdated.emit(result)
 
         except Exception as e:
@@ -272,6 +303,7 @@ class LiveProcessWorker(QtCore.QObject):
         """Finalize the session and emit the final result."""
         try:
             final_result = self._session.finish()
+            self._record(final_result, "stalled" if self._stalled else "complete")
             self.sigStackFinished.emit(final_result)
         except Exception as e:
             self._logger.error(f"Error finalizing session: {e}")

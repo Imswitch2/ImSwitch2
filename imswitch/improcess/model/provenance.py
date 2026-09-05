@@ -456,6 +456,46 @@ def _ports_for(results, ports) -> list[str]:
     return [f"{DEFAULT_PORT}{index}" for index in range(len(results))]
 
 
+SOURCE_KINDS = ("file", "memory", "live")
+
+
+def source_kind_of(data_obj) -> str:
+    """``file`` for data on disk, ``live`` for a stream, ``memory`` otherwise.
+
+    A ``DataObj`` with a path is a file. A ``StreamInit`` (it carries
+    ``stack_info``) is live. An in-memory wrapper (a buffered live stack, a
+    RAM recording) has no path of its own; it may still know where the
+    recording was written (``recording:dataset_path``), which is recorded
+    as ``path`` because that is what a replay could open.
+    """
+    if getattr(data_obj, "stack_info", None) is not None:
+        return "live"
+    if getattr(data_obj, "dataPath", None) or getattr(data_obj, "path", None):
+        return "file"
+    return "memory"
+
+
+def _source_path_of(data_obj, kind: str):
+    path = getattr(data_obj, "dataPath", None) or getattr(data_obj, "path", None)
+    if path:
+        return str(path)
+    if kind == "live":
+        path = getattr(data_obj, "source_path", None)
+        if not path:
+            info = getattr(data_obj, "stack_info", None)
+            path = getattr(info, "dataset_path", None)
+        return str(path) if path else None
+    info = getattr(data_obj, "source_info", None) or getattr(data_obj, "_source_info", None) or {}
+    path = info.get("dataset_path") if isinstance(info, dict) else None
+    if not path:
+        attrs = getattr(data_obj, "attrs", None) or getattr(data_obj, "_attrs", None) or {}
+        try:
+            path = attrs.get("recording:dataset_path")
+        except Exception:
+            path = None
+    return str(path) if path else None
+
+
 def describe_source(data_obj) -> dict:
     """What a replay needs to find and verify the raw data.
 
@@ -463,15 +503,22 @@ def describe_source(data_obj) -> dict:
     dtype, the file's size and modification time, and a digest of the
     attributes. It detects a file that was re-recorded or re-exported, which
     is what goes wrong in practice; a full hash is a replay-time option.
+
+    ``kind`` says whether there is anything on disk to replay from at all
+    (see :func:`source_kind_of`); a memory or live source without a path is
+    described as far as it goes and the reconstruction node is marked
+    non-replayable by the caller.
     """
-    path = getattr(data_obj, "dataPath", None) or getattr(data_obj, "path", None)
+    kind = source_kind_of(data_obj)
+    path = _source_path_of(data_obj, kind)
     dataset = getattr(data_obj, "datasetName", None)
     if callable(dataset):
         dataset = None
     if dataset is None:
-        dataset = getattr(data_obj, "_datasetName", None)
+        dataset = getattr(data_obj, "dataset_name", None) or getattr(data_obj, "_datasetName", None)
     description: dict[str, Any] = {
-        "path": str(path) if path else None,
+        "kind": kind,
+        "path": path,
         "dataset": str(dataset) if dataset else None,
         "name": str(getattr(data_obj, "name", "") or ""),
     }
@@ -484,8 +531,18 @@ def describe_source(data_obj) -> dict:
         except OSError:
             pass
     try:
-        handle = getattr(data_obj, "data_handle", None)
-        if handle is not None:
+        # Never materialise pixels here: a DataObj exposes its open handle,
+        # an in-memory wrapper already holds its array, a stream init carries
+        # its first frames.
+        if hasattr(data_obj, "data_handle"):
+            handle = data_obj.data_handle
+        elif getattr(data_obj, "_data", None) is not None:
+            handle = data_obj._data
+        elif kind == "live":
+            handle = getattr(data_obj, "data", None)
+        else:
+            handle = None
+        if handle is not None and hasattr(handle, "shape"):
             fingerprint["shape"] = [int(n) for n in handle.shape]
             fingerprint["dtype"] = str(handle.dtype)
     except Exception:
@@ -526,8 +583,28 @@ def source_node_for(data_obj) -> tuple[str, dict]:
     return node_id, node
 
 
-def record_reconstruction(result, reconstructor, params, data_obj):
-    """Record that ``result`` came from ``reconstructor`` over ``data_obj``."""
+def _unreplayable_source_reason(source_node: dict) -> str | None:
+    """A source with no path on disk cannot be opened again, whatever its kind.
+
+    A memory or live source that knows the recording it was also written to
+    is fine: that file is what a replay opens.
+    """
+    description = source_node.get("source") or {}
+    if not description.get("path"):
+        return (
+            f"source is {description.get('kind', 'unknown')} data that was not "
+            "persisted to a file"
+        )
+    return None
+
+
+def record_reconstruction(result, reconstructor, params, data_obj, *, extra: dict | None = None):
+    """Record that ``result`` came from ``reconstructor`` over ``data_obj``.
+
+    A source that is not a file (a buffered live stack, a RAM recording)
+    leaves the node non-replayable with the reason, unless the wrapper knew
+    the path the recording was also written to.
+    """
     source_id, source = source_node_for(data_obj)
     node_id, node = make_node(
         "reconstruct",
@@ -536,8 +613,68 @@ def record_reconstruction(result, reconstructor, params, data_obj):
         inputs=[{"node": source_id, "port": SOURCE_PORT}],
         input_labels=[source.get("source", {}).get("name") or source_id],
         outputs=(DEFAULT_PORT,),
+        extra=extra,
     )
+    reason = _unreplayable_source_reason(source)
+    if reason:
+        node["replayable"] = False
+        node["reasons"] = [*(node.get("reasons") or []), reason]
     _attach(result, merge_nodes({source_id: source}, {node_id: node}), node_id, DEFAULT_PORT)
+    return result
+
+
+COMPLETION_STATES = ("partial", "complete", "stalled", "failed")
+_STREAM_NODE_ATTR = "_provenance_stream_node"
+
+
+def record_streaming(result, reconstructor, params, source, *, session, completion: dict):
+    """Record a streaming reconstruction snapshot on ``result``.
+
+    Every ``result()`` snapshot and the final ``finish()`` go through here.
+    The step id is minted once per ``session`` and reused, so a stream that
+    yields a hundred snapshots does not leave a hundred nodes; the node is
+    rewritten with the latest ``completion`` (``status`` in
+    :data:`COMPLETION_STATES`, ``frames_committed``, ``expected_frames``).
+    Only a ``complete`` run over a file source is replayable.
+    """
+    status = str(completion.get("status", "partial"))
+    if status not in COMPLETION_STATES:
+        raise ProvenanceError(f"unknown completion status {status!r}")
+    source_id, source_node = source_node_for(source)
+    cached = getattr(session, _STREAM_NODE_ATTR, None)
+    node_id = cached if isinstance(cached, str) and cached else None
+    new_id, node = make_node(
+        "reconstruct",
+        plugin=reconstructor,
+        params=params,
+        inputs=[{"node": source_id, "port": SOURCE_PORT}],
+        input_labels=[source_node.get("source", {}).get("name") or source_id],
+        outputs=(DEFAULT_PORT,),
+        extra={
+            "mode": "streaming",
+            "completion": {
+                "status": status,
+                "frames_committed": completion.get("frames_committed"),
+                "expected_frames": completion.get("expected_frames"),
+            },
+        },
+    )
+    if node_id is None:
+        node_id = new_id
+        try:
+            setattr(session, _STREAM_NODE_ATTR, node_id)
+        except Exception:
+            pass
+    reasons = list(node.get("reasons") or [])
+    source_reason = _unreplayable_source_reason(source_node)
+    if source_reason:
+        reasons.append(source_reason)
+    if status != "complete":
+        reasons.append(f"stream finished as {status}")
+    if reasons:
+        node["replayable"] = False
+        node["reasons"] = reasons
+    _attach(result, merge_nodes({source_id: source_node}, {node_id: node}), node_id, DEFAULT_PORT)
     return result
 
 
@@ -729,7 +866,11 @@ def validate_graph(graph: Any) -> dict:
 
 
 __all__ = [
+    "COMPLETION_STATES",
     "DEFAULT_PORT",
+    "SOURCE_KINDS",
+    "record_streaming",
+    "source_kind_of",
     "MAX_ARRAY_ELEMENTS",
     "MAX_NODES",
     "MAX_PAYLOAD_BYTES",

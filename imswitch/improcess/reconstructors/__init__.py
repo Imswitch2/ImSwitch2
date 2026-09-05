@@ -20,6 +20,7 @@ from .widefield_starss import WidefieldStarssReconstructor
 from .smlm import SmlmLocalizer
 from .beadrec import BeadRecReconstructor
 from .tiling import TilingReconstructor
+from .monalisa.legacy import LegacyMonalisaReconstructor
 
 
 _AVAILABLE_RECONSTRUCTOR_CLASSES = {
@@ -31,6 +32,7 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'smlm-localizer': SmlmLocalizer,
     'beadrec': BeadRecReconstructor,
     'tiling-mosaic': TilingReconstructor,
+    'monalisa-legacy': LegacyMonalisaReconstructor,
 }
 
 
