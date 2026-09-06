@@ -17,9 +17,15 @@ plan, Phase 4):
   pixels, so we must hand it nm.
 * **Presence of ``z`` marks 3D.** A 2D export omits ``z``/``lpz`` entirely, so
   napari-storm treats it as planar.
-* **``lpx``/``lpy`` carry the fitted PSF sigma** (the canonical schema has no
-  separate localization-precision column). This mirrors napari-storm's own
-  save path, which derives precision from uncertainty.
+* **``sx``/``sy`` carry the fitted PSF width and ``lpx``/``lpy`` the
+  localization precision**, exactly as Picasso keeps them. The canonical
+  schema has both (``sigma_*_nm`` and ``lp_*_nm``), so nothing is conflated
+  on the way out or back in.
+
+This is the *file* boundary. The embedded viewer
+(:mod:`~imswitch.improcess.view.NapariStormDisplay`) does not go through it:
+it hands napari-storm the nanometre recarray in place and declares the
+columns, see :func:`~imswitch.improcess.model.localization_schema.napari_storm_table_kwargs`.
 """
 
 from __future__ import annotations

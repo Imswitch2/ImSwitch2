@@ -1,5 +1,10 @@
 # SMLM localization import — scope
 
+**Status:** implemented on `feat/napari-storm-viewer` (2026-09): §0 precision
+columns, §1 formats (ThunderSTORM CSV, Picasso HDF5, generic CSV via mapping
+dialog) and §2 layout as written. User docs: `docs/improcess.rst`,
+"Importing localization tables".
+
 Opening a coordinate file that ImProcess did not produce. Today this is not
 possible: `read_picasso_hdf5()` exists in `analysis/smlm_export.py` but nothing
 outside the tests calls it, and there is no CSV path at all.

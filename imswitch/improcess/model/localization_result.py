@@ -3,8 +3,8 @@
 ``LocalizationResult`` is the source of truth for the SMLM pipeline: it wraps
 the canonical localization recarray (see
 :mod:`~imswitch.improcess.model.localization_schema`) and everything else —
-the in-house renderer, table processors, the napari-storm export — is a
-derived view of it.
+the in-house renderer, table processors, the Picasso export, the embedded
+napari-storm viewer — is a derived view of it.
 
 ``ProcessingResult`` demands a viewable ``data`` array, but a coordinate table
 has no natural image. Rather than leave the viewer blank, the result exposes a
@@ -132,7 +132,7 @@ class LocalizationResult(ProcessingResult):
             locs: Localization recarray (canonical schema) or a mapping/array
                 coercible to it via :func:`as_localizations`.
             pixel_size_nm: Camera pixel size of the source stack, in nm. Used
-                for the napari-storm pixel view and as a floor for the preview.
+                for the pixel-native Picasso export and as a floor for the preview.
             z_step_nm: Axial sampling in nm for 3D data (optional).
             dims: "2D" or "3D". Auto-detected from z values when omitted.
             source_name: Name of the stack the localizations came from.

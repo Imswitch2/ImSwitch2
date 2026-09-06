@@ -1,8 +1,9 @@
 """Canonical single-molecule localization schema (single source of truth).
 
 Every SMLM component in ImProcess — the localizer, the in-house renderer,
-table processors, and the napari-storm export — reads and writes the same
-structured record described here. Keeping the column contract in one module
+table processors, the importers, the Picasso export and the embedded
+napari-storm viewer — reads and writes the same structured record described
+here. Keeping the column contract in one module
 means the phases can evolve independently without re-deriving field names or
 units in five places.
 
@@ -11,16 +12,17 @@ Design decisions (see docs/design/plans/smlm-localization-port.md, section 7):
 * **Units are nanometres internally.** Positions and sigmas are stored in nm;
   the acquisition pixel size lives in the owning
   :class:`~imswitch.improcess.model.localization_result.LocalizationResult`
-  metadata, not in the table. A *pixel* view is derived on demand for the
-  napari-storm boundary (which is pixel-native), via
-  :func:`to_napari_storm_recarray`.
+  metadata, not in the table. The embedded napari-storm viewer reads this nm
+  table in place, declaring the columns via :func:`napari_storm_table_kwargs`;
+  only the Picasso/HDF5 *file* export is pixel-native, and that view is
+  derived on demand via :func:`to_napari_storm_recarray`.
 * **The schema is 3D-ready.** ``z_nm`` and ``sigma_z_nm`` always exist; a
   2D localizer simply leaves them at zero. ``dims`` on the result records
   whether the z columns are meaningful.
 
-The field order mirrors napari-storm's ``LOCS_DTYPE`` (frame, x, y, z,
+The first eight fields mirror napari-storm's ``LOCS_DTYPE`` (frame, x, y, z,
 sigma_x, sigma_y, sigma_z, photons) so the export is a rename + unit
-conversion rather than a reshape.
+conversion rather than a reshape; the precision columns follow.
 """
 
 from __future__ import annotations

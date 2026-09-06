@@ -992,6 +992,8 @@ without unit gain that estimate is correct in shape but scaled: good for
 filtering localizations against each other, not for quoting an absolute
 nanometre precision.
 
+.. _improcess-napari-storm:
+
 Localization point clouds (napari-storm)
 ========================================
 
@@ -1161,7 +1163,9 @@ to your Imcontrol setup file (the same JSON you select via
             "frcPanel": true,
             "roiManagerPanel": true,
             "roiStatsPanel": true,
-            "reconstructors": ["monalisa", "view-only"],
+            "smlmRenderPanel": true,
+            "napariStormViewer": true,
+            "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
             "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
         }
     }
@@ -1246,7 +1250,9 @@ The MoNaLISA preset has the same shape as the others::
             "frcPanel": true,
             "roiManagerPanel": true,
             "roiStatsPanel": true,
-            "reconstructors": ["monalisa", "view-only"],
+            "smlmRenderPanel": true,
+            "napariStormViewer": true,
+            "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
             "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"],
             "liveStallTimeoutS": 300
         }
@@ -1265,6 +1271,13 @@ The ``processing:`` block also accepts:
   recorder prepares the next one; the reader automatically disables the
   watchdog for these lapse sources unless you explicitly set a value in this
   config key (an explicit value then applies everywhere).
+* **napariStormViewer** (bool, default ``false``) — draw localization results
+  as GPU point clouds through the optional napari-storm package instead of
+  their histogram preview.  Needs the ``storm`` extra; without it the key has
+  no effect.  See :ref:`improcess-napari-storm`.
+* **smlmRenderPanel** (bool, default ``false``) — show the panel controlling
+  the point-cloud renderer (Gaussian width, colour by depth, render range,
+  appearance).  Only useful together with ``napariStormViewer``.
 
 To launch Imswitch2 with *only* ImProcess (no Imcontrol GUI) and *only*
 the plugins from one of these setup presets:

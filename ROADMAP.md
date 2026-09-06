@@ -382,9 +382,10 @@ dependency).
 **Goal:** Make ImSwitch2 a first-class SMLM platform end to end — acquire a
 blinking image stack, localize single emitters into a coordinate table with
 properties, process that table (drift correction, grouping, filtering), and
-render it in-house — while treating the external
-[napari-storm](https://github.com/napari-storm/napari-storm) plugin as the
-premium GPU point-cloud renderer via a clean data handoff, not a dependency.
+render it in-house — with the external
+[napari-storm](https://pypi.org/project/napari-storm/) package as the
+optional premium GPU point-cloud viewer: embedded behind a lazy import and the
+`storm` extra, never a hard dependency.
 
 **Detailed plan:**
 [docs/design/plans/smlm-localization-port.md](docs/design/plans/smlm-localization-port.md)
@@ -414,8 +415,9 @@ initial scope.
   "render" is a pure-numpy step that turns the coordinate table back into an
   image — 2D/3D **histogram binning** or **fixed-Gaussian splatting**. The
   rendered volume is a normal image `ProcessingResult` the embedded napari
-  viewer already displays (3D via the dims slider). napari-storm stays the
-  separate, cutting-edge GPU particle renderer, fed the same recarray.
+  viewer already displays (3D via the dims slider). napari-storm is the
+  optional cutting-edge GPU particle renderer, fed the same recarray in place
+  when the `storm` extra is installed and `napariStormViewer` is on.
 
 **Surface-level plan (refined in the plan doc):**
 
