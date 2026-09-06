@@ -159,6 +159,50 @@ class Processor(ABC):
     #: usually wants `mask` first (its output stays pixel-aligned); anything
     #: whose cost scales with the frame usually wants `crop`.
     roi_modes: tuple[str, ...] = ("crop", "mask")
+    #: Version of this processor's parameter contract. Bump it when a key is
+    #: renamed, removed or changes meaning, and teach :meth:`migrate_params`
+    #: the way from the old shape; a recorded run then still replays.
+    params_version: int = 1
+    #: Keys of :meth:`default_params` whose widget default depends on the
+    #: machine (an installed model list, say) and so are not compared by the
+    #: defaults-vs-widget sync test.
+    default_params_volatile: tuple[str, ...] = ()
+
+    @classmethod
+    def default_params(cls) -> dict:
+        """The parameters a fresh widget would hand ``apply``.
+
+        What a headless run starts from, so a workflow can name only the
+        settings it changes. Pinned to the widget by a test: the dict here
+        and ``make_param_widget(...).get_values()`` must agree.
+        """
+        return {}
+
+    def encode_params(self, params: dict | None) -> tuple[dict, list[str]]:
+        """``(encoded, reasons)``: params as lossless JSON, or why not.
+
+        The default is the strict encoder; a processor whose parameters carry
+        objects (an ROI record, a model handle) overrides this to write them
+        down in a form :meth:`decode_params` can read back, and returns a
+        reason for anything it cannot.
+        """
+        from imswitch.improcess.model.provenance import encode_params
+
+        return encode_params(params)
+
+    def decode_params(self, encoded: dict | None, context=None) -> dict:
+        """Inverse of :meth:`encode_params`."""
+        from imswitch.improcess.model.provenance import decode_strict
+
+        return dict(decode_strict(dict(encoded or {})))
+
+    def migrate_params(self, encoded: dict | None, from_version: int) -> dict:
+        """Bring params recorded under an older ``params_version`` up to date.
+
+        The default is identity; a processor that bumped its version overrides
+        this. Raising ``ValueError`` says the old shape cannot be migrated.
+        """
+        return dict(encoded or {})
 
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.

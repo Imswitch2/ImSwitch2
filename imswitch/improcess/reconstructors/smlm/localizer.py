@@ -102,6 +102,14 @@ class SmlmLocalizer(StreamingReconstructor):
     description = "Single-molecule localization (net-gradient detect + fit)"
     default_save_subdir = "smlm"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'threshold': 500.0,
+        'sigma': 1.0,
+        'roi': 7,
+        'method': 'gausslq',
+        'pixel_size_nm': 100.0}
+
     def __init__(self):
         self._logger = initLogger('SmlmLocalizer')
 

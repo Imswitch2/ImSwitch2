@@ -34,6 +34,15 @@ class SmlmFilterProcessor(Processor):
     category = "Localization"
     kinds = ("localization",)
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'min_photons': 0.0,
+        'max_photons': 0.0,
+        'min_sigma_nm': 0.0,
+        'max_sigma_nm': 0.0,
+        'min_frame': 0,
+        'max_frame': 0}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: isinstance(result, LocalizationResult)

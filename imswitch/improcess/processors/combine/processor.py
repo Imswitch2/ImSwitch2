@@ -38,6 +38,10 @@ class StackCombineProcessor(Processor):
     min_inputs = 2
     max_inputs = None
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2

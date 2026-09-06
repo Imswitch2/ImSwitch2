@@ -38,6 +38,10 @@ class SubtractBackgroundProcessor(Processor):
     accepts_roi = True
     roi_modes = ('mask', 'crop')
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'radius': 50.0, 'output_background': False}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2

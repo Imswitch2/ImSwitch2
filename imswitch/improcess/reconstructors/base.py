@@ -60,6 +60,34 @@ class Reconstructor(ABC):
     processing.
     """
 
+    #: Version of this reconstructor's parameter contract; see
+    #: :attr:`~imswitch.improcess.processors.base.Processor.params_version`.
+    params_version: int = 1
+    #: Keys of :meth:`default_params` whose widget default is machine-dependent.
+    default_params_volatile: tuple[str, ...] = ()
+
+    @classmethod
+    def default_params(cls) -> dict:
+        """The parameters a fresh widget would hand ``process``; pinned to the
+        widget by a test."""
+        return {}
+
+    def encode_params(self, params: dict | None) -> tuple[dict, list[str]]:
+        """``(encoded, reasons)``: params as lossless JSON, or why not."""
+        from imswitch.improcess.model.provenance import encode_params
+
+        return encode_params(params)
+
+    def decode_params(self, encoded: dict | None, context=None) -> dict:
+        """Inverse of :meth:`encode_params`."""
+        from imswitch.improcess.model.provenance import decode_strict
+
+        return dict(decode_strict(dict(encoded or {})))
+
+    def migrate_params(self, encoded: dict | None, from_version: int) -> dict:
+        """Bring params recorded under an older ``params_version`` up to date."""
+        return dict(encoded or {})
+
 
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:

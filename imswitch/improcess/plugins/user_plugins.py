@@ -17,6 +17,7 @@ import glob
 import importlib.util
 import inspect
 import os
+import sys
 import traceback
 from dataclasses import dataclass
 
@@ -116,7 +117,16 @@ def _load_module_from_path(path: str):
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not create import spec for {path!r}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Registered like any import, so ``inspect`` can find the file behind a
+    # class defined here (the runtime versions drop-in plugins by a digest
+    # of that file) and dataclasses/pickling inside the plugin work. A
+    # reload simply replaces the entry.
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 

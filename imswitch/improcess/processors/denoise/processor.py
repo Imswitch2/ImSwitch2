@@ -33,6 +33,16 @@ class DenoiseProcessor(Processor):
     accepts_roi = True
     roi_modes = ('mask', 'crop')
 
+    default_params_volatile = ('model_name',)
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'model_name': 'Vimentin_UNet_RCAN_lowSNR',
+        'model_type': 'Auto',
+        'crop_size': 800,
+        'pad': True,
+        'clip_neg': True}
+
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
         # Lazy: the Denoiser triggers a torch import on construction, so build

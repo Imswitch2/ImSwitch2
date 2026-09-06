@@ -19,6 +19,10 @@ class ProjectionProcessor(Processor):
     category = "Dimensions and channels"
     kinds = ("image", "composite")
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'axis': 'Auto', 'mode': 'max', 'start': None, 'stop': None}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: result.data.ndim >= 2

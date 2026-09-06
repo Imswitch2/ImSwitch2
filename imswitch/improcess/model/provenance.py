@@ -270,7 +270,18 @@ def make_node(
     """
     if op not in OPS:
         raise ProvenanceError(f"unknown provenance op {op!r}")
-    encoded, reasons = encode_params(params)
+    codec = getattr(plugin, "encode_params", None) if plugin is not None else None
+    if callable(codec):
+        # The plugin's own codec knows how to write down objects the strict
+        # encoder would refuse; a codec that misbehaves must not lose the run.
+        try:
+            encoded, reasons = codec(params)
+            encoded, reasons = dict(encoded or {}), list(reasons or [])
+        except Exception as exc:  # noqa: BLE001
+            encoded, reasons = encode_params(params)
+            reasons.append(f"plugin codec failed: {exc}")
+    else:
+        encoded, reasons = encode_params(params)
     node: dict[str, Any] = {
         "op": op,
         "time": _now(),

@@ -44,6 +44,25 @@ class MonalisaReconstructor(StreamingReconstructor):
     supports_streaming = True
     supports_consolidation = True
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'pixel_size_nm': 77,
+        'reconstruction_method': 'Fast Gauss MoNaLISA',
+        'device': 'GPU',
+        'row_offset': 9.89,
+        'col_offset': 10.4,
+        'row_period': 11.05,
+        'col_period': 11.05,
+        'psf_fwhm_nm': 220,
+        'bg_modelling': 'Constant',
+        'bg_gaussian_size_nm': 500,
+        'fast_gauss_footprint_mode': 'Rectangular shells',
+        'fast_gauss_footprint_num_rects': 3,
+        'fast_gauss_gaussian_sigma_px': 2.0,
+        'fast_gauss_pinhole_radius_sigma': 1.5,
+        'bleaching_correction': False,
+        'auto_scan_orientation': True}
+
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')
         self._pattern_finder = PatternFinder()

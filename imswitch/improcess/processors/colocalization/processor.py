@@ -21,6 +21,14 @@ class ColocalizationProcessor(Processor):
     category = "Measurement"
     kinds = ("image", "composite")
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'compare_axis': 'Auto',
+        'index_a': 0,
+        'index_b': 1,
+        'threshold_a': 0.0,
+        'threshold_b': 0.0}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         """Require a stack: the last two axes are the (Y, X) plane, so at least

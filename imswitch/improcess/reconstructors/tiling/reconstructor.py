@@ -390,6 +390,19 @@ class TilingReconstructor(Reconstructor):
     accepted_source_kinds = ("image", "tiling-manifest")
     execution_policy = "worker"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'refine': True,
+        'blend': True,
+        'shading_correction': False,
+        'max_shift_px': None,
+        'project': False,
+        'stage_positions': True,
+        'detector': None,
+        'alignment_diagnostic': False,
+        'channel': None,
+        'project_z': False}
+
     def __init__(self):
         super().__init__()
         self._logger = initLogger(self)

@@ -29,6 +29,10 @@ class ChannelSplitProcessor(Processor):
     preserves_grid = True
     kinds = ("image", "composite")
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'axis': 'Auto'}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return self._has_channel_axis

@@ -17,6 +17,10 @@ class StackSplitProcessor(Processor):
     category = "Dimensions and channels"
     kinds = ("image", "composite")
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'axis': 'Auto'}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: getattr(result.data, "ndim", 0) > 2

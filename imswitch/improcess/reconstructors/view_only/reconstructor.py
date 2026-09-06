@@ -90,6 +90,10 @@ class ViewOnlyReconstructor(Reconstructor):
     description = "Display raw frames without any reconstruction"
     is_pass_through = True
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {}
+
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return _NoParamsWidget(parent)
 

@@ -26,6 +26,21 @@ class MulticolorRegistrationProcessor(Processor):
     id = "multicolor-registration"
     category = "Registration"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'n_slices': 3,
+        'split_axis': 'X',
+        'bounds': '',
+        'mode': 'maxproj',
+        'reference_channel': 0,
+        'time_index': 0,
+        'bead_sigma': 1.5,
+        'bead_min_dist': 6,
+        'bead_thr_rel': 0.5,
+        'match_max_dist': 25.0,
+        'ransac_n_iter': 2000,
+        'ransac_inlier_px': 3.0}
+
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
 
