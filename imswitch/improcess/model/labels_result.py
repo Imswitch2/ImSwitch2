@@ -10,7 +10,6 @@ integer values, written through the shared image writer.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -55,8 +54,8 @@ class LabelsResult(ProcessingResult):
         data = np.asarray(self.data)
         return int(len(np.unique(data[data != 0]))) if data.size else 0
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        save_image_result(self, path, fmt, extra={"labels": True})
+    def write_files(self, plan, document) -> None:
+        save_image_result(self, plan.primary, plan.fmt, extra={"labels": True}, document=document)
 
 
 def _default_labels(ndim: int) -> list[str]:

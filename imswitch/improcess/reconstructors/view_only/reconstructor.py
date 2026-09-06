@@ -12,11 +12,9 @@ lazy data handle wrapped as a ProcessingResult so the rest of ImProcess
 """
 
 import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import tifffile as tiff
 from qtpy import QtWidgets
 
 from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
@@ -59,8 +57,8 @@ def _source_identity(data_obj) -> str | None:
 class ViewOnlyResult(ProcessingResult):
     """Raw frame stack wrapped as a ProcessingResult."""
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        save_image_result(self, path, fmt)
+    def write_files(self, plan, document) -> None:
+        save_image_result(self, plan.primary, plan.fmt, document=document)
 
 
 class _NoParamsWidget(QtWidgets.QWidget):

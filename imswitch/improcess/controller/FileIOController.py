@@ -371,7 +371,19 @@ class FileIOController(ImProcessWidgetController):
         # Two-part suffixes (.ome.tif, .ome.zarr) are why this asks the writer
         # rather than reading Path.suffix, which sees only the last part and
         # would call an OME-Zarr directory a TIFF.
-        reconObj.save(Path(filePath), result_io.format_for_path(filePath))
+        #
+        # The user picked this path in a dialog, so overwriting it is what
+        # they asked for; the staged protocol still writes atomically.
+        receipt = reconObj.save(
+            Path(filePath), result_io.format_for_path(filePath), overwrite=True
+        )
+        files = getattr(receipt, "files", None)
+        if files:
+            self._logger.info(
+                "Saved %s: %s", getattr(reconObj, "name", "result"),
+                ", ".join(str(f) for f in files),
+            )
+        return receipt
 
     def saveCoefficients(self, reconObj, filePath):
         coeffs = copy.deepcopy(reconObj.getCoeffs())

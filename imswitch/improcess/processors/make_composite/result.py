@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-import h5py
 import numpy as np
-import tifffile
 
 from imswitch.improcess.model.contrast import finite_range
 from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
@@ -80,8 +77,8 @@ class CompositeResult(ProcessingResult):
             )
         return layers
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        save_image_result(self, path, fmt, extra={"mode": "composite"})
+    def write_files(self, plan, document) -> None:
+        save_image_result(self, plan.primary, plan.fmt, extra={"mode": "composite"}, document=document)
 
 
 __all__ = ["CompositeResult"]

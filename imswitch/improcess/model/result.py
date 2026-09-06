@@ -1,6 +1,6 @@
 """Processing result abstractions for ImProcess reconstructors and processors."""
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -107,6 +107,26 @@ class ProcessorInputChoice:
     result: "ProcessingResult"
 
 
+@dataclass
+class SerializationView:
+    """The array a writer sees, which need not be the array the viewer sees.
+
+    MoNaLISA holds ``(Dataset, Base, T, Z, Y, X)`` in memory and has always
+    written a ``(T, Z, C, Y, X)`` hyperstack with ``C = Dataset x Base``; a
+    generic writer handed ``result.data`` would silently change that file
+    layout. A result that wants a different on-disk shape returns it here,
+    with the axes, scales and channel names that describe *that* array, and
+    the shared writer writes the view.
+    """
+
+    data: Any
+    axis_labels: list[str]
+    axis_scales: list[float]
+    scale_unit: str = "px"
+    channel_names: list[str] | None = None
+    extra: dict[str, Any] | None = None
+
+
 class ProcessingResult(ABC):
     """
     Abstract base for all reconstructor/processor outputs.
@@ -178,6 +198,8 @@ class ProcessingResult(ABC):
         self.roi_provenance: dict[str, Any] = {}
         self.lineage = tuple(lineage)
         self.identity_kind = identity_kind
+        #: Receipts of every save of this result in this session, newest last.
+        self.artifacts: list = []
         self._display_layer_settings: dict[str, dict[str, Any]] = {}
         self.axis_scales = (
             axis_scales
@@ -297,19 +319,62 @@ class ProcessingResult(ABC):
             for layer_id, settings in self._display_layer_settings.items()
         }
     
-    @abstractmethod
-    def save(self, path: Path, fmt: str) -> None:
+    #: Formats :meth:`save` accepts for this type (canonical ids: ``tiff``,
+    #: ``hdf5``, ``zarr``, ``csv``, ``picasso``, ``imagej``). Subclasses that
+    #: write something other than an image array override this.
+    supported_formats: tuple[str, ...] = ("tiff", "hdf5", "zarr")
+
+    def serialization_view(self) -> SerializationView:
+        """The array, axes, scales and channel names a writer should write.
+
+        The default is the result as displayed. Override when the on-disk
+        layout must differ from the in-memory one (see
+        :class:`SerializationView`).
         """
-        Save the result to disk.
-        
-        Args:
-            path: Output file path
-            fmt: Format string (e.g., "tiff", "hdf5", "zarr")
-        
-        The implementation is modality-specific: MoNaLISA saves 6D ImageJ TIFFs
-        with specific axis order, STED might save multi-channel TIFFs, etc.
+        data = self.data
+        ndim = int(getattr(data, "ndim", np.ndim(data)))
+        return SerializationView(
+            data=data,
+            axis_labels=list(self.axis_labels)[:ndim] if self.axis_labels else [],
+            axis_scales=[float(v) for v in list(self.axis_scales)[:ndim]],
+            scale_unit=str(self.scale_unit or "px"),
+        )
+
+    def plan_save(self, path: Path, fmt: str):
+        """Every file :meth:`write_files` will produce for ``path`` in ``fmt``.
+
+        The default is one file. A writer with companions (drift vectors, a
+        YAML info sidecar, a CSV's provenance companion) names them here so the
+        save protocol can stage, publish and receipt all of them together.
         """
-        ...
+        from imswitch.improcess.model.save_protocol import SavePlan
+
+        return SavePlan(Path(path), fmt)
+
+    def write_files(self, plan, document) -> None:
+        """Write every file in ``plan`` (already pointing into the staging
+        directory), embedding ``document`` where the container allows.
+
+        Subclasses implement this instead of ``save``. ``plan.primary`` and
+        ``plan.companions`` are the paths to write; ``document`` is the
+        :class:`~.save_protocol.ProvenanceDocument` describing the graph and
+        this very artifact.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement write_files"
+        )
+
+    def save(self, path: Path, fmt: str | None = None, *, overwrite: bool = False):
+        """Write the result through the staged save protocol; returns the receipt.
+
+        The receipt lists every file published. A subclass that overrides
+        ``save`` itself bypasses the protocol and its provenance guarantees;
+        implement :meth:`write_files` (and :meth:`plan_save` when there are
+        companions) instead.
+        """
+        from imswitch.improcess.model.save_protocol import save_result
+
+        return save_result(self, path, fmt, overwrite=overwrite)
 
     def plot_payloads(self) -> list[PlotPayload]:
         """Return optional graph payloads for the ImProcess graph widget."""

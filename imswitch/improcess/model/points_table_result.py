@@ -88,14 +88,28 @@ class PointsTableResult(ProcessingResult):
             records.append(row)
         return records
 
-    def save(self, path: Path, fmt: str = "csv") -> None:
+
+    supported_formats = ("csv", "hdf5")
+
+    def plan_save(self, path: Path, fmt: str):
+        from imswitch.improcess.model.save_protocol import SavePlan, companion_json_path
+
         path = Path(path)
-        if fmt in ("csv", "txt"):
-            self._save_csv(path)
-        elif fmt in ("hdf5", "h5", "hdf"):
-            self._save_hdf5(path)
+        if fmt == "csv":
+            return SavePlan(path, fmt, (companion_json_path(path),))
+        return SavePlan(path, fmt)
+
+    def write_files(self, plan, document) -> None:
+        from imswitch.improcess.model.save_protocol import embed_hdf5_path, write_companion_json
+
+        if plan.fmt == "csv":
+            self._save_csv(plan.primary)
+            write_companion_json(plan.primary, document)
+        elif plan.fmt == "hdf5":
+            self._save_hdf5(plan.primary)
+            embed_hdf5_path(plan.primary, document)
         else:
-            raise ValueError(f"points table supports CSV or HDF5, got {fmt!r}")
+            raise ValueError(f"points table supports CSV or HDF5, got {plan.fmt!r}")
 
     def _save_csv(self, path: Path) -> None:
         import csv

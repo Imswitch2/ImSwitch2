@@ -10,7 +10,6 @@ a bare layer.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import numpy as np
 
@@ -58,22 +57,32 @@ class ROIMaskResult(ProcessingResult):
             for index, name in enumerate(self.roi_names, start=1)
         ]
 
-    def save(self, path, fmt: str = "tiff") -> None:
-        """Write the label image, in the format the caller asked for."""
-        target = Path(path)
-        if fmt in ("tiff", "tif"):
-            import tifffile
 
-            tifffile.imwrite(str(target), np.asarray(self.data))
+    supported_formats = ("tiff", "hdf5")
+
+    def write_files(self, plan, document) -> None:
+        """Write the label image, in the format the plan asks for."""
+        if plan.fmt == "tiff":
+            from imswitch.improcess.model.result_io import save_image_result
+
+            save_image_result(
+                self, plan.primary, "tiff",
+                extra={"labels": True, "roi_names": [str(n) for n in self.roi_names]},
+                document=document,
+            )
             return
-        if fmt in ("h5", "hdf5"):
+        if plan.fmt == "hdf5":
             import h5py
 
-            with h5py.File(str(target), "w") as handle:
+            from imswitch.improcess.model.save_protocol import embed_hdf5
+
+            with h5py.File(str(plan.primary), "w") as handle:
                 dataset = handle.create_dataset("labels", data=np.asarray(self.data))
                 dataset.attrs["roi_names"] = [str(n) for n in self.roi_names]
+                embed_hdf5(handle, document)
             return
-        raise ValueError(f"unsupported format {fmt!r} for an ROI label image")
+        raise ValueError(f"unsupported format {plan.fmt!r} for an ROI label image")
+
 
 
 __all__ = ["ROIMaskResult"]
