@@ -24,9 +24,11 @@ from imswitch.improcess.workflows.sources import (
     SourceError,
     SourceSpec,
     close_source,
+    file_sha256,
     fingerprint_mismatches,
     fingerprint_of,
     open_source,
+    spec_mismatches,
 )
 from imswitch.improcess.workflows.steps import (
     DEFAULT_PORT,
@@ -82,6 +84,17 @@ class RunReport:
     def ports_of(self, step_id: str) -> list[str]:
         prefix = f"{step_id}."
         return [key[len(prefix):] for key in self.results if key.startswith(prefix)]
+
+    def detach_sources(self) -> list:
+        """Hand the opened sources to the caller instead of closing them.
+
+        For a caller that keeps the results alive (the GUI publishes them
+        into the reconstruction list): a lazily-backed result reads from its
+        source handle, so closing the handle would break the result.
+        """
+        sources, self._sources = list(self._sources), []
+        self._closed = True
+        return sources
 
     def close(self) -> None:
         if self._closed:
@@ -141,9 +154,19 @@ def render_save_path(step: Save, *, out_dir: Path, source_stem: str, result, inp
         rendered = step.path_template.format(**values)
     except KeyError as exc:
         raise WorkflowError(f"{step.id}: unknown placeholder {exc} in path template") from exc
+    out_dir = Path(out_dir).resolve()
     path = Path(rendered)
     if not path.is_absolute():
         path = out_dir / path
+    path = path.resolve()
+    # The output directory is the one place a workflow may write. A template
+    # with `..` or an absolute path elsewhere is refused, not honoured.
+    try:
+        path.relative_to(out_dir)
+    except ValueError:
+        raise WorkflowError(
+            f"{step.id}: save path {path} is outside the output directory {out_dir}"
+        ) from None
     return path
 
 
@@ -157,6 +180,8 @@ def run(
     overwrite: bool = False,
     mode: str = "run",
     allow_drift: bool = False,
+    verify_hash: bool = False,
+    hash_sources: bool = False,
     progress: Callable[[int, int, str], None] | None = None,
     cancel: Callable[[], bool] | None = None,
     logger=None,
@@ -167,6 +192,11 @@ def run(
     strings); a source step with a path of its own needs none. Raises
     :class:`RunError` on the first failing step, with the report attached
     as ``exc.report``.
+
+    ``hash_sources`` records a sha256 of every file source in the provenance
+    (so a later replay can be verified byte-for-byte); ``verify_hash`` makes
+    a replay require and check that hash. Accepting drift (``allow_drift``)
+    turns a replay into a run, and the report's ``mode`` says so.
     """
     if mode not in MODES:
         raise WorkflowError(f"unknown mode {mode!r}; expected one of {MODES}")
@@ -174,7 +204,7 @@ def run(
     if issues:
         raise WorkflowError("workflow is invalid:\n  " + "\n  ".join(str(i) for i in issues))
     logger = logger or _log()
-    out_dir = Path(out_dir) if out_dir is not None else Path.cwd()
+    out_dir = (Path(out_dir) if out_dir is not None else Path.cwd()).resolve()
     report = RunReport(workflow=workflow.name, mode=mode, out_dir=out_dir)
     bindings = dict(bindings or {})
     source_stem = "result"
@@ -185,13 +215,14 @@ def run(
     from imswitch.improcess.model.provenance import graph_of, output_of
 
     for index, step in enumerate(workflow.steps):
-        if cancel is not None and cancel():
-            report.error = "cancelled"
-            report.failed_step = step.id
-            raise RunError("cancelled", ) from None
         if progress is not None:
             progress(index, total, step.id)
         try:
+            if cancel is not None and cancel():
+                # Inside the handler on purpose: a cancellation is reported
+                # like any failure, with the report (and its open sources)
+                # attached so the caller can close them.
+                raise RunError("cancelled")
             if isinstance(step, Source):
                 spec = bindings.get(step.id, step.source)
                 if isinstance(spec, str):
@@ -200,16 +231,44 @@ def run(
                     spec = parse_binding(spec)
                 if not spec.bound:
                     raise SourceError(f"source {step.id!r} is not bound to a path")
+                if mode == "replay":
+                    # A binding may relocate the file; it may not point at a
+                    # different dataset or kind of source and still be a replay.
+                    drift = spec_mismatches(step.source, spec)
+                    if drift:
+                        message = f"source {step.id!r} is bound to something other than the recorded run: " + "; ".join(drift)
+                        if not allow_drift:
+                            raise SourceError(message + " (use allow_drift to run anyway; that is a run, not a replay)")
+                        report.warnings.append(message)
+                    if not spec.dataset and step.source.dataset:
+                        spec = spec.with_path(spec.path, step.source.dataset)
                 data_obj = open_source(spec, source_root=source_root)
                 report._sources.append(data_obj)
-                if mode == "replay" and step.source.fingerprint:
-                    problems = fingerprint_mismatches(step.source.fingerprint, fingerprint_of(data_obj))
+                resolved_path = spec.resolved(source_root).path
+                if hash_sources or (mode == "replay" and verify_hash):
+                    digest = file_sha256(resolved_path)
+                    if digest:
+                        data_obj._provenance_sha256 = digest
+                if mode == "replay":
+                    recorded = dict(step.source.fingerprint or {})
+                    if verify_hash and not recorded.get("sha256"):
+                        raise SourceError(
+                            f"source {step.id!r}: verify_hash asked, but the recorded run kept no hash "
+                            "(record one with hash_sources=True / --hash-sources)"
+                        )
+                    problems = fingerprint_mismatches(recorded, fingerprint_of(data_obj)) if recorded else []
+                    if not recorded:
+                        problems.append("no fingerprint was recorded for this source")
                     if problems:
                         message = f"source {step.id!r} differs from the recorded run: " + "; ".join(problems)
                         if allow_drift:
                             report.warnings.append(message)
                         else:
                             raise SourceError(message + " (use allow_drift to run anyway; that is a run, not a replay)")
+                    if report.warnings and allow_drift:
+                        # Drift was accepted: whatever this produces, it did not
+                        # reproduce the recorded run.
+                        report.mode = "run"
                 if len(report._sources) == 1:
                     source_stem = Path(str(spec.path)).name.split(".")[0]
                 report.results[f"{step.id}.{SOURCE_PORT}"] = data_obj
@@ -252,29 +311,33 @@ def run(
                             f"{step.processor!r} does not accept result {getattr(item, 'name', item)!r} "
                             f"(kind {getattr(item, 'kind', 'image')!r})"
                         )
-                results, failures = run_processor(plugin, inputs, params, logger)
-                if failures:
-                    who, why = failures[0]
-                    raise RunError(f"{step.processor!r} failed on {getattr(who, 'name', who)!r}: {why}")
-                if not results:
-                    raise RunError(f"{step.processor!r} produced no results")
                 spec = plugin.output_spec(params)
                 fan_out = len(inputs) > 1 and getattr(plugin, "max_inputs", 1) == 1
-                used: set[str] = set()
-                for position, result in enumerate(results):
-                    graph = graph_of(result)
-                    port = output_of(graph)[1] if graph else DEFAULT_PORT
-                    if not spec.matches(port):
-                        raise RunError(
-                            f"{step.id}: {step.processor!r} produced port {port!r}, "
-                            f"outside its declared {spec.describe()}"
-                        )
-                    if fan_out and port in used:
-                        # One run per input: the same port from the second
-                        # input onwards is suffixed with its input position.
-                        port = f"{port}{position}"
-                    used.add(port)
-                    report.results[f"{step.id}.{port}"] = result
+                # A single-input processor over several inputs runs once per
+                # input, and each run's ports are suffixed with *that input's*
+                # index (signal, background, signal1, background1, ...).
+                groups = [[item] for item in inputs] if fan_out else [inputs]
+                for input_index, group in enumerate(groups):
+                    results, failures = run_processor(plugin, group, params, logger)
+                    if failures:
+                        who, why = failures[0]
+                        raise RunError(f"{step.processor!r} failed on {getattr(who, 'name', who)!r}: {why}")
+                    if not results:
+                        raise RunError(f"{step.processor!r} produced no results")
+                    for result in results:
+                        graph = graph_of(result)
+                        port = output_of(graph)[1] if graph else DEFAULT_PORT
+                        if not spec.matches(port):
+                            raise RunError(
+                                f"{step.id}: {step.processor!r} produced port {port!r}, "
+                                f"outside its declared {spec.describe()}"
+                            )
+                        if fan_out and input_index > 0:
+                            port = f"{port}{input_index}"
+                        key = f"{step.id}.{port}"
+                        if key in report.results:
+                            raise RunError(f"{step.id}: {step.processor!r} produced port {port!r} twice")
+                        report.results[key] = result
 
             elif isinstance(step, Save):
                 result = report.result(step.input)

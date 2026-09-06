@@ -66,17 +66,23 @@ def _ancestors(graph: dict, node_id: str) -> list[str]:
     """Node ids reachable backwards from ``node_id``, in dependency order."""
     nodes = graph["nodes"]
     order: list[str] = []
-    seen: set[str] = set()
-
-    def visit(current: str) -> None:
-        if current in seen:
-            return
-        seen.add(current)
-        for ref in nodes[current].get("inputs") or []:
-            visit(str(ref["node"]))
-        order.append(current)
-
-    visit(node_id)
+    done: set[str] = set()
+    # Iterative post-order: a validated graph may hold thousands of nodes in
+    # one chain, and Python's recursion limit is not part of the contract.
+    stack: list[tuple[str, bool]] = [(node_id, False)]
+    while stack:
+        current, expanded = stack.pop()
+        if current in done:
+            continue
+        if expanded:
+            done.add(current)
+            order.append(current)
+            continue
+        stack.append((current, True))
+        for ref in reversed(nodes[current].get("inputs") or []):
+            child = str(ref["node"])
+            if child not in done:
+                stack.append((child, False))
     return order
 
 

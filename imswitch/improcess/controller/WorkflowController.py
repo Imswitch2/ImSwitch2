@@ -52,6 +52,7 @@ class WorkflowController(QtCore.QObject):
         self._config = dict(processing_config or {})
         self._thread = None
         self._worker = None
+        self._retained: list = []          # source handles behind published results
         for name, slot in (("sigExportWorkflowRequested", self.exportWorkflow),
                            ("sigRunWorkflowRequested", self.runWorkflow)):
             signal = getattr(mainView, name, None)
@@ -150,7 +151,7 @@ class WorkflowController(QtCore.QObject):
             f"Workflow {report.workflow} done: {published} result(s) added"
             + (f", wrote {len(files)} file(s)" if files else "")
         )
-        report.close()
+        self._retain(report)
 
     @QtCore.Slot(str, object)
     def _onFailed(self, message: str, report) -> None:
@@ -158,7 +159,18 @@ class WorkflowController(QtCore.QObject):
         self._logger.error("Workflow failed: %s", message)
         self._status(f"Workflow failed: {message}" + (f" ({published} partial result(s) added)" if published else ""))
         if report is not None:
-            report.close()
+            self._retain(report)
+
+    def _retain(self, report) -> None:
+        """Keep the sources the published results may still read from.
+
+        A view-only result is a lazy view over the file it came from; closing
+        the report would close that handle under a result that is now in the
+        reconstruction list. The handles are transferred to this controller
+        and live as long as the session does, which is how the GUI's own
+        loader treats the files it opens.
+        """
+        self._retained.extend(report.detach_sources())
 
     def _publish(self, report) -> int:
         from imswitch.improcess.model.result import ProcessingResult

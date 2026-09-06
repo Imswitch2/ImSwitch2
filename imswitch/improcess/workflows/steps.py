@@ -339,6 +339,27 @@ def _defaults(plugin) -> dict:
         return {}
 
 
+def _unknown_params(step, plugin) -> list[Issue]:
+    """Parameter keys the plugin does not declare (``param_keys``).
+
+    Checked whenever the plugin declares a key set, including an empty one:
+    a plugin with no parameters accepts none, and a typo must fail before
+    the run rather than being ignored by ``params.get(...)``.
+    """
+    getter = getattr(type(plugin), "param_keys", None)
+    try:
+        allowed = getter() if callable(getter) else None
+    except Exception:
+        allowed = None
+    if allowed is None:
+        return []
+    unknown = sorted(set(step.params) - set(allowed))
+    if not unknown:
+        return []
+    plugin_id = getattr(plugin, "id", type(plugin).__name__)
+    return [Issue(step.id, f"unknown parameter(s) for {plugin_id!r}: {unknown} (accepted: {sorted(allowed) or 'none'})")]
+
+
 def validate(workflow: Workflow, registry=None) -> list[Issue]:
     """Everything wrong with ``workflow`` that can be known before running.
 
@@ -369,11 +390,17 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                 issues.append(Issue(step.id, "a reconstruction takes exactly one source"))
             elif not isinstance(by_id.get(step.inputs[0].step), Source):
                 issues.append(Issue(step.id, "a reconstruction's input must be a source step"))
-            if registry and registry.get_reconstructor(step.reconstructor, raise_on_missing=False) is None:
-                issues.append(Issue(step.id, f"unknown reconstructor {step.reconstructor!r}"))
+            if registry:
+                plugin = registry.get_reconstructor(step.reconstructor, raise_on_missing=False)
+                if plugin is None:
+                    issues.append(Issue(step.id, f"unknown reconstructor {step.reconstructor!r}"))
+                else:
+                    issues.extend(_unknown_params(step, plugin))
         elif isinstance(step, Consolidate):
             if not step.inputs:
                 issues.append(Issue(step.id, "a consolidation needs at least one input"))
+            if step.params:
+                issues.append(Issue(step.id, f"a consolidation takes no parameters; got {sorted(step.params)}"))
             for ref in step.inputs:
                 target = by_id.get(ref.step)
                 if target is not None and not isinstance(target, Reconstruct):
@@ -401,9 +428,7 @@ def validate(workflow: Workflow, registry=None) -> list[Issue]:
                         pass   # a single-input processor over several inputs runs once per input
                     elif count < low or (high is not None and count > high):
                         issues.append(Issue(step.id, f"{step.processor!r} takes {low}..{high if high is not None else '∞'} inputs, got {count}"))
-                    unknown = sorted(set(step.params) - set(_defaults(processor)))
-                    if unknown and _defaults(processor):
-                        issues.append(Issue(step.id, f"unknown parameter(s) for {step.processor!r}: {unknown}"))
+                    issues.extend(_unknown_params(step, processor))
         elif isinstance(step, Save):
             from imswitch.improcess.model.save_protocol import UnsupportedSaveFormat, normalize_format
 

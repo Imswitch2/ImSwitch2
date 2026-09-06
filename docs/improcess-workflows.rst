@@ -112,8 +112,15 @@ Parameters and defaults
 **widget default** — the value a freshly opened parameter panel would have
 handed the plugin — from ``default_params()``, which is pinned to the widget
 by a test. ``python -m imswitch.improcess.workflows list`` prints every
-plugin's id, version, ports and defaults. An unknown parameter key is a
-validation error, not a silent no-op.
+plugin's id, version, ports and defaults.
+
+The keys a step may set are the plugin's ``param_keys()``: its defaults plus
+any ``extra_param_keys`` it declares for settings no widget default names
+(MoNaLISA's ``scan_params``). An unknown key is a validation error for
+every step kind — reconstructions included — and a plugin with no
+parameters accepts none; a typo cannot become a silent no-op. A
+``consolidate`` step takes no parameters at all, because ``consolidate()``
+takes none, and the provenance never records settings a step did not use.
 
 A reconstructor may complete its parameters from the data before running
 (``prepare_params``): MoNaLISA fills ``scan_params`` from the recording's
@@ -228,11 +235,23 @@ Two run modes are kept apart on purpose:
 
 * ``run`` (the default) binds whatever sources it is given: apply this
   recipe to new data.
-* ``replay`` verifies each source against the fingerprint recorded in the
-  workflow (shape, dtype, size, modification time, attribute digest,
-  tiling manifest) and refuses to continue on a mismatch. ``allow_drift``
-  downgrades that to a warning — and then it is a run, not a replay; the
-  report says so.
+* ``replay`` verifies each source against what was recorded: a binding may
+  relocate the file but not point at a different dataset or kind of
+  source, and every recorded fingerprint field (shape, dtype, size,
+  modification time, attribute digest, tiling manifest) must be present
+  now and equal — a field that cannot be determined today is a mismatch,
+  not a pass. Those fields cannot tell two files of the same shape and size
+  apart by content; for that, record a hash when running
+  (``hash_sources=True`` / ``--hash-sources``, one read pass over each
+  source) and replay with ``verify_hash=True`` / ``--verify-hash``, which
+  requires the recorded hash and compares it. ``allow_drift`` downgrades a
+  mismatch to a warning — and then it is a run, not a replay: the report's
+  ``mode`` becomes ``"run"``.
+
+``run_over`` accepts either a registry or a zero-argument factory
+(``bootstrap_registry`` itself); with a factory every row gets fresh plugin
+instances, so a plugin that caches state cannot carry it from one input to
+the next.
 
 Testing a workflow
 ==================

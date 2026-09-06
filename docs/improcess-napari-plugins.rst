@@ -160,6 +160,23 @@ affine, zero shear, and the same shape. ImProcess results store a scale and
 nothing else, so any other transform cannot be represented and is not
 claimed. Two arrays of the same shape are not the same grid.
 
+**Attribution.** A name pattern alone cannot say which session's plugin
+made a layer, so an adapter mapping is suggested only when the layer
+appeared *after* that session opened, is not a layer any session added
+itself, and exactly one open session's adapter claims it. If two sessions
+could claim it, no mapping is suggested and the import gets a fresh grid;
+the dialog still lets you pick the source result explicitly.
+
+**Points → localizations.** The ``table-to-localizations`` processor is the
+explicit promotion: it asks which columns are ``x`` and ``y`` (optionally
+``z``, ``frame``, ``photons``, ``sigma``), the coordinate unit and the pixel
+size, and refuses a column it cannot find. Nothing else turns a points
+table into emitters.
+
+**Writers.** Plugins that contribute writers appear under **Plugins → napari
+plugins → Endpoint sessions** as *Save layers of … with <writer>*; only that
+session's layers are handed to the writer, never the whole viewer.
+
 Every import records a ``napari-import`` step in the result's provenance,
 naming the plugin, the widget, the layer and the grid decision. Such a step
 is not replayable by definition.

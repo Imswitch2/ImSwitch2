@@ -211,6 +211,23 @@ class Processor(ABC):
         """
         return {}
 
+    #: Parameter keys accepted beyond those in :meth:`default_params` (an
+    #: optional setting no widget default names). ``None`` means "anything",
+    #: for a processor that genuinely takes free-form parameters.
+    extra_param_keys: tuple[str, ...] | None = ()
+
+    @classmethod
+    def param_keys(cls) -> frozenset[str] | None:
+        """Every parameter key a workflow may set, or ``None`` for unchecked.
+
+        A key outside this set is a validation error, not a silent no-op:
+        a typo in a workflow file must fail before the run, and a
+        processor with no parameters accepts none.
+        """
+        if cls.extra_param_keys is None:
+            return None
+        return frozenset(cls.default_params()) | frozenset(cls.extra_param_keys)
+
     def encode_params(self, params: dict | None) -> tuple[dict, list[str]]:
         """``(encoded, reasons)``: params as lossless JSON, or why not.
 

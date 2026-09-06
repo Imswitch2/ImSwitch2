@@ -354,13 +354,13 @@ def test_an_unsupported_format_is_refused_before_anything_is_written(tmp_path):
 def test_publish_is_a_rename_within_the_directory(tmp_path, monkeypatch):
     """Companions and primary reach their names by rename, not by copying."""
     seen = []
-    real_replace = os.replace
+    real_link = os.link
 
-    def spy(src, dst):
+    def spy(src, dst, *args, **kwargs):
         seen.append((Path(src).name, Path(dst).name))
-        real_replace(src, dst)
+        real_link(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(os, "replace", spy)
+    monkeypatch.setattr(os, "link", spy)         # publish = atomic no-clobber link, then unlink
     result = DriftCorrectedResult("d", np.zeros((2, 4, 4), np.float32), ["T", "Y", "X"], np.zeros((2, 2)))
     result.save(tmp_path / "d.ome.tif", "tiff")
     assert [dst for _src, dst in seen] == ["d.ome.drift.npy", "d.ome.tif"]   # companion first, primary last

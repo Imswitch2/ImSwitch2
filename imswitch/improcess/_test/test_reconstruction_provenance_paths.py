@@ -280,7 +280,7 @@ def _stream_worker(expected=6):
 
 
 def test_streaming_snapshots_share_one_node_and_the_final_is_complete():
-    worker, session = _stream_worker()
+    worker, session = _stream_worker(expected=4)      # every expected frame arrives
     snapshots, finals = [], []
     worker.sigResultUpdated.connect(snapshots.append)
     worker.sigStackFinished.connect(finals.append)
@@ -295,7 +295,7 @@ def test_streaming_snapshots_share_one_node_and_the_final_is_complete():
     assert second["completion"]["frames_committed"] == 4
     assert graph_of(snapshots[0])["output"]["node"] == graph_of(snapshots[1])["output"]["node"]
     final = output_node(finals[0])
-    assert final["completion"] == {"status": "complete", "frames_committed": 4, "expected_frames": 6}
+    assert final["completion"] == {"status": "complete", "frames_committed": 4, "expected_frames": 4}
     assert final["replayable"] is False                     # live source, not a file
     assert "not persisted" in " ".join(final["reasons"])
 

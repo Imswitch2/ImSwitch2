@@ -86,6 +86,7 @@ def cmd_run(args) -> int:
         workflow, bindings_list, registry=registry, out_dir=args.out,
         overwrite=args.overwrite, source_root=source_root,
         mode=args.mode, allow_drift=args.allow_drift,
+        verify_hash=args.verify_hash, hash_sources=args.hash_sources,
         on_row=lambda row: print(
             f"[{row.index}] {'ok ' if row.ok else 'FAIL'} "
             + (", ".join(row.files) if row.ok else f"{row.failed_step}: {row.error}")
@@ -122,7 +123,7 @@ def cmd_replay(args) -> int:
             return 2
         batch = run_over(
             workflow, [{}], registry=registry, out_dir=args.out, overwrite=args.overwrite,
-            mode="replay", allow_drift=args.allow_drift,
+            mode="replay", allow_drift=args.allow_drift, verify_hash=args.verify_hash,
             on_row=lambda row: print(
                 "replayed: " + ", ".join(row.files) if row.ok else f"FAILED at {row.failed_step}: {row.error}"
             ),
@@ -186,6 +187,10 @@ def main(argv=None) -> int:
     p_run.add_argument("--overwrite", action="store_true", help="allow overwriting existing outputs")
     p_run.add_argument("--mode", choices=("run", "replay"), default="run")
     p_run.add_argument("--allow-drift", action="store_true", help="replay even if sources differ from the recorded ones")
+    p_run.add_argument("--hash-sources", action="store_true",
+                       help="record a sha256 of every file source in the provenance (slower; enables --verify-hash on replay)")
+    p_run.add_argument("--verify-hash", action="store_true",
+                       help="in replay mode, require and check the recorded sha256 of every source")
     p_run.add_argument("--summary", help="summary CSV name inside --out")
     p_run.set_defaults(func=cmd_run)
 
@@ -197,6 +202,8 @@ def main(argv=None) -> int:
     p_replay.add_argument("--out", help="output directory for --run")
     p_replay.add_argument("--overwrite", action="store_true")
     p_replay.add_argument("--allow-drift", action="store_true", help="run even if the sources changed (then it is a run, not a replay)")
+    p_replay.add_argument("--verify-hash", action="store_true",
+                          help="require and check the sha256 recorded for every source (needs a run made with --hash-sources)")
     p_replay.set_defaults(func=cmd_replay)
 
     p_show = sub.add_parser("show-provenance", help="print the provenance a file carries (what to hand an LLM)")

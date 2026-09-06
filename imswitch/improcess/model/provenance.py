@@ -97,13 +97,27 @@ def encode_strict(value: Any, *, _path: str = "") -> Any:
     if isinstance(value, np.floating):
         return encode_strict(float(value), _path=_path)
     if isinstance(value, dict):
-        out = {}
+        if all(isinstance(key, str) for key in value):
+            return {
+                key: encode_strict(item, _path=f"{_path}.{key}" if _path else key)
+                for key, item in value.items()
+            }
+        # Non-string keys would be stringified by JSON and come back changed;
+        # keep them as pairs so the decoder restores the original keys.
+        pairs = []
         for key, item in value.items():
-            if not isinstance(key, (str, int, float, bool)) and key is not None:
-                raise NotEncodable(f"{_path or 'params'}: dict key {key!r} is not a JSON key")
-            out[str(key)] = encode_strict(item, _path=f"{_path}.{key}" if _path else str(key))
-        return out
-    if isinstance(value, (list, tuple)):
+            if not isinstance(key, (str, int, float, bool, tuple)) and key is not None:
+                raise NotEncodable(f"{_path or 'params'}: dict key {key!r} cannot be written down")
+            pairs.append([
+                encode_strict(key, _path=f"{_path}<key>"),
+                encode_strict(item, _path=f"{_path}.{key}" if _path else str(key)),
+            ])
+        return {"__dict__": pairs}
+    if isinstance(value, tuple):
+        return {"__tuple__": [
+            encode_strict(item, _path=f"{_path}[{index}]") for index, item in enumerate(value)
+        ]}
+    if isinstance(value, list):
         return [
             encode_strict(item, _path=f"{_path}[{index}]")
             for index, item in enumerate(value)
@@ -130,10 +144,34 @@ def decode_strict(value: Any) -> Any:
             return float(value["__float__"])
         if set(value) == {"__ndarray__", "dtype", "shape"}:
             return np.asarray(value["__ndarray__"], dtype=value["dtype"]).reshape(value["shape"])
+        if set(value) == {"__tuple__"}:
+            return tuple(decode_strict(item) for item in value["__tuple__"])
+        if set(value) == {"__dict__"}:
+            return {decode_strict(k): decode_strict(v) for k, v in value["__dict__"]}
         return {key: decode_strict(item) for key, item in value.items()}
     if isinstance(value, list):
         return [decode_strict(item) for item in value]
     return value
+
+
+def _not_json_lossless(encoded: dict) -> list[str]:
+    """Keys whose value does not survive ``json.dumps``/``json.loads`` unchanged."""
+    bad = []
+    for key, value in encoded.items():
+        try:
+            text = json.dumps(value, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            bad.append(str(key))
+            continue
+        if json.loads(text) != value:
+            bad.append(str(key))
+    return bad
+
+
+def json_safe_value(value: Any) -> Any:
+    from imswitch.improcess.model.footprint import json_safe
+
+    return json_safe(value)
 
 
 def encode_params(params: dict | None) -> tuple[dict, list[str]]:
@@ -273,10 +311,19 @@ def make_node(
     codec = getattr(plugin, "encode_params", None) if plugin is not None else None
     if callable(codec):
         # The plugin's own codec knows how to write down objects the strict
-        # encoder would refuse; a codec that misbehaves must not lose the run.
+        # encoder would refuse; a codec that misbehaves must not lose the run,
+        # and a codec that returns something JSON would quietly mangle must
+        # not be trusted either: its output has to survive a JSON round trip
+        # unchanged, or the node is not replayable.
         try:
             encoded, reasons = codec(params)
             encoded, reasons = dict(encoded or {}), list(reasons or [])
+            problems = _not_json_lossless(encoded)
+            if problems:
+                fallback, _ = encode_params(params)
+                for key in problems:
+                    encoded[key] = fallback.get(key, json_safe_value(encoded.get(key)))
+                reasons.extend(f"plugin codec output for {key!r} is not lossless JSON" for key in problems)
         except Exception as exc:  # noqa: BLE001
             encoded, reasons = encode_params(params)
             reasons.append(f"plugin codec failed: {exc}")
@@ -570,6 +617,11 @@ def describe_source(data_obj) -> dict:
     manifest = getattr(data_obj, "sourceFingerprint", None)
     if manifest:
         fingerprint["manifest"] = manifest if isinstance(manifest, (str, int, float)) else str(manifest)
+    # A full content hash is opt-in (the runner computes it when asked to);
+    # it is the only field that proves the pixels are the same.
+    digest = getattr(data_obj, "_provenance_sha256", None)
+    if digest:
+        fingerprint["sha256"] = str(digest)
     description["fingerprint"] = fingerprint
     return description
 

@@ -48,6 +48,15 @@ class EndpointSession:
     widget: Any = None
     viewer: Any = None                                    # detached viewer, when any
     error: str = ""
+    #: The layers the viewer held when this session opened. A layer not in
+    #: this set appeared afterwards, which is the only attribution the
+    #: session can honestly make for a plugin's output.
+    layers_before: tuple = ()
+    #: Set when the session was closed while its export was still running;
+    #: the export's completion is then stale and its files are discarded.
+    cancelled: bool = False
+    #: The export worker/thread, so closing the session can disown them.
+    worker: Any = None
 
     @property
     def lane(self) -> str:
@@ -131,11 +140,16 @@ class SessionRegistry:
         viewer objects first; this never touches them."""
         if session.state == "closed":
             return session
+        if session.state == "exporting":
+            # The worker is still writing into a directory we are about to
+            # delete; its completion must be treated as stale.
+            session.cancelled = True
         session.state = "closed"
         session.layers = []
         session.dock = None
         session.widget = None
         session.viewer = None
+        session.worker = None
         self._remove_files(session)
         return session
 

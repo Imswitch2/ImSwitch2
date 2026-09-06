@@ -128,6 +128,9 @@ class MonalisaReconstructor(StreamingReconstructor):
         self._logger.info(f'Pattern found: row_offset={row_offset:.2f}, col_offset={col_offset:.2f}, '
                          f'row_period={row_period:.2f}, col_period={col_period:.2f}')
     
+    #: ``scan_params`` comes from the file (or an explicit override), not a widget.
+    extra_param_keys = ("scan_params",)
+
     def prepare_params(self, data_obj, params: dict | None) -> dict:
         """Fill ``scan_params`` from the acquisition attributes when absent.
 

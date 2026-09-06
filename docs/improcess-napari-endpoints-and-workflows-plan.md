@@ -320,6 +320,30 @@ snapshots must not leak per-chunk nodes (same step id per session);
 
 ## Review response
 
+### Round 4 (code review of the implemented branch, 2026-09-06) — all 20 fixed
+| # | Finding | Fix (all pinned in `_test/test_review_round4.py`) |
+|---|---|---|
+| 1 | Failed overwrite destroyed existing files; preflight/rename race | Existing targets are moved to a backup dir before publish and restored on any failure; publish is `os.link` (atomic no-clobber) + unlink, guarded rename only for directories (`save_protocol.py`) |
+| 2 | Save paths doubled `out_dir` / could escape it | `out_dir` resolved once; rendered path resolved and must be inside it (`runner.render_save_path`) |
+| 3 | Strict replay ignored dataset/kind, passed on missing fields, no `--verify-hash` | `spec_mismatches` (dataset, kind), every recorded fingerprint field required, `hash_sources` records sha256, `verify_hash` requires and checks it (`sources.py`, `runner.py`, CLI flags) |
+| 4 | Plugin codec output trusted; tuples/keys lossy | Codec output must survive a JSON round trip unchanged or the key is replaced by the strict summary and the node is non-replayable; tuples and non-string keys get markers (`provenance.py`) |
+| 5 | Fan-out ports used the global result position | Fan-out runs once per input; ports suffixed with the input index (`signal1`, `background1`) (`runner.py`) |
+| 6 | GUI closed sources under published lazy results | `RunReport.detach_sources()`; the controller retains the handles (`WorkflowController.py`) |
+| 7 | Name-only mapping could inherit the wrong grid | Attribution needs: layer appeared after the session opened (`layers_before`), not session-owned, exactly one claiming session (`NapariEndpointController._mappingSuggestions`) |
+| 8 | Dock failure orphaned layers | Layers registered on the session before the dock is built and removed on failure |
+| 9 | Closing an exporting session leaked files | Session keeps its worker and a `cancelled` flag; a late completion is discarded (`_discardStaleExport`) |
+| 10 | Dropped live chunks recorded as complete | Failed chunks tracked; `complete` only with no failures and `frames_committed >= expected_frames` (`workers.py`) |
+| 11 | Unknown params unchecked for reconstructors / empty defaults | `param_keys()` on both base classes (defaults ∪ `extra_param_keys`); checked for every step kind; MoNaLISA declares `scan_params` (`steps._unknown_params`) |
+| 12 | Consolidation recorded params it never used | `run_consolidation` rejects params; `Consolidate` params must be empty |
+| 13 | Dotted CSV names collided on the companion | `strip_format_suffix`: only the format suffix goes (`sample.v1.provenance.json`) |
+| 14 | Corrupt declared provenance read as empty | `ProvenanceReadError` when the declared provenance is not valid JSON / not an object (`provenance_io.py`) |
+| 15 | `allow_drift` still labelled the report a replay | `report.mode = "run"` once drift is accepted |
+| 16 | One registry across batch rows | `run_over(registry=<factory>)` gives every row fresh plugins |
+| 17 | Recursive DFS in replay | Iterative post-order (`replay._ancestors`); 3000-node chain test |
+| 18 | Cancellation lost the report | Checked inside the handler; `RunError.report` attached |
+| 19 | Writers documented but not wired | `writerFormatsFor` / `saveSessionLayers` (session layers only) + menu entries |
+| 20 | `table-to-localizations` missing | New built-in processor with an explicit column mapping; kind-matrix test updated |
+
 ### Round 3 (v3 → v4)
 | Finding | Change |
 |---|---|

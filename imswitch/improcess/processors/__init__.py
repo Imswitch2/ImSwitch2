@@ -33,6 +33,7 @@ from .smlm_group import SmlmGroupProcessor
 from .smlm_render import SmlmRenderProcessor
 from .stack_split import StackSplitProcessor
 from .stack_subset import StackSubsetProcessor
+from .table_to_localizations import TableToLocalizationsProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
@@ -64,6 +65,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'stack-combine': StackCombineProcessor,
     'stack-split': StackSplitProcessor,
     'stack-subset': StackSubsetProcessor,
+    'table-to-localizations': TableToLocalizationsProcessor,
 }
 
 # User drop-in analysis plugins discovered from the plugins directory

@@ -26,6 +26,7 @@ from imswitch.improcess.model.napari_endpoints import (
     export_result,
     inspect_installed_plugins,
     resolve_widget,
+    writer_formats_for,
 )
 from imswitch.improcess.model.napari_import import (
     NotImportable,
@@ -71,6 +72,7 @@ def _threaded_export_runner(session_uid, job, on_done, on_failed, keepalive: lis
     keepalive.append(entry)
     thread.finished.connect(lambda: keepalive.remove(entry) if entry in keepalive else None)
     thread.start()
+    return entry
 
 
 def _default_add_layer_data(viewer, layer_data):
@@ -196,6 +198,15 @@ class NapariEndpointController(QtCore.QObject):
             action.triggered.connect(
                 lambda _checked=False, uid=session.uid: self.closeSession(uid)
             )
+            # Writer contributions: save exactly this session's layers with a
+            # plugin's writer, as an extra export format.
+            for writer in self.writerFormatsFor(session):
+                save_action = sessions_menu.addAction(
+                    f"Save layers of {session.label} with {writer.display_name} ({writer.plugin_name})"
+                )
+                save_action.triggered.connect(
+                    lambda _checked=False, uid=session.uid, w=writer: self.saveSessionLayers(uid, w)
+                )
         close_all = menu.addAction("Close all endpoint sessions")
         close_all.setEnabled(bool(sessions))
         close_all.triggered.connect(lambda _checked=False: self.closeAll())
@@ -218,6 +229,11 @@ class NapariEndpointController(QtCore.QObject):
             self._status(reason)
             return None
         session = self._registry.open(endpoint, result)
+        viewer = self._viewer()
+        # What the viewer held before this send: a layer that is not in this
+        # set appeared afterwards, which is the only honest attribution of a
+        # plugin's output to a session.
+        session.layers_before = tuple(getattr(viewer, "layers", []) or ()) if viewer is not None else ()
         try:
             if endpoint.lane == "dock":
                 self._openDock(session, endpoint, result)
@@ -241,8 +257,21 @@ class NapariEndpointController(QtCore.QObject):
         except NotLayerable as exc:
             raise RuntimeError(str(exc)) from exc
         layers = self._add_layer_data(viewer, layer_data)
+        # Owned from this moment: if the dock cannot be built, the layers
+        # this send added are taken back out, not left behind.
+        session.layers = list(layers)
         widget_name = resolve_widget(endpoint, self._installed or InstalledPlugins()) or endpoint.widget_name
-        dock, widget = viewer.window.add_plugin_dock_widget(endpoint.plugin_name, widget_name)
+        try:
+            dock, widget = viewer.window.add_plugin_dock_widget(endpoint.plugin_name, widget_name)
+        except Exception:
+            for layer in layers:
+                try:
+                    if layer in viewer.layers:
+                        viewer.layers.remove(layer)
+                except Exception:
+                    self._logger.debug("Could not roll back endpoint layer", exc_info=True)
+            session.layers = []
+            raise
         self._registry.mark_open(session, layers=layers, dock=dock, widget=widget)
         self._connectLayerEvents(viewer)
         self._status(f"Sent {result.name} to {endpoint.label}.")
@@ -255,15 +284,18 @@ class NapariEndpointController(QtCore.QObject):
         def job():
             return export_result(endpoint, result, directory)
 
-        self._export_runner(session.uid, job, self._onExportDone, self._onExportFailed)
+        session.worker = self._export_runner(session.uid, job, self._onExportDone, self._onExportFailed)
 
     def _run_export_threaded(self, session_uid, job, on_done, on_failed):
-        _threaded_export_runner(session_uid, job, on_done, on_failed, self._keepalive)
+        return _threaded_export_runner(session_uid, job, on_done, on_failed, self._keepalive)
 
     @QtCore.Slot(str, object)
     def _onExportDone(self, session_uid: str, path) -> None:
         session = self._registry.get(session_uid)
-        if session is None or session.state != "exporting":
+        if session is None or session.state != "exporting" or session.cancelled:
+            # The session was closed while the export ran: its directory was
+            # deleted and the worker has just recreated it. Take that back.
+            self._discardStaleExport(path)
             return
         endpoint = session.endpoint
         try:
@@ -289,6 +321,19 @@ class NapariEndpointController(QtCore.QObject):
             self._logger.exception("Reader endpoint %s failed", endpoint.id)
             self._registry.mark_failed(session, str(exc))
             self._status(f"{endpoint.label} failed: {exc}")
+
+    def _discardStaleExport(self, path) -> None:
+        """Remove what a worker wrote for a session that no longer exists."""
+        import shutil
+
+        try:
+            directory = Path(path).parent
+            if directory.name.startswith("imswitch_endpoint_"):
+                shutil.rmtree(directory, ignore_errors=True)
+            elif Path(path).exists():
+                Path(path).unlink()
+        except Exception:
+            self._logger.debug("Could not discard a stale export", exc_info=True)
 
     @QtCore.Slot(str, str)
     def _onExportFailed(self, session_uid: str, message: str) -> None:
@@ -433,15 +478,30 @@ class NapariEndpointController(QtCore.QObject):
         return str(endpoint.plugin_name), endpoint.widget_name, preserves
 
     def _mappingSuggestions(self, layers) -> dict:
-        """layer -> (endpoint, mapping) for layers a verified adapter can name."""
+        """layer -> (endpoint, mapping, source uid) where attribution is unambiguous.
+
+        A name pattern alone cannot say which session's plugin made a layer.
+        A layer is attributed to a session only when it appeared *after* that
+        session opened (it is not in the session's ``layers_before``), it is
+        not a layer any session added itself, and exactly one open session's
+        adapter mapping claims it. Anything less and no mapping is suggested,
+        so a wildcard can never hand a wrong session's grid to a layer.
+        """
         suggestions = {}
-        for session in self._registry.sessions():
-            endpoint = session.endpoint
-            for layer in layers:
-                for mapping in getattr(endpoint, "output_mappings", ()):
+        for layer in layers:
+            if self._registry.find_by_layer(layer) is not None:
+                continue
+            claims = []
+            for session in self._registry.sessions():
+                if any(layer is before for before in session.layers_before):
+                    continue
+                for mapping in getattr(session.endpoint, "output_mappings", ()):
                     if mapping.matches(getattr(layer, "name", ""), type(layer).__name__):
-                        suggestions[id(layer)] = (endpoint, mapping, session.result_uid)
+                        claims.append((session, mapping))
                         break
+            if len(claims) == 1:
+                session, mapping = claims[0]
+                suggestions[id(layer)] = (session.endpoint, mapping, session.result_uid)
         return suggestions
 
     def _sessionForSource(self, source_result):
@@ -468,6 +528,44 @@ class NapariEndpointController(QtCore.QObject):
             self._status("Load the ROI manager panel to receive imported shapes.")
             return
         add(list(rois))
+
+    # -- writer contributions ----------------------------------------------------------
+
+    def writerFormatsFor(self, session) -> list:
+        """Writer plugins able to save every layer the session added."""
+        if not session.is_open or not session.layers:
+            return []
+        layer_types = [type(layer).__name__.lower() for layer in session.layers]
+        return writer_formats_for(layer_types, self._installed or InstalledPlugins())
+
+    def saveSessionLayers(self, session_uid: str, writer, path=None, *, save_layers=None):
+        """Save the session's own layers (never the whole viewer) with ``writer``."""
+        session = self._registry.get(session_uid)
+        if session is None or not session.is_open:
+            self._status("That endpoint session is no longer open.")
+            return None
+        if path is None:
+            from qtpy import QtWidgets
+
+            suffix = writer.extensions[0] if writer.extensions else ""
+            path, _filter = QtWidgets.QFileDialog.getSaveFileName(
+                self._mainView, f"Save layers with {writer.display_name}",
+                f"{session.result_name}{suffix}", f"{writer.display_name} (*{suffix or '.*'})",
+            )
+            if not path:
+                return None
+        if save_layers is None:
+            import napari
+
+            save_layers = napari.save_layers
+        try:
+            written = save_layers(str(path), list(session.layers), plugin=writer.plugin_name)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.exception("Writer %s failed", writer.writer_id)
+            self._status(f"{writer.display_name} failed: {exc}")
+            return None
+        self._status(f"Saved {len(session.layers)} layer(s) with {writer.display_name}: {path}")
+        return written
 
     # -- plugin installation ---------------------------------------------------------
 

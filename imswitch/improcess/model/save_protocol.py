@@ -262,10 +262,22 @@ def description_payload(document: ProvenanceDocument, extra: dict | None = None)
     return payload
 
 
+def strip_format_suffix(name: str) -> str:
+    """``name`` without its recognised format suffix, and nothing else.
+
+    ``sample.v1.csv`` -> ``sample.v1``: only the format suffix goes, so two
+    files that differ before it keep distinct companions.
+    """
+    lowered = name.lower()
+    for suffix in sorted(FORMAT_ALIASES, key=len, reverse=True):
+        if lowered.endswith("." + suffix):
+            return name[: -(len(suffix) + 1)]
+    return Path(name).stem if "." in name else name
+
+
 def companion_json_path(primary: Path) -> Path:
     primary = Path(primary)
-    stem = primary.name.split(".")[0] or primary.stem
-    return primary.with_name(stem + COMPANION_SUFFIX)
+    return primary.with_name(strip_format_suffix(primary.name) + COMPANION_SUFFIX)
 
 
 def write_companion_json(primary: Path, document: ProvenanceDocument) -> Path:
@@ -293,7 +305,8 @@ def save_result(result, path, fmt: str | None = None, *, overwrite: bool = False
     if not isinstance(plan, SavePlan):
         raise SaveError(f"{type(result).__name__}.plan_save did not return a SavePlan")
 
-    # 2. preflight
+    # 2. preflight (the final no-clobber guarantee is the publish step's
+    #    link-based rename; this check is for a readable error before work)
     if not overwrite:
         existing = [str(p) for p in plan.files if p.exists()]
         if existing:
@@ -301,11 +314,14 @@ def save_result(result, path, fmt: str | None = None, *, overwrite: bool = False
     plan.directory.mkdir(parents=True, exist_ok=True)
 
     # 3. stage
-    stage_dir = plan.directory / f".{plan.primary.name}.staging-{mint_uid('save')[-8:]}"
+    token = mint_uid('save')[-8:]
+    stage_dir = plan.directory / f".{plan.primary.name}.staging-{token}"
     stage_dir.mkdir()
+    backup_dir = plan.directory / f".{plan.primary.name}.backup-{token}"
     staged = plan.staged(stage_dir)
     document = document_for(result, plan)
     published: list[Path] = []
+    backups: list[tuple[Path, Path]] = []      # (original target, where it was moved)
     try:
         result.write_files(staged, document)
         missing = [p.name for p in staged.files if not p.exists()]
@@ -318,18 +334,33 @@ def save_result(result, path, fmt: str | None = None, *, overwrite: bool = False
             raise SaveError(
                 f"{type(result).__name__} wrote files it did not plan: {unplanned}"
             )
-        # 4. publish: companions first, primary last
+        # 4a. overwrite: move what exists aside first, so a failure below can
+        #     put it back exactly as it was
+        if overwrite:
+            for target in plan.files:
+                if target.exists() or target.is_symlink():
+                    backup_dir.mkdir(exist_ok=True)
+                    moved = backup_dir / target.name
+                    os.replace(target, moved)
+                    backups.append((target, moved))
+        # 4b. publish: companions first, primary last
         for staged_file, target in zip(staged.files[1:], plan.files[1:]):
-            _publish(staged_file, target, overwrite)
+            _publish(staged_file, target)
             published.append(target)
-        _publish(staged.primary, plan.primary, overwrite)
+        _publish(staged.primary, plan.primary)
         published.append(plan.primary)
     except Exception:
         for target in published:
             _remove(target)
+        for target, moved in backups:
+            try:
+                os.replace(moved, target)
+            except OSError:
+                pass
         raise
     finally:
         shutil.rmtree(stage_dir, ignore_errors=True)
+        shutil.rmtree(backup_dir, ignore_errors=True)
 
     graph = graph_of(result)
     node, port = output_of(graph) if graph else ("", "")
@@ -340,10 +371,31 @@ def save_result(result, path, fmt: str | None = None, *, overwrite: bool = False
     return receipt
 
 
-def _publish(staged: Path, target: Path, overwrite: bool) -> None:
-    if overwrite and target.exists():
-        _remove(target)
-    os.replace(staged, target)
+def _publish(staged: Path, target: Path) -> None:
+    """Move a staged file to its name without ever replacing an existing one.
+
+    A hard link fails atomically when the target exists, which closes the
+    gap between the preflight check and the rename that a plain
+    ``os.replace`` leaves open. Directories (Zarr groups) cannot be
+    hard-linked; for those an existence check followed by a rename is the
+    best POSIX offers, and the window is documented rather than hidden.
+    """
+    if staged.is_dir() and not staged.is_symlink():
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(f"refusing to overwrite: {target}")
+        os.rename(staged, target)
+        return
+    try:
+        os.link(staged, target)          # atomic no-clobber
+    except FileExistsError:
+        raise FileExistsError(f"refusing to overwrite: {target}") from None
+    except OSError:
+        # A filesystem without hard links: fall back to the guarded rename.
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(f"refusing to overwrite: {target}") from None
+        os.rename(staged, target)
+        return
+    os.unlink(staged)
 
 
 def _remove(target: Path) -> None:

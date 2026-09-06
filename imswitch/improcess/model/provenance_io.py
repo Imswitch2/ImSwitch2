@@ -70,6 +70,8 @@ def _document_from_payload(payload: Any) -> ProvenanceDocument:
         try:
             payload = json.loads(payload)
         except (TypeError, ValueError):
+            # A description that is not JSON is not provenance (a plain
+            # ImageJ or user description); nothing was declared, nothing is lost.
             return ProvenanceDocument()
     if not isinstance(payload, dict):
         return ProvenanceDocument()
@@ -77,8 +79,13 @@ def _document_from_payload(payload: Any) -> ProvenanceDocument:
     if isinstance(inner, str):
         try:
             inner = json.loads(inner)
-        except (TypeError, ValueError):
-            inner = None
+        except (TypeError, ValueError) as exc:
+            # Present but unreadable is a different thing from absent: this
+            # file *declared* provenance and it is corrupt. Say so rather
+            # than falling back to an older history that may not match.
+            raise ProvenanceReadError(f"the declared provenance is not valid JSON: {exc}") from exc
+    if PROVENANCE_KEY in payload and not isinstance(inner, dict):
+        raise ProvenanceReadError("the declared provenance is not a JSON object")
     if isinstance(inner, dict):
         document = ProvenanceDocument.from_dict(inner)
         if not document.history:
@@ -116,7 +123,10 @@ def _read_tiff(path: Path) -> ProvenanceDocument:
         if handle.imagej_metadata:
             # The ImageJ description is key=value lines; our JSON rides in
             # a dedicated key.
-            text = handle.imagej_metadata.get(PROVENANCE_KEY) or handle.imagej_metadata.get("Description")
+            declared = handle.imagej_metadata.get(PROVENANCE_KEY)
+            if declared:
+                return _document_from_payload({PROVENANCE_KEY: declared})   # strict: it was declared
+            text = handle.imagej_metadata.get("Description")
             if text:
                 document = _document_from_payload(text)
                 if document.graph is not None or document.history:

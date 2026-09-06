@@ -158,16 +158,55 @@ def fingerprint_of(data_obj) -> dict:
 
 
 def fingerprint_mismatches(expected: dict, actual: dict, *, strict_mtime: bool = True) -> list[str]:
-    """Human-readable differences between a recorded and a current fingerprint."""
+    """Human-readable differences between a recorded and a current fingerprint.
+
+    Every field the record has must be present now and equal; a field that
+    was recorded and cannot be determined today is a mismatch, not a pass.
+    ``sha256`` is compared only when both sides have it (it is opt-in).
+    """
     problems = []
     for key in ("shape", "dtype", "size", "attrs_digest", "manifest"):
-        if key in expected and expected[key] is not None and key in actual and actual[key] is not None:
-            if expected[key] != actual[key]:
-                problems.append(f"{key}: recorded {expected[key]!r}, found {actual[key]!r}")
+        if key not in expected or expected[key] is None:
+            continue
+        if actual.get(key) is None:
+            problems.append(f"{key}: recorded {expected[key]!r}, cannot be determined now")
+        elif expected[key] != actual[key]:
+            problems.append(f"{key}: recorded {expected[key]!r}, found {actual[key]!r}")
     if strict_mtime and expected.get("mtime") and actual.get("mtime"):
         if abs(float(expected["mtime"]) - float(actual["mtime"])) > 1.0:
             problems.append("mtime: the file was modified since the recorded run")
+    if expected.get("sha256") and actual.get("sha256") and expected["sha256"] != actual["sha256"]:
+        problems.append("sha256: the file's content differs from the recorded run")
     return problems
+
+
+def spec_mismatches(recorded: SourceSpec, bound: SourceSpec) -> list[str]:
+    """Where a binding disagrees with the recorded source, beyond its path.
+
+    Relocating a file is allowed (that is what ``--source-root`` and
+    ``--bind`` are for); pointing at a different dataset or kind of source
+    is not a replay of the recorded run.
+    """
+    problems = []
+    if recorded.dataset and bound.dataset and recorded.dataset != bound.dataset:
+        problems.append(f"dataset: recorded {recorded.dataset!r}, bound {bound.dataset!r}")
+    if recorded.source_kind != "auto" and bound.source_kind != "auto" and recorded.source_kind != bound.source_kind:
+        problems.append(f"source kind: recorded {recorded.source_kind!r}, bound {bound.source_kind!r}")
+    return problems
+
+
+def file_sha256(path) -> str | None:
+    """Content hash of a file (``None`` for a directory such as a Zarr group)."""
+    import hashlib
+
+    path = Path(path)
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def close_source(data_obj) -> None:
@@ -192,10 +231,12 @@ __all__ = [
     "SourceError",
     "SourceSpec",
     "close_source",
+    "file_sha256",
     "fingerprint_mismatches",
     "fingerprint_of",
     "open_source",
     "parse_binding",
+    "spec_mismatches",
 ]
 
 

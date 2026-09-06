@@ -116,10 +116,20 @@ def run_over(
     source_root=None,
     mode: str = "run",
     allow_drift: bool = False,
+    verify_hash: bool = False,
+    hash_sources: bool = False,
     on_row=None,
     keep_reports: bool = False,
 ) -> BatchReport | tuple[BatchReport, list[RunReport]]:
-    """Run ``workflow`` once per bindings dict; failures are rows, not exceptions."""
+    """Run ``workflow`` once per bindings dict; failures are rows, not exceptions.
+
+    ``registry`` may be a registry instance or a zero-argument factory. Pass
+    a factory (``bootstrap_registry`` itself, or ``functools.partial`` of it)
+    to give every row fresh plugin instances, so a plugin that caches state
+    cannot carry it from one input to the next. An instance is reused across
+    rows, which is faster and fine for the built-ins, all of which are
+    stateless.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     batch = BatchReport(workflow=workflow.name)
@@ -127,9 +137,11 @@ def run_over(
     for index, bindings in enumerate(bindings_list):
         shown = {key: str(getattr(value, "path", value)) for key, value in bindings.items()}
         try:
+            row_registry = registry() if callable(registry) else registry
             report = run(
-                workflow, registry=registry, bindings=bindings, out_dir=out_dir,
+                workflow, registry=row_registry, bindings=bindings, out_dir=out_dir,
                 overwrite=overwrite, source_root=source_root, mode=mode, allow_drift=allow_drift,
+                verify_hash=verify_hash, hash_sources=hash_sources,
             )
             row = BatchRow(
                 index=index, bindings=shown, ok=True,

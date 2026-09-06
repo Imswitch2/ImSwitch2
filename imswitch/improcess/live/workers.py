@@ -254,6 +254,7 @@ class LiveProcessWorker(QtCore.QObject):
         self._provenance = None
         self._frames_committed = 0
         self._stalled = False
+        self._failed_chunks: list[tuple[int, int, str]] = []
 
     def setProvenance(self, reconstructor, params: dict, source, expected_frames=None) -> None:
         """Tell the worker what it is reconstructing, for the provenance record."""
@@ -297,13 +298,26 @@ class LiveProcessWorker(QtCore.QObject):
 
         except Exception as e:
             self._logger.error(f"Error processing chunk [{chunk.start}:{chunk.end}]: {e}")
+            # A dropped chunk means frames are missing from the result; the
+            # final record must not call that complete.
+            self._failed_chunks.append((int(chunk.start), int(chunk.end), str(e)))
+
+    def _final_status(self) -> str:
+        if self._stalled:
+            return "stalled"
+        if self._failed_chunks:
+            return "partial"
+        expected = self._provenance[3] if self._provenance is not None else None
+        if expected is not None and self._frames_committed < int(expected):
+            return "partial"
+        return "complete"
 
     @QtCore.Slot()
     def finalize(self) -> None:
         """Finalize the session and emit the final result."""
         try:
             final_result = self._session.finish()
-            self._record(final_result, "stalled" if self._stalled else "complete")
+            self._record(final_result, self._final_status())
             self.sigStackFinished.emit(final_result)
         except Exception as e:
             self._logger.error(f"Error finalizing session: {e}")

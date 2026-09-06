@@ -59,13 +59,22 @@ def run_reconstruction(reconstructor, source, params: dict | None, context=None)
 
 
 def run_consolidation(reconstructor, runs_or_results, params: dict | None = None):
-    """Call ``reconstructor.consolidate`` over the results and record the node."""
+    """Call ``reconstructor.consolidate`` over the results and record the node.
+
+    ``consolidate`` takes no parameters, so none may be recorded either: a
+    node that claimed settings the merge never saw would be a lie replay
+    would faithfully repeat.
+    """
+    if params:
+        raise ValueError(
+            f"consolidation takes no parameters; got {sorted(params)}"
+        )
     results = [
         item.result if isinstance(item, ReconstructionRun) else item
         for item in runs_or_results
     ]
     merged = reconstructor.consolidate(results)
-    record_consolidation(merged, results, reconstructor, params)
+    record_consolidation(merged, results, reconstructor, None)
     return merged
 
 
