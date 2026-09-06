@@ -129,22 +129,34 @@ class Consolidate:
 
 @dataclass
 class Process:
-    """Run a processor over one or more results. Ports per the processor."""
+    """Run a processor over one or more results. Ports per the processor.
+
+    ``restriction`` is an ROI restriction in the form the provenance records
+    it (``ROIRestriction.encode_provenance()``): the run is narrowed to
+    those regions the way the GUI's "apply within ROI" narrows it, and the
+    processor never sees the ROIs themselves.
+    """
 
     id: str
     processor: str
     params: dict = field(default_factory=dict)
     inputs: list[Ref] = field(default_factory=list)
+    restriction: dict | None = None
 
     kind = "process"
 
     def __post_init__(self):
         self.id = _check_id(self.id)
         self.inputs = [parse_ref(r) for r in (self.inputs or [])]
+        if self.restriction is not None and not isinstance(self.restriction, dict):
+            raise WorkflowError(f"{self.id}: restriction must be an object")
 
     def to_dict(self) -> dict:
-        return {"step": "process", "id": self.id, "processor": self.processor,
-                "params": dict(self.params), "inputs": [str(r) for r in self.inputs]}
+        payload = {"step": "process", "id": self.id, "processor": self.processor,
+                   "params": dict(self.params), "inputs": [str(r) for r in self.inputs]}
+        if self.restriction:
+            payload["restriction"] = dict(self.restriction)
+        return payload
 
 
 @dataclass
@@ -200,6 +212,9 @@ class Workflow:
     steps: list = field(default_factory=list)
     schema: int = SCHEMA_VERSION
     description: str = ""
+    #: Free-form, carried through serialisation: replay records here which
+    #: provenance node each step came from and what the recorded run was.
+    metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
         seen = set()
@@ -223,6 +238,8 @@ class Workflow:
         payload = {"name": self.name, "schema": self.schema}
         if self.description:
             payload["description"] = self.description
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
         payload["steps"] = [step.to_dict() for step in self.steps]
         return payload
 
@@ -235,7 +252,8 @@ class Workflow:
             raise WorkflowError(f"workflow schema {schema} is newer than this ImSwitch understands")
         steps = [step_from_dict(item) for item in (payload.get("steps") or [])]
         return cls(name=str(payload.get("name") or "workflow"), steps=steps, schema=schema,
-                   description=str(payload.get("description") or ""))
+                   description=str(payload.get("description") or ""),
+                   metadata=dict(payload.get("metadata") or {}))
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False, default=str)

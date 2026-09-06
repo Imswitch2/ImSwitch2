@@ -268,14 +268,128 @@ Replay: from a saved file back to a workflow
 ============================================
 
 Every file ImProcess writes carries a **provenance document**: the graph
-of steps that made it (plugin ids, versions, parameters, ordered input
-ports, the source's path and fingerprint) and an artifact record naming
-the file itself. Phase 4 of the workflows plan adds
-``workflow_from_provenance``, which turns that document into a runnable
-``Workflow`` (replay), and the LLM prompt for files that carry only a
-partial or legacy history. Until then the document can be read with
-``imswitch.improcess.model.provenance_io.read_provenance`` and its
-``processing_history`` inspected in the Metadata panel.
+of steps that made it (plugin ids and versions, parameters, ordered input
+ports, ROI restrictions, the source's path and fingerprint) and an
+artifact record naming the file itself. That is a workflow in all but
+shape, and ``replay`` reshapes it — like Fiji's macro recorder, except
+nothing had to be recording: the record is in the file.
+
+.. code-block:: bash
+
+   # what the file knows about itself
+   python -m imswitch.improcess.workflows show-provenance results/cell_3_maxproj_blur.ome.tif
+
+   # the workflow that made it, as YAML (print, or write with --out-workflow)
+   python -m imswitch.improcess.workflows replay results/cell_3_maxproj_blur.ome.tif --out-workflow cell_3.yaml
+
+   # make it again, verifying the source has not changed
+   python -m imswitch.improcess.workflows replay results/cell_3_maxproj_blur.ome.tif --run --out replayed/
+
+From Python:
+
+.. code-block:: python
+
+   from imswitch.improcess.workflows import workflow_from_file, bootstrap_registry, run
+
+   registry = bootstrap_registry()
+   replay = workflow_from_file("results/cell_3_maxproj_blur.ome.tif", registry=registry)
+   for warning in replay.warnings:          # version drift, migrated params, streaming origin
+       print(warning)
+   with run(replay.workflow, registry=registry, out_dir="replayed", mode="replay") as report:
+       print(report.receipts[0].files)
+
+In the GUI, **File → Export workflow of current result…** writes the same
+workflow from the result in memory (no file needed), and **File → Run
+workflow…** runs a workflow file and adds its results to the reconstruction
+list.
+
+What replay reproduces, and what it refuses
+-------------------------------------------
+
+Replay walks the graph backwards from the file's own node and emits one
+step per node: sources with their recorded path, dataset and fingerprint;
+reconstructions and consolidations with their parameters; processing steps
+with their parameters, **ordered input ports** (so a channel split feeding
+two branches and a merge comes back as exactly that) and their ROI
+restriction; and finally a ``Save`` with a **parameterised** destination —
+never the original path. Parameters recorded under an older
+``params_version`` are migrated by the plugin; a newer one is refused.
+Version drift (ImSwitch, a plugin) and a streaming origin are warnings.
+
+Replay refuses, listing every reason, when the graph contains a step that
+cannot be run again:
+
+* a node recorded **non-replayable**: a parameter that had no lossless
+  form (an object the plugin's codec could not write down), an ROI
+  restriction too large to keep and recorded by reference, a source that
+  was never persisted (a RAM recording), a stream that did not complete,
+  or a layer imported from a napari plugin;
+* a plugin that is not installed;
+* parameters recorded with a newer ``params_version`` than the installed
+  plugin has.
+
+In ``replay`` mode the run also verifies every source against the recorded
+fingerprint (dataset, shape, dtype, size, modification time, attribute
+digest, tiling manifest) and stops on a mismatch; ``--allow-drift`` turns
+that into a warning, and the report then says it was a run, not a replay.
+
+Files written before the graph existed carry only the linear
+``processing_history`` (schema 0). Replay builds the best workflow it can —
+an unbound source, a view-only reconstruction if none was recorded, the
+processing steps with their (possibly summarised) parameters — and warns
+about every gap. That is where the next section comes in.
+
+Reconstructing a pipeline with an LLM
+-------------------------------------
+
+When ``replay`` refuses, or the file predates the graph, or the file was
+written by another program, the record is still worth reading: it names
+the steps and most of the settings, and a language model can turn it into a
+workflow draft for you to check. Give it three things:
+
+1. **the provenance** — ``python -m imswitch.improcess.workflows
+   show-provenance FILE --json`` (or the Metadata panel's copy action);
+2. **the plugin catalogue** — ``python -m imswitch.improcess.workflows list
+   --json``: every plugin id, its default parameters and its ports;
+3. **this page**, which is the schema.
+
+A prompt that works:
+
+.. code-block:: text
+
+   You are writing an ImSwitch ImProcess workflow file (YAML, schema 1) as
+   described in the attached documentation page. Attached are (a) the
+   provenance document of a result file and (b) the catalogue of installed
+   plugins with their default parameters and output ports.
+
+   Produce a workflow that reproduces the result:
+   - one `source` step per recorded source (leave `path` unset if the
+     recorded path is a temporary or in-memory location, and say so);
+   - `reconstruct` / `consolidate` / `process` steps with the recorded
+     parameters; only include parameters that differ from the catalogue
+     defaults;
+   - refer to multi-output steps by their ports (e.g. `split.C1`,
+     `bg.background`) exactly as the provenance's input references do;
+   - a final `save` step with fmt equal to the file's own format and the
+     default path template.
+
+   Where the provenance is incomplete (a node marked not replayable, a
+   summarised parameter such as "<array shape=(512, 512)>", an unknown
+   plugin), do not guess silently: add a `# TODO` comment on that step
+   explaining what is missing and what a human must supply.
+
+   Output only the YAML.
+
+Validate the draft before trusting it:
+
+.. code-block:: bash
+
+   python -m imswitch.improcess.workflows validate draft.yaml
+
+Validation reports unknown plugins, undeclared ports, unknown parameters
+and wrong arity; what it cannot check is whether a guessed parameter value
+is the one that was used, which is why summarised parameters must stay
+marked.
 
 Related documentation
 =====================

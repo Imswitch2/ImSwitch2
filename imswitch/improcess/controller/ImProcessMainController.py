@@ -77,6 +77,18 @@ class ImProcessMainController(MainController):
             # Endpoints are an extra on top of the viewer; a broken npe2
             # environment must not keep ImProcess from starting.
             self.__logger.exception("Could not set up napari endpoints")
+        self.workflowController = None
+        try:
+            from .WorkflowController import WorkflowController
+
+            self.workflowController = WorkflowController(
+                self.__commChannel,
+                self.__mainView,
+                self.mainViewController.reconstructionController,
+                processing_config=getattr(self, '_processingConfigLoaded', None),
+            )
+        except Exception:
+            self.__logger.exception("Could not set up workflow export/run")
         self._resultProcessorControllers = {}
         # Runtime panels that publish their own results (multi-action producers
         # like Multicolor) expose sigResultProduced; we forward it to the comm

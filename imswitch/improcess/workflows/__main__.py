@@ -97,6 +97,69 @@ def cmd_run(args) -> int:
     return 0 if batch.ok else 1
 
 
+def cmd_replay(args) -> int:
+    from imswitch.improcess.workflows.replay import ReplayError, workflow_from_file
+
+    registry = _registry(args)
+    try:
+        result = workflow_from_file(args.file, registry=registry, save_fmt=args.fmt)
+    except ReplayError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    for warning in result.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    workflow = result.workflow
+    if args.out_workflow:
+        path = workflow.save(args.out_workflow)
+        print(f"wrote {path} ({len(workflow.steps)} steps)")
+    else:
+        print(workflow.to_yaml() if args.out_workflow is None and not args.run else "")
+    if args.run:
+        from imswitch.improcess.workflows.batch import run_over
+
+        if not args.out:
+            print("--run needs --out", file=sys.stderr)
+            return 2
+        batch = run_over(
+            workflow, [{}], registry=registry, out_dir=args.out, overwrite=args.overwrite,
+            mode="replay", allow_drift=args.allow_drift,
+            on_row=lambda row: print(
+                "replayed: " + ", ".join(row.files) if row.ok else f"FAILED at {row.failed_step}: {row.error}"
+            ),
+        )
+        return 0 if batch.ok else 1
+    return 0
+
+
+def cmd_show(args) -> int:
+    from imswitch.improcess.model.provenance_io import read_provenance
+
+    document = read_provenance(args.file, validate=not args.no_validate)
+    if args.json:
+        print(json.dumps(document.to_dict(), indent=2, default=str))
+        return 0
+    print(f"schema {document.schema}")
+    if document.artifact:
+        print(f"artifact: {document.artifact.get('primary')} node={document.node} port={document.port} "
+              f"files={document.artifact.get('files')}")
+    if document.graph:
+        nodes = document.graph["nodes"]
+        print(f"graph: {len(nodes)} nodes, ImSwitch {document.graph.get('imswitch_version', '?')}")
+        for node_id, node in nodes.items():
+            inputs = ", ".join(f"{r['node'][-8:]}.{r['port']}" for r in node.get("inputs") or [])
+            flag = "" if node.get("replayable", True) else "  [NOT REPLAYABLE: " + "; ".join(node.get("reasons") or []) + "]"
+            print(f"  {node_id[-8:]}  {node.get('op'):12s} {node.get('plugin_id') or '':24s} <- {inputs or '-'}{flag}")
+            if node.get("params"):
+                print(f"           params: {json.dumps(node['params'], default=str)[:200]}")
+    elif document.history:
+        print("linear history only (schema 0):")
+        for index, step in enumerate(document.history, start=1):
+            print(f"  {index}. {step.get('operation')}  {json.dumps(step.get('params') or {}, default=str)[:200]}")
+    else:
+        print("no provenance in this file")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m imswitch.improcess.workflows",
                                      description="Run ImProcess workflows without the GUI")
@@ -125,6 +188,22 @@ def main(argv=None) -> int:
     p_run.add_argument("--allow-drift", action="store_true", help="replay even if sources differ from the recorded ones")
     p_run.add_argument("--summary", help="summary CSV name inside --out")
     p_run.set_defaults(func=cmd_run)
+
+    p_replay = sub.add_parser("replay", help="turn a saved result's provenance into a workflow, and optionally run it")
+    p_replay.add_argument("file", help="a file ImProcess wrote (OME-TIFF, HDF5, Zarr, CSV with companion)")
+    p_replay.add_argument("--out-workflow", help="write the workflow here (.yaml or .json); default: print YAML")
+    p_replay.add_argument("--fmt", help="format for the replayed save (default: the file's own)")
+    p_replay.add_argument("--run", action="store_true", help="also run it, in replay mode")
+    p_replay.add_argument("--out", help="output directory for --run")
+    p_replay.add_argument("--overwrite", action="store_true")
+    p_replay.add_argument("--allow-drift", action="store_true", help="run even if the sources changed (then it is a run, not a replay)")
+    p_replay.set_defaults(func=cmd_replay)
+
+    p_show = sub.add_parser("show-provenance", help="print the provenance a file carries (what to hand an LLM)")
+    p_show.add_argument("file")
+    p_show.add_argument("--json", action="store_true", help="the full document as JSON")
+    p_show.add_argument("--no-validate", action="store_true")
+    p_show.set_defaults(func=cmd_show)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

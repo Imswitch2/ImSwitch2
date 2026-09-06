@@ -232,6 +232,20 @@ def run(
                 plugin = registry.get_processor(step.processor)
                 inputs = [report.result(ref) for ref in step.inputs]
                 params = {**type(plugin).default_params(), **step.params}
+                if step.restriction:
+                    # Narrow the run to the recorded regions, the way the GUI
+                    # does: the restriction travels beside the params and is
+                    # applied around the processor, never handed to it.
+                    from imswitch.improcess.analysis.roi_restriction import ROI_PARAM, ROIRestriction
+
+                    if not getattr(plugin, "accepts_roi", False):
+                        raise WorkflowError(f"{step.processor!r} cannot be restricted to ROIs")
+                    if step.restriction.get("by_reference"):
+                        raise WorkflowError(
+                            f"{step.id}: the ROI restriction was recorded by reference only "
+                            "(its geometry was too large to store); it cannot be replayed"
+                        )
+                    params[ROI_PARAM] = ROIRestriction.from_provenance(step.restriction)
                 for item in inputs:
                     if not plugin.accepts(item):
                         raise WorkflowError(

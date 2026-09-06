@@ -65,6 +65,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigLoadProcessorRequested = QtCore.Signal(str)
     # Emitted when the user asks to re-scan the drop-in analysis plugins folder.
     sigReloadPluginsRequested = QtCore.Signal()
+    # Workflows: export the current result's provenance as a workflow file,
+    # or run a workflow file and publish its results.
+    sigExportWorkflowRequested = QtCore.Signal()
+    sigRunWorkflowRequested = QtCore.Signal()
 
     sigImageAutoContrastRequested = QtCore.Signal()
     sigImageResetContrastRequested = QtCore.Signal()
@@ -201,6 +205,25 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         setSaveFolder = QtWidgets.QAction('Set default save folder…', self)
         setSaveFolder.triggered.connect(self.sigSetSaveFolder)
         file.addAction(setSaveFolder)
+
+        file.addSeparator()
+        exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
+        exportWorkflowAction.setToolTip(
+            'Write the steps that made the current result as a workflow file '
+            '(YAML) that can be run again headlessly or on other data'
+        )
+        exportWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigExportWorkflowRequested.emit()
+        )
+        file.addAction(exportWorkflowAction)
+        runWorkflowAction = QtWidgets.QAction('Run workflow…', self)
+        runWorkflowAction.setToolTip(
+            'Run a workflow file; its results are added to the reconstruction list'
+        )
+        runWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowRequested.emit()
+        )
+        file.addAction(runWorkflowAction)
 
         # Toolbars split along the result-unification invariant: Image holds
         # display-only actions (never publish a result), Image operations

@@ -28,6 +28,12 @@ from imswitch.improcess.workflows.batch import (
     bindings_from_manifest,
     run_over,
 )
+from imswitch.improcess.workflows.replay import (
+    ReplayError,
+    ReplayResult,
+    workflow_from_file,
+    workflow_from_provenance,
+)
 from imswitch.improcess.workflows.runner import RunError, RunReport, run
 from imswitch.improcess.workflows.runtime import bootstrap_registry, describe_registry
 from imswitch.improcess.workflows.sources import SourceError, SourceSpec, open_source, parse_binding
@@ -52,6 +58,8 @@ __all__ = [
     "Process",
     "Reconstruct",
     "Ref",
+    "ReplayError",
+    "ReplayResult",
     "RunError",
     "RunReport",
     "Save",
@@ -69,4 +77,6 @@ __all__ = [
     "run",
     "run_over",
     "validate",
+    "workflow_from_file",
+    "workflow_from_provenance",
 ]
