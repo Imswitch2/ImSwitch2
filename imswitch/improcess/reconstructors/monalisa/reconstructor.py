@@ -128,6 +128,27 @@ class MonalisaReconstructor(StreamingReconstructor):
         self._logger.info(f'Pattern found: row_offset={row_offset:.2f}, col_offset={col_offset:.2f}, '
                          f'row_period={row_period:.2f}, col_period={col_period:.2f}')
     
+    def prepare_params(self, data_obj, params: dict | None) -> dict:
+        """Fill ``scan_params`` from the acquisition attributes when absent.
+
+        The GUI derives the scan geometry from the file the moment it is
+        opened and hands it to ``process`` inside ``params``; a headless run
+        does the same here, through the same pure function.
+        """
+        from .scan_params import DEFAULT_LABELS, apply_scan_attrs, default_scan_params
+
+        params = dict(params or {})
+        if params.get('scan_params') is None:
+            try:
+                frames = int(data_obj.numFrames)
+            except Exception:
+                frames = None
+            params['scan_params'] = apply_scan_attrs(
+                default_scan_params(DEFAULT_LABELS), getattr(data_obj, 'attrs', None) or {},
+                DEFAULT_LABELS, frames,
+            )
+        return params
+
     def process(
         self, data_obj: 'DataObj', params: dict, context=None
     ) -> MonalisaProcessingResult:

@@ -1456,5 +1456,7 @@ See also
   and per-layer audits
 * :doc:`improcess-napari-plugins` — sending results to installed napari
   plugins (dock widgets and readers), and taking layers back
+* :doc:`improcess-workflows` — reconstructing and processing without the
+  GUI: batch workflows, ports, saves, binding, replay
 * :doc:`gui` — main GUI overview (Imcontrol)
 * :doc:`modules` — list of Imswitch2 modules

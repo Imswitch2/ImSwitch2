@@ -47,6 +47,7 @@ config files).
     advanced-scanning
     improcess
     improcess-napari-plugins
+    improcess-workflows
     tiling
     use-cases
     scripting

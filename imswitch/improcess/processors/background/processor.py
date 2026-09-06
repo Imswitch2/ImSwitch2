@@ -42,6 +42,13 @@ class SubtractBackgroundProcessor(Processor):
     def default_params(cls) -> dict:
         return {'radius': 50.0, 'output_background': False}
 
+    def output_spec(self, params: dict | None = None, input_specs=None):
+        from imswitch.improcess.processors.base import OutputSpec
+
+        if (params or {}).get("output_background", False):
+            return OutputSpec(ports=("signal", "background"))
+        return OutputSpec(ports=("out",))
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2

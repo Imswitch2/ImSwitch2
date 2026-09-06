@@ -10,6 +10,39 @@ from imswitch.improcess.model.result import ProcessingResult, result_kind
 
 
 @dataclass(frozen=True)
+class OutputSpec:
+    """Which output ports a processor run will produce.
+
+    ``ports`` names them when they are known before the run (``("out",)``,
+    ``("signal", "background")``); ``pattern`` is a regular expression for
+    ports that depend on the data (a channel split yields ``C0, C1, …`` for
+    as many channels as the input has). A workflow validated before running
+    accepts a reference to a port that matches either; after the run the
+    ports actually produced are checked against the spec.
+    """
+
+    ports: tuple[str, ...] | None = ("out",)
+    pattern: str | None = None
+
+    def matches(self, port: str) -> bool:
+        if self.ports is not None and port in self.ports:
+            return True
+        if self.pattern is not None:
+            import re
+
+            return re.fullmatch(self.pattern, str(port)) is not None
+        return False
+
+    def describe(self) -> str:
+        parts = []
+        if self.ports:
+            parts.append(", ".join(self.ports))
+        if self.pattern:
+            parts.append(f"/{self.pattern}/")
+        return " or ".join(parts) or "(none)"
+
+
+@dataclass(frozen=True)
 class ProcessorOutput:
     """One or more ProcessingResults returned by a processor.
 
@@ -203,6 +236,16 @@ class Processor(ABC):
         this. Raising ``ValueError`` says the old shape cannot be migrated.
         """
         return dict(encoded or {})
+
+    def output_spec(self, params: dict | None = None, input_specs=None) -> OutputSpec:
+        """The output ports a run with ``params`` will produce.
+
+        One port, ``"out"``, unless the processor says otherwise. A processor
+        with several outputs names them (``("signal", "background")``); one
+        whose outputs depend on the data gives a ``pattern`` instead. This is
+        what lets a workflow be validated before it runs.
+        """
+        return OutputSpec(ports=("out",))
 
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.

@@ -19,12 +19,14 @@ import numpy as np
 class AxisLabels:
     """The display strings the scan-parameter dict is written in."""
 
-    r_l: str = "Right-Left"
-    u_d: str = "Up-Down"
-    b_f: str = "Back-Forth"
+    # The GUI's strings (ImProcessMainView), so a headless dict and a GUI dict
+    # describe the same scan with the same words.
+    r_l: str = "Right/Left"
+    u_d: str = "Up/Down"
+    b_f: str = "Back/Forth"
     timepoints: str = "Timepoints"
-    p: str = "+"
-    n: str = "-"
+    p: str = "pos"
+    n: str = "neg"
 
 
 DEFAULT_LABELS = AxisLabels()

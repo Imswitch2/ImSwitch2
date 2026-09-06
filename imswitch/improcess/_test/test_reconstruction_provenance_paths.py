@@ -148,13 +148,15 @@ def test_legacy_monalisa_adapter_records_with_its_settings(tmp_path):
     data_obj = _file(tmp_path)
     data_obj.data = np.ones((4, 6, 6), dtype=np.float32)
     data_obj.numFrames = 4
+    from imswitch.improcess.reconstructors.monalisa.scan_params import DEFAULT_LABELS
+
     params = {
         **LegacyMonalisaReconstructor.default_params(),
         "pattern": [1.0, 2.0, 3.0, 4.0],
         "bleaching_correction": True,
         "scan_params": {
-            "dimensions": ["Right-Left", "Up-Down", "Back-Forth", "Timepoints"],
-            "directions": ["+", "+", "+"],
+            "dimensions": [DEFAULT_LABELS.r_l, DEFAULT_LABELS.u_d, DEFAULT_LABELS.b_f, DEFAULT_LABELS.timepoints],
+            "directions": [DEFAULT_LABELS.p] * 3,
             "steps": ["2", "2", "1", "1"],
             "step_sizes": ["35", "35", "35", "1"],
             "n_linesteps": 1,

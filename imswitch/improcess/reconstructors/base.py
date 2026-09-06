@@ -88,6 +88,16 @@ class Reconstructor(ABC):
         """Bring params recorded under an older ``params_version`` up to date."""
         return dict(encoded or {})
 
+    def prepare_params(self, data_obj, params: dict | None) -> dict:
+        """Complete ``params`` from the data before a headless run.
+
+        The GUI fills some parameters from the file behind the user's back
+        (MoNaLISA's scan geometry comes from the acquisition attributes). A
+        headless run has no controller to do that, so a reconstructor that
+        needs it does it here. The default returns the params unchanged.
+        """
+        return dict(params or {})
+
 
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:

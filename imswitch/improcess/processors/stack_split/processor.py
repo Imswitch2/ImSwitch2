@@ -48,3 +48,10 @@ class StackSplitProcessor(Processor):
         )
         outputs = split_result(result, axis, operation=self.id)
         return ProcessorOutput(outputs, keys=split_port_keys(outputs))
+
+    def output_spec(self, params: dict | None = None, input_specs=None):
+        """One port per slice, named ``<axis label><index>`` (``Z0, Z1, …``);
+        how many depends on the data."""
+        from imswitch.improcess.processors.base import OutputSpec
+
+        return OutputSpec(ports=None, pattern=r"[A-Za-z]+\d+")

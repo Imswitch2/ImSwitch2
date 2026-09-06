@@ -62,6 +62,12 @@ class ChannelSplitProcessor(Processor):
         outputs = split_result(result, axis, operation=self.id)
         return ProcessorOutput(outputs, keys=split_port_keys(outputs))
 
+    def output_spec(self, params: dict | None = None, input_specs=None):
+        """One port per channel, ``C0, C1, …``; how many depends on the data."""
+        from imswitch.improcess.processors.base import OutputSpec
+
+        return OutputSpec(ports=None, pattern=r"[A-Za-z]+\d+")
+
     @staticmethod
     def _has_channel_axis(result: ProcessingResult) -> bool:
         shape = shape_for_result(result)
