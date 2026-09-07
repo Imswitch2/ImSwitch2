@@ -76,6 +76,11 @@ class ProvenanceConflict(ProvenanceError):
 # strict parameter encoding
 # --------------------------------------------------------------------------
 
+def _is_marker_key(key: str) -> bool:
+    """Whether a dict key could be mistaken for one of the encoder's markers."""
+    return len(key) > 4 and key.startswith("__") and key.endswith("__")
+
+
 def encode_strict(value: Any, *, _path: str = "") -> Any:
     """``value`` as JSON-compatible data, losslessly, or :class:`NotEncodable`.
 
@@ -97,13 +102,16 @@ def encode_strict(value: Any, *, _path: str = "") -> Any:
     if isinstance(value, np.floating):
         return encode_strict(float(value), _path=_path)
     if isinstance(value, dict):
-        if all(isinstance(key, str) for key in value):
+        # A plain dict is written as-is only when it cannot be mistaken for
+        # one of the encoder's own markers: string keys, none of them of the
+        # ``__name__`` form. Anything else goes through the pairs form, which
+        # the decoder always reads back as a dict, so a user value that
+        # happens to be {"__tuple__": [1, 2]} stays exactly that.
+        if all(isinstance(key, str) and not _is_marker_key(key) for key in value):
             return {
                 key: encode_strict(item, _path=f"{_path}.{key}" if _path else key)
                 for key, item in value.items()
             }
-        # Non-string keys would be stringified by JSON and come back changed;
-        # keep them as pairs so the decoder restores the original keys.
         pairs = []
         for key, item in value.items():
             if not isinstance(key, (str, int, float, bool, tuple)) and key is not None:

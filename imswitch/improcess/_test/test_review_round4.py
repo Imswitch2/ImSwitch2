@@ -200,6 +200,23 @@ def test_a_lossy_plugin_codec_marks_the_node_non_replayable():
     assert json.loads(json.dumps(node["params"])) == node["params"]      # what was kept is JSON
 
 
+@pytest.mark.parametrize("value", [
+    {"__tuple__": [1, 2]},
+    {"__float__": "nan"},
+    {"__dict__": [[1, 2]]},
+    {"__ndarray__": [1], "dtype": "int8", "shape": [1]},
+    {"outer": {"__tuple__": [1, 2]}},
+    {"__tuple__": (1, 2)},
+])
+def test_user_values_that_look_like_markers_round_trip_unchanged(value):
+    """A value the encoder's own markers could be mistaken for is escaped,
+    never decoded as the marker (the round-4 follow-up finding)."""
+    encoded = encode_strict(value)
+    assert json.loads(json.dumps(encoded)) == encoded
+    assert decode_strict(encoded) == value
+    assert type(decode_strict(encoded)) is dict
+
+
 def test_tuples_and_non_string_keys_survive_the_strict_codec():
     value = {"shape": (3, 4), "lut": {1: "a", (0, 1): "b"}, "plain": [1, 2]}
     encoded = encode_strict(value)
