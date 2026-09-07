@@ -175,7 +175,7 @@ The event-triggered imaging does not have a separate manager, but is loaded by a
 Other config parameters and a list of widgets to be loaded are added in this file as well. 
 
 etSTED imaging
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 In order to run etSTED imaging, and record etSTED images, 
 
 

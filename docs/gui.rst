@@ -10,16 +10,16 @@ Graphical user interface
    so this page stays in sync with the actual UI.  See
    :doc:`how-to/auto-screenshots`.
 
-.. image:: ./images/auto/main-window.png
-   :alt: Imswitch2 main window
+.. image:: ./images/auto/mock-main-window.png
+   :alt: Imswitch2 main window with a mock setup loaded
    :align: center
 
 The Imswitch2 GUI is divided into different modules to make it
-intuitive to explore for both users and developers.
-
-.. image:: ./images/auto/main-window-annotated.png
-   :alt: Annotated Imswitch2 main window
-   :align: center
+intuitive to explore for both users and developers.  The capture above
+is the hardware-control module with a mock setup loaded (``python
+tools/screenshot_widgets.py --mock-setup``): detector settings, acquisition
+selection and recording on the left, the napari image display in the
+middle, positioners and viewer tools along the bottom.
 
 
 Keyboard shortcuts
