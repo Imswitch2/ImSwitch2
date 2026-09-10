@@ -13,8 +13,7 @@ import numpy as np
 import pytest
 
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
-    MAX_QUEUED_CONSUMER_FRAMES,
-    MAX_QUEUED_RAW_FRAMES,
+    MAX_QUEUED_CONSUMER_BYTES,
     ChunkConsumerOverflowError,
     ChunkKind,
     ChunkPayload,
@@ -146,7 +145,8 @@ class _CameraLikeDetector:
     releaseChunkConsumer = None
     _distributeChunkLocked = None
     _chunkKinds = None
-    _chunkQueueCap = None
+    _chunkConsumerBytes = None
+    _frameBytes = None
 
 
 class _Silent:
@@ -157,7 +157,8 @@ class _Silent:
 #: Broker methods a double borrows from the real base class, so every test
 #: exercises the shipped logic rather than a re-implementation of it.
 _BROKER_METHODS = ('readChunk', 'startChunkConsumer', 'releaseChunkConsumer',
-                   '_distributeChunkLocked', '_chunkKinds', '_chunkQueueCap')
+                   '_distributeChunkLocked', '_chunkKinds',
+                   '_chunkConsumerBytes', '_frameBytes')
 
 
 def _wire(detector):
@@ -166,7 +167,10 @@ def _wire(detector):
     )
 
     for method in _BROKER_METHODS:
-        setattr(type(detector), method, getattr(DetectorManager, method))
+        # Copy the descriptor, not what it resolves to: a staticmethod fetched
+        # with getattr comes back as a plain function and would be re-bound as
+        # an instance method on the double.
+        setattr(type(detector), method, DetectorManager.__dict__[method])
     return detector
 
 
@@ -293,47 +297,104 @@ def test_a_later_generation_is_unaffected_by_an_earlier_failure():
     assert len(detector.readChunk('rec')) == 1
 
 
-def test_a_deferred_raw_consumer_is_capped_far_lower_than_a_display_one():
-    """A deferred raw frame is a volume; that frame count is not that memory."""
+def _framesWithinBudget(detector, frame) -> int:
+    """How many of ``frame`` the queue budget holds for this detector."""
+    from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+        DetectorManager,
+    )
+
+    return MAX_QUEUED_CONSUMER_BYTES // DetectorManager._frameBytes(frame)
+
+
+def test_the_queue_holds_what_fits_in_memory_not_a_fixed_frame_count():
+    """The budget is bytes, so the frame count follows from the frame.
+
+    Two frame counts used to be chosen by hand -- 1000 for a display consumer,
+    16 for a raw one -- and a frame count bounds nothing: the same number is
+    3 MB for a 76x20 crop and 8 GB for a full sensor. Worse, picking between
+    them needed a per-detector category that every new detector had to
+    remember to declare correctly, which is the same trap in a new place.
+    """
+    import numpy as np
+
+    from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+        DetectorManager,
+    )
+
+    small = DetectorManager._frameBytes(np.zeros((20, 76), np.uint16))
+    full = DetectorManager._frameBytes(np.zeros((2048, 2048), np.uint16))
+    volume = DetectorManager._frameBytes(np.zeros((2, 100, 512, 512), np.uint16))
+
+    # A fast camera on a small ROI -- the configuration that failed in the
+    # field at 9338 fps -- gets tens of thousands of frames of slack.
+    assert MAX_QUEUED_CONSUMER_BYTES // small > 10_000
+    # A full sensor gets tens, because that is what the same memory buys.
+    assert 8 < MAX_QUEUED_CONSUMER_BYTES // full < 200
+    # And a point detector's assembled volume gets very few, which is the
+    # bound the old raw cap was reaching for by proxy.
+    assert MAX_QUEUED_CONSUMER_BYTES // volume < 8
+
+
+def test_a_deferred_raw_consumer_is_bounded_by_the_same_memory():
+    """A volume is large, so few of them fit; nothing declares that."""
     detector = _detector(planes=1)
     detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    detector.writePlane()
+    detector.finishScan()
+    detector._distributeChunkLocked(detector.drainChunk())
+    fits = _framesWithinBudget(detector, detector.readChunk('rec')[0])
 
-    for _ in range(MAX_QUEUED_RAW_FRAMES + 4):
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    for _ in range(fits + 4):
         detector._written = 0          # each iteration is a fresh scan
         detector.writePlane()
         detector.finishScan()
         detector._distributeChunkLocked(detector.drainChunk())
 
-    with pytest.raises(Exception):
+    with pytest.raises(ChunkConsumerOverflowError):
         detector.readChunk('rec')
 
 
-def test_a_camera_raw_consumer_keeps_the_ordinary_cap():
-    """The small cap is a memory budget, and a camera frame is not a volume.
+def test_a_camera_raw_consumer_survives_a_stall_no_detector_had_to_declare():
+    """The failure the field hit, and the category nobody has to remember.
 
-    Regression: the cap was keyed on ``ChunkKind.RAW`` alone, and the recording
-    worker registers RAW for *every* detector it records. A camera's raw frame
-    is its display frame, one per exposure, so a camera scan recording got 16
-    frames of slack: one writer or disk hiccup longer than that aborted the run
-    with "its stream is incomplete", the queue having been filled meanwhile by
-    the live-view poller. Anything under the ordinary cap must survive.
+    The cap was keyed on ``ChunkKind.RAW`` alone, and the recording worker
+    registers RAW for *every* detector it records. A camera's raw frame is its
+    display frame, one per exposure, so a camera recording got 16 frames of
+    slack -- 1.7 ms at 9338 fps. Keying it on a per-detector flag fixed the
+    number but kept the trap: a new detector that forgot to declare itself got
+    the wrong budget. Bytes need no declaration.
     """
     detector = _cameraDetector()
     detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    detector.produceFrame()
+    detector._distributeChunkLocked(detector.drainChunk())
+    fits = _framesWithinBudget(detector, detector.readChunk('rec')[0])
+    assert fits > 1000, 'a small camera frame should buy a long stall'
 
-    for _ in range(MAX_QUEUED_RAW_FRAMES * 4):
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    for _ in range(2000):
         detector.produceFrame()
         detector._distributeChunkLocked(detector.drainChunk())
 
-    assert len(detector.readChunk('rec')) == MAX_QUEUED_RAW_FRAMES * 4
+    assert len(detector.readChunk('rec')) == 2000
 
 
-def test_a_camera_raw_consumer_still_fails_past_the_ordinary_cap():
-    """Raising the budget must not turn an unbounded leak into silence."""
-    detector = _cameraDetector()
+def test_a_camera_raw_consumer_still_fails_once_the_memory_is_gone():
+    """Bounding by bytes must not turn an unbounded leak into silence.
+
+    A large frame is used deliberately: the budget it buys is small, which is
+    the point of counting bytes, and it keeps this test from having to produce
+    tens of thousands of frames to reach the same edge.
+    """
+    detector = _cameraDetector(size=1024)
     detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    detector.produceFrame()
+    detector._distributeChunkLocked(detector.drainChunk())
+    fits = _framesWithinBudget(detector, detector.readChunk('rec')[0])
 
-    for _ in range(MAX_QUEUED_CONSUMER_FRAMES + 4):
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    for _ in range(fits + 4):
         detector.produceFrame()
         detector._distributeChunkLocked(detector.drainChunk())
 
@@ -341,16 +402,21 @@ def test_a_camera_raw_consumer_still_fails_past_the_ordinary_cap():
         detector.readChunk('rec')
 
 
-def test_the_overflow_error_quotes_the_cap_that_actually_tripped():
-    """The message used to hardcode the display cap whatever the kind.
+def test_the_overflow_error_quotes_the_budget_that_actually_tripped():
+    """The message used to hardcode one frame count whatever the kind.
 
     That is how a recording 17 frames behind reported "more than 1000 frames"
     in the only field log this failure ever produced.
     """
     detector = _detector(planes=1)
     detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    detector.writePlane()
+    detector.finishScan()
+    detector._distributeChunkLocked(detector.drainChunk())
+    fits = _framesWithinBudget(detector, detector.readChunk('rec')[0])
 
-    for _ in range(MAX_QUEUED_RAW_FRAMES + 4):
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    for _ in range(fits + 4):
         detector._written = 0
         detector.writePlane()
         detector.finishScan()
@@ -358,17 +424,17 @@ def test_the_overflow_error_quotes_the_cap_that_actually_tripped():
 
     with pytest.raises(ChunkConsumerOverflowError) as raised:
         detector.readChunk('rec')
-    assert str(MAX_QUEUED_RAW_FRAMES) in str(raised.value)
-    assert str(MAX_QUEUED_CONSUMER_FRAMES) not in str(raised.value)
+    message = str(raised.value)
+    assert str(MAX_QUEUED_CONSUMER_BYTES // (1024 * 1024)) in message
+    assert 'MiB' in message
 
 
-def test_the_recording_worker_registers_the_kind_this_cap_is_keyed_on():
+def test_the_recording_worker_registers_the_kind_this_budget_applies_to():
     """Bind the two files the bug lived between.
 
     ``test_chunk_contract`` never mentioned the RecordingManager and
     ``test_recording`` never mentioned ``ChunkKind``; both halves were correct
-    on their own. This asserts the join: what the recording worker registers is
-    the kind whose cap the tests above pin.
+    on their own. This asserts the join.
     """
     from imswitch.imcontrol.model.managers.RecordingManager import (
         _RECORDING_CHUNK_CONSUMER,
@@ -377,13 +443,11 @@ def test_the_recording_worker_registers_the_kind_this_cap_is_keyed_on():
     detector = _cameraDetector()
     detector.startChunkConsumer(_RECORDING_CHUNK_CONSUMER, kind=ChunkKind.RAW)
 
-    for _ in range(MAX_QUEUED_RAW_FRAMES + 1):
+    for _ in range(100):
         detector.produceFrame()
         detector._distributeChunkLocked(detector.drainChunk())
 
-    assert len(detector.readChunk(_RECORDING_CHUNK_CONSUMER)) == (
-        MAX_QUEUED_RAW_FRAMES + 1
-    )
+    assert len(detector.readChunk(_RECORDING_CHUNK_CONSUMER)) == 100
 
 
 def test_the_two_latest_frame_caches_do_not_overwrite_each_other():
