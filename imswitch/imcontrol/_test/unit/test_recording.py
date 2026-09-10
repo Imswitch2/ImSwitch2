@@ -4299,7 +4299,7 @@ def test_detector_bitDepth_property():
 
 from imswitch.imcontrol.model.managers.RecordingManager import (
     HDF5Storer, StreamPayloadInfo, TiffStorer, WriterThread,
-    WRITER_QUEUE_MAXSIZE,
+    WRITER_QUEUE_MAX_BYTES,
     WRITE_BATCH_FRAMES,
 )
 
@@ -4502,21 +4502,51 @@ def test_writerthread_keeps_normal_single_camera_recording_logically_yx():
 
 
 def test_writerthread_backpressure_no_drop():
-    """A slow storer fills the bounded queue; blocking put must not drop frames."""
-    storer = _FakeStorer(writeDelay=0.003)  # writer slower than producer -> queue fills
+    """A slow storer fills the queue's budget; blocking must not drop frames.
+
+    The budget is bytes, so the frames are sized to fill it rather than
+    counted: bounding by queue *items* meant the buffer was whatever one poll
+    happened to return -- about one frame on a fast camera, so seven
+    milliseconds where the constant implied seconds.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import _framesNBytes
+
+    storer = _FakeStorer(writeDelay=0.003)  # writer slower than producer
     writer = _make_writer(storer)
     writer.start()
     writer.wait_for_open()
 
-    n = WRITER_QUEUE_MAXSIZE * 2 + 10  # forces the queue full -> enqueue blocks
+    frame = np.zeros((1, 512, 512), dtype=np.uint16)
+    # Twice the budget's worth, so enqueue must block and wait for the writer.
+    n = 2 * (WRITER_QUEUE_MAX_BYTES // _framesNBytes(frame)) + 10
     for i in range(n):
-        writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+        writer.enqueue_frames('CAM', np.full((1, 512, 512), i % 4096, dtype=np.uint16))
     writer.finish()
 
     received = np.concatenate(storer.writes['CAM'], axis=0)
     assert len(received) == n, f"Backpressure dropped frames: expected {n}, got {len(received)}"
     for i in range(n):
-        assert (received[i] == i).all(), f"Frame {i} out of order under backpressure"
+        assert (received[i] == i % 4096).all(), f"Frame {i} out of order under backpressure"
+
+
+def test_the_writer_buffer_is_a_memory_bound_not_an_item_count():
+    """One queued item is one poll's worth of frames, which is not a size."""
+    from imswitch.imcontrol.model.managers.RecordingManager import _framesNBytes
+
+    storer = _FakeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    try:
+        # A single chunk larger than the whole budget is admitted rather than
+        # deadlocking on room that can never appear.
+        huge = np.zeros((1, 1, WRITER_QUEUE_MAX_BYTES // 2 + 1024), dtype=np.uint16)
+        assert _framesNBytes(huge) > WRITER_QUEUE_MAX_BYTES
+        writer.enqueue_frames('CAM', huge)
+    finally:
+        writer.finish()
+
+    assert len(storer.writes['CAM']) == 1
 
 
 def test_writerthread_abort_calls_abortstream_not_finalize():

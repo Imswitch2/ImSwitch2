@@ -643,6 +643,19 @@ class DetectorManager(SignalInterface):
         """
         with self._chunkConsumersLock:
             if self._chunkConsumers:
+                # If somebody else has drained since this path last looked, the
+                # latch already holds a frame nobody here has seen, and draining
+                # again would only move more frames out of the driver's buffer
+                # and into every registered consumer's queue -- including a
+                # recorder that is blocked on its writer and cannot take them.
+                # That is how a 300 ms live-view tick came to hand a stalled
+                # recording thousands of frames at once. Reuse the latch
+                # instead; when nothing else is draining, the flag stays
+                # consumed and this path drains for itself, so the display
+                # keeps updating either way.
+                if not is_save and self._latchIsUnconsumed():
+                    self._markLatchConsumed()
+                    return self.__image
                 # _distributeChunkLocked latches both representations, so any
                 # drain refreshes them whichever participant performed it.
                 self._distributeChunkLocked(self.drainChunk())
@@ -670,6 +683,7 @@ class DetectorManager(SignalInterface):
                         return self.getLatestFrame(is_save=True)
                     except TypeError:
                         return self.getLatestFrame()
+                self._markLatchConsumed()
                 return self.__image
 
             try:
@@ -683,6 +697,21 @@ class DetectorManager(SignalInterface):
             else:
                 self.__image = frame
             return frame
+
+    def _latchIsUnconsumed(self) -> bool:
+        """Whether a drain by someone else has refreshed the display latch.
+
+        Read through ``__dict__`` for the same reason :meth:`_chunkKinds` does.
+        Defaults to consumed, so a manager that never latched behaves exactly
+        as it did before: it drains for itself.
+        """
+        if self.__dict__.get('_chunkLatchConsumed', True):
+            return False
+        image = self.__dict__.get('_DetectorManager__image')
+        return image is not None and getattr(image, 'size', 0) > 0
+
+    def _markLatchConsumed(self) -> None:
+        self.__dict__['_chunkLatchConsumed'] = True
 
     @staticmethod
     def _frameBytes(frame) -> int:
@@ -723,6 +752,8 @@ class DetectorManager(SignalInterface):
         display = payload.of(ChunkKind.DISPLAY)
         if display is not None and len(display) > 0:
             self.__image = np.asarray(display[-1])
+            # A frame nobody on the display path has taken yet.
+            self.__dict__['_chunkLatchConsumed'] = False
         raw = payload.of(ChunkKind.RAW)
         if raw is not None and len(raw) > 0:
             self._latestRawImage = np.asarray(raw[-1])

@@ -158,7 +158,9 @@ class _Silent:
 #: exercises the shipped logic rather than a re-implementation of it.
 _BROKER_METHODS = ('readChunk', 'startChunkConsumer', 'releaseChunkConsumer',
                    '_distributeChunkLocked', '_chunkKinds',
-                   '_chunkConsumerBytes', '_frameBytes')
+                   '_chunkConsumerBytes', '_frameBytes',
+                   'getLatestFrameShared', '_latchIsUnconsumed',
+                   '_markLatchConsumed')
 
 
 def _wire(detector):
@@ -497,3 +499,63 @@ def test_the_default_payload_serves_a_camera_unchanged():
 
     assert payload.of(ChunkKind.DISPLAY) is frames
     assert payload.of(ChunkKind.RAW) is frames
+
+
+def test_a_display_read_reuses_a_latch_another_consumer_just_refreshed():
+    """The live view must not hand a stalled recorder its whole backlog.
+
+    Every drain fans out to every registered consumer, so a live-view tick that
+    drains 300 ms of a fast camera pushes all of it into a blocked recorder's
+    queue at once. The frames are the recorder's to have -- but they can wait
+    in the driver's buffer, where they are not counted against a budget the
+    recorder cannot currently spend. When somebody else has already drained,
+    the latch holds a frame the display has not seen and no drain is needed.
+    """
+    detector = _cameraDetector()
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+
+    detector.produceFrame()
+    detector.produceFrame()
+    detector.readChunk('rec')          # the recorder drains: latch refreshed
+    before = len(detector._chunkConsumers['rec'])
+
+    detector.produceFrame()            # arrives in the driver, undrained
+    frame = detector.getLatestFrameShared()
+
+    assert frame is not None
+    assert len(detector._chunkConsumers['rec']) == before, (
+        'the display path drained and pushed frames into the recorder queue'
+    )
+
+
+def test_a_display_read_still_drains_when_nothing_else_does():
+    """Otherwise a blocked recorder would freeze the live view with it."""
+    detector = _cameraDetector()
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    detector.produceFrame()
+    detector.readChunk('rec')
+
+    # First read takes the latch the recorder's drain left behind.
+    detector.getLatestFrameShared()
+    # The recorder is now blocked and never polls again; frames keep arriving.
+    detector.produceFrame()
+    detector.produceFrame()
+
+    # The display must fetch them itself rather than showing a frozen image.
+    detector.getLatestFrameShared()
+    assert len(detector._chunkConsumers['rec']) > 0, (
+        'the display path stopped draining, so nothing refreshes the view'
+    )
+
+
+def test_the_save_path_is_unaffected_by_latch_reuse():
+    """A recording snap must still force a drain; it wants the newest data."""
+    detector = _cameraDetector()
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    detector.produceFrame()
+    detector.readChunk('rec')
+    detector.produceFrame()
+
+    detector.getLatestFrameShared(is_save=True)
+
+    assert len(detector._chunkConsumers['rec']) > 0

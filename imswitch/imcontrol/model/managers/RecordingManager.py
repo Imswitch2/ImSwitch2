@@ -61,7 +61,26 @@ RECORDING_ARM_TIMEOUT = 5.0  # seconds; max wait for detectors to arm before sta
 RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
 
 # Off-thread writer constants
-WRITER_QUEUE_MAXSIZE = 64  # Bounded queue size for backpressure (blocks acquisition when full)
+#: How much unwritten frame data may sit between the acquisition loop and the
+#: storer before the acquisition loop is made to wait. This is the buffer that
+#: absorbs a disk or compression hiccup, so it is stated in bytes: it used to
+#: be 64 *queue items*, and an item holds whatever one poll returned. At the
+#: 0.1 ms poll interval below that is about one frame, so the buffer was 64
+#: frames -- 7 ms on a fast camera, not the seconds the number suggests, and
+#: less than the detector-side budget downstream of it. A recording could not
+#: use its own buffer.
+WRITER_QUEUE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _framesNBytes(frames) -> int:
+    """Bytes one enqueued chunk of frames occupies."""
+    nbytes = getattr(frames, 'nbytes', None)
+    if nbytes is not None:
+        return int(nbytes)
+    try:
+        return int(sum(getattr(frame, 'nbytes', 0) for frame in frames))
+    except TypeError:
+        return 0
 WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
 WRITER_OPEN_TIMEOUT_S = 30.0
 #: How long the acquisition loop may sit blocked on a full writer queue before
@@ -2871,7 +2890,14 @@ class WriterThread(threading.Thread):
         self._scanDrivenDetectors = dict(scanDrivenDetectors or {})
         
         # Bounded queue for backpressure (put() blocks when full)
-        self._queue = queue.Queue(maxsize=WRITER_QUEUE_MAXSIZE)
+        # Unbounded as a container; the real bound is WRITER_QUEUE_MAX_BYTES,
+        # applied by enqueue_frames against _queuedBytes below. Bounding the
+        # item count would be bounding the wrong thing -- an item is one poll's
+        # worth of frames, which is one frame on a fast camera and hundreds on
+        # a slow one.
+        self._queue = queue.Queue()
+        self._queuedBytesLock = threading.Lock()
+        self._queuedBytes = 0
         
         # Per-detector batching buffers
         self._batches = {detectorName: [] for detectorName in detectorNames}
@@ -3027,7 +3053,16 @@ class WriterThread(threading.Thread):
         try:
             while True:
                 item = self._queue.get()
-                
+                if isinstance(item, tuple) and len(item) == 3:
+                    # Release the producer's reservation as soon as the chunk
+                    # leaves the queue: from here the frames are this thread's
+                    # to batch and write.
+                    with self._queuedBytesLock:
+                        self._queuedBytes = max(
+                            0, self._queuedBytes - int(item[2])
+                        )
+                    item = (item[0], item[1])
+
                 if item is None:
                     # Sentinel. On abort, discard partial output; otherwise flush
                     # remaining batches and finalize normally.
@@ -3160,6 +3195,7 @@ class WriterThread(threading.Thread):
         live-view poller. Say that the producer stalled, and for how long, so
         the writer is a candidate rather than a deduction.
         """
+        payloadBytes = _framesNBytes(frames)
         blockedSince = None
         stallReported = False
         while True:
@@ -3169,8 +3205,19 @@ class WriterThread(threading.Thread):
                     'RecordingWriterThread is not running; frames cannot be '
                     'enqueued'
                 )
-            try:
-                self._queue.put((detectorName, frames), timeout=0.1)
+            with self._queuedBytesLock:
+                # An empty queue always admits, however large the payload:
+                # otherwise a single chunk bigger than the whole budget -- one
+                # assembled volume, say -- would wait for room that can never
+                # appear.
+                admitted = (
+                    self._queuedBytes == 0
+                    or self._queuedBytes + payloadBytes <= WRITER_QUEUE_MAX_BYTES
+                )
+                if admitted:
+                    self._queuedBytes += payloadBytes
+            if admitted:
+                self._queue.put((detectorName, frames, payloadBytes))
                 # Cover the race where the writer failed while this put was
                 # completing. finish() performs the same check for a failure
                 # that occurs after the producer's final enqueue.
@@ -3187,7 +3234,7 @@ class WriterThread(threading.Thread):
                         f'the writer queue.'
                     )
                 return
-            except queue.Full:
+            else:
                 self._raise_if_failed()
                 if not self.is_alive():
                     raise RuntimeError(
@@ -3195,6 +3242,7 @@ class WriterThread(threading.Thread):
                         'enqueued; recording aborted'
                     ) from self._write_exception
                 # Writer still alive and draining - keep applying backpressure.
+                time.sleep(0.01)
                 if blockedSince is None:
                     blockedSince = time.time()
                 elif (not stallReported
@@ -3244,27 +3292,10 @@ class WriterThread(threading.Thread):
                         and self._write_exception is None
                     )
                 else:
-                    while True:
-                        try:
-                            self._queue.put(None, timeout=0.1)
-                            break
-                        except queue.Full:
-                            if not self.is_alive():
-                                stopped_unexpectedly = (
-                                    self._open_exception is None
-                                    and self._write_exception is None
-                                )
-                                break
-                            if abort:
-                                # Discard a queued item to make room for the
-                                # sentinel; abort mode deliberately does not
-                                # preserve partial output.
-                                try:
-                                    self._queue.get_nowait()
-                                except queue.Empty:
-                                    pass
-                            # finish() keeps waiting for the writer to drain so
-                            # all queued frames are finalized.
+                    # The queue is unbounded as a container -- the bound is the
+                    # producer's byte budget -- so the sentinel always fits and
+                    # never has to displace queued frames to get in.
+                    self._queue.put(None)
 
         # join() itself rejects a thread that was never started. Surface that
         # as a lifecycle error rather than silently claiming success.
