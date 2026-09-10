@@ -574,15 +574,67 @@ def export_result(endpoint: NapariEndpoint, result, directory: Path) -> Path:
     return exporter.write(result, directory / export_filename(endpoint, result))
 
 
+#: npe2 caps a writer's layer count here.
+_MAX_LAYERS = 1 << 32
+
+
+def parse_layer_constraint(expr: str) -> tuple[str, int, int]:
+    """``(layer_type, minimum, maximum)`` for one npe2 writer constraint.
+
+    The grammar is npe2's: ``image`` exactly one, ``image?`` zero or one,
+    ``image+`` one or more, ``image*`` any number, ``image{k}`` exactly
+    ``k``, ``image{m,n}`` between ``m`` and ``n`` inclusive.
+    """
+    text = str(expr).strip()
+    if text.endswith("?"):
+        return text[:-1].lower(), 0, 1
+    if text.endswith("+"):
+        return text[:-1].lower(), 1, _MAX_LAYERS
+    if text.endswith("*"):
+        return text[:-1].lower(), 0, _MAX_LAYERS
+    if text.endswith("}"):
+        base, _, inner = text[:-1].rpartition("{")
+        if "," in inner:
+            low, high = inner.split(",", 1)
+            return base.lower(), int(low), int(high)
+        count = int(inner)
+        return base.lower(), count, count
+    return text.lower(), 1, 1
+
+
+def writer_accepts(writer: NapariWriterFormat, layer_types: Iterable[str]) -> bool:
+    """Whether ``writer`` can take exactly this multiset of layer types.
+
+    Every constraint's count must be met, and a type the writer does not
+    mention at all is a type it does not accept (npe2's rule).
+    """
+    counts: dict[str, int] = {}
+    for layer_type in layer_types:
+        key = str(layer_type).lower()
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return False
+    bounds: dict[str, tuple[int, int]] = {}
+    for expr in writer.layer_types:
+        try:
+            layer_type, low, high = parse_layer_constraint(expr)
+        except ValueError:
+            return False
+        bounds[layer_type] = (low, high)
+    for layer_type, count in counts.items():
+        low, high = bounds.get(layer_type, (0, 0))
+        if not low <= count <= high:
+            return False
+    for layer_type, (low, _high) in bounds.items():
+        if counts.get(layer_type, 0) < low:
+            return False
+    return True
+
+
 def writer_formats_for(layer_types: Iterable[str], installed: InstalledPlugins) -> list[NapariWriterFormat]:
-    """Writer contributions able to save *all* of ``layer_types``."""
-    wanted = {str(t).lower() for t in layer_types}
-    formats = []
-    for writer in installed.writers:
-        accepted = {t.split("{")[0].lower() for t in writer.layer_types}
-        if wanted and (wanted <= accepted or "*" in accepted):
-            formats.append(writer)
-    return formats
+    """Writer contributions able to save exactly these layers (by type and count)."""
+    wanted = [str(t).lower() for t in layer_types]
+    return [writer for writer in installed.writers if writer_accepts(writer, wanted)]
 
 
 __all__ = [
@@ -609,6 +661,8 @@ __all__ = [
     "register_user_endpoints",
     "resolve_widget",
     "user_endpoints",
+    "parse_layer_constraint",
+    "writer_accepts",
     "writer_formats_for",
 ]
 

@@ -184,13 +184,14 @@ def import_layer(
         coords = np.asarray(snapshot.data, dtype=float)
         if coords.ndim != 2:
             raise NotImportable("points data must be (N, D)")
+        coords, baked = _bake_points_transform(snapshot, coords)
         result = PointsTableResult(
             name=label,
             coordinates=coords,
             properties=snapshot.properties,
             coordinate_scale=list(snapshot.scale),
             scale_unit=unit,
-            metadata={"layer_name": snapshot.name, "layer_type": "points"},
+            metadata={"layer_name": snapshot.name, "layer_type": "points", "transform_baked": baked},
         )
         record_import(
             result, plugin_name=plugin_name, widget_name=widget_name,
@@ -225,6 +226,37 @@ def import_layer(
         source_result=source_result,
     )
     return ImportedLayer(result=result, grid=grid, reason=reason)
+
+
+def _bake_points_transform(snapshot: LayerSnapshot, coords: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Points in the layer's *data* frame with its translation folded in.
+
+    A Points layer's coordinates are index-space numbers; the layer's
+    ``scale`` and ``translate`` place them in the world. The table keeps the
+    per-axis scale (``coordinate_scale``), so the only thing that would be
+    lost is the translation: it is added here, in data units
+    (``translate / scale``), so ``coords * scale`` is again the world
+    position. A rotation, shear or extra affine cannot be folded into a
+    per-axis scale; such a layer is refused rather than imported wrong.
+    """
+    scale = np.asarray(snapshot.scale, dtype=float)
+    translate = np.asarray(snapshot.translate, dtype=float)
+    if coords.shape[1] != len(scale) or len(translate) != len(scale):
+        raise NotImportable(
+            f"points are {coords.shape[1]}-D but the layer transform is {len(scale)}-D"
+        )
+    same, reason = identity_transform(snapshot)
+    if not same and any(word in reason for word in ("rotated", "sheared", "affine")):
+        raise NotImportable(
+            f"the points layer {reason}; that transform cannot be represented as a per-axis "
+            "scale -- bake it into the coordinates in napari before importing"
+        )
+    if np.any(scale == 0):
+        raise NotImportable("the points layer has a zero scale on some axis")
+    baked = {"translate": translate.tolist(), "scale": scale.tolist()}
+    if np.any(np.abs(translate) > _ATOL):
+        coords = coords + translate / scale
+    return coords, baked
 
 
 def _rois_from_shapes(snapshot: LayerSnapshot):

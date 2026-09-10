@@ -25,12 +25,16 @@ class BatchRow:
     ok: bool
     error: str = ""
     failed_step: str = ""
+    #: Files published by this row. For a failed row these are the outputs
+    #: written *before* the failure (``partial`` is then True); they are
+    #: left in place, not rolled back, and listed so nobody has to guess.
     files: list[str] = field(default_factory=list)
+    partial: bool = False
     warnings: list[str] = field(default_factory=list)
 
     def as_record(self) -> dict[str, Any]:
-        record: dict[str, Any] = {"index": self.index, "ok": self.ok, "error": self.error,
-                                  "failed_step": self.failed_step}
+        record: dict[str, Any] = {"index": self.index, "ok": self.ok, "partial": self.partial,
+                                  "error": self.error, "failed_step": self.failed_step}
         for key, value in self.bindings.items():
             record[f"source:{key}"] = value
         record["files"] = ";".join(self.files)
@@ -150,9 +154,14 @@ def run_over(
             )
         except RunError as exc:
             report = getattr(exc, "report", None)
+            # Files a Save step published before a later step failed are
+            # real files in the output folder; the row must list them, or
+            # the summary would say "nothing written" while they sit there.
+            written = [str(f) for receipt in getattr(report, "receipts", []) or [] for f in receipt.files]
             row = BatchRow(
                 index=index, bindings=shown, ok=False, error=str(exc),
                 failed_step=getattr(report, "failed_step", "") or "",
+                files=written, partial=bool(written),
                 warnings=list(getattr(report, "warnings", []) or []),
             )
         except Exception as exc:  # noqa: BLE001 - one row's failure is a row

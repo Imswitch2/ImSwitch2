@@ -260,9 +260,13 @@ class LiveReconstructionController(QtCore.QObject):
         # forwarded so the final record says "stalled", not "complete".
         setter = getattr(self._process_worker, "setProvenance", None)
         if callable(setter):
+            # The first stack was consumed by begin() and never arrives as a
+            # chunk; it counts towards the committed frames all the same.
+            init_shape = getattr(init_data, "shape", None)
             setter(
                 self._reconstructor, self._params, init_obj,
                 expected_frames=getattr(stack_info, "expected_frames", None),
+                initial_frames=int(init_shape[0]) if init_shape else 0,
             )
             self._stream_worker.sigStalled.connect(self._process_worker.markStalled)
 

@@ -25,6 +25,7 @@ already published; the target directory is left as it was found.
 from __future__ import annotations
 
 import json
+import errno
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -192,11 +193,24 @@ class ProvenanceDocument:
         )
 
     @classmethod
-    def from_json(cls, text: str) -> "ProvenanceDocument":
+    def from_json(cls, text: str, *, strict: bool = False) -> "ProvenanceDocument":
+        """The document in ``text``.
+
+        Tolerant by default (a description that is not JSON is simply not
+        provenance). With ``strict`` the text was *declared* to be a
+        provenance document, and anything but a JSON object is an error.
+        """
         try:
-            return cls.from_dict(json.loads(text))
-        except (TypeError, ValueError):
+            payload = json.loads(text)
+        except (TypeError, ValueError) as exc:
+            if strict:
+                raise ValueError(f"the declared provenance is not valid JSON: {exc}") from exc
             return cls()
+        if not isinstance(payload, dict):
+            if strict:
+                raise ValueError("the declared provenance is not a JSON object")
+            return cls()
+        return cls.from_dict(payload)
 
 
 def artifact_record(plan: SavePlan, result) -> dict:
@@ -343,24 +357,34 @@ def save_result(result, path, fmt: str | None = None, *, overwrite: bool = False
                     moved = backup_dir / target.name
                     os.replace(target, moved)
                     backups.append((target, moved))
-        # 4b. publish: companions first, primary last
+        # 4b. publish: companions first, primary last. ``_publish`` records
+        #     the target in ``published`` the moment it exists, so a failure
+        #     anywhere after that point (even inside the publish itself) is
+        #     rolled back rather than left as a half-published result.
         for staged_file, target in zip(staged.files[1:], plan.files[1:]):
-            _publish(staged_file, target)
-            published.append(target)
-        _publish(staged.primary, plan.primary)
-        published.append(plan.primary)
-    except Exception:
+            _publish(staged_file, target, published)
+        _publish(staged.primary, plan.primary, published)
+    except Exception as exc:
         for target in published:
             _remove(target)
+        not_restored = []
         for target, moved in backups:
             try:
                 os.replace(moved, target)
-            except OSError:
-                pass
-        raise
-    finally:
+            except OSError as restore_exc:
+                not_restored.append(f"{target} (kept at {moved}: {restore_exc})")
         shutil.rmtree(stage_dir, ignore_errors=True)
+        if not_restored:
+            # The previous files could not be put back: keep the backup
+            # directory and say where it is, instead of deleting the only
+            # copy and reporting just the original error.
+            raise SaveError(
+                f"{exc}; the previous file(s) could not be restored: {'; '.join(not_restored)}"
+            ) from exc
         shutil.rmtree(backup_dir, ignore_errors=True)
+        raise
+    shutil.rmtree(stage_dir, ignore_errors=True)
+    shutil.rmtree(backup_dir, ignore_errors=True)
 
     graph = graph_of(result)
     node, port = output_of(graph) if graph else ("", "")
@@ -371,7 +395,7 @@ def save_result(result, path, fmt: str | None = None, *, overwrite: bool = False
     return receipt
 
 
-def _publish(staged: Path, target: Path) -> None:
+def _publish(staged: Path, target: Path, published: list[Path]) -> None:
     """Move a staged file to its name without ever replacing an existing one.
 
     A hard link fails atomically when the target exists, which closes the
@@ -379,23 +403,60 @@ def _publish(staged: Path, target: Path) -> None:
     ``os.replace`` leaves open. Directories (Zarr groups) cannot be
     hard-linked; for those an existence check followed by a rename is the
     best POSIX offers, and the window is documented rather than hidden.
+
+    ``target`` is appended to ``published`` as soon as it exists, *before*
+    any further step, so the caller's rollback covers a failure inside this
+    function too. A target that already existed is never appended: it is
+    not ours to remove.
     """
     if staged.is_dir() and not staged.is_symlink():
         if target.exists() or target.is_symlink():
             raise FileExistsError(f"refusing to overwrite: {target}")
         os.rename(staged, target)
+        published.append(target)
         return
     try:
         os.link(staged, target)          # atomic no-clobber
     except FileExistsError:
         raise FileExistsError(f"refusing to overwrite: {target}") from None
-    except OSError:
+    except OSError as exc:
+        if _same_file(staged, target):
+            # The link was made and the error came after: the target is
+            # ours, and the caller's rollback must know that.
+            published.append(target)
+            raise
+        if exc.errno not in _NO_HARDLINK_ERRNOS:
+            raise
         # A filesystem without hard links: fall back to the guarded rename.
         if target.exists() or target.is_symlink():
             raise FileExistsError(f"refusing to overwrite: {target}") from None
         os.rename(staged, target)
+        published.append(target)
         return
-    os.unlink(staged)
+    published.append(target)
+    try:
+        os.unlink(staged)
+    except OSError:
+        # The link *is* the published file; the staged name goes with the
+        # staging directory. Not a failure of the save.
+        pass
+
+
+#: ``os.link`` errors that mean "this filesystem cannot", not "this failed".
+_NO_HARDLINK_ERRNOS = frozenset(
+    code for code in (
+        getattr(errno, "EPERM", None), getattr(errno, "EOPNOTSUPP", None),
+        getattr(errno, "ENOTSUP", None), getattr(errno, "EXDEV", None),
+        getattr(errno, "EMLINK", None), getattr(errno, "EACCES", None),
+    ) if code is not None
+)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def _remove(target: Path) -> None:

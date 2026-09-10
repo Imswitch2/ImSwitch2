@@ -256,9 +256,21 @@ class LiveProcessWorker(QtCore.QObject):
         self._stalled = False
         self._failed_chunks: list[tuple[int, int, str]] = []
 
-    def setProvenance(self, reconstructor, params: dict, source, expected_frames=None) -> None:
-        """Tell the worker what it is reconstructing, for the provenance record."""
+    def setProvenance(self, reconstructor, params: dict, source, expected_frames=None,
+                      initial_frames: int | None = None) -> None:
+        """Tell the worker what it is reconstructing, for the provenance record.
+
+        ``initial_frames`` is how many frames ``session.begin()`` already
+        consumed from the first stack: they never arrive as chunks, so
+        without this the count would start at zero and a complete
+        acquisition with no further chunks would be recorded as partial.
+        """
         self._provenance = (reconstructor, dict(params or {}), source, expected_frames)
+        if initial_frames is None:
+            data = getattr(source, "data", None)
+            shape = getattr(data, "shape", None)
+            initial_frames = int(shape[0]) if shape else 0
+        self._frames_committed = max(self._frames_committed, int(initial_frames or 0))
 
     @QtCore.Slot(float)
     def markStalled(self, _seconds_waited: float = 0.0) -> None:
@@ -266,19 +278,22 @@ class LiveProcessWorker(QtCore.QObject):
         self._stalled = True
 
     def _record(self, result, status: str) -> None:
+        """Attach the provenance record to ``result``; raises when it cannot.
+
+        A result that leaves this worker without provenance would be the one
+        producing path that records nothing, so a recording failure is a
+        failure of the result, not a debug line.
+        """
         if self._provenance is None or result is None:
             return
         reconstructor, params, source, expected = self._provenance
-        try:
-            from imswitch.improcess.reconstructors.run import record_snapshot
+        from imswitch.improcess.reconstructors.run import record_snapshot
 
-            record_snapshot(
-                result, reconstructor, params, source,
-                session=self._session, status=status,
-                frames_committed=self._frames_committed, expected_frames=expected,
-            )
-        except Exception:
-            self._logger.debug("Could not record streaming provenance", exc_info=True)
+        record_snapshot(
+            result, reconstructor, params, source,
+            session=self._session, status=status,
+            frames_committed=self._frames_committed, expected_frames=expected,
+        )
 
     @QtCore.Slot(object)
     def processChunk(self, chunk: Chunk) -> None:
@@ -290,17 +305,24 @@ class LiveProcessWorker(QtCore.QObject):
             self._session.push(chunk.data, chunk.start, chunk.end)
             self._chunk_count += 1
             self._frames_committed = max(self._frames_committed, int(chunk.end))
-
-            if self._chunk_count % self._update_cadence == 0:
-                result = self._session.result()
-                self._record(result, "partial")
-                self.sigResultUpdated.emit(result)
-
         except Exception as e:
             self._logger.error(f"Error processing chunk [{chunk.start}:{chunk.end}]: {e}")
             # A dropped chunk means frames are missing from the result; the
             # final record must not call that complete.
             self._failed_chunks.append((int(chunk.start), int(chunk.end), str(e)))
+            return
+
+        if self._chunk_count % self._update_cadence == 0:
+            try:
+                result = self._session.result()
+                self._record(result, "partial")
+            except Exception as e:
+                # The frames are in; only the snapshot could not be made or
+                # recorded. Nothing is emitted for it, and the final record
+                # still has to succeed for the stream to count as finished.
+                self._logger.error(f"Could not snapshot the live result: {e}")
+                return
+            self.sigResultUpdated.emit(result)
 
     def _final_status(self) -> str:
         if self._stalled:
@@ -317,11 +339,19 @@ class LiveProcessWorker(QtCore.QObject):
         """Finalize the session and emit the final result."""
         try:
             final_result = self._session.finish()
-            self._record(final_result, self._final_status())
-            self.sigStackFinished.emit(final_result)
         except Exception as e:
             self._logger.error(f"Error finalizing session: {e}")
             self.sigFailed.emit(str(e))
+            return
+        try:
+            self._record(final_result, self._final_status())
+        except Exception as e:
+            # Fail closed: a final result without its provenance record is
+            # a failed stream, never a finished one.
+            self._logger.error(f"Could not record the live result's provenance: {e}")
+            self.sigFailed.emit(f"provenance could not be recorded: {e}")
+            return
+        self.sigStackFinished.emit(final_result)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

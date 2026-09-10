@@ -40,7 +40,10 @@ class ChannelMergeProcessor(Processor):
 
     @classmethod
     def default_params(cls) -> dict:
-        return {}
+        # ``name`` and ``axis_label`` are set by the toolbar dialog rather
+        # than the parameter widget, but they are parameters all the same:
+        # a workflow must be able to set them, and a typo must be caught.
+        return {"name": "Merged channels", "axis_label": CHANNEL_AXIS_LABEL}
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -61,7 +64,7 @@ class ChannelMergeProcessor(Processor):
         layout.addStretch()
 
         def get_values():
-            return {}
+            return dict(self.default_params())
 
         widget.get_values = get_values
         return widget
@@ -73,7 +76,7 @@ class ChannelMergeProcessor(Processor):
         return merge_results(
             results,
             name=params.get("name") or "Merged channels",
-            axis_label=str(params.get("axis_label", CHANNEL_AXIS_LABEL)),
+            axis_label=str(params.get("axis_label") or CHANNEL_AXIS_LABEL),
         )
 
 

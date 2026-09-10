@@ -93,7 +93,7 @@ Steps and references
      - ``id``, ``reconstructor`` (plugin id), ``params``, ``inputs`` (exactly one source)
      - ``out``
    * - ``Consolidate``
-     - ``id``, ``reconstructor``, ``inputs`` (reconstructions by that reconstructor), ``params``
+     - ``id``, ``reconstructor``, ``inputs`` (reconstructions by that reconstructor); no ``params`` — consolidation merges what the reconstructions already are
      - ``out``
    * - ``Process``
      - ``id``, ``processor`` (plugin id), ``params``, ``inputs`` (ordered)
@@ -228,8 +228,10 @@ are released.
 every built-in unless a setup's ``processing`` block (or explicit id lists)
 narrows it, plus the drop-in plugins from the user plugins folder — and
 stamps each plugin's version (the ImSwitch distribution version for
-built-ins, a digest of the file for drop-ins). Two runs in one process never
-share a registry.
+built-ins, a digest of the file for drop-ins). Every call returns a new
+registry; two runs share plugin instances only if you pass the same
+registry object to both. The command line never does: each batch row gets
+its own registry.
 
 Two run modes are kept apart on purpose:
 
@@ -252,6 +254,13 @@ Two run modes are kept apart on purpose:
 (``bootstrap_registry`` itself); with a factory every row gets fresh plugin
 instances, so a plugin that caches state cannot carry it from one input to
 the next.
+
+A row that fails after one of its ``Save`` steps has already published a
+file is reported with ``ok = False`` **and** the files written before the
+failure in ``files``, with ``partial = True``. They are left in place (they
+are complete, receipted files of an earlier step), and the summary CSV
+carries the ``partial`` column so nobody has to guess whether a failed row
+left anything behind.
 
 Testing a workflow
 ==================

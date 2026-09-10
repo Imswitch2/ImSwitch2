@@ -50,7 +50,7 @@ def read_provenance(path, *, validate: bool = True) -> ProvenanceDocument:
     elif name.endswith((".h5", ".hdf5", ".hdf")):
         document = _read_hdf5(path)
     elif name.endswith(".provenance.json"):
-        document = ProvenanceDocument.from_json(path.read_text(encoding="utf-8"))
+        document = _read_declared_json(path)
     else:
         document = _read_companion(path)
     if validate and document.graph is not None:
@@ -171,8 +171,17 @@ def _read_zarr(path: Path) -> ProvenanceDocument:
 def _read_companion(path: Path) -> ProvenanceDocument:
     companion = companion_json_path(path)
     if companion.exists():
-        return ProvenanceDocument.from_json(companion.read_text(encoding="utf-8"))
+        return _read_declared_json(companion)
     return ProvenanceDocument()
+
+
+def _read_declared_json(path: Path) -> ProvenanceDocument:
+    """A ``.provenance.json`` file: its existence declares provenance, so a
+    file that is not a JSON document is an error, not an empty document."""
+    try:
+        return ProvenanceDocument.from_json(path.read_text(encoding="utf-8"), strict=True)
+    except ValueError as exc:
+        raise ProvenanceReadError(f"{path.name}: {exc}") from exc
 
 
 def _decode_attrs(attrs: dict) -> dict:

@@ -160,22 +160,39 @@ affine, zero shear, and the same shape. ImProcess results store a scale and
 nothing else, so any other transform cannot be represented and is not
 claimed. Two arrays of the same shape are not the same grid.
 
-**Attribution.** A name pattern alone cannot say which session's plugin
-made a layer, so an adapter mapping is suggested only when the layer
-appeared *after* that session opened, is not a layer any session added
-itself, and exactly one open session's adapter claims it. If two sessions
-could claim it, no mapping is suggested and the import gets a fresh grid;
-the dialog still lets you pick the source result explicitly.
+**Attribution.** A name pattern cannot say which plugin made a layer, and
+neither can "it appeared after the session opened": an unrelated layer
+added later would inherit the session's grid. A mapping is therefore
+*pre-selected* in the import dialog only when napari's own record of where
+the layer came from (``layer.source``) points at the session — the dock
+widget the session opened produced it, or its parent layer is one the
+session added — and exactly one open session's adapter claims it. Every
+other mapping an open session could offer is listed under *Adapter mapping*
+for you to choose explicitly; the default is none, a fresh coordinate space.
+Changing the source result away from the mapping's session drops the
+mapping rather than carrying it over.
 
 **Points → localizations.** The ``table-to-localizations`` processor is the
 explicit promotion: it asks which columns are ``x`` and ``y`` (optionally
 ``z``, ``frame``, ``photons``, ``sigma``), the coordinate unit and the pixel
-size, and refuses a column it cannot find. Nothing else turns a points
-table into emitters.
+size, and refuses a column it cannot find. Units are per axis: with
+``unit: px`` the lateral columns are camera pixels (``pixel_size_nm`` each)
+and a ``z`` column is in Z steps (``z_step_nm`` each, required); ``nm`` and
+``um`` take every column as physical; ``table`` uses the table's own
+per-axis ``coordinate_scale`` and ``scale_unit``, which is what an imported
+Points layer carries. An imported Points layer has its translation folded
+into the coordinates (``translate / scale``, so ``coordinates × scale`` is
+again the world position); a rotated, sheared or affine-transformed Points
+layer is refused, because a per-axis scale cannot represent it. Nothing
+else turns a points table into emitters.
 
 **Writers.** Plugins that contribute writers appear under **Plugins → napari
 plugins → Endpoint sessions** as *Save layers of … with <writer>*; only that
-session's layers are handed to the writer, never the whole viewer.
+session's layers are handed to the writer, never the whole viewer. A writer
+is offered only when its npe2 layer-type constraints (``image``, ``image+``,
+``image?``, ``image{2}``, ``image{1,3}`` …) accept exactly the session's
+layers by type *and count*, and the writer command you picked is the one
+dispatched, not the plugin's first compatible writer.
 
 Every import records a ``napari-import`` step in the result's provenance,
 naming the plugin, the widget, the layer and the grid decision. Such a step

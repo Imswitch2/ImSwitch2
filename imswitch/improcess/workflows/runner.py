@@ -137,6 +137,29 @@ def _slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_\-]+", "-", str(text)).strip("-") or "result"
 
 
+#: Container suffixes a source file may carry, longest first.
+_SOURCE_SUFFIXES = (
+    ".ome.zarr", ".ome.tiff", ".ome.tif", ".zarr", ".tiff", ".tif",
+    ".hdf5", ".hdf", ".h5", ".csv", ".json", ".npy", ".npz",
+)
+
+
+def source_stem_of(path) -> str:
+    """The file name without its *container* suffix, dots inside kept.
+
+    ``sample.v1.h5`` and ``sample.v2.h5`` must not both become ``sample``:
+    only the recognised container suffix comes off (``sample.v1``), and an
+    unknown suffix loses just its last extension.
+    """
+    name = Path(str(path)).name
+    lower = name.lower()
+    for suffix in _SOURCE_SUFFIXES:
+        if lower.endswith(suffix) and len(name) > len(suffix):
+            return name[: -len(suffix)]
+    stem = Path(name).stem
+    return stem or name
+
+
 def render_save_path(step: Save, *, out_dir: Path, source_stem: str, result, input_step: str) -> Path:
     from imswitch.improcess.model.save_protocol import normalize_format
 
@@ -270,7 +293,7 @@ def run(
                         # reproduce the recorded run.
                         report.mode = "run"
                 if len(report._sources) == 1:
-                    source_stem = Path(str(spec.path)).name.split(".")[0]
+                    source_stem = source_stem_of(spec.path)
                 report.results[f"{step.id}.{SOURCE_PORT}"] = data_obj
 
             elif isinstance(step, Reconstruct):
@@ -366,7 +389,7 @@ def _log():
     return initLogger("ImProcessWorkflows", tryInheritParent=False)
 
 
-__all__ = ["MODES", "RunError", "RunReport", "render_save_path", "run"]
+__all__ = ["MODES", "RunError", "RunReport", "render_save_path", "run", "source_stem_of"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

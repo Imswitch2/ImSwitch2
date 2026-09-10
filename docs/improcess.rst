@@ -340,6 +340,7 @@ smlm-render             Processor      Render a localization table into a super-
 smlm-filter             Processor      Filter localizations by photons, lateral sigma and frame range
 smlm-drift              Processor      Segment cross-correlation drift correction with drift trace plots
 smlm-group              Processor      Link blinking repeats into photon-weighted merged localizations
+table-to-localizations  Processor      Promote a points table to localizations with an explicit column mapping
 ======================= ============== ====================================================
 
 Processor categories and compatibility
@@ -541,6 +542,15 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``LocalizationResult`` with blinking repeats within the link radius
        merged: photon-weighted mean position/sigmas, summed photons, first
        frame; optional dark-frame gap tolerance.
+   * - ``table-to-localizations``
+     - SMLM
+     - Any ``table`` result with named columns (a ``PointsTableResult``
+       imported from a napari Points layer, a CSV). The x/y (optionally
+       z, frame, photons, sigma) columns and their unit are given
+       explicitly; a missing column is an error, never a guess.
+     - ``LocalizationResult`` in nanometres, per-axis converted (``px``:
+       lateral pixel size and Z step; ``table``: the table's own per-axis
+       scale and unit). The only path from a points table to emitters.
 
 Remaining follow-ups
 --------------------

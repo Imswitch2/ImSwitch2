@@ -1,15 +1,18 @@
-"""Ask which napari layer to import, and which result it came from.
+"""Ask which napari layer to import, from which result, with which mapping.
 
-Both choices are the user's. A plugin can add any number of layers, and the
-session only knows which layers ImProcess itself added; guessing "the newest
-one belongs to the last result sent" would be wrong often enough to be
-worse than asking. When a verified adapter declared an output mapping for a
-layer, the dialog pre-selects it and says so.
+Nothing is inferred behind the user's back: the layer, the source result and
+the adapter mapping are three explicit choices. A mapping is pre-selected
+only when napari's own record says the layer came out of that endpoint's
+session (see ``NapariEndpointController._mappingSuggestions``); every other
+mapping an open session could offer is listed for the user to pick, and the
+default is "none: a fresh coordinate space".
 """
 
 from __future__ import annotations
 
 from qtpy import QtWidgets
+
+_NO_MAPPING = "None — fresh coordinate space"
 
 
 class NapariImportDialog(QtWidgets.QDialog):
@@ -20,6 +23,7 @@ class NapariImportDialog(QtWidgets.QDialog):
         results,
         *,
         suggestions=None,
+        candidates=None,
         preselected_layer=None,
         preselected_result=None,
     ):
@@ -28,6 +32,10 @@ class NapariImportDialog(QtWidgets.QDialog):
         self._layers = list(layers)
         self._results = list(results)
         self._suggestions = dict(suggestions or {})
+        self._candidates = dict(candidates or {})
+        # Candidates the mapping combo currently lists for the chosen layer;
+        # index 0 is always "no mapping".
+        self._mappingChoices: list = []
 
         layout = QtWidgets.QFormLayout(self)
         self.layerCombo = QtWidgets.QComboBox()
@@ -44,6 +52,9 @@ class NapariImportDialog(QtWidgets.QDialog):
             self.resultCombo.addItem(str(getattr(result, "name", "result")))
         layout.addRow("Derived from result:", self.resultCombo)
 
+        self.mappingCombo = QtWidgets.QComboBox()
+        layout.addRow("Adapter mapping:", self.mappingCombo)
+
         self.nameEdit = QtWidgets.QLineEdit()
         layout.addRow("Result name:", self.nameEdit)
 
@@ -59,6 +70,8 @@ class NapariImportDialog(QtWidgets.QDialog):
         layout.addRow(buttons)
 
         self.layerCombo.currentIndexChanged.connect(self._layerChanged)
+        self.resultCombo.currentIndexChanged.connect(self._resultChanged)
+        self.mappingCombo.currentIndexChanged.connect(self._mappingChanged)
         if preselected_layer is not None and preselected_layer in self._layers:
             self.layerCombo.setCurrentIndex(self._layers.index(preselected_layer))
         if preselected_result is not None and preselected_result in self._results:
@@ -69,25 +82,88 @@ class NapariImportDialog(QtWidgets.QDialog):
         if not self._results:
             self.infoLabel.setText("No results are loaded; import needs a source result.")
 
+    # -- reactions ------------------------------------------------------------
+
     def _layerChanged(self, index: int) -> None:
         if not (0 <= index < len(self._layers)):
             return
         layer = self._layers[index]
         self.nameEdit.setText(str(getattr(layer, "name", "") or "imported"))
+        self._fillMappings(layer)
         suggestion = self._suggestions.get(id(layer))
         if suggestion is None:
-            self.infoLabel.setText(
-                "No adapter mapping for this layer: it gets a fresh coordinate space."
-            )
+            self.mappingCombo.setCurrentIndex(0)
+            self._describe(None)
             return
         endpoint, mapping, result_uid = suggestion
         for position, result in enumerate(self._results):
             if str(getattr(result, "result_uid", "")) == str(result_uid):
                 self.resultCombo.setCurrentIndex(position)
                 break
+        for position, choice in enumerate(self._mappingChoices):
+            if choice is not None and choice[0] is endpoint and choice[1] is mapping:
+                self.mappingCombo.setCurrentIndex(position)
+                break
+        self._describe(suggestion, suggested=True)
+
+    def _resultChanged(self, index: int) -> None:
+        """A mapping belongs to the session of *one* result: changing the
+        result away from it drops the mapping rather than carrying it over."""
+        choice = self._currentMapping()
+        if choice is None or not (0 <= index < len(self._results)):
+            return
+        selected_uid = str(getattr(self._results[index], "result_uid", ""))
+        if str(choice[2]) != selected_uid:
+            self.mappingCombo.setCurrentIndex(0)
+
+    def _mappingChanged(self, _index: int) -> None:
+        choice = self._currentMapping()
+        if choice is None:
+            self._describe(None)
+            return
+        # The mapping's session was opened on one result; select it, so the
+        # grid the mapping may inherit is that result's.
+        for position, result in enumerate(self._results):
+            if str(getattr(result, "result_uid", "")) == str(choice[2]):
+                if self.resultCombo.currentIndex() != position:
+                    self.resultCombo.setCurrentIndex(position)
+                break
+        self._describe(choice)
+
+    # -- helpers --------------------------------------------------------------
+
+    def _fillMappings(self, layer) -> None:
+        self.mappingCombo.blockSignals(True)
+        self.mappingCombo.clear()
+        self._mappingChoices = [None]
+        self.mappingCombo.addItem(_NO_MAPPING)
+        for endpoint, mapping, result_uid in self._candidates.get(id(layer), []):
+            self._mappingChoices.append((endpoint, mapping, result_uid))
+            self.mappingCombo.addItem(
+                f"{endpoint.label}: {mapping.label or mapping.result_kind}"
+                + (" (may inherit the source grid)" if mapping.preserves_grid else "")
+            )
+        self.mappingCombo.setCurrentIndex(0)
+        self.mappingCombo.blockSignals(False)
+
+    def _currentMapping(self):
+        index = self.mappingCombo.currentIndex()
+        if not (0 <= index < len(self._mappingChoices)):
+            return None
+        return self._mappingChoices[index]
+
+    def _describe(self, choice, *, suggested: bool = False) -> None:
+        if choice is None:
+            self.infoLabel.setText(
+                "No adapter mapping: the layer gets a fresh coordinate space."
+            )
+            return
+        endpoint, mapping, _uid = choice
         grid = "may inherit the source grid" if mapping.preserves_grid else "gets a fresh coordinate space"
+        origin = "napari records this layer as made by that session" if suggested else "chosen explicitly"
         self.infoLabel.setText(
-            f"{endpoint.label} declares this layer as '{mapping.label or mapping.result_kind}'; it {grid}."
+            f"{endpoint.label} declares this layer as '{mapping.label or mapping.result_kind}'; "
+            f"it {grid} ({origin})."
         )
 
     def selection(self):
@@ -96,14 +172,15 @@ class NapariImportDialog(QtWidgets.QDialog):
         if not (0 <= layer_index < len(self._layers)) or not (0 <= result_index < len(self._results)):
             return None
         layer = self._layers[layer_index]
-        suggestion = self._suggestions.get(id(layer))
-        endpoint = suggestion[0] if suggestion else None
+        choice = self._currentMapping()
+        endpoint = choice[0] if choice else None
         return layer, self._results[result_index], self.nameEdit.text().strip() or None, endpoint
 
     @classmethod
-    def choose(cls, parent, layers, results, *, suggestions=None, preselected_layer=None, preselected_result=None):
+    def choose(cls, parent, layers, results, *, suggestions=None, candidates=None,
+               preselected_layer=None, preselected_result=None):
         dialog = cls(
-            parent, layers, results, suggestions=suggestions,
+            parent, layers, results, suggestions=suggestions, candidates=candidates,
             preselected_layer=preselected_layer, preselected_result=preselected_result,
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:

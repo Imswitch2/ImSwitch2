@@ -91,10 +91,10 @@ def test_publish_refuses_a_file_that_appeared_after_preflight(tmp_path, monkeypa
     target = tmp_path / "x.ome.tif"
     real_publish = protocol._publish
 
-    def sneak_then_publish(staged, target_path):
+    def sneak_then_publish(staged, target_path, published):
         if target_path.name == "x.ome.tif" and not target_path.exists():
             target_path.write_bytes(b"someone else's file")      # the race
-        real_publish(staged, target_path)
+        real_publish(staged, target_path, published)
 
     monkeypatch.setattr(protocol, "_publish", sneak_then_publish)
     with pytest.raises(FileExistsError):
@@ -287,16 +287,22 @@ def test_a_mapping_is_suggested_only_for_a_layer_that_appeared_after_one_session
                               widget_name="Automated Threshold", kinds=("image",), verified=True,
                               output_mappings=(OutputMapping("*", "labels", "labels", preserves_grid=True),))
     older = viewer.add_layer(Labels(np.ones((4, 4), np.int32), {"name": "older mask"}, "labels"))
-    controller.sendTo(endpoint)
+    older.source = SimpleNamespace(widget=None, parent=None)
+    session = controller.sendTo(endpoint)
     newer = viewer.add_layer(Labels(np.ones((4, 4), np.int32), {"name": "new mask"}, "labels"))
+    newer.source = SimpleNamespace(widget=session.widget, parent=None)   # napari: made by that dock widget
     suggestions = controller._mappingSuggestions([older, newer])
     assert id(older) not in suggestions                 # existed before the session: not its output
     assert id(newer) in suggestions
-    controller.sendTo(endpoint)                          # a second session whose wildcard also matches
+    second = controller.sendTo(endpoint)                 # a second session whose wildcard also matches
     newest = viewer.add_layer(Labels(np.ones((4, 4), np.int32), {"name": "newest mask"}, "labels"))
+    newest.source = SimpleNamespace(widget=second.widget, parent=None)
     suggestions = controller._mappingSuggestions([newer, newest])
-    assert id(newer) in suggestions                     # appeared before session 2: only session 1 claims it
-    assert id(newest) not in suggestions                # both sessions could claim it: ambiguous, no suggestion
+    assert suggestions[id(newer)][0] is endpoint and suggestions[id(newer)][2] == session.result_uid
+    assert id(newest) in suggestions                    # napari's record says: session 2's widget
+    unrelated = viewer.add_layer(Labels(np.ones((4, 4), np.int32), {"name": "unrelated mask"}, "labels"))
+    assert id(unrelated) not in controller._mappingSuggestions([unrelated])   # newer, matching, but no record
+    assert len(controller._mappingCandidates([unrelated])[id(unrelated)]) == 2  # still offered explicitly
 
 
 # 9. a closed session's export is discarded ------------------------------------------
@@ -481,12 +487,12 @@ def test_writer_formats_save_exactly_the_sessions_layers(tmp_path):
     assert [w.writer_id for w in formats] == ["writer-plugin.save"]
     saved = {}
 
-    def fake_save_layers(path, layers, plugin=None):
-        saved["path"], saved["layers"], saved["plugin"] = path, list(layers), plugin
+    def fake_save_layers(path, layers, writer):
+        saved["path"], saved["layers"], saved["writer"] = path, list(layers), writer
         return [path]
 
     controller.saveSessionLayers(session.uid, formats[0], tmp_path / "out.fancy", save_layers=fake_save_layers)
-    assert saved["plugin"] == "writer-plugin" and saved["layers"] == list(session.layers)
+    assert saved["writer"].writer_id == "writer-plugin.save" and saved["layers"] == list(session.layers)
     assert len(saved["layers"]) == 1
 
 

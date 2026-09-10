@@ -320,6 +320,27 @@ snapshots must not leak per-chunk nodes (same step id per session);
 
 ## Review response
 
+### Round 5 (second code review, 2026-09-07) — 12 blockers + 5 secondary, all fixed
+| # | Finding | Fix (pinned in `_test/test_review_round5.py`) |
+|---|---|---|
+| 1 | A failure after the link left a published target; restore errors swallowed | `_publish` records the target in `published` the moment it exists (also when `os.link` raised after linking: `samefile` check); unlink of the staged copy is not a failure; a restore that fails keeps the backup dir and raises `SaveError` naming it |
+| 2 | Live provenance failed open | `_record` raises; `finalize` emits `sigFailed` instead of `sigStackFinished`; snapshot failures are logged and not emitted |
+| 3 | Initial live stack not counted | `setProvenance(..., initial_frames=)` from the controller (`begin()` data shape) |
+| 4 | Codec check missed non-string keys | `_not_json_lossless` checks `{key: value}` as JSON would write it; non-string keys reported, popped and re-keyed as strings |
+| 5 | `channel-merge` / `stack-combine` hid dialog params | `default_params()` declare `name`/`axis_label` and `mode`/`join_axis`/`name`/`axis_label`; widgets return them |
+| 6 | `sample.v1.h5` / `sample.v2.h5` collided | `source_stem_of`: only the container suffix comes off |
+| 7 | One pixel size for every axis; `coordinate_scale` ignored | `px`: z uses `z_step_nm` (required); new `table` unit uses the table's per-axis scale/unit; Points import bakes `translate / scale`, refuses rotation/shear/affine |
+| 8 | "Appeared after the session" attribution; dialog kept a stale mapping | Suggestion only when `layer.source.widget` is the session's widget or `source.parent` is a session layer; all claims offered as explicit *Adapter mapping* choices; changing the result drops the mapping |
+| 9 | Writer constraints as sets; dispatch by plugin name | npe2 grammar (`? + * {k} {m,n}`) with counts (`writer_accepts`); `napari.save_layers(..., _writer=<the chosen contribution>)` |
+| 10 | Reader failure leaked layers | Layers added by a failing `viewer.open` are removed before the session is marked failed |
+| 11 | Failed batch rows hid published files | `BatchRow.files` lists them, `partial=True`, summary column, CLI prints them |
+| 12 | Malformed `.provenance.json` read as empty | `from_json(strict=True)` for declared companions → `ProvenanceReadError` |
+| S1 | CLI reused one registry | `run_over(registry=lambda: ...)` in `run` and `replay` |
+| S2 | GUI retained sources forever | Released when none of the run's results is loaded (`sigResultsChanged`) and at `sigClosing` |
+| S3 | Exporting session closed without interrupt/join | `requestInterruption` on close; `closeAll` joins export threads (bounded) |
+| S4 | Attribute digest over truncated `json_safe` | `attrs_digest` over a full rendering (arrays as element lists) |
+| S5 | Docs | Consolidate has no params; registry sharing stated precisely; `table-to-localizations` in the inventory |
+
 ### Round 4 (code review of the implemented branch, 2026-09-06) — all 20 fixed
 | # | Finding | Fix (all pinned in `_test/test_review_round4.py`) |
 |---|---|---|

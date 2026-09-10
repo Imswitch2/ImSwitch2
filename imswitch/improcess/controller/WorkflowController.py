@@ -52,12 +52,21 @@ class WorkflowController(QtCore.QObject):
         self._config = dict(processing_config or {})
         self._thread = None
         self._worker = None
-        self._retained: list = []          # source handles behind published results
+        # Source handles behind published results: one entry per run,
+        # ``(result uids it published, handles)``. Released when every one of
+        # those results has left the reconstruction list, or at shutdown.
+        self._retained: list[tuple[frozenset, list]] = []
         for name, slot in (("sigExportWorkflowRequested", self.exportWorkflow),
                            ("sigRunWorkflowRequested", self.runWorkflow)):
             signal = getattr(mainView, name, None)
             if signal is not None:
                 signal.connect(slot)
+        changed = getattr(commChannel, "sigResultsChanged", None)
+        if changed is not None:
+            changed.connect(self.releaseUnusedSources)
+        closing = getattr(mainView, "sigClosing", None)
+        if closing is not None:
+            closing.connect(self.shutdown)
 
     # -- export ---------------------------------------------------------------
 
@@ -167,10 +176,67 @@ class WorkflowController(QtCore.QObject):
         A view-only result is a lazy view over the file it came from; closing
         the report would close that handle under a result that is now in the
         reconstruction list. The handles are transferred to this controller
-        and live as long as the session does, which is how the GUI's own
-        loader treats the files it opens.
+        and released once none of the results this run published is loaded
+        any more (:meth:`releaseUnusedSources`), or at shutdown.
         """
-        self._retained.extend(report.detach_sources())
+        from imswitch.improcess.model.result import ProcessingResult
+
+        uids = frozenset(
+            str(getattr(result, "result_uid", "") or id(result))
+            for result in report.results.values() if isinstance(result, ProcessingResult)
+        )
+        handles = report.detach_sources()
+        if handles:
+            self._retained.append((uids, handles))
+
+    def releaseUnusedSources(self) -> int:
+        """Close the handles of runs whose published results are all gone.
+
+        Connected to the comm channel's ``sigResultsChanged``; returns how
+        many runs' handles were released.
+        """
+        loaded = self._loadedResultUids()
+        if loaded is None:
+            return 0
+        keep, released = [], 0
+        for uids, handles in self._retained:
+            if uids & loaded:
+                keep.append((uids, handles))
+                continue
+            self._closeHandles(handles)
+            released += 1
+        self._retained = keep
+        return released
+
+    def shutdown(self) -> None:
+        """Release every retained source handle (window closing)."""
+        for _uids, handles in self._retained:
+            self._closeHandles(handles)
+        self._retained = []
+
+    def _loadedResultUids(self):
+        getter = getattr(self._commChannel, "getAllResults", None)
+        if not callable(getter):
+            return None
+        try:
+            items = getter()
+        except Exception:
+            return None
+        uids = set()
+        for item in items or []:
+            result = item[1] if isinstance(item, tuple) and len(item) == 2 else item
+            if result is not None:
+                uids.add(str(getattr(result, "result_uid", "") or id(result)))
+        return uids
+
+    def _closeHandles(self, handles) -> None:
+        from imswitch.improcess.workflows.sources import close_source
+
+        for handle in handles:
+            try:
+                close_source(handle)
+            except Exception:
+                self._logger.debug("Could not close a retained source", exc_info=True)
 
     def _publish(self, report) -> int:
         from imswitch.improcess.model.result import ProcessingResult

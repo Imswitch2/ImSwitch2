@@ -38,7 +38,7 @@ def _installed(**kwargs):
             InstalledWidget("some-plugin", "Do Things"),
         ),
         reader_plugins=frozenset({"napari-storm"}),
-        writers=(NapariWriterFormat("some-plugin", "some-plugin.write", "Write", ("image", "labels"), (".foo",)),),
+        writers=(NapariWriterFormat("some-plugin", "some-plugin.write", "Write", ("image+", "labels?"), (".foo",)),),
     )
     base.update(kwargs)
     return InstalledPlugins(**base)
@@ -222,4 +222,7 @@ def test_a_drop_in_plugin_file_can_contribute_adapters(tmp_path):
 def test_writer_formats_match_all_requested_layer_types():
     installed = _installed()
     assert [w.writer_id for w in writer_formats_for(["image"], installed)] == ["some-plugin.write"]
+    assert [w.writer_id for w in writer_formats_for(["image", "image", "labels"], installed)] == ["some-plugin.write"]
     assert writer_formats_for(["points"], installed) == []
+    assert writer_formats_for(["labels"], installed) == []          # image+ needs at least one image
+    assert writer_formats_for(["image", "labels", "labels"], installed) == []   # labels? allows one

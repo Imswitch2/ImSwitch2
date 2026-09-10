@@ -162,17 +162,26 @@ def decode_strict(value: Any) -> Any:
     return value
 
 
-def _not_json_lossless(encoded: dict) -> list[str]:
-    """Keys whose value does not survive ``json.dumps``/``json.loads`` unchanged."""
-    bad = []
+def _not_json_lossless(encoded: dict) -> list:
+    """Keys of ``encoded`` that do not survive ``json.dumps``/``json.loads``.
+
+    The check is on the *whole mapping* as it would be written, not on the
+    values one by one: JSON turns a non-string key into a string, keeps a
+    ``True`` key as ``"true"``, and merges ``1`` and ``"1"`` keys into one.
+    A key that is not a string is reported as itself so the caller can
+    remove it.
+    """
+    bad: list = [key for key in encoded if not isinstance(key, str)]
     for key, value in encoded.items():
-        try:
-            text = json.dumps(value, ensure_ascii=False, allow_nan=False)
-        except (TypeError, ValueError):
-            bad.append(str(key))
+        if not isinstance(key, str):
             continue
-        if json.loads(text) != value:
-            bad.append(str(key))
+        try:
+            text = json.dumps({key: value}, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            bad.append(key)
+            continue
+        if json.loads(text) != {key: value}:
+            bad.append(key)
     return bad
 
 
@@ -330,7 +339,9 @@ def make_node(
             if problems:
                 fallback, _ = encode_params(params)
                 for key in problems:
-                    encoded[key] = fallback.get(key, json_safe_value(encoded.get(key)))
+                    value = encoded.pop(key)
+                    name = key if isinstance(key, str) else str(key)
+                    encoded[name] = fallback.get(name, json_safe_value(value))
                 reasons.extend(f"plugin codec output for {key!r} is not lossless JSON" for key in problems)
         except Exception as exc:  # noqa: BLE001
             encoded, reasons = encode_params(params)
@@ -616,10 +627,7 @@ def describe_source(data_obj) -> dict:
     try:
         attrs = getattr(data_obj, "attrs", None)
         if attrs:
-            from imswitch.improcess.model.footprint import json_safe
-
-            payload = json.dumps(json_safe(dict(attrs)), sort_keys=True, default=str)
-            fingerprint["attrs_digest"] = hashlib.sha256(payload.encode()).hexdigest()
+            fingerprint["attrs_digest"] = attrs_digest(attrs)
     except Exception:
         pass
     manifest = getattr(data_obj, "sourceFingerprint", None)
@@ -632,6 +640,37 @@ def describe_source(data_obj) -> dict:
         fingerprint["sha256"] = str(digest)
     description["fingerprint"] = fingerprint
     return description
+
+
+def attrs_digest(attrs) -> str:
+    """A sha256 over *every* attribute value, in full.
+
+    The footprint's ``json_safe`` truncates long lists and strings, which is
+    right for a readable summary and wrong for a fingerprint: two files
+    whose attributes differ past the cut would hash the same. This uses a
+    complete, order-independent rendering instead (arrays as their full
+    element lists, bytes decoded, sets sorted).
+    """
+    payload = json.dumps(_full_json(dict(attrs)), sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _full_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _full_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_full_json(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted(_full_json(item) for item in value)
+    if isinstance(value, np.ndarray):
+        return {"__ndarray__": value.tolist(), "dtype": str(value.dtype), "shape": list(value.shape)}
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, float) and not np.isfinite(value):
+        return str(value)
+    return value
 
 
 _SOURCE_NODE_ATTR = "_provenance_source_node"
@@ -954,6 +993,7 @@ __all__ = [
     "SOURCE_PORT",
     "decode_strict",
     "derive_history",
+    "attrs_digest",
     "describe_source",
     "encode_params",
     "encode_strict",

@@ -56,6 +56,16 @@ def cmd_list(args) -> int:
     return 0
 
 
+def _print_row(row) -> None:
+    if row.ok:
+        print(f"[{row.index}] ok  " + ", ".join(row.files))
+        return
+    line = f"[{row.index}] FAIL {row.failed_step}: {row.error}"
+    if row.files:
+        line += f" (written before the failure: {', '.join(row.files)})"
+    print(line)
+
+
 def cmd_run(args) -> int:
     from imswitch.improcess.workflows.batch import (
         bindings_for_inputs,
@@ -82,15 +92,14 @@ def cmd_run(args) -> int:
             fixed[sid.strip()] = parse_binding(spec.strip())
         bindings_list = [fixed]
 
+    # A factory, not the instance above: every row gets a fresh registry,
+    # as the documentation promises, so no plugin state crosses rows.
     batch = run_over(
-        workflow, bindings_list, registry=registry, out_dir=args.out,
+        workflow, bindings_list, registry=lambda: _registry(args), out_dir=args.out,
         overwrite=args.overwrite, source_root=source_root,
         mode=args.mode, allow_drift=args.allow_drift,
         verify_hash=args.verify_hash, hash_sources=args.hash_sources,
-        on_row=lambda row: print(
-            f"[{row.index}] {'ok ' if row.ok else 'FAIL'} "
-            + (", ".join(row.files) if row.ok else f"{row.failed_step}: {row.error}")
-        ),
+        on_row=_print_row,
     )
     summary = Path(args.out) / (args.summary or f"{workflow.name}_summary.csv")
     batch.write_summary(summary)
@@ -122,10 +131,12 @@ def cmd_replay(args) -> int:
             print("--run needs --out", file=sys.stderr)
             return 2
         batch = run_over(
-            workflow, [{}], registry=registry, out_dir=args.out, overwrite=args.overwrite,
+            workflow, [{}], registry=lambda: _registry(args), out_dir=args.out, overwrite=args.overwrite,
             mode="replay", allow_drift=args.allow_drift, verify_hash=args.verify_hash,
             on_row=lambda row: print(
-                "replayed: " + ", ".join(row.files) if row.ok else f"FAILED at {row.failed_step}: {row.error}"
+                "replayed: " + ", ".join(row.files) if row.ok
+                else f"FAILED at {row.failed_step}: {row.error}"
+                + (f" (written before the failure: {', '.join(row.files)})" if row.files else "")
             ),
         )
         return 0 if batch.ok else 1
