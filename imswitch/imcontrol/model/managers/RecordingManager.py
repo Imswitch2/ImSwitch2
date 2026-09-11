@@ -56,6 +56,16 @@ install_zarr_create_array_compat()
 # Recording loop constants
 FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
 DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive within this period
+#: A detector is declared stalled after this many of *its own* declared frame
+#: intervals without a frame, never sooner than DEFAULT_STALL_TIMEOUT. The flat
+#: ten seconds alone was a proxy for "this detector has died" sized for a
+#: camera that frames at least every few seconds; a 30 s luminescence exposure
+#: -- routine, and within what the Orca-Quest and Zelux will do -- was killed
+#: at frame zero as stalled, with a message about scan TTL wiring in a mode
+#: that has no scan, and its file deleted. The manager already reads each
+#: detector's exposure or frame interval for the OME metadata; the watchdog
+#: now reads the same number.
+STALL_FRAME_INTERVALS = 3.0
 _RECORDING_CHUNK_CONSUMER = 'RecordingManager'  # readChunk consumer key (see DetectorManager.readChunk)
 RECORDING_ARM_TIMEOUT = 5.0  # seconds; max wait for detectors to arm before starting a scan
 RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
@@ -90,6 +100,14 @@ def _framesNBytes(frames) -> int:
     except TypeError:
         return 0
 WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
+#: The longest a captured frame may sit in the writer's batch before it is
+#: written. A batch used to flush on frame count alone, so how stale the file
+#: on disk could be was 32 divided by the frame rate: 3 ms on a fast camera and
+#: 32 s at one frame per second -- and a recording shorter than the batch had
+#: no dataset on disk at all until it finalized. A live reader following the
+#: file saw nothing for the whole of a slow acquisition. Count still decides
+#: how *large* a write is; time decides how *late* it may be.
+WRITE_FLUSH_MAX_LATENCY_S = 0.5
 WRITER_OPEN_TIMEOUT_S = 30.0
 #: How long the acquisition loop may sit blocked on a full writer queue before
 #: it says so. Well under any detector's chunk-queue budget, so the stall is
@@ -2743,7 +2761,16 @@ class RecordingManager(SignalInterface):
             return value / 1_000_000.0
         return None
 
-    def _detectorFrameIntervalSeconds(self, det) -> float:
+    def _declaredFrameIntervalSeconds(self, det) -> Optional[float]:
+        """The frame interval a detector itself declares, or ``None``.
+
+        No fallback here on purpose. The OME metadata below substitutes one
+        second when nothing is declared, which is a harmless placeholder in a
+        file's time axis and a wrong basis for anything that acts on it: a
+        watchdog that took that placeholder as "this camera frames every
+        second" would have given every undeclared detector a three-second
+        allowance it never earned.
+        """
         params = getattr(det, 'parameters', {}) or {}
         for key in ('Internal frame interval', 'Frame interval', 'Real exposure time',
                     'Set exposure time', 'Exposure', 'exposure'):
@@ -2758,7 +2785,11 @@ class RecordingManager(SignalInterface):
                     return value
         except Exception:
             pass
-        return 1.0
+        return None
+
+    def _detectorFrameIntervalSeconds(self, det) -> float:
+        declared = self._declaredFrameIntervalSeconds(det)
+        return declared if declared is not None else 1.0
 
     @staticmethod
     def _scanStep(scanStepSizes, axis) -> float:
@@ -2910,6 +2941,9 @@ class WriterThread(threading.Thread):
         # Per-detector batching buffers
         self._batches = {detectorName: [] for detectorName in detectorNames}
         self._batch_frame_counts = {detectorName: 0 for detectorName in detectorNames}
+        # When each detector's current batch received its first frame, so a
+        # batch that fills slowly is written on time rather than on count.
+        self._batch_started = {detectorName: None for detectorName in detectorNames}
         
         # Track total frames written per detector
         self._currentFrames = {detectorName: 0 for detectorName in detectorNames}
@@ -3060,7 +3094,13 @@ class WriterThread(threading.Thread):
         # Main write loop: process frames until sentinel
         try:
             while True:
-                item = self._queue.get()
+                try:
+                    item = self._queue.get(timeout=WRITE_FLUSH_MAX_LATENCY_S)
+                except queue.Empty:
+                    # Nothing new arrived, but what has already arrived may be
+                    # overdue on disk.
+                    self._flush_stale_batches()
+                    continue
                 if isinstance(item, tuple) and len(item) == 3:
                     # Release the producer's reservation as soon as the chunk
                     # leaves the queue: from here the frames are this thread's
@@ -3133,12 +3173,17 @@ class WriterThread(threading.Thread):
                 detectorName, frames = item
                 
                 # Append to batch
+                if not self._batches[detectorName]:
+                    self._batch_started[detectorName] = time.monotonic()
                 self._batches[detectorName].append(frames)
                 self._batch_frame_counts[detectorName] += len(frames)
                 
                 # Flush batch if threshold reached
                 if self._batch_frame_counts[detectorName] >= WRITE_BATCH_FRAMES:
                     self._flush_batch(detectorName)
+                # And any batch, this detector's or another's, that has been
+                # waiting longer than a reader should have to.
+                self._flush_stale_batches()
         
         except Exception as e:
             # Record the failure and exit. Do NOT re-raise into the thread void:
@@ -3169,6 +3214,19 @@ class WriterThread(threading.Thread):
         # Clear batch
         self._batches[detectorName] = []
         self._batch_frame_counts[detectorName] = 0
+        self._batch_started[detectorName] = None
+
+    def _flush_stale_batches(self):
+        """Write any batch that has been accumulating for too long."""
+        if self._abort_event.is_set():
+            return
+        now = time.monotonic()
+        for detectorName in self._detectorNames:
+            started = self._batch_started.get(detectorName)
+            if started is None or not self._batches[detectorName]:
+                continue
+            if now - started >= WRITE_FLUSH_MAX_LATENCY_S:
+                self._flush_batch(detectorName)
     
     def _flush_all_batches(self):
         """Flush all remaining per-detector batches."""
@@ -3681,6 +3739,23 @@ class RecordingWorker(Worker):
             return recFrames * int(declared)
         return recFrames * numCamTTL.get(detectorName, 1)
 
+    def _stallAllowanceFor(self, detectorName) -> float:
+        """How long this detector may go without a frame before it is stalled.
+
+        The larger of the flat floor and a few of the detector's own declared
+        frame intervals, read from the same parameters the OME metadata uses.
+        A detector that declares nothing keeps the floor exactly as before.
+        """
+        floor = float(self.stallTimeout)
+        try:
+            det = self.__recordingManager.detectorsManager[detectorName]
+            interval = self.__recordingManager._declaredFrameIntervalSeconds(det)
+        except Exception:
+            return floor
+        if interval is None or interval <= 0:
+            return floor
+        return max(floor, STALL_FRAME_INTERVALS * float(interval))
+
     def _stallReferenceTimeFor(self, detectorName, lastFrameTime):
         """Return when no-frame timing may begin, or ``None`` while scanning."""
         if (
@@ -3724,6 +3799,10 @@ class RecordingWorker(Worker):
         discardWarned: set = set()
         self.discardedFrames = discardedFrames
         lastFrameTime = {detectorName: time.time() for detectorName in self.detectorNames}
+        stallAllowance = {
+            detectorName: self._stallAllowanceFor(detectorName)
+            for detectorName in self.detectorNames
+        }
         
         # Prepare shapes for storer
         for detectorName in shapes:
@@ -3977,29 +4056,49 @@ class RecordingWorker(Worker):
                             continue
 
                         elapsed = now - referenceTime
-                        if elapsed > self.stallTimeout:
+                        allowed = stallAllowance[detectorName]
+                        if elapsed > allowed:
                             if self._isScanDrivenDetector(detectorName):
                                 message = (
                                     f"Detector '{detectorName}' stalled: no "
                                     f"assembled frame received for "
                                     f"{elapsed:.1f}s after scan completion "
-                                    f"(timeout: {self.stallTimeout}s). "
+                                    f"(timeout: {allowed:g}s). "
                                     f"Current: {currentFrame[detectorName]} "
                                     f"frames, expected: "
                                     f"{nFramesPerDetector[detectorName]} "
                                     f"frames. Check the detector input, scan "
                                     f"trigger, and sample-clock configuration."
                                 )
-                            else:
+                            elif self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse):
                                 message = (
                                     f"Detector '{detectorName}' stalled: no "
                                     f"frames received for {elapsed:.1f}s "
-                                    f"(timeout: {self.stallTimeout}s). "
+                                    f"(timeout: {allowed:g}s). "
                                     f"Current: {currentFrame[detectorName]} "
                                     f"frames, expected: "
                                     f"{nFramesPerDetector[detectorName]} "
                                     f"frames. Check camera triggering and "
                                     f"numCamTTL configuration."
+                                )
+                            else:
+                                # No scan is involved, so scan wiring is not
+                                # the place to look; the detector's own
+                                # declared cadence is what the deadline came
+                                # from, so say so.
+                                message = (
+                                    f"Detector '{detectorName}' stalled: no "
+                                    f"frames received for {elapsed:.1f}s, "
+                                    f"longer than its allowance of "
+                                    f"{allowed:g}s (the larger of "
+                                    f"{self.stallTimeout:g}s and "
+                                    f"{STALL_FRAME_INTERVALS:g} x its declared "
+                                    f"frame interval). Current: "
+                                    f"{currentFrame[detectorName]} frames, "
+                                    f"expected: "
+                                    f"{nFramesPerDetector[detectorName]}. "
+                                    f"Check the detector's exposure and that it "
+                                    f"is acquiring."
                                 )
                             self.__logger.error(message)
                             self.__recordingManager.sigRecordingStalled.emit(detectorName)

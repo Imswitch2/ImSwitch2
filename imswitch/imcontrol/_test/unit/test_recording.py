@@ -5380,3 +5380,170 @@ def test_the_writer_is_waited_on_while_it_is_still_draining():
     received = np.concatenate(storer.writes['CAM'], axis=0)
     assert len(received) == 400, 'a slow but progressing writer lost frames'
     assert WRITER_NO_PROGRESS_TIMEOUT_S > 0
+
+
+# ----------------------------------------------------------------------
+# The stall watchdog reads the detector's own cadence
+# ----------------------------------------------------------------------
+
+class _PacedCamera:
+    """A healthy camera that delivers one frame per ``period`` seconds.
+
+    ``declare`` publishes that period the way a real manager does, as a
+    detector parameter with a unit -- the same parameter the OME metadata
+    reads -- so the watchdog can know what cadence to expect.
+    """
+    shape = (4, 4)
+    dtype = np.dtype(np.uint16)
+    pixelSizeUm = [1.0, 0.1, 0.1]
+    isScanDriven = False
+
+    def __init__(self, period, declare):
+        from types import SimpleNamespace
+
+        self._period = period
+        self._t0 = None
+        self._delivered = 0
+        self.parameters = (
+            {'Set exposure time': SimpleNamespace(value=period, valueUnits='s')}
+            if declare else {}
+        )
+
+    def startAcquisition(self):
+        self._t0 = time.time()
+
+    def stopAcquisition(self):
+        pass
+
+    def startChunkConsumer(self, _key, kind=None):
+        pass
+
+    def releaseChunkConsumer(self, _key):
+        pass
+
+    def readChunk(self, _key):
+        if self._t0 is None:
+            return []
+        due = int((time.time() - self._t0) // self._period)
+        if due > self._delivered:
+            self._delivered += 1
+            return [np.zeros(self.shape, dtype=self.dtype)]
+        return []
+
+
+class _OneCamera:
+    def __init__(self, camera):
+        self.cam = camera
+
+    def __getitem__(self, name):
+        return self.cam
+
+    def acquire(self, detectorNames, purpose):
+        self.cam.startAcquisition()
+        return object()
+
+    def release(self, _handle):
+        self.cam.stopAcquisition()
+
+
+def _record_paced_camera(qtbot, tmp_path, camera, stallTimeout):
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        RecMode, RecordingManager, SaveFormat, SaveMode,
+    )
+
+    manager = RecordingManager(_OneCamera(camera))
+    failures, ended = [], []
+    manager.sigRecordingFailed.connect(failures.append)
+    manager.sigRecordingEndedDetailed.connect(ended.append)
+    manager.startRecording(
+        detectorNames=['Cam'],
+        recMode=RecMode.SpecFrames,
+        savename=str(tmp_path / 'paced'),
+        saveMode=SaveMode.RAM,
+        saveFormat=SaveFormat.HDF5,
+        attrs={'Cam': {}},
+        recFrames=3,
+        stallTimeout=stallTimeout,
+    )
+    # The worker reports on its own thread; its signals reach this one only
+    # while events are being processed, which qtbot's wait does and a sleep
+    # loop does not.
+    try:
+        qtbot.waitUntil(lambda: bool(failures or ended), timeout=6000)
+    except Exception:
+        pass
+    manager.endRecording(emitSignal=False, wait=True)
+    return failures, ended
+
+
+def test_a_slow_camera_that_declares_its_exposure_is_not_a_stall(qtbot, tmp_path):
+    """The allowance follows the cadence the detector itself publishes.
+
+    A flat wall-clock timeout killed any exposure longer than itself at frame
+    zero, deleted the file, and blamed scan TTL wiring in a mode with no scan.
+    The camera here frames slower than the floor and says so; it must finish.
+    """
+    # Floor 0.2 s, exposure 0.4 s: allowance becomes 3 x 0.4 = 1.2 s.
+    failures, ended = _record_paced_camera(
+        qtbot, tmp_path, _PacedCamera(period=0.4, declare=True), stallTimeout=0.2
+    )
+
+    assert not failures, failures
+    assert ended
+
+
+def test_a_slow_camera_that_declares_nothing_keeps_the_floor(qtbot, tmp_path):
+    """Nothing declared, nothing derived: the flat floor applies as before.
+
+    This is the same camera without the parameter, and it is the control that
+    shows the declaration is what made the difference above.
+    """
+    failures, _ended = _record_paced_camera(
+        qtbot, tmp_path, _PacedCamera(period=0.4, declare=False), stallTimeout=0.2
+    )
+
+    assert failures and 'stalled' in failures[0]
+    # And a non-scan mode is told about exposure, not about scan wiring.
+    assert 'numCamTTL' not in failures[0]
+    assert 'exposure' in failures[0]
+
+
+# ----------------------------------------------------------------------
+# Frames reach disk on time, not only on count
+# ----------------------------------------------------------------------
+
+def test_fewer_frames_than_a_batch_are_written_before_finalize():
+    """A batch flushes on age as well as on count.
+
+    With count as the only trigger, the file held nothing until either 32
+    frames had arrived or the recording finalized: 32 seconds of staleness at
+    one frame per second, and an empty file for the whole of any recording
+    shorter than the batch.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        WRITE_BATCH_FRAMES, WRITE_FLUSH_MAX_LATENCY_S,
+    )
+
+    storer = _FakeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    try:
+        for i in range(5):
+            writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+        assert 5 < WRITE_BATCH_FRAMES
+
+        deadline = time.time() + 4 * WRITE_FLUSH_MAX_LATENCY_S + 1.0
+        while time.time() < deadline and not storer.writes.get('CAM'):
+            time.sleep(0.02)
+
+        assert storer.writes.get('CAM'), (
+            'five frames sat in the batch with nothing on disk; only count '
+            'was flushing'
+        )
+        assert not storer.finalized
+    finally:
+        writer.finish()
+
+    received = np.concatenate(storer.writes['CAM'], axis=0)
+    assert len(received) == 5
