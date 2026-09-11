@@ -1636,21 +1636,34 @@ def recorded_frames_per_time_point(layout: AcquisitionLayout) -> int:
             total *= loop.count
         return total // time_loop.count
 
-    per_point: dict[int, int] = {}
+    # Time is outermost, so one time point's frames are consecutive: the first
+    # stack ends where the time coordinate changes, and whether the rest match
+    # follows from the total, which the spans give arithmetically. Tallying
+    # every frame instead walked the entire acquisition to describe its first
+    # stack -- and this is the branch a *gated* detector takes, on the live
+    # reader's open() path, before a single frame is read.
+    first = 0
+    first_value = None
     for coordinates in iter_recorded_coordinates(layout):
         value = coordinates[time_loop.id]
-        per_point[value] = per_point.get(value, 0) + 1
-    if not per_point:
+        if first_value is None:
+            first_value = value
+        elif value != first_value:
+            break
+        first += 1
+    if first == 0:
         return 0
-    counts = set(per_point.values())
-    if len(counts) > 1:
+
+    total = recorded_frame_count(layout)
+    if total % first:
         raise ValueError(
             f"This layout's time points do not hold the same number of "
-            f"frames ({sorted(counts)}), so there is no single stack size. "
-            f"A gated detector selecting different frames per time point has "
-            f"to be read through its recorded coordinates."
+            f"frames (the first holds {first} of {total} recorded), so there "
+            f"is no single stack size. A gated detector selecting different "
+            f"frames per time point has to be read through its recorded "
+            f"coordinates."
         )
-    return counts.pop()
+    return first
 
 
 def unfold_frame_axis(

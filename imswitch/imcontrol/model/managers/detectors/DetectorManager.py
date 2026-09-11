@@ -769,6 +769,13 @@ class DetectorManager(SignalInterface):
                 continue
 
             queuedBytes = self._chunkConsumerBytes()
+            if key in self._chunkConsumersOverflowed:
+                # Its stream is already incomplete and its next read will say
+                # so, so nothing retained for it can ever be returned. Holding
+                # frames for it would only keep a queue-budget's worth of
+                # memory alive and make every later drain trim it again.
+                continue
+
             consumerQueue.extend(newFrames)
             total = queuedBytes.get(key, 0) + sum(
                 self._frameBytes(frame) for frame in newFrames
@@ -777,12 +784,15 @@ class DetectorManager(SignalInterface):
                 queuedBytes[key] = total
                 continue
 
-            # Drop from the front until the retained frames fit the budget.
-            dropped = 0
-            while consumerQueue and total > MAX_QUEUED_CONSUMER_BYTES:
-                total -= self._frameBytes(consumerQueue.pop(0))
-                dropped += 1
-            queuedBytes[key] = total
+            # Over budget: this consumer has stopped keeping up, and from here
+            # its stream is incomplete however many frames are kept. Release
+            # them in one go rather than trimming from the front on this and
+            # every subsequent drain -- popping one frame at a time moved the
+            # whole remaining queue each time, tens of thousands of frames of
+            # it, while holding the lock every other consumer needs to read.
+            dropped = len(consumerQueue)
+            consumerQueue.clear()
+            queuedBytes[key] = 0
 
             self._chunkConsumersOverflowed.add(key)
             if key in self._chunkConsumersWarned:
@@ -791,12 +801,13 @@ class DetectorManager(SignalInterface):
             perFrame = self._frameBytes(newFrames[-1])
             self.__logger.warning(
                 f'readChunk consumer "{key}" is registered but not polling; '
-                f'dropped its {dropped} oldest frame(s) to stay within '
+                f'dropped the {dropped} frame(s) held for it after exceeding '
                 f'{MAX_QUEUED_CONSUMER_BYTES // (1024 * 1024)} MiB '
                 f'(about {max(1, MAX_QUEUED_CONSUMER_BYTES // max(1, perFrame))} '
-                f'frames at this detector\'s {perFrame} bytes each). The '
-                f'consumer will fail rather than accept an incomplete stream; '
-                f'call releaseChunkConsumer when done.'
+                f'frames at this detector\'s {perFrame} bytes each). Its '
+                f'stream is incomplete, so it will fail on its next read '
+                f'rather than accept a gap; call releaseChunkConsumer when '
+                f'done.'
             )
 
     def releaseChunkConsumer(self, consumerKey: str) -> None:

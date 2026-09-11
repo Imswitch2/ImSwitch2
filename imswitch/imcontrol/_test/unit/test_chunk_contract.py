@@ -559,3 +559,47 @@ def test_the_save_path_is_unaffected_by_latch_reuse():
     detector.getLatestFrameShared(is_save=True)
 
     assert len(detector._chunkConsumers['rec']) > 0
+
+
+def test_an_overflowed_consumer_stops_costing_the_ones_still_reading():
+    """Trimming a full queue on every drain is work inside a shared lock.
+
+    Bounding the queue by bytes made it hold tens of thousands of small
+    frames, and the trim popped them one at a time -- each pop moving the
+    whole remaining queue -- on every subsequent drain, while holding the lock
+    the recorder needs to read its own frames. Once a consumer is over budget
+    its stream is incomplete however much is kept, and nothing retained for it
+    can ever be returned, so it is released in one go and skipped after that.
+    """
+    detector = _cameraDetector(size=1024)
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    detector.startChunkConsumer('idle', kind=ChunkKind.RAW)
+
+    detector.produceFrame()
+    detector._distributeChunkLocked(detector.drainChunk())
+    fits = _framesWithinBudget(detector, detector.readChunk('rec')[0])
+
+    for _ in range(fits + 4):
+        detector.produceFrame()
+        detector._distributeChunkLocked(detector.drainChunk())
+        detector.readChunk('rec')          # the recorder keeps up
+
+    # The idle consumer is over budget: nothing is retained for it any more.
+    assert detector._chunkConsumers['idle'] == []
+    assert detector._chunkConsumerBytes().get('idle', 0) == 0
+
+    # Further drains cost it nothing, and the recorder is unaffected.
+    detector.produceFrame()
+    detector._distributeChunkLocked(detector.drainChunk())
+    assert detector._chunkConsumers['idle'] == []
+    assert len(detector.readChunk('rec')) == 1
+
+    # And it still fails rather than accepting a gap.
+    with pytest.raises(ChunkConsumerOverflowError):
+        detector.readChunk('idle')
+
+    # Restarting it is the documented recovery, and it works.
+    detector.startChunkConsumer('idle', kind=ChunkKind.RAW)
+    detector.produceFrame()
+    detector._distributeChunkLocked(detector.drainChunk())
+    assert len(detector.readChunk('idle')) == 1

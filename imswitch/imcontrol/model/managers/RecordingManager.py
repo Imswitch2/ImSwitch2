@@ -71,6 +71,14 @@ RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
 #: use its own buffer.
 WRITER_QUEUE_MAX_BYTES = 512 * 1024 * 1024
 
+#: How long the writer may write *nothing at all* during shutdown before it is
+#: declared stuck. This is a liveness bound, not a throughput one: a slow disk
+#: keeps draining and keeps its recording, while a wedged writer is still
+#: caught. The deadline it replaced was a fixed 30 s for the whole drain, which
+#: with the budget above silently required about 17 MiB/s -- and missing it
+#: deleted a recording whose frames had all been captured.
+WRITER_NO_PROGRESS_TIMEOUT_S = 30.0
+
 
 def _framesNBytes(frames) -> int:
     """Bytes one enqueued chunk of frames occupies."""
@@ -3182,6 +3190,36 @@ class WriterThread(threading.Thread):
             )
         self._raise_if_failed()
     
+    def _joinWhileDraining(self) -> None:
+        """Wait for the writer while it is still making progress.
+
+        A fixed deadline here asserts a disk throughput nobody declared: with a
+        512 MiB queue budget, "finish within 30 seconds" means "write at least
+        17 MiB/s", and a NAS, a busy share or a spinning disk need not. What
+        happened when it was missed was the worst outcome in the file -- the
+        caller raises, the worker's cleanup calls abort(), and abortStream
+        DELETES a recording whose frames were all captured.
+
+        Progress is the thing actually worth waiting for, so that is what is
+        measured: as long as queued bytes are going down, the writer is working
+        and gets as long as it needs. Only when nothing has been written for
+        ``WRITER_NO_PROGRESS_TIMEOUT_S`` is it declared stuck.
+        """
+        lastBytes = None
+        lastProgress = time.monotonic()
+        while True:
+            self.join(timeout=0.25)
+            if not self.is_alive():
+                return
+            with self._queuedBytesLock:
+                queued = self._queuedBytes
+            if lastBytes is None or queued < lastBytes:
+                lastBytes = queued
+                lastProgress = time.monotonic()
+                continue
+            if time.monotonic() - lastProgress > WRITER_NO_PROGRESS_TIMEOUT_S:
+                return
+
     def enqueue_frames(self, detectorName, frames):
         """Enqueue frames for the writer thread.
 
@@ -3303,9 +3341,14 @@ class WriterThread(threading.Thread):
             self._raise_if_failed()
             raise RuntimeError('RecordingWriterThread was never started')
 
-        self.join(timeout=30.0)
+        self._joinWhileDraining()
         if self.is_alive():
-            raise TimeoutError('RecordingWriterThread did not finish within 30 seconds')
+            raise TimeoutError(
+                f'RecordingWriterThread stopped making progress with '
+                f'{self._queuedBytes / (1024 * 1024):.0f} MiB still queued; '
+                f'it wrote nothing for '
+                f'{WRITER_NO_PROGRESS_TIMEOUT_S:g}s'
+            )
         self._raise_if_failed()
         if stopped_unexpectedly:
             raise RuntimeError(

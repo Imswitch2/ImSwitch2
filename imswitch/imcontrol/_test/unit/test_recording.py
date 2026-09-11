@@ -5350,3 +5350,33 @@ def test_waitForAcquisitionStarted_timeout(qtbot):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_the_writer_is_waited_on_while_it_is_still_draining():
+    """A fixed shutdown deadline asserts a disk speed nobody declared.
+
+    With a 512 MiB queue budget, "finish within 30 seconds" means "write at
+    least 17 MiB/s" -- and missing it did not merely warn: finish() raised,
+    the worker's cleanup aborted, and abortStream deleted a recording whose
+    frames had all been captured. A writer that is still draining is given as
+    long as it needs; only one that writes nothing at all is declared stuck.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        WRITER_NO_PROGRESS_TIMEOUT_S,
+    )
+
+    # Slow enough that a fixed 30 s deadline would have been a coin flip, but
+    # always making progress.
+    storer = _FakeStorer(writeDelay=0.002)
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+
+    for i in range(400):
+        writer.enqueue_frames('CAM', np.full((1, 64, 64), i % 4096, dtype=np.uint16))
+    writer.finish()
+
+    assert not writer.is_alive()
+    received = np.concatenate(storer.writes['CAM'], axis=0)
+    assert len(received) == 400, 'a slow but progressing writer lost frames'
+    assert WRITER_NO_PROGRESS_TIMEOUT_S > 0
