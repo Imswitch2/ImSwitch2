@@ -294,6 +294,24 @@ def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
     )
 
 
+#: How much frame data one ``poll()`` may hand back. A poll used to return
+#: every unread frame in one call, so a live source pointed at a recording
+#: that had already finished materialised the whole recording before the
+#: first chunk was processed -- and the lapse sources walked every timepoint
+#: in the same call. The streaming path exists so that memory stays bounded;
+#: this is the read-side twin of the detector queue's byte budget, and like
+#: it the frame count follows from the frame. The cursor stays where the
+#: budget ran out, so the next poll continues from there.
+LIVE_POLL_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _chunk_nbytes(data: Any) -> int:
+    nbytes = getattr(data, "nbytes", None)
+    if nbytes is None:
+        nbytes = np.asarray(data).nbytes
+    return int(nbytes)
+
+
 class LiveSource(ABC):
     """Polls a growing source and yields new raw-frame chunks."""
 
@@ -552,6 +570,7 @@ class ZarrLiveSource(LiveSource):
             return []
 
         chunks = []
+        queued = 0
         while self._cursor < readable_length:
             start = self._cursor
             end = min(start + self._chunk_size, readable_length)
@@ -560,6 +579,9 @@ class ZarrLiveSource(LiveSource):
             chunks.append(Chunk(data=data, start=start, end=end))
 
             self._cursor = end
+            queued += _chunk_nbytes(data)
+            if queued >= LIVE_POLL_MAX_BYTES:
+                break
 
         return chunks
 
@@ -966,6 +988,7 @@ class ZarrLapseSource(LiveSource):
             return []
         
         chunks = []
+        queued = 0
         
         while True:
             # Refresh current array and re-enumerate scan groups to detect new ones
@@ -1016,6 +1039,9 @@ class ZarrLapseSource(LiveSource):
             
             self._local_cursor = end_local
             self._global_cursor = end_global
+            queued += _chunk_nbytes(data)
+            if queued >= LIVE_POLL_MAX_BYTES:
+                break
             
             # If we haven't filled a full chunk, stop polling (wait for more data)
             if end_local - start_local < self._chunk_size and end_local < readable_length:
@@ -1272,6 +1298,7 @@ class Hdf5LiveSource(LiveSource):
             return []
 
         chunks = []
+        queued = 0
         while self._cursor < readable_length:
             start = self._cursor
             end = min(start + self._chunk_size, readable_length)
@@ -1280,6 +1307,9 @@ class Hdf5LiveSource(LiveSource):
             chunks.append(Chunk(data=data, start=start, end=end))
 
             self._cursor = end
+            queued += _chunk_nbytes(data)
+            if queued >= LIVE_POLL_MAX_BYTES:
+                break
 
         return chunks
 
@@ -1707,6 +1737,7 @@ class Hdf5LapseSource(LiveSource):
             return []
         
         chunks = []
+        queued = 0
         
         while True:
             # Refresh current dataset and re-enumerate scan groups to detect new ones
@@ -1757,6 +1788,9 @@ class Hdf5LapseSource(LiveSource):
             
             self._local_cursor = end_local
             self._global_cursor = end_global
+            queued += _chunk_nbytes(data)
+            if queued >= LIVE_POLL_MAX_BYTES:
+                break
             
             # If we haven't filled a full chunk, stop polling (wait for more data)
             if end_local - start_local < self._chunk_size and end_local < readable_length:

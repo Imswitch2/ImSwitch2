@@ -67,7 +67,6 @@ DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive w
 #: now reads the same number.
 STALL_FRAME_INTERVALS = 3.0
 _RECORDING_CHUNK_CONSUMER = 'RecordingManager'  # readChunk consumer key (see DetectorManager.readChunk)
-RECORDING_ARM_TIMEOUT = 5.0  # seconds; max wait for detectors to arm before starting a scan
 RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
 
 # Off-thread writer constants
@@ -100,6 +99,31 @@ def _framesNBytes(frames) -> int:
     except TypeError:
         return 0
 WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
+#: How large one on-disk chunk of a streaming HDF5/Zarr dataset should be. A
+#: chunk is what a reader must decompress to reach any frame in it, so its
+#: *size* is the number that matters; the depth used to be the write batch,
+#: 32 frames, which is 100 kB for a small ROI, 256 MiB for a 2048x2048 camera
+#: (larger than any default chunk cache, so every frame read on the slider
+#: re-inflated the whole chunk, a ~30x read amplification), and 32 whole
+#: assembled volumes for a point detector -- which the old HDF5 file format
+#: refuses outright once a chunk reaches 4 GiB, at 128 MiB per volume. Sized
+#: from the frame, a small ROI gets a full write batch, a big camera one or
+#: two frames, and a point detector's volume exactly one, without any detector
+#: declaring anything. The write batch keeps its own meaning: how much the
+#: writer accumulates before flushing, which need not match the layout on
+#: disk. 4 MiB fits the 8 MiB chunk cache h5py opens files with on HDF5 2.x
+#: and sits in the single-digit-MiB range NGFF recommends.
+TARGET_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _chunkFrames(dtype, frameShape) -> int:
+    """Frames per on-disk chunk for frames of ``frameShape`` and ``dtype``."""
+    frameBytes = int(np.dtype(dtype).itemsize) * int(np.prod(frameShape, dtype=np.int64))
+    if frameBytes <= 0:
+        return 1
+    return int(max(1, min(WRITE_BATCH_FRAMES, TARGET_CHUNK_BYTES // frameBytes)))
+
+
 #: The longest a captured frame may sit in the writer's batch before it is
 #: written. A batch used to flush on frame count alone, so how stale the file
 #: on disk could be was 32 divided by the frame rate: 3 ms on a fast camera and
@@ -109,6 +133,18 @@ WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before fl
 #: how *large* a write is; time decides how *late* it may be.
 WRITE_FLUSH_MAX_LATENCY_S = 0.5
 WRITER_OPEN_TIMEOUT_S = 30.0
+#: How long the detectors may take to arm once the writer has opened the file.
+DETECTOR_ARM_TIMEOUT_S = 5.0
+#: How long a scan controller waits for the recording to report armed before
+#: it starts the scan. The worker opens the file first (the writer has
+#: WRITER_OPEN_TIMEOUT_S for that) and arms the detectors second, so this
+#: outer wait contains both and must exceed their sum. It used to be a flat
+#: 5 s: a file open that took longer -- a network share, a folder with a few
+#: hundred recordings to number past -- was reported as "detectors did not
+#: report armed", the writer's own deadline could never be reached, and the
+#: abort that followed still blocked until the open it had given up on
+#: returned.
+RECORDING_ARM_TIMEOUT = WRITER_OPEN_TIMEOUT_S + DETECTOR_ARM_TIMEOUT_S
 #: How long the acquisition loop may sit blocked on a full writer queue before
 #: it says so. Well under any detector's chunk-queue budget, so the stall is
 #: reported before the overflow it causes rather than after it.
@@ -616,14 +652,12 @@ class ZarrStorer(Storer):
         if 'data' in det_group:
             raise ValueError(f'Zarr data array already exists for detector {detectorName}')
 
-        # Use multi-frame chunks for better compression ratio and fewer I/O ops
-        chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
         dataset = self._create_array(
             det_group,
             'data',
             shape=(0, *spatialShape),
             dtype=dtype,
-            chunks=(chunk_frames, *spatialShape),
+            chunks=(_chunkFrames(dtype, spatialShape), *spatialShape),
             dimension_names=self._dimension_names(
                 detectorName, 1 + len(spatialShape)
             ),
@@ -994,8 +1028,6 @@ class HDF5Storer(Storer):
         if maxshape is not None:
             # Extendable dataset for streaming (start with 0 frames)
             shape = maxshape[1:]
-            # Use multi-frame chunks for better compression ratio and fewer I/O ops
-            chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
             dataset = det_group.create_dataset(
                 'data',
                 shape=(0, *shape),
@@ -1003,7 +1035,7 @@ class HDF5Storer(Storer):
                 dtype=dtype,
                 compression=self.compression,
                 shuffle=True if self.compression else False,
-                chunks=(chunk_frames, *shape)  # Multi-frame chunks for batched writes
+                chunks=(_chunkFrames(dtype, shape), *shape),
             )
         else:
             # Fixed dataset from data (snapshot)

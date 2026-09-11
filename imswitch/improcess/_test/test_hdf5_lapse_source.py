@@ -368,3 +368,34 @@ def test_hdf5_multifile_lapse_waits_for_missing_later_timepoint(tmp_path):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_hdf5_lapse_poll_stops_at_the_byte_budget_and_resumes(tmp_hdf5_path, monkeypatch):
+    """A poll used to walk every timepoint in one call, so a finished lapse
+    was materialised whole before its first chunk was processed. The budget
+    ends the walk; the cursor stays put; the next poll carries on."""
+    from imswitch.improcess.live import sources
+
+    frames_per_stack, num_timepoints, frame_shape = 4, 3, (3, 5)
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        f.attrs['timestamp'] = 123456.0
+        f.attrs['rec_mode'] = 'recording'
+        for scan_idx in range(num_timepoints):
+            _write_hdf5_scan_group(f, scan_idx, 'CAM', frames_per_stack, frame_shape,
+                                   num_timepoints=num_timepoints, is_writing=False)
+        f.flush()
+        f.swmr_mode = True
+
+    chunk_bytes = 2 * frame_shape[0] * frame_shape[1] * 2
+    monkeypatch.setattr(sources, 'LIVE_POLL_MAX_BYTES', 2 * chunk_bytes)
+
+    source = Hdf5LapseSource(detector_name='CAM', chunk_size=2)
+    source.open(tmp_hdf5_path)
+    polls = []
+    while not source.is_complete():
+        polls.append(source.poll())
+
+    assert [len(chunks) for chunks in polls] == [2, 2, 2]
+    chunks = [chunk for poll in polls for chunk in poll]
+    assert [(c.start, c.end) for c in chunks] == [(i, i + 2) for i in range(0, 12, 2)]
+    assert int(chunks[2].data[0, 0, 0]) == 1000  # the second timepoint, read on the second poll

@@ -49,6 +49,7 @@ from imswitch.imcontrol.controller.controllers._acquisition_layout_source import
     scan_devices,
     scan_directions,
     scan_driven_detector_names,
+    rising_edge_count,
     validate_detector_edge_counts,
     with_time_partition,
 )
@@ -775,3 +776,67 @@ def test_a_recording_that_produced_no_frames_still_says_what_it_was(qt_app, tmp_
     # And the reader says the honest thing rather than offering a dataset.
     with pytest.raises(RuntimeError, match='does not contain any datasets'):
         DataObj.getDatasetNames(str(path))
+
+
+# ----------------------------------------------------------------------
+# The tiled TTL signal is the arbiter of the pulse declaration
+# ----------------------------------------------------------------------
+
+
+def _point_scan_rig(setup):
+    nidaq = NidaqManager(setup)
+    camera = HamamatsuManager(setup.detectors['Camera'], 'Camera', nidaqManager=nidaq)
+    return _ManualDetectorsManager({'Camera': camera})
+
+
+def test_point_scan_layout_refuses_a_pulse_declaration_the_tiled_ttl_contradicts(qt_app):
+    """getNumCamTTL() counts the edges of one TTL cycle and calls that pulses
+    per position. The point-scan designer's cycle is the decoded sequence,
+    which spans several positions unless it pulses on every step: ``h1,l1``
+    fires once per two positions. The layout built from "one per position"
+    then plans frames the camera never sends, the recording waits for them
+    until the watchdog stops it early, and the file describes a scan that was
+    not run. The final tiled signal is what the DAQ runs, so it decides.
+    """
+    setup = _galvo_setup({'Camera': CAMERA_JSON})
+    detectors = _point_scan_rig(setup)
+    parameters, sig_dict, scan_info = _galvo_scan(setup, linesteps=1)
+
+    every_other_position = np.zeros(2 * POSITIONS, dtype=bool)
+    every_other_position[0::4] = True
+    assert rising_edge_count(every_other_position) == POSITIONS // 2
+    controller = _PointScanController(
+        setup, detectors, parameters,
+        {'scanSignalsDict': sig_dict,
+         'TTLCycleSignalsDict': {'Camera': every_other_position}},
+        scan_info, pulses={'Camera': 1},
+    )
+    with pytest.raises(ValueError, match=(
+        rf"selects {POSITIONS} frame\(s\), but the final TTL signal has "
+        rf"{POSITIONS // 2} rising edge\(s\)"
+    )):
+        build_controller_point_scan_layouts(controller, ('Camera',))
+
+
+def test_point_scan_layout_accepts_a_pulse_declaration_the_tiled_ttl_confirms(qt_app):
+    setup = _galvo_setup({'Camera': CAMERA_JSON})
+    detectors = _point_scan_rig(setup)
+    parameters, sig_dict, scan_info = _galvo_scan(setup, linesteps=1)
+
+    every_position = np.zeros(2 * POSITIONS, dtype=bool)
+    every_position[0::2] = True
+    controller = _PointScanController(
+        setup, detectors, parameters,
+        {'scanSignalsDict': sig_dict,
+         'TTLCycleSignalsDict': {'Camera': every_position}},
+        scan_info, pulses={'Camera': 1},
+    )
+    layouts = build_controller_point_scan_layouts(controller, ('Camera',))
+    assert scan_position_count(layouts['Camera']) == POSITIONS
+
+
+def test_rising_edges_are_low_to_high_steps():
+    assert rising_edge_count([]) == 0
+    assert rising_edge_count([0, 0, 0]) == 0
+    assert rising_edge_count([1, 1, 0, 1, 0, 0, 1]) == 3
+    assert rising_edge_count(np.array([True, False, True])) == 2

@@ -10,7 +10,8 @@ from imswitch.imcommon.framework import Signal, Timer
 from imswitch.imcommon.model import ostools, APIExport
 from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat, getWidgetStatePersistence
 from imswitch.imcontrol.model.managers.RecordingManager import (
-    RECORDING_ARM_TIMEOUT, FailureKind,
+    DETECTOR_ARM_TIMEOUT_S, RECORDING_ARM_TIMEOUT, WRITER_OPEN_TIMEOUT_S,
+    FailureKind,
 )
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
@@ -1175,8 +1176,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if armed:
             return True
         self._handleRecordingFailure(
-            f'Detectors did not report armed within '
-            f'{RECORDING_ARM_TIMEOUT:.1f}s; scan was not started.',
+            f'Recording did not report armed within '
+            f'{RECORDING_ARM_TIMEOUT:.0f}s (the writer has '
+            f'{WRITER_OPEN_TIMEOUT_S:.0f}s of that to create the file, the '
+            f'detectors {DETECTOR_ARM_TIMEOUT_S:.0f}s to arm); scan was not '
+            f'started.',
             abortManager=True,
         )
         return False

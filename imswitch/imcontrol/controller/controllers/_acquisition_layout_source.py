@@ -6,6 +6,8 @@ import math
 from dataclasses import replace
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
+import numpy as np
+
 from imswitch.imcommon.model.acquisition_layout import (
     ACQUISITION_LAYOUT_SCHEMA,
     PAYLOAD_ASSEMBLED_IMAGE,
@@ -56,26 +58,45 @@ def planned_frame_count(layout: AcquisitionLayout) -> int | None:
     return math.prod(loop.count for loop in layout.event_loops)
 
 
+def rising_edge_count(signal: Sequence[Any]) -> int:
+    """Rising edges in a digital signal, a low-to-high step counting one."""
+    levels = np.asarray(signal, dtype=bool).ravel()
+    if levels.size == 0:
+        return 0
+    return int(levels[0]) + int(np.count_nonzero(levels[1:] & ~levels[:-1]))
+
+
 def validate_detector_edge_counts(
     layouts: Mapping[str, AcquisitionLayout],
     ttl_signals: Mapping[str, Sequence[Any]],
 ) -> None:
-    """Cross-check planned frame selections against final detector TTL edges."""
+    """Cross-check planned frame selections against final detector TTL edges.
+
+    ``getNumCamTTL()`` counts a detector's pulses in one TTL cycle and calls
+    that its pulses per position. For the point-scan designer one cycle is
+    the decoded sequence, which spans several positions whenever the
+    sequence is anything but a pulse on every step -- ``h2,l2`` on the fast
+    axis fires once per four positions, not once per position -- so the
+    layout and the recording gate built from that number expect frames the
+    camera will never send, the recording stalls out as stopped early, and
+    the file describes a scan that did not happen. The final tiled signal is
+    the one the DAQ will actually run, so its edges are the arbiter.
+    """
     for detector, layout in layouts.items():
         expected = planned_frame_count(layout)
         signal = ttl_signals.get(detector)
         if expected is None or signal is None:
             continue
-        actual = 0
-        previous = False
-        for value in signal:
-            current = bool(value)
-            actual += int(current and not previous)
-            previous = current
+        actual = rising_edge_count(signal)
         if actual != expected:
             raise ValueError(
-                f"Advanced detector {detector!r} layout selects {expected} "
-                f"frame(s), but the final TTL signal has {actual} rising edge(s)"
+                f"Detector {detector!r} layout selects {expected} frame(s), "
+                f"but the final TTL signal has {actual} rising edge(s). The "
+                f"recording would wait for frames that never arrive, and the "
+                f"file would describe a scan that was not run. Give the "
+                f"detector a TTL sequence that fires the same number of "
+                f"pulses at every scan position, or record it in a non-scan "
+                f"mode."
             )
 
 
@@ -174,8 +195,8 @@ def build_controller_point_scan_layouts(
     )
     if not result or len(result) != 2 or result[1] is None:
         raise RuntimeError("Scan signal generation did not produce ScanInfoContract metadata")
-    _, scan_info = result
-    return build_point_scan_layouts(
+    signal_dict, scan_info = result
+    layouts = build_point_scan_layouts(
         scan_info,
         detector_names,
         scan_source=type(controller).__name__,
@@ -185,6 +206,11 @@ def build_controller_point_scan_layouts(
         devices=scan_devices(controller, scan_info),
         kind_overrides=physical_kind_overrides(controller, scan_info),
     )
+    ttl_signals = {}
+    if isinstance(signal_dict, Mapping):
+        ttl_signals = signal_dict.get("TTLCycleSignalsDict") or {}
+    validate_detector_edge_counts(layouts, ttl_signals)
+    return layouts
 
 
 def _kind(axis: Any, index: int) -> str:
