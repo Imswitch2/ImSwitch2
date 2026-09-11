@@ -146,6 +146,9 @@ def test_shutdown_cancels_and_joins_a_running_workflow_before_closing_sources():
         def requestInterruption(self):
             events.append("interrupt")
 
+        def quit(self):
+            events.append("quit")
+
         def isRunning(self):
             return self.running
 
@@ -162,7 +165,7 @@ def test_shutdown_cancels_and_joins_a_running_workflow_before_closing_sources():
     controller._thread, controller._worker = Thread(), Worker()
     controller._retained = [(frozenset({"r"}), [SimpleNamespace(checkAndUnloadData=lambda: events.append("close"))])]
     assert controller.shutdown(wait_ms=77) is True
-    assert events == ["cancel", "interrupt", ("wait", 77), "close"] and controller._retained == []
+    assert events == ["cancel", "interrupt", "quit", ("wait", 77), "close"] and controller._retained == []
 
     class StuckThread(Thread):
         def wait(self, ms):

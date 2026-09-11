@@ -260,7 +260,9 @@ file is reported with ``ok = False`` **and** the files written before the
 failure in ``files``, with ``partial = True``. A save that fails rolls back
 what it published; if the rollback itself cannot remove or restore a file,
 the ``SaveError`` names every path left behind rather than reporting only
-the original error. Partial files are left in place (they
+the original error. A save that succeeds but cannot remove its own
+staging or backup directory still returns its receipt, with those
+directories listed in ``SaveReceipt.leftovers`` and a warning logged. Partial files are left in place (they
 are complete, receipted files of an earlier step), and the summary CSV
 carries the ``partial`` column so nobody has to guess whether a failed row
 left anything behind.

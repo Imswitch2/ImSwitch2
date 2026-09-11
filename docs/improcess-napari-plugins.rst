@@ -186,10 +186,12 @@ is no longer loaded is not offered at all.
 
 **Lifetime of what a session shows.** A session's layers read the result's
 data, which may be a lazy view over the file it came from. While a session
-is open on a result, the workflow controller keeps that file handle open
-even after the result leaves the reconstruction list; the handle is
-released once no session and no loaded result (including results derived
-from it) still needs it. Closing a session whose export is still writing
+is open on a result (or on any result derived from it), the workflow
+controller keeps that file handle open even after the result leaves the
+reconstruction list; the handle is released as soon as no session and no
+loaded result still needs it, which the endpoint controller announces
+whenever a session opens or closes. A cancelled export keeps its lease
+until its worker has reported back. Closing a session whose export is still writing
 cancels it: the export finishes on its own, its files are discarded when
 it reports back, and at shutdown ImProcess waits a bounded time for such
 exports and keeps a reference to any that outlive the wait rather than

@@ -90,7 +90,10 @@ class ImProcessMainController(MainController):
             if self.napariEndpointController is not None:
                 # An endpoint session's layers read a result's (lazy) data;
                 # the workflow controller must not close a source under them.
-                self.workflowController.addHolder(self.napariEndpointController.heldResultUids)
+                self.workflowController.addHolder(
+                    self.napariEndpointController.heldResultUids,
+                    changed=self.napariEndpointController.sigSessionsChanged,
+                )
         except Exception:
             self.__logger.exception("Could not set up workflow export/run")
         self._resultProcessorControllers = {}

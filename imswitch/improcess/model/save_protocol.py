@@ -134,6 +134,9 @@ class SaveReceipt:
     fmt: str
     node: str = ""
     port: str = ""
+    #: Scaffolding (staging/backup directories) that could not be removed
+    #: after a successful publish, each with the reason. Empty normally.
+    leftovers: tuple[str, ...] = ()
 
 
 @dataclass
@@ -414,12 +417,21 @@ def save_result(result, path, fmt: str | None = None, *, overwrite: bool = False
                 parts.append("left behind: " + "; ".join(leftovers))
             raise SaveError("; ".join(parts)) from exc
         raise
-    shutil.rmtree(stage_dir, ignore_errors=True)
-    shutil.rmtree(backup_dir, ignore_errors=True)
+    # The publish succeeded; the scaffolding goes. If it cannot, the save
+    # is still a save, but a hidden backup or staging directory left beside
+    # the result is reported on the receipt and logged, never hidden.
+    leftovers: tuple[str, ...] = tuple(
+        f"{directory} ({label}, not removed: {problem})"
+        for directory, label in ((stage_dir, "staging"), (backup_dir, "backup"))
+        if directory.exists() for problem in [_remove(directory)] if problem
+    )
+    if leftovers:
+        _log().warning("Saved %s, but could not clean up: %s", plan.primary, "; ".join(leftovers))
 
     graph = graph_of(result)
     node, port = output_of(graph) if graph else ("", "")
-    receipt = SaveReceipt(primary=plan.primary, files=plan.files, fmt=fmt, node=node, port=port)
+    receipt = SaveReceipt(primary=plan.primary, files=plan.files, fmt=fmt, node=node, port=port,
+                          leftovers=leftovers)
     artifacts = getattr(result, "artifacts", None)
     if isinstance(artifacts, list):
         artifacts.append(receipt)
@@ -490,12 +502,22 @@ def _same_file(a: Path, b: Path) -> bool:
         return False
 
 
+def _log():
+    from imswitch.imcommon.model import initLogger
+
+    return initLogger("ImProcessSave", tryInheritParent=False)
+
+
 def _remove(target: Path) -> str:
     """Remove ``target``; returns why it could not be, or ``""`` when it is gone."""
     problems: list[str] = []
+
+    def note(_fn, path, exc_info):        # ``onerror``: works on every supported Python
+        problems.append(f"{path}: {exc_info[1]}")
+
     try:
         if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target, onexc=lambda _fn, path, err: problems.append(f"{path}: {err}"))
+            shutil.rmtree(target, onerror=note)
         elif target.exists() or target.is_symlink():
             target.unlink()
     except OSError as exc:

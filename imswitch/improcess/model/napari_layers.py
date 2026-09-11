@@ -26,7 +26,7 @@ from imswitch.improcess.model.result import result_kind
 LAYERABLE_KINDS = ("image", "composite", "rgb", "labels", "localization")
 
 #: ``scale_unit`` values -> pint-style unit names napari understands.
-_UNITS = {"um": "micrometer", "µm": "micrometer", "nm": "nanometer", "mm": "millimeter"}
+_UNITS = {"um": "micrometer", "µm": "micrometer", "nm": "nanometer", "mm": "millimeter", "m": "meter"}
 
 #: ImProcess registers a few colormaps of its own on its viewer ("grayclip"
 #: clips saturated pixels red). A plugin, a reader, or a detached viewer has

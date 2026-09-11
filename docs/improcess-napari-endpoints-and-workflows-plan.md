@@ -320,6 +320,18 @@ snapshots must not leak per-chunk nodes (same step id per session);
 
 ## Review response
 
+### Round 7 (fourth code review, 2026-09-11) — 3 push blockers + 5 secondary, all fixed
+| # | Finding | Fix (pinned in `_test/test_review_round7.py`) |
+|---|---|---|
+| 1 | `shutil.rmtree(onexc=)` is Python 3.12+ | `onerror` callback (project floor is 3.10) |
+| 2 | Workflow shutdown could not join: `thread.quit` was queued behind the blocked GUI thread | `cancelRun` calls `thread.quit()` directly before `wait()`; a run that still does not stop is parked in `_ORPHANED_RUNS` (released by `_clear`) — real-QThread test |
+| 3 | Leases incomplete (lineage, cancelled exports) | `EndpointSession.result_lineage`; `held_result_uids` includes lineage and cancelled sessions whose worker has not reported back; `WorkflowController.shutdown` keeps handles a holder still leases |
+| S4 | Closing an endpoint never triggered a release | `NapariEndpointController.sigSessionsChanged` (every state change); `addHolder(holder, changed=signal)` connects it to `releaseUnusedSources` |
+| S5 | Top-level embedded provenance not strict | `from_dict(strict=True)` for the top-level form; `_history` raises on a non-list / non-JSON history |
+| S6 | `np.bytes_` hashed as its repr | bytes checked before `np.generic`; generics recurse through `.item()` |
+| S7 | Successful save cleanup silent | Checked `_remove`; leftovers on `SaveReceipt.leftovers` + warning log |
+| S8 | `"m"` had no napari unit | `_UNITS["m"] = "meter"` |
+
 ### Round 6 (third code review, 2026-09-11) — 6 push blockers + 5 secondary, all fixed
 | # | Finding | Fix (pinned in `_test/test_review_round6.py`) |
 |---|---|---|

@@ -95,18 +95,27 @@ def _document_from_payload(payload: Any) -> ProvenanceDocument:
             document.history = _history(payload)
         return document
     if "graph" in payload or "artifact" in payload:
-        return ProvenanceDocument.from_dict(payload)
+        # The top-level form is as much a declaration as the nested one.
+        try:
+            return ProvenanceDocument.from_dict(payload, strict=True)
+        except ValueError as exc:
+            raise ProvenanceReadError(str(exc)) from exc
     return ProvenanceDocument(history=_history(payload))
 
 
 def _history(payload: dict) -> list:
+    """The schema-0 history a container declares; corrupt when present and not a list."""
     history = payload.get(HISTORY_KEY)
+    if history is None:
+        return []
     if isinstance(history, str):
         try:
             history = json.loads(history)
-        except (TypeError, ValueError):
-            history = []
-    return list(history) if isinstance(history, list) else []
+        except (TypeError, ValueError) as exc:
+            raise ProvenanceReadError(f"the declared {HISTORY_KEY!r} is not valid JSON: {exc}") from exc
+    if not isinstance(history, list):
+        raise ProvenanceReadError(f"the declared {HISTORY_KEY!r} is not a list")
+    return list(history)
 
 
 def _read_tiff(path: Path) -> ProvenanceDocument:

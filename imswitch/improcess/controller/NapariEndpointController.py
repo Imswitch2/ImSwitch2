@@ -153,6 +153,10 @@ def _default_detached_viewer():
 class NapariEndpointController(QtCore.QObject):
     """Owns the "napari plugins" menu, the endpoint sessions and the import path."""
 
+    #: Emitted whenever a session opens, fails, closes or is forgotten, so
+    #: whoever leases sources on a session's behalf can re-check.
+    sigSessionsChanged = QtCore.Signal()
+
     def __init__(
         self,
         commChannel,
@@ -300,6 +304,7 @@ class NapariEndpointController(QtCore.QObject):
         except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
             self._logger.exception("Could not send %s to %s", result, endpoint.id)
             self._registry.mark_failed(session, str(exc))
+            self.sigSessionsChanged.emit()
             self._status(f"Could not send to {endpoint.label}: {exc}")
             return None
         return session
@@ -331,6 +336,7 @@ class NapariEndpointController(QtCore.QObject):
             session.layers = []
             raise
         self._registry.mark_open(session, layers=layers, dock=dock, widget=widget)
+        self.sigSessionsChanged.emit()
         self._connectLayerEvents(viewer)
         self._status(f"Sent {result.name} to {endpoint.label}.")
 
@@ -360,6 +366,7 @@ class NapariEndpointController(QtCore.QObject):
             if session is not None:
                 session.worker = None
                 self._registry.forget(session_uid)
+                self.sigSessionsChanged.emit()
             return
         endpoint = session.endpoint
         try:
@@ -381,6 +388,7 @@ class NapariEndpointController(QtCore.QObject):
                     except Exception:
                         pass
                 self._registry.mark_open(session, files=[Path(path)], layers=layers)
+                self.sigSessionsChanged.emit()
                 self._connectLayerEvents(viewer)
             else:
                 detached = self._detached_viewer_factory()
@@ -395,11 +403,13 @@ class NapariEndpointController(QtCore.QObject):
                         self._logger.debug("Could not close the detached viewer", exc_info=True)
                     raise
                 self._registry.mark_open(session, files=[Path(path)], viewer=detached)
+                self.sigSessionsChanged.emit()
                 self._watchDetached(session.uid, detached)
             self._status(f"Opened {Path(path).name} with {endpoint.reader_plugin}.")
         except Exception as exc:  # noqa: BLE001
             self._logger.exception("Reader endpoint %s failed", endpoint.id)
             self._registry.mark_failed(session, str(exc))
+            self.sigSessionsChanged.emit()
             self._status(f"{endpoint.label} failed: {exc}")
 
     def _removeLayersAddedSince(self, viewer, before) -> None:
@@ -435,8 +445,10 @@ class NapariEndpointController(QtCore.QObject):
             if session is not None:
                 session.worker = None
                 self._registry.forget(session_uid)
+                self.sigSessionsChanged.emit()
             return
         self._registry.mark_failed(session, message)
+        self.sigSessionsChanged.emit()
         self._logger.error("Export for %s failed: %s", session.endpoint.id, message)
         self._status(f"Export for {session.endpoint.label} failed: {message}")
 
@@ -458,6 +470,7 @@ class NapariEndpointController(QtCore.QObject):
         session = self._registry.get(session_uid)
         if session is not None and session.is_open:
             self._registry.close(session)
+            self.sigSessionsChanged.emit()
 
     # -- closing ------------------------------------------------------------------
 
@@ -496,6 +509,7 @@ class NapariEndpointController(QtCore.QObject):
             except Exception:
                 self._logger.debug("Could not close detached viewer", exc_info=True)
         self._registry.close(session)
+        self.sigSessionsChanged.emit()
 
     def closeAll(self, wait_ms: int = 5000) -> bool:
         """Close every session; at shutdown also wait for export threads.

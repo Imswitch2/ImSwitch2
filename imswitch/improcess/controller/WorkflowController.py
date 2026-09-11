@@ -55,6 +55,11 @@ class _RunWorker(QtCore.QObject):
         self.sigFinished.emit(report)
 
 
+#: Workflow threads that did not stop within the shutdown wait; referenced
+#: here so they are not destroyed while running, released when they finish.
+_ORPHANED_RUNS: list = []
+
+
 class WorkflowController(QtCore.QObject):
     def __init__(self, commChannel, mainView, reconstructionController, *,
                  processing_config=None, parent=None):
@@ -226,34 +231,55 @@ class WorkflowController(QtCore.QObject):
         self._retained = keep
         return released
 
-    def addHolder(self, holder) -> None:
+    def addHolder(self, holder, changed=None) -> None:
         """Register a zero-argument callable returning result uids still in use.
 
         The napari endpoint controller registers its sessions' result uids,
         so a source is not closed under a layer that still reads from it.
+        ``changed`` is a signal (or anything with ``connect``) the holder
+        emits when what it holds changes; a release check runs on it, so a
+        source whose last reader was an endpoint session is closed when
+        that session closes, not at the next unrelated list event.
         """
         self._holders.append(holder)
+        connect = getattr(changed, "connect", None)
+        if callable(connect):
+            connect(self.releaseUnusedSources)
 
     def shutdown(self, wait_ms: int = 5000) -> bool:
-        """Stop a running workflow and release every retained source handle.
+        """Stop a running workflow and release the retained source handles.
 
         Cancellation is requested (the runner checks between steps), the
-        thread is joined for at most ``wait_ms``, and only then are the
-        handles closed: closing them under a running step would fail that
-        step in the middle of a read. Returns False when the run did not
-        stop in time; its handles are then left to the process.
+        thread is joined for at most ``wait_ms``, and only then are handles
+        closed: closing them under a running step would fail that step in
+        the middle of a read. Handles a registered holder still leases (an
+        export that outlived the endpoint controller's own wait) stay open.
+        Returns False when the run did not stop in time; the thread and
+        worker are then parked so they are not destroyed while running, and
+        every handle stays open.
         """
         stopped = self.cancelRun(wait_ms)
         if not stopped:
             self._logger.warning("A workflow is still running after %d ms; its sources stay open", wait_ms)
             return False
-        for _uids, handles in self._retained:
+        held = self._heldResultUids() or set()
+        keep = []
+        for uids, handles in self._retained:
+            if uids & held:
+                keep.append((uids, handles))
+                self._logger.warning("Sources of a workflow run stay open: %s still reads them", sorted(uids & held))
+                continue
             self._closeHandles(handles)
-        self._retained = []
+        self._retained = keep
         return True
 
     def cancelRun(self, wait_ms: int = 5000) -> bool:
-        """Ask a running workflow to stop and wait for its thread; True when idle."""
+        """Ask a running workflow to stop and wait for its thread; True when idle.
+
+        ``thread.quit()`` is called here directly: the worker's completion
+        signal would queue it onto this (GUI) thread, which is blocked in
+        ``wait()``, so relying on it would deadlock until the timeout.
+        """
         thread, worker = self._thread, self._worker
         if thread is None:
             return True
@@ -261,7 +287,11 @@ class WorkflowController(QtCore.QObject):
             worker.cancel()
         try:
             thread.requestInterruption()
+            thread.quit()
             if thread.isRunning() and not thread.wait(int(wait_ms)):
+                # Keep both alive beyond this controller: destroying a
+                # running QThread takes the process down with it.
+                _ORPHANED_RUNS.append((thread, worker))
                 return False
         except Exception:
             self._logger.debug("Could not join the workflow thread", exc_info=True)
@@ -313,6 +343,9 @@ class WorkflowController(QtCore.QObject):
         return count
 
     def _clear(self) -> None:
+        entry = (self._thread, self._worker)
+        if entry in _ORPHANED_RUNS:
+            _ORPHANED_RUNS.remove(entry)
         if self._worker is not None:
             self._worker.deleteLater()
         if self._thread is not None:

@@ -664,12 +664,13 @@ def _full_json(value: Any) -> Any:
         return sorted(_full_json(item) for item in value)
     if isinstance(value, np.ndarray):
         return {"__ndarray__": value.tolist(), "dtype": str(value.dtype), "shape": list(value.shape)}
-    if isinstance(value, np.generic):
-        return value.item()
     if isinstance(value, (bytes, bytearray)):
-        # Lossless: a replacement-decoded string would hash b"\xff" and
-        # b"\xfe" the same.
+        # Before ``np.generic``: ``np.bytes_`` is both, and must get the
+        # typed marker, not ``str(b'..')``. Lossless: a replacement-decoded
+        # string would hash b"\xff" and b"\xfe" the same.
         return {"__bytes__": bytes(value).hex()}
+    if isinstance(value, np.generic):
+        return _full_json(value.item())
     if isinstance(value, float) and not np.isfinite(value):
         return str(value)
     return value

@@ -39,6 +39,9 @@ class EndpointSession:
     endpoint: Any                    # NapariEndpoint
     result_uid: str
     result_name: str
+    #: The result's uid and every ancestor's (``ProcessingResult.lineage``):
+    #: what this session's lease on lazy sources covers.
+    result_lineage: frozenset = frozenset()
     state: str = "pending"
     created: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
     temp_dir: Path | None = None
@@ -89,11 +92,15 @@ class SessionRegistry:
     # -- lifecycle ----------------------------------------------------------
 
     def open(self, endpoint, result) -> EndpointSession:
+        uid = str(getattr(result, "result_uid", "") or "")
         session = EndpointSession(
             uid=mint_uid("endpoint"),
             endpoint=endpoint,
-            result_uid=str(getattr(result, "result_uid", "") or ""),
+            result_uid=uid,
             result_name=str(getattr(result, "name", "") or "result"),
+            # A derived result may read through its ancestors' file handle;
+            # the lease this session holds covers the whole lineage.
+            result_lineage=frozenset({uid, *(str(u) for u in (getattr(result, "lineage", ()) or ()))}),
         )
         self._sessions[session.uid] = session
         return session
@@ -175,8 +182,19 @@ class SessionRegistry:
         }
 
     def held_result_uids(self) -> set[str]:
-        """Result uids an open or exporting session still reads from."""
-        return {s.result_uid for s in self._sessions.values() if s.state in ("pending", "exporting", "open")}
+        """Result uids (with lineage) some session still reads from.
+
+        Open, pending and exporting sessions hold their result; so does a
+        cancelled session whose export worker has not reported back yet,
+        because that worker may still be reading the result's lazy data.
+        """
+        held: set[str] = set()
+        for session in self._sessions.values():
+            if session.state in ("pending", "exporting", "open") or (
+                session.cancelled and session.worker is not None
+            ):
+                held |= set(session.result_lineage) | {session.result_uid}
+        return held
 
     # -- events from the viewer ----------------------------------------------
 
