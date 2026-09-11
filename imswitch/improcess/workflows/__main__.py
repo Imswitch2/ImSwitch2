@@ -75,7 +75,6 @@ def cmd_run(args) -> int:
     from imswitch.improcess.workflows.sources import parse_binding
 
     workflow = _load(args.workflow)
-    registry = _registry(args)
     source_root = args.source_root or str(Path(args.workflow).resolve().parent)
 
     if args.manifest:

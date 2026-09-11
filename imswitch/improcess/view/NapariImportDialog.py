@@ -31,8 +31,17 @@ class NapariImportDialog(QtWidgets.QDialog):
         self.setWindowTitle("Import napari layer as result")
         self._layers = list(layers)
         self._results = list(results)
-        self._suggestions = dict(suggestions or {})
-        self._candidates = dict(candidates or {})
+        # A mapping belongs to a session opened on one result; one whose
+        # result is not in this dialog cannot be chosen (it would silently
+        # attach to whichever result happened to be selected).
+        known = {str(getattr(result, "result_uid", "")) for result in self._results}
+        self._suggestions = {
+            key: value for key, value in dict(suggestions or {}).items() if str(value[2]) in known
+        }
+        self._candidates = {
+            key: [c for c in choices if str(c[2]) in known]
+            for key, choices in dict(candidates or {}).items()
+        }
         # Candidates the mapping combo currently lists for the chosen layer;
         # index 0 is always "no mapping".
         self._mappingChoices: list = []
@@ -172,9 +181,14 @@ class NapariImportDialog(QtWidgets.QDialog):
         if not (0 <= layer_index < len(self._layers)) or not (0 <= result_index < len(self._results)):
             return None
         layer = self._layers[layer_index]
+        result = self._results[result_index]
         choice = self._currentMapping()
-        endpoint = choice[0] if choice else None
-        return layer, self._results[result_index], self.nameEdit.text().strip() or None, endpoint
+        endpoint = None
+        if choice is not None and str(choice[2]) == str(getattr(result, "result_uid", "")):
+            # Revalidated on accept: the mapping applies only with the
+            # result its session was opened on.
+            endpoint = choice[0]
+        return layer, result, self.nameEdit.text().strip() or None, endpoint
 
     @classmethod
     def choose(cls, parent, layers, results, *, suggestions=None, candidates=None,

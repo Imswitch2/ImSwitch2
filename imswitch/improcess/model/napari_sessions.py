@@ -142,16 +142,23 @@ class SessionRegistry:
             return session
         if session.state == "exporting":
             # The worker is still writing into a directory we are about to
-            # delete; its completion must be treated as stale.
+            # delete; its completion must be treated as stale. The worker
+            # reference stays on the session (a tombstone) so the controller
+            # can tell the export is still running and wait for it.
             session.cancelled = True
+        else:
+            session.worker = None
         session.state = "closed"
         session.layers = []
         session.dock = None
         session.widget = None
         session.viewer = None
-        session.worker = None
         self._remove_files(session)
         return session
+
+    def forget(self, uid: str) -> None:
+        """Drop a session (a tombstone whose worker has come back, say)."""
+        self._sessions.pop(uid, None)
 
     def close_all(self) -> list[EndpointSession]:
         closed = []
@@ -160,8 +167,16 @@ class SessionRegistry:
                 closed.append(self.close(session))
         return closed
 
-    def forget_closed(self) -> None:
-        self._sessions = {uid: s for uid, s in self._sessions.items() if s.state not in ("closed", "failed")}
+    def forget_closed(self, keep=None) -> None:
+        """Drop closed and failed sessions, except those ``keep(session)`` is true for."""
+        self._sessions = {
+            uid: s for uid, s in self._sessions.items()
+            if s.state not in ("closed", "failed") or (keep is not None and keep(s))
+        }
+
+    def held_result_uids(self) -> set[str]:
+        """Result uids an open or exporting session still reads from."""
+        return {s.result_uid for s in self._sessions.values() if s.state in ("pending", "exporting", "open")}
 
     # -- events from the viewer ----------------------------------------------
 

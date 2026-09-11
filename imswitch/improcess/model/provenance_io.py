@@ -87,7 +87,10 @@ def _document_from_payload(payload: Any) -> ProvenanceDocument:
     if PROVENANCE_KEY in payload and not isinstance(inner, dict):
         raise ProvenanceReadError("the declared provenance is not a JSON object")
     if isinstance(inner, dict):
-        document = ProvenanceDocument.from_dict(inner)
+        try:
+            document = ProvenanceDocument.from_dict(inner, strict=True)
+        except ValueError as exc:
+            raise ProvenanceReadError(str(exc)) from exc
         if not document.history:
             document.history = _history(payload)
         return document

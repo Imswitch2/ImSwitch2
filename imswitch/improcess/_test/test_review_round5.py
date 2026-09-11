@@ -472,7 +472,7 @@ def test_closing_an_exporting_session_interrupts_and_shutdown_joins_the_worker(t
     controller._keepalive.append((thread, object()))
     controller.closeSession(session.uid)
     assert session.cancelled and thread.interrupted
-    assert controller.closeAll(wait_ms=123) is None and thread.waited == 123 and not thread.running
+    assert controller.closeAll(wait_ms=123) is True and thread.waited == 123 and not thread.running
 
 
 def test_attribute_digest_sees_every_element():

@@ -158,7 +158,18 @@ unless the endpoint adapter declares ``preserves_grid`` for that output
 order as the source, equal scale, zero translation, identity rotation and
 affine, zero shear, and the same shape. ImProcess results store a scale and
 nothing else, so any other transform cannot be represented and is not
-claimed. Two arrays of the same shape are not the same grid.
+claimed. Two arrays of the same shape are not the same grid, and the same
+numbers in another unit are not either: a layer whose unit differs from
+the source's gets a fresh grid even when the adapter vouches for it.
+
+**Units.** napari carries a unit per axis; a result carries one unit for
+all axes. Length units that differ between axes (micrometre Y, nanometre X)
+are converted onto one unit, with the per-axis scales converted along, so
+each scale keeps meaning what it meant. Axes whose units are not all
+lengths and not all the same are refused; set one unit per layer in napari
+first. A Points layer that is rotated, sheared or carries an affine is
+refused whether or not it is also translated; each transform component is
+checked on its own.
 
 **Attribution.** A name pattern cannot say which plugin made a layer, and
 neither can "it appeared after the session opened": an unrelated layer
@@ -170,7 +181,19 @@ session added — and exactly one open session's adapter claims it. Every
 other mapping an open session could offer is listed under *Adapter mapping*
 for you to choose explicitly; the default is none, a fresh coordinate space.
 Changing the source result away from the mapping's session drops the
-mapping rather than carrying it over.
+mapping rather than carrying it over, and a mapping whose session result
+is no longer loaded is not offered at all.
+
+**Lifetime of what a session shows.** A session's layers read the result's
+data, which may be a lazy view over the file it came from. While a session
+is open on a result, the workflow controller keeps that file handle open
+even after the result leaves the reconstruction list; the handle is
+released once no session and no loaded result (including results derived
+from it) still needs it. Closing a session whose export is still writing
+cancels it: the export finishes on its own, its files are discarded when
+it reports back, and at shutdown ImProcess waits a bounded time for such
+exports and keeps a reference to any that outlive the wait rather than
+destroying a running thread.
 
 **Points → localizations.** The ``table-to-localizations`` processor is the
 explicit promotion: it asks which columns are ``x`` and ``y`` (optionally

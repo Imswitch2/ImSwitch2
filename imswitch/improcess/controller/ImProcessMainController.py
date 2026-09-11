@@ -87,6 +87,10 @@ class ImProcessMainController(MainController):
                 self.mainViewController.reconstructionController,
                 processing_config=getattr(self, '_processingConfigLoaded', None),
             )
+            if self.napariEndpointController is not None:
+                # An endpoint session's layers read a result's (lazy) data;
+                # the workflow controller must not close a source under them.
+                self.workflowController.addHolder(self.napariEndpointController.heldResultUids)
         except Exception:
             self.__logger.exception("Could not set up workflow export/run")
         self._resultProcessorControllers = {}

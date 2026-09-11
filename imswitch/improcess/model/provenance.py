@@ -666,8 +666,10 @@ def _full_json(value: Any) -> Any:
         return {"__ndarray__": value.tolist(), "dtype": str(value.dtype), "shape": list(value.shape)}
     if isinstance(value, np.generic):
         return value.item()
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
+    if isinstance(value, (bytes, bytearray)):
+        # Lossless: a replacement-decoded string would hash b"\xff" and
+        # b"\xfe" the same.
+        return {"__bytes__": bytes(value).hex()}
     if isinstance(value, float) and not np.isfinite(value):
         return str(value)
     return value

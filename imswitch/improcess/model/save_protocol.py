@@ -179,9 +179,27 @@ class ProvenanceDocument:
         return json.dumps(self.to_dict(), ensure_ascii=False, default=str)
 
     @classmethod
-    def from_dict(cls, payload: Any) -> "ProvenanceDocument":
+    def from_dict(cls, payload: Any, *, strict: bool = False) -> "ProvenanceDocument":
+        """The document in ``payload``.
+
+        With ``strict`` the payload was *declared* to be a provenance
+        document, so a field that is present with the wrong type is corrupt
+        provenance, not an absent one: ``schema`` must be an integer,
+        ``graph`` and ``artifact`` objects, the history a list.
+        """
         if not isinstance(payload, dict):
+            if strict:
+                raise ValueError("the declared provenance is not a JSON object")
             return cls()
+        if strict:
+            for key, expected, name in (
+                ("schema", int, "an integer"), ("graph", dict, "an object"),
+                ("artifact", dict, "an object"), (HISTORY_KEY, list, "a list"),
+            ):
+                if key in payload and payload[key] is not None and (
+                    not isinstance(payload[key], expected) or isinstance(payload[key], bool)
+                ):
+                    raise ValueError(f"the declared provenance's {key!r} is not {name}")
         graph = payload.get("graph")
         if graph is None and isinstance(payload.get("nodes"), dict):
             graph = payload                       # a bare graph
@@ -198,7 +216,8 @@ class ProvenanceDocument:
 
         Tolerant by default (a description that is not JSON is simply not
         provenance). With ``strict`` the text was *declared* to be a
-        provenance document, and anything but a JSON object is an error.
+        provenance document, and anything but a well-formed JSON object is
+        an error (see :meth:`from_dict`).
         """
         try:
             payload = json.loads(text)
@@ -206,11 +225,9 @@ class ProvenanceDocument:
             if strict:
                 raise ValueError(f"the declared provenance is not valid JSON: {exc}") from exc
             return cls()
-        if not isinstance(payload, dict):
-            if strict:
-                raise ValueError("the declared provenance is not a JSON object")
+        if not isinstance(payload, dict) and not strict:
             return cls()
-        return cls.from_dict(payload)
+        return cls.from_dict(payload, strict=strict)
 
 
 def artifact_record(plan: SavePlan, result) -> dict:
@@ -365,23 +382,37 @@ def save_result(result, path, fmt: str | None = None, *, overwrite: bool = False
             _publish(staged_file, target, published)
         _publish(staged.primary, plan.primary, published)
     except Exception as exc:
+        # Rollback. Every step of it can fail too, and a rollback that
+        # fails silently is how a "failed" save leaves files behind: each
+        # problem is collected and every leftover path is named.
+        leftovers = []
         for target in published:
-            _remove(target)
+            problem = _remove(target)
+            if problem:
+                leftovers.append(f"{target} (published, not removed: {problem})")
         not_restored = []
         for target, moved in backups:
             try:
                 os.replace(moved, target)
             except OSError as restore_exc:
                 not_restored.append(f"{target} (kept at {moved}: {restore_exc})")
-        shutil.rmtree(stage_dir, ignore_errors=True)
-        if not_restored:
-            # The previous files could not be put back: keep the backup
-            # directory and say where it is, instead of deleting the only
-            # copy and reporting just the original error.
-            raise SaveError(
-                f"{exc}; the previous file(s) could not be restored: {'; '.join(not_restored)}"
-            ) from exc
-        shutil.rmtree(backup_dir, ignore_errors=True)
+        problem = _remove(stage_dir)
+        if problem:
+            leftovers.append(f"{stage_dir} (staging, not removed: {problem})")
+        if not not_restored:
+            problem = _remove(backup_dir) if backup_dir.exists() else ""
+            if problem:
+                leftovers.append(f"{backup_dir} (backup, not removed: {problem})")
+        if not_restored or leftovers:
+            # Keep the backup directory when the previous files could not be
+            # put back (it holds the only copy) and say exactly what is left
+            # on disk, instead of reporting just the original error.
+            parts = [str(exc)]
+            if not_restored:
+                parts.append("the previous file(s) could not be restored: " + "; ".join(not_restored))
+            if leftovers:
+                parts.append("left behind: " + "; ".join(leftovers))
+            raise SaveError("; ".join(parts)) from exc
         raise
     shutil.rmtree(stage_dir, ignore_errors=True)
     shutil.rmtree(backup_dir, ignore_errors=True)
@@ -459,14 +490,19 @@ def _same_file(a: Path, b: Path) -> bool:
         return False
 
 
-def _remove(target: Path) -> None:
+def _remove(target: Path) -> str:
+    """Remove ``target``; returns why it could not be, or ``""`` when it is gone."""
+    problems: list[str] = []
     try:
         if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target, ignore_errors=True)
+            shutil.rmtree(target, onexc=lambda _fn, path, err: problems.append(f"{path}: {err}"))
         elif target.exists() or target.is_symlink():
             target.unlink()
-    except OSError:
-        pass
+    except OSError as exc:
+        problems.append(str(exc))
+    if target.exists() or target.is_symlink():
+        return "; ".join(problems) or "still exists"
+    return ""
 
 
 __all__ = [

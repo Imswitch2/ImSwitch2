@@ -257,7 +257,10 @@ the next.
 
 A row that fails after one of its ``Save`` steps has already published a
 file is reported with ``ok = False`` **and** the files written before the
-failure in ``files``, with ``partial = True``. They are left in place (they
+failure in ``files``, with ``partial = True``. A save that fails rolls back
+what it published; if the rollback itself cannot remove or restore a file,
+the ``SaveError`` names every path left behind rather than reporting only
+the original error. Partial files are left in place (they
 are complete, receipted files of an earlier step), and the summary CSV
 carries the ``partial`` column so nobody has to guess whether a failed row
 left anything behind.

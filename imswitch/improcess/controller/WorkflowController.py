@@ -25,13 +25,27 @@ class _RunWorker(QtCore.QObject):
         self._workflow = workflow
         self._registry = registry
         self._out_dir = out_dir
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Ask the run to stop at the next step boundary (thread-safe: a flag)."""
+        self._cancelled = True
+
+    def _should_stop(self) -> bool:
+        if self._cancelled:
+            return True
+        thread = QtCore.QThread.currentThread()
+        return bool(thread is not None and thread.isInterruptionRequested())
 
     @QtCore.Slot()
     def run(self) -> None:
         from imswitch.improcess.workflows.runner import RunError, run
 
         try:
-            report = run(self._workflow, registry=self._registry, out_dir=self._out_dir)
+            report = run(
+                self._workflow, registry=self._registry, out_dir=self._out_dir,
+                cancel=self._should_stop,
+            )
         except RunError as exc:
             self.sigFailed.emit(str(exc), getattr(exc, "report", None))
             return
@@ -56,6 +70,10 @@ class WorkflowController(QtCore.QObject):
         # ``(result uids it published, handles)``. Released when every one of
         # those results has left the reconstruction list, or at shutdown.
         self._retained: list[tuple[frozenset, list]] = []
+        # Callables returning result uids some other owner still reads from
+        # (napari endpoint sessions hold lazy layers over a result's data);
+        # a retained source is released only when none of them holds it.
+        self._holders: list = []
         for name, slot in (("sigExportWorkflowRequested", self.exportWorkflow),
                            ("sigRunWorkflowRequested", self.runWorkflow)):
             signal = getattr(mainView, name, None)
@@ -195,12 +213,12 @@ class WorkflowController(QtCore.QObject):
         Connected to the comm channel's ``sigResultsChanged``; returns how
         many runs' handles were released.
         """
-        loaded = self._loadedResultUids()
-        if loaded is None:
+        held = self._heldResultUids()
+        if held is None:
             return 0
         keep, released = [], 0
         for uids, handles in self._retained:
-            if uids & loaded:
+            if uids & held:
                 keep.append((uids, handles))
                 continue
             self._closeHandles(handles)
@@ -208,13 +226,52 @@ class WorkflowController(QtCore.QObject):
         self._retained = keep
         return released
 
-    def shutdown(self) -> None:
-        """Release every retained source handle (window closing)."""
+    def addHolder(self, holder) -> None:
+        """Register a zero-argument callable returning result uids still in use.
+
+        The napari endpoint controller registers its sessions' result uids,
+        so a source is not closed under a layer that still reads from it.
+        """
+        self._holders.append(holder)
+
+    def shutdown(self, wait_ms: int = 5000) -> bool:
+        """Stop a running workflow and release every retained source handle.
+
+        Cancellation is requested (the runner checks between steps), the
+        thread is joined for at most ``wait_ms``, and only then are the
+        handles closed: closing them under a running step would fail that
+        step in the middle of a read. Returns False when the run did not
+        stop in time; its handles are then left to the process.
+        """
+        stopped = self.cancelRun(wait_ms)
+        if not stopped:
+            self._logger.warning("A workflow is still running after %d ms; its sources stay open", wait_ms)
+            return False
         for _uids, handles in self._retained:
             self._closeHandles(handles)
         self._retained = []
+        return True
 
-    def _loadedResultUids(self):
+    def cancelRun(self, wait_ms: int = 5000) -> bool:
+        """Ask a running workflow to stop and wait for its thread; True when idle."""
+        thread, worker = self._thread, self._worker
+        if thread is None:
+            return True
+        if worker is not None:
+            worker.cancel()
+        try:
+            thread.requestInterruption()
+            if thread.isRunning() and not thread.wait(int(wait_ms)):
+                return False
+        except Exception:
+            self._logger.debug("Could not join the workflow thread", exc_info=True)
+            return False
+        return True
+
+    def _heldResultUids(self):
+        """Uids of every result still in use: loaded in the list (with their
+        lineage, since a derived result may read through its parent's
+        handle) plus whatever registered holders report."""
         getter = getattr(self._commChannel, "getAllResults", None)
         if not callable(getter):
             return None
@@ -227,6 +284,13 @@ class WorkflowController(QtCore.QObject):
             result = item[1] if isinstance(item, tuple) and len(item) == 2 else item
             if result is not None:
                 uids.add(str(getattr(result, "result_uid", "") or id(result)))
+                uids.update(str(u) for u in (getattr(result, "lineage", ()) or ()))
+        for holder in self._holders:
+            try:
+                uids.update(str(u) for u in (holder() or ()))
+            except Exception:
+                self._logger.debug("A result holder failed; keeping sources open", exc_info=True)
+                return None
         return uids
 
     def _closeHandles(self, handles) -> None:

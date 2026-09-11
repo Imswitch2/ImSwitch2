@@ -98,20 +98,84 @@ def _matrix(value) -> np.ndarray | None:
         return None
 
 
-def identity_transform(snapshot: LayerSnapshot) -> tuple[bool, str]:
-    """Whether the layer sits on its data's own index grid, scale aside."""
+def transform_problems(snapshot: LayerSnapshot) -> list[str]:
+    """Every way the layer's transform departs from a plain per-axis scale.
+
+    Each component is checked on its own: a translated *and* rotated layer
+    reports both, so a caller that can fold one in (translation) cannot be
+    fooled into ignoring the other.
+    """
+    problems = []
     if any(abs(t) > _ATOL for t in snapshot.translate):
-        return False, f"layer is translated by {snapshot.translate}"
+        problems.append(f"layer is translated by {snapshot.translate}")
     if snapshot.rotate is not None and snapshot.rotate.size:
         if not np.allclose(snapshot.rotate, np.eye(snapshot.rotate.shape[0]), atol=_ATOL):
-            return False, "layer is rotated"
+            problems.append("layer is rotated")
     if snapshot.shear is not None and snapshot.shear.size:
         if not np.allclose(snapshot.shear, 0.0, atol=_ATOL):
-            return False, "layer is sheared"
+            problems.append("layer is sheared")
     if snapshot.affine is not None and snapshot.affine.size:
         if not np.allclose(snapshot.affine, np.eye(snapshot.affine.shape[0]), atol=_ATOL):
-            return False, "layer has a non-identity affine"
+            problems.append("layer has a non-identity affine")
+    return problems
+
+
+def identity_transform(snapshot: LayerSnapshot) -> tuple[bool, str]:
+    """Whether the layer sits on its data's own index grid, scale aside."""
+    problems = transform_problems(snapshot)
+    if problems:
+        return False, "; ".join(problems)
     return True, ""
+
+
+#: Length units napari may put on a layer axis, in nanometres.
+_LENGTH_NM = {
+    "nm": 1.0, "nanometer": 1.0, "nanometre": 1.0, "nanometers": 1.0,
+    "um": 1000.0, "µm": 1000.0, "micrometer": 1000.0, "micrometre": 1000.0, "micrometers": 1000.0,
+    "micron": 1000.0, "microns": 1000.0,
+    "mm": 1e6, "millimeter": 1e6, "millimetre": 1e6, "millimeters": 1e6,
+    "m": 1e9, "meter": 1e9, "metre": 1e9, "meters": 1e9,
+}
+_UNIT_NAME = {1.0: "nm", 1000.0: "um", 1e6: "mm", 1e9: "m"}
+
+
+def normalized_units(snapshot: LayerSnapshot, source_result) -> tuple[str, list[float]]:
+    """One unit for every axis, with the scales converted to it.
+
+    napari carries a unit *per axis*; ImProcess results carry one
+    ``scale_unit`` for all of them. Length units that differ between axes
+    (micrometre Y, nanometre X) are converted onto one of them, so the
+    per-axis scales keep meaning what they meant. Axes whose units are not
+    all lengths, or not all the same non-length unit, cannot be represented
+    and are refused rather than silently relabelled.
+    """
+    scales = [float(v) for v in snapshot.scale]
+    units = [str(u).strip().lower() for u in (snapshot.units or ())]
+    if not units or all(not u or u == "none" for u in units):
+        return _fallback_unit(snapshot, source_result), scales
+    if len(units) != len(scales):
+        raise NotImportable(f"the layer names {len(units)} axis units for {len(scales)} axes")
+    factors = [_LENGTH_NM.get(u) for u in units]
+    if all(f is not None for f in factors):
+        target = factors[-1]
+        unit = _UNIT_NAME.get(target)
+        if unit is None:                      # a length we have no short name for
+            target, unit = 1000.0, "um"
+        return unit, [scale * factor / target for scale, factor in zip(scales, factors)]
+    if len(set(units)) == 1:
+        unit = units[0]
+        return ("px" if unit in ("pixel", "pixels") else unit), scales
+    raise NotImportable(
+        f"the layer's axis units {tuple(snapshot.units)} are not all lengths and not all the same; "
+        "set one unit per layer in napari before importing"
+    )
+
+
+def _fallback_unit(snapshot: LayerSnapshot, source_result) -> str:
+    unit = str(snapshot.metadata.get("scale_unit") or "")
+    if unit:
+        return unit
+    return str(getattr(source_result, "scale_unit", "px") or "px")
 
 
 def grid_decision(
@@ -174,7 +238,7 @@ def import_layer(
     if layer_type not in IMPORTABLE_LAYER_TYPES:
         raise NotImportable(f"a {snapshot.layer_type} layer cannot be imported as a result")
     label = name or snapshot.name
-    unit = _unit_from(snapshot, source_result)
+    unit, scales = normalized_units(snapshot, source_result)
 
     if layer_type == "shapes":
         rois = _rois_from_shapes(snapshot)
@@ -189,7 +253,7 @@ def import_layer(
             name=label,
             coordinates=coords,
             properties=snapshot.properties,
-            coordinate_scale=list(snapshot.scale),
+            coordinate_scale=list(scales),
             scale_unit=unit,
             metadata={"layer_name": snapshot.name, "layer_type": "points", "transform_baked": baked},
         )
@@ -201,13 +265,17 @@ def import_layer(
         return ImportedLayer(result=result, grid="n/a", reason="points carry no pixel grid")
 
     grid, reason = grid_decision(snapshot, source_result, preserves_grid=preserves_grid)
+    source_unit = str(getattr(source_result, "scale_unit", "") or "")
+    if grid == "inherit" and source_unit and unit != source_unit:
+        # Same numbers in a different unit is a different grid.
+        grid, reason = "fresh", f"layer unit {unit!r} differs from the source's {source_unit!r}"
     axis_labels = list(snapshot.metadata.get("axis_labels") or [])
     if len(axis_labels) != snapshot.ndim:
         source_labels = list(getattr(source_result, "axis_labels", []) or [])
         axis_labels = source_labels if len(source_labels) == snapshot.ndim else _default_labels(snapshot.ndim)
     common = {
         "axis_labels": axis_labels,
-        "axis_scales": list(snapshot.scale),
+        "axis_scales": list(scales),
         "scale_unit": unit,
         "metadata": {"layer_name": snapshot.name, "layer_type": layer_type, "grid": grid},
     }
@@ -245,11 +313,13 @@ def _bake_points_transform(snapshot: LayerSnapshot, coords: np.ndarray) -> tuple
         raise NotImportable(
             f"points are {coords.shape[1]}-D but the layer transform is {len(scale)}-D"
         )
-    same, reason = identity_transform(snapshot)
-    if not same and any(word in reason for word in ("rotated", "sheared", "affine")):
+    # Every component on its own: a translation (which can be folded in)
+    # must never hide a rotation, shear or affine (which cannot).
+    unfoldable = [p for p in transform_problems(snapshot) if "translated" not in p]
+    if unfoldable:
         raise NotImportable(
-            f"the points layer {reason}; that transform cannot be represented as a per-axis "
-            "scale -- bake it into the coordinates in napari before importing"
+            f"the points layer {'; '.join(unfoldable)}; that transform cannot be represented as a "
+            "per-axis scale -- bake it into the coordinates in napari before importing"
         )
     if np.any(scale == 0):
         raise NotImportable("the points layer has a zero scale on some axis")
@@ -278,21 +348,6 @@ def _rois_from_shapes(snapshot: LayerSnapshot):
     return rois
 
 
-def _unit_from(snapshot: LayerSnapshot, source_result) -> str:
-    if snapshot.units:
-        first = str(snapshot.units[-1]).lower()
-        if first.startswith("micro"):
-            return "um"
-        if first.startswith("nano"):
-            return "nm"
-        if first.startswith("milli"):
-            return "mm"
-    unit = str(snapshot.metadata.get("scale_unit") or "")
-    if unit:
-        return unit
-    return str(getattr(source_result, "scale_unit", "px") or "px")
-
-
 def _default_labels(ndim: int) -> list[str]:
     base = ["Z", "Y", "X"]
     return base[-ndim:] if ndim <= 3 else [f"D{i}" for i in range(ndim - 2)] + ["Y", "X"]
@@ -305,6 +360,8 @@ __all__ = [
     "NotImportable",
     "grid_decision",
     "identity_transform",
+    "normalized_units",
+    "transform_problems",
     "import_layer",
     "snapshot_layer",
 ]

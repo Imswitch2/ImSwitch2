@@ -320,6 +320,21 @@ snapshots must not leak per-chunk nodes (same step id per session);
 
 ## Review response
 
+### Round 6 (third code review, 2026-09-11) — 6 push blockers + 5 secondary, all fixed
+| # | Finding | Fix (pinned in `_test/test_review_round6.py`) |
+|---|---|---|
+| 1 | Rollback failures swallowed (`_remove` ignored errors) | `_remove` returns why a path is still there; every leftover (published, staging, backup) and every unrestored backup is listed in one `SaveError` |
+| 2 | Endpoint layers outlived their HDF5 source | Source lease: `WorkflowController.addHolder(...)`, wired to `NapariEndpointController.heldResultUids` (open/exporting sessions); loaded results' `lineage` counts too |
+| 3 | Running workflow thread not shut down | `_RunWorker.cancel()` + thread interruption checked via the runner's `cancel` callback between steps; `shutdown()` cancels, joins (bounded) and only then closes handles; returns False and keeps handles when the run did not stop |
+| 4 | Translation hid a Points rotation | `transform_problems()` reports every component; the Points bake refuses any rotation/shear/affine regardless of translation |
+| 5 | Per-axis napari units collapsed | `normalized_units()`: length units converted onto one unit with the scales converted along; non-length/heterogeneous units refused; a unit differing from the source's forces a fresh grid |
+| 6 | Export cancellation teardown | Cancelled sessions keep their worker as a tombstone until it reports back (then forgotten); `closeAll` joins first and forgets after, parks surviving threads in a module-level holder; the worker checks interruption before starting and sends its directory on failure so a stale failure is cleaned up |
+| S7 | Orphan mapping targeted a visible result | Mappings whose result is not in the dialog are filtered; `selection()` revalidates the uid |
+| S8 | Structurally corrupt provenance read as absent | `ProvenanceDocument.from_dict(strict=True)` type-checks `schema`/`graph`/`artifact`/history; applied to companions and embedded declared provenance |
+| S9 | Failed detached open leaked its viewer | Closed in the exception path |
+| S10 | Bytes attributes hashed lossily | `{"__bytes__": hex}` |
+| S11 | Unused registry in `cmd_run` | Removed |
+
 ### Round 5 (second code review, 2026-09-07) — 12 blockers + 5 secondary, all fixed
 | # | Finding | Fix (pinned in `_test/test_review_round5.py`) |
 |---|---|---|

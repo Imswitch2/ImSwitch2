@@ -38,30 +38,49 @@ from imswitch.improcess.model.napari_sessions import SessionRegistry
 
 
 class _ExportWorker(QtCore.QObject):
-    """Runs one export callable off the GUI thread and reports back."""
+    """Runs one export callable off the GUI thread and reports back.
 
-    sigDone = QtCore.Signal(str, object)     # session uid, Path
-    sigFailed = QtCore.Signal(str, str)      # session uid, message
+    ``directory`` is where the job writes; it rides on the failure signal
+    too, so a failed export whose session is already gone can still be
+    cleaned up by the receiver.
+    """
 
-    def __init__(self, session_uid: str, job: Callable[[], Path], parent=None):
+    sigDone = QtCore.Signal(str, object)          # session uid, Path
+    sigFailed = QtCore.Signal(str, str, object)   # session uid, message, directory
+
+    def __init__(self, session_uid: str, job: Callable[[], Path], directory=None, parent=None):
         super().__init__(parent)
         self._uid = session_uid
         self._job = job
+        self._directory = directory
 
     @QtCore.Slot()
     def run(self) -> None:
+        thread = QtCore.QThread.currentThread()
+        if thread is not None and thread.isInterruptionRequested():
+            # Cancelled before it started: nothing is written, nothing to keep.
+            self.sigFailed.emit(self._uid, "cancelled", self._directory)
+            return
         try:
             path = self._job()
         except Exception as exc:  # noqa: BLE001 - reported to the user
-            self.sigFailed.emit(self._uid, str(exc))
+            self.sigFailed.emit(self._uid, str(exc), self._directory)
             return
+        # A cancellation that arrived mid-write cannot stop the write; the
+        # completion is reported and the receiver discards it as stale.
         self.sigDone.emit(self._uid, Path(path))
 
 
-def _threaded_export_runner(session_uid, job, on_done, on_failed, keepalive: list):
+#: Export threads that outlived their controller's shutdown wait. Kept
+#: referenced here so a running QThread is never destroyed under its
+#: worker; they finish on their own and are released then.
+_ORPHANED_EXPORTS: list = []
+
+
+def _threaded_export_runner(session_uid, job, on_done, on_failed, keepalive: list, directory=None):
     """Default runner: a QThread per export; the controller keeps the refs."""
     thread = QtCore.QThread()
-    worker = _ExportWorker(session_uid, job)
+    worker = _ExportWorker(session_uid, job, directory)
     worker.moveToThread(thread)
     worker.sigDone.connect(on_done)
     worker.sigFailed.connect(on_failed)
@@ -70,7 +89,13 @@ def _threaded_export_runner(session_uid, job, on_done, on_failed, keepalive: lis
     thread.started.connect(worker.run)
     entry = (thread, worker)
     keepalive.append(entry)
-    thread.finished.connect(lambda: keepalive.remove(entry) if entry in keepalive else None)
+
+    def release():
+        for holder in (keepalive, _ORPHANED_EXPORTS):
+            if entry in holder:
+                holder.remove(entry)
+
+    thread.finished.connect(release)
     thread.start()
     return entry
 
@@ -320,15 +345,21 @@ class NapariEndpointController(QtCore.QObject):
         session.worker = self._export_runner(session.uid, job, self._onExportDone, self._onExportFailed)
 
     def _run_export_threaded(self, session_uid, job, on_done, on_failed):
-        return _threaded_export_runner(session_uid, job, on_done, on_failed, self._keepalive)
+        session = self._registry.get(session_uid)
+        directory = session.temp_dir if session is not None else None
+        return _threaded_export_runner(session_uid, job, on_done, on_failed, self._keepalive, directory)
 
     @QtCore.Slot(str, object)
     def _onExportDone(self, session_uid: str, path) -> None:
         session = self._registry.get(session_uid)
         if session is None or session.state != "exporting" or session.cancelled:
             # The session was closed while the export ran: its directory was
-            # deleted and the worker has just recreated it. Take that back.
+            # deleted and the worker has just recreated it. Take that back,
+            # and let the tombstone go now that its worker is back.
             self._discardStaleExport(path)
+            if session is not None:
+                session.worker = None
+                self._registry.forget(session_uid)
             return
         endpoint = session.endpoint
         try:
@@ -353,7 +384,16 @@ class NapariEndpointController(QtCore.QObject):
                 self._connectLayerEvents(viewer)
             else:
                 detached = self._detached_viewer_factory()
-                detached.open(str(path), plugin=endpoint.reader_plugin)
+                try:
+                    detached.open(str(path), plugin=endpoint.reader_plugin)
+                except Exception:
+                    # The viewer was made for this session; a failed open
+                    # must not leave an empty window behind.
+                    try:
+                        detached.close()
+                    except Exception:
+                        self._logger.debug("Could not close the detached viewer", exc_info=True)
+                    raise
                 self._registry.mark_open(session, files=[Path(path)], viewer=detached)
                 self._watchDetached(session.uid, detached)
             self._status(f"Opened {Path(path).name} with {endpoint.reader_plugin}.")
@@ -384,10 +424,17 @@ class NapariEndpointController(QtCore.QObject):
         except Exception:
             self._logger.debug("Could not discard a stale export", exc_info=True)
 
-    @QtCore.Slot(str, str)
-    def _onExportFailed(self, session_uid: str, message: str) -> None:
+    @QtCore.Slot(str, str, object)
+    def _onExportFailed(self, session_uid: str, message: str, directory=None) -> None:
         session = self._registry.get(session_uid)
-        if session is None:
+        if session is None or session.cancelled or session.state != "exporting":
+            # The session was closed while the export ran: whatever the
+            # worker recreated in its directory is stale and goes.
+            if directory is not None:
+                self._discardStaleExport(Path(directory) / "export")
+            if session is not None:
+                session.worker = None
+                self._registry.forget(session_uid)
             return
         self._registry.mark_failed(session, message)
         self._logger.error("Export for %s failed: %s", session.endpoint.id, message)
@@ -450,19 +497,31 @@ class NapariEndpointController(QtCore.QObject):
                 self._logger.debug("Could not close detached viewer", exc_info=True)
         self._registry.close(session)
 
-    def closeAll(self, wait_ms: int = 5000) -> None:
+    def closeAll(self, wait_ms: int = 5000) -> bool:
         """Close every session; at shutdown also wait for export threads.
 
         A thread still writing when the window goes away would be destroyed
         under its worker; each one is joined here, bounded by ``wait_ms``.
+        A cancelled session is forgotten only once its worker has come
+        back, so the late completion still finds the tombstone that tells
+        it to discard what it wrote. Returns False when an export outlived
+        the wait; that thread is then parked in a module-level holder and
+        finishes on its own.
         """
         for session in list(self._registry.all_sessions()):
             self.closeSession(session.uid)
-        self._registry.forget_closed()
-        self.joinExports(wait_ms)
+        all_done = self.joinExports(wait_ms)
+        self._registry.forget_closed(keep=lambda s: s.cancelled and self._workerRunning(s))
+        return all_done
 
     def joinExports(self, wait_ms: int = 5000) -> bool:
-        """Wait for every running export thread; False when one is still running."""
+        """Wait for every running export thread; False when one is still running.
+
+        A thread that does not finish in time is *not* dropped: its entry
+        moves to a module-level holder so the QThread object stays alive
+        until it finishes, and the session's late completion is discarded
+        the normal way.
+        """
         all_done = True
         for entry in list(self._keepalive):
             thread = entry[0] if isinstance(entry, tuple) else None
@@ -476,9 +535,25 @@ class NapariEndpointController(QtCore.QObject):
                     if not wait(int(wait_ms)):
                         all_done = False
                         self._logger.warning("An endpoint export is still running after %d ms", wait_ms)
+                        if entry not in _ORPHANED_EXPORTS:
+                            _ORPHANED_EXPORTS.append(entry)
             except Exception:
                 self._logger.debug("Could not join an export thread", exc_info=True)
         return all_done
+
+    def heldResultUids(self) -> set[str]:
+        """Result uids an endpoint session still reads (a lease for lazy sources)."""
+        return self._registry.held_result_uids()
+
+    @staticmethod
+    def _workerRunning(session) -> bool:
+        entry = session.worker
+        thread = entry[0] if isinstance(entry, tuple) else None
+        running = getattr(thread, "isRunning", None)
+        try:
+            return bool(running()) if callable(running) else False
+        except Exception:
+            return False
 
     def _interruptExport(self, session) -> None:
         entry = session.worker
