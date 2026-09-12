@@ -91,7 +91,7 @@ def _beta_scan_info():
         "axis_startpos": [[0], [0], [0]],
         "axis_centerpos": [0, 0, 0],
         "return_time": 0.001,
-        "sequence_time": 0.002,
+        "sequence_time": 0.002, "move_time": 0, "settle_time": 0,
         "n_linesteps": 2,
     }
     return BetaScanDesigner().make_signal(parameters, setup)[2]
@@ -271,7 +271,7 @@ def test_beta_final_ttl_edges_match_the_3d_advanced_layout():
         "linestep_enable": {"Camera": [True, True]},
         "pulse_starts_s": {"Camera": [[0], [0]]},
         "pulse_ends_s": {"Camera": [[0.001], [0.001]]},
-        "sequence_time": 0.002,
+        "sequence_time": 0.002, "move_time": 0, "settle_time": 0,
         "advanced_mode": True,
     }
     signals, _ = AdvancedScanTTLCycleDesigner().make_signal(
@@ -454,7 +454,7 @@ def _y_first_parameters(designer):
         "n_linesteps": 2,
     }
     if designer == "beta":
-        return dict(common, return_time=0.001, sequence_time=0.002)
+        return dict(common, return_time=0.001, sequence_time=0.002, move_time=0, settle_time=0)
     return dict(common, sequence_time=0.001, phase_delay=0, d3step_delay=100)
 
 
@@ -505,7 +505,7 @@ def test_y_first_line_steps_follow_the_designers_own_signal(designer):
         "linestep_enable": {"Camera": [True, True]},
         "pulse_starts_s": {"Camera": [[0], [0]]},
         "pulse_ends_s": {"Camera": [[pulse_end], [pulse_end]]},
-        "sequence_time": sequence_time,
+        "sequence_time": sequence_time, "move_time": 0, "settle_time": 0,
         "advanced_mode": True,
     }
     signals, _ = AdvancedScanTTLCycleDesigner().make_signal(

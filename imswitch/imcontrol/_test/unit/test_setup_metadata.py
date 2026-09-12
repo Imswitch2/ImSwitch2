@@ -42,10 +42,6 @@ def test_metadata_is_the_shared_mapping_contract():
 # silent filename discovery into a review decision.
 _UNREGISTERED_CORE_MANAGERS = {
     ("detector", "APDManager"),
-    ("detector", "BaslerManager"),
-    ("detector", "ESP32CamManager"),
-    ("detector", "GXPIPYManager"),
-    ("detector", "JetsonCamManager"),
     ("detector", "PMTManager"),
     ("detector", "PhotometricsManager"),
     ("detector", "PiCamManager"),

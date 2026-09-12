@@ -15,6 +15,7 @@ import h5py
 import sip
 import zarr
 import numpy as np
+from imswitch.imcommon.model.acquisition_metadata import VALID_COMPLETION_OUTCOMES
 import tifffile as tiff
 from qtpy import QtCore
 
@@ -154,6 +155,13 @@ PRODUCER_STALL_WARN_S = 1.0
 # format so Fiji/HDFView builds that do not understand HDF5 2.0 can still open
 # completed recordings.
 HDF5_STREAM_LIBVER = ('v110', 'v110')
+#: Width of the fixed-length completion-outcome attribute a streaming HDF5
+#: dataset is created with. It was a literal S13 -- the length of the longer
+#: of the two outcomes that existed -- so a third, longer outcome would have
+#: been cut to thirteen characters on modify without an error, and
+#: 'stopped_early_on_stall' would have become a valid, wrong 'stopped_early'.
+#: The width now follows the vocabulary it stores.
+COMPLETION_OUTCOME_ATTR_DTYPE = f"S{max(len(value) for value in VALID_COMPLETION_OUTCOMES)}"
 
 
 @dataclass(frozen=True)
@@ -981,7 +989,15 @@ class HDF5Storer(Storer):
                 attr_id = target.attrs.get_id(key)
                 if attr_id.dtype.kind == "S" and isinstance(value, str):
                     value = value.encode("utf-8")
-                target.attrs.modify(key, value)
+                if (attr_id.dtype.kind == "S" and isinstance(value, bytes)
+                        and len(value) > attr_id.dtype.itemsize):
+                    # modify() cuts a value to the attribute's fixed width
+                    # without a word; recreate the attribute at the width the
+                    # value needs instead.
+                    del target.attrs[key]
+                    target.attrs[key] = value
+                else:
+                    target.attrs.modify(key, value)
             else:
                 target.attrs[key] = value
             return
@@ -1087,7 +1103,7 @@ class HDF5Storer(Storer):
                 dataset.attrs.create(
                     "recording:completion_outcome",
                     np.bytes_(""),
-                    dtype="S13",
+                    dtype=COMPLETION_OUTCOME_ATTR_DTYPE,
                 )
 
         # Group attrs by category and create metadata subgroups

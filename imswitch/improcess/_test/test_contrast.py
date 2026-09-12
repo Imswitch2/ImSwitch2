@@ -86,7 +86,7 @@ def test_auto_levels_and_histogram_accept_lazy_arrays_without_materializing():
 def test_sample_values_bounds_output_size_for_oversized_ndarray(monkeypatch):
     import imswitch.improcess.model.contrast as contrast_module
 
-    monkeypatch.setattr(contrast_module, "_SAMPLE_ELEMENT_THRESHOLD", 500)
+    monkeypatch.setattr(contrast_module, "_SAMPLE_WORKING_SET_BYTES", 500 * contrast_module._WORKING_SET_BYTES_PER_ELEMENT)
 
     data = np.arange(10_000, dtype=np.float32)
 
@@ -100,7 +100,7 @@ def test_sample_values_bounds_output_size_for_oversized_ndarray(monkeypatch):
 def test_auto_levels_samples_oversized_ndarray_within_tolerance(monkeypatch):
     import imswitch.improcess.model.contrast as contrast_module
 
-    monkeypatch.setattr(contrast_module, "_SAMPLE_ELEMENT_THRESHOLD", 500)
+    monkeypatch.setattr(contrast_module, "_SAMPLE_WORKING_SET_BYTES", 500 * contrast_module._WORKING_SET_BYTES_PER_ELEMENT)
 
     data = np.arange(10_000, dtype=np.float32)
 
@@ -113,7 +113,7 @@ def test_auto_levels_samples_oversized_ndarray_within_tolerance(monkeypatch):
 def test_sample_values_prefers_downsampling_leading_axes_over_spatial(monkeypatch):
     import imswitch.improcess.model.contrast as contrast_module
 
-    monkeypatch.setattr(contrast_module, "_SAMPLE_ELEMENT_THRESHOLD", 100)
+    monkeypatch.setattr(contrast_module, "_SAMPLE_WORKING_SET_BYTES", 100 * contrast_module._WORKING_SET_BYTES_PER_ELEMENT)
 
     # 200 planes of 5x5 -- comfortably reducible via the leading (frame) axis
     # alone, so the 5x5 in-plane resolution should be preserved.

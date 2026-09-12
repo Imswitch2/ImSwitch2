@@ -315,7 +315,14 @@ def _chunk_nbytes(data: Any) -> int:
 class LiveSource(ABC):
     """Polls a growing source and yields new raw-frame chunks."""
 
-    idles_between_stacks: bool = False
+    #: Whether the stream legitimately goes quiet between logical stacks. The
+    #: live stall watchdog (300 s by default) finalises a quiet stream as a
+    #: crashed writer, so it is only right for a source that streams
+    #: continuously -- and a source that streams continuously has to say so.
+    #: The default used to be the other way round, switched off by a flag each
+    #: new source author had to remember; forgetting it turned a slow
+    #: timelapse into a silently short reconstruction.
+    idles_between_stacks: bool = True
 
     @abstractmethod
     def open(self, path_or_handle: Any) -> StackInfo:
@@ -462,6 +469,8 @@ class InMemoryStackWrapper:
 
 class ZarrLiveSource(LiveSource):
     """Polls a growing Zarr array for new frames."""
+
+    idles_between_stacks = False  # one growing array; quiet means the writer stopped
 
     def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
         """
@@ -1188,6 +1197,8 @@ class ZarrLapseSource(LiveSource):
 
 class Hdf5LiveSource(LiveSource):
     """Polls a growing HDF5 dataset for new frames (SWMR protocol)."""
+
+    idles_between_stacks = False  # one growing array; quiet means the writer stopped
 
     def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
         """

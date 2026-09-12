@@ -38,7 +38,7 @@ def _beta_scan_parameters(*, n_linesteps=1):
         "axis_startpos": [[0], [0], [0]],
         "axis_centerpos": [0, 0, 0],
         "return_time": 0.001,
-        "sequence_time": 0.002,
+        "sequence_time": 0.002, "move_time": 0, "settle_time": 0,
         "n_linesteps": n_linesteps,
     }
 
@@ -139,7 +139,7 @@ def test_advanced_ttl_linestep_edges_drive_simulated_camera_frame_count():
             "linestep_enable": {"Camera": [True, False, True]},
             "pulse_starts_s": {"Camera": [[], [], []]},
             "pulse_ends_s": {"Camera": [[], [], []]},
-            "sequence_time": 0.002,
+            "sequence_time": 0.002, "move_time": 0, "settle_time": 0,
             "advanced_mode": False,
         },
         setup_info,

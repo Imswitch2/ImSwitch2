@@ -26,11 +26,16 @@ from imswitch.improcess.model.image_sources import (
     resolve_image,
 )
 from imswitch.improcess.model.plane_navigation import (
+    extract_plane,
     iter_planes,
     mean_plane,
     plane_count,
 )
 from imswitch.improcess.model.virtual_image import virtual_source_from_resolved_image
+
+
+#: Planes the Data panel's mean preview averages at most.
+MEAN_PREVIEW_MAX_PLANES = 256
 
 
 class DataObj:
@@ -363,13 +368,21 @@ class DataObj:
             if handle is not None and handle.ndim > 0 and not self.dataMaterialized:
                 frame_count = plane_count(handle.shape, labels)
                 if frame_count > 0:
+                    # A display preview, so bounded like every other display
+                    # reduction: at most MEAN_PREVIEW_MAX_PLANES planes, taken
+                    # at an even stride. Reading every plane of a 60 000-frame
+                    # recording on the GUI thread froze the window for the
+                    # duration, for a preview.
+                    stride = max(1, -(-frame_count // MEAN_PREVIEW_MAX_PLANES))
+                    indices = range(0, frame_count, stride)
                     accumulator = None
-                    for frame in iter_planes(handle, labels):
+                    for index in indices:
+                        frame = np.asarray(extract_plane(handle, index, labels))
                         if accumulator is None:
                             accumulator = np.zeros(frame.shape, dtype=np.float64)
                         accumulator += frame
                     self._meanData = np.asarray(
-                        accumulator / frame_count,
+                        accumulator / len(indices),
                         dtype=np.float32,
                     )
                 else:

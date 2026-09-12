@@ -37,6 +37,32 @@ results that look valid and mean nothing.
 
 ---
 
+## 0b. What the magic-number fixes will refuse on the rig
+
+The audit fixes (`docs/design/plans/magic-number-audit-fixes.md`) turned several
+silent substitutions into refusals. Check the rig's setup file against these
+before the session, or the first scan will stop with a message naming the field:
+
+- **`nidaq.timerCounterChannel` must be set** on a rig with an APD or PMT (e.g.
+  `"Dev1/ctr2"`, a counter no detector's `ctrInputLine` uses). Six of seven shipped
+  setups leave it `null`; the point detectors used to arm against a terminal
+  nothing drove.
+- **`scan.sampleRate` must be `100000`** on real NI-DAQ hardware. Another value is
+  refused at startup instead of running the scan slower by the ratio.
+- **Stage (Beta) scans need a dwell longer than the stage's move + settle**
+  (4 ms by default; `move_time`/`settle_time` in `scanDesignerParams` declare a
+  faster stage). The stage panels open at 10 ms instead of 1 ms.
+- **TriggerScope firmware scans** are refused when a DAC ramp would leave the axis's
+  `minVolt`/`maxVolt` — from the parked position, so park the axis first.
+- **Photometrics `External "frame-trigger"`** now programs one exposure per rising
+  edge (`EXT_TRIG_EDGE_RISING`), not exposure-while-high. Confirm on the camera if
+  one is present.
+- Every camera without `cameraPixelSizeUm` **warns at startup** and stamps
+  `Camera pixel size source = assumed default` into its files. Declare the
+  measured value to silence it.
+- The Point Scan panel's **phase delay opens at 0 µs** (was 100); put the calibrated
+  lag in `scan.scanDesignerParams.phase_delay` (µs) so both panels seed from it.
+
 ## 1. Why this needs a rig at all
 
 The whole effort replaces *inferred* frame semantics with *recorded* ones. Every

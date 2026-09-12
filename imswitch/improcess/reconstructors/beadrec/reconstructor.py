@@ -257,10 +257,15 @@ class BeadRecReconstructor(Reconstructor):
     #: a condition loop is reconstructed per condition instead of being mixed
     #: into one raster. ``allow_ambiguous`` is on because the manual Scan X/Y
     #: entries are a legitimate override for a recording without a layout.
+    # The scan loops' physical steps ARE the bead fit's pixel size; a layout
+    # whose loop has no step was read as 0.0 and the fit reported nonsense in
+    # calibrated units. Declaring them here makes the preflight's
+    # UNCALIBRATED_ACQUISITION_LOOP refusal live where it matters.
     acquisition_requirements = AcquisitionRequirements(
         payload_kinds=frozenset({PAYLOAD_DETECTOR_FRAME_STREAM}),
         allowed_extra_loops="split",
         allow_ambiguous=True,
+        requires_calibrated_loops=frozenset({"scan_x", "scan_y"}),
     )
 
     def make_param_widget(self, parent):

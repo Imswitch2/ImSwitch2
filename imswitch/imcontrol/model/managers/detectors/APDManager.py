@@ -42,6 +42,35 @@ def _joinScanThreadBounded(thread, timeoutMs, detectorName):
         )
 
 
+def _timerClockTerminalOf(nidaqManager):
+    """The timer counter's output terminal, or None when none is configured.
+
+    Tolerant of test doubles: anything that is not a terminal name is None,
+    which only matters on hardware, where requireTimerClock() refuses it.
+    """
+    accessor = getattr(nidaqManager, 'getTimerClockTerminal', None)
+    terminal = accessor() if callable(accessor) else None
+    return terminal if isinstance(terminal, str) else None
+
+
+def _timerRateOf(nidaqManager):
+    """The timer counter's pulse rate in hertz; 1 MHz when it cannot say."""
+    try:
+        return float(getattr(nidaqManager, 'timerRateHz'))
+    except (AttributeError, TypeError, ValueError):
+        return 1e6
+
+
+def _requireTimerClock(detectorName, terminal):
+    if terminal is None:
+        raise RuntimeError(
+            f'{detectorName} takes its sample clock from the NI-DAQ timer '
+            f'counter, but nidaq.timerCounterChannel is not set in the setup '
+            f'file. Set it to a counter no detector uses, e.g. "Dev1/ctr2".'
+        )
+    return terminal
+
+
 class APDManager(DetectorManager):
     """ DetectorManager that deals with an avalanche photodiode connected to a
     counter input on a Nidaq card.
@@ -65,8 +94,11 @@ class APDManager(DetectorManager):
         # for typical fluorescence; the TTL-multiplying path will reallocate
         # as float32 (to preserve NaN as a "no-data" marker) in initiateImage.
         self._image = np.zeros(fullShape, dtype=np.uint16)
-        self._detection_samplerate = float(1e6)
-        self._nidaq_clock_source = r'ctr2InternalOutput'  # counter output task generating a 1 MHz frequency digitial pulse train
+        # The sample clock is the NI-DAQ timer counter's pulse train: its rate
+        # and terminal come from the manager that generates it, not from a
+        # literal here (which named counter 2 whatever the setup file chose).
+        self._detection_samplerate = _timerRateOf(nidaqManager)
+        self._nidaq_clock_source = _timerClockTerminalOf(nidaqManager)
         manager_props = detectorInfo.managerProperties
         self._channel = manager_props["ctrInputLine"]
         device_name = manager_props.get("deviceName", "Dev1")
@@ -756,6 +788,10 @@ class APDManager(DetectorManager):
         self.__newFrameReady = False
         return np.expand_dims(self._image_display, axis=0).copy()
 
+    def requireTimerClock(self):
+        """The sample-clock terminal, or a clear refusal when none exists."""
+        return _requireTimerClock(self._name, self._nidaq_clock_source)
+
     @property
     def rawFrameIsDeferred(self) -> bool:
         """The raw volume is only whole once its scan reaches a terminal."""
@@ -1056,7 +1092,13 @@ class ScanWorker(Worker):
         self._throw_startacc = round(
             scanInfoDict.get('scan_throw_startacc', 0) * self._frac_scan_det_rate)  # starting acceleration
 
-        self._phase_delay = int(scanInfoDict.get('phase_delay', 0))  # phase delay samples - galvo response time
+        # Galvo response lag, declared in microseconds; converted to detection
+        # samples at the timer rate (identical at 1 MHz, which is why it used
+        # to pass as a sample count).
+        self._phase_delay = int(round(
+            float(scanInfoDict.get('phase_delay', 0) or 0)
+            * self._manager._detection_samplerate / 1e6
+        ))
         self._smooth_axes = scanInfoDict.get('smooth_axes', [False, False, False])
 
         # samples to throw due to smooth between d>2 step transitioning
@@ -1072,7 +1114,7 @@ class ScanWorker(Worker):
             self._inputTaskGeneration = (
                 self._manager._nidaqManager.startInputTask(
                     self._name, 'ci', self._channel, 'finite',
-                    self._manager._nidaq_clock_source,
+                    self._manager.requireTimerClock(),
                     self._manager._detection_samplerate,
                     self._samples_total, True, 'ao/StartTrigger',
                     self._manager._terminal,
@@ -1208,7 +1250,14 @@ class ScanWorker(Worker):
             # optional: logger warning
             line_samples = line_samples[:n]
         pixels = np.asarray(line_samples).reshape(-1, frac).sum(axis=1)
-        if not self._manager._ttlmultiplying:
+        if self._manager._simulation_mode and not self._manager._ttlmultiplying:
+            # The synthetic generator's own ceiling. It used to be applied to
+            # real counts as well, so a bright feature at a long dwell -- 10 ms
+            # at 1 Mcps is 10000 counts -- came back flat-topped at exactly
+            # mockPhotonCountMax, indistinguishable from detector saturation
+            # and adjustable only through a key named for the mock. A real
+            # APD's only ceiling is the frame's dtype, applied where the frame
+            # is assembled.
             pixels = np.clip(pixels, 0, self._manager._mock_photon_count_max)
         return pixels
 

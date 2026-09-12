@@ -367,7 +367,7 @@ Controls NI-DAQ card behavior.
 
 Key fields:
 
-* ``timerCounterChannel``: Counter channel for timing (e.g., ``0`` → ``"Dev1/ctr0"``)
+* ``timerCounterChannel``: Counter that generates the 1 MHz pulse train the point detectors (APD, PMT) sample on (e.g. ``"Dev1/ctr2"``; an integer ``N`` means ``"Dev1/ctr{N}"``). Choose a counter no detector's ``ctrInputLine`` uses. Required on any rig with a point detector: without it the detectors have no sample clock and a scan is refused at start with a message naming this setting.
 * ``startTrigger``: Enable start triggering for synchronization (``true`` / ``false``)
 * ``simulation``: Allow NI-DAQ commands without physical hardware (``true`` / ``false``)
 
@@ -501,14 +501,16 @@ Key fields:
 
 * ``camera`` (str): Detector name (must match a detector with ``forFocusLock: true``)
 * ``positioner`` (str): Positioner name (typically a Z-axis piezo)
-* ``updateFreq`` (int): Update frequency in milliseconds
+* ``updateFreq`` (int): Focus-estimate update rate in **hertz** (must be positive; rates above 1000 are floored to a 1 ms timer)
 * ``frameCropx`` / ``frameCropy`` (int): Starting X/Y position of camera frame crop in pixels
 * ``frameCropw`` / ``frameCroph`` (int): Width/height of camera frame crop in pixels
 * ``swapImageAxes`` (bool): Swap camera image axes when grabbing frame
 * ``piKp`` (float): Default kp (proportional gain) of feedback loop
 * ``piKi`` (float): Default ki (integral gain) of feedback loop
-* ``reacquireTimeoutS`` (float, default ``1.0``): How long to wait for the focus
-  signal to come back after a scan released the actuator, before giving up
+* ``reacquireTimeoutS`` (float, default ``1.0``): Settle allowance for the actuator
+  after a scan released it. The reacquisition deadline is this **plus** the sample
+  window, ``reacquireSamples / updateFreq``, so a slow focus camera cannot make the
+  deadline structurally impossible
 * ``reacquireTolerancePx`` (float, default ``0.5``): How close the signal must
   return to its pre-scan setpoint before the lock re-engages, in camera pixels
 * ``reacquireSamples`` (int, default ``5``): Consecutive estimates averaged
@@ -595,7 +597,8 @@ Key fields:
 
 * ``camera`` (str): Detector name
 * ``positioner`` (str): Positioner name (typically Z-axis)
-* ``updateFreq`` (int): Update frequency in milliseconds
+* ``updateFreq`` (int): Update rate of the autofocus plot, in hertz
+* ``settleTimeMs`` (float, default ``150``): Wait after each Z move before the focus metric's frame is taken. The frame is taken through the same fresh-frame handshake as tiling, so a camera slower than this still yields a frame that started exposing after the move
 * ``frameCropx`` / ``frameCropy`` (int): Starting X/Y position of frame crop in pixels
 * ``frameCropw`` / ``frameCroph`` (int): Width/height of frame crop in pixels
 

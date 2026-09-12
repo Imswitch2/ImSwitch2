@@ -6,13 +6,29 @@ from .DetectorManager import (
 )
 
 
+# PVCAM PL_EXPOSURE_MODES extended trigger codes, (7 + n) << 8: the label the
+# panel shows and the code the camera takes, in one table so the write and the
+# read-back cannot disagree. They did: the write map sent 2560 (EXT_TRIG_LEVEL,
+# exposure lasts while the line is high) for "frame-trigger" while the
+# read-back called 2304 a start-trigger and 2048 a frame-trigger, so selecting
+# a start-trigger displayed as a frame-trigger after the next exposure change.
+TRIGGER_SOURCE_CODES = {
+    'Internal trigger': 1792,           # EXT_TRIG_INTERNAL
+    'External "start-trigger"': 2048,   # EXT_TRIG_TRIG_FIRST: first edge starts, then internal timing
+    'External "frame-trigger"': 2304,   # EXT_TRIG_EDGE_RISING: one exposure per rising edge
+}
+TRIGGER_SOURCE_LABELS = {code: label for label, code in TRIGGER_SOURCE_CODES.items()}
+
+
 class PhotometricsManager(DetectorManager):
     """ DetectorManager that deals with frame extraction for a Photometrics camera.
 
     Manager properties:
 
     - ``cameraListIndex`` -- the camera's index in the Photometrics camera list
-      (list indexing starts at 0)
+      (list indexing starts at 0); the string ``"mock"`` loads
+      ``MockPhotometrics`` instead of pyvcam, which is also what a failed
+      camera initialisation falls back to
     - ``cameraPixelSizeUm`` -- optically effective (sample-plane) pixel size in
       micrometers, i.e. physical sensor pitch divided by total optical
       magnification. Exposed at runtime as the 'Camera pixel size' detector
@@ -41,9 +57,7 @@ class PhotometricsManager(DetectorManager):
                                                     valueUnits='ms', editable=False),
             'Trigger source': DetectorListParameter(group='Acquisition mode',
                                                     value='Internal trigger',
-                                                    options=['Internal trigger',
-                                                             'External "start-trigger"',
-                                                             'External "frame-trigger"'],
+                                                    options=list(TRIGGER_SOURCE_CODES),
                                                     editable=True),
             'Readout port': DetectorListParameter(group='ports',
                                                   value='Sensitivity',
@@ -142,23 +156,15 @@ class PhotometricsManager(DetectorManager):
 
     def _setTriggerSource(self, source):
         self.__logger.debug("Change trigger source")
+        try:
+            trigger_value = TRIGGER_SOURCE_CODES[source]
+        except KeyError:
+            raise ValueError(f'Invalid trigger source "{source}"') from None
 
         def triggerAction():
             self._camera.exp_mode = trigger_value
 
-        if source == 'Internal trigger':
-            trigger_value = 1792
-            self._performSafeCameraAction(triggerAction)
-
-        elif source == 'External "start-trigger"':
-            trigger_value = 2048
-            self._performSafeCameraAction(triggerAction)
-
-        elif source == 'External "frame-trigger"':
-            trigger_value = 2560
-            self._performSafeCameraAction(triggerAction)
-        else:
-            raise ValueError(f'Invalid trigger source "{source}"')
+        self._performSafeCameraAction(triggerAction)
 
     def _setReadoutPort(self, port):
         self.__logger.debug("Change readout port")
@@ -199,12 +205,15 @@ class PhotometricsManager(DetectorManager):
     def _updatePropertiesFromCamera(self):
         self.setParameter('Real exposure time', self._camera.exp_time)
         triggerSource = self._camera.exp_mode
-        if triggerSource == 1792:
-            self.setParameter('Trigger source', 'Internal trigger')
-        elif triggerSource == 2304:
-            self.setParameter('Trigger source', 'External "start-trigger"')
-        elif triggerSource == 2048:
-            self.setParameter('Trigger source', 'External "frame-trigger"')
+        label = TRIGGER_SOURCE_LABELS.get(triggerSource)
+        if label is not None:
+            self.setParameter('Trigger source', label)
+        else:
+            self.__logger.warning(
+                f'Camera reports exposure mode {triggerSource}, which none of the '
+                f'trigger sources here name; the displayed trigger source is left '
+                f'as it was'
+            )
 
         readoutPort = self._camera.readout_port
         if readoutPort == 0:
@@ -218,6 +227,12 @@ class PhotometricsManager(DetectorManager):
         self._camera.close()
 
     def _getCameraObj(self, cameraId):
+        from imswitch.imcontrol.model.interfaces.photometrics_mock import MockPhotometrics
+
+        if str(cameraId).lower() == 'mock':
+            camera = MockPhotometrics()
+            self.__logger.info(f'Initialized camera, model: {camera.name}')
+            return camera
         try:
             from pyvcam import pvc
             from pyvcam.camera import Camera
@@ -227,12 +242,15 @@ class PhotometricsManager(DetectorManager):
             camera = next(Camera.detect_camera())
             camera.open()
         except Exception as e:
+            # A stand-in that answers the PVCAM surface this manager reads.
+            # The Hamamatsu mock that used to be substituted here answered none
+            # of it, so the fallback raised one line later and took the whole
+            # imcontrol module down with it.
             self.__logger.warning(
                 f'Failed to initialize Photometrics camera {cameraId}, loading mocker: {e}',
                 exc_info=True
             )
-            from imswitch.imcontrol.model.interfaces.hamamatsu_mock import MockHamamatsu
-            camera = MockHamamatsu()
+            camera = MockPhotometrics()
 
         self.__logger.info(f'Initialized camera, model: {camera.name}')
         return camera

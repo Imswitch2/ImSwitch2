@@ -8,6 +8,7 @@ import numpy as np
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.scan_parameters import (
+    seed_scan_delays_from_setup,
     AdvancedScanParameterSerializer,
     pixels_for_length_step,
 )
@@ -46,6 +47,7 @@ class ScanControllerAdvanced(SuperScanController):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        seed_scan_delays_from_setup(self._widget, self._setupInfo)
 
         # Snapshot of the parameters that produced the cached signalDict, so
         # repeated scan frames can skip regenerating an identical signal.

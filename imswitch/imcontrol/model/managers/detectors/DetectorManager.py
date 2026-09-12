@@ -65,6 +65,11 @@ class DetectorListParameter(DetectorParameter):
 #: size of camera detectors. Used by ``DetectorManager.pixelSizeUm`` and by
 #: downstream modules such as tiling, scale bars and stitching.
 CAMERA_PIXEL_SIZE_PARAM = 'Camera pixel size'
+#: Companion parameter naming where the pixel size came from.
+CAMERA_PIXEL_SIZE_SOURCE_PARAM = 'Camera pixel size source'
+PIXEL_SIZE_SOURCE_SETUP = 'setup file'
+PIXEL_SIZE_SOURCE_DEFAULT = 'assumed default'
+PIXEL_SIZE_SOURCE_USER = 'user'
 
 #: Setup-file ``managerProperties`` key that seeds CAMERA_PIXEL_SIZE_PARAM.
 CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
@@ -237,6 +242,18 @@ class DetectorManager(SignalInterface):
                     f' "{CAMERA_PIXEL_SIZE_KEY}". Using the default'
                     f' {default} µm instead of the configured value.'
                 )
+            else:
+                # An omission is allowed, but it is not a calibration: the
+                # placeholder goes into every file's OME PhysicalSize, the
+                # scale bar and the napari layer scale looking exactly like a
+                # measured value. Say so once, here, and mark the provenance
+                # (see the 'Camera pixel size source' parameter).
+                logger.warning(
+                    f'Manager property "{CAMERA_PIXEL_SIZE_KEY}" is not declared;'
+                    f' assuming {default} µm/px. Recordings will carry this'
+                    f' placeholder as their pixel size until it is declared in'
+                    f' the setup file or set in the detector settings.'
+                )
             return DetectorNumberParameter(
                 group='Miscellaneous', value=float(default),
                 valueUnits='µm', editable=True,
@@ -329,6 +346,18 @@ class DetectorManager(SignalInterface):
                 getattr(detectorInfo, 'managerProperties', None)) is not None
         )
 
+        # Where the pixel size came from, recorded next to it so a file can
+        # tell a measured calibration from the assumed placeholder. Flips to
+        # 'user' when the value is edited at runtime.
+        if CAMERA_PIXEL_SIZE_PARAM in self.__parameters:
+            declared = CAMERA_PIXEL_SIZE_PARAM in self.__configOwnedParameters
+            self.__parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM] = DetectorListParameter(
+                group='Miscellaneous',
+                value=PIXEL_SIZE_SOURCE_SETUP if declared else PIXEL_SIZE_SOURCE_DEFAULT,
+                options=[PIXEL_SIZE_SOURCE_SETUP, PIXEL_SIZE_SOURCE_DEFAULT,
+                         PIXEL_SIZE_SOURCE_USER],
+                editable=False,
+            )
         self.setBinning(supportedBinnings[0])
 
     def updateLatestFrame(self, init):
@@ -349,6 +378,10 @@ class DetectorManager(SignalInterface):
         if name not in self.__parameters:
             raise AttributeError(f'Non-existent parameter "{name}" specified')
 
+        if (name == CAMERA_PIXEL_SIZE_PARAM
+                and CAMERA_PIXEL_SIZE_SOURCE_PARAM in self.__parameters
+                and value != self.__parameters[name].value):
+            self.__parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value = PIXEL_SIZE_SOURCE_USER
         self.__parameters[name].value = value
         return self.parameters
 

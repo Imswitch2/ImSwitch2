@@ -12,7 +12,7 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin, check_firmware_scan_dac_ranges
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
@@ -203,6 +203,9 @@ class TriggerScopePLSRMulticolorController(
         scanParameterDict['Laser3OnUs'] = int(self._scanParameterDict['Laser3OnMs'] * 1000)
         scanParameterDict['DelayAfterLaser3Us'] = int(self._scanParameterDict['DelayAfterLaser3Ms'] * 1000)
         scanParameterDict['MulticolorScanThirdV'] = self._scanParameterDict['MulticolorScanThirdUm'] / multicolorConvFactor
+        check_firmware_scan_dac_ranges(
+            self.positioners, deviceParameterDict, scanParameterDict, what='multicolor pLS-RESOLFT scan',
+        )
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):

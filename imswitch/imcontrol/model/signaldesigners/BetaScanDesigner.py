@@ -4,11 +4,30 @@ from .basesignaldesigners import ScanDesigner, ScanInfoContract
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
+#: Fast-axis ramp and settle inside each pixel dwell, in seconds. These were
+#: literals inside the pixel loop; a stage that needs longer declares
+#: ``move_time``/``settle_time`` in ``scanDesignerParams``.
+DEFAULT_MOVE_TIME_S = 0.002
+DEFAULT_SETTLE_TIME_S = 0.002
+
+
 class BetaScanDesigner(ScanDesigner):
     """ Scan designer for X/Y/Z stages that move a sample.
+
     Designer params:
+
     - ``return_time`` -- time to wait between lines for the stage to return to
       the first position of the next line, in seconds.
+    - ``move_time`` -- how long the fast axis takes to ramp from one pixel to
+      the next, in seconds (default 2 ms).
+    - ``settle_time`` -- how long it rests at the new pixel before the next
+      dwell starts, in seconds (default 2 ms).
+
+    The ramp and the settle occupy the end of every dwell window, so a dwell
+    that is not longer than their sum leaves no stationary time at all and
+    the ramps fold back over the previous pixels; such a dwell is refused. A
+    dwell that leaves less than half its length stationary is warned about:
+    a camera exposing for the whole dwell integrates the move.
     """
 
     def __init__(self, *args, **kwargs):
@@ -20,6 +39,38 @@ class BetaScanDesigner(ScanDesigner):
                                     'axis_startpos',
                                     'axis_centerpos',
                                     'return_time']
+
+    def checkSignalLength(self, scanParameters, setupInfo):
+        """Honour ``maxScanTimeMin`` from the dwell and the pixel counts.
+
+        The cap was read by the Galvo designer alone, and declared only by
+        setups that use this one -- a double no-op.
+        """
+        seconds = self.estimateScanSeconds(scanParameters, setupInfo)
+        limit = getattr(setupInfo.scan, 'maxScanTimeMin', None)
+        if limit and seconds > 60 * float(limit):
+            self._logger.error(
+                f'Scan would take {seconds / 60:.1f} min, above the '
+                f'{limit:g} min cap (scan.maxScanTimeMin).'
+            )
+            return False
+        return True
+
+    def estimateScanSeconds(self, scanParameters, setupInfo):
+        """Wall-clock length of the scan these parameters describe."""
+        positions = []
+        for length, step in zip(scanParameters['axis_length'],
+                                scanParameters['axis_step_size']):
+            positions.append(
+                1 if not length else pixels_for_length_step(float(length), float(step))
+            )
+        while len(positions) < 3:
+            positions.append(1)
+        fast, middle, slow = positions[:3]
+        linesteps = max(1, int(scanParameters.get('n_linesteps', 1)))
+        lines = middle * slow * linesteps
+        return (fast * lines * float(scanParameters['sequence_time'])
+                + lines * float(scanParameters.get('return_time', 0) or 0))
 
     def checkSignalComp(self, scanParameters, setupInfo, scanInfo):
         """ Check analog scanning signals so that they are inside the range of
@@ -127,6 +178,24 @@ class BetaScanDesigner(ScanDesigner):
         slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
 
         sampleRate = setupInfo.scan.sampleRate
+        moveTime = float(parameterDict.get('move_time', DEFAULT_MOVE_TIME_S))
+        settleTime = float(parameterDict.get('settle_time', DEFAULT_SETTLE_TIME_S))
+        dwell = float(parameterDict['sequence_time'])
+        if dwell <= moveTime + settleTime:
+            raise ValueError(
+                f'{self.__class__.__name__}: a {dwell * 1e3:g} ms dwell is not '
+                f'longer than the {moveTime * 1e3:g} ms move plus '
+                f'{settleTime * 1e3:g} ms settle the stage needs between pixels, '
+                f'so the fast axis would never be stationary. Lengthen the dwell '
+                f'or declare shorter move_time/settle_time for this stage.'
+            )
+        stationary = dwell - moveTime - settleTime
+        if stationary < dwell / 2:
+            self._logger.warning(
+                f'Only {stationary * 1e3:g} ms of each {dwell * 1e3:g} ms dwell is '
+                f'stationary: the move and settle take {(moveTime + settleTime) * 1e3:g} ms, '
+                f'so a detector exposing for the whole dwell integrates the move.'
+            )
         sequenceSamples = parameterDict['sequence_time'] * sampleRate
         returnSamples = parameterDict['return_time'] * sampleRate
         if not sequenceSamples.is_integer():
@@ -147,11 +216,11 @@ class BetaScanDesigner(ScanDesigner):
         rampValues = axis_pixel_positions(
             fast_axis_positions, fast_axis_step_size, start=fast_axis_start)
         self._logger.debug(rampValues)
+        smooth = int(np.ceil(moveTime * sampleRate))
+        settling = int(np.ceil(settleTime * sampleRate))
         for s in range(fast_axis_positions):
             start = s * sequenceSamples
             end = s * sequenceSamples + sequenceSamples
-            smooth = int(np.ceil(0.002 * sampleRate))
-            settling = int(np.ceil(0.002 * sampleRate))
             rampSignal[start: end] = rampValues[s]
             if s != fast_axis_positions - 1:
                 if (end - smooth - settling) > 0:

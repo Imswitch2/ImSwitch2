@@ -3,6 +3,7 @@ import json
 import configparser
 from ast import literal_eval
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
+from ._triggerscope_scan_geometry import check_dac_range
 import numpy as np
 import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
@@ -234,6 +235,9 @@ class TriggerScopeRasterController(
             stepSizesVolt.append(stepSize / convFactor)
             startPosVolt.append(self._analogParameterDict['axis_startpos'][index] / convFactor)
 
+        for target, startVolt, lengthVolt in zip(AOtargets, startPosVolt, lengthsVolt):
+            check_dac_range(self.positioners, target, (startVolt, startVolt + lengthVolt),
+                            what='Raster scan')
         rasterScanParameters['Analog'] = {'targets': AOtargets,
                                           'lengths': lengthsVolt,
                                           'stepSizes': stepSizesVolt,

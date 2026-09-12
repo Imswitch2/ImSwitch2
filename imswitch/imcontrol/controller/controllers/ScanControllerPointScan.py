@@ -8,12 +8,13 @@ from typing import Dict, Any
 from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
-from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step
+from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step, seed_scan_delays_from_setup
 from ._acquisition_layout_source import build_controller_point_scan_layouts
 
 class ScanControllerPointScan(SuperScanController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        seed_scan_delays_from_setup(self._widget, self._setupInfo)
 
         self._widget.initControls(
             self.positioners.keys(),
@@ -54,6 +55,8 @@ class ScanControllerPointScan(SuperScanController):
 
             self._widget.setSeqTimePar(self._digitalParameterDict['sequence_time'])
             self._widget.setPhaseDelayPar(self._analogParameterDict['phase_delay'])
+            if 'd3step_delay' in self._analogParameterDict:
+                self._widget.setd3StepDelayPar(self._analogParameterDict['d3step_delay'])
         finally:
             self.settingParameters = False
     

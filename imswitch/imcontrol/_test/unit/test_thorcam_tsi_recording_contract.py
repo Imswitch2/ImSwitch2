@@ -189,3 +189,60 @@ def test_bulb_mode_no_trigger_empty_chunk():
     
     assert chunk.ndim == 3, "Must return 3-D"
     assert len(chunk) == 0, "No trigger → empty chunk, not fabricated frames"
+
+
+
+class _FakeSdkCamera:
+    """The thorlabs_tsi_sdk surface ThorTSICamera's re-arm path touches."""
+
+    def __init__(self):
+        self.is_armed = False
+        self.frames_per_trigger_zero_for_unlimited = 1
+        self.operation_mode = 0
+        self.arm_depths = []
+
+    def arm(self, frames_to_buffer):
+        self.is_armed = True
+        self.arm_depths.append(int(frames_to_buffer))
+
+    def disarm(self):
+        self.is_armed = False
+
+
+def _wrapper_over(sdk):
+    from imswitch.imcontrol.model.interfaces.thorcamera_tsi import ThorTSICamera
+    wrapper = ThorTSICamera.__new__(ThorTSICamera)
+    wrapper._camera = sdk
+    return wrapper
+
+
+def test_a_trigger_mode_change_rearms_at_the_depth_the_camera_was_armed_with():
+    """The re-arm used to read frames-per-trigger (1) as the ring depth, so
+    the first Operation Mode change -- which every startup makes while
+    restoring detector state -- shrank the SDK ring from four frames to one
+    for the rest of the session."""
+    sdk = _FakeSdkCamera()
+    wrapper = _wrapper_over(sdk)
+    wrapper.arm(buffer_size=4)
+    assert sdk.arm_depths == [4]
+
+    wrapper.set_trigger_mode('hardware')
+    assert sdk.is_armed and sdk.operation_mode == 1
+    assert sdk.arm_depths == [4, 4]
+
+    wrapper.set_trigger_mode('software')
+    assert sdk.arm_depths == [4, 4, 4]
+
+
+def test_the_ring_depth_is_a_manager_property():
+    from imswitch.imcontrol.model.interfaces.thorcamera_tsi import DEFAULT_FRAME_BUFFER_DEPTH
+
+    assert _make_manager()._camera.armed_buffer_size == DEFAULT_FRAME_BUFFER_DEPTH == 4
+
+    info = DetectorInfo(
+        analogChannel=None, digitalLine=None, managerName='ThorCamTSIManager',
+        managerProperties={'cameraSerial': 'MOCK_TSI', 'frameBufferDepth': 8},
+        forAcquisition=True, forFocusLock=False,
+    )
+    mgr = ThorCamTSIManager(info, 'ThorCam')
+    assert mgr._camera.armed_buffer_size == 8

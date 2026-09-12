@@ -136,7 +136,9 @@ class FocusLockController(ImConWidgetController):
         self.locked = False
         self.aboutToLock = False
         self.twoFociVar = False
-        self.focusTime = 1000 / self.updateFreq  # focus signal update interval (ms)
+        # updateFreq is a rate in hertz; the timer cannot fire faster than
+        # once a millisecond.
+        self.focusTime = max(1.0, 1000.0 / float(self.updateFreq))  # focus signal update interval (ms)
         self.aboutToLockDiffMax = 0.4
         self.reacquireTimeoutS = float(
             self._setupInfo.focusLock.reacquireTimeoutS
@@ -556,10 +558,25 @@ class FocusLockController(ImConWidgetController):
     # Reacquisition barrier
     # ------------------------------------------------------------------
 
+    def _reacquireDeadlineS(self):
+        """Seconds the barrier gets: the settle allowance plus its sample window.
+
+        A window of ``reacquireSampleCount`` estimates takes
+        ``reacquireSampleCount / updateFreq`` seconds however fast the piezo
+        settles; a deadline that did not include it was structurally
+        impossible on any focus camera slower than 5 Hz.
+        """
+        try:
+            rate = float(self.updateFreq)
+        except Exception:
+            rate = 0.0  # a controller built without a setup (test doubles)
+        window = self.reacquireSampleCount / rate if rate > 0 else 0.0
+        return float(self.reacquireTimeoutS) + window
+
     def _beginReacquire(self):
         """Wait for the signal to come back before correcting against it."""
         self._reacquireSamples = np.full(self.reacquireSampleCount, np.nan)
-        self._reacquireDeadline = perf_counter() + self.reacquireTimeoutS
+        self._reacquireDeadline = perf_counter() + self._reacquireDeadlineS()
         self._reacquireFailed = False
         self._reacquireDone.clear()
         self.aboutToLock = True
@@ -923,8 +940,10 @@ class FocusLockController(ImConWidgetController):
             return False
         self._logger.warning(
             f'Focus lock did not reacquire within '
-            f'{self.reacquireTimeoutS:.2f} s of the scan ending; leaving '
-            f'the lock off. Raise reacquireTimeoutS if the piezo needs '
+            f'{self._reacquireDeadlineS():.2f} s of the scan ending '
+            f'({self.reacquireTimeoutS:.2f} s settle allowance plus a '
+            f'{self.reacquireSampleCount}-sample window); '
+            f'leaving the lock off. Raise reacquireTimeoutS if the piezo needs '
             f'longer to settle, or reacquireTolerancePx if it settles '
             f'off-setpoint by design.'
         )

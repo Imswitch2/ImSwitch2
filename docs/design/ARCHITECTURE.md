@@ -108,16 +108,12 @@ Missing dependencies (`None` or absent key) trigger a documented mock-mode fallb
 | `APDManager` | Avalanche Photodiode (NI-DAQ counter) | Via injected `nidaqManager` |
 | `PMTManager` | Photomultiplier Tube (NI-DAQ analog) | Via injected `nidaqManager` |
 | `HamamatsuManager` | Hamamatsu sCMOS (DCAM API) | `ctypes` DLL via bundled interface |
-| `BaslerManager` | Basler cameras | `pypylon` (lazy) |
 | `ThorCamTSIManager` | Thorlabs scientific cameras (Zelux/Kiralux/Quantalux) | `thorlabs_tsi_sdk` (lazy) + bundled DLL bootstrap; in-process mock fallback |
 | `PhotometricsManager` | Photometrics sCMOS/CCD | `pyvcam` (lazy) |
-| `GXPIPYManager` | Daheng Imaging cameras | `gxipy` (lazy) |
 | `TISManager` | The Imaging Source cameras | `ctypes`/`tisgrabber` via bundled interface |
 | `SwabianTimeTaggerManager` | Swabian Time Tagger (FLIM) | `TimeTagger` (lazy) |
-| `AVManager` | Generic video (webcam) | OpenCV |
-| `JetsonCamManager` | NVIDIA Jetson cameras | Bundled interface |
+| `AVManager` | Synthetic test camera (no video driver bundled) | `MockCameraTIS` |
 | `PiCamManager` | Raspberry Pi Camera | `picamera` (lazy) |
-| `ESP32CamManager` | ESP32-CAM (network) | Bundled interface |
 
 ### Laser Managers
 
@@ -551,8 +547,6 @@ The architecture is fully verified against the in-process mock (75 tests across 
 | `lantz` | LantzLaserManager, RS232Driver | Instrument framework |
 | `ctypes` | Hamamatsu SLM, SmarACT, TIS, Hamamatsu camera | Vendor C DLLs |
 | `pyvcam` | PhotometricsManager | Photometrics SDK |
-| `pypylon` | BaslerManager (via interface) | Basler SDK |
-| `gxipy` | GXPIPYManager (via interface) | Daheng SDK |
 | `h5py` | RecordingManager | HDF5 storage |
 | `zarr` | RecordingManager | Zarr storage |
 | `tifffile` | RecordingManager | TIFF storage |

@@ -7,7 +7,7 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin, check_firmware_scan_dac_ranges
 from ._acquisition_layout_source import resolft_counter, resolft_position_count
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
@@ -246,6 +246,9 @@ class TriggerScopeLSXYRController(
         scanParameterDict['rasterYStepSizeV'] = self._scanParameterDict['rasterYStepSizeUm'] / rasterYConvFactor
         scanParameterDict['rasterYSteps'] = int(self._scanParameterDict['rasterYSteps'])
 
+        check_firmware_scan_dac_ranges(
+            self.positioners, deviceParameterDict, scanParameterDict, what='LSXYR scan',
+        )
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):

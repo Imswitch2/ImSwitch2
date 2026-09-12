@@ -12,7 +12,7 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin, check_firmware_scan_dac_ranges
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
@@ -170,6 +170,9 @@ class TriggerScopePLSRController(
         scanParameterDict['cycleStartV'] = self._scanParameterDict['cycleStartPosUm'] / roConvFactor
         scanParameterDict['cycleStepSizeV'] = self._scanParameterDict['cycleStepSizeUm'] / roConvFactor
         scanParameterDict['cycleSteps'] = int(self._scanParameterDict['cycleSteps'])
+        check_firmware_scan_dac_ranges(
+            self.positioners, deviceParameterDict, scanParameterDict, what='pLS-RESOLFT scan',
+        )
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):

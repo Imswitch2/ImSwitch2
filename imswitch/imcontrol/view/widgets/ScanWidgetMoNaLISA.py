@@ -20,7 +20,7 @@ class ScanWidgetMoNaLISA(SuperScanWidget):
             "You need to be in digital laser modulation and external "
             "frame-trigger acquisition mode")
 
-        self.seqTimePar = QtWidgets.QLineEdit('1')  # ms
+        self.seqTimePar = QtWidgets.QLineEdit('10')  # ms; a stage needs its move and settle inside each dwell
 
         self.scanPar = {
                         'seqTime': self.seqTimePar

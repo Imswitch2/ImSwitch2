@@ -116,13 +116,16 @@ class AdvancedScanParameterSerializer:
 
         seq_time = widget.getSeqTimePar()
         analogParameterDict["sequence_time"] = seq_time
+        # Only a widget without the field falls back to zero. A blank or
+        # garbled entry raises: a bare except here used to turn a typo into a
+        # silent zero-microsecond phase delay.
         try:
             analogParameterDict["phase_delay"] = widget.getPhaseDelayPar()
-        except Exception:
+        except AttributeError:
             analogParameterDict["phase_delay"] = 0
         try:
             analogParameterDict["d3step_delay"] = widget.getd3StepDelayPar()
-        except Exception:
+        except AttributeError:
             analogParameterDict["d3step_delay"] = 0
 
         return analogParameterDict, positionersScan
@@ -345,6 +348,16 @@ class AdvancedScanParameterSerializer:
                 widget.setSeqTimePar(digitalParameterDict["sequence_time"])
             except Exception:
                 pass
+        # The delays are serialised by build_analog and were never written
+        # back, so a calibrated phase delay came back as 0 after a restart and
+        # the persisted value was overwritten by the next scan.
+        for key, setter in (("phase_delay", "setPhaseDelayPar"),
+                            ("d3step_delay", "setd3StepDelayPar")):
+            if key in analogParameterDict and hasattr(widget, setter):
+                try:
+                    getattr(widget, setter)(analogParameterDict[key])
+                except Exception:
+                    pass
         dig = digitalParameterDict or {}
 
         try:
@@ -451,3 +464,21 @@ class AdvancedScanParameterSerializer:
 
 
 __all__ = ["AdvancedScanParameterSerializer"]
+
+
+def seed_scan_delays_from_setup(widget, setupInfo) -> None:
+    """Seed the panel's phase and D3-step delay fields from the setup file.
+
+    Both are rig facts -- the galvo's response lag and the settle a slice
+    change needs -- so they belong in ``scan.scanDesignerParams`` as
+    ``phase_delay``/``d3step_delay`` (microseconds), not in a widget literal.
+    The two panels used to open with different literals (100 and 0) for the
+    same mirror. A persisted widget state applied later still wins, as it
+    should: it is what the operator last calibrated.
+    """
+    scan = getattr(setupInfo, "scan", None)
+    params = getattr(scan, "scanDesignerParams", None) or {}
+    for key, setter in (("phase_delay", "setPhaseDelayPar"),
+                        ("d3step_delay", "setd3StepDelayPar")):
+        if key in params and hasattr(widget, setter):
+            getattr(widget, setter)(params[key])

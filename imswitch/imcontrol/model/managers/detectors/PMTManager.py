@@ -42,6 +42,25 @@ def _joinScanThreadBounded(thread, timeoutMs, detectorName):
         )
 
 
+def _timerClockTerminalOf(nidaqManager):
+    """The timer counter's output terminal, or None when none is configured.
+
+    Tolerant of test doubles: anything that is not a terminal name is None,
+    which only matters on hardware, where requireTimerClock() refuses it.
+    """
+    accessor = getattr(nidaqManager, 'getTimerClockTerminal', None)
+    terminal = accessor() if callable(accessor) else None
+    return terminal if isinstance(terminal, str) else None
+
+
+def _timerRateOf(nidaqManager):
+    """The timer counter's pulse rate in hertz; 1 MHz when it cannot say."""
+    try:
+        return float(getattr(nidaqManager, 'timerRateHz'))
+    except (AttributeError, TypeError, ValueError):
+        return 1e6
+
+
 class PMTManager(DetectorManager):
     """PMT analog-input manager with linestep-aware buffering + frame-boundary UI updates."""
 
@@ -58,10 +77,20 @@ class PMTManager(DetectorManager):
         # Pixel sizes stored low-dim to high-dim (ImSwitch convention used elsewhere)
         self.__pixel_sizes = [1, 1]
 
-        self._detection_samplerate = float(1e6)
-        self._nidaq_clock_source = r"ctr2InternalOutput"
+        # The sample clock is the NI-DAQ timer counter's pulse train: its rate
+        # and terminal come from the manager that generates it, not from a
+        # literal here (which named counter 2 whatever the setup file chose).
+        self._detection_samplerate = _timerRateOf(nidaqManager)
+        self._nidaq_clock_source = _timerClockTerminalOf(nidaqManager)
 
         manager_props = detectorInfo.managerProperties
+        # Analog-input range handed to the driver. It used to be dropped on the
+        # way, so every PMT ran at nidaqmx's +-5 V; these defaults state that
+        # range, and a preamp swinging further declares its own.
+        self._aiVoltageRange = (
+            float(manager_props.get("aiVoltageMin", -5.0)),
+            float(manager_props.get("aiVoltageMax", 5.0)),
+        )
         self._channel = manager_props.get("analogInputLine", None)
         device_name = manager_props.get("deviceName", "Dev1")
         if isinstance(self._channel, int):
@@ -184,6 +213,16 @@ class PMTManager(DetectorManager):
                 logger.warning(f'Failed to clean up scan thread: {e}')
         if hasattr(super(), "__del__"):
             super().__del__()
+
+    def requireTimerClock(self):
+        """The sample-clock terminal, or a clear refusal when none exists."""
+        if self._nidaq_clock_source is None:
+            raise RuntimeError(
+                f'{self._name} takes its sample clock from the NI-DAQ timer '
+                f'counter, but nidaq.timerCounterChannel is not set in the setup '
+                f'file. Set it to a counter no detector uses, e.g. "Dev1/ctr2".'
+            )
+        return self._nidaq_clock_source
 
     @property
     def isScanDriven(self):
@@ -967,7 +1006,11 @@ class ScanWorker(Worker):
         self._throw_settling = round(scanInfoDict["scan_throw_settling"] * self._frac_scan_det_rate)
         self._throw_startacc = round(scanInfoDict["scan_throw_startacc"] * self._frac_scan_det_rate)
 
-        self._phase_delay = int(scanInfoDict["phase_delay"])
+        # Galvo response lag in microseconds, as detection samples (see APD).
+        self._phase_delay = int(round(
+            float(scanInfoDict["phase_delay"] or 0)
+            * self._manager._detection_samplerate / 1e6
+        ))
         self._smooth_axes = scanInfoDict["smooth_axes"]
 
         pad_initpos = self._scan_pads_initpos[0] if len(self._scan_pads_initpos) > 0 else 0
@@ -979,9 +1022,9 @@ class ScanWorker(Worker):
             self._inputTaskGeneration = (
                 self._manager._nidaqManager.startInputTask(
                     self._name, "ai", self._channel, "finite",
-                    self._manager._nidaq_clock_source,
+                    self._manager.requireTimerClock(),
                     self._manager._detection_samplerate,
-                    None, None,
+                    *self._manager._aiVoltageRange,
                     self._samples_total, True, "ao/StartTrigger",
                 )
             )

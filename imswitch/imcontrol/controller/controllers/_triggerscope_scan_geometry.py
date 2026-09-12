@@ -124,3 +124,55 @@ class TriggerScopeScanGeometryMixin:
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+#: The voltages one firmware mode uploads, per device role: fixed voltages,
+#: and (start, step, count) ramps whose far end is start + step * count. The
+#: firmware ramps the DAC autonomously from wherever the axis is parked, and
+#: no one checked the far end against the axis's declared range: the same
+#: operator jogging the same axis through the GUI is clamped and warned.
+_DAC_EXCURSIONS = (
+    ('roScanDevice', ('roRestingV', 'roStartV'), ('roStartV', 'roStepSizeV', 'roSteps')),
+    ('roScanDevice', ('cycleStartV',), ('cycleStartV', 'cycleStepSizeV', 'cycleSteps')),
+    ('galvoScanDevice',
+     ('galvoFirstPositionV', 'galvoSecondPositionV', 'galvoThirdPositionV'), None),
+    ('MulticolorScanDevice',
+     ('MulticolorScanFirstV', 'MulticolorScanSecondV', 'MulticolorScanThirdV'), None),
+    ('rasterXScanDevice', ('rasterXStartPosV',), ('rasterXStartPosV', 'rasterXStepSizeV', 'rasterXSteps')),
+    ('rasterYScanDevice', ('rasterYStartPosV',), ('rasterYStartPosV', 'rasterYStepSizeV', 'rasterYSteps')),
+)
+
+
+def check_dac_range(positioners, device, voltages, *, what):
+    """Refuse a firmware scan that would drive ``device`` outside its range.
+
+    ``positioners`` maps device name to its setup info; the range is the same
+    ``minVolt``/``maxVolt`` the positioner manager clamps jogs to, with the
+    same +-10 V fallback the TriggerScope manager applies when a device
+    declares none.
+    """
+    props = positioners[device].managerProperties
+    minVolt = float(props.get('minVolt', -10))
+    maxVolt = float(props.get('maxVolt', 10))
+    outside = [float(v) for v in voltages if not (minVolt <= float(v) <= maxVolt)]
+    if outside:
+        raise ValueError(
+            f'{what}: the scan would drive "{device}" to {outside[0]:.3f} V, '
+            f'outside its declared [{minVolt:g}, {maxVolt:g}] V. Scan a smaller '
+            f'range or move the axis first -- the firmware ramps from where the '
+            f'axis is parked, so the usable range is what remains above it.'
+        )
+
+
+def check_firmware_scan_dac_ranges(positioners, deviceParameterDict, scanParameterDict, *, what):
+    """Check every ramp and fixed voltage a RESOLFT-family mode uploads."""
+    for deviceKey, fixedKeys, ramp in _DAC_EXCURSIONS:
+        device = deviceParameterDict.get(deviceKey)
+        if not device or device not in positioners:
+            continue
+        voltages = [scanParameterDict[k] for k in fixedKeys if k in scanParameterDict]
+        if ramp is not None and all(k in scanParameterDict for k in ramp):
+            start, step, count = (scanParameterDict[k] for k in ramp)
+            voltages.append(float(start) + float(step) * int(count))
+        if voltages:
+            check_dac_range(positioners, device, voltages, what=what)

@@ -27,16 +27,16 @@ model, which was enough for the job.
 
 - **32 verified** — reproduced by one agent and survived another's attempt to refute it.
 - **10 refuted** — not listed.
-- **12 never challenged by a second agent** — listed at the end as leads. 5 of them were settled by fixing them instead, each fix with its own test.
-- **7 of the verified were consequences of this branch's own changes or sat in its path, and are fixed** — marked below. With the five settled leads that is 12 findings fixed on the branch.
+- **12 never challenged by a second agent** — listed at the end as leads, and fixed all the same.
+- **Every verified finding and every lead is fixed on this branch** (32 verified + 12 leads), each with its own test. What each fix did, and which ones change behaviour a rig operator will notice, is in [magic-number-audit-fixes.md](magic-number-audit-fixes.md).
 
-Nothing else here is a regression introduced by this branch.
+Only the first twelve were consequences of this branch's own changes or sat in its path; the rest are older defects of the same shape, fixed here because they were found here.
 
 ## Verified
 
 ### Detector managers
 
-**FLIM TCSPC window defaults to 2.048 ns against the 80 MHz laser period the same constructor declares**
+**FLIM TCSPC window defaults to 2.048 ns against the 80 MHz laser period the same constructor declares** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py:88` · *bites someone today*
 
 n_bins default 64 (line 88) x binwidth_ps default 32 ps (line 89) = a 2.048 ns TCSPC histogram window. Five lines further down, laser_rep_rate_mhz defaults to 80.0 MHz (line 93) = a 12.5 ns excitation period. The window covers 16% of the period it is meant to sample.
@@ -50,7 +50,7 @@ Anyone running the Swabian TimeTagger FLIM detector on the shipped defaults, whi
 *The right shape:* Do not default the window independently of the rate. Derive it: n_bins = ceil((1/laser_rep_rate) / binwidth_ps) for the declared rep rate, or at minimum refuse to start (or warn loudly, once) when n_bins*binwidth_ps < 0.8 * (1/laser_rep_rate_mhz). The two numbers are one physical fact expressed twice; only one of them should be a free default.
 
 
-**SwabianTimeTagger is scan-driven but does not declare rawFrameIsDeferred, so a FLIM recording saves the one-second live-preview snapshot as the finished measurement**
+**SwabianTimeTagger is scan-driven but does not declare rawFrameIsDeferred, so a FLIM recording saves the one-second live-preview snapshot as the finished measurement** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py:962` · *bites someone today*
 
 Two per-detector declarations that default to the camera answer and that a scan-driven detector must remember to override: rawFrameIsDeferred (DetectorManager.py:538, default False) and drainChunk (DetectorManager.py:561, default raw = display). Swabian overrides isScanDriven, pixelSizeUm, scale, dtype, finishScan -- and neither of these two. Combined with FlimWorker.LIVE_PREVIEW_S = 1.0 s (line 1149), the raw stream becomes 'whatever the scan had reached one second in'.
@@ -64,7 +64,7 @@ Anyone doing a ScanOnce or ScanLapse recording of a FLIM scan. RecordingManager.
 *The right shape:* Give SwabianTimeTaggerManager the same latch APD and PMT have: rawFrameIsDeferred -> True, and a drainChunk that publishes the volume exactly once, when _on_frame_ready arrives with is_final=True (and never for a generation that aborted). Better still, make the base class refuse the default: a manager whose isScanDriven is True should not be allowed to inherit rawFrameIsDeferred=False silently -- assert it, or derive the raw contract from isScanDriven rather than from a second flag that must agree with it.
 
 
-**APDManager clips real photon counts to mockPhotonCountMax on the live NI-DAQ path**
+**APDManager clips real photon counts to mockPhotonCountMax on the live NI-DAQ path** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/APDManager.py:1212` · *bites someone today*
 
 _mock_photon_count_max, default 5000 counts (APDManager.py:82-92, config key mockPhotonCountMax). It is a synthetic-data bound -- docs/mock-infrastructure.rst:78 lists it alongside mockPhotonCountMean/mockRandomSeed as parameters of the mock generator -- and randomInput() at :1388 is its intended consumer. samples_to_pixels() applies it to every pixel, gated only on _ttlmultiplying, never on _simulation_mode.
@@ -82,7 +82,7 @@ TIGHTEN THE VICTIM: "Any real APD confocal/STED acquisition with a per-pixel cou
 *The right shape:* Gate the clip on self._manager._simulation_mode, or move it into randomInput() where the other mock bounds live. If a real-data ceiling is genuinely wanted it should be a separate, differently named property expressed in counts-per-second (a detector property) rather than counts-per-pixel (which silently depends on the dwell time).
 
 
-**A camera with no cameraPixelSizeUm silently gets 0.15 um/px, and no shipped setup declares it**
+**A camera with no cameraPixelSizeUm silently gets 0.15 um/px, and no shipped setup declares it** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/DetectorManager.py:201` · *bites someone today*
 
 default: float = 0.15 um -- 'a typical high-mag value' per the docstring. It is the sample-plane pixel size used by tiling, stitching, scale bars, napari layer scale and the saved OME PhysicalSizeX/Y.
@@ -100,7 +100,7 @@ Every camera detector whose setup file omits cameraPixelSizeUm -- which is all 1
 *The right shape:* Treat 'absent' the same way the function already treats 'misspelled': warn once, naming the detector and the value being assumed. Better, make the fallback self-identifying -- record in the parameter (and hence in the saved metadata) that the pixel size is an assumed default rather than a declared calibration, so a file written with it cannot be mistaken for a calibrated one.
 
 
-**APD and PMT hardcode the NI-DAQ sample clock terminal to counter 2 while the setup file chooses which counter generates it**
+**APD and PMT hardcode the NI-DAQ sample clock terminal to counter 2 while the setup file chooses which counter generates it** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/APDManager.py:69` · *bites on a different rig*
 
 _nidaq_clock_source = 'ctr2InternalOutput' (APDManager.py:69, PMTManager.py:62) and _detection_samplerate = 1e6 (APDManager.py:68, PMTManager.py:61). Both are hardcoded in the detector; the pulse train they name is created by NidaqManager from setupInfo.nidaq.timerCounterChannel (NidaqManager.py:128, :1240-1250) at rate=1e6. The detector hardcodes the counter INDEX; the config chooses it.
@@ -118,7 +118,7 @@ BOARD DEPENDENCE. The silent variant is narrower than st
 *The right shape:* The detector should ask the NidaqManager for the clock it actually created (terminal and rate) rather than restating them. At minimum, NidaqManager should expose the timer terminal derived from timerCounterChannel, and startInputTask should reject -- loudly, at scan build -- a clock source that names a counter no task is driving.
 
 
-**Five camera managers can never reach real hardware and silently present a synthetic mock as a live camera**
+**Five camera managers can never reach real hardware and silently present a synthetic mock as a live camera** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/BaslerManager.py:171` · *bites on a different rig*
 
 Not a number but the same shape: a try/except fallback sized for 'the SDK is not installed on this dev box' that is load-bearing on a rig. Five managers import an interface module that does not exist anywhere in this tree -- avcamera, baslercamera, esp32camera, gxipycamera, jetsoncam -- and fall through to MockCameraTIS, a 500x500 synthetic bead generator, behind a single logger.warning.
@@ -132,7 +132,7 @@ CORRECTED DIAGNOSIS. The defect is not the try/except and not BaslerManager:171.
 *The right shape:* A mock substituted for missing hardware must be visible at the level the user works at, not only in the log: either refuse to construct the detector unless the setup file opts in (the way HamamatsuManager/TISManager use an explicit 'mock' cameraListIndex), or mark the manager as mocked so the GUI and every saved file's metadata say so. A recording produced from synthetic frames must not be indistinguishable from a real one.
 
 
-**ThorCam re-arm reuses frames-per-trigger as the ring-buffer depth, shrinking it from 4 frames to 1 on any runtime trigger-mode change**
+**ThorCam re-arm reuses frames-per-trigger as the ring-buffer depth, shrinking it from 4 frames to 1 on any runtime trigger-mode change** — **fixed on this branch**
 `imswitch/imcontrol/model/interfaces/thorcamera_tsi.py:167` · *bites on a different rig*
 
 Three different numbers for one quantity. ThorCamTSIManager arms with buffer_size=4 (lines 115, 238, 340); the interface's own signature defaults it to 2 (thorcamera_tsi.py:195); and the re-arm inside set_trigger_mode reads it from frames_per_trigger_zero_for_unlimited, which __init__ sets to 1 (thorcamera_tsi.py:49). Frames-per-trigger and frames-to-buffer are different quantities that happen to both be small integers.
@@ -148,7 +148,7 @@ A. THE VICTIM SCENARIO AS GIVEN IS NOT REACHABLE, AND IT IS THE ONE CASE WHERE T
 *The right shape:* Remember the depth the camera was actually armed with (or take it from a single configurable property next to flushFrameLimit, which is already config-driven at ThorCamTSIManager.py:41) and re-arm with that. Never derive a buffer depth from a frames-per-trigger setting; they are different units of the same integer.
 
 
-**PhotometricsManager's mock fallback is a Hamamatsu mock that implements none of the API it is substituted into**
+**PhotometricsManager's mock fallback is a Hamamatsu mock that implements none of the API it is substituted into** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/PhotometricsManager.py:234` · *bites on a different rig*
 
 Not a magnitude: a substitution written for one detector's API reused for its neighbour's. The except branch logs 'loading mocker' and hands back MockHamamatsu, which has none of sensor_size, name, scan_line_time, poll_frame, check_frame_status, start_live, abort, finish, exp_time, exp_mode, readout_port, binning, roi or close.
@@ -164,7 +164,7 @@ WRONG ABOUT THE MISSING HINT. The claim says the error "gives no hint that the r
 *The right shape:* Either write a Photometrics mock that answers the PVCAM surface the manager actually uses, or let the ImportError propagate with its own message. A fallback that cannot stand in is worse than no fallback, because it converts a clear 'pyvcam is not installed' into an AttributeError on an unrelated class.
 
 
-**Photometrics trigger-source enum: the write map and the read-back map disagree on two of three values**
+**Photometrics trigger-source enum: the write map and the read-back map disagree on two of three values** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/PhotometricsManager.py:154` · *bites on a different rig*
 
 Four PVCAM exp_mode codes, mapped inconsistently in two directions. _setTriggerSource writes 1792 for 'Internal trigger', 2048 for 'External start-trigger', 2560 for 'External frame-trigger' (lines 150/154/158). _updatePropertiesFromCamera reads 1792 -> Internal, 2304 -> start-trigger, 2048 -> frame-trigger (lines 202/204/206). 2560 maps to nothing on the way back and 2304 is never written.
@@ -182,7 +182,7 @@ A Photometrics user setting up a scan-triggered recording. Select 'External star
 
 ### Scan and DAQ timing
 
-**Beta stage scan hardcodes a 2 ms move + 2 ms settle inside each pixel dwell; the shipped default dwell is 1 ms, so the fast axis is driven to the wrong positions**
+**Beta stage scan hardcodes a 2 ms move + 2 ms settle inside each pixel dwell; the shipped default dwell is 1 ms, so the fast axis is driven to the wrong positions** — **fixed on this branch**
 `imswitch/imcontrol/model/signaldesigners/BetaScanDesigner.py:153-154` · *bites someone today*
 
 smooth = ceil(0.002 * sampleRate) and settling = ceil(0.002 * sampleRate) — 2 ms + 2 ms = 4 ms of the pixel dwell, evidently sized for a piezo/stage settle at a ~10 ms camera exposure. Nothing declares it; no positioner property feeds it.
@@ -198,7 +198,7 @@ THRESHOLD IS WRONG — it is not a cliff at 4 ms. The 4 ms is stolen from the EN
 *The right shape:* A settle time is a property of the mechanics, so it belongs in the positioner's managerProperties (e.g. settleTimeS, alongside the existing conversionFactor/minVolt/maxVolt), converted to samples per axis at design time. Whatever the source, it must be clamped against the dwell — settle_samples = min(round(settleTimeS*sampleRate), sequenceSamples) — and a dwell shorter than the settle time must be refused with a message, not silently folded back over the previous pixels.
 
 
-**'maxScanTimeMin' — documented as a hard cap on scan duration — is only honored by GalvoScanDesigner, and is declared exclusively in setups that use BetaScanDesigner**
+**'maxScanTimeMin' — documented as a hard cap on scan duration — is only honored by GalvoScanDesigner, and is declared exclusively in setups that use BetaScanDesigner** — **fixed on this branch**
 `imswitch/imcontrol/model/signaldesigners/GalvoScanDesigner.py:72-76 (only reader) vs imswitch/imcontrol/model/managers/ScanManagerBase.py:119 (Base/MoNaLISA makeFullScan, never calls checkSignalLength)` · *bites someone today*
 
 maxScanTimeMin = 1 (minute), declared in 4 shipped setups; and the companion guard `scan_steps > 1e7` in the same method. The config-editor template calls it "Hard cap on scan duration. null = no limit" and docs/setupinfo-reference.rst documents it as effective.
@@ -216,7 +216,7 @@ Users of example_no_hardware, example_snouty_smart_modes, hamamatsu_mock_scan_se
 *The right shape:* Move the duration/size guard out of one designer and into SuperScanManager.makeFullScan so every widget type gets it, and express it in the two quantities that actually bind: seconds (scan_samples_total * scan_time_step, which every designer already reports in the ScanInfoContract) against maxScanTimeMin, and bytes (samples * 8 * n_AO_axes + samples * n_DO_lines) against a memory budget — not a pixel-step count.
 
 
-**'D3 step delay (samples)' in the point-scan GUI is consumed as microseconds, giving 1/10 of the requested inter-slice settling at the shipped sample rate**
+**'D3 step delay (samples)' in the point-scan GUI is consumed as microseconds, giving 1/10 of the requested inter-slice settling at the shipped sample rate** — **fixed on this branch**
 `imswitch/imcontrol/model/signaldesigners/GalvoScanDesigner.py:82 (`self.__paddingtime_d3step = int(parameterDict['d3step_delay'])  # inter-slice delay [µs]`) vs imswitch/imcontrol/view/widgets/ScanWidgetPointScan.py:143` · *bites someone today*
 
 d3step_delay, entered in a field labelled "(samples)", used verbatim as µs and then divided by __timestep = 1e6/sampleRate = 10 µs. The label is only correct at sampleRate = 1 MHz; every shipped config uses 100 kHz.
@@ -234,7 +234,7 @@ The example_sted / PointScan operator who sets a per-slice delay so a Z piezo or
 *The right shape:* Both fields are times, not counts. Label and store them in µs (or seconds) and convert at the point of use — settling_samples = round(delay_s * sampleRate), phase_delay_samples = round(delay_s * detection_samplerate) — so neither meaning changes when the sample rate does.
 
 
-**scan.sampleRate is honored by every designer, the simulator and the detectors, but NidaqManager clocks the real AO/DO scan from the hardwired 100 kHz timebase**
+**scan.sampleRate is honored by every designer, the simulator and the detectors, but NidaqManager clocks the real AO/DO scan from the hardwired 100 kHz timebase** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/NidaqManager.py:1265 (`scanclock = r'100kHzTimebase'`), 1274, 1296, and the 1 MHz/100 kHz ratio at 1191 and 1244` · *bites on a different rig*
 
 100000 Hz / '100kHzTimebase', hardcoded at 6 sites, and `1e6/100e3` = 10 hardcoded at 2 more — against `scan.sampleRate`, a REQUIRED config field the editor template describes as "DAQ output sample rate" and docs/setupinfo-reference.rst as "DAQ sample rate in Hz". All 8 shipped setups happen to say 100000, so the two truths never diverge in-tree.
@@ -252,7 +252,7 @@ SITE COUNT IS OVERSTATED (6 -> effectively 1 decisive + 3 dependents). Lines 101
 *The right shape:* Either derive the clock from the config (use the internal AO sample clock at setupInfo.scan.sampleRate, or select the timebase terminal that matches it) and derive the timer counter's rate ratio from it, or — if 100 kHz is a deliberate hardware constraint — delete sampleRate from the schema and docs and expose it as a read-only constant, so nothing can silently disagree with the hardware.
 
 
-**APD and PMT hardwire their sample clock to 'ctr2InternalOutput' while nidaq.timerCounterChannel is a free config field the editor tells you to choose**
+**APD and PMT hardwire their sample clock to 'ctr2InternalOutput' while nidaq.timerCounterChannel is a free config field the editor tells you to choose** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/APDManager.py:69 and imswitch/imcontrol/model/managers/detectors/PMTManager.py:62, vs imswitch/imcontrol/model/SetupInfo.py:504-519` · *bites on a different rig*
 
 the literal 'ctr2InternalOutput' (no device prefix, counter 2 fixed) in both point-detector managers, against `timerCounterChannel`, whose config-editor tip reads "Output counter channel for timing, e.g. Dev1/ctr2. Integer N is also accepted and translated to Dev1/ctr{N}". Also `deviceName` (default "Dev1") is configurable for the detector's own counter/AI channel but not for the clock terminal.
@@ -270,7 +270,7 @@ BETTER COLLISION STORY THAN THE CLAIM'S — the "ctr2/ctr3 are the usual encoder
 *The right shape:* Derive the detector clock from the same config value the timer task uses — pass the timer counter's InternalOutput terminal down from setupInfo.nidaq (e.g. '<dev>/ctr<N>InternalOutput' built from getTimerCounterChannel), or, failing that, validate at startup that the configured timer counter is ctr2 on the detector's device and refuse with a clear message otherwise.
 
 
-**The analog-input voltage range is accepted and then dropped: every PMT channel silently runs at nidaqmx's ±5 V default**
+**The analog-input voltage range is accepted and then dropped: every PMT channel silently runs at nidaqmx's ±5 V default** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/NidaqManager.py:411-420 (min_val=-0.5/max_val=10.0 declared at 412, `add_ai_voltage_chan(channel)` called with no range at 420)` · *bites on a different rig*
 
 min_val=-0.5, max_val=10.0 — a deliberate-looking PMT-shaped range that reaches no hardware, and the ±5.0 V that nidaqmx substitutes (verified: add_ai_voltage_chan defaults min_val=-5.0, max_val=5.0). PMTManager compounds it by passing None, None for those parameters, which only works because they are ignored.
@@ -288,7 +288,7 @@ Any PMT rig. If the preamp swings above 5 V (a 0-10 V preamp is ordinary), every
 *The right shape:* Pass the range through: `add_ai_voltage_chan(channel, min_val=min_val, max_val=max_val)`, and source min/max from the PMT's managerProperties (the manager already reads offset_v and mock ranges from there) rather than from a wrapper default. A None must then be rejected at the call site instead of silently working.
 
 
-**TriggerScope firmware scans upload DAC start/length voltages that no one checks against the axis's declared minVolt/maxVolt**
+**TriggerScope firmware scans upload DAC start/length voltages that no one checks against the axis's declared minVolt/maxVolt** — **fixed on this branch**
 `imswitch/imcontrol/controller/controllers/TriggerScopeRasterController.py:225-235, reached via imswitch/imcontrol/model/managers/ScanManagerTriggerScope.py:50-54` · *bites on a different rig*
 
 the per-axis minVolt/maxVolt that are load-bearing on every other path — clamped with a warning in TriggerScopePositionerManager.setPosition, range-checked in TriggerScopeManager.setAnalog, checked per emitted waveform by Beta/Galvo checkSignalComp — and are consulted nowhere on the firmware scan path. (TriggerScopeManager.py:59-60 also substitutes a ±10 V default for devices that omit them.)
@@ -308,7 +308,7 @@ A TriggerScope rig operator who enters a scan ROI larger than the galvo's or pie
 
 ### Things a new device must remember to declare
 
-**SwabianTimeTagger declares isScanDriven but not rawFrameIsDeferred or drainChunk, so a FLIM recording stops on the first live-preview frame**
+**SwabianTimeTagger declares isScanDriven but not rawFrameIsDeferred or drainChunk, so a FLIM recording stops on the first live-preview frame** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py:962` · *bites on a different rig*
 
 rawFrameIsDeferred = False (DetectorManager.py:538) and DetectorManager.drainChunk returning ChunkPayload(display=frames, raw=frames) (DetectorManager.py:561). Both defaults are correct for a camera, whose every frame is complete on arrival.
@@ -376,7 +376,7 @@ Any point-scan rig (APDManager/PMTManager, ChunkKind.RAW) recording a Z-stack or
 
 ### Defaults standing in for declarations
 
-**Camera pixel size silently defaults to 0.15 µm and is then written into every file as a measured calibration**
+**Camera pixel size silently defaults to 0.15 µm and is then written into every file as a measured calibration** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/detectors/DetectorManager.py:201 (default: float = 0.15), 225-243 (absent-key branch)` · *bites someone today*
 
 0.15 µm sample-plane pixel size. Documented as "a typical high-mag value" — sized for a 60x/6.5 µm-pitch sCMOS (0.108 µm) or a 40x/6 µm (0.15 µm).
@@ -390,7 +390,7 @@ Every user of every setup file that does not spell `cameraPixelSizeUm` — which
 *The right shape:* Keep 0.15 as a runtime starting value but stop laundering it into the file as a declaration: `configuredCameraPixelSize()` already returns None for "undeclared", so carry that distinction into the recorded metadata (omit PhysicalSize, or stamp an explicit `calibration:pixel_size_source = default|config|user` annotation) and log once at startup that detector X is running on the default pixel size. Tiling should refuse, or loudly warn, on a detector whose pixel size is a default rather than silently mosaicking with it.
 
 
-**Galvo phase delay is a rig calibration hardcoded twice, at different values, in two scan panels**
+**Galvo phase delay is a rig calibration hardcoded twice, at different values, in two scan panels** — **fixed on this branch**
 `imswitch/imcontrol/view/widgets/ScanWidgetPointScan.py:15 (`QLineEdit('100')`) vs imswitch/imcontrol/view/widgets/ScanWidgetAdvanced.py:33 (`QLineEdit("0")`); defaulted again at imswitch/imcontrol/model/managers/detectors/APDManager.py:1059 and imswitch/imcontrol/model/scan_parameters.py:120-122` · *bites on a different rig*
 
 100 detection samples (Point Scan panel) versus 0 (Advanced panel), for the same physical quantity: the galvo mirror's response lag. Detection samples run at the hardcoded 1 MHz `_detection_samplerate`, so 100 samples = 100 µs.
@@ -404,7 +404,7 @@ Anyone driving the same galvo pair from both panels on the same microscope: the 
 *The right shape:* Move the phase delay out of the widgets and into the setup file next to the galvo that has it (a `phaseDelayUs` on the scanning positioner or on `ScanInfo`), expressed in microseconds rather than in samples of an unrelated 1 MHz clock, with the widgets seeded from it. Make both detector managers read it the same way — required, like PMTManager already does — and drop the bare `except Exception: = 0` in scan_parameters.py in favour of catching only the missing-accessor case.
 
 
-**Focus-lock reacquisition deadline is in seconds but the barrier it bounds advances in focus estimates, so a slow focus camera can never reacquire**
+**Focus-lock reacquisition deadline is in seconds but the barrier it bounds advances in focus estimates, so a slow focus camera can never reacquire** — **fixed on this branch**
 `imswitch/imcontrol/model/SetupInfo.py:251 (reacquireTimeoutS: float = 1.0) with :274 (reacquireSamples: int = 5)` · *bites on a different rig*
 
 1.0 second deadline, guarding a window of 5 consecutive focus estimates that arrive at `updateFreq` Hz. Evidently sized for the one shipped rig: docs/setupinfo-reference.rst:547 says "at updateFreq: 10 a five-sample window needs ~0.5 s", and example_sted.json is the only setup that sets updateFreq, to 10.
@@ -436,7 +436,7 @@ A point-scan rig recording a camera in ScanOnce/ScanLapse mode with any TTL sequ
 
 ### ImProcess readers and limits
 
-**getMeanData() reads the entire dataset on the GUI thread when a dataset is selected, with no size limit of any kind**
+**getMeanData() reads the entire dataset on the GUI thread when a dataset is selected, with no size limit of any kind** — **fixed on this branch**
 `imswitch/improcess/model/DataObj.py:352 (getMeanData), reached from imswitch/improcess/controller/DataFrameController.py:89 (showMean) via currentDataChanged at :125` · *bites someone today*
 
 There is none — that is the finding. Every other display-only reduction in ImProcess is capped: contrast.sample_values bounds itself to _MAX_SAMPLE_VALUES = 2_000_000 samples specifically so "display-only operations stay cheap" (contrast.py:9-12). The mean-preview path, which runs on plain dataset selection rather than on request, reads 100% of the planes. Both of its branches do: the lazy branch walks every plane, and the mean_plane fallback (plane_navigation.py:146) does np.mean(np.asarray(array)) — a full materialization.
@@ -472,7 +472,7 @@ Anyone who switches live reconstruction on over a folder that already holds fini
 *The right shape:* Give poll() a byte budget, computed the way the detector queue now computes its own: stop appending once sum(chunk.data.nbytes) exceeds a fixed MiB budget, leave the cursor where it is, and return — the next poll continues. The frame count then follows from the frame, as it does on the write side. Separately, wrap the startup poll in the same try/except the steady loop already has, so a source error there fails the store instead of the session.
 
 
-**The "is this array small enough to read whole" threshold is in elements, but the cost it gates is bytes — and 8.5x bytes at that**
+**The "is this array small enough to read whole" threshold is in elements, but the cost it gates is bytes — and 8.5x bytes at that** — **fixed on this branch**
 `imswitch/improcess/model/contrast.py:11 (_SAMPLE_ELEMENT_THRESHOLD = 64 * 1024 * 1024), used at :31 in _should_sample and :80 in finite_values` · *bites on a different rig*
 
 67,108,864 ELEMENTS. As bytes that is 64 MiB of uint8, 128 MiB of uint16, 256 MiB of float32, 512 MiB of float64 — the number is dtype-blind, and the operation it permits costs 8x the element count regardless of dtype, because _flatten_finite (:15) does astype(float64) then an isfinite mask then a boolean fancy-index, three full-size allocations. So the multiplier is 17x the array for uint8 and about 2x for float64: the threshold measures the one quantity that does not determine the cost.
@@ -488,7 +488,7 @@ Every processor result goes through finite_range() to compute display levels —
 
 ### Timeouts and waits
 
-**focusLock updateFreq is documented in milliseconds and consumed as hertz; asking for a slow loop gives the fastest possible one**
+**focusLock updateFreq is documented in milliseconds and consumed as hertz; asking for a slow loop gives the fastest possible one** — **fixed on this branch**
 `imswitch/imcontrol/controller/controllers/FocusLockController.py:139 and :178; declared at imswitch/imcontrol/model/SetupInfo.py:223-224; documented at docs/setupinfo-reference.rst:504` · *bites someone today*
 
 updateFreq. SetupInfo.py:224 says 'Update frequency, in milliseconds' and docs/setupinfo-reference.rst:504 repeats 'Update frequency in milliseconds'. The code computes focusTime = 1000 / self.updateFreq  # focus signal update interval (ms) and then self.timer.start(int(self.focusTime)) -- i.e. it treats the field as Hz. Only the shipped example value (10) happens to be sane under both readings.
@@ -506,7 +506,7 @@ Severity phrasing: "the whole application stops responding" is stronger than wha
 *The right shape:* Pick one unit and make the name say it: updateIntervalMs (consumed directly) or updateFreqHz (consumed as 1000/x), fix the docstring and docs/setupinfo-reference.rst to match, floor the timer at 1 ms, and reject updateFreq <= 0 at setup load. Validate reacquireTimeoutS against reacquireSamples/updateFreq at load rather than discovering it as a per-tile warning.
 
 
-**Autofocus waits a hardcoded 150 ms for the Z stage and then reads whatever frame is newest, landing exactly one sweep step off**
+**Autofocus waits a hardcoded 150 ms for the Z stage and then reads whatever frame is newest, landing exactly one sweep step off** — **fixed on this branch**
 `imswitch/imcontrol/controller/controllers/AutofocusController.py:11 (_SETTLE_S = 0.15), :274-276` · *bites on a different rig*
 
 _SETTLE_S = 0.15 s -- a fixed post-move settle, followed immediately by detector.getLatestFrameShared() with no freshness boundary. There is no config path: AutofocusInfo (SetupInfo.py:280-300) has no settle or exposure field.
@@ -522,7 +522,7 @@ The claim's model implicitly treats all 11 samples -- including the very first -
 *The right shape:* Take the settle time from config the way tiling does (add settleTimeMs to AutofocusInfo, defaulting to TilingInfo's 150 ms) and take the frame through the same fresh-frame handshake TilingController already implements -- open a chunk-consumer boundary after the move and require two frames past it -- rather than sleeping a constant and trusting getLast().
 
 
-**Point-scan detectors inherit nidaqmx's implicit 10 s read timeout, capping the fast-axis line period, and the failure is reported as a camera-trigger problem**
+**Point-scan detectors inherit nidaqmx's implicit 10 s read timeout, capping the fast-axis line period, and the failure is reported as a camera-trigger problem** — **fixed on this branch**
 `imswitch/imcontrol/model/managers/NidaqManager.py:461-470 (readInputTask); callers APDManager.py:1162,1186 and PMTManager.py:998,1008` · *bites on a different rig*
 
 None -- and that is the defect. readInputTask(taskName, samples, timeout=False) falls into `return self.tasks[taskName].read(samples)`, and nidaqmx.Task.read defaults to timeout=10.0 seconds (verified against the installed nidaqmx 1.5.0). No APD or PMT caller ever passes the timeout argument the method already exposes.
@@ -586,27 +586,25 @@ Found but never challenged by a verifier. Ordered by the severity their finder a
   `imswitch/imcommon/model/acquisition_layout.py:1640-1643` · *bites on a different rig* · A rig recording gated Advanced / line-step scans (pLS-RESOLFT, MoNaLISA, any detector whose mask drops some conditions) with a time loop, then running live reconstruction on it. recorded_event_spans is non-None exactly when the detector is gated, which is exactly the configuration this branch's span machinery exists for. The call is on LiveSource.open() (sources.py:520 and :1245, via _frames_per_s
 - **The chunk-consumer overflow trim uses list.pop(0) on a queue whose length is now tens of thousands of frames** — **fixed on this branch**  
   `imswitch/imcontrol/model/managers/detectors/DetectorManager.py:783` · *bites on a different rig* · The 9338 fps 76x20 crop camera that motivated the byte budget, when some consumer is registered but has stopped polling (a BeadRec or tiling consumer whose thread died, or one that was never released). The queue sits at the 84,733-frame cap and every subsequent drain pops as many frames off the front as it pushes on the back, each pop memmoving the whole remaining pointer array -- all of it inside
-- **The completion-outcome HDF5 attribute is fixed at S13 — exactly the length of the longer of the two current values, so a third outcome truncates silently and 'stopped_early_on_stall' becomes a valid-but-wrong 'stopped_early'**  
+- **The completion-outcome HDF5 attribute is fixed at S13 — exactly the length of the longer of the two current values, so a third outcome truncates silently and 'stopped_early_on_stall' becomes a valid-but-wrong 'stopped_early'** — **fixed on this branch**  
   `imswitch/imcontrol/model/managers/RecordingManager.py:1032 (dtype="S13"), against imswitch/imcommon/model/acquisition_metadata.py:14 (VALID_COMPLETION_OUTCOMES)` · *bites when extended* · The next person to add a completion outcome — which the codebase is already reaching for, since FailureKind (:1707) distinguishes failure classes the outcome field cannot express. Their HDF5 recordings carry a truncated marker with no exception and no warning, on HDF5 only (Zarr :826 and TIFF write plain strings, so the same recording reports different outcomes in different formats). Worst case is
-- **Basler and Jetson getChunk return a 4-D chunk, breaking the (numFrames, H, W) contract the broker fans out on**  
+- **Basler and Jetson getChunk return a 4-D chunk, breaking the (numFrames, H, W) contract the broker fans out on** — **fixed on this branch**  
   `imswitch/imcontrol/model/managers/detectors/BaslerManager.py:100` · *bites when extended* · Anyone configuring a Basler or Jetson camera. Their interface's getLastChunk() already returns (1, H, W), so the extra expand_dims makes it (1, 1, H, W) and each 'frame' handed to a consumer is (1, H, W) instead of (H, W). The ZarrStorer takes spatialShape from frames.shape[1:] (RecordingManager.py:753), so it silently creates a 4-D dataset with a degenerate axis, mislabelled against the OME axis 
-- **NidaqManager.readInputTask's `timeout=False` branch reads as 'no timeout' but delivers nidaqmx's 10 s default, capping the longest scan line**  
+- **NidaqManager.readInputTask's `timeout=False` branch reads as 'no timeout' but delivers nidaqmx's 10 s default, capping the longest scan line** — **fixed on this branch**  
   `imswitch/imcontrol/model/managers/NidaqManager.py:461-470` · *bites when extended* · A point-scan user acquiring a slow, wide line — photon-starved APD/STED imaging, where multi-millisecond dwells are the point. APDManager.run_loop_d2 issues one read per fast-axis line period (readdata(self._samples_d2_period)), so the whole line must arrive within 10 s. Beyond that, every line read raises DaqError -200474 mid-scan and the acquisition dies with a driver message about a timeout rat
-- **The acquisition-layout preflight is opt-in per reconstructor, and eight of nine never opt in — so the uncalibrated-loop refusal is dead code**  
+- **The acquisition-layout preflight is opt-in per reconstructor, and eight of nine never opt in — so the uncalibrated-loop refusal is dead code** — **fixed on this branch**  
   `imswitch/improcess/reconstructors/base.py:196 (`acquisition_requirements: AcquisitionRequirements | None = None`) and :30 (`requires_calibrated_loops: frozenset[str] = frozenset()`); the guard it disables is at :121-133` · *bites when extended* · Anyone whose recording carries a layout with an uncalibrated loop (`step=None`, `unit=None`) — which the producer side can legitimately emit: `_acquisition_layout_source._physical_loops` (lines 224-229) sets `step=None` whenever `pixel_sizes` is short or unparseable, and `build_triggerscope_resolft_layouts`'s `step()` helper (line 668-674) returns None for a missing `cycleStepSizeUm`/`roStepSizeUm
-- **Processor.id defaults to "unnamed", which silently defeats both the plugin loader's missing-id guard and the footprint's class-name fallback**  
+- **Processor.id defaults to "unnamed", which silently defeats both the plugin loader's missing-id guard and the footprint's class-name fallback** — **fixed on this branch**  
   `imswitch/improcess/processors/base.py:96` · *bites when extended* · Anyone writing an ImProcess drop-in analysis plugin - the documented user extension point - who sets `name` but not `id`. Their tool loads and runs, but every result it produces carries a processing footprint that says the step was `unnamed`. If they write a second plugin that also omits `id`, that one silently does not appear in the tool list at all; the only trace is a log warning naming a dupli
-- **The live stall watchdog's 300 s default is switched off by a class flag each new source author must remember to set**  
+- **The live stall watchdog's 300 s default is switched off by a class flag each new source author must remember to set** — **fixed on this branch**  
   `imswitch/improcess/live/sources.py:300 (LiveSource.idles_between_stacks = False), overridden at :753, :862, :1497, :1597; consumed at imswitch/improcess/controller/LiveReconstructionController.py:105-117; default from imswitch/improcess/model/processing_config.py:149` · *bites when extended* · Whoever adds the seventh live source — a new format, a plugin reconstructor's own reader, a remote store — and does not know the flag exists. If their source idles longer than five minutes between logical stacks (a slow timelapse, a scan waiting on a trigger or a focus-lock settle), the watchdog declares the writer crashed and finalises with partial data. The result is a silently short reconstruct
-- **Pulse-generator stop() joins its worker with a timeout and never checks whether it stopped**  
+- **Pulse-generator stop() joins its worker with a timeout and never checks whether it stopped** — **fixed on this branch**  
   `imswitch/imcontrol/model/managers/pulsegen/PulseStreamerManager.py:293-294; same shape at pulsegen/TeensyPulseManager.py:277-278 and interfaces/teensypulse.py:614-615` · *bites when extended* · A rig whose Pulse Streamer is reached over Ethernet, where the worker can be blocked inside pulseStreamer.stream() or isStreaming() for longer than 1 s (a long sequence upload, a congested link). stop() returns claiming success while the worker's finally clause has not run, so __running stays True. The operator's next action then fails with 'A sequence is already running' (run(), :248) or 'Cannot 
 
 ## What to do with this
 
-Everything marked *fixed on this branch* is done and tested there. Of the
-rest, nothing is in this PR's blast radius; the findings belong to other owners
-and other branches — the FLIM detector, the Photometrics and ThorCam managers,
-the focus lock and the autofocus, the NI-DAQ read timeout, the scan designers'
-timing, the camera pixel-size default, ImProcess's display-time reductions.
-They are recorded here so that they are found by design rather than by
-accident. Each verified entry carries the shape its fix should take.
+Everything here is fixed and tested on this branch; the companion
+[magic-number-audit-fixes.md](magic-number-audit-fixes.md) says how, finding by
+finding, and lists the behaviour changes that need a look on a rig. Each
+verified entry above still carries the verifier's corrections and the shape the
+fix was meant to take, so the reasoning can be checked against what was done.

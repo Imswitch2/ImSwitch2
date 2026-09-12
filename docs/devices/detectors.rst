@@ -158,7 +158,11 @@ top for the debug-plot path.
 AVManager
 =========
 
-Allied Vision (Vimba) area-scan cameras.
+The no-hardware camera. It serves synthetic frames from ``MockCameraTIS``:
+no video driver is bundled (the Allied Vision interface this manager once
+wrapped was removed upstream in 2022), so every ``cameraListIndex`` loads the
+mock. The shipped no-hardware setups use it, and its model name says *mock*
+so that a recording made from it cannot be mistaken for a real camera's.
 
 **Setup JSON**
 
@@ -189,10 +193,10 @@ Allied Vision (Vimba) area-scan cameras.
      - Meaning
    * - ``cameraListIndex``
      - int or str
-     - Index of the camera in the enumerated AV camera list (0-based).  Set to an invalid value (e.g. ``"mock"``) to force the mock fallback.
+     - Accepted for compatibility; ``"mock"`` states what every value does.
    * - ``avcam``
      - dict
-     - Dictionary of AV camera property name → value pairs applied via ``setPropertyValue`` at startup.
+     - Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup; the mock accepts and ignores them.
 
 Both fields are **required**; no defaults.
 
@@ -202,189 +206,12 @@ None.
 
 **Vendor library**
 
-``imswitch.imcontrol.model.interfaces.avcamera.CameraAV`` is
-lazy-imported inside ``_getAVObj``.  If construction fails the
-manager substitutes ``MockCameraTIS`` from
-``imswitch.imcontrol.model.interfaces.tiscamera_mock`` for headless
-operation.
+None. ``imswitch.imcontrol.model.interfaces.tiscamera_mock.MockCameraTIS``
+is the only camera this manager can construct.
 
 **Source**
 
 `AVManager.py <../../imswitch/imcontrol/model/managers/detectors/AVManager.py>`_
-
-
-BaslerManager
-=============
-
-Basler (pylon SDK) industrial cameras.
-
-**Setup JSON**
-
-.. code-block:: json
-
-    "detectors": {
-        "BaslerCam": {
-            "managerName": "BaslerManager",
-            "managerProperties": {
-                "cameraListIndex": 0,
-                "basler": {
-                    "exposure": 10000,
-                    "gain": 1
-                }
-            },
-            "forAcquisition": true
-        }
-    }
-
-**managerProperties**
-
-.. list-table::
-   :widths: 22 14 64
-   :header-rows: 1
-
-   * - Field
-     - Type
-     - Meaning
-   * - ``cameraListIndex``
-     - int or str
-     - Index of the camera in the enumerated Basler camera list (0-based).  Set to an invalid value (e.g. ``"mock"``) to force the mock fallback.
-   * - ``basler``
-     - dict
-     - Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.
-
-Both fields are **required**; no defaults.
-
-**Low-level dependencies**
-
-None.
-
-**Vendor library**
-
-``imswitch.imcontrol.model.interfaces.baslercamera.CameraBasler`` is
-lazy-imported inside ``_getBaslerObj``.  On failure the manager
-substitutes ``MockCameraTIS`` from
-``imswitch.imcontrol.model.interfaces.tiscamera_mock``.
-
-**Source**
-
-`BaslerManager.py <../../imswitch/imcontrol/model/managers/detectors/BaslerManager.py>`_
-
-
-ESP32CamManager
-===============
-
-Network-attached ESP32-CAM module reached over HTTP.
-
-**Setup JSON**
-
-.. code-block:: json
-
-    "detectors": {
-        "ESP32Cam": {
-            "managerName": "ESP32CamManager",
-            "managerProperties": {
-                "cameraHost": "192.168.4.1",
-                "cameraPort": 80,
-                "esp32cam": {
-                    "exposure": 100,
-                    "gain": 1
-                }
-            },
-            "forAcquisition": true
-        }
-    }
-
-**managerProperties**
-
-.. list-table::
-   :widths: 22 14 64
-   :header-rows: 1
-
-   * - Field
-     - Type
-     - Meaning
-   * - ``cameraHost``
-     - str
-     - Hostname / IP address of the ESP32-CAM web server.
-   * - ``cameraPort``
-     - int
-     - TCP port the camera is listening on.
-   * - ``esp32cam``
-     - dict
-     - Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.
-
-All three fields are **required**; no defaults.
-
-**Low-level dependencies**
-
-None.
-
-**Vendor library**
-
-``imswitch.imcontrol.model.interfaces.esp32camera.CameraESP32Cam`` is
-lazy-imported inside ``_getESP32CamObj``.  On failure the manager
-substitutes ``MockCameraTIS`` from
-``imswitch.imcontrol.model.interfaces.tiscamera_mock``.
-
-**Source**
-
-`ESP32CamManager.py <../../imswitch/imcontrol/model/managers/detectors/ESP32CamManager.py>`_
-
-
-GXPIPYManager
-=============
-
-Daheng Imaging (GxIPY SDK) industrial cameras.
-
-**Setup JSON**
-
-.. code-block:: json
-
-    "detectors": {
-        "GXCam": {
-            "managerName": "GXPIPYManager",
-            "managerProperties": {
-                "cameraListIndex": 0,
-                "gxipycam": {
-                    "exposure": 10000,
-                    "gain": 1
-                }
-            },
-            "forAcquisition": true
-        }
-    }
-
-**managerProperties**
-
-.. list-table::
-   :widths: 22 14 64
-   :header-rows: 1
-
-   * - Field
-     - Type
-     - Meaning
-   * - ``cameraListIndex``
-     - int or str
-     - Index of the camera in the enumerated Daheng camera list (0-based).  Set to an invalid value (e.g. ``"mock"``) to force the mock fallback.
-   * - ``gxipycam``
-     - dict
-     - Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.
-
-Both fields are **required**; no defaults.
-
-**Low-level dependencies**
-
-None.
-
-**Vendor library**
-
-``imswitch.imcontrol.model.interfaces.gxipycamera.CameraGXIPY`` is
-lazy-imported inside ``_getGXObj``.  On failure the manager substitutes
-``MockCameraTIS`` from ``imswitch.imcontrol.model.interfaces.tiscamera_mock``.
-
-**Source**
-
-`GXPIPYManager.py <../../imswitch/imcontrol/model/managers/detectors/GXPIPYManager.py>`_
 
 
 HamamatsuManager
@@ -444,61 +271,6 @@ substitutes ``MockHamamatsu`` from
 `HamamatsuManager.py <../../imswitch/imcontrol/model/managers/detectors/HamamatsuManager.py>`_
 
 
-JetsonCamManager
-================
-
-NVIDIA Jetson on-board CSI camera (IMX219 / Pi-camera-style sensor).
-
-**Setup JSON**
-
-.. code-block:: json
-
-    "detectors": {
-        "JetsonCam": {
-            "managerName": "JetsonCamManager",
-            "managerProperties": {
-                "avcam": {
-                    "exposure": 10000,
-                    "gain": 1
-                }
-            },
-            "forAcquisition": true
-        }
-    }
-
-**managerProperties**
-
-.. list-table::
-   :widths: 22 14 64
-   :header-rows: 1
-
-   * - Field
-     - Type
-     - Meaning
-   * - ``avcam``
-     - dict
-     - Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.
-
-The single field is **required**; no defaults.  (The class docstring
-also mentions ``cameraListIndex`` but the source never reads it — the
-Jetson camera is opened without a list index.)
-
-**Low-level dependencies**
-
-None.
-
-**Vendor library**
-
-``imswitch.imcontrol.model.interfaces.jetsoncam.CameraJETSON`` is
-lazy-imported inside ``_getJetsonObj``.  On failure the manager
-substitutes ``MockCameraTIS`` from
-``imswitch.imcontrol.model.interfaces.tiscamera_mock``.
-
-**Source**
-
-`JetsonCamManager.py <../../imswitch/imcontrol/model/managers/detectors/JetsonCamManager.py>`_
-
-
 PMTManager
 ==========
 
@@ -539,6 +311,10 @@ card.  Image is built during a scan driven by ``NidaqManager``.
      - str
      - ``"Dev1"``
      - NI-DAQ device prefix used when ``analogInputLine`` is given as an int.
+   * - ``aiVoltageMin`` / ``aiVoltageMax``
+     - float
+     - ``-5.0`` / ``5.0``
+     - Analog-input range handed to the driver, in volts. Declare the preamp's real swing: a signal above ``aiVoltageMax`` is clipped flat by the card with no error, and a small signal on a wide range wastes ADC resolution. The card coerces the pair up to the nearest range it has.
    * - ``offset_v``
      - float
      - ``0.0``
@@ -707,7 +483,6 @@ scan.
                 "click_channel": 1,
                 "start_channel": 2,
                 "line_channel": 3,
-                "n_bins": 64,
                 "binwidth_ps": 32,
                 "t0_ps": 0,
                 "min_counts_per_pixel": 20,
@@ -747,8 +522,8 @@ scan.
      - TimeTagger input channel receiving the per-line marker.
    * - ``n_bins``
      - int
-     - ``64``
-     - Number of TCSPC histogram bins per pixel.
+     - one laser period
+     - Number of TCSPC histogram bins per pixel. Omitted, it spans one period of ``laser_rep_rate_mhz`` at ``binwidth_ps`` (391 bins at 80 MHz / 32 ps). A declared window shorter than 80 % of the period is warned about at startup: the ``moment`` and ``phasor`` fits read a truncated decay as a short lifetime, plausibly and without any other sign.
    * - ``binwidth_ps``
      - int
      - ``32``
@@ -925,6 +700,10 @@ Thorlabs Scientific Cameras (TSI SDK) — Zelux, Kiralux, Quantalux.
      - str
      - ``"dlls/64_lib"``
      - Path (relative to the working directory on Windows) to the Thorlabs TSI DLLs.
+   * - ``frameBufferDepth``
+     - int
+     - ``4``
+     - Frames the SDK ring buffer holds between the camera and the acquisition loop. What the depth buys is tolerance to latency spikes (a GC pause, an HDF5 resize, a writer block) of up to ``depth / framerate`` seconds; the camera is re-armed at this depth on every trigger-mode change.
    * - ``defaults``
      - dict
      - ``{}``

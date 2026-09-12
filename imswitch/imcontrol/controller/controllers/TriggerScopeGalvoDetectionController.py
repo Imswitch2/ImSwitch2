@@ -12,7 +12,7 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin, check_firmware_scan_dac_ranges
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
@@ -183,6 +183,9 @@ class TriggerScopeGalvoDetectionController(
         scanParameterDict['galvoFirstPositionV'] = self._scanParameterDict['galvoFirstPositionUm'] / galvoConvFactor
         scanParameterDict['galvoSecondPositionV'] = self._scanParameterDict['galvoSecondPositionUm'] / galvoConvFactor
         scanParameterDict['galvoThirdPositionV'] = self._scanParameterDict['galvoThirdPositionUm'] / galvoConvFactor
+        check_firmware_scan_dac_ranges(
+            self.positioners, deviceParameterDict, scanParameterDict, what='galvo-detection scan',
+        )
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
