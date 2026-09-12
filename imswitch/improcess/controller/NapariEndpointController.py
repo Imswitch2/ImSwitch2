@@ -526,6 +526,9 @@ class NapariEndpointController(QtCore.QObject):
             self.closeSession(session.uid)
         all_done = self.joinExports(wait_ms)
         self._registry.forget_closed(keep=lambda s: s.cancelled and self._workerRunning(s))
+        # Forgetting tombstones changes what is held; say so, or a lease
+        # subscriber keeps the stale "still held" it heard at close time.
+        self.sigSessionsChanged.emit()
         return all_done
 
     def joinExports(self, wait_ms: int = 5000) -> bool:

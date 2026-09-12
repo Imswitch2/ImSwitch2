@@ -435,10 +435,7 @@ def test_gui_retained_sources_are_released_when_their_results_are_gone(registry,
     assert controller.releaseUnusedSources() == 1 and controller._retained == []
     controller._onFinished(run(wf, registry=registry, out_dir=tmp_path))
     controller.shutdown()
-    assert controller._retained                              # still loaded: its lease holds even at shutdown
-    loaded.clear()
-    controller.shutdown()
-    assert controller._retained == []
+    assert controller._retained == []      # a loaded result goes away with the window; no lease at shutdown
 
 
 def test_closing_an_exporting_session_interrupts_and_shutdown_joins_the_worker(tmp_path):

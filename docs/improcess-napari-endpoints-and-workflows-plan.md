@@ -320,6 +320,14 @@ snapshots must not leak per-chunk nodes (same step id per session);
 
 ## Review response
 
+### Round 8 (fifth code review, 2026-09-12) — 2 P1 + 1 P2 + 1 P3, all fixed
+| # | Finding | Fix (pinned in `_test/test_review_round8.py`) |
+|---|---|---|
+| 1 | A queued completion delivered after `shutdown()` published a result and retained its source | `_shuttingDown` flag; `_onFinished`/`_onFailed` close the report and publish nothing |
+| 2 | Shutdown leases: loaded results kept handles open; a failing holder read as "nobody" | Split `_loadedUids` / `_externalHeldUids`; at shutdown only external holders count, and an unanswerable holder keeps every handle open |
+| 3 | `closeAll()` left subscribers with the stale "held" from close time | `sigSessionsChanged` emitted again after `forget_closed()` |
+| 4 | Repeated shutdown appended the same orphaned run twice | Membership guard on `_ORPHANED_RUNS` |
+
 ### Round 7 (fourth code review, 2026-09-11) — 3 push blockers + 5 secondary, all fixed
 | # | Finding | Fix (pinned in `_test/test_review_round7.py`) |
 |---|---|---|

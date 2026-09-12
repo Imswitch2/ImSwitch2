@@ -191,7 +191,11 @@ controller keeps that file handle open even after the result leaves the
 reconstruction list; the handle is released as soon as no session and no
 loaded result still needs it, which the endpoint controller announces
 whenever a session opens or closes. A cancelled export keeps its lease
-until its worker has reported back. Closing a session whose export is still writing
+until its worker has reported back. At application shutdown the loaded
+results no longer count (the list goes away with the window), but a
+session's lease still does, and a lease that cannot be checked keeps
+every handle open; a workflow that finishes after shutdown began is
+discarded rather than published. Closing a session whose export is still writing
 cancels it: the export finishes on its own, its files are discarded when
 it reports back, and at shutdown ImProcess waits a bounded time for such
 exports and keeps a reference to any that outlive the wait rather than

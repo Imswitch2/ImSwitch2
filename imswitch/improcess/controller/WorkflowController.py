@@ -79,6 +79,7 @@ class WorkflowController(QtCore.QObject):
         # (napari endpoint sessions hold lazy layers over a result's data);
         # a retained source is released only when none of them holds it.
         self._holders: list = []
+        self._shuttingDown = False
         for name, slot in (("sigExportWorkflowRequested", self.exportWorkflow),
                            ("sigRunWorkflowRequested", self.runWorkflow)):
             signal = getattr(mainView, name, None)
@@ -177,6 +178,8 @@ class WorkflowController(QtCore.QObject):
 
     @QtCore.Slot(object)
     def _onFinished(self, report) -> None:
+        if self._discardIfShuttingDown(report):
+            return
         published = self._publish(report)
         files = [str(f) for receipt in report.receipts for f in receipt.files]
         self._status(
@@ -187,11 +190,30 @@ class WorkflowController(QtCore.QObject):
 
     @QtCore.Slot(str, object)
     def _onFailed(self, message: str, report) -> None:
+        if self._discardIfShuttingDown(report):
+            return
         published = self._publish(report) if report is not None else 0
         self._logger.error("Workflow failed: %s", message)
         self._status(f"Workflow failed: {message}" + (f" ({published} partial result(s) added)" if published else ""))
         if report is not None:
             self._retain(report)
+
+    def _discardIfShuttingDown(self, report) -> bool:
+        """A completion that lands after shutdown began is not published.
+
+        The worker's signal is queued; it can be delivered after
+        :meth:`shutdown` returned, when publishing would put a result into a
+        list that is going away and retain a source nobody will release.
+        The report is closed instead.
+        """
+        if not self._shuttingDown:
+            return False
+        if report is not None:
+            try:
+                report.close()
+            except Exception:
+                self._logger.debug("Could not close a late workflow report", exc_info=True)
+        return True
 
     def _retain(self, report) -> None:
         """Keep the sources the published results may still read from.
@@ -258,16 +280,26 @@ class WorkflowController(QtCore.QObject):
         worker are then parked so they are not destroyed while running, and
         every handle stays open.
         """
+        self._shuttingDown = True
         stopped = self.cancelRun(wait_ms)
         if not stopped:
             self._logger.warning("A workflow is still running after %d ms; its sources stay open", wait_ms)
             return False
-        held = self._heldResultUids() or set()
+        # Two kinds of lease, with different shutdown meaning. Results loaded
+        # in the reconstruction list are going away with the window: they
+        # do not keep a handle open. External holders (an export thread
+        # that outlived its controller's wait) may still be reading; and a
+        # holder that cannot answer is *unknown*, which must count as held
+        # -- closing a handle under an unknown reader is the one unsafe move.
+        held = self._externalHeldUids()
         keep = []
         for uids, handles in self._retained:
-            if uids & held:
+            if held is None or uids & held:
                 keep.append((uids, handles))
-                self._logger.warning("Sources of a workflow run stay open: %s still reads them", sorted(uids & held))
+                self._logger.warning(
+                    "Sources of a workflow run stay open at shutdown: %s",
+                    "a holder could not be asked" if held is None else f"{sorted(uids & held)} still read",
+                )
                 continue
             self._closeHandles(handles)
         self._retained = keep
@@ -290,8 +322,10 @@ class WorkflowController(QtCore.QObject):
             thread.quit()
             if thread.isRunning() and not thread.wait(int(wait_ms)):
                 # Keep both alive beyond this controller: destroying a
-                # running QThread takes the process down with it.
-                _ORPHANED_RUNS.append((thread, worker))
+                # running QThread takes the process down with it. Once is
+                # enough, however often shutdown is asked.
+                if (thread, worker) not in _ORPHANED_RUNS:
+                    _ORPHANED_RUNS.append((thread, worker))
                 return False
         except Exception:
             self._logger.debug("Could not join the workflow thread", exc_info=True)
@@ -299,9 +333,20 @@ class WorkflowController(QtCore.QObject):
         return True
 
     def _heldResultUids(self):
-        """Uids of every result still in use: loaded in the list (with their
-        lineage, since a derived result may read through its parent's
-        handle) plus whatever registered holders report."""
+        """Uids of every result still in use, or ``None`` when that is unknown.
+
+        Loaded results (with their lineage, since a derived result may read
+        through its parent's handle) plus whatever the registered holders
+        report. Unknown on either side means "keep everything open".
+        """
+        loaded = self._loadedUids()
+        external = self._externalHeldUids()
+        if loaded is None or external is None:
+            return None
+        return loaded | external
+
+    def _loadedUids(self):
+        """Uids (with lineage) of the results in the reconstruction list, or ``None``."""
         getter = getattr(self._commChannel, "getAllResults", None)
         if not callable(getter):
             return None
@@ -315,6 +360,11 @@ class WorkflowController(QtCore.QObject):
             if result is not None:
                 uids.add(str(getattr(result, "result_uid", "") or id(result)))
                 uids.update(str(u) for u in (getattr(result, "lineage", ()) or ()))
+        return uids
+
+    def _externalHeldUids(self):
+        """Uids the registered holders still read, or ``None`` when one cannot say."""
+        uids = set()
         for holder in self._holders:
             try:
                 uids.update(str(u) for u in (holder() or ()))
