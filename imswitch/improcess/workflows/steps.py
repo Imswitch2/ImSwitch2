@@ -346,6 +346,14 @@ def _unknown_params(step, plugin) -> list[Issue]:
     a plugin with no parameters accepts none, and a typo must fail before
     the run rather than being ignored by ``params.get(...)``.
     """
+    from imswitch.improcess.model.plugin_contract import contract_problem
+
+    problem = contract_problem(plugin)
+    if problem:
+        # No declaration (or a widget that contradicts it) means the
+        # headless defaults are not the effective ones: refuse, rather than
+        # run with parameters the record could not vouch for.
+        return [Issue(step.id, f"{problem}; it cannot run in a workflow")]
     getter = getattr(type(plugin), "param_keys", None)
     try:
         allowed = getter() if callable(getter) else None

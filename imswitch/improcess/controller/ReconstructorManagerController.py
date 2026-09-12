@@ -317,6 +317,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
+        # The widget exists now, on the GUI thread: the one safe place to
+        # compare it with the plugin's headless declaration. A mismatch is
+        # remembered on the class, so this reconstructor's results record
+        # why they cannot be replayed.
+        from imswitch.improcess.model.plugin_contract import warn_contract_problems
+
+        warn_contract_problems(self._logger, reconstructor, widget)
         if getattr(self._main, '_currentDataObj', None) is not None:
             self._inspect_current_source()
         # NOTE: Special-case by ID retained because widefield-starss batch signals

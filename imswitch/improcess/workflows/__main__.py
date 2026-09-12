@@ -52,6 +52,9 @@ def cmd_list(args) -> int:
         print(f"{section}:")
         for pid, info in description[section].items():
             extra = f"  ports={info['ports']}" if "ports" in info else ""
+            if info.get("gui_only"):
+                # Listed, but not usable here: say so now, not at validate time.
+                extra += f"  GUI-ONLY: {info['gui_only']}"
             print(f"  {pid:28s} {info['name']}  [{info['version']}]{extra}")
     return 0
 

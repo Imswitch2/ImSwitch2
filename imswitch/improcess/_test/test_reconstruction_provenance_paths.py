@@ -34,6 +34,12 @@ from imswitch.improcess.reconstructors.run import (  # noqa: E402
 # -- fixtures --------------------------------------------------------------------
 
 class _Recon(Reconstructor):
+    # Explicit contract: a stub that only inherited the framework
+    # default_params would be GUI-only and never replayable.
+    @classmethod
+    def default_params(cls):
+        return {}
+
     name = "Stub"
     id = "t.stub"
     supports_consolidation = True
@@ -326,6 +332,12 @@ def test_context_is_passed_only_when_given(tmp_path):
     seen = {}
 
     class _Strict(Reconstructor):
+        # Explicit contract: a stub that only inherited the framework
+        # default_params would be GUI-only and never replayable.
+        @classmethod
+        def default_params(cls):
+            return {}
+
         name = "strict"
         id = "t.strict"
 

@@ -36,6 +36,12 @@ def _image(name="src", shape=(2, 8, 8), labels=("C", "Y", "X")):
 
 
 class _Base(Processor):
+    # Explicit contract: a stub that only inherited the framework
+    # default_params would be GUI-only and never replayable.
+    @classmethod
+    def default_params(cls):
+        return {}
+
     category = "Test"
 
     @property

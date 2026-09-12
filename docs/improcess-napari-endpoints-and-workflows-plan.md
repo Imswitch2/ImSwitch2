@@ -320,6 +320,14 @@ snapshots must not leak per-chunk nodes (same step id per session);
 
 ## Review response
 
+### Round 9 (plugin-author contract review, 2026-09-12) — cleanup before push
+| Finding | Fix (pinned in `_test/test_plugin_contract.py`, `_test/test_plugin_param_contract.py`) |
+|---|---|
+| Examples/template declared no `default_params`; inherited `{}` claimed replayability | `model/plugin_contract.py`: `has_param_contract` (any override above the framework base, resolved through the MRO); `contract_problem`; provenance adds the reason on `process`/`reconstruct` nodes (not consolidation); `validate` refuses such `Process`/`Reconstruct` steps; `workflows list` prints `GUI-ONLY` |
+| Widget/declaration drift unchecked for drop-ins | `record_widget_check` on the widget the GUI builds anyway (processor panel, reconstructor manager): key sets, non-volatile values, codec round trip; a mismatch is remembered on the class and reaches provenance + validation; `check_plugin_contract(cls)` for third-party tests; the pin test now covers `examples/improcess_plugins/` |
+| Photophysics hidden `tail`/`roi`; `save()` override bypassed staging | Both declared (and returned by `get_values`); `apply` merges the declared defaults; result converted to `supported_formats`/`plan_save`/`write_files` (CSV + `.provenance.json` companion) |
+| Docs taught `save()` overrides; no author checklist | `improcess.rst` "What a plugin gets for free, and what it must declare" (`improcess-headless-contract`), reconstructor example without a custom `save`, `improcess-workflows.rst` GUI-only rule, examples README, internal README §1.3/§4, generated template |
+
 ### Round 8 (fifth code review, 2026-09-12) — 2 P1 + 1 P2 + 1 P3, all fixed
 | # | Finding | Fix (pinned in `_test/test_review_round8.py`) |
 |---|---|---|

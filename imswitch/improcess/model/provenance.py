@@ -348,6 +348,16 @@ def make_node(
             reasons.append(f"plugin codec failed: {exc}")
     else:
         encoded, reasons = encode_params(params)
+    if plugin is not None and op in ("process", "reconstruct"):
+        # A parameter-consuming step run by a plugin without a headless
+        # contract (or whose widget disagrees with it) records parameters
+        # that may not be the effective ones; it must not claim replay.
+        # Consolidation takes no parameters and is left alone.
+        from imswitch.improcess.model.plugin_contract import contract_problem
+
+        problem = contract_problem(plugin)
+        if problem:
+            reasons.append(problem)
     node: dict[str, Any] = {
         "op": op,
         "time": _now(),

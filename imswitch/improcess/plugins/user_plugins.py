@@ -43,6 +43,8 @@ graph) with no extra UI code.
 Files are executed as arbitrary Python at startup — only keep code you trust.
 """
 
+import numpy as np
+
 from imswitch.improcess.processors.base import Processor
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 
@@ -53,6 +55,14 @@ class InvertProcessor(Processor):
     category = "User"
     kinds = ("image",)
 
+    @classmethod
+    def default_params(cls) -> dict:
+        # The parameters a freshly opened widget hands apply(): same keys,
+        # same defaults as get_values() below. This declaration is what
+        # workflows, replay and the provenance record use when no widget
+        # exists. A plugin that does not override it is GUI-only.
+        return {}
+
     @property
     def applies_to(self):
         return lambda result: getattr(result.data, "ndim", 0) >= 2
@@ -61,11 +71,11 @@ class InvertProcessor(Processor):
         from qtpy import QtWidgets
 
         widget = QtWidgets.QWidget(parent)
-        widget.get_values = lambda: {}
+        widget.get_values = lambda: dict(self.default_params())
         return widget
 
     def apply(self, result, params):
-        data = result.data
+        data = np.asarray(result.data)   # may be a lazy view over the file
         return ArrayProcessingResult(
             name=f"{result.name} (inverted)",
             data=data.max() - data,

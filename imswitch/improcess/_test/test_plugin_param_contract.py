@@ -6,6 +6,7 @@ losslessly, and the registry must stamp a version nobody had to remember.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy import QtWidgets  # noqa: E402
 
+from imswitch.improcess.model.plugin_contract import check_plugin_contract, has_param_contract  # noqa: E402
 from imswitch.improcess.model.plugin_versions import imswitch_version, plugin_version  # noqa: E402
 from imswitch.improcess.model.provenance import encode_strict  # noqa: E402
 from imswitch.improcess.processors import _AVAILABLE_PROCESSOR_CLASSES  # noqa: E402
@@ -25,11 +27,25 @@ def qapp():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+_EXAMPLES_DIR = Path(__file__).resolve().parents[3] / "examples" / "improcess_plugins"
+
+
+def _example_plugins():
+    """The shipped drop-in examples are held to the same contract as the built-ins."""
+    from imswitch.improcess.plugins.user_plugins import discover_processor_plugins
+
+    classes, errors = discover_processor_plugins(str(_EXAMPLES_DIR))
+    assert errors == [], errors
+    return sorted(classes.items())
+
+
 def _plugins():
     for pid, cls in sorted(_AVAILABLE_PROCESSOR_CLASSES.items()):
         yield f"processor:{pid}", cls
     for pid, cls in sorted(_AVAILABLE_RECONSTRUCTOR_CLASSES.items()):
         yield f"reconstructor:{pid}", cls
+    for pid, cls in _example_plugins():
+        yield f"example:{pid}", cls
 
 
 _IDS = [key for key, _cls in _plugins()]
@@ -58,6 +74,14 @@ def test_default_params_match_the_widget(cls, qapp):
 
 
 @pytest.mark.parametrize("cls", _CLASSES, ids=_IDS)
+def test_every_plugin_declares_its_contract_and_the_helper_agrees(cls, qapp):
+    """Built-ins and examples override default_params, and the author-facing
+    helper (the one a third-party plugin's own tests call) finds no problem."""
+    assert has_param_contract(cls), f"{cls.__name__} inherits the framework default_params"
+    assert check_plugin_contract(cls) == []
+
+
+@pytest.mark.parametrize("cls", _CLASSES, ids=_IDS)
 def test_defaults_are_lossless_and_round_trip_through_the_codec(cls):
     plugin = cls()
     defaults = cls.default_params()
@@ -70,8 +94,11 @@ def test_defaults_are_lossless_and_round_trip_through_the_codec(cls):
 
 
 def test_the_registry_stamps_a_version_from_the_distribution():
+    # The examples live outside the package and get a file digest instead.
     registry = PluginRegistry()
-    for cls in _CLASSES:
+    for key, cls in _plugins():
+        if key.startswith("example:"):
+            continue
         plugin = cls()
         if cls in _AVAILABLE_PROCESSOR_CLASSES.values():
             registry.register_processor(plugin)
@@ -116,6 +143,11 @@ def test_a_plugin_codec_is_used_by_the_recorder_and_its_failure_is_survived():
     class _Custom(Processor):
         id = "t.custom"
         name = "Custom"
+        extra_param_keys = ("handle",)
+
+        @classmethod
+        def default_params(cls):
+            return {}
 
         @property
         def applies_to(self):

@@ -292,8 +292,15 @@ Drop-in plugins in workflows
 A processor from the user plugins folder (see :doc:`improcess`, "Drop-in
 analysis plugins") is a plugin like any other: ``bootstrap_registry()``
 discovers it, its id goes in a ``Process`` step, and its version in the
-provenance is a digest of its file. Give it ``default_params()`` so
-``params`` can stay short.
+provenance is a digest of its file — **provided it declares its parameter
+contract**. A plugin that does not override ``default_params()`` (even to
+return ``{}``) has declared nothing about what its widget hands ``apply``;
+it is GUI-only. ``validate`` refuses a ``Process`` or ``Reconstruct`` step
+that names it, ``list`` prints it with a ``GUI-ONLY`` marker and the
+reason, and a result it produced in the GUI carries the same reason in its
+provenance, so ``replay`` refuses that step too. The same applies to a
+plugin whose widget was found to disagree with its declaration. See
+:ref:`improcess-headless-contract` for what to declare and how to test it.
 
 .. _workflows-replay:
 
