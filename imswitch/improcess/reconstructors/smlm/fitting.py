@@ -44,9 +44,17 @@ def fit_spot(
     """Fit one emitter at candidate integer centre ``(y0, x0)``.
 
     Returns a dict with keys ``x``, ``y`` (frame-pixel sub-pixel centre),
-    ``intensity`` (photons proxy), ``sigma_x``, ``sigma_y`` (px). Raises
-    ``ValueError``/``RuntimeError`` when the ROI is out of bounds, has no
-    positive signal, or the MLE optimiser fails.
+    ``intensity``, ``sigma_x``, ``sigma_y`` (px) and ``background`` (per-pixel
+    level, detector counts). Raises ``ValueError``/``RuntimeError`` when the
+    ROI is out of bounds, has no positive signal, or the MLE optimiser fails.
+
+    ``intensity`` is the **integrated** signal for both methods. That is worth
+    stating because it has not always been true: the MLE branch previously
+    returned the fitted *peak amplitude*, which differs from the integral by
+    :math:`2 \\pi \\sigma^2`, so the same column meant different physical
+    quantities depending on the method chosen. Anything reading photons — the
+    precision estimate, filtering, napari-storm's variable-width rendering —
+    silently changed meaning with it.
     """
     frame = np.asarray(frame)
     half = roi // 2
@@ -80,6 +88,7 @@ def fit_spot(
             "intensity": total,
             "sigma_x": float(np.sqrt(max(x2, 1e-3))),
             "sigma_y": float(np.sqrt(max(y2, 1e-3))),
+            "background": background,
         }
 
     if method == "mle":
@@ -90,13 +99,17 @@ def fit_spot(
         )
         if not result.success:
             raise RuntimeError("MLE fit failed")
-        y_fit, x_fit, sigma, amplitude, _bg = result.x
+        y_fit, x_fit, sigma, amplitude, residual_bg = result.x
         return {
             "x": x0 - half + float(x_fit),
             "y": y0 - half + float(y_fit),
-            "intensity": float(amplitude),
+            # Integral of the fitted Gaussian, not its peak — see the docstring.
+            "intensity": float(amplitude) * 2.0 * np.pi * float(sigma) ** 2,
             "sigma_x": float(sigma),
             "sigma_y": float(sigma),
+            # The optimiser sees an already background-subtracted ROI, so its
+            # background parameter is a residual on top of the median estimate.
+            "background": background + float(residual_bg),
         }
 
     raise ValueError(f"Unsupported fit method: {method!r}")

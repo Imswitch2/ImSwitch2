@@ -946,6 +946,121 @@ histogram in the viewer updates in real time to show the growing point cloud.
 The output from a live reconstruction is identical to running the batch 
 reconstruction on the saved data afterwards, ensuring reproducibility.
 
+Importing localization tables
+=============================
+
+Coordinate tables written by other SMLM software open straight into the
+reconstruction list.  A localization table is a *result*, not raw data to
+reconstruct, so it bypasses the data loader and is published the same way a
+reconstructor publishes its output: filter, drift-correct, group, render and
+view it exactly as if the ``smlm-localizer`` had produced it.
+
+Two formats are recognised by content and need no interaction:
+
+* **ThunderSTORM CSV** — units are read from the ``name [unit]`` header
+  rather than assumed, and the 1-based frame numbers become 0-based to match
+  Picasso and ImProcess.  A file whose positions are in pixels cannot be
+  converted without a pixel size and says so instead of guessing.
+* **Picasso HDF5** — recognised by its ``locs`` dataset, so it opens even
+  though it shares the ``.hdf5`` suffix with image stacks.  The pixel size is
+  taken from the ``.yaml`` sidecar Picasso writes next to it.
+
+Any other ``.csv``/``.tsv`` is offered as a localization table only while the
+``smlm-localizer`` reconstructor is active (its accepted sources include
+``localizations``), because a generic table could be anything.  A column
+mapping dialog then asks what each column means, with the mapping pre-filled
+from the header names, plus the position unit, the camera pixel size and the
+first frame number.  X and Y are mandatory; everything else is optional and
+left empty when the file has nothing to put there.
+
+Files that declare no pixel size fall back to an assumed 100 nm, which is
+recorded in ``metadata["pixel_size_assumed"]`` and logged.  The coordinates
+themselves are exact either way — the pixel size only sets the preview
+histogram's bin floor and the scale of a later Picasso export — but nothing
+downstream should report the assumed value as measured.
+
+Localization precision versus PSF width
+---------------------------------------
+
+The localization table carries two different widths on purpose, because they
+are different physical quantities:
+
+* ``sigma_x_nm`` / ``sigma_y_nm`` / ``sigma_z_nm`` — the **PSF width**, how
+  broad the spot was on the camera.  Useful for rejecting bad fits.  Picasso
+  calls these ``sx``/``sy``, ThunderSTORM ``sigma``.
+* ``lp_x_nm`` / ``lp_y_nm`` / ``lp_z_nm`` — the **localization precision**,
+  how well the emitter's position is known.  Picasso calls these
+  ``lpx``/``lpy``, ThunderSTORM ``uncertainty``.
+
+Precision is what an SMLM reconstruction should be rendered with; drawing
+every molecule at its PSF width merely reproduces a diffraction-limited image.
+Import keeps both columns apart, and the ``smlm-localizer`` fills the precision
+columns itself from the Thompson/Larson/Webb closed form with Mortensen's
+correction, using the fitted width, photons, background and pixel size.  Note
+that ImProcess does not yet apply camera gain and offset, so for a camera
+without unit gain that estimate is correct in shape but scaled: good for
+filtering localizations against each other, not for quoting an absolute
+nanometre precision.
+
+.. _improcess-napari-storm:
+
+Localization point clouds (napari-storm)
+========================================
+
+A ``LocalizationResult`` displays by default as a low-resolution histogram
+preview.  Set ``"napariStormViewer": true`` in the ``processing`` block to draw
+localization results instead as GPU-rendered summed Gaussians through the
+optional `napari-storm <https://pypi.org/project/napari-storm/>`_ package,
+which is installed by the ``storm`` extra::
+
+    pip install "imswitch[storm]"
+
+Everything about this backend is best-effort.  Without the package, on a GL
+session without instancing support, or for a table napari-storm refuses, the
+flag does nothing and the result keeps its preview; nothing else in the viewer
+changes.  napari-storm pins ``zarr<3`` for its own MINFLUX reader, so
+resolving the extra moves an environment onto zarr 2.x.  ImSwitch runs on
+either zarr major; to stay on zarr 3, install the package itself with
+``pip install --no-deps napari-storm`` instead of the extra.
+
+The viewer reads the result's nanometre table in place, without a copy or unit
+conversion, and declares the columns to napari-storm rather than renaming
+them.  Each molecule is drawn as a Gaussian of its localization precision
+where the table has one (variable-width mode); a table without usable
+precision falls back to the fitted PSF width, and one with neither to a fixed
+20 nm width.  A 2D result is drawn on the 2D canvas and a 3D one switches the
+canvas to 3D, framed on the cloud.
+
+Point clouds are *retained*: a result is opened in the renderer once, updated
+in place when its settings change, hidden while another kind of result is
+selected, and closed only when it leaves the reconstruction list.  This is
+deliberately not the stateless rebuild-on-click path the other display layers
+take, because opening and closing GPU datasets on every selection is the churn
+napari-storm's architecture exists to avoid.  The remaining napari layers work
+as before; the contrast and layer-control widgets skip point-cloud layers,
+which hold geometry rather than an intensity array.
+
+Render controls
+---------------
+
+Set ``"smlmRenderPanel": true`` in the ``processing`` block to show a panel
+driving the point-cloud renderer for the selected localization result.  It is
+only useful together with ``napariStormViewer``.
+
+* **Gaussian** — *Width mode* chooses between the precision of each
+  localization (variable, available only when the table has one) and a fixed
+  sigma; the fixed XY and Z sigmas are entered in nanometres with the
+  corresponding FWHM shown alongside, since papers quote FWHM while the
+  renderer takes sigma.  *Colour by depth* encodes Z on a hue-sweeping
+  colormap and is available for 3D results in fixed-width mode.
+* **Render range** — per-axis lower and upper bounds, as fractions of the
+  dataset extent, restricting the drawn sub-volume without copying the data.
+* **Appearance** — colormap and opacity, which recolour the cloud without
+  rebuilding any geometry.
+
+Until a control is touched the renderer decides from the data, so an untouched
+panel never overrides what a result would draw on its own.
+
 File watcher save folder
 ========================
 
@@ -1058,7 +1173,9 @@ to your Imcontrol setup file (the same JSON you select via
             "frcPanel": true,
             "roiManagerPanel": true,
             "roiStatsPanel": true,
-            "reconstructors": ["monalisa", "view-only"],
+            "smlmRenderPanel": true,
+            "napariStormViewer": true,
+            "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
             "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
         }
     }
@@ -1143,7 +1260,9 @@ The MoNaLISA preset has the same shape as the others::
             "frcPanel": true,
             "roiManagerPanel": true,
             "roiStatsPanel": true,
-            "reconstructors": ["monalisa", "view-only"],
+            "smlmRenderPanel": true,
+            "napariStormViewer": true,
+            "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
             "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"],
             "liveStallTimeoutS": 300
         }
@@ -1162,6 +1281,13 @@ The ``processing:`` block also accepts:
   recorder prepares the next one; the reader automatically disables the
   watchdog for these lapse sources unless you explicitly set a value in this
   config key (an explicit value then applies everywhere).
+* **napariStormViewer** (bool, default ``false``) — draw localization results
+  as GPU point clouds through the optional napari-storm package instead of
+  their histogram preview.  Needs the ``storm`` extra; without it the key has
+  no effect.  See :ref:`improcess-napari-storm`.
+* **smlmRenderPanel** (bool, default ``false``) — show the panel controlling
+  the point-cloud renderer (Gaussian width, colour by depth, render range,
+  appearance).  Only useful together with ``napariStormViewer``.
 
 To launch Imswitch2 with *only* ImProcess (no Imcontrol GUI) and *only*
 the plugins from one of these setup presets:

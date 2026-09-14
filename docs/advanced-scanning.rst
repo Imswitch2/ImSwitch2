@@ -8,7 +8,7 @@ pass. It is intended for interleaved multicolour point scanning and experiments
 that need explicit pulse timing within every pixel.
 
 Configure it with ``scanWidgetType: "Advanced"`` and normally pair it with
-``AdvancedScanTTLCycleDesigner``. See :ref:`scan` for the complete setup-file
+``AdvancedScanTTLCycleDesigner``. See :ref:`the scan block <setupinfo-scan>` for the complete setup-file
 fields and :doc:`scan-lifecycle` for the controller/recording lifecycle.
 
 

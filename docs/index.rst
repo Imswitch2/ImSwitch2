@@ -49,6 +49,7 @@ config files).
     improcess-napari-plugins
     improcess-workflows
     tiling
+    zstack-workflow
     use-cases
     scripting
     scripting-wfs-workflows
@@ -61,6 +62,7 @@ config files).
     imcontrol-setups
     setupinfo-reference
     devices/detectors
+    TISCamera
     devices/lasers
     devices/positioners
     devices/rotators

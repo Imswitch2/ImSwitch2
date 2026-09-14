@@ -62,6 +62,15 @@ def test_results_changed_is_announced_when_a_result_is_added():
     )
     handler = ReconstructionViewController.resultProduced.__get__(stub)
     stub._resultsChanged = ReconstructionViewController._resultsChanged.__get__(stub)
+    # _resultsChanged also reconciles the retained napari-storm datasets. The
+    # stub widget has no display, so this is the no-adapter path and must stay
+    # a silent no-op rather than an AttributeError.
+    stub._retainNapariStormDatasets = (
+        ReconstructionViewController._retainNapariStormDatasets.__get__(stub)
+    )
+    stub._napariStormDisplay = (
+        ReconstructionViewController._napariStormDisplay.__get__(stub)
+    )
 
     handler(SimpleNamespace(name="one"), "one")
 
