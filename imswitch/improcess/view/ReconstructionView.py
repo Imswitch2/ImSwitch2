@@ -7,6 +7,7 @@ from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view.guitools import naparitools
 from imswitch.improcess.model.contrast import safe_display_levels
 from . import guitools
+from .NapariStormDisplay import NapariStormDisplay
 
 
 def _spec_kind(spec) -> str:
@@ -72,7 +73,13 @@ class ReconstructionView(QtWidgets.QFrame):
     sigViewChanged = QtCore.Signal()
 
     # Methods
-    def __init__(self, *args, showLayerControls: bool = True, **kwargs):
+    def __init__(
+        self,
+        *args,
+        showLayerControls: bool = True,
+        useNapariStormViewer: bool = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self)
 
@@ -87,6 +94,14 @@ class ReconstructionView(QtWidgets.QFrame):
         )
         self.setNapariLayerControlsVisible(showLayerControls)
         self._displayLayers = []
+        # Optional GPU point-cloud backend for localization results. Retained
+        # across selections, so it deliberately sits outside _displayLayers,
+        # which is cleared and rebuilt on every result change. None unless the
+        # config asks for it; the adapter then gates itself again on the
+        # optional package actually being installed.
+        self.napariStormDisplay = (
+            NapariStormDisplay(self.napariViewer) if useNapariStormViewer else None
+        )
         # Tracks which managed/protected layer is the selected result's canonical
         # output (may be a labels/points layer, not imgLayer) so the toolbar and
         # active-image accessors can target it by role rather than by identity.
@@ -585,7 +600,15 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer.contrast_limits_range = safe_display_levels(minimum, maximum)
 
     def getActiveImageLayer(self):
-        """Return the active image-like Napari layer, falling back to imgLayer."""
+        """Return the active image-like Napari layer, falling back to imgLayer.
+
+        "Image-like" means the data really is an array, not merely that the
+        layer has the two attributes. A point-cloud layer has ``contrast_limits``
+        *and* a ``data`` holding a tuple of geometry arrays, so attribute
+        presence alone let it through to every contrast tool built on this
+        accessor, where the tuple then failed whatever tried to take its min
+        and max.
+        """
         layer = None
         try:
             layer = self.napariViewer.layers.selection.active
@@ -593,8 +616,8 @@ class ReconstructionView(QtWidgets.QFrame):
             layer = None
         if (
             layer is not None
-            and hasattr(layer, "data")
             and hasattr(layer, "contrast_limits")
+            and isinstance(getattr(layer, "data", None), np.ndarray)
         ):
             return layer
         return self.imgLayer

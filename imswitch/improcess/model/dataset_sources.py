@@ -68,10 +68,20 @@ TILING_RUN_SPEC = SourceSpec(
     locator=LOCATOR_DIRECTORY,
     label="ImSwitch tiling run",
 )
+#: A coordinate table from another SMLM tool. Only the text suffixes are listed:
+#: a Picasso ``.hdf5`` is indistinguishable from an image stack by name, so it
+#: is recognised by content (see ``analysis.smlm_import``) rather than here.
+LOCALIZATIONS_SPEC = SourceSpec(
+    id="localizations",
+    suffixes=(".csv", ".tsv"),
+    locator=LOCATOR_FILE,
+    label="Localization table",
+)
 
 SOURCE_SPECS: tuple[SourceSpec, ...] = (HDF5_SPEC, TIFF_SPEC, ZARR_SPEC)
 _SPECS_BY_ID = {
-    spec.id: spec for spec in (*SOURCE_SPECS, TILING_MANIFEST_SPEC)
+    spec.id: spec
+    for spec in (*SOURCE_SPECS, TILING_MANIFEST_SPEC, LOCALIZATIONS_SPEC)
 }
 _EXTENSION_ALIASES = {
     "h5": "hdf5",
@@ -84,6 +94,8 @@ _EXTENSION_ALIASES = {
     "zarr": "zarr",
     "json": "tiling-manifest",
     "tiles.json": "tiling-manifest",
+    "csv": "localizations",
+    "tsv": "localizations",
 }
 
 
@@ -101,14 +113,15 @@ def source_kind_for(spec_id: str) -> str:
 
     Spec ids name the *container* -- "tiff", "hdf5", "zarr" -- while source
     kinds name what a reconstructor is handed. Every array container is an
-    "image"; the tiling manifest is the one source that is metadata instead.
+    "image"; the tiling manifest is metadata, and a localization table is a
+    coordinate list that opens straight to a result rather than to a DataObj.
     Kept here so the two vocabularies cannot drift apart silently.
     """
-    return (
-        TILING_MANIFEST_SPEC.id
-        if spec_id == TILING_MANIFEST_SPEC.id
-        else "image"
-    )
+    if spec_id == TILING_MANIFEST_SPEC.id:
+        return TILING_MANIFEST_SPEC.id
+    if spec_id == LOCALIZATIONS_SPEC.id:
+        return LOCALIZATIONS_SPEC.id
+    return "image"
 
 
 def spec_for_extension(extension: str | None) -> SourceSpec | None:
@@ -135,11 +148,17 @@ def specs_for_extensions(extensions: Iterable[str] | None) -> list[SourceSpec]:
 def specs_for_reconstructor(reconstructor) -> list[SourceSpec]:
     specs = specs_for_extensions(getattr(reconstructor, "file_extensions", None))
     accepted = tuple(getattr(reconstructor, "accepted_source_kinds", ("image",)))
-    if "tiling-manifest" not in accepted:
-        return [spec for spec in specs if spec.id != TILING_MANIFEST_SPEC.id]
-    if TILING_MANIFEST_SPEC not in specs:
-        specs.append(TILING_MANIFEST_SPEC)
-    specs.append(TILING_RUN_SPEC)
+    if "tiling-manifest" in accepted:
+        if TILING_MANIFEST_SPEC not in specs:
+            specs.append(TILING_MANIFEST_SPEC)
+        specs.append(TILING_RUN_SPEC)
+    else:
+        specs = [spec for spec in specs if spec.id != TILING_MANIFEST_SPEC.id]
+    if LOCALIZATIONS_SPEC.id in accepted:
+        if LOCALIZATIONS_SPEC not in specs:
+            specs.append(LOCALIZATIONS_SPEC)
+    else:
+        specs = [spec for spec in specs if spec.id != LOCALIZATIONS_SPEC.id]
     return specs
 
 
@@ -255,4 +274,4 @@ def file_dialog_filter(specs: Sequence[SourceSpec] | None) -> str:
     patterns = [f"*{suffix}" for spec in file_specs for suffix in spec.suffixes]
     if not patterns:
         return ""
-    return f"Supported image files ({' '.join(patterns)})"
+    return f"Supported files ({' '.join(patterns)})"

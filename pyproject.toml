@@ -24,11 +24,18 @@ select = ["E9", "F63", "F7", "F82"]
 "imswitch/improcess/model/Denoiser.py" = ["F821"]  # torch/transforms imported conditionally inside __init__
 
 [tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
+# glviewer tests are deselected by default: they build a real napari viewer,
+# and a live GL context does not survive alongside the rest of the suite in one
+# process — it segfaults the interpreter reproducibly, with or without clean
+# teardown. Run them on their own, on a real display (not
+# QT_QPA_PLATFORM=offscreen, which segfaults in napari's canvas init):
+#     pytest -m glviewer
+addopts = "--import-mode=importlib -m 'not glviewer'"
 testpaths = ["imswitch"]
 markers = [
     "nohardware: tests that must run without physical microscope hardware or hardware extras",
     "hardware: tests that require physical microscope hardware or vendor drivers",
     "redzone: tests covering safety-critical DAQ, laser, stage, TTL, or scan behavior through mocks or pure logic",
     "ui: tests that require a Qt application, usually with offscreen rendering in CI",
+    "glviewer: tests that build a real napari viewer and GL context; deselected by default because they cannot share a process with the rest of the suite (run with -m glviewer)",
 ]

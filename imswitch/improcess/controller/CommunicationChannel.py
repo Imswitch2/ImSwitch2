@@ -61,6 +61,22 @@ class CommunicationChannel(SignalInterface):
     removed, or ctrl-clicked into the selection.
     """
 
+    sigSmlmRenderSettingsChanged = Signal(object, object, object)
+    """(result, gaussianOverrides, renderRange) — how to draw a point cloud.
+
+    Emitted by the render-controls panel and applied by the reconstruction
+    viewer's controller, which owns the renderer. Routed through the channel so
+    the panel needs no reference to the viewer, matching how results are
+    published in the other direction.
+    """
+
+    sigSmlmRenderAppearanceChanged = Signal(object, object)
+    """(result, appearance) — colormap and opacity for a point cloud.
+
+    Separate from the settings signal because appearance rebuilds no geometry
+    on napari-storm's side, so dragging an opacity slider must not replan.
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.__resultProvider = None

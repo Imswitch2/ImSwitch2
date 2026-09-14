@@ -5,6 +5,7 @@ from .MemoryLiveController import MemoryLiveController
 from .ReconstructionViewController import ReconstructionViewController
 from .GraphController import GraphController
 from .MetadataController import MetadataController
+from .SmlmRenderController import SmlmRenderController
 from .ScanParamsController import ScanParamsController
 from .WidefieldStarssBatchController import WidefieldStarssBatchController
 from .FileIOController import FileIOController
@@ -48,6 +49,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
         if self._widget.metadataWidget is not None:
             self.metadataController = self._factory.createController(
                 MetadataController, self._widget.metadataWidget
+            )
+        self.smlmRenderController = None
+        if getattr(self._widget, "smlmRenderWidget", None) is not None:
+            self.smlmRenderController = self._factory.createController(
+                SmlmRenderController, self._widget.smlmRenderWidget
             )
         self.scanParamsController = self._factory.createController(
             ScanParamsController, self._widget.scanParamsDialog

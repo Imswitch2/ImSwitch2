@@ -1,6 +1,6 @@
-**********************
+***********************
 HDF5 and Zarr datafiles
-**********************
+***********************
 
 Imswitch2 saves images as either `HDF5
 <https://www.hdfgroup.org/solutions/hdf5/>`_ or `Zarr
