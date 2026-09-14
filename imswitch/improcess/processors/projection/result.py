@@ -9,6 +9,7 @@ import tifffile
 from imswitch.improcess.analysis.projections import ProjectionAnalysis
 from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.result_io import save_image_result
 
 
 class ProjectionResult(ProcessingResult):
@@ -38,19 +39,11 @@ class ProjectionResult(ProcessingResult):
         )
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        if fmt in ("tiff", "tif"):
-            tifffile.imwrite(str(path), np.asarray(self.data).astype(np.float32))
-        elif fmt in ("hdf5", "h5", "hdf"):
-            with h5py.File(str(path), "w") as h5:
-                h5.create_dataset("projection", data=np.asarray(self.data))
-                h5.attrs["mode"] = self.analysis.mode
-                h5.attrs["axis"] = self.analysis.axis
-                h5.attrs["axis_label"] = self.analysis.axis_label
-                h5.attrs["axis_labels"] = ",".join(self.axis_labels)
-                h5.attrs["scale_unit"] = self.scale_unit
-        else:
-            raise ValueError(f"Projection result supports TIFF or HDF5, got {fmt!r}")
+        save_image_result(self, path, fmt, extra={
+            "projection_mode": self.analysis.mode,
+            "projection_axis": self.analysis.axis,
+            "projection_axis_label": self.analysis.axis_label,
+        })
 
     def plot_payloads(self) -> list[PlotPayload]:
         data = np.asarray(self.data, dtype=np.float64)

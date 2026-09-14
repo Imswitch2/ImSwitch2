@@ -82,7 +82,8 @@ class _FakeReconstructionView:
         self.set_image_calls = 0
         self.clear_image_calls = 0
 
-    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
+    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip",
+                 name=None, identity=None):
         # Simplified version of the actual setImage logic
         self.set_image_calls += 1
         if name is not None:
@@ -96,6 +97,8 @@ class _FakeReconstructionView:
         self.imgLayer.colormap = colormap
         self.imgLayer.metadata["axis_labels"] = list(axisLabels)
         self.imgLayer.metadata["scale_unit"] = scaleUnit
+        for key, value in (identity or {}).items():
+            self.imgLayer.metadata[key] = value
         self.napariViewer.dims.axis_labels = tuple(axisLabels)
 
     def clearImage(self):
@@ -356,3 +359,42 @@ def test_controller_handles_removed_current_item_without_crash():
     assert view.imgLayer.name == "Reconstruction"
     assert view.imgLayer.data.shape == (1, 1)
     assert comm.current_results == [None]
+
+
+# --------------------------------------------------------------------------
+# the mutation token a measured layer is cached on
+# --------------------------------------------------------------------------
+
+def _bareController():
+    controller = ReconstructionViewController.__new__(ReconstructionViewController)
+    controller._widget = _FakeReconstructionView()
+    controller._logger = SimpleNamespace(
+        debug=lambda *a, **k: None, warning=lambda *a, **k: None
+    )
+    controller._transposeOrder = [0, 1]
+    controller._displayedAxisLabels = []
+    return controller
+
+
+def test_each_render_pass_mints_a_new_mutation_token():
+    """The token has to change whenever the layer's pixels can have changed."""
+    controller = _bareController()
+    result = _FakeResult("recon", np.ones((4, 5), dtype=np.float32))
+
+    controller._setProcessingResultSlice(result)
+    first = controller._widget.imgLayer.metadata["mutation_token"]
+    controller._setProcessingResultSlice(result)
+    second = controller._widget.imgLayer.metadata["mutation_token"]
+
+    assert first and second and first != second
+
+
+def test_a_live_result_gets_no_mutation_token():
+    """A result that can be rewritten in place must never be cached against."""
+    controller = _bareController()
+    controller.__dict__["_liveResultUids"] = set()
+    result = _FakeResult("live", np.ones((4, 5), dtype=np.float32))
+    controller.__dict__["_liveResultUids"].add(result.result_uid)
+
+    controller._setProcessingResultSlice(result)
+    assert controller._widget.imgLayer.metadata["mutation_token"] is None

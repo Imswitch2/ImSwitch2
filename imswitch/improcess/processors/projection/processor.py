@@ -86,12 +86,17 @@ class ProjectionProcessor(Processor):
             # ranges are otherwise named identically.
             name += f" {start + 1}-{stop}"
         name += ")"
+        # Collapsing a non-spatial axis (Z, T) leaves every pixel where it was,
+        # so the output shares the input's grid. Collapsing one of the two
+        # *displayed* axes — which "Auto" does on 2D data — does not: the
+        # result is a profile, and an ROI from the source means nothing on it.
+        same_grid = axis < result.data.ndim - 2
         return ProjectionResult(
             name=name,
             analysis=analysis,
             scale_unit=result.scale_unit,
             params={**params, "start": start, "stop": stop},
-        )
+        ).adopt_identity_from(result, same_grid=same_grid)
 
     @staticmethod
     def _slice_range(data, axis: int, params: dict):

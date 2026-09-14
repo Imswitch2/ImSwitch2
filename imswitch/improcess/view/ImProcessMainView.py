@@ -522,6 +522,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self._connectResultPusher(self.profileWidget)
         self._connectResultPusher(self.roiStatsWidget)
+        self._connectResultPusher(self.roiManagerWidget)
         self._connectResultPusher(self.graphWidget)
         self._connectResultPusher(self.metadataWidget)
 
@@ -791,7 +792,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if dock is not None:
             dock.show()
             self._safeRaiseDock(dock)
-            if spec.widget_kind == 'roi-manager':
+            if spec.widget_kind in ('roi-manager', 'segmentation'):
                 self._wireROIManagerToDependentWidgets()
             self._syncDockVisibilityActions()
             return title
@@ -824,9 +825,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if runtime_loaded:
                 self._runtimeAnalysisToolIds.add(processor_id)
             setattr(self, spec.attribute, widget)
-            if spec.widget_kind == 'roi-manager':
+            if spec.widget_kind in ('roi-manager', 'segmentation', 'result-processor'):
+                # Any of these may be opened first, and the wiring runs in
+                # both directions, so it is redone whenever one arrives.
                 self._wireROIManagerToDependentWidgets()
-            if spec.widget_kind in ('profile', 'roi-stats', 'metadata'):
+            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager'):
                 self._connectResultPusher(widget)
             if spec.widget_kind == 'graph':
                 self._wireGraphToDependentWidgets()
@@ -1298,6 +1301,35 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                     )
             elif hasattr(widget, '_roiManagerWidget'):
                 widget._roiManagerWidget = roi_manager
+        # Processor panels that accept an ROI restriction (P-R) need the same
+        # late binding, and there can be many of them open at once. Iterated
+        # over the runtime tool registry rather than over this view's
+        # attributes: the attribute sweep it started as was gated on `docks`
+        # being non-empty, which has nothing to do with whether a processor
+        # panel exists, and it reached every string and layout on the view.
+        for tool_id in self._runtimeAnalysisToolAttributes():
+            widget = self.getRuntimeAnalysisWidget(tool_id)
+            setter = getattr(type(widget), 'setROIManagerWidget', None)
+            if widget is None or not callable(setter):
+                continue
+            try:
+                setter(widget, roi_manager)
+            except Exception:
+                self._logger.exception(
+                    f'Could not wire the ROI Manager into {tool_id!r}'
+                )
+
+        # The reverse direction: the ROI manager seeds *Limit to threshold*
+        # from the Segmentation panel, and either panel may be opened first.
+        segmentation = getattr(self, 'segmentationWidget', None)
+        setter = getattr(type(roi_manager), 'setSegmentationWidget', None)
+        if segmentation is not None and callable(setter):
+            try:
+                setter(roi_manager, segmentation)
+            except Exception:
+                self._logger.exception(
+                    'Could not wire Segmentation into the ROI Manager'
+                )
 
     def _wireGraphToDependentWidgets(self) -> None:
         """Late-binding: connect table plot requests after Graph runtime load."""

@@ -13,6 +13,7 @@ from imswitch.improcess.analysis.smlm_import import (
     read_localizations,
     sniff_localization_format,
 )
+from imswitch.improcess.model import result_io
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
     LOCALIZATIONS_SPEC,
@@ -392,10 +393,17 @@ class FileIOController(ImProcessWidgetController):
         """ Saves the reconstructed image or coefficients from the current
         result to a user-specified destination. """
 
+        # Coefficients are a MoNaLISA-specific TIFF; a reconstruction can go
+        # into any container the shared writer supports, and the chosen
+        # filter's suffix is what decides which.
+        nameFilter = (
+            result_io.file_dialog_filter() if dataType == 'reconstruction'
+            else '*.tiff'
+        )
         filePath = guitools.askForFilePath(self._widget,
                                            caption=f'Save {dataType}',
                                            defaultFolder=self._saveFolder or self._dataFolder,
-                                           nameFilter='*.tiff', isSaving=True)
+                                           nameFilter=nameFilter, isSaving=True)
 
         if filePath:
             reconObj = self._main.reconstructionController.getActiveResult()
@@ -446,9 +454,10 @@ class FileIOController(ImProcessWidgetController):
                     raise ValueError(f'Invalid save data type "{dataType}"')
 
     def saveReconstruction(self, reconObj, filePath):
-        suffix = Path(filePath).suffix.lower().lstrip(".") or "tiff"
-        fmt = "tiff" if suffix in ("tif", "tiff") else suffix
-        reconObj.save(Path(filePath), fmt)
+        # Two-part suffixes (.ome.tif, .ome.zarr) are why this asks the writer
+        # rather than reading Path.suffix, which sees only the last part and
+        # would call an OME-Zarr directory a TIFF.
+        reconObj.save(Path(filePath), result_io.format_for_path(filePath))
 
     def saveCoefficients(self, reconObj, filePath):
         coeffs = copy.deepcopy(reconObj.getCoeffs())

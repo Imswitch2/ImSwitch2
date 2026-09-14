@@ -351,7 +351,10 @@ def test_crop_substack_publishes_subset_result(monkeypatch):
         toolbar_module.StackSubsetDialog,
         "get_params",
         staticmethod(
-            lambda _result, parent=None, napari_viewer=None: {
+            # **_kwargs so a new dialog option does not silently turn this
+            # into a TypeError the controller reports as "could not collect
+            # parameters", which looks exactly like the user cancelling.
+            lambda _result, parent=None, napari_viewer=None, rois=(), **_kwargs: {
                 "ranges": [{"axis": "Z", "start": 1, "stop": 3}],
                 "copy": False,
             }
@@ -675,3 +678,60 @@ def test_batch_skips_results_the_processor_cannot_take():
     produced = controller._commChannel.sigResultProduced.emitted
     assert len(produced) == 1
     np.testing.assert_array_equal(produced[0][0].data, data.max(axis=0))
+
+
+def test_crop_offers_the_roi_managers_area_rois(monkeypatch):
+    """Cropping from an ROI needs the panel's ROIs to reach the dialog."""
+    from imswitch.imcommon.algorithms.roi import ROIRecord
+    from imswitch.imcommon.algorithms.roi_geometry import roi_from_points
+
+    data = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+    toolbar_module = importlib.import_module(
+        "imswitch.improcess.controller.ImageToolbarController"
+    )
+    seen = {}
+    monkeypatch.setattr(
+        toolbar_module.StackSubsetDialog,
+        "get_params",
+        staticmethod(
+            lambda _result, parent=None, napari_viewer=None, rois=(), **_k: (
+                seen.update(rois=list(rois)) or None
+            )
+        ),
+    )
+    controller, view, _recon = _controller(data)
+    view.roiManagerWidget = SimpleNamespace(
+        rois=lambda visible_only=False: [
+            ROIRecord("box", "rectangle", (0, 2, 0, 2)),
+            ROIRecord("line", "line", (0, 1, 0, 3), vertices=((0.0, 0.0), (0.0, 3.0))),
+            roi_from_points([[1.0, 1.0]], name="dot"),
+        ]
+    )
+
+    controller.cropSubstack()
+
+    # Only the ones with a rectangle to crop to.
+    assert [roi.name for roi in seen["rois"]] == ["box"]
+
+
+def test_crop_works_with_no_roi_manager_open(monkeypatch):
+    """The dialog is exactly as it was before this feature existed."""
+    data = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+    toolbar_module = importlib.import_module(
+        "imswitch.improcess.controller.ImageToolbarController"
+    )
+    seen = {}
+    monkeypatch.setattr(
+        toolbar_module.StackSubsetDialog,
+        "get_params",
+        staticmethod(
+            lambda _result, parent=None, napari_viewer=None, rois=(), **_k: (
+                seen.update(rois=list(rois)) or None
+            )
+        ),
+    )
+    controller, view, _recon = _controller(data)
+    view.roiManagerWidget = None
+
+    controller.cropSubstack()
+    assert seen["rois"] == []

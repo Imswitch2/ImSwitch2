@@ -14,13 +14,27 @@ from __future__ import annotations
 import numpy as np
 
 VIEWER_TOOLS_LAYER_NAME = "Viewer Tools"
+ROI_OVERLAY_LAYER_NAME = "ROI Manager"
+VIEWER_TOOL_POINTS_LAYER_NAME = "Viewer Tool Points"
+
+#: Layers that annotate the image rather than being one. Excluded by name as
+#: well as by type, and the *Points* layer shows why the name check is not
+#: belt-and-braces: a napari Points layer's ``data`` really is an ``(n, 2)``
+#: float ndarray, so the type check below accepts it. Placing points also
+#: makes it napari's active layer, so without this entry the act of drawing
+#: points would redirect measurement onto an array of coordinates.
+ANNOTATION_LAYER_NAMES = (
+    VIEWER_TOOLS_LAYER_NAME,
+    ROI_OVERLAY_LAYER_NAME,
+    VIEWER_TOOL_POINTS_LAYER_NAME,
+)
 
 
 def is_image_layer(layer, *, min_ndim: int = 2, exclude_names=()) -> bool:
     """True for a visible, ndarray-backed napari layer usable as an image source.
 
-    Hidden layers, underscore-prefixed helper layers and the shared
-    "Viewer Tools" annotation layer are never image sources.
+    Hidden layers, underscore-prefixed helper layers and the shared annotation
+    layers ("Viewer Tools", "ROI Manager") are never image sources.
     """
     if layer is None or not hasattr(layer, "data"):
         return False
@@ -30,7 +44,7 @@ def is_image_layer(layer, *, min_ndim: int = 2, exclude_names=()) -> bool:
         and layer.data.ndim >= min_ndim
         and getattr(layer, "visible", True)
         and not name.startswith("_")
-        and name != VIEWER_TOOLS_LAYER_NAME
+        and name not in ANNOTATION_LAYER_NAMES
         and name not in tuple(exclude_names)
     )
 
