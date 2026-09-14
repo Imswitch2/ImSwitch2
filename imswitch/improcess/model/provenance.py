@@ -858,6 +858,39 @@ def record_import(
     return result
 
 
+def record_external_table(result, path, *, table_format: str, reader: str = "smlm_import"):
+    """Record a localization table read from another program's file as ``result``.
+
+    The file is a real, fingerprinted ``source`` node (path, size, mtime), so
+    a saved result says exactly which Picasso or ThunderSTORM table it came
+    from. The step that turned it into a result is ``opaque`` and not
+    replayable on purpose: no ImProcess reconstructor produced it, and a
+    workflow has no step kind that opens a foreign table. ``show-provenance``
+    still names the file and format, which is what an LLM or a person needs.
+    """
+    from types import SimpleNamespace
+
+    origin = SimpleNamespace(path=str(path), name=os.path.basename(str(path)))
+    source_id, source_node = source_node_for(origin)
+    node_id, node = make_node(
+        "opaque",
+        inputs=[{"node": source_id, "port": SOURCE_PORT}],
+        input_labels=[origin.name],
+        outputs=(DEFAULT_PORT,),
+        extra={
+            "label": f"Imported localization table ({table_format})",
+            "table_format": str(table_format),
+            "reader": str(reader),
+            "reasons": [
+                f"imported from an external localization table ({table_format}); "
+                "no ImProcess step produced it"
+            ],
+        },
+    )
+    _attach(result, {source_id: source_node, node_id: node}, node_id, DEFAULT_PORT)
+    return result
+
+
 # --------------------------------------------------------------------------
 # derived linear history
 # --------------------------------------------------------------------------
@@ -1019,6 +1052,7 @@ __all__ = [
     "output_ref",
     "primary_chain",
     "record_consolidation",
+    "record_external_table",
     "record_import",
     "record_process",
     "record_reconstruction",

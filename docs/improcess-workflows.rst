@@ -363,7 +363,10 @@ cannot be run again:
   form (an object the plugin's codec could not write down), an ROI
   restriction too large to keep and recorded by reference, a source that
   was never persisted (a RAM recording), a stream that did not complete,
-  or a layer imported from a napari plugin;
+  a layer imported from a napari plugin, or a localization table opened
+  from another program's file (Picasso, ThunderSTORM, a mapped CSV) — that
+  file is recorded as a fingerprinted source, so the provenance says
+  exactly where the table came from, but no ImProcess step produced it;
 * a plugin that is not installed;
 * parameters recorded with a newer ``params_version`` than the installed
   plugin has.

@@ -310,6 +310,13 @@ class FileIOController(ImProcessWidgetController):
             )
             return 'empty'
 
+        # The table is a result with no ImProcess step behind it; its
+        # provenance is the foreign file itself, fingerprinted, plus an
+        # opaque import node naming the format. A save then says where the
+        # localizations came from instead of recording an anonymous origin.
+        from imswitch.improcess.model.provenance import record_external_table
+
+        record_external_table(result, dataPath, table_format=localizationFormat)
         reconstructionController.resultProduced(result, result.name)
         self._logger.info(
             f"Loaded {len(result)} localizations from {os.path.basename(dataPath)} "
