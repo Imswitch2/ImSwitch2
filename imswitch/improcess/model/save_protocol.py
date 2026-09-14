@@ -519,7 +519,10 @@ def _remove(target: Path) -> str:
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target, onerror=note)
         elif target.exists() or target.is_symlink():
-            target.unlink()
+            # ``os.unlink`` directly, as ``_publish`` does: on Python 3.10
+            # pathlib binds the function at import time, which is one
+            # behaviour for the two call sites instead of two.
+            os.unlink(target)
     except OSError as exc:
         problems.append(str(exc))
     if target.exists() or target.is_symlink():

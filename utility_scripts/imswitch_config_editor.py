@@ -245,6 +245,7 @@ def _load_section_schemas() -> dict:
 IMPROCESS_RECONSTRUCTOR_FALLBACK = [
     "beadrec",
     "monalisa",
+    "monalisa-legacy",
     "smlm-localizer",
     "snouty",
     "snouty-projections",
@@ -281,6 +282,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "stack-split",
     "stack-subset",
     "subtract-background",
+    "table-to-localizations",
     "transform",
 ]
 
