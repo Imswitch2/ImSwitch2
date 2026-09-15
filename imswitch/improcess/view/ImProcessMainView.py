@@ -70,6 +70,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     # or run a workflow file and publish its results.
     sigExportWorkflowRequested = QtCore.Signal()
     sigRunWorkflowRequested = QtCore.Signal()
+    # Batch forms of the same: the workflow's reconstruction step is bound
+    # to each selected result, or its source to each chosen file.
+    sigRunWorkflowOnResultsRequested = QtCore.Signal()
+    sigRunWorkflowOverFilesRequested = QtCore.Signal()
 
     sigImageAutoContrastRequested = QtCore.Signal()
     sigImageResetContrastRequested = QtCore.Signal()
@@ -227,6 +231,24 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             lambda _checked=False: self.sigRunWorkflowRequested.emit()
         )
         file.addAction(runWorkflowAction)
+        runOnResultsAction = QtWidgets.QAction('Run workflow on selected results…', self)
+        runOnResultsAction.setToolTip(
+            'Apply the processing steps of a workflow file to every selected result: '
+            'its reconstruction step is replaced by each result in turn'
+        )
+        runOnResultsAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowOnResultsRequested.emit()
+        )
+        file.addAction(runOnResultsAction)
+        runOverFilesAction = QtWidgets.QAction('Run workflow over files…', self)
+        runOverFilesAction.setToolTip(
+            'Run a workflow file once per chosen recording; every result is added '
+            'to the reconstruction list'
+        )
+        runOverFilesAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowOverFilesRequested.emit()
+        )
+        file.addAction(runOverFilesAction)
 
         # Toolbars split along the result-unification invariant: Image holds
         # display-only actions (never publish a result), Image operations

@@ -69,6 +69,10 @@ class RunReport:
     steps_run: list[str] = field(default_factory=list)
     failed_step: str | None = None
     error: str | None = None
+    #: ``"step.port"`` keys that were *bound* to results handed in by the
+    #: caller rather than produced by this run (see ``run(bindings=...)``);
+    #: a publisher must not add those to a list they already sit in.
+    bound: list[str] = field(default_factory=list)
     _sources: list = field(default_factory=list, repr=False)
     _closed: bool = field(default=False, repr=False)
 
@@ -212,9 +216,14 @@ def run(
     """Execute ``workflow`` and return its :class:`RunReport`.
 
     ``bindings`` map source step ids to specs (or ``path[::dataset]``
-    strings); a source step with a path of its own needs none. Raises
-    :class:`RunError` on the first failing step, with the report attached
-    as ``exc.report``.
+    strings); a source step with a path of its own needs none. A binding
+    may instead map a reconstruct, consolidate or process step id to an
+    **in-memory result**: that step is not run, its ``out`` port *is* the
+    result, and every step that only fed it (its source, typically) is
+    skipped -- which is how the GUI applies a workflow's processing to
+    results already in its list. Such keys are listed in ``report.bound``.
+    Raises :class:`RunError` on the first failing step, with the report
+    attached as ``exc.report``.
 
     ``hash_sources`` records a sha256 of every file source in the provenance
     (so a later replay can be verified byte-for-byte); ``verify_hash`` makes
@@ -232,6 +241,21 @@ def run(
     bindings = dict(bindings or {})
     source_stem = "result"
     total = len(workflow.steps)
+    # A binding may also be an in-memory result: "start from this". That
+    # step is not run, its output port is the result, and any step that
+    # only fed it (its source, say) is skipped too.
+    bound_results = {sid: value for sid, value in bindings.items() if is_result_binding(value)}
+    for sid in bound_results:
+        try:
+            target = workflow.step(sid)
+        except KeyError:
+            raise WorkflowError(f"binding names a step that does not exist: {sid!r}") from None
+        if isinstance(target, (Source, Save)):
+            raise WorkflowError(
+                f"{sid!r} cannot be bound to a result: only a reconstruct, consolidate or "
+                "process step can start from an existing result"
+            )
+    skipped = steps_replaced_by_bindings(workflow, set(bound_results))
 
     from imswitch.improcess.processors.run import run_processor
     from imswitch.improcess.reconstructors.run import run_consolidation, run_reconstruction
@@ -246,6 +270,15 @@ def run(
                 # like any failure, with the report (and its open sources)
                 # attached so the caller can close them.
                 raise RunError("cancelled")
+            if step.id in skipped:
+                if step.id in bound_results:
+                    result = bound_results[step.id]
+                    report.results[f"{step.id}.{DEFAULT_PORT}"] = result
+                    report.bound.append(f"{step.id}.{DEFAULT_PORT}")
+                    if not report._sources:
+                        source_stem = str(getattr(result, "name", "") or source_stem)
+                report.steps_run.append(step.id)
+                continue
             if isinstance(step, Source):
                 spec = bindings.get(step.id, step.source)
                 if isinstance(spec, str):
@@ -383,13 +416,46 @@ def run(
     return report
 
 
+def is_result_binding(value) -> bool:
+    """Whether a binding value is an in-memory result rather than a source spec."""
+    return (
+        not isinstance(value, (str, SourceSpec))
+        and hasattr(value, "axis_labels")
+        and hasattr(value, "data")
+    )
+
+
+def steps_replaced_by_bindings(workflow, bound_ids) -> set:
+    """The bound steps plus every step that only exists to feed them.
+
+    A source whose only consumer is a bound reconstruction is not opened;
+    a step with any consumer that still runs is kept.
+    """
+    consumers: dict[str, set] = {step.id: set() for step in workflow.steps}
+    for step in workflow.steps:
+        for ref in getattr(step, "inputs", ()) or ():
+            consumers.setdefault(ref.step, set()).add(step.id)
+        ref = getattr(step, "input", None)
+        if ref is not None:
+            consumers.setdefault(ref.step, set()).add(step.id)
+    skipped = set(bound_ids)
+    for step in reversed(workflow.steps):
+        if step.id in skipped:
+            continue
+        users = consumers.get(step.id, set())
+        if users and users <= skipped and not isinstance(step, Save):
+            skipped.add(step.id)
+    return skipped
+
+
 def _log():
     from imswitch.imcommon.model import initLogger
 
     return initLogger("ImProcessWorkflows", tryInheritParent=False)
 
 
-__all__ = ["MODES", "RunError", "RunReport", "render_save_path", "run", "source_stem_of"]
+__all__ = ["MODES", "RunError", "RunReport", "is_result_binding", "render_save_path", "run",
+           "source_stem_of", "steps_replaced_by_bindings"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -325,6 +325,7 @@ snapshots must not leak per-chunk nodes (same step id per session);
 |---|---|
 | Metadata panel did not update for results derived in the session | `metadata_tree_from_result` (identity, metadata, provenance history + graph, source file); `MetadataController` follows `sigCurrentResultChanged`, *Reload* rebuilds |
 | Export refused built-in processors the setup's `processing` block did not list (`processors: []`) although the GUI had runtime-loaded them | GUI export/run use the full registry (`bootstrap_registry()`), not the config-narrowed one |
+| No batch from the GUI | Runner accepts an in-memory result as a binding for a reconstruct/consolidate/process step (`steps_replaced_by_bindings` skips what only fed it; `report.bound`); File → *Run workflow on selected results…* (binds the single reconstruction step to each selection) and *Run workflow over files…*; `_RunWorker` runs a bindings list, reporting per run |
 | Workflow-published view-only result crashed the viewer (`Hdf5VirtualArray` has no `transpose`); re-run refused to overwrite | Viewer materialises data without `transpose`; run asks about overwriting when the output folder is not empty |
 
 ### Round 9 (plugin-author contract review, 2026-09-12) — cleanup before push

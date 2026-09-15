@@ -347,6 +347,22 @@ offer at startup, and the GUI loads any built-in on demand, so an export must
 describe what was actually run. When the chosen output folder already holds
 files, the run asks whether saves may overwrite files of the same name.
 
+Two batch forms run the same workflow file many times, each run reporting
+and publishing on its own so one failure does not hide the rest:
+
+* **File → Run workflow on selected results…** applies the workflow's
+  *processing* to every result selected in the reconstruction list. The
+  workflow must have exactly one reconstruction step; that step is bound
+  to each result in turn — it is not run, its source is not opened, and
+  the steps after it run on the result as it is in the list, chaining
+  onto the result's own provenance. This is how a recipe exported from
+  one result is applied to the others. (In code: ``run(workflow,
+  bindings={"rec": result})``; the runner accepts an in-memory result for
+  any reconstruct, consolidate or process step, and ``report.bound`` lists
+  the ports that were handed in rather than produced.)
+* **File → Run workflow over files…** runs a one-source workflow once per
+  chosen recording, the GUI counterpart of ``run --input``.
+
 What replay reproduces, and what it refuses
 -------------------------------------------
 

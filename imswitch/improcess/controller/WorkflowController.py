@@ -17,15 +17,26 @@ from imswitch.imcommon.model import initLogger
 
 
 class _RunWorker(QtCore.QObject):
+    """Runs a workflow once, or once per bindings dict, off the GUI thread.
+
+    Each run reports on its own (``sigFinished`` / ``sigFailed`` per run), so
+    a batch over selected results publishes each result as it is made and a
+    failing row does not hide the rows that succeeded; ``sigDone`` fires once
+    at the end with the counts.
+    """
+
     sigFinished = QtCore.Signal(object)     # RunReport
     sigFailed = QtCore.Signal(str, object)  # message, RunReport or None
+    sigDone = QtCore.Signal(int, int)       # runs finished, runs failed
 
-    def __init__(self, workflow, registry, out_dir, parent=None, *, overwrite: bool = False):
+    def __init__(self, workflow, registry, out_dir, parent=None, *, overwrite: bool = False,
+                 bindings_list=None):
         super().__init__(parent)
         self._workflow = workflow
         self._registry = registry
         self._out_dir = out_dir
         self._overwrite = bool(overwrite)
+        self._bindings_list = list(bindings_list) if bindings_list is not None else [None]
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -42,18 +53,31 @@ class _RunWorker(QtCore.QObject):
     def run(self) -> None:
         from imswitch.improcess.workflows.runner import RunError, run
 
-        try:
-            report = run(
-                self._workflow, registry=self._registry, out_dir=self._out_dir,
-                overwrite=self._overwrite, cancel=self._should_stop,
-            )
-        except RunError as exc:
-            self.sigFailed.emit(str(exc), getattr(exc, "report", None))
-            return
-        except Exception as exc:  # noqa: BLE001
-            self.sigFailed.emit(str(exc), None)
-            return
-        self.sigFinished.emit(report)
+        finished = failed = 0
+        for index, bindings in enumerate(self._bindings_list):
+            if index and self._should_stop():
+                # A cancellation *inside* a run is the runner's, reported
+                # with its report attached; between rows there is no report,
+                # so say so once and stop the batch.
+                failed += 1
+                self.sigFailed.emit("cancelled", None)
+                break
+            try:
+                report = run(
+                    self._workflow, registry=self._registry, out_dir=self._out_dir,
+                    bindings=bindings, overwrite=self._overwrite, cancel=self._should_stop,
+                )
+            except RunError as exc:
+                failed += 1
+                self.sigFailed.emit(str(exc), getattr(exc, "report", None))
+                continue
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                self.sigFailed.emit(str(exc), None)
+                continue
+            finished += 1
+            self.sigFinished.emit(report)
+        self.sigDone.emit(finished, failed)
 
 
 #: Workflow threads that did not stop within the shutdown wait; referenced
@@ -63,13 +87,17 @@ _ORPHANED_RUNS: list = []
 
 class WorkflowController(QtCore.QObject):
     def __init__(self, commChannel, mainView, reconstructionController, *,
-                 processing_config=None, parent=None):
+                 processing_config=None, registry_factory=None, parent=None):
         super().__init__(parent)
         self._logger = initLogger(self)
         self._commChannel = commChannel
         self._mainView = mainView
         self._reconstructionController = reconstructionController
         self._config = dict(processing_config or {})
+        # Tests inject a factory that leaves the user's drop-in folder alone;
+        # loading it caches the drop-ins process-wide, which is right for
+        # the application and wrong for a test process.
+        self._registry_factory = registry_factory
         self._thread = None
         self._worker = None
         # Source handles behind published results: one entry per run,
@@ -82,7 +110,9 @@ class WorkflowController(QtCore.QObject):
         self._holders: list = []
         self._shuttingDown = False
         for name, slot in (("sigExportWorkflowRequested", self.exportWorkflow),
-                           ("sigRunWorkflowRequested", self.runWorkflow)):
+                           ("sigRunWorkflowRequested", self.runWorkflow),
+                           ("sigRunWorkflowOnResultsRequested", self.runWorkflowOnResults),
+                           ("sigRunWorkflowOverFilesRequested", self.runWorkflowOverFiles)):
             signal = getattr(mainView, name, None)
             if signal is not None:
                 signal.connect(slot)
@@ -144,6 +174,8 @@ class WorkflowController(QtCore.QObject):
         """
         from imswitch.improcess.workflows.runtime import bootstrap_registry
 
+        if self._registry_factory is not None:
+            return self._registry_factory()
         return bootstrap_registry()
 
     def _askOverwrite(self, out_dir: Path):
@@ -172,21 +204,107 @@ class WorkflowController(QtCore.QObject):
 
     def runWorkflow(self, path=None, out_dir=None, overwrite=None):
         """Run a workflow file on a worker thread; results are published."""
-        from imswitch.improcess.workflows.steps import Workflow, WorkflowError, validate
+        return self._runBatch(path, [None], out_dir=out_dir, overwrite=overwrite)
+
+    def runWorkflowOnResults(self, path=None, results=None, out_dir=None, overwrite=None):
+        """Apply a workflow's processing to every selected result.
+
+        The workflow must have exactly one reconstruction step; that step is
+        bound to each result in turn (its source is not opened), and every
+        step after it runs on the result as it is in the list. Each run's
+        outputs chain onto the result's own provenance.
+        """
+        from imswitch.improcess.model.result import ProcessingResult
+
+        if results is None:
+            results = [
+                item[1] if isinstance(item, tuple) and len(item) == 2 else item
+                for item in (self._commChannel.getSelectedResults() or [])
+            ]
+        results = [r for r in results if isinstance(r, ProcessingResult)]
+        if not results:
+            self._status("Select one or more results in the reconstruction list first.")
+            return False
+        loaded = self._loadWorkflow(path, title="Run workflow on selected results")
+        if loaded is None:
+            return False
+        path, workflow = loaded
+        entry = self._entryStep(workflow)
+        if entry is None:
+            return False
+        return self._runBatch(
+            path, [{entry: result} for result in results], out_dir=out_dir, overwrite=overwrite,
+            workflow=workflow,
+        )
+
+    def runWorkflowOverFiles(self, path=None, files=None, out_dir=None, overwrite=None):
+        """Run a workflow once per chosen recording (its single source bound to each)."""
+        from imswitch.improcess.workflows.batch import bindings_for_inputs
+        from imswitch.improcess.workflows.steps import WorkflowError
+
+        loaded = self._loadWorkflow(path, title="Run workflow over files")
+        if loaded is None:
+            return False
+        path, workflow = loaded
+        if files is None:
+            from imswitch.improcess.model.dataset_sources import SOURCE_SPECS, file_dialog_filter
+
+            files, _filter = QtWidgets.QFileDialog.getOpenFileNames(
+                self._mainView, "Recordings to run the workflow over", "", file_dialog_filter(SOURCE_SPECS),
+            )
+            if not files:
+                return False
+        try:
+            bindings_list = bindings_for_inputs(workflow, [str(f) for f in files])
+        except WorkflowError as exc:
+            self._status(f"Cannot bind the chosen files: {exc}")
+            return False
+        return self._runBatch(path, bindings_list, out_dir=out_dir, overwrite=overwrite, workflow=workflow)
+
+    def _loadWorkflow(self, path, *, title: str):
+        from imswitch.improcess.workflows.steps import Workflow, WorkflowError
 
         if self._thread is not None:
             self._status("A workflow is already running.")
-            return False
+            return None
         if path is None:
             path, _filter = QtWidgets.QFileDialog.getOpenFileName(
-                self._mainView, "Run workflow", "", "Workflow (*.yaml *.yml *.json)",
+                self._mainView, title, "", "Workflow (*.yaml *.yml *.json)",
             )
             if not path:
-                return False
+                return None
         try:
-            workflow = Workflow.load(path)
+            return path, Workflow.load(path)
         except (WorkflowError, OSError, ValueError) as exc:
             self._status(f"Could not read workflow: {exc}")
+            return None
+
+    def _entryStep(self, workflow):
+        """The step id an in-memory result stands in for: the one reconstruction."""
+        from imswitch.improcess.workflows.steps import Reconstruct
+
+        candidates = [step.id for step in workflow.steps if isinstance(step, Reconstruct)]
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates:
+            self._status("This workflow has no reconstruction step to replace with a result.")
+        else:
+            self._status(
+                f"This workflow has {len(candidates)} reconstruction steps ({', '.join(candidates)}); "
+                "applying it to results needs exactly one."
+            )
+        return None
+
+    def _runBatch(self, path, bindings_list, *, out_dir=None, overwrite=None, workflow=None):
+        from imswitch.improcess.workflows.steps import validate
+
+        if workflow is None:
+            loaded = self._loadWorkflow(path, title="Run workflow")
+            if loaded is None:
+                return False
+            path, workflow = loaded
+        elif self._thread is not None:
+            self._status("A workflow is already running.")
             return False
         registry = self._registry()
         issues = validate(workflow, registry)
@@ -204,17 +322,26 @@ class WorkflowController(QtCore.QObject):
                 return False
 
         self._thread = QtCore.QThread()
-        self._worker = _RunWorker(workflow, registry, Path(out_dir), overwrite=overwrite)
+        self._worker = _RunWorker(
+            workflow, registry, Path(out_dir), overwrite=overwrite, bindings_list=bindings_list,
+        )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.sigFinished.connect(self._onFinished)
         self._worker.sigFailed.connect(self._onFailed)
-        for signal in (self._worker.sigFinished, self._worker.sigFailed):
-            signal.connect(self._thread.quit)
+        self._worker.sigDone.connect(self._onBatchDone)
+        self._worker.sigDone.connect(self._thread.quit)
         self._thread.finished.connect(self._clear)
-        self._status(f"Running workflow {workflow.name}…")
+        count = len(bindings_list)
+        self._status(f"Running workflow {workflow.name}" + (f" ({count} runs)…" if count > 1 else "…"))
         self._thread.start()
         return True
+
+    @QtCore.Slot(int, int)
+    def _onBatchDone(self, finished: int, failed: int) -> None:
+        if self._shuttingDown or finished + failed <= 1:
+            return
+        self._status(f"Workflow batch done: {finished} run(s) succeeded, {failed} failed.")
 
     @QtCore.Slot(object)
     def _onFinished(self, report) -> None:
@@ -426,7 +553,10 @@ class WorkflowController(QtCore.QObject):
         from imswitch.improcess.model.result import ProcessingResult
 
         count = 0
+        bound = set(getattr(report, "bound", ()) or ())
         for key, result in report.results.items():
+            if key in bound:
+                continue          # handed in from the list; it is already there
             if isinstance(result, ProcessingResult):
                 self._commChannel.sigResultProduced.emit(result, f"{report.workflow}:{key}")
                 count += 1

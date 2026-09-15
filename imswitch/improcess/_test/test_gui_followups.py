@@ -108,7 +108,11 @@ def _workflow_controller(loaded, config):
     view = SimpleNamespace(showStatusMessage=lambda m, timeout_ms=6000: None)
     active = {"result": None}
     recon = SimpleNamespace(getActiveResult=lambda: active["result"])
-    return WorkflowController(comm, view, recon, processing_config=config), active
+    controller = WorkflowController(
+        comm, view, recon, processing_config=config,
+        registry_factory=lambda: bootstrap_registry(user_plugins=False),   # not the user's drop-in folder
+    )
+    return controller, active
 
 
 def test_export_works_for_a_runtime_loaded_processor_the_setup_did_not_list(registry, tmp_path):
@@ -135,9 +139,9 @@ def test_run_passes_the_overwrite_choice_to_the_worker(monkeypatch, registry, tm
     made = {}
 
     class FakeWorker(module._RunWorker):
-        def __init__(self, workflow, registry, out_dir, parent=None, *, overwrite=False):
+        def __init__(self, workflow, registry, out_dir, parent=None, *, overwrite=False, **kwargs):
             made["overwrite"] = overwrite
-            super().__init__(workflow, registry, out_dir, parent, overwrite=overwrite)
+            super().__init__(workflow, registry, out_dir, parent, overwrite=overwrite, **kwargs)
 
     monkeypatch.setattr(module, "_RunWorker", FakeWorker)
     controller, _ = _workflow_controller([], {"processors": []})
