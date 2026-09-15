@@ -201,7 +201,7 @@ def run(
     workflow: Workflow,
     *,
     registry,
-    bindings: dict[str, SourceSpec | str] | None = None,
+    bindings: dict[str, SourceSpec | str | Any] | None = None,   # Any: an in-memory result
     out_dir=None,
     source_root=None,
     overwrite: bool = False,

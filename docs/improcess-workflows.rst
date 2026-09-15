@@ -363,6 +363,16 @@ and publishing on its own so one failure does not hide the rest:
 * **File → Run workflow over files…** runs a one-source workflow once per
   chosen recording, the GUI counterpart of ``run --input``.
 
+A row that fails — a result a step refuses (an image handed to a
+localization-only step), a processor that raises, a save that clashes —
+is one failed row: it stops at that step, whatever it produced before
+is still added to the list and labelled partial, and the next row runs.
+Only cancelling stops the batch. The end-of-batch status names the
+failed rows with their step and reason; the log has all of them. The
+selection is not pre-screened: a result is refused at the step that
+refuses it, exactly as on the command line, because acceptance can
+depend on what the earlier steps produce.
+
 What replay reproduces, and what it refuses
 -------------------------------------------
 

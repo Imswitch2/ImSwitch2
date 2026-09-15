@@ -620,14 +620,15 @@ threshold curve and cutoff marker.  The same graph contract is intended for
 future processing units such as batch summaries, FLIM traces and line-profile
 tools.
 
-File metadata panel
-===================
+Metadata panel
+==============
 
-Set ``"metadataPanel": true`` in the ``processing`` block to show the file
+Set ``"metadataPanel": true`` in the ``processing`` block to show the
 metadata panel, or open it at any time from the **Tools** toolbar / menu
 (``panel.metadata``, unbound by default).  It shows the complete metadata
-hierarchy of a measurement file as a collapsible tree with *Name*, *Value* and
-*Type* columns.
+hierarchy of a measurement file — or of the result selected in the
+reconstruction list, provenance included — as a collapsible tree with
+*Name*, *Value* and *Type* columns.
 
 The reader is deliberately **layout-agnostic**: it walks whatever hierarchy the
 container actually has and reports every attribute it finds on the way down.

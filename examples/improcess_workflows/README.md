@@ -31,3 +31,13 @@ python -m imswitch.improcess.workflows list
 
 Parameters not given in a step keep the plugin's widget defaults; `list`
 prints them. Outputs are never overwritten unless `--overwrite` is passed.
+
+## From the GUI
+
+**File → Export workflow of current result…** writes the steps behind the
+selected result as a workflow file. **Run workflow…** runs a file on the
+recording it names; **Run workflow on selected results…** applies a file's
+processing steps to every result selected in the list (its reconstruction
+step stands in for each result); **Run workflow over files…** is the GUI
+form of `run --input`. Each run reports on its own, so one bad input does
+not stop the rest.

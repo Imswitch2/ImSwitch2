@@ -112,7 +112,7 @@ def bindings_for_inputs(workflow: Workflow, inputs: Iterable, *, source_id: str 
 
 def run_over(
     workflow: Workflow,
-    bindings_list: Iterable[dict[str, SourceSpec | str]],
+    bindings_list: Iterable[dict[str, SourceSpec | str | Any]],
     *,
     registry,
     out_dir,

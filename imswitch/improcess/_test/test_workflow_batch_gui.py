@@ -230,8 +230,6 @@ def test_the_batch_summary_names_the_failed_rows(registry, tmp_path):
     produced = []
     controller = _controller([], produced)
     bad = ArrayProcessingResult("flat", np.zeros((8, 8), np.float32), ["Y", "X"])
-    controller._batchFailures = []
-    worker = controller._worker = None
     from imswitch.improcess.controller.WorkflowController import _RunWorker
 
     worker = _RunWorker(_chain(), registry, tmp_path, bindings_list=[{"rec": bad}, {"rec": _stack("fine")}])
