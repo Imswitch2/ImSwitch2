@@ -320,6 +320,13 @@ snapshots must not leak per-chunk nodes (same step id per session);
 
 ## Review response
 
+### Round 10 (first rig session, 2026-09-15) — 3 findings, all fixed
+| Finding | Fix (pinned in `_test/test_gui_followups.py`) |
+|---|---|
+| Metadata panel did not update for results derived in the session | `metadata_tree_from_result` (identity, metadata, provenance history + graph, source file); `MetadataController` follows `sigCurrentResultChanged`, *Reload* rebuilds |
+| Export refused built-in processors the setup's `processing` block did not list (`processors: []`) although the GUI had runtime-loaded them | GUI export/run use the full registry (`bootstrap_registry()`), not the config-narrowed one |
+| Workflow-published view-only result crashed the viewer (`Hdf5VirtualArray` has no `transpose`); re-run refused to overwrite | Viewer materialises data without `transpose`; run asks about overwriting when the output folder is not empty |
+
 ### Round 9 (plugin-author contract review, 2026-09-12) — cleanup before push
 | Finding | Fix (pinned in `_test/test_plugin_contract.py`, `_test/test_plugin_param_contract.py`) |
 |---|---|

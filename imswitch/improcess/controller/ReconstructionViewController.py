@@ -198,7 +198,14 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
 
         mode = self._processingViewMode(result)
-        im = result.data.transpose(*mode.transpose)
+        data = result.data
+        if not hasattr(data, "transpose"):
+            # A lazy view over a file (a workflow's view-only reconstruction,
+            # a duplicate of one): the viewer shows pixels, so this is where
+            # they are read -- the same moment the GUI's own loader reads a
+            # file it opens.
+            data = np.asarray(data)
+        im = data.transpose(*mode.transpose)
         axisLabels = np.array(result.axis_labels)[list(mode.transpose)]
         axisScales = np.array(result.axis_scales, dtype=float)[list(mode.transpose)]
         self._transposeOrder = list(mode.transpose)

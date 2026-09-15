@@ -341,7 +341,11 @@ From Python:
 In the GUI, **File → Export workflow of current result…** writes the same
 workflow from the result in memory (no file needed), and **File → Run
 workflow…** runs a workflow file and adds its results to the reconstruction
-list.
+list. Both see every installed plugin, built-in or drop-in, whatever the
+setup file's ``processing`` block lists: that block chooses what the panels
+offer at startup, and the GUI loads any built-in on demand, so an export must
+describe what was actually run. When the chosen output folder already holds
+files, the run asks whether saves may overwrite files of the same name.
 
 What replay reproduces, and what it refuses
 -------------------------------------------

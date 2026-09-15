@@ -20,11 +20,12 @@ class _RunWorker(QtCore.QObject):
     sigFinished = QtCore.Signal(object)     # RunReport
     sigFailed = QtCore.Signal(str, object)  # message, RunReport or None
 
-    def __init__(self, workflow, registry, out_dir, parent=None):
+    def __init__(self, workflow, registry, out_dir, parent=None, *, overwrite: bool = False):
         super().__init__(parent)
         self._workflow = workflow
         self._registry = registry
         self._out_dir = out_dir
+        self._overwrite = bool(overwrite)
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -44,7 +45,7 @@ class _RunWorker(QtCore.QObject):
         try:
             report = run(
                 self._workflow, registry=self._registry, out_dir=self._out_dir,
-                cancel=self._should_stop,
+                overwrite=self._overwrite, cancel=self._should_stop,
             )
         except RunError as exc:
             self.sigFailed.emit(str(exc), getattr(exc, "report", None))
@@ -99,7 +100,6 @@ class WorkflowController(QtCore.QObject):
         from imswitch.improcess.model.provenance import graph_of
         from imswitch.improcess.model.save_protocol import ProvenanceDocument
         from imswitch.improcess.workflows.replay import ReplayError, workflow_from_provenance
-        from imswitch.improcess.workflows.runtime import bootstrap_registry
 
         result = self._reconstructionController.getActiveResult()
         if result is None:
@@ -111,7 +111,7 @@ class WorkflowController(QtCore.QObject):
             return None
         try:
             replay = workflow_from_provenance(
-                ProvenanceDocument(graph=graph), registry=bootstrap_registry(self._config),
+                ProvenanceDocument(graph=graph), registry=self._registry(),
                 name=f"workflow-{_slug(getattr(result, 'name', 'result'))}",
             )
         except ReplayError as exc:
@@ -133,9 +133,45 @@ class WorkflowController(QtCore.QObject):
 
     # -- run --------------------------------------------------------------------
 
-    def runWorkflow(self, path=None, out_dir=None):
-        """Run a workflow file on a worker thread; results are published."""
+    def _registry(self):
+        """Every installed plugin, built-in or drop-in.
+
+        Not narrowed by the setup file's ``processing`` block: that block
+        chooses what the panels *offer at startup*, and the GUI loads any
+        built-in on demand anyway (a runtime-loaded ``resize`` is as much
+        part of what was done as a configured one). An exported workflow
+        must describe what happened, and a run must find it.
+        """
         from imswitch.improcess.workflows.runtime import bootstrap_registry
+
+        return bootstrap_registry()
+
+    def _askOverwrite(self, out_dir: Path):
+        """Whether saves may replace files already in ``out_dir``; None cancels.
+
+        Only asked when the folder holds something: a save into a folder
+        that already has a file of the same name is otherwise refused, and
+        the refusal arrives after the reconstruction has already run.
+        """
+        try:
+            occupied = any(out_dir.iterdir())
+        except OSError:
+            occupied = False
+        if not occupied:
+            return False
+        answer = QtWidgets.QMessageBox.question(
+            self._mainView, "Output folder is not empty",
+            f"{out_dir} already contains files. Overwrite files of the same name?\n\n"
+            "No: keep them and let a clashing save fail. Cancel: do not run.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer == QtWidgets.QMessageBox.Cancel:
+            return None
+        return answer == QtWidgets.QMessageBox.Yes
+
+    def runWorkflow(self, path=None, out_dir=None, overwrite=None):
+        """Run a workflow file on a worker thread; results are published."""
         from imswitch.improcess.workflows.steps import Workflow, WorkflowError, validate
 
         if self._thread is not None:
@@ -152,7 +188,7 @@ class WorkflowController(QtCore.QObject):
         except (WorkflowError, OSError, ValueError) as exc:
             self._status(f"Could not read workflow: {exc}")
             return False
-        registry = bootstrap_registry(self._config)
+        registry = self._registry()
         issues = validate(workflow, registry)
         if issues:
             self._status(f"Workflow invalid: {issues[0]}")
@@ -162,9 +198,13 @@ class WorkflowController(QtCore.QObject):
             out_dir = QtWidgets.QFileDialog.getExistingDirectory(self._mainView, "Output directory for saves")
             if not out_dir:
                 return False
+        if overwrite is None:
+            overwrite = self._askOverwrite(Path(out_dir))
+            if overwrite is None:
+                return False
 
         self._thread = QtCore.QThread()
-        self._worker = _RunWorker(workflow, registry, Path(out_dir))
+        self._worker = _RunWorker(workflow, registry, Path(out_dir), overwrite=overwrite)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.sigFinished.connect(self._onFinished)

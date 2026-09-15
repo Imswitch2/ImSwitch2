@@ -650,7 +650,12 @@ nested dicts and lists become subtrees, and string attributes that actually
 carry a JSON document or an XML document (OME-XML, for example) are parsed and
 expanded, with the raw string kept on the parent node.
 
-The panel follows the current data item, so loading a file shows its metadata.
+The panel follows the current data item, so loading a file shows its metadata,
+and it follows the selection in the reconstruction list: a result made in the
+session (a duplicate, a crop, a processor's output) shows its identity, its
+metadata and its provenance -- every step done to it so far, and the source
+file it came from -- in the same tree.  *Reload* rebuilds that view after
+further processing.
 *Open file...* reads the metadata of any supported file without loading its
 pixels, and *Reload* re-reads the current one — useful while a recording is
 still being written.  The filter box matches names, values and types, keeping
