@@ -109,6 +109,7 @@ class WorkflowController(QtCore.QObject):
         # a retained source is released only when none of them holds it.
         self._holders: list = []
         self._shuttingDown = False
+        self._batchFailures: list[str] = []
         for name, slot in (("sigExportWorkflowRequested", self.exportWorkflow),
                            ("sigRunWorkflowRequested", self.runWorkflow),
                            ("sigRunWorkflowOnResultsRequested", self.runWorkflowOnResults),
@@ -321,6 +322,7 @@ class WorkflowController(QtCore.QObject):
             if overwrite is None:
                 return False
 
+        self._batchFailures = []
         self._thread = QtCore.QThread()
         self._worker = _RunWorker(
             workflow, registry, Path(out_dir), overwrite=overwrite, bindings_list=bindings_list,
@@ -341,7 +343,14 @@ class WorkflowController(QtCore.QObject):
     def _onBatchDone(self, finished: int, failed: int) -> None:
         if self._shuttingDown or finished + failed <= 1:
             return
-        self._status(f"Workflow batch done: {finished} run(s) succeeded, {failed} failed.")
+        # The status bar shows only the last message; a batch's failures
+        # would otherwise be visible only in the log.
+        summary = f"Workflow batch done: {finished} run(s) succeeded, {failed} failed."
+        if self._batchFailures:
+            shown = self._batchFailures[:3]
+            more = len(self._batchFailures) - len(shown)
+            summary += " Failed: " + " | ".join(shown) + (f" | +{more} more (see log)" if more > 0 else "")
+        self._status(summary)
 
     @QtCore.Slot(object)
     def _onFinished(self, report) -> None:
@@ -360,6 +369,7 @@ class WorkflowController(QtCore.QObject):
         if self._discardIfShuttingDown(report):
             return
         published = self._publish(report) if report is not None else 0
+        self._batchFailures.append(str(message))
         self._logger.error("Workflow failed: %s", message)
         self._status(f"Workflow failed: {message}" + (f" ({published} partial result(s) added)" if published else ""))
         if report is not None:

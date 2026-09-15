@@ -199,6 +199,51 @@ def test_a_failing_row_does_not_stop_the_batch(registry, tmp_path):
     assert outcomes[0].startswith("fail") and outcomes[1] == "ok" and outcomes[2] == (1, 1)
 
 
+def test_a_result_a_step_refuses_is_reported_and_the_rest_still_run(registry, tmp_path):
+    """A localization-only step over an image: refused before the processor
+    runs, reported for that row, and the next row is untouched."""
+    from imswitch.improcess.controller.WorkflowController import _RunWorker
+    from imswitch.improcess.model.localization_result import LocalizationResult
+    from imswitch.improcess.model.localization_schema import localizations_from_columns
+
+    wf = Workflow("smlm", [
+        Source("raw"),
+        Reconstruct("rec", "smlm-localizer", inputs=["raw"]),
+        Process("keep", "smlm-filter", inputs=["rec"]),
+    ])
+    image = _stack("an image, not localizations")
+    locs = LocalizationResult("locs", localizations_from_columns({
+        "frame": np.array([0, 1]), "x_nm": np.array([10.0, 20.0]), "y_nm": np.array([5.0, 8.0]),
+        "photons": np.array([500.0, 800.0])}), pixel_size_nm=100.0)
+    worker = _RunWorker(wf, registry, tmp_path, bindings_list=[{"rec": image}, {"rec": locs}])
+    outcomes = []
+    worker.sigFinished.connect(lambda report: outcomes.append(("ok", report.result("keep").kind)))
+    worker.sigFailed.connect(lambda message, report: outcomes.append(("fail", message, report.failed_step)))
+    worker.sigDone.connect(lambda finished, failed: outcomes.append(("done", finished, failed)))
+    worker.run()
+    assert outcomes[0][0] == "fail" and "does not accept" in outcomes[0][1] and outcomes[0][2] == "keep"
+    assert outcomes[1] == ("ok", "localization")
+    assert outcomes[2] == ("done", 1, 1)
+
+
+def test_the_batch_summary_names_the_failed_rows(registry, tmp_path):
+    produced = []
+    controller = _controller([], produced)
+    bad = ArrayProcessingResult("flat", np.zeros((8, 8), np.float32), ["Y", "X"])
+    controller._batchFailures = []
+    worker = controller._worker = None
+    from imswitch.improcess.controller.WorkflowController import _RunWorker
+
+    worker = _RunWorker(_chain(), registry, tmp_path, bindings_list=[{"rec": bad}, {"rec": _stack("fine")}])
+    worker.sigFinished.connect(controller._onFinished)
+    worker.sigFailed.connect(controller._onFailed)
+    worker.sigDone.connect(controller._onBatchDone)
+    worker.run()
+    last = [m for k, m in produced if k == "status"][-1]
+    assert last.startswith("Workflow batch done: 1 run(s) succeeded, 1 failed.")
+    assert "proj:" in last and "Failed:" in last
+
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #
