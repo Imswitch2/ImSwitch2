@@ -121,3 +121,21 @@ def test_tables_and_curves_are_not_layerable(kind_result):
 def test_pixel_units_add_no_units_kwarg():
     _data, kwargs, _ = result_to_layer_data(_image(unit="px"))[0]
     assert "units" not in kwargs
+
+
+def test_a_result_without_a_plane_is_not_layerable():
+    """napari's image layer holds planes; a one-axis result sent to an
+    endpoint is refused with its shape, never handed to the viewer."""
+    from imswitch.improcess.model.napari_layers import NotLayerable
+    from imswitch.improcess.model.result import DisplayLayerSpec
+
+    profile = ArrayProcessingResult("profile", np.arange(8, dtype=np.float32), ["Y"])
+    with pytest.raises(NotLayerable, match=r"shape \(8,\)"):
+        result_to_layer_data(profile)
+
+    class _Composite(ArrayProcessingResult):
+        def display_layers(self):
+            return [DisplayLayerSpec(name="flat", data=np.arange(4, dtype=np.float32), axis_labels=["X"])]
+
+    with pytest.raises(NotLayerable, match="needs at least two"):
+        result_to_layer_data(_Composite("c", np.zeros((4, 4), np.float32), ["Y", "X"]))

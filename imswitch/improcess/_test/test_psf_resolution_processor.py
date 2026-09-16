@@ -29,6 +29,18 @@ def _gaussian(shape=(31, 33), center=(14.2, 16.7), sigma=(2.4, 3.1), amplitude=8
     )
 
 
+def test_fit_psf_accepts_camera_dtypes():
+    """Camera frames are uint16 or float32, never float64: the conversion to
+    float64 must be allowed to copy (NumPy 2 raises on a no-copy request it
+    cannot honour, which made the processor fail on every real image)."""
+    for dtype in (np.uint16, np.float32):
+        image = _gaussian(amplitude=8000.0, background=500.0).astype(dtype)
+        fit = fit_psf(image, (5, 25, 6, 28), name="bead")
+        assert fit.center_x == pytest.approx(16.7, abs=0.05)
+        batch = fit_psf_batch(image, [ROIRecord("roi-bead", "rectangle", (5, 25, 6, 28))])
+        assert len(batch.fits) == 1 and batch.fits[0].center_y == pytest.approx(14.2, abs=0.05)
+
+
 def test_fit_psf_recovers_synthetic_gaussian():
     image = _gaussian()
 

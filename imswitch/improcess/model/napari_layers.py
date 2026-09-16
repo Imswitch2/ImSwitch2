@@ -96,6 +96,11 @@ def _image_like_layers(result, kind, *, session_uid) -> list[LayerData]:
 
     data = result.data
     ndim = int(getattr(data, "ndim", np.ndim(data)))
+    if ndim < 2:
+        raise NotLayerable(
+            f"{getattr(result, 'name', 'result')!r} has {ndim} axis/axes "
+            f"(shape {tuple(getattr(data, 'shape', ()) or ())}); an image layer needs at least two"
+        )
     scales = list(getattr(result, "axis_scales", None) or [1.0] * ndim)
     unit = getattr(result, "scale_unit", "px")
     kwargs: dict[str, Any] = {
@@ -128,6 +133,11 @@ def _layer_from_spec(result, spec, *, session_uid) -> LayerData:
     kind = str(getattr(spec, "kind", "image") or "image")
     data = spec.data
     ndim = int(getattr(data, "ndim", np.ndim(data)))
+    if kind in ("image", "labels") and ndim < 2:
+        raise NotLayerable(
+            f"layer {spec.name!r} of {getattr(result, 'name', 'result')!r} has {ndim} axis/axes "
+            f"(shape {tuple(getattr(data, 'shape', ()) or ())}); an image layer needs at least two"
+        )
     scales = spec.axis_scales if spec.axis_scales is not None else [1.0] * ndim
     metadata = {
         **_base_metadata(result, session_uid=session_uid),
