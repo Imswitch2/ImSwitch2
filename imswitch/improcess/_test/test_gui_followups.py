@@ -166,6 +166,40 @@ def test_the_viewer_materialises_a_lazy_view_only_result(registry, tmp_path):
         assert controller._displayedAxisLabels == list(result.axis_labels)
 
 
+# 4. a projection needs a stack; nothing downstream can take a 1D result --------------------------
+#
+# The rig case: a workflow recorded on a TZYX stack (Auto -> Z, then Auto ->
+# T) applied to a TYX result. The second projection collapsed X, and the
+# 1D profile it handed the viewer left napari raising on every cursor move.
+
+def test_projection_refuses_a_flat_image_and_accepts_a_stack(registry):
+    processor = registry.get_processor("projection")
+    flat = ArrayProcessingResult("flat", np.zeros((8, 8), np.float32), ["Y", "X"])
+    stack = ArrayProcessingResult("stack", np.zeros((3, 8, 8), np.float32), ["Z", "Y", "X"])
+    assert not processor.accepts(flat)
+    assert processor.accepts(stack)
+
+
+def test_the_viewer_shows_nothing_for_a_one_axis_result():
+    from imswitch.improcess._test.test_reconstruction_viewer_sot import _bareController
+
+    controller = _bareController()
+    profile = ArrayProcessingResult("profile", np.arange(8, dtype=np.float32), ["Y"])
+    controller._setProcessingResultSlice(profile)
+    assert controller._widget.set_image_calls == 0
+    assert controller._widget.clear_image_calls == 1
+    assert controller._displayedAxisLabels == []
+
+
+def test_tiff_refuses_a_one_axis_result_with_a_reason(tmp_path):
+    from imswitch.improcess.model.result_io import save_image_result
+
+    profile = ArrayProcessingResult("profile", np.arange(8, dtype=np.float32), ["Y"])
+    with pytest.raises(ValueError, match="two axes"):
+        save_image_result(profile, tmp_path / "p.tiff", "tiff")
+    assert not (tmp_path / "p.tiff").exists()
+
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #

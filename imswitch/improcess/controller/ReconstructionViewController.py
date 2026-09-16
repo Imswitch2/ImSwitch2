@@ -197,7 +197,6 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.clearImage()
             return
 
-        mode = self._processingViewMode(result)
         data = result.data
         if not hasattr(data, "transpose"):
             # A lazy view over a file (a workflow's view-only reconstruction,
@@ -205,6 +204,20 @@ class ReconstructionViewController(ImProcessWidgetController):
             # they are read -- the same moment the GUI's own loader reads a
             # file it opens.
             data = np.asarray(data)
+        if getattr(data, "ndim", 0) < 2:
+            # napari's image layer holds planes. A 1D result pushed into it
+            # leaves the layer's transform and units disagreeing about the
+            # rank, and every later cursor move or redraw raises from inside
+            # napari. Show nothing rather than a viewer that cannot draw.
+            self._logger.warning(
+                "Result %r has %d axis/axes and cannot be shown as an image",
+                getattr(result, "name", result), getattr(data, "ndim", 0),
+            )
+            self._transposeOrder = []
+            self._displayedAxisLabels = []
+            self._widget.clearImage()
+            return
+        mode = self._processingViewMode(result)
         im = data.transpose(*mode.transpose)
         axisLabels = np.array(result.axis_labels)[list(mode.transpose)]
         axisScales = np.array(result.axis_scales, dtype=float)[list(mode.transpose)]

@@ -75,6 +75,7 @@ Unreleased
 
 **Behaviour Changes**
 
+- ImProcess *Projection* now requires a stack, as ImageJ's *Z Project* does. It used to accept a 2D image and collapse one of its two displayed axes, leaving a one-axis profile that the viewer could not draw (napari raised on every cursor move afterwards) and the TIFF writer could not store. A workflow whose projections resolve ``Auto`` on a result with fewer stack axes than the one it was recorded on is now refused at that step, with the offered result's axes and shape in the message, and the other rows of a batch run on. The viewer and the TIFF writer also refuse a result with fewer than two axes outright, whatever produced it.
 - **ROI standard deviation is now the sample standard deviation** (``ddof = 1``), matching ImageJ, and a single-pixel ROI reports ``NaN`` rather than ``0``. It was the population form (``ddof = 0``), so every ROI standard deviation ImSwitch has reported was smaller than the figure ImageJ gives for the same region — by ~12% for a 5-pixel ROI (1.118 becoming 1.291), and by less as the region grows. Nothing else about the numbers changes. This affects the ROI manager, the ROI statistics panel, and anything reading ``ROIStats.std``; there is one definition now, in the measurement registry, which the legacy helper is a view onto.
 
 **Bug Fixes**

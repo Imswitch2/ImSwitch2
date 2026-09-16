@@ -363,9 +363,11 @@ def run(
                     params[ROI_PARAM] = ROIRestriction.from_provenance(step.restriction)
                 for item in inputs:
                     if not plugin.accepts(item):
+                        shape = tuple(getattr(getattr(item, "data", None), "shape", ()) or ())
                         raise WorkflowError(
                             f"{step.processor!r} does not accept result {getattr(item, 'name', item)!r} "
-                            f"(kind {getattr(item, 'kind', 'image')!r})"
+                            f"(kind {getattr(item, 'kind', 'image')!r}, axes "
+                            f"{list(getattr(item, 'axis_labels', []) or [])}, shape {shape})"
                         )
                 spec = plugin.output_spec(params)
                 fan_out = len(inputs) > 1 and getattr(plugin, "max_inputs", 1) == 1

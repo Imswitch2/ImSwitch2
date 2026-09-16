@@ -246,6 +246,11 @@ def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
     # stored shape then disagrees with the declared axes and the write fails
     # outright. Only a result that really is RGB says so.
     photometric = "rgb" if _is_rgb(result) else "minisblack"
+    if np.ndim(data) < 2:
+        raise ValueError(
+            f"cannot write {getattr(result, 'name', 'result')!r} as TIFF: a TIFF page needs "
+            f"two axes, this result has {np.ndim(data)} (shape {tuple(np.shape(data))})"
+        )
     try:
         tifffile.imwrite(
             str(path), data, ome=True, metadata=metadata, photometric=photometric

@@ -242,6 +242,32 @@ def test_the_batch_summary_names_the_failed_rows(registry, tmp_path):
     assert "proj:" in last and "Failed:" in last
 
 
+def test_two_auto_projections_refuse_a_flat_intermediate_instead_of_producing_a_profile(registry, tmp_path):
+    """Recorded on TZYX (Auto -> Z, then Auto -> T), applied to TYX: the
+    second projection is refused with the shape it was offered, the row
+    fails at that step, and the TZYX row still runs to a plane."""
+    from imswitch.improcess.controller.WorkflowController import _RunWorker
+
+    wf = Workflow("twice", [
+        Source("raw"),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("p1", "projection", inputs=["rec"], params={"axis": "Auto", "mode": "max"}),
+        Process("p2", "projection", inputs=["p1"], params={"axis": "Auto", "mode": "max"}),
+    ])
+    tyx = ArrayProcessingResult("tyx", np.zeros((2, 8, 8), np.float32), ["T", "Y", "X"])
+    tzyx = ArrayProcessingResult("tzyx", np.zeros((2, 3, 8, 8), np.float32), ["T", "Z", "Y", "X"])
+    worker = _RunWorker(wf, registry, tmp_path, bindings_list=[{"rec": tyx}, {"rec": tzyx}])
+    outcomes = []
+    worker.sigFinished.connect(lambda report: outcomes.append(("ok", tuple(report.result("p2").data.shape))))
+    worker.sigFailed.connect(lambda message, report: outcomes.append(("fail", message, report.failed_step)))
+    worker.sigDone.connect(lambda finished, failed: outcomes.append(("done", finished, failed)))
+    worker.run()
+    assert outcomes[0][0] == "fail" and outcomes[0][2] == "p2"
+    assert "does not accept" in outcomes[0][1] and "shape (8, 8)" in outcomes[0][1]
+    assert outcomes[1] == ("ok", (8, 8))
+    assert outcomes[2] == ("done", 1, 1)
+
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #
