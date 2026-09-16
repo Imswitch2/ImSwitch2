@@ -770,6 +770,68 @@ def test_gauss_processor_gpu_fallback():
     assert processor.pts_per_focus == len(get_rectangles_coords(2)[0])
 
 
+def _require_gpu():
+    """Skip unless cupy is importable AND a CUDA device is actually usable."""
+    cp = pytest.importorskip("cupy")
+    try:
+        float(cp.zeros(1).sum())
+    except Exception as exc:  # cupy installed but no working device
+        pytest.skip(f"no usable CUDA device: {exc}")
+    return cp
+
+
+def test_live_session_gpu_matches_cpu(synthetic_stack):
+    """The GPU hot-plane path reconstructs the same volume as the CPU path."""
+    _require_gpu()
+    stack, attrs, *_ = synthetic_stack
+    init_obj = StreamInit(
+        name="s", dataset_name="d", data=stack, attrs=attrs
+    )
+
+    cpu = MonalisaReconstructor().make_session()
+    cpu.begin(init_obj, params={"use_gpu": False})
+    cpu.push(stack[50:], 50, 100)
+    cpu_data = cpu.result().data
+    cpu.close()
+
+    gpu = MonalisaReconstructor().make_session()
+    gpu.begin(init_obj, params={"use_gpu": True})
+    gpu.push(stack[50:], 50, 100)
+    gpu_data = gpu.result().data
+    gpu.close()
+
+    assert gpu_data.shape == cpu_data.shape
+    np.testing.assert_allclose(
+        gpu_data, cpu_data, rtol=1e-3, atol=1e-3 * float(cpu_data.max())
+    )
+
+
+def test_live_session_gpu_defers_d2h_until_result(synthetic_stack):
+    """Per-frame pushes accumulate on the device; result() performs the D2H."""
+    _require_gpu()
+    stack, attrs, *_ = synthetic_stack
+    init_obj = StreamInit(
+        name="s", dataset_name="d", data=stack, attrs=attrs
+    )
+
+    session = MonalisaReconstructor().make_session()
+    session.begin(init_obj, params={"use_gpu": True})  # pushes timepoint 0
+
+    # begin() scattered the init stack into the device plane but did not copy
+    # it back yet -- the flush is lazy.
+    assert session._hot_plane_dirty is True
+
+    session.result()
+    assert session._hot_plane_dirty is False
+
+    # A further push re-dirties the plane; the next result() re-syncs it.
+    session.push(stack[50:], 50, 100)
+    assert session._hot_plane_dirty is True
+    session.result()
+    assert session._hot_plane_dirty is False
+    session.close()
+
+
 def test_make_gauss_processor_rejects_invalid_fast_gauss_options():
     """Fast-Gauss magic numbers are validated when supplied as parameters."""
     with pytest.raises(ValueError, match="num_rects"):
@@ -803,6 +865,96 @@ def test_make_gauss_processor_rejects_invalid_fast_gauss_options():
             gaussian_sigma_px=0,
             use_gpu=False,
         )
+
+
+
+# --- incremental timepoint planes ------------------------------------------
+#
+# live_plane() is the cheap live-update path: the viewer keeps its own buffer
+# and each refresh writes one timepoint into it, instead of receiving a fresh
+# copy of the whole growing volume. The plane must be a COPY -- the session
+# goes on writing to `reconstructed` from the process thread.
+
+
+def test_live_plane_is_a_copy_not_a_view(synthetic_stack):
+    stack, attrs, *_ = synthetic_stack
+    session = MonalisaReconstructor().make_session()
+    session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
+                  params={"use_gpu": False})
+
+    index, plane = session.live_plane()
+
+    assert not np.shares_memory(plane, session.reconstructed)
+    assert plane.ndim == session.reconstructed.ndim   # keeps all axes
+    assert plane.shape[2] == 1                        # T axis length 1
+    assert 0 <= index < session.reconstructed.shape[2]
+
+
+def test_live_plane_before_begin_returns_none():
+    """Nothing to hand over until the output buffer exists."""
+    assert MonalisaReconstructor().make_session().live_plane() is None
+
+
+def test_planes_assemble_into_the_same_volume_as_result(synthetic_stack):
+    """Writing each plane into a viewer-side buffer reproduces result() exactly."""
+    stack, attrs, *_ = synthetic_stack
+    session = MonalisaReconstructor().make_session()
+    session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
+                  params={"use_gpu": False})
+
+    # The viewer's buffer is the first whole result -- a copy it then owns.
+    gui_buffer = session.result().data
+    assert not np.shares_memory(gui_buffer, session.reconstructed)
+
+    n_frames = stack.shape[0]
+    for i in range(n_frames, n_frames * 2):
+        session.push(stack[i % n_frames][None], i, i + 1)
+        if (i + 1) % 10 == 0:                     # as the viewer throttle would
+            index, plane = session.live_plane()
+            gui_buffer[:, :, index:index + 1] = plane
+
+    np.testing.assert_array_equal(gui_buffer, session.result().data)
+    session.close()
+
+
+# --- saving ----------------------------------------------------------------
+
+
+def test_saved_tiff_is_a_conformant_imagej_hyperstack(synthetic_stack, tmp_path):
+    """`bigtiff` and `imagej` together make tifffile warn and produce a file
+    ImageJ may refuse. Only one of them may be set."""
+    import warnings
+
+    import tifffile
+
+    stack, attrs, *_ = synthetic_stack
+    session = MonalisaReconstructor().make_session()
+    session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
+                  params={"use_gpu": False})
+
+    out = tmp_path / "s_recon.tif"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        session.result().save(out, "tiff")
+
+    nonconformant = [w for w in caught if "nonconformant" in str(w.message)]
+    assert nonconformant == [], [str(w.message) for w in nonconformant]
+
+    with tifffile.TiffFile(str(out)) as tf:
+        assert tf.is_bigtiff is False
+        assert tf.imagej_metadata["hyperstack"] is True
+    session.close()
+
+
+def test_save_rejects_unsupported_formats(synthetic_stack, tmp_path):
+    stack, attrs, *_ = synthetic_stack
+    session = MonalisaReconstructor().make_session()
+    session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
+                  params={"use_gpu": False})
+
+    with pytest.raises(ValueError, match="tiff"):
+        session.result().save(tmp_path / "s.zarr", "zarr")
+    session.close()
 
 
 def test_live_session_missing_scan_geometry():

@@ -10,6 +10,7 @@ import h5py
 import numpy as np
 import zarr
 
+from imswitch.imcommon.model.logging import initLogger
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     dataset_names,
@@ -473,15 +474,18 @@ class ZarrLiveSource(LiveSource):
         return attrs
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
-        expected_frames = self._coerce_int(attrs.get('recording:expected_frames'))
+        # _meta_lookup, not attrs.get: legacy ImSwitch-1 Zarr nests these under
+        # an ``ImswitchData`` attr, so a completed store's ``writing=False`` is
+        # invisible at the top level and the store looks forever mid-write.
+        expected_frames = self._coerce_int(_meta_lookup(attrs, 'recording:expected_frames'))
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
-        committed = self._coerce_int(attrs.get('recording:frames_committed'))
+        committed = self._coerce_int(_meta_lookup(attrs, 'recording:frames_committed'))
         if committed is not None:
             self._frames_committed = committed
 
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        self._writing = self._coerce_bool(_meta_lookup(attrs, 'writing'), default=self._writing)
 
     def _readable_length(self) -> int:
         if self._array is None:
@@ -541,6 +545,32 @@ def _lapse_index_template(path: str):
     return folder, name[:start], width, name[end:], int(match.group(1))
 
 
+def _highest_lapse_index_span(template, first_index: int) -> int:
+    """How many timepoint slots the files on disk span, gaps included.
+
+    Returns ``highest_index - first_index + 1`` by scanning the folder for
+    names matching the template, so a skipped timepoint does not truncate the
+    range. Falls back to ``1`` when there is no template or the folder cannot
+    be listed.
+    """
+    if template is None:
+        return 1
+    folder, prefix, _width, suffix, _ = template
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 1
+
+    highest = first_index
+    for name in names:
+        if not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        digits = name[len(prefix):len(name) - len(suffix)]
+        if digits.isdigit():
+            highest = max(highest, int(digits))
+    return highest - first_index + 1
+
+
 class ZarrMultiFileLapseSource(LiveSource):
     """Stream a per-file timelapse (one ``.zarr`` per timepoint) as one stream.
 
@@ -550,6 +580,12 @@ class ZarrMultiFileLapseSource(LiveSource):
     session's ``time_index = start // frames_per_stack`` routes each file into
     its own timepoint, accumulating one multi-timepoint result. Later timepoint
     files (live recording) are picked up by re-deriving the next index path.
+
+    ``position`` is the timepoint's **true** index (relative to the first
+    file), not a count of files streamed. An acquisition can skip a timepoint
+    -- t0, t1, t2, t4 -- and keeping the true index is what leaves t3's slot
+    untouched in the session's pre-zeroed output, so it shows as blank and the
+    viewer's timepoint slider jumps straight from t2 to t4.
     """
 
     # Multiple timepoints stream through one worker run; between timepoints the
@@ -557,8 +593,13 @@ class ZarrMultiFileLapseSource(LiveSource):
     # stall watchdog must not treat that gap as a crashed writer.
     idles_between_stacks = True
 
-    def __init__(self, first_path, detector_name=None, chunk_size=None,
-                 num_timepoints=None):
+    def __init__(
+        self,
+        first_path,
+        detector_name=None,
+        chunk_size=None,
+        num_timepoints=None,
+    ) -> None:
         self._first_path = str(first_path)
         self._detector_name = detector_name
         self._chunk_size = chunk_size
@@ -566,8 +607,9 @@ class ZarrMultiFileLapseSource(LiveSource):
         self._inner: ZarrLiveSource | None = None
         self._template = None
         self._first_index = 0
-        self._position = 0  # 0-based timepoint position
+        self._position = 0  # 0-based TRUE timepoint index (gaps preserved)
         self._frames_per_stack = 1
+        self._logger = initLogger(self, tryInheritParent=False)
 
     def open(self, path_or_handle: Any) -> StackInfo:
         first = str(path_or_handle) if path_or_handle is not None else self._first_path
@@ -617,14 +659,42 @@ class ZarrMultiFileLapseSource(LiveSource):
         # flush ordering makes shape-visible imply data-visible, but Zarr
         # cannot.
         if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
-            next_path = self._build_path(self._position + 1)
-            if (next_path is not None and os.path.exists(next_path)
-                    and _zarr_store_streamable(next_path)):
+            nxt = self._next_available_position()
+            if nxt is not None:
+                if nxt != self._position + 1:
+                    missing = ", ".join(str(p) for p in range(self._position + 1, nxt))
+                    self._logger.warning(
+                        f"Timepoint(s) {missing} never appeared but timepoint {nxt} "
+                        f"did; leaving the gap blank and continuing at {nxt}"
+                    )
                 self._inner.close()
-                self._position += 1
+                self._position = nxt
                 self._inner = ZarrLiveSource(self._detector_name, self._chunk_size)
-                self._inner.open(next_path)
+                self._inner.open(self._build_path(nxt))
         return chunks
+
+    def _next_available_position(self) -> int | None:
+        """The next timepoint to stream, or ``None`` to keep waiting.
+
+        Normally that is simply the next index. When the next index is absent
+        but a LATER one already exists, the acquisition skipped that timepoint
+        -- the recorder writes in order, so a later file existing means the
+        earlier one is never coming -- and we jump to the first index present.
+        The skipped position is never streamed, so the session's pre-zeroed
+        output keeps a blank slot there.
+
+        If the first present store exists but is not safe to stream yet
+        (mid-write without a commit barrier), wait for it rather than looking
+        further ahead: it is the next real timepoint, just not ready.
+        """
+        for position in range(self._position + 1, self._num_timepoints):
+            path = self._build_path(position)
+            if path is None or not os.path.exists(path):
+                continue
+            if not _zarr_store_streamable(path):
+                return None
+            return position
+        return None
 
     def is_complete(self) -> bool:
         if self._inner is None:
@@ -651,13 +721,13 @@ class ZarrMultiFileLapseSource(LiveSource):
         return os.path.join(folder, f"{prefix}{index:0{width}d}{suffix}")
 
     def _count_present_timepoints(self) -> int:
-        count = 1
-        while True:
-            path = self._build_path(count)
-            if path is None or not os.path.exists(path):
-                break
-            count += 1
-        return count
+        """Timepoint slots to allocate when the metadata does not say.
+
+        Taken from the HIGHEST index on disk rather than a contiguous walk: a
+        skipped timepoint would end that walk early and cap the range, so every
+        later file would be silently dropped.
+        """
+        return _highest_lapse_index_span(self._template, self._first_index)
 
 
 class ZarrLapseSource(LiveSource):
@@ -932,7 +1002,7 @@ class ZarrLapseSource(LiveSource):
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
         """Update internal state from attributes."""
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        self._writing = self._coerce_bool(_meta_lookup(attrs, 'writing'), default=self._writing)
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:
@@ -1219,11 +1289,11 @@ class Hdf5LiveSource(LiveSource):
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
         """Update internal state from attributes."""
-        expected_frames = self._coerce_int(attrs.get('recording:expected_frames'))
+        expected_frames = self._coerce_int(_meta_lookup(attrs, 'recording:expected_frames'))
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        self._writing = self._coerce_bool(_meta_lookup(attrs, 'writing'), default=self._writing)
 
     def _readable_length(self) -> int:
         """Return the number of frames that can be read.
@@ -1284,8 +1354,9 @@ class Hdf5MultiFileLapseSource(LiveSource):
         self._inner: Hdf5LiveSource | None = None
         self._template = None
         self._first_index = 0
-        self._position = 0  # 0-based timepoint position
+        self._position = 0  # 0-based TRUE timepoint index (gaps preserved)
         self._frames_per_stack = 1
+        self._logger = initLogger(self, tryInheritParent=False)
 
     def open(self, path_or_handle: Any) -> StackInfo:
         first = str(path_or_handle) if path_or_handle is not None else self._first_path
@@ -1325,15 +1396,36 @@ class Hdf5MultiFileLapseSource(LiveSource):
         offset = self._position * self._frames_per_stack
         chunks = [Chunk(c.data, c.start + offset, c.end + offset) for c in self._inner.poll()]
 
-        # Current timepoint fully read: advance to the next file if it exists.
+        # Current timepoint fully read: advance to the next file that exists.
+        # A skipped timepoint is jumped over (see the Zarr sibling); its slot
+        # stays blank because its true index is never streamed.
         if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
-            next_path = self._build_path(self._position + 1)
-            if next_path is not None and os.path.exists(next_path):
+            nxt = self._next_available_position()
+            if nxt is not None:
+                if nxt != self._position + 1:
+                    missing = ", ".join(str(p) for p in range(self._position + 1, nxt))
+                    self._logger.warning(
+                        f"Timepoint(s) {missing} never appeared but timepoint {nxt} "
+                        f"did; leaving the gap blank and continuing at {nxt}"
+                    )
                 self._inner.close()
-                self._position += 1
+                self._position = nxt
                 self._inner = Hdf5LiveSource(self._detector_name, self._chunk_size)
-                self._inner.open(next_path)
+                self._inner.open(self._build_path(nxt))
         return chunks
+
+    def _next_available_position(self) -> int | None:
+        """The next timepoint to stream, or ``None`` to keep waiting.
+
+        As in the Zarr sibling, but advancing on plain existence: SWMR flush
+        ordering makes a shape-visible HDF5 dataset data-visible too, so there
+        is no separate streamability gate to clear.
+        """
+        for position in range(self._position + 1, self._num_timepoints):
+            path = self._build_path(position)
+            if path is not None and os.path.exists(path):
+                return position
+        return None
 
     def is_complete(self) -> bool:
         if self._inner is None:
@@ -1360,13 +1452,11 @@ class Hdf5MultiFileLapseSource(LiveSource):
         return os.path.join(folder, f"{prefix}{index:0{width}d}{suffix}")
 
     def _count_present_timepoints(self) -> int:
-        count = 1
-        while True:
-            path = self._build_path(count)
-            if path is None or not os.path.exists(path):
-                break
-            count += 1
-        return count
+        """Timepoint slots to allocate when the metadata does not say.
+
+        See :meth:`ZarrMultiFileLapseSource._count_present_timepoints`.
+        """
+        return _highest_lapse_index_span(self._template, self._first_index)
 
 
 class Hdf5LapseSource(LiveSource):
@@ -1644,7 +1734,7 @@ class Hdf5LapseSource(LiveSource):
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
         """Update internal state from attributes."""
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        self._writing = self._coerce_bool(_meta_lookup(attrs, 'writing'), default=self._writing)
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:

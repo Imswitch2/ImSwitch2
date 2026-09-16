@@ -143,16 +143,6 @@ class ReconstructorManagerController(ImProcessWidgetController):
         except Exception:
             pass
 
-        # Push the active reconstructor's preferred output folder name to
-        # the file watcher so 'Watch and run' writes outputs under the
-        # plugin's default_save_subdir instead of a hardcoded 'rec/'.
-        watcher = self._main.watcherFrameController
-        if watcher is not None:
-            try:
-                watcher.setSaveSubdir(getattr(reconstructor, 'default_save_subdir', 'rec'))
-            except Exception:
-                pass
-
         # NOTE: Special-case by ID retained because MoNaLISA uses a legacy parameter
         # tree that differs fundamentally from the standard plugin widget API.
         # This will remain until the scan-params/find-pattern path is migrated.

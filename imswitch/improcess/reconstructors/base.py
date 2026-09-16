@@ -38,14 +38,15 @@ class Reconstructor(ABC):
     """
 
     default_save_subdir: str = "rec"
-    """Subdirectory name the WatcherFrame uses for reconstructed outputs.
+    """Subdirectory name a save path should use for reconstructed outputs.
 
-    The file watcher writes one output per watched input under
-    ``{watched_dir}/{default_save_subdir}/``. Override per modality to pick a
-    plugin-appropriate folder name (e.g. ``"deskew"`` for SNOUTY) or to keep
-    multiple watchers coexisting without overwriting each other. ``"rec"`` is
-    the historical MoNaLISA default and is kept here so behavior is
-    unchanged for plugins that don't override.
+    Declarative metadata only: the batch file watcher that consumed it was
+    removed with the rest of the old watch-and-run path, so nothing reads it
+    today. It is retained as part of the plugin contract for a future save
+    path, which would write outputs under
+    ``{output_dir}/{default_save_subdir}/``. Override per modality to pick a
+    plugin-appropriate folder name (e.g. ``"deskew"`` for SNOUTY). ``"rec"``
+    is the historical MoNaLISA default.
     """
 
     supports_consolidation: bool = False
@@ -56,7 +57,6 @@ class Reconstructor(ABC):
     but disabled, so a multidata run never silently degrades to individual
     processing.
     """
-
 
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -194,6 +194,25 @@ class StreamingSession(ABC):
     def result(self) -> ProcessingResult:
         """Return a snapshot of the current reconstruction."""
         ...
+
+    def live_plane(self) -> "tuple[int, np.ndarray] | None":
+        """One timepoint's output slice, for an incremental viewer update.
+
+        Returns ``(timepoint_index, plane)`` where ``plane`` is a **copy** of
+        that timepoint's slice of the output, keeping every axis (so the
+        timepoint axis has length 1 and the caller can assign it straight into
+        an identically-shaped buffer).
+
+        This is the cheap path for live updates: the viewer keeps its own
+        accumulating buffer and writes each plane into it, instead of receiving
+        a fresh copy of the whole growing volume on every refresh. The copy is
+        what keeps the boundary hard -- the session never hands out memory it
+        goes on writing to.
+
+        Returning ``None`` (the default) means the session cannot do
+        incremental updates, and callers fall back to :meth:`result`.
+        """
+        return None
 
     def finish(self) -> ProcessingResult:
         """Finalize processing and return the final result."""

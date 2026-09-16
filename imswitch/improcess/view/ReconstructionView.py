@@ -52,6 +52,7 @@ class ReconstructionView(QtWidgets.QFrame):
         )
         self.setNapariLayerControlsVisible(showLayerControls)
         self._displayLayers = []
+        self._imgLayerIsDisplayAnchor = False
         # Tracks which managed/protected layer is the selected result's canonical
         # output (may be a labels/points layer, not imgLayer) so the toolbar and
         # active-image accessors can target it by role rather than by identity.
@@ -190,16 +191,34 @@ class ReconstructionView(QtWidgets.QFrame):
             self.sigAxisStepChanged.emit(event.value)
 
     def addNewData(self, reconObj, name):
+        """Add an entry, de-duplicating the label with a ``.N`` suffix.
+
+        For producers that can legitimately emit results under a repeated name
+        (reconstructing the same file twice, say), so the entries stay tellable
+        apart. Callers whose name is already unique should use
+        :meth:`addNamedData` instead.
+        """
         ind = 0
         for i in range(self.reconList.count()):
             if name + '.' + str(ind) == self.reconList.item(i).data(0):
                 ind += 1
-        name = name + '.' + str(ind)
+        return self.addNamedData(reconObj, name + '.' + str(ind))
 
+    def addNamedData(self, reconObj, name):
+        """Add an entry labelled exactly ``name`` -- no de-duplicating suffix.
+
+        Used by the live path, where the run name (the timelapse folder) is
+        already unique per job, so a ``.0`` would be noise.
+
+        Returns:
+            The created ``QListWidgetItem``, so a caller can keep updating that
+            specific entry rather than whichever one happens to be selected.
+        """
         listItem = QtWidgets.QListWidgetItem(name)
         listItem.setData(1, reconObj)
         self.reconList.addItem(listItem)
         self.reconList.setCurrentItem(listItem)
+        return listItem
 
     def getCurrentItemIndex(self):
         currentItem = self.reconList.currentItem()
@@ -252,8 +271,94 @@ class ReconstructionView(QtWidgets.QFrame):
     def getImage(self):
         return self.imgLayer.data
 
+    def tryFastLiveUpdate(self, result, transposeOrder) -> bool:
+        """Attempt an in-place pixel swap for a repeat live-reconstruction update.
+
+        ImSwitch-1 style: no layer add/remove, no ``display_layers()`` rebuild
+        (that recomputes per-base contrast over the whole growing volume), no
+        axis-label / colormap / scale-bar reconfiguration -- just reassign each
+        existing layer's ``.data`` and ``refresh()``.
+
+        This is a "try" method: calling it *is* the update, and the return value
+        reports whether it happened. ``True`` means the layers now show
+        ``result``; ``False`` means nothing was touched and the caller should
+        fall back to the full :meth:`setDisplayLayers` / :meth:`setImage` path
+        (the layer structure or a shape no longer matches).
+
+        Every target is validated *before* any assignment, so a mismatch can
+        never leave the layers partially updated.
+        """
+        try:
+            arrays = (
+                list(result.display_layer_data())
+                if hasattr(result, "display_layer_data") else []
+            )
+        except Exception as exc:
+            self._logger.debug("tryFastLiveUpdate: display_layer_data() failed (%s)", exc)
+            return False
+
+        try:
+            if arrays:
+                anchor = getattr(self, "_imgLayerIsDisplayAnchor", False)
+                # display_layers() routes the first image-kind spec (base 0 for
+                # MoNaLISA) to imgLayer and the rest to _displayLayers, in order.
+                targets = ([self.imgLayer] if anchor else []) + list(self._displayLayers)
+                if len(arrays) != len(targets):
+                    return False
+                pairs = []
+                for layer, arr in zip(targets, arrays):
+                    arr = np.asarray(arr)
+                    if tuple(arr.shape) != tuple(np.shape(layer.data)):
+                        return False
+                    pairs.append((layer, arr))
+            else:
+                im = np.asarray(result.data).transpose(*transposeOrder)
+                if tuple(im.shape) != tuple(np.shape(self.imgLayer.data)):
+                    return False
+                pairs = [(self.imgLayer, im)]
+        except Exception as exc:
+            self._logger.debug("tryFastLiveUpdate: fell back (%s)", exc)
+            return False
+
+        for layer, arr in pairs:
+            try:
+                layer.data = arr
+                layer.refresh()
+            except Exception as exc:
+                self._logger.debug("tryFastLiveUpdate: layer.data swap failed (%s)", exc)
+                return False
+        return True
+
+    def moveDimStep(self, axis: int, step: int) -> None:
+        """Move one napari dims slider to ``step`` (clamped), e.g. the live
+        timepoint axis."""
+        try:
+            dims = self.napariViewer.dims
+            if 0 <= axis < dims.ndim:
+                hi = max(0, int(dims.range[axis][1]))
+                dims.set_current_step(axis, max(0, min(int(step), hi)))
+        except Exception as exc:
+            self._logger.debug("moveDimStep(%s, %s) failed: %s", axis, step, exc)
+
+    def _setScaleBarUnit(self, unit):
+        """Set the napari scale-bar unit, but only when it changed.
+
+        Skips redundant assignments (they fire on every live-reconstruction
+        redraw) and silences the napari >=0.6 ``FutureWarning`` about setting
+        ``ScaleBar.unit`` directly -- the deprecation is upstream's to resolve.
+        """
+        try:
+            if getattr(self.napariViewer.scale_bar, 'unit', None) == unit:
+                return
+        except Exception:
+            pass
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', FutureWarning)
+            self.napariViewer.scale_bar.unit = unit
+
     def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
         self._clearDisplayLayers()
+        self._imgLayerIsDisplayAnchor = False
         # A prior labels/points-primary result may have hidden imgLayer; a plain
         # image result restores it as the (visible) primary again.
         self.imgLayer.visible = True
@@ -304,7 +409,7 @@ class ReconstructionView(QtWidgets.QFrame):
                 self.imgLayer.metadata["source_result"] = str(name)
             else:
                 self.imgLayer.metadata.pop("source_result", None)
-            self.napariViewer.scale_bar.unit = "µm" if scaleUnit == "um" else scaleUnit
+            self._setScaleBarUnit("µm" if scaleUnit == "um" else scaleUnit)
         except Exception as exc:
             self._logger.debug("setImage: could not set scale_bar unit: %s", exc)
 
@@ -326,6 +431,7 @@ class ReconstructionView(QtWidgets.QFrame):
              if _spec_kind(spec) == "image"),
             None,
         )
+        self._imgLayerIsDisplayAnchor = img_spec_index is not None
         self._primaryComponent = None
         self._primaryLayer = None
 
@@ -355,7 +461,7 @@ class ReconstructionView(QtWidgets.QFrame):
                                  first.axis_labels, exc)
 
         try:
-            self.napariViewer.scale_bar.unit = (
+            self._setScaleBarUnit(
                 "µm" if first.scale_unit == "um" else first.scale_unit
             )
         except Exception as exc:

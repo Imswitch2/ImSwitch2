@@ -20,7 +20,7 @@ from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
-from .WatcherFrame import WatcherFrame
+from .DirectoryWatcherFrame import DirectoryWatcherFrame
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
@@ -265,7 +265,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
-        self.watcherFrame = WatcherFrame()
+        self.directoryWatcherFrame = DirectoryWatcherFrame()
 
         btnFrame = BtnFrame()
         self._btnFrame = btnFrame
@@ -416,16 +416,16 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if not showActionsPanel:
             actionsDock.hide()
 
-        self.watcherDock = Dock('File watcher', size=(2, 3))
-        self.watcherDock.addWidget(self.watcherFrame)
-        self.dockArea.addDock(self.watcherDock, 'bottom', actionsDock)
-        self.docks['File watcher'] = self.watcherDock
+        self.directoryWatcherDock = Dock('Directory watcher', size=(2, 3))
+        self.directoryWatcherDock.addWidget(self.directoryWatcherFrame)
+        self.dockArea.addDock(self.directoryWatcherDock, 'bottom', actionsDock)
+        self.docks['Directory watcher'] = self.directoryWatcherDock
         if not showFileWatcherPanel:
-            self.watcherDock.hide()
+            self.directoryWatcherDock.hide()
 
         self.multiDataDock = Dock('Multidata management', size=(2, 3))
         self.multiDataDock.addWidget(self.multiDataFrame)
-        self.dockArea.addDock(self.multiDataDock, 'above', self.watcherDock)
+        self.dockArea.addDock(self.multiDataDock, 'above', self.directoryWatcherDock)
         self.docks['Multidata management'] = self.multiDataDock
         if not showMultiDataPanel:
             self.multiDataDock.hide()

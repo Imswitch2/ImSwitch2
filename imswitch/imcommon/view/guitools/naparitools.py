@@ -29,7 +29,10 @@ from .imagetools import minmaxLevels
 
 def addNapariGrayclipColormap():
     try:
-        if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, 'grayclip'):
+        # Membership check, not hasattr: AVAILABLE_COLORMAPS is a dict, so a
+        # previously-registered 'grayclip' (e.g. by another ImSwitch module
+        # loaded first) is a *key*, not an attribute.
+        if 'grayclip' in napari.utils.colormaps.AVAILABLE_COLORMAPS:
             return
 
         grayclip = []
@@ -39,8 +42,9 @@ def addNapariGrayclipColormap():
         napari.utils.colormaps.AVAILABLE_COLORMAPS['grayclip'] = napari.utils.Colormap(
             name='grayclip', colors=grayclip
         )
-    except (AttributeError, TypeError):
-        # AVAILABLE_COLORMAPS API changed or is not a dict - skip silently
+    except (AttributeError, TypeError, KeyError):
+        # AVAILABLE_COLORMAPS API changed / not a dict / already registered by a
+        # concurrent caller - skip silently.
         pass
 
 

@@ -6,8 +6,15 @@ from pathlib import Path
 import numpy as np
 import tifffile as tiff
 
+from imswitch.imcommon.model import initLogger
+
 from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
 from .coeffs_to_image import output_pixel_size_nm, reconstruct_images_from_coeffs
+
+# ImageJ's hyperstack layout addresses data with 32-bit offsets, so it caps
+# out below 4 GB. Past that only BigTIFF can hold the file -- and BigTIFF
+# cannot carry ImageJ metadata (see save()).
+IMAGEJ_MAX_BYTES = 3_900_000_000
 
 # Canonical semantic-name → scan-dimension-name map. Reconstructions produced
 # by MonalisaReconstructor use these names; the legacy controller path passes
@@ -269,7 +276,24 @@ class MonalisaProcessingResult(ProcessingResult):
             layers.append(layer)
         
         return layers
-    
+
+    def display_layer_data(self) -> list[np.ndarray]:
+        """Per-base data slices (views), in the same order as ``display_layers``.
+
+        No contrast/percentile recompute -- this is the hot path called on
+        every streaming update. The heavy ``np.percentile`` over the whole
+        growing volume in ``display_layers`` runs only on the first full render.
+        """
+        if "Base" not in self.axis_labels:
+            return []
+        base_axis = self.axis_labels.index("Base")
+        idx = [slice(None)] * self.data.ndim
+        out = []
+        for base_idx in range(self.data.shape[base_axis]):
+            idx[base_axis] = base_idx
+            out.append(self.data[tuple(idx)])
+        return out
+
     def save(self, path: Path, fmt: str = "tiff") -> None:
         """
         Save MoNaLISA reconstruction as ImageJ-compatible 6D TIFF.
@@ -312,13 +336,31 @@ class MonalisaProcessingResult(ProcessingResult):
             numTimepoints, numSlices, numDatasets * numBases, numRows, numCols
         )
 
-        # Save with ImageJ compatibility
-        with tiff.TiffWriter(str(path), bigtiff=True, imagej=True) as tif:
+        # `bigtiff` and `imagej` are mutually exclusive: asking for both makes
+        # tifffile emit "writing nonconformant BigTIFF ImageJ" and produces a
+        # file ImageJ may not open as a hyperstack. Write the ImageJ layout
+        # while the data fits it, and only fall back to BigTIFF beyond that --
+        # where the ImageJ metadata cannot be carried anyway.
+        if data_to_save.nbytes < IMAGEJ_MAX_BYTES:
+            with tiff.TiffWriter(str(path), imagej=True) as tif:
+                tif.write(
+                    data_to_save,
+                    resolution=resolution,
+                    metadata=ijmetadata,
+                    photometric='minisblack',
+                )
+            return
+
+        initLogger('MonalisaProcessingResult').warning(
+            f'Reconstruction is {data_to_save.nbytes / 1e9:.1f} GB, past the '
+            f'ImageJ hyperstack limit; writing BigTIFF without ImageJ '
+            f'metadata (axis order is still {ijmetadata["axes"]}).'
+        )
+        with tiff.TiffWriter(str(path), bigtiff=True) as tif:
             tif.write(
                 data_to_save,
                 resolution=resolution,
-                metadata=ijmetadata,
-                photometric='minisblack'
+                photometric='minisblack',
             )
 
 

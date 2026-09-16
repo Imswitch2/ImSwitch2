@@ -46,6 +46,16 @@ class MonalisaLiveSession(StreamingSession):
         self.name = ""
         self.scan_params = {}
         self.output_pixel_size_nm = None
+        # GPU streaming path: accumulate the in-flight timepoint's output on the
+        # device and copy back to ``reconstructed`` only at the viewer-refresh
+        # cadence (see result()) or when the timepoint rolls over. Frames arrive
+        # in order so exactly one timepoint is ever "hot".
+        self._hot_plane = None
+        self._hot_time_index = 0
+        self._hot_plane_dirty = False
+        self._frame_inds_gpu = None
+        # Timepoint currently being written; see live_plane().
+        self._current_timepoint = 0
 
     def begin(self, init_obj, params: dict) -> StreamPlan:
         """
@@ -185,6 +195,15 @@ class MonalisaLiveSession(StreamingSession):
             (1, 1, num_time_points, 1, recon_rows, recon_cols), dtype=np.float32
         )
 
+        if self.use_gpu and CUPY_AVAILABLE:
+            # One flat device plane for the current timepoint (same layout as
+            # ``reconstructed[0, 0, t, 0].reshape(-1)``) plus a device copy of
+            # the scatter map, so per-frame accumulation never leaves the GPU.
+            self._hot_plane = cp.zeros(recon_rows * recon_cols, dtype=cp.float32)
+            self._hot_time_index = 0
+            self._hot_plane_dirty = False
+            self._frame_inds_gpu = cp.asarray(self.processor.frame_inds)
+
         self.scan_params = {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
             "directions": ["+", "+", "+", "+"],
@@ -263,18 +282,61 @@ class MonalisaLiveSession(StreamingSession):
             )
             return
 
+        # The timepoint currently being filled; live_plane() hands this one to
+        # the viewer. Frames arrive in order, so it only ever moves forward.
+        self._current_timepoint = time_index
+
         local_start = start % self.num_frames_in_stack
         local_end = local_start + (end - start)
 
         if self.bleaching_correction:
             chunk = self._apply_bleaching_correction(chunk)
 
-        chunk_gpu = cp.array(chunk) if self.use_gpu and CUPY_AVAILABLE else chunk
-        proc_pixels = self.processor.process_chunk(chunk_gpu)
-        pixel_indices = self.processor.frame_inds[local_start:local_end]
+        if self.use_gpu and CUPY_AVAILABLE:
+            self._push_gpu(chunk, time_index, local_start, local_end)
+            return
 
+        proc_pixels = self.processor.process_chunk(chunk)
+        pixel_indices = self.processor.frame_inds[local_start:local_end]
         flat_recon = self.reconstructed[0, 0, time_index, 0].reshape(-1)
         flat_recon[pixel_indices.ravel()] = proc_pixels.ravel()
+
+    def _push_gpu(
+        self,
+        chunk: np.ndarray,
+        time_index: int,
+        local_start: int,
+        local_end: int,
+    ) -> None:
+        """Scatter a chunk into the on-device hot plane for ``time_index``.
+
+        Only one timepoint is ever in flight (frames arrive in order), so a
+        single device plane suffices: when the timepoint advances, flush the
+        finished plane to the host buffer (one D2H) and zero it for reuse. The
+        per-frame path stays entirely on the GPU -- no ``asnumpy`` here.
+        """
+        if time_index != self._hot_time_index:
+            self._flush_hot_plane()
+            self._hot_plane.fill(0)
+            self._hot_time_index = time_index
+
+        chunk_gpu = cp.asarray(chunk)
+        proc_pixels = self.processor.process_chunk_gpu(chunk_gpu)
+        pixel_indices = self._frame_inds_gpu[local_start:local_end]
+        self._hot_plane[pixel_indices.ravel()] = proc_pixels.ravel()
+        self._hot_plane_dirty = True
+
+    def _flush_hot_plane(self) -> None:
+        """Copy the current GPU hot plane back to the host buffer (one D2H).
+
+        No-op unless the plane has unsynced writes. Driven at the viewer-refresh
+        cadence via :meth:`result`, and once per timepoint on rollover.
+        """
+        if not self._hot_plane_dirty or self._hot_plane is None:
+            return
+        dst = self.reconstructed[0, 0, self._hot_time_index, 0]
+        dst.reshape(-1)[:] = cp.asnumpy(self._hot_plane)
+        self._hot_plane_dirty = False
 
     def _resolve_gaussian_sigma_px(self, params: dict) -> float:
         """Fit-Gaussian sigma in pixels.
@@ -430,7 +492,8 @@ class MonalisaLiveSession(StreamingSession):
 
     @staticmethod
     def _scan_steps_from_size(
-        axis_length: np.ndarray, axis_step_size: np.ndarray
+        axis_length: np.ndarray,
+        axis_step_size: np.ndarray,
     ) -> tuple[int, int] | None:
         try:
             dx, dy = float(axis_step_size[0]), float(axis_step_size[1])
@@ -596,6 +659,29 @@ class MonalisaLiveSession(StreamingSession):
         scale = reference_energy / safe_energies
         return corrected * scale[:, np.newaxis, np.newaxis].astype(np.float32)
 
+    def live_plane(self) -> tuple[int, np.ndarray] | None:
+        """The in-flight timepoint's slice, copied, for an incremental redraw.
+
+        Costs one plane (``Y*X`` floats) instead of the whole growing volume
+        that :meth:`result` copies, so the per-refresh cost stays flat as the
+        timelapse gets longer.
+
+        On the GPU path the device hot plane is synced first, so the returned
+        slice includes everything reconstructed so far for this timepoint.
+        """
+        if self.reconstructed is None:
+            return None
+
+        if self.use_gpu and CUPY_AVAILABLE:
+            self._flush_hot_plane()
+
+        index = self._current_timepoint
+        if not 0 <= index < self.reconstructed.shape[2]:
+            return None
+        # Keep every axis (T has length 1) so the viewer can assign this
+        # straight into the matching slice of its own buffer.
+        return index, self.reconstructed[:, :, index:index + 1].copy()
+
     def result(self) -> MonalisaProcessingResult:
         """
         Return a snapshot of the current reconstruction.
@@ -605,6 +691,12 @@ class MonalisaLiveSession(StreamingSession):
         """
         if self.reconstructed is None:
             raise RuntimeError("Session not initialized; call begin() first")
+
+        # GPU path: the in-flight timepoint lives on the device -- sync it back
+        # here so the snapshot is current. This call is the viewer-cadence D2H
+        # (the process worker throttles result() to viewer_update_interval_s).
+        if self.use_gpu and CUPY_AVAILABLE:
+            self._flush_hot_plane()
 
         return MonalisaProcessingResult(
             name=self.name,
@@ -621,6 +713,8 @@ class MonalisaLiveSession(StreamingSession):
                 del self.processor.x_interp
                 del self.processor.y_interp
                 del self.processor.lsq_weights
+            self._hot_plane = None
+            self._frame_inds_gpu = None
             cp.get_default_memory_pool().free_all_blocks()
 
 

@@ -250,6 +250,16 @@ class ProcessingResult(ABC):
         """
         return []
 
+    def display_layer_data(self) -> list[np.ndarray]:
+        """Per-layer data arrays only, in the same order as :meth:`display_layers`.
+
+        Used by the viewer's fast live-update path: on a repeat streaming
+        update the layers already exist, so all it needs is the fresh pixel
+        data -- not a rebuilt :class:`DisplayLayerSpec` list with per-call
+        contrast recomputation. Return ``[]`` when :meth:`display_layers` does.
+        """
+        return []
+
     def applyDisplayLayerSettings(
         self,
         layers: list[DisplayLayerSpec],

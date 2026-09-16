@@ -8,7 +8,7 @@ ImProcess already provides.
 
 `process()` does no signal processing — it returns the raw DataObj data or
 lazy data handle wrapped as a ProcessingResult so the rest of ImProcess
-(ReconstructionView, WatcherFrame save, etc.) can handle it uniformly.
+(ReconstructionView, the save paths, etc.) can handle it uniformly.
 """
 
 from pathlib import Path
