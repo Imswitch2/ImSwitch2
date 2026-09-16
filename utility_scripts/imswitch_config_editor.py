@@ -237,37 +237,85 @@ def _load_section_schemas() -> dict:
     return sections
 
 
+#: Plugin lists used when ImProcess cannot be imported — the Config Studio is
+#: a standalone PyQt5 script and may run without the rest of ImSwitch
+#: installed. These MUST mirror the real registries; a stale entry here shows
+#: the operator a plugin list that silently omits whatever was added since.
+#: ``test_config_editor_plugin_fallback.py`` fails when they drift apart.
+IMPROCESS_RECONSTRUCTOR_FALLBACK = [
+    "beadrec",
+    "monalisa",
+    "smlm-localizer",
+    "snouty",
+    "snouty-projections",
+    "tiling-mosaic",
+    "view-only",
+    "widefield-starss",
+]
+
+IMPROCESS_PROCESSOR_FALLBACK = [
+    "channel-merge",
+    "channel-split",
+    "colocalization",
+    "convert-type",
+    "denoise",
+    "drift-correct",
+    "filter",
+    "frc",
+    "image-calculator",
+    "label-morphology",
+    "make-composite",
+    "make-rgb",
+    "math",
+    "multicolor-apply",
+    "multicolor-registration",
+    "projection",
+    "psf-resolution",
+    "resize",
+    "segmentation",
+    "smlm-drift",
+    "smlm-filter",
+    "smlm-group",
+    "smlm-render",
+    "stack-combine",
+    "stack-split",
+    "stack-subset",
+    "subtract-background",
+    "transform",
+]
+
+#: Why the live registries could not be read, or None when they were.
+PLUGIN_DISCOVERY_ERROR = None
+
+
 def _resolve_section_dynamic_options(schema: dict) -> None:
     """Replace supported option placeholders with runtime-discovered values."""
-    fallback = {
-        "__improcess_reconstructors__": [
-            "monalisa",
-            "snouty",
-            "snouty-projections",
-            "view-only",
-            "widefield-starss",
-        ],
-        "__improcess_processors__": [
-            "denoise",
-            "colocalization",
-            "drift-correct",
-            "frc",
-            "multicolor-apply",
-            "multicolor-registration",
-            "projection",
-            "psf-resolution",
-            "segmentation",
-        ],
+    global PLUGIN_DISCOVERY_ERROR
+
+    resolved = {
+        "__improcess_reconstructors__": list(IMPROCESS_RECONSTRUCTOR_FALLBACK),
+        "__improcess_processors__": list(IMPROCESS_PROCESSOR_FALLBACK),
     }
-    resolved = dict(fallback)
     try:
         from imswitch.improcess.reconstructors import available_reconstructor_ids
         from imswitch.improcess.processors import available_processor_ids
 
         resolved["__improcess_reconstructors__"] = available_reconstructor_ids()
         resolved["__improcess_processors__"] = available_processor_ids()
-    except Exception:
-        pass
+        PLUGIN_DISCOVERY_ERROR = None
+    except Exception as exc:
+        # Say so rather than swallowing it: the built-in lists are a snapshot,
+        # and a user who cannot find a plugin they know exists deserves to
+        # know they are looking at the offline copy. One import failure in any
+        # plugin hides every plugin, so this is worth reporting.
+        if PLUGIN_DISCOVERY_ERROR is None:
+            print(
+                f'Config Studio: could not read the ImProcess plugin '
+                f'registries ({exc}); showing the built-in list, which may be '
+                f'missing recently added plugins.',
+                file=sys.stderr,
+            )
+        PLUGIN_DISCOVERY_ERROR = str(exc)
 
     for field in schema.get("fields", []):
         opts = field.get("opts") or []
@@ -3340,6 +3388,7 @@ class MainWindow(QMainWindow):
             self._left.set_folder(start_folder)
 
         self._detect_options_file()
+        self._open_active_config(start_folder)
 
     # ── Build UI ──────────────────────────────────────────────────────────
     def _build_toolbar(self):
@@ -3772,6 +3821,56 @@ class MainWindow(QMainWindow):
                 self._update_active_banner()
                 return
         self._active_banner.setVisible(False)
+
+    def _active_setup_name(self) -> str:
+        """The setup file name ``imcontrol_options.json`` marks as active."""
+        if not self._options_path:
+            return ""
+        try:
+            with open(self._options_path, encoding="utf-8") as fh:
+                return str(json.load(fh).get("setupFileName") or "")
+        except Exception:
+            return ""
+
+    def _active_setup_path(self, start_folder: str = "") -> str:
+        """Locate the active setup file on disk, or "" if it cannot be found.
+
+        The browsed folder is searched first so that a folder passed on the
+        command line wins over the default location; a stale or deleted
+        ``setupFileName`` simply resolves to nothing.
+        """
+        name = self._active_setup_name()
+        if not name:
+            return ""
+        roots = []
+        if start_folder:
+            roots.append(Path(start_folder))
+        roots.append(_default_setup_dir())
+        for root in roots:
+            try:
+                candidate = Path(root) / name
+                if candidate.is_file():
+                    return str(candidate)
+            except Exception:
+                continue
+        return ""
+
+    def _open_active_config(self, start_folder: str = "") -> None:
+        """Open the config ImSwitch is actually set up to use, at startup.
+
+        The editor already knows which one that is -- it shows it in the
+        banner -- so opening to an empty pane made everyone's first action the
+        same one. Silent when there is no options file, no active name, or the
+        named file is missing: an editor that opens empty is a far better
+        outcome than one that refuses to start.
+        """
+        path = self._active_setup_path(start_folder)
+        if not path:
+            return
+        try:
+            self._load_file(path)
+        except Exception as exc:  # noqa: BLE001 - never block startup
+            self._status.setText(f"Could not open the active config: {exc}")
 
     def _update_active_banner(self):
         if not self._options_path:

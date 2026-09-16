@@ -19,6 +19,14 @@ class SegmentationProcessor(Processor):
     name = "Segmentation"
     id = "segmentation"
     category = "Segmentation"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
+    # Restricting to a region is meaningful here (P-R), and cropping is
+    # offered first: segmenting one region is usually the point, and the
+    # smaller grid is what the caller wants to look at.
+    accepts_roi = True
+    roi_modes = ('crop', 'mask')
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -150,6 +158,7 @@ class SegmentationProcessor(Processor):
             watershed_min_distance=int(params.get("watershed_min_distance", 5)),
         )
         analysis.metadata["source_plane_indices"] = dict(plane_indices)
+        # The mask is pixel-for-pixel aligned with the image it segmented.
         return SegmentationResult(
             name=f"{result.name} (segmentation)",
             analysis=analysis,
@@ -157,7 +166,7 @@ class SegmentationProcessor(Processor):
             axis_scales=axis_scales,
             scale_unit=result.scale_unit,
             source_image=np.asarray(image),
-        )
+        ).adopt_identity_from(result, same_grid=True)
 
     @staticmethod
     def _extract_2d(result: ProcessingResult, params: dict | None = None) -> tuple[np.ndarray, dict]:

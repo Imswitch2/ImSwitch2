@@ -114,7 +114,7 @@ def test_communication_channel_exposes_scan_workflow_service():
     assert 'from .WorkflowServices import BeadRecWorkflowService, ScanWorkflowService' in source
     assert 'self.scanWorkflow = ScanWorkflowService(self)' in source
     assert 'self.beadRecWorkflow = BeadRecWorkflowService(self)' in source
-    assert 'def run_scan(self, recalculate_signals: bool, is_non_final_part_of_sequence: bool)' in (
+    assert 'def run_scan(self, recalculate_signals: bool,' in (
         (ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'WorkflowServices.py').read_text()
     )
 

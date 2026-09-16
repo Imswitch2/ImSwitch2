@@ -8,9 +8,17 @@ from qtpy import QtWidgets
 
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
+from imswitch.improcess.analysis.smlm_import import (
+    read_generic_csv,
+    read_localizations,
+    sniff_localization_format,
+)
+from imswitch.improcess.model import result_io
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
+    LOCALIZATIONS_SPEC,
     LOCATOR_DIRECTORY,
+    TILING_MANIFEST_SPEC,
     file_dialog_filter,
     preferred_source_spec,
     resolve_dataset_source,
@@ -183,9 +191,24 @@ class FileIOController(ImProcessWidgetController):
             ``'cancelled'``   — user dismissed the picker dialog,
             ``'empty'``       — no datasets in the file or none selected.
         """
+        # Recognised by content, before the suffix-based resolver runs: a
+        # Picasso .hdf5 and an image .hdf5 are the same name, and a
+        # localization .csv is not something DataObj can open at all.
+        localizationFormat = sniff_localization_format(dataPath)
+        if localizationFormat == 'generic-csv':
+            # An unrecognised table: only a localization file if the user says
+            # so, and only readable once they name the columns. Offered rather
+            # than assumed, and only where a table cannot be image data anyway.
+            if self._localizationSpecActive():
+                return self._loadMappedLocalizationsAsResult(dataPath)
+        elif localizationFormat is not None:
+            return self._loadLocalizationsAsResult(dataPath, localizationFormat)
+
         try:
             source = resolve_dataset_source(dataPath, allowed_specs=self._activeSourceSpecs())
             dataPath = str(source.path)
+            if source.format_id == TILING_MANIFEST_SPEC.id:
+                return self._loadMetadataAsCurrent(source)
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
             self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
@@ -227,6 +250,106 @@ class FileIOController(ImProcessWidgetController):
             )
         return 'multidata'
 
+    def _localizationSpecActive(self) -> bool:
+        """Whether the active reconstructor offers localization tables."""
+        specs = self._activeSourceSpecs() or []
+        return any(spec.id == LOCALIZATIONS_SPEC.id for spec in specs)
+
+    def _loadMappedLocalizationsAsResult(self, dataPath) -> str:
+        """Ask what the columns mean, then read the table as a result."""
+        from imswitch.improcess.view.LocalizationImportDialog import (
+            LocalizationImportDialog,
+        )
+
+        try:
+            kwargs = LocalizationImportDialog.get_import_kwargs(
+                dataPath, parent=self._widget
+            )
+        except Exception as exc:
+            self._logger.error(f"Could not inspect {dataPath}: {exc}")
+            return 'empty'
+        if kwargs is None:
+            return 'cancelled'
+
+        try:
+            result = read_generic_csv(dataPath, **kwargs)
+        except Exception as exc:
+            self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
+            return 'empty'
+        return self._publishLocalizations(result, dataPath, 'generic-csv')
+
+    def _loadLocalizationsAsResult(self, dataPath, localizationFormat) -> str:
+        """Open a coordinate table straight into the reconstruction list.
+
+        A localization table is a *result*, not data to reconstruct, so it
+        bypasses DataObj entirely and is published the same way a reconstructor
+        publishes its output.
+        """
+        try:
+            result = read_localizations(dataPath)
+        except Exception as exc:
+            self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
+            return 'empty'
+        return self._publishLocalizations(result, dataPath, localizationFormat)
+
+    def _publishLocalizations(self, result, dataPath, localizationFormat) -> str:
+        """Hand a freshly read localization table to the reconstruction list."""
+        if result.metadata.get('pixel_size_assumed'):
+            # The coordinates are exact; only the preview bin floor and any
+            # later pixel-native export depend on this. Say so rather than let
+            # a guess be mistaken for a measurement.
+            self._logger.warning(
+                f"{os.path.basename(dataPath)} declares no pixel size; assuming "
+                f"{result.pixel_size_nm:g} nm for preview and export"
+            )
+
+        reconstructionController = getattr(self._main, 'reconstructionController', None)
+        if reconstructionController is None:
+            self._logger.error(
+                "No reconstruction controller available to receive localizations"
+            )
+            return 'empty'
+
+        reconstructionController.resultProduced(result, result.name)
+        self._logger.info(
+            f"Loaded {len(result)} localizations from {os.path.basename(dataPath)} "
+            f"({localizationFormat})"
+        )
+        return 'current'
+
+    def _loadMetadataAsCurrent(self, source) -> str:
+        """Inspect and route a non-array source without asking DataObj to open it."""
+        from imswitch.imcommon.algorithms.tile_mosaic import (
+            inspect_dataset,
+            manifest_fingerprint,
+        )
+
+        try:
+            index, completeness = inspect_dataset(source.path)
+            data_obj = DataObj.fromMetadataSource(
+                source.path.parent.name,
+                source.path,
+                source.format_id,
+                index,
+                originalPath=source.original_path,
+            )
+            data_obj.sourceSummary = completeness
+            data_obj.sourceFingerprint = manifest_fingerprint(source.path)
+        except Exception as exc:
+            self._logger.error(
+                f"Could not inspect tiling source {source.original_path}: {exc}"
+            )
+            return 'empty'
+
+        if self._main._currentDataObj is not None:
+            self._main._currentDataObj.checkAndUnloadData()
+        self._main._currentDataObj = data_obj
+        if data_obj.sourceReady:
+            self._commChannel.sigCurrentDataChanged.emit(data_obj)
+            self._widget.raiseCurrentDataDock()
+            return 'current'
+        return 'empty'
+
     def _loadAsCurrent(self, name, datasetName, dataPath, *, virtual: bool = False):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
 
@@ -238,10 +361,14 @@ class FileIOController(ImProcessWidgetController):
         self._main._currentDataObj = DataObj(name, datasetName, path=dataPath)
         if virtual:
             self._main._currentDataObj.checkAndOpenData()
-            ready = self._main._currentDataObj.sourceLoaded
         else:
             self._main._currentDataObj.checkAndLoadData()
-            ready = self._main._currentDataObj.dataLoaded
+        ready = getattr(self._main._currentDataObj, 'sourceReady', None)
+        if ready is None:
+            ready = (
+                self._main._currentDataObj.sourceLoaded
+                if virtual else self._main._currentDataObj.dataLoaded
+            )
         if ready:
             self._commChannel.sigCurrentDataChanged.emit(self._main._currentDataObj)
             self._widget.raiseCurrentDataDock()
@@ -266,10 +393,17 @@ class FileIOController(ImProcessWidgetController):
         """ Saves the reconstructed image or coefficients from the current
         result to a user-specified destination. """
 
+        # Coefficients are a MoNaLISA-specific TIFF; a reconstruction can go
+        # into any container the shared writer supports, and the chosen
+        # filter's suffix is what decides which.
+        nameFilter = (
+            result_io.file_dialog_filter() if dataType == 'reconstruction'
+            else '*.tiff'
+        )
         filePath = guitools.askForFilePath(self._widget,
                                            caption=f'Save {dataType}',
                                            defaultFolder=self._saveFolder or self._dataFolder,
-                                           nameFilter='*.tiff', isSaving=True)
+                                           nameFilter=nameFilter, isSaving=True)
 
         if filePath:
             reconObj = self._main.reconstructionController.getActiveResult()
@@ -320,9 +454,10 @@ class FileIOController(ImProcessWidgetController):
                     raise ValueError(f'Invalid save data type "{dataType}"')
 
     def saveReconstruction(self, reconObj, filePath):
-        suffix = Path(filePath).suffix.lower().lstrip(".") or "tiff"
-        fmt = "tiff" if suffix in ("tif", "tiff") else suffix
-        reconObj.save(Path(filePath), fmt)
+        # Two-part suffixes (.ome.tif, .ome.zarr) are why this asks the writer
+        # rather than reading Path.suffix, which sees only the last part and
+        # would call an OME-Zarr directory a TIFF.
+        reconObj.save(Path(filePath), result_io.format_for_path(filePath))
 
     def saveCoefficients(self, reconObj, filePath):
         coeffs = copy.deepcopy(reconObj.getCoeffs())

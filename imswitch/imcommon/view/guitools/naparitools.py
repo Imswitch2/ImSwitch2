@@ -1,3 +1,4 @@
+import dataclasses
 import warnings
 from abc import abstractmethod
 
@@ -27,11 +28,67 @@ import matplotlib.pyplot as plt
 from .imagetools import minmaxLevels
 
 
+#: Floor for overlay edge widths, as a fraction of ONE DATA PIXEL.
+#: Only ever reached at pathological zoom levels; its job is to keep
+#: edge_width strictly positive, not to set a visible thickness.
+_MIN_EDGE_WIDTH_DATA_PIXELS = 0.1
+
+
+def dataPixelWorldSize(viewer) -> float:
+    """World-unit size of one image pixel in ``viewer`` (µm/px), or 1.0.
+
+    Image layers carry the detector's pixel size as their ``scale``; the
+    overlay Shapes layers are scale-(1, 1) and must be excluded, or the answer
+    is always 1.0 -- which is the whole bug this exists to avoid.
+    """
+    sizes = []
+    try:
+        for layer in viewer.layers:
+            if not isinstance(layer, napari.layers.Image):
+                continue
+            scale = getattr(layer, 'scale', None)
+            if scale is None:
+                continue
+            sizes.extend(
+                abs(float(value)) for value in tuple(scale)[-2:] if value
+            )
+    except Exception:
+        return 1.0
+    return min(sizes) if sizes else 1.0
+
+
+def worldEdgeWidth(viewer, screenPixels: float) -> float:
+    """Edge width in world units that renders ~``screenPixels`` px thick.
+
+    ``camera.zoom`` is screen pixels per world unit, so ``screenPixels / zoom``
+    is already independent of the detector's µm/px pitch. The FLOOR is not:
+    a fixed 0.5 world-unit (µm) minimum is a third of a data pixel on a
+    0.5 µm/px camera but nearly EIGHT data pixels on a 65 nm/px one, so
+    fine-pitch detectors drew visibly coarse crosshairs, grids and profile
+    lines that no amount of zooming would thin out. Scale the floor to the
+    data instead.
+
+    napari's own edge-width slider cannot be used to correct this by hand: as
+    of 0.7.1 it is an integer ``QLabeledSlider`` clamped to 0-40 that does
+    ``int(value)`` on the way in and ``np.clip(int(value), 0, 40)`` on the way
+    back, so every sub-micron width collapses to 0 or 1.
+    """
+    zoom = getattr(getattr(viewer, 'camera', None), 'zoom', 1.0) or 1.0
+    try:
+        width = float(screenPixels) / float(zoom)
+    except (TypeError, ValueError, ZeroDivisionError):
+        width = float(screenPixels)
+    floor = _MIN_EDGE_WIDTH_DATA_PIXELS * dataPixelWorldSize(viewer)
+    return max(floor, width)
+
+
 def addNapariGrayclipColormap():
     try:
-        # Membership check, not hasattr: AVAILABLE_COLORMAPS is a dict, so a
-        # previously-registered 'grayclip' (e.g. by another ImSwitch module
-        # loaded first) is a *key*, not an attribute.
+        # Membership, not hasattr: AVAILABLE_COLORMAPS is a dict, so hasattr
+        # asked whether it had an *attribute* called 'grayclip' and was always
+        # False. The guard therefore never fired, and registering a second
+        # time raises -- which meant a second viewer could not be built in a
+        # process that had already made one.
         if 'grayclip' in napari.utils.colormaps.AVAILABLE_COLORMAPS:
             return
 
@@ -46,6 +103,20 @@ def addNapariGrayclipColormap():
         # AVAILABLE_COLORMAPS API changed / not a dict / already registered by a
         # concurrent caller - skip silently.
         pass
+
+
+def removeUnprotectedLayers(layers):
+    """Remove every layer from ``layers`` that is not marked ``protected``.
+
+    What ``clear()`` has to mean on a layer list that refuses to delete some
+    of its members. ``MutableSequence.clear`` is a ``pop()`` loop that runs
+    until the list raises ``IndexError`` -- and a list that silently keeps a
+    protected layer never does, so the loop spins forever at full CPU. Walking
+    a snapshot and removing by identity terminates whatever the list declines.
+    """
+    for layer in list(layers):
+        if not getattr(layer, 'protected', False):
+            layers.remove(layer)
 
 
 class EmbeddedNapari(napari.Viewer):
@@ -68,6 +139,18 @@ class EmbeddedNapari(napari.Viewer):
             return indices
 
         self.layers._delitem_indices = newDelitemIndices
+
+        # clear() cannot be left to MutableSequence once deletion can decline:
+        # it pops until IndexError, which a protected layer never lets happen.
+        def newClear():
+            batched = getattr(self.layers, 'batched_update', None)
+            if batched is None:
+                removeUnprotectedLayers(self.layers)
+                return
+            with batched():
+                removeUnprotectedLayers(self.layers)
+
+        self.layers.clear = newClear
 
         # Make menu bar not native
         self.window._qt_window.menuBar().setNativeMenuBar(False)
@@ -202,9 +285,29 @@ class NapariUpdateLevelsWidget(NapariBaseWidget):
         layer.contrast_limits_range = (lo, hi)
         layer.contrast_limits = (lo, hi)
 
+    @staticmethod
+    def _intensityArray(layer):
+        """The layer's intensity array, or None if it has no such thing.
+
+        Not every napari layer stores an image in ``data``. A point-cloud
+        layer holds a tuple of geometry arrays, and asking it for ``.max()``
+        raised ``AttributeError`` straight out of the button handler. Layers
+        without contrast limits are skipped for the same reason: there is
+        nothing for this widget to set on them.
+        """
+        if not hasattr(layer, 'contrast_limits'):
+            return None
+        data = getattr(layer, 'data', None)
+        if not isinstance(data, np.ndarray) or data.size == 0:
+            return None
+        return data
+
     def _on_update_levels(self):
         for layer in self.viewer.layers.selection:
-            mn, mx = minmaxLevels(layer.data)
+            data = self._intensityArray(layer)
+            if data is None:
+                continue
+            mn, mx = minmaxLevels(data)
             self._set_layer_range(layer, mn, mx)
             # Populate manual inputs so the user can fine-tune from here
             self._minInput.setText(f'{mn:.6g}')
@@ -218,6 +321,8 @@ class NapariUpdateLevelsWidget(NapariBaseWidget):
             return
         lo, hi = min(lo, hi), max(lo, hi)
         for layer in self.viewer.layers.selection:
+            if not hasattr(layer, 'contrast_limits'):
+                continue
             self._set_layer_range(layer, lo, hi)
 
 
@@ -1157,7 +1262,7 @@ class ViewerToolManager(QtCore.QObject):
 
     _PIXEL_WIDTH = 2  # desired line width in screen pixels
 
-    def __init__(self, napari_viewer):
+    def __init__(self, napari_viewer, enforce_single=True):
         """
         Initialize the ViewerToolManager.
 
@@ -1165,12 +1270,23 @@ class ViewerToolManager(QtCore.QObject):
         ----------
         napari_viewer : napari.Viewer
             The napari viewer instance to manage tools for.
+        enforce_single : bool
+            Keep at most one rectangle and one line in the layer, discarding
+            older ones as new shapes are drawn.  This is the historical
+            behaviour and stays the default for single-panel callers such as
+            imcontrol's ImageWidget.  ``ViewerToolService`` turns it off,
+            because on a layer shared between panels a global "last one wins"
+            rule makes one panel's drawing delete another's; the service
+            applies the same limit per owner instead.
         """
         super().__init__()
         self._viewer = napari_viewer
         self._shapes_layer = None
+        # Points need a layer of their own; created on first use (C-08).
+        self._points_layer = None
         self._current_mode = 'pan'
         self._processing_data_change = False
+        self._enforce_single = bool(enforce_single)
 
         # Recompute edge width whenever the camera zoom changes so user-drawn
         # shapes stay ~PIXEL_WIDTH screen pixels thick regardless of which
@@ -1187,8 +1303,7 @@ class ViewerToolManager(QtCore.QObject):
 
     def _get_edge_width(self):
         """Edge width in world units that renders to ~PIXEL_WIDTH screen pixels."""
-        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
-        return max(0.5, self._PIXEL_WIDTH / zoom)
+        return worldEdgeWidth(self._viewer, self._PIXEL_WIDTH)
 
     def _on_zoom_changed(self, event):
         """Rescale existing shapes' edge widths to match the new zoom."""
@@ -1210,19 +1325,43 @@ class ViewerToolManager(QtCore.QObject):
         except Exception:
             pass
 
+    LAYER_NAME = 'Viewer Tools'
+
     def _ensure_shapes_layer(self):
-        """Lazily create the Shapes layer if it doesn't exist."""
-        if self._shapes_layer is None:
+        """Lazily create the Shapes layer, adopting an existing one if present.
+
+        Several panels can manage tools on the same viewer.  Creating a layer
+        unconditionally gave each of them its own ('Viewer Tools',
+        'Viewer Tools [1]', ...), so a shape drawn for one panel was invisible
+        to the others and the layer list filled up with duplicates.  Adopting
+        the layer this viewer already has keeps them on one.
+        """
+        if self._shapes_layer is not None:
+            return
+
+        adopted = None
+        try:
+            for layer in self._viewer.layers:
+                if getattr(layer, 'name', None) == self.LAYER_NAME:
+                    adopted = layer
+                    break
+        except Exception:
+            adopted = None
+
+        if adopted is not None:
+            self._shapes_layer = adopted
+        else:
             self._shapes_layer = self._viewer.add_shapes(
-                name='Viewer Tools',
+                name=self.LAYER_NAME,
                 edge_color='yellow',
                 face_color=[0, 0, 0, 0],  # Transparent fill
                 edge_width=self._get_edge_width(),
                 ndim=2
             )
-            # Connect to data change events
-            self._shapes_layer.events.data.connect(self._on_shapes_data_changed)
-            self._shapes_layer.events.mode.connect(self._on_mode_changed)
+        # Connect to data change events (also for an adopted layer: each
+        # manager needs its own notifications).
+        self._shapes_layer.events.data.connect(self._on_shapes_data_changed)
+        self._shapes_layer.events.mode.connect(self._on_mode_changed)
     
     def _on_shapes_data_changed(self, event):
         """Handle shapes data change events and enforce single rectangle/line constraint."""
@@ -1230,10 +1369,10 @@ class ViewerToolManager(QtCore.QObject):
         if self._processing_data_change:
             return
         
-        if self._shapes_layer is None:
+        if self._shapes_layer is None or not self._enforce_single:
             self.sigShapesChanged.emit()
             return
-        
+
         try:
             self._processing_data_change = True
             
@@ -1284,6 +1423,86 @@ class ViewerToolManager(QtCore.QObject):
             self._current_mode = 'pan'
         self.sigModeChanged.emit(self._current_mode)
     
+    #: Points live on a layer of their own — napari's Shapes layer has no
+    #: point type — so the tool has two layers and a mode decides which one is
+    #: being drawn on (C-08).
+    POINTS_LAYER_NAME = 'Viewer Tool Points'
+
+    def _ensure_points_layer(self):
+        """Lazily create the Points layer, adopting an existing one.
+
+        The same discipline as the Shapes layer, for the same reason: several
+        panels manage tools on one viewer, and creating unconditionally gave
+        each of them its own duplicate.
+        """
+        if getattr(self, '_points_layer', None) is not None:
+            return
+
+        adopted = None
+        try:
+            for layer in self._viewer.layers:
+                if getattr(layer, 'name', None) == self.POINTS_LAYER_NAME:
+                    adopted = layer
+                    break
+        except Exception:
+            adopted = None
+
+        if adopted is not None:
+            self._points_layer = adopted
+        else:
+            # napari renamed Points' `edge_color` to `border_color` in 0.5;
+            # the kwarg is built rather than passed as None, because passing
+            # an unknown keyword is a TypeError whatever its value.
+            options = {
+                'name': self.POINTS_LAYER_NAME,
+                'face_color': 'yellow',
+                'size': 8,
+                'ndim': 2,
+            }
+            options[
+                'border_color' if self._supports_border_color() else 'edge_color'
+            ] = 'black'
+            self._points_layer = self._viewer.add_points(**options)
+        try:
+            self._points_layer.events.data.connect(
+                lambda _event=None: self.sigShapesChanged.emit()
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _supports_border_color() -> bool:
+        """napari renamed `edge_color` to `border_color` for Points in 0.5."""
+        try:
+            import inspect
+
+            import napari
+
+            return 'border_color' in inspect.signature(
+                napari.layers.Points.__init__
+            ).parameters
+        except Exception:
+            return False
+
+    def get_points_data(self):
+        """Every point currently on the tool's Points layer, as (row, col)."""
+        layer = getattr(self, '_points_layer', None)
+        if layer is None:
+            return []
+        try:
+            return [tuple(float(v) for v in point[-2:]) for point in layer.data]
+        except Exception:
+            return []
+
+    def clear_points(self):
+        layer = getattr(self, '_points_layer', None)
+        if layer is None:
+            return
+        try:
+            layer.data = []
+        except Exception:
+            pass
+
     def set_mode(self, mode):
         """
         Set the interaction mode.
@@ -1291,10 +1510,31 @@ class ViewerToolManager(QtCore.QObject):
         Parameters
         ----------
         mode : str
-            One of: 'pan', 'select', 'rectangle', 'line', 'ellipse', 'polygon', 'path'
+            One of: 'pan', 'select', 'rectangle', 'line', 'ellipse', 'polygon',
+            'path', 'point'
         """
+        if mode == 'point':
+            # Drawing points means the Points layer is the one taking clicks,
+            # and the Shapes layer must stop taking them — two layers both in
+            # an add mode is how a click lands on whichever napari happens to
+            # consider active.
+            self._ensure_points_layer()
+            if self._shapes_layer is not None:
+                self._shapes_layer.mode = 'pan_zoom'
+            self._points_layer.mode = 'add'
+            try:
+                self._viewer.layers.selection.active = self._points_layer
+            except Exception:
+                pass
+            self._current_mode = mode
+            self.sigModeChanged.emit(mode)
+            return
+
         self._ensure_shapes_layer()
-        
+        points_layer = getattr(self, '_points_layer', None)
+        if points_layer is not None:
+            points_layer.mode = 'pan_zoom'
+
         # Map simplified mode names to napari Shape layer modes
         mode_map = {
             'pan': 'pan_zoom',
@@ -1420,7 +1660,7 @@ class ViewerToolManager(QtCore.QObject):
             self._shapes_layer.add_lines(
                 [[[row - s, col], [row + s, col]],
                  [[row, col - s], [row, col + s]]],
-                edge_color='yellow', edge_width=2,
+                edge_color='yellow', edge_width=self._get_edge_width(),
             )
         finally:
             self._processing_data_change = False
@@ -1441,7 +1681,8 @@ class ViewerToolManager(QtCore.QObject):
         self._processing_data_change = True
         try:
             self._shapes_layer.data = []
-            self._shapes_layer.add_lines(lines, edge_color='yellow', edge_width=1)
+            self._shapes_layer.add_lines(
+                lines, edge_color='yellow', edge_width=self._get_edge_width())
         finally:
             self._processing_data_change = False
     
@@ -1507,8 +1748,7 @@ class NapariCrosshairOverlay:
 
     def _get_edge_width(self):
         """Convert PIXEL_WIDTH to data-unit edge_width for the current zoom."""
-        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
-        return max(0.5, self._PIXEL_WIDTH / zoom)
+        return worldEdgeWidth(self._viewer, self._PIXEL_WIDTH)
 
     def _on_zoom_changed(self, event):
         if self._layer is not None and self._layer in self._viewer.layers \
@@ -1585,8 +1825,7 @@ class NapariGridOverlay:
 
     def _get_edge_width(self):
         """Convert PIXEL_WIDTH to data-unit edge_width for the current zoom."""
-        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
-        return max(0.5, self._PIXEL_WIDTH / zoom)
+        return worldEdgeWidth(self._viewer, self._PIXEL_WIDTH)
 
     def _on_zoom_changed(self, event):
         if self._layer is not None and self._layer in self._viewer.layers \
@@ -1629,3 +1868,475 @@ class NapariGridOverlay:
 
     def show(self):
         self.setVisible(True)
+
+
+class NapariROISetOverlay:
+    """Draws a managed ROI *set* into the viewer, read-only.
+
+    Named for the set rather than "ROI" because ``NapariROIOverlay`` above is
+    already taken by imcontrol's single detector-ROI rectangle — a different
+    thing entirely, and one this must not shadow.
+
+    Separate from ``ViewerToolManager``'s scratch layer: that one is where the
+    user draws, this one is what has been committed.  Keeping them apart is
+    what makes "draw, then Add" work the way ImageJ's does, and it is why
+    clearing a scratch shape after capture no longer makes the ROI disappear.
+
+    Three properties are load-bearing:
+
+    * **multipart.**  An ROI is a *list* of polygons, not one: a composite can
+      be disconnected, and a region with a hole has an inner boundary as well
+      as an outer one.  Every part carries the ROI's uid, so clicking any of
+      them selects the one ROI.
+    * **read-only.**  The layer is not editable and re-renders from the model
+      if anything mutates it.  Dragging a vertex here would desynchronise the
+      overlay from the records with no undo; editing an ROI is a command.
+    * **target-aligned.**  Shape coordinates are the ROI's own pixel
+      coordinates, and the layer carries the target image layer's transform.
+      There is therefore one coordinate representation, not two kept in step.
+    """
+
+    LAYER_NAME = 'ROI Manager'
+    _PIXEL_WIDTH = 2
+
+    #: Distinct, colour-blind-safe defaults cycled by ROI index.
+    _COLOR_CYCLE = (
+        '#ffcc00', '#00b7eb', '#ff6f61', '#7ac74f',
+        '#c77dff', '#ff9f1c', '#4cc9f0', '#f72585',
+    )
+    _SELECTED_COLOR = '#ffffff'
+
+    def __init__(self, viewer):
+        self._viewer = viewer
+        self._layer = None
+        self._rois = []
+        self._selected = set()
+        self._show_labels = False
+        self._visible = True
+        self._target_layer = None
+        self._default_style = None
+        self._failures: list[str] = []
+        self._suppress_resync = False
+        self._click_handler = None
+        #: Requested width per drawn shape, in *screen* pixels. Kept so a zoom
+        #: change can recompute data-unit widths without re-rendering, and
+        #: without collapsing per-ROI widths into one.
+        self._screen_widths: list[float] = []
+        # Remembered so remove() can undo them: an overlay that leaves its
+        # viewer callbacks connected keeps being driven after its panel is gone.
+        self._zoom_signal = None
+        try:
+            self._zoom_signal = self._viewer.camera.events.zoom
+            self._zoom_signal.connect(self._on_zoom_changed)
+        except Exception:
+            self._zoom_signal = None
+
+    # -- appearance ---------------------------------------------------------
+
+    def _target_scale(self) -> float:
+        """The overlay's pixel size in world units, along the displayed plane.
+
+        Read from the layer if it has been aligned already, else from the
+        target: `_ensure_layer` needs a width before `_align_to_target` has
+        run.
+        """
+        for source in (self._layer, self._target_layer):
+            scale = getattr(source, 'scale', None)
+            if scale is None:
+                continue
+            try:
+                values = [abs(float(v)) for v in tuple(scale)[-2:] if float(v)]
+            except (TypeError, ValueError):
+                continue
+            if values:
+                return sum(values) / len(values)
+        return 1.0
+
+    def _edge_width_for(self, screen_pixels: float) -> float:
+        """A width in the layer's data units that renders ``screen_pixels`` thick.
+
+        napari measures ``edge_width`` in **data** units and multiplies it by
+        the layer's scale and the camera zoom to get screen pixels. This
+        overlay copies the target image's scale (see `_align_to_target`), so
+        both terms are in play and both have to be divided out.
+
+        Dividing by the zoom alone — which is what this did — makes the two
+        zoom terms cancel, leaving an on-screen width of exactly
+        ``screen_pixels x scale`` at every zoom level. On uncalibrated data
+        that is right by accident; on a 100 nm/px result calibrated in nm it
+        is two hundred screen pixels of outline, and on a 0.1 um/px camera it
+        is a fifth of one.
+        """
+        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
+        scale = self._target_scale() or 1.0
+        return max(0.05, float(screen_pixels) / (zoom * scale))
+
+    def _get_edge_width(self):
+        return self._edge_width_for(self._PIXEL_WIDTH)
+
+    def _on_zoom_changed(self, _event=None):
+        if self._layer is None or not self._rois:
+            return
+        try:
+            # Per shape, because an ROI with an explicit stroke width keeps it:
+            # rescaling the whole layer to one value would silently discard
+            # every per-ROI width the moment the user zoomed.
+            self._layer.edge_width = [
+                self._edge_width_for(width) for width in self._screen_widths
+            ] or self._get_edge_width()
+        except Exception:
+            pass
+
+    def _style_for(self, index, roi):
+        """The ROI's own style over the set's default, with a colour fallback."""
+        from imswitch.imcommon.algorithms.roi_style import ROIStyle
+
+        style = getattr(roi, 'style', None) or ROIStyle()
+        style = style.merged_with(self._default_style)
+        if not style.stroke_color:
+            # Group members share a colour so a group reads as one thing.
+            key = roi.group if getattr(roi, 'group', 0) else index
+            style = dataclasses.replace(
+                style, stroke_color=self._COLOR_CYCLE[key % len(self._COLOR_CYCLE)]
+            )
+        if roi.uid in self._selected:
+            style = dataclasses.replace(style, stroke_color=self._SELECTED_COLOR)
+        return style
+
+    @staticmethod
+    def _rgba(color, opacity):
+        """A colour with an alpha, for the fill napari expects as RGBA."""
+        if not color:
+            return [0.0, 0.0, 0.0, 0.0]
+        try:
+            from napari.utils.colormaps.standardize_color import transform_color
+
+            rgba = np.asarray(transform_color(color)[0], dtype=float)
+        except Exception:
+            return [0.0, 0.0, 0.0, float(opacity or 0.0)]
+        rgba[3] = float(opacity or 0.0)
+        return rgba.tolist()
+
+    # -- layer lifecycle ----------------------------------------------------
+
+    def _ensure_layer(self):
+        if self._layer is not None and self._layer in getattr(self._viewer, 'layers', []):
+            return self._layer
+        self._layer = self._viewer.add_shapes(
+            name=self.LAYER_NAME,
+            edge_color=self._COLOR_CYCLE[0],
+            face_color=[0, 0, 0, 0],
+            edge_width=self._get_edge_width(),
+            ndim=2,
+        )
+        try:
+            # editable=False also forces mode to pan_zoom, so the user cannot
+            # drag the overlay out of step with the model.
+            self._layer.editable = False
+        except Exception:
+            pass
+        try:
+            self._layer.mode = 'pan_zoom'
+        except Exception:
+            pass
+        try:
+            self._layer.events.data.connect(self._on_layer_data_changed)
+        except Exception:
+            pass
+        return self._layer
+
+    def _on_layer_data_changed(self, _event=None):
+        """Re-render from the model if anything edited the layer.
+
+        The overlay is a view of the records; anything that changed it did not
+        change them, so the records win.
+        """
+        if self._suppress_resync:
+            return
+        self.refresh()
+
+    def remove(self):
+        """Take the overlay out of the viewer and undo every connection.
+
+        Removing the layer is not enough on its own: the camera-zoom handler
+        and the click handler are connected to objects that outlive the panel,
+        so leaving them attached keeps a dead overlay being driven.
+        """
+        self.remove_click_handler()
+        if self._zoom_signal is not None:
+            try:
+                self._zoom_signal.disconnect(self._on_zoom_changed)
+            except Exception:
+                # Teardown runs while things are being dismantled; a signal
+                # that cannot be disconnected must not stop the rest of it.
+                pass
+            self._zoom_signal = None
+        if self._layer is not None:
+            try:
+                self._layer.events.data.disconnect(self._on_layer_data_changed)
+            except Exception:
+                pass
+            try:
+                self._viewer.layers.remove(self._layer)
+            except Exception:
+                pass
+        self._layer = None
+
+    # -- state --------------------------------------------------------------
+
+    def set_target_layer(self, layer):
+        """Align the overlay with the image being measured."""
+        self._target_layer = layer
+        self.refresh()
+
+    def set_rois(self, rois, *, selected_uids=(), default_style=None):
+        self._rois = list(rois)
+        self._selected = set(selected_uids or ())
+        if default_style is not None:
+            self._default_style = default_style
+        self.refresh()
+
+    def set_selection(self, uids):
+        self._selected = set(uids or ())
+        self.refresh()
+
+    def set_labels_visible(self, show: bool):
+        self._show_labels = bool(show)
+        self.refresh()
+
+    def set_visible(self, visible: bool):
+        """Show All. Hiding keeps the ROI list; it only stops drawing it."""
+        self._visible = bool(visible)
+        if self._layer is not None:
+            try:
+                self._layer.visible = self._visible
+            except Exception:
+                pass
+        self.refresh()
+
+    # -- rendering ----------------------------------------------------------
+
+    def refresh(self):
+        from imswitch.imcommon.algorithms.roi_geometry import roi_outline
+
+        drawn = [roi for roi in self._rois if getattr(roi, 'visible', True)]
+        if not self._visible or not drawn:
+            if self._layer is not None:
+                self._set_layer_data([], [], [], [], [], [], labels=[])
+            return
+
+        layer = self._ensure_layer()
+        self._align_to_target(layer)
+
+        shapes, edges, fills, widths, uids, parts, labels = [], [], [], [], [], [], []
+        screen_widths: list[float] = []
+        for index, roi in enumerate(drawn):
+            try:
+                outline = roi_outline(roi)
+            except Exception:
+                # An ROI whose geometry cannot be traced is skipped rather
+                # than taking the whole overlay down with it.
+                continue
+            if not outline:
+                continue
+            style = self._style_for(index, roi)
+            # One label per ROI, on its largest part. napari's text is
+            # per-shape, so the other parts carry an empty string rather than
+            # repeating the name once per fragment — a disconnected ROI would
+            # otherwise be labelled three times.
+            biggest = max(range(len(outline)), key=lambda i: len(outline[i]))
+            show_label = self._show_labels and style.label_visible
+            # ROIStyle.stroke_width is documented as *screen* pixels, so it
+            # goes through the same conversion as the default rather than
+            # being passed through as a data-unit width.
+            screen_width = float(style.stroke_width or self._PIXEL_WIDTH)
+            for part_index, part in enumerate(outline):
+                shapes.append(np.asarray(part, dtype=float))
+                edges.append(style.stroke_color)
+                fills.append(self._rgba(style.fill_color, style.fill_opacity))
+                screen_widths.append(screen_width)
+                widths.append(self._edge_width_for(screen_width))
+                uids.append(roi.uid)
+                parts.append(part_index)
+                labels.append(
+                    roi.name if (show_label and part_index == biggest) else ""
+                )
+
+        self._screen_widths = screen_widths
+        self._set_layer_data(shapes, edges, fills, widths, uids, parts, labels=labels)
+
+    def _align_to_target(self, layer):
+        """Copy the target image layer's *displayed-plane* transform.
+
+        The overlay is 2D — ROI records are 2D — so an nD target's transform
+        cannot be copied wholesale: assigning a 4-element scale to a 2D layer
+        fails, and swallowing that failure left the overlay at identity while
+        the image sat at 0.1 µm/px, putting every drawn ROI in the wrong place.
+        Only the last two components, which are the plane the ROIs live on, are
+        taken, and a failure is recorded rather than ignored.
+
+        The alternative — pre-transforming every vertex into world space —
+        means keeping two representations of the same coordinates in step, and
+        they drift the moment the target's scale changes.
+        """
+        target = self._target_layer
+        if target is None or layer is None:
+            return
+        for attribute in ('scale', 'translate'):
+            value = getattr(target, attribute, None)
+            if value is None:
+                continue
+            try:
+                trimmed = tuple(float(v) for v in value)[-2:]
+            except TypeError:
+                continue
+            if len(trimmed) == 2:
+                self._apply(layer, attribute, trimmed)
+
+        # A rotation or shear on the displayed plane is carried as the 2x2
+        # spatial block of the target's affine.
+        affine = getattr(target, 'affine', None)
+        matrix = None
+        for name in ('affine_matrix', 'matrix'):
+            candidate = getattr(affine, name, None)
+            if candidate is not None:
+                matrix = np.asarray(candidate, dtype=float)
+                break
+        if matrix is not None and matrix.ndim == 2 and matrix.shape[0] >= 3:
+            plane = np.eye(3)
+            plane[:2, :2] = matrix[-3:-1, -3:-1]
+            plane[:2, 2] = matrix[-3:-1, -1]
+            if not np.allclose(plane, np.eye(3)):
+                self._apply(layer, 'affine', plane)
+
+    def _set_layer_data(self, shapes, edges, fills, widths, uids, parts, labels=None):
+        layer = self._layer
+        if layer is None:
+            if not shapes:
+                return
+            layer = self._ensure_layer()
+        self._suppress_resync = True
+        try:
+            layer.data = list(shapes)
+            if shapes:
+                for attribute, value in (
+                    ('shape_type', ['polygon'] * len(shapes)),
+                    ('edge_color', list(edges)),
+                    ('face_color', list(fills)),
+                    # Per shape, so one ROI's width does not set everyone's.
+                    ('edge_width', list(widths)),
+                ):
+                    self._apply(layer, attribute, value)
+                self._apply(
+                    layer, 'features',
+                    {'roi_uid': list(uids), 'part_index': list(parts)},
+                )
+                self._apply(
+                    layer, 'text',
+                    {'string': list(labels), 'anchor': 'center'} if any(labels or [])
+                    else None,
+                )
+        finally:
+            self._suppress_resync = False
+
+    def _apply(self, layer, attribute, value):
+        """Set one layer attribute, reporting rather than swallowing failure.
+
+        Silently ignoring these left the overlay looking fine while sitting at
+        the wrong transform or without its ROI ids — the sort of failure that
+        only shows up as measurements landing in the wrong place.
+        """
+        try:
+            setattr(layer, attribute, value)
+            return True
+        except Exception as exc:
+            self._failures.append(f'{attribute}: {exc}')
+            return False
+
+    @property
+    def failures(self) -> list[str]:
+        """Layer attributes that could not be applied, for diagnosis."""
+        return list(self._failures)
+
+    # -- hit testing --------------------------------------------------------
+
+    def roi_at(self, data_position, *, tolerance=None):
+        """The uid of the ROI under a point, or None.
+
+        Ours rather than napari's: ``Shapes.get_value`` returns only the
+        topmost shape by draw order, which cannot pick the smallest of several
+        overlapping ROIs and cannot fall through the hole in an annulus.
+        """
+        from imswitch.imcommon.algorithms.roi_geometry import roi_hit_test, roi_mask_local
+
+        if tolerance is None:
+            zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
+            tolerance = max(self._PIXEL_WIDTH / zoom, 0.5)
+
+        hits = []
+        for roi in self._rois:
+            if not getattr(roi, 'visible', True):
+                continue
+            try:
+                if not roi_hit_test(roi, data_position, tolerance=tolerance):
+                    continue
+                local, _slices = roi_mask_local(roi, (10 ** 6, 10 ** 6))
+                area = int(local.sum())
+            except Exception:
+                continue
+            hits.append((area, roi.uid))
+        if not hits:
+            return None
+        # Smallest wins: a small ROI inside a big one is the one you meant.
+        return min(hits, key=lambda item: item[0])[1]
+
+    def world_to_data(self, world_position):
+        """Map a world-space event position into ROI pixel coordinates."""
+        layer = self._layer
+        if layer is None:
+            return tuple(float(v) for v in world_position[-2:])
+        try:
+            return tuple(
+                float(v) for v in np.asarray(layer.world_to_data(world_position))[-2:]
+            )
+        except Exception:
+            return tuple(float(v) for v in world_position[-2:])
+
+    def install_click_handler(self, on_roi_clicked):
+        """Call ``on_roi_clicked(uid, modifiers)`` when a drawn ROI is clicked.
+
+        A plain mouse callback plus our own hit test: napari's ``get_value``
+        would only ever report the topmost shape, which cannot express
+        "smallest of the overlapping ones" or "the hole is not part of it".
+        """
+        layer = self._ensure_layer()
+
+        def _handler(_layer, event):
+            try:
+                data_point = self.world_to_data(event.position)
+                uid = self.roi_at(data_point)
+            except Exception:
+                return
+            if uid is not None:
+                on_roi_clicked(uid, getattr(event, "modifiers", ()))
+
+        try:
+            layer.mouse_drag_callbacks.append(_handler)
+        except Exception:
+            return None
+        self._click_handler = _handler
+        return _handler
+
+    def remove_click_handler(self):
+        handler = getattr(self, "_click_handler", None)
+        if handler is None or self._layer is None:
+            return
+        try:
+            self._layer.mouse_drag_callbacks.remove(handler)
+        except Exception:
+            pass
+        self._click_handler = None
+
+    @property
+    def layer(self):
+        return self._layer

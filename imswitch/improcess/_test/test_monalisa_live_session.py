@@ -110,6 +110,60 @@ def test_make_session_returns_streaming_session():
     assert isinstance(session, StreamingSession)
 
 
+def test_live_session_deinterleaves_per_line_conditions():
+    """Fast Gauss scatters [line/A, line/B] blocks into separate outputs."""
+
+    class _IdentityProcessor:
+        frame_inds = np.arange(6, dtype=np.int64).reshape(6, 1)
+
+        @staticmethod
+        def process_chunk(chunk):
+            return np.asarray(chunk)
+
+    session = MonalisaReconstructor().make_session()
+    session.processor = _IdentityProcessor()
+    session.nx_s = 3
+    session.ny_s = 2
+    session.num_linesteps = 2
+    session.num_frames_per_condition = 6
+    session.num_frames_in_stack = 12
+    session.reconstructed = np.zeros((1, 1, 2, 1, 2, 3), dtype=np.float32)
+    frames = np.arange(12, dtype=np.float32).reshape(12, 1, 1)
+
+    session.push(frames, 0, 12)
+
+    np.testing.assert_array_equal(
+        session.reconstructed[0, 0, 0, 0],
+        np.array([[0, 1, 2], [6, 7, 8]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        session.reconstructed[0, 0, 1, 0],
+        np.array([[3, 4, 5], [9, 10, 11]], dtype=np.float32),
+    )
+
+
+def test_fast_gauss_geometry_treats_linesteps_as_one_interleaved_stack():
+    reconstructor = MonalisaReconstructor()
+    attrs = {
+        'ScanStage:axis_startpos': [0.0, 0.0, 0.0],
+        'ScanStage:axis_length': [0.9, 0.9, 1.0],
+        'ScanStage:axis_step_size': [0.05, 0.05, 1.0],
+        'ScanTTL:Nx': 18,
+        'ScanTTL:Ny': 18,
+        'ScanTTL:n_linesteps': 2,
+        'recording:frames_per_stack': 648,
+    }
+
+    geometry = reconstructor._fast_gauss_geometry_from_attrs(attrs, 648)
+
+    assert geometry is not None
+    assert geometry['frames_per_stack'] == 648
+    assert geometry['num_timepoints'] == 1
+    assert geometry['n_linesteps'] == 2
+    assert geometry['scan_params']['steps'] == [18, 18, 1, 2]
+    assert geometry['scan_params']['n_linesteps'] == 2
+
+
 def test_live_session_begin(synthetic_stack):
     """Test StreamingSession.begin with synthetic data."""
     stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
@@ -543,6 +597,63 @@ def test_fast_gauss_offline_uses_file_scan_metadata_when_params_mismatch(synthet
     assert result.output_pixel_size_nm == pytest.approx((50.0, 50.0))
     assert np.all(np.isfinite(result.data))
     assert not np.all(result.data == 0)
+
+
+def test_fast_gauss_offline_reconstructs_line_interleaved_conditions(synthetic_stack):
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    interleaved = np.empty((stack.shape[0] * 2, *stack.shape[1:]), dtype=np.float32)
+    for row in range(ny_s):
+        source = stack[row * nx_s:(row + 1) * nx_s]
+        target = row * nx_s * 2
+        interleaved[target:target + nx_s] = source
+        interleaved[target + nx_s:target + 2 * nx_s] = source * 2
+
+    imswitch_data = attrs['ImswitchData']
+    data_obj = InMemoryStackWrapper(
+        name='offline-fast-gauss-linesteps',
+        dataset_name='detector_0',
+        data=interleaved,
+        attrs={
+            'ScanStage:axis_startpos': imswitch_data['ScanStage:axis_startpos'],
+            'ScanStage:axis_length': imswitch_data['ScanStage:axis_length'],
+            'ScanStage:axis_step_size': imswitch_data['ScanStage:axis_step_size'],
+            'ScanStage:axis_step_size_unit': 'nm',
+            'ScanTTL:Nx': nx_s,
+            'ScanTTL:Ny': ny_s,
+            'ScanTTL:n_linesteps': 2,
+            'recording:frames_per_stack': interleaved.shape[0],
+            'recording:num_timepoints': 1,
+        },
+    )
+    params = {
+        'reconstruction_method': 'Fast Gauss MoNaLISA',
+        'device': 'CPU',
+        'fast_gauss_footprint_num_rects': DEFAULT_FOOTPRINT_NUM_RECTS,
+        'fast_gauss_gaussian_sigma_px': DEFAULT_GAUSSIAN_SIGMA_PX,
+        'bleaching_correction': False,
+        'row_offset': 5.0,
+        'col_offset': 5.0,
+        'row_period': 10.0,
+        'col_period': 10.0,
+        'scan_params': {
+            'dimensions': ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'],
+            'directions': ['pos', 'pos', 'pos'],
+            'steps': [str(nx_s), str(ny_s), '1', '1'],
+            'step_sizes': ['50', '50', '1', '1'],
+            'unidirectional': False,
+        },
+    }
+
+    result = MonalisaReconstructor().process(data_obj, params)
+
+    assert result.data.shape[:4] == (1, 1, 2, 1)
+    assert result.scan_params['n_linesteps'] == 2
+    np.testing.assert_allclose(
+        result.data[0, 0, 1, 0],
+        result.data[0, 0, 0, 0] * 2,
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
 
 def test_fast_gauss_offline_accepts_legacy_scan_dimension_labels(synthetic_stack):

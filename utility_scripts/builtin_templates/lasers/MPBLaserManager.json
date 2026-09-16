@@ -10,6 +10,11 @@
     {"key": "valueRangeStep", "label": "Step",            "type": "float", "default": 1.0,    "req": true,  "grp": "Basic", "tip": "", "opts": []}
   ],
   "props": [
-    {"key": "rs232device", "label": "RS232 Device", "type": "text", "default": "mpb", "req": true, "grp": "Basic", "tip": "", "opts": []}
+    {"key": "rs232device",       "label": "RS232 Device",        "type": "text",  "default": "mpb", "req": true,  "grp": "Basic",    "tip": "", "opts": []},
+    {"key": "useMockOnFailure",  "label": "Mock on failure",     "type": "bool",  "default": true,  "req": false, "grp": "Basic",    "tip": "Continue without hardware after a failed startup, but only after a best-effort immediate OFF. Disable to make an unavailable or unconfirmed laser a startup error.", "opts": []},
+    {"key": "rampDownEnabled",   "label": "Ramp down before OFF", "type": "bool",  "default": true,  "req": false, "grp": "Advanced", "tip": "Ramp live APC output to the device-reported minimum before normal OFF commands.", "opts": []},
+    {"key": "rampDownDurationS", "label": "Ramp duration (s)",    "type": "float", "default": 2.0,   "req": false, "grp": "Advanced", "tip": "Approximate duration of the software ramp. Confirm the correct value for the exact MPB model and firmware.", "opts": []},
+    {"key": "rampDownSteps",     "label": "Ramp steps",           "type": "int",   "default": 20,    "req": false, "grp": "Advanced", "tip": "Number of descending SETPOWER commands used by a normal OFF.", "opts": []},
+    {"key": "rampDownDwellS",    "label": "Minimum-power dwell (s)", "type": "float", "default": 0.0, "req": false, "grp": "Advanced", "tip": "Optional dwell at the device-reported minimum before disabling emission.", "opts": []}
   ]
 }

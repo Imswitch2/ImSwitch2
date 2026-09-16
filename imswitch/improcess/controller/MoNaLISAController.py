@@ -38,6 +38,7 @@ class MoNaLISAController(ImProcessWidgetController):
             'directions': [self._widget.p_text, self._widget.p_text, self._widget.p_text],
             'steps': ['35', '35', '1', '1'],
             'step_sizes': ['35', '35', '35', '1'],
+            'n_linesteps': 1,
             'unidirectional': True
         }
 
@@ -99,15 +100,18 @@ class MoNaLISAController(ImProcessWidgetController):
             return
 
         dimensionMap = {
-            b'X': self._widget.r_l_text,
-            b'Y': self._widget.u_d_text,
-            b'Z': self._widget.b_f_text
+            'X': self._widget.r_l_text,
+            'Y': self._widget.u_d_text,
+            'Z': self._widget.b_f_text
         }
         try:
             targetsAttr = attrs['ScanStage:target_device']
             for i in range(0, min(3, len(targetsAttr))):
-                self._scanParDict['dimensions'][i] = dimensionMap[targetsAttr[i]]
-        except (KeyError, TypeError):
+                target = targetsAttr[i]
+                if isinstance(target, (bytes, np.bytes_)):
+                    target = target.decode(errors='ignore')
+                self._scanParDict['dimensions'][i] = dimensionMap[str(target).upper()]
+        except (KeyError, TypeError, AttributeError):
             pass
 
         try:
@@ -120,13 +124,61 @@ class MoNaLISAController(ImProcessWidgetController):
         except (KeyError, TypeError):
             pass
 
+        numLinesteps = self._positiveIntAttr(attrs, 'ScanTTL:n_linesteps') or 1
+        self._scanParDict['n_linesteps'] = numLinesteps
+
+        # Prefer the physical X/Y counts recorded by advanced scans.  Unlike
+        # sqrt(numFrames), these remain correct when every physical line is
+        # repeated for multiple line-step conditions.
+        spatialSteps = {
+            self._widget.r_l_text: self._positiveIntAttr(attrs, 'ScanTTL:Nx'),
+            self._widget.u_d_text: self._positiveIntAttr(attrs, 'ScanTTL:Ny'),
+        }
+        for index, dimension in enumerate(self._scanParDict['dimensions'][:3]):
+            if spatialSteps.get(dimension) is not None:
+                self._scanParDict['steps'][index] = str(spatialSteps[dimension])
+
+        # Older recordings may lack ScanTTL:Nx/Ny but still contain physical
+        # axis lengths and pitches. Their convention is positions=length/step.
         try:
-            numFrames = dataObj.numFrames
+            axisLengths = np.asarray(attrs['ScanStage:axis_length'], dtype=float).flatten()
+            axisSteps = np.asarray(attrs['ScanStage:axis_step_size'], dtype=float).flatten()
+        except (KeyError, TypeError, ValueError):
+            axisLengths = axisSteps = np.array([])
+        for index in range(min(3, axisLengths.size, axisSteps.size)):
+            if spatialSteps.get(self._scanParDict['dimensions'][index]) is not None:
+                continue
+            if axisSteps[index] != 0:
+                count = max(1, int(round(abs(axisLengths[index] / axisSteps[index]))))
+                self._scanParDict['steps'][index] = str(count)
+
+        try:
+            numFrames = int(dataObj.numFrames)
         except Exception:
             numFrames = None
         if numFrames:
-            for i in range(0, 2):
-                self._scanParDict['steps'][i] = str(int(np.sqrt(numFrames)))
+            spatialProduct = int(np.prod(
+                np.asarray(self._scanParDict['steps'][:3], dtype=int)
+            ))
+            if spatialProduct <= 0 or numFrames % spatialProduct != 0:
+                # Last-resort compatibility for metadata-light square scans.
+                framesPerCondition = (
+                    numFrames // numLinesteps
+                    if numFrames % numLinesteps == 0 else numFrames
+                )
+                side = int(np.sqrt(framesPerCondition))
+                if side * side == framesPerCondition:
+                    self._scanParDict['steps'][0] = str(side)
+                    self._scanParDict['steps'][1] = str(side)
+                    spatialProduct = side * side * int(self._scanParDict['steps'][2])
+
+            if spatialProduct > 0 and numFrames % spatialProduct == 0:
+                outputTimeSteps = numFrames // spatialProduct
+                self._scanParDict['steps'][3] = str(outputTimeSteps)
+                if outputTimeSteps % numLinesteps != 0:
+                    # The metadata cannot describe this detector's frame
+                    # stream; retain legacy ordering rather than mis-group it.
+                    self._scanParDict['n_linesteps'] = 1
 
         try:
             stepSizesAttr = attrs['ScanStage:axis_step_size']
@@ -137,6 +189,23 @@ class MoNaLISAController(ImProcessWidgetController):
                 self._scanParDict['step_sizes'][i] = str(stepSizesAttr[i] * 1000)  # convert um->nm
 
         self.updateScanParams()
+
+    @staticmethod
+    def _positiveIntAttr(attrs, key):
+        """Return a positive scalar integer metadata value, else ``None``."""
+        try:
+            value = attrs[key]
+            if isinstance(value, (list, tuple, np.ndarray)):
+                value = np.asarray(value).flatten()
+                if value.size != 1:
+                    return None
+                value = value[0]
+            if isinstance(value, (bytes, np.bytes_)):
+                value = value.decode(errors='ignore')
+            number = int(float(value))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return number if number > 0 else None
 
     def extractData(self, data):
         fwhmNm = self._widget.getFwhmNm()

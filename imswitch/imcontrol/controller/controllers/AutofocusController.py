@@ -10,6 +10,10 @@ from ..basecontrollers import ImConWidgetController
 _Z_AXIS = 'Z'
 _SETTLE_S = 0.15
 _CLOSE_JOIN_TIMEOUT_S = 2.0
+# How long a starting scan waits for autofocus to let go of the Z axis. Bounded
+# because blocking a scan indefinitely on a wedged positioner call is worse than
+# the brief overlap it prevents.
+_SCAN_HANDOFF_TIMEOUT_S = 2.0
 
 
 class AutofocusController(ImConWidgetController):
@@ -27,6 +31,11 @@ class AutofocusController(ImConWidgetController):
         self._focusLeaseLock = threading.Lock()
         self._closed = False
         self._focusing = False
+        # Depth-counted like the focus lock's: workflows publish these signals
+        # themselves, so a duplicate start must not be cleared by a single end.
+        self._scanDepth = 0
+        self._scanActive = False
+        self._yieldActuator = False
 
         if self._setupInfo.autofocus is None:
             return
@@ -46,8 +55,73 @@ class AutofocusController(ImConWidgetController):
         self.sigFocusDone.connect(self._onFocusDone)
         self.sigFocusStopped.connect(self._onFocusStopped)
 
+        self._commChannel.sigScanStarting.connect(self._onScanStarting)
+        self._commChannel.sigScanEnded.connect(self._onScanEnded)
+
+    def _onScanStarting(self):
+        """A scan is about to take the hardware; hand the Z axis over.
+
+        This is a handoff, not a request. Setting the cancel event and
+        returning let the scan start while the worker was still mid-sweep --
+        and its ``finally`` restores the starting Z, so cancelling could itself
+        issue a move *after* the waveform was running. The worker is therefore
+        told to abandon the axis where it stands, and this waits for it to
+        actually leave before the scan proceeds.
+        """
+        if self.__dict__.get('_closed', False):
+            return
+        self._scanDepth = self.__dict__.get('_scanDepth', 0) + 1
+        self._scanActive = True
+        if not self.__dict__.get('_focusing', False):
+            return
+
+        self._logger.warning('Autofocus cancelled: a scan took the Z axis.')
+        # Suppress the restore-to-start move: the scan owns the axis from here,
+        # and its own return-to-center defines the final position.
+        self._yieldActuator = True
+        cancel = self.__dict__.get('_focusCancel')
+        if cancel is not None:
+            cancel.set()
+
+        worker = self.__dict__.get('_focusThread')
+        if worker is None or worker is threading.current_thread():
+            return
+        worker.join(_SCAN_HANDOFF_TIMEOUT_S)
+        if worker.is_alive():
+            # Bounded on purpose: blocking the scan indefinitely on a wedged
+            # positioner call would be worse than the overlap it prevents.
+            self._logger.error(
+                'Autofocus did not release the Z axis within '
+                f'{_SCAN_HANDOFF_TIMEOUT_S:g} s; the scan is starting anyway '
+                'and the two may briefly drive it together.'
+            )
+
+    def _onScanEnded(self):
+        if self.__dict__.get('_closed', False):
+            return
+        depth = self.__dict__.get('_scanDepth', 0)
+        if depth <= 0:
+            # Never clear on an end we did not see a start for.
+            return
+        self._scanDepth = depth - 1
+        self._scanActive = self._scanDepth > 0
+
     def closeEvent(self) -> bool:
         self._closed = True
+
+        comm = self.__dict__.get('_commChannel')
+        if comm is not None:
+            for signalName, slot in (
+                ('sigScanStarting', self._onScanStarting),
+                ('sigScanEnded', self._onScanEnded),
+            ):
+                signal = getattr(comm, signalName, None)
+                if signal is not None:
+                    try:
+                        signal.disconnect(slot)
+                    except Exception:
+                        pass
+
         cancel = self.__dict__.get('_focusCancel')
         if cancel is not None:
             cancel.set()
@@ -145,7 +219,19 @@ class AutofocusController(ImConWidgetController):
         rangez, resolutionz = values
         if self._focusing or self.__dict__.get('_closed', False):
             return
+        if self.__dict__.get('_scanActive', False):
+            # Autofocus sweeps Z from a worker thread. On a rig where it
+            # targets the same actuator a scan is driving, that is the same
+            # conflict the focus lock yields for.
+            self._logger.warning(
+                'Autofocus cannot start while a scan is running; it would '
+                'drive the Z axis against the scan waveform.'
+            )
+            if not self.__dict__.get('_closed', False):
+                self._onFocusStopped()
+            return
         self._focusCancel.clear()
+        self._yieldActuator = False
         self._focusing = True
         self._widget.focusButton.setText('Focusing...')
         self._widget.focusButton.setEnabled(False)
@@ -221,7 +307,14 @@ class AutofocusController(ImConWidgetController):
         except Exception as e:
             self._logger.error(f'Autofocus failed: {e}', exc_info=True)
         finally:
-            if (
+            if self.__dict__.get('_yieldActuator', False):
+                # A scan took the axis. Restoring our starting Z here would be
+                # a move issued into a running waveform.
+                self._logger.warning(
+                    'Autofocus left the Z axis where the scan found it; its '
+                    'starting position was not restored.'
+                )
+            elif (
                 not completed
                 and positioner is not None
                 and current_z is not None

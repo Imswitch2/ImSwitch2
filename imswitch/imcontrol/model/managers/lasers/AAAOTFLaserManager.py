@@ -4,6 +4,7 @@ from scipy.interpolate import interp1d
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
 from .aa_aotf_protocols import DEFAULT_PROFILE_ID, build_profiles
+from .aa_aotf_protocols.frequency_startup import validate_frequency_mhz
 from ._protocol import DeviceInitializationError, ProtocolError
 
 
@@ -25,6 +26,9 @@ class AAAOTFLaserManager(LaserManager):
     - ``protocolProfile`` -- command profile to use. Omitted means
       ``"aa.compatibility"``, the field-proven behavior; the AA controller has
       no safe read-only dialect query, so nothing is auto-discovered
+    - ``frequencyMHz`` -- optional fixed RF frequency restored at startup.
+      Requires the ``"aa.frequency-startup"`` profile. When omitted, startup
+      behavior is exactly the same as for existing configurations
     - ``toggleTrueExternal`` -- bool describing if the channel setting
       should use internal (False) or external (True) setting to be able
       to modify the laser power through ImSwitch. Default: False/null
@@ -52,6 +56,45 @@ class AAAOTFLaserManager(LaserManager):
                 f'AA laser {name!r}: unknown protocolProfile {requested!r}. '
                 f'Available profiles: {", ".join(sorted(self._profiles))}.'
             )
+
+        configured_frequency = laserInfo.managerProperties.get('frequencyMHz')
+        self._frequency_mhz = None
+        # The setup editor represents an unset optional numeric field as 0.0.
+        # Treat that value exactly like omission so generated legacy AOM
+        # configurations retain their original wire trace.
+        frequency_is_configured = configured_frequency not in (None, '')
+        if frequency_is_configured:
+            try:
+                frequency_is_configured = float(configured_frequency) != 0
+            except (TypeError, ValueError):
+                pass  # The validation below provides the actionable error.
+        if frequency_is_configured:
+            try:
+                self._frequency_mhz = validate_frequency_mhz(
+                    configured_frequency
+                )
+            except ValueError as exc:
+                raise DeviceInitializationError(
+                    f'AA laser {name!r}: invalid frequencyMHz: {exc}'
+                ) from None
+            required_operations = (
+                'prepare_frequency_programming',
+                'set_channel_frequency',
+            )
+            missing = [
+                operation for operation in required_operations
+                if not callable(getattr(self._profile, operation, None))
+            ]
+            if missing:
+                raise DeviceInitializationError(
+                    f'AA laser {name!r}: protocolProfile '
+                    f'{self._profile.profile_id!r} does not support '
+                    f'frequencyMHz. Use "aa.frequency-startup".'
+                )
+
+            self._run('prepare_frequency_programming')
+            self._run('set_channel_frequency', self._frequency_mhz)
+
         if 'toggleTrueExternal' in laserInfo.managerProperties:
             self._toggleTrueExternal = laserInfo.managerProperties['toggleTrueExternal']
         else:

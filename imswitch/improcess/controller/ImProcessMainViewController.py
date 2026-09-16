@@ -4,6 +4,7 @@ from .MemoryLiveController import MemoryLiveController
 from .ReconstructionViewController import ReconstructionViewController
 from .GraphController import GraphController
 from .MetadataController import MetadataController
+from .SmlmRenderController import SmlmRenderController
 from .ScanParamsController import ScanParamsController
 from .WidefieldStarssBatchController import WidefieldStarssBatchController
 from .FileIOController import FileIOController
@@ -44,6 +45,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
             self.metadataController = self._factory.createController(
                 MetadataController, self._widget.metadataWidget
             )
+        self.smlmRenderController = None
+        if getattr(self._widget, "smlmRenderWidget", None) is not None:
+            self.smlmRenderController = self._factory.createController(
+                SmlmRenderController, self._widget.smlmRenderWidget
+            )
         self.scanParamsController = self._factory.createController(
             ScanParamsController, self._widget.scanParamsDialog
         )
@@ -73,6 +79,9 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._widget.sigSetSaveFolder.connect(self.fileIOController.setSaveFolder)
 
         self._widget.sigReconstuctCurrent.connect(self.reconstructorManager.reconstructCurrent)
+        self._widget.sigCancelReconstruction.connect(
+            self.reconstructorManager.cancelReconstruction
+        )
         self._widget.sigReconstructMultiConsolidated.connect(
             lambda: self.reconstructorManager.reconstructMulti(consolidate=True)
         )
@@ -108,15 +117,21 @@ class ImProcessMainViewController(ImProcessWidgetController):
         MoNaLISA scan-param parsing."""
         self._currentDataObj = dataObj
 
+        self.reconstructorManager.currentDataChanged(dataObj)
+
         # Load reconstructor parameters from dataset metadata (best-effort).
-        if hasattr(self._widget.parTree, "load_from_attrs"):
+        if (
+            getattr(dataObj, 'sourceKind', 'image') == 'image'
+            and hasattr(self._widget.parTree, "load_from_attrs")
+        ):
             try:
                 self._widget.parTree.load_from_attrs(dataObj.attrs or {})
             except Exception as exc:
                 self._logger.warning(f"Could not load reconstructor params from metadata: {exc}")
 
         # MoNaLISA-specific scan-params housekeeping (also best-effort).
-        self.monalisaController.parseScanParamsFromAttrs(dataObj)
+        if getattr(dataObj, 'sourceKind', 'image') == 'image':
+            self.monalisaController.parseScanParamsFromAttrs(dataObj)
 
         # Pass-through reconstructors don't require an explicit click — the
         # data is the result. Route to the viewer the moment a current
@@ -126,6 +141,9 @@ class ImProcessMainViewController(ImProcessWidgetController):
             self._activeReconstructor is not None
             and getattr(self._activeReconstructor, 'is_pass_through', False)
             and dataObj is not None
+            and self.reconstructorManager._accepts_current_source(
+                self._activeReconstructor
+            )
         ):
             try:
                 self.reconstructorManager.reconstruct([dataObj], consolidate=False)

@@ -35,18 +35,26 @@ class StackCombineProcessor(Processor):
     name = "Stack/Combine"
     id = "stack-combine"
     category = "Dimensions and channels"
+    min_inputs = 2
+    max_inputs = None
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2
+
+    def check_inputs(self, results) -> tuple[bool, str]:
+        # Mode/axis are chosen in the dialog; the panel-level check is the
+        # stack case, which is the stricter of the two.
+        return combine_compatibility(results, mode="stack")
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget(parent)
         layout = QtWidgets.QVBoxLayout(widget)
         layout.addWidget(
             QtWidgets.QLabel(
-                "Stack/Combine uses the selected reconstruction-list results;\n"
-                "use the Stack/Combine toolbar action to choose axis and order."
+                "Stacks the checked inputs along a new axis, in the order "
+                "listed;\nuse the Stack/Combine toolbar action to concatenate "
+                "along an existing axis."
             )
         )
         layout.addStretch()
@@ -157,6 +165,111 @@ def combine_compatibility(
             )
         other_unit = getattr(result, "scale_unit", "px")
         if other_unit != unit:
+            return False, (
+                f"'{result_name}' scale unit '{other_unit}' does not match "
+                f"'{first_name}' unit '{unit}'"
+            )
+    return True, ""
+
+
+def _broadcast_alignment(shape, other_shape):
+    """``(result_shape, offset, other_offset)`` for two right-aligned shapes.
+
+    ``None`` when they cannot be lined up. Right-aligned because that is what
+    numpy does, and the whole point is to agree with what the arithmetic will
+    actually compute.
+    """
+    width = max(len(shape), len(other_shape))
+    left = (1,) * (width - len(shape)) + tuple(shape)
+    right = (1,) * (width - len(other_shape)) + tuple(other_shape)
+    out = []
+    for a, b in zip(left, right):
+        if a == b or a == 1 or b == 1:
+            out.append(max(a, b))
+        else:
+            return None
+    result = tuple(out)
+    # The answer has to be one of the inputs, not something larger than both.
+    # Without this, a (233, 1) column and a (1, 233) row "broadcast" into a
+    # 233x233 image neither of them contains — arithmetic numpy will happily
+    # perform and nobody asked for.
+    if result not in (tuple(shape), tuple(other_shape)):
+        return None
+    return result, width - len(shape), width - len(other_shape)
+
+
+def elementwise_compatibility(
+    results: Sequence[ProcessingResult],
+) -> tuple[bool, str]:
+    """``(ok, reason)`` for pixel-wise arithmetic between results.
+
+    Deliberately looser than :func:`combine_compatibility`, because the two
+    answer different questions. Stacking builds one array, so the shapes must
+    genuinely agree; arithmetic only needs the operands to line up, and numpy
+    lines up a ``(1, 233, 233)`` image with a ``(233, 233)`` mask without
+    ambiguity. Refusing that pair — as this did, because the calculator reused
+    the stacking check — turns "apply this mask to the image I drew it on"
+    into an error about two shapes the user can see are the same picture.
+
+    Length-1 axes may broadcast, and a plane may broadcast across a stack: one
+    mask applied to every slice is what a mask on a stack means. What is still
+    refused is anything where the answer is bigger than both inputs, and
+    anything whose *shared* axes disagree in label, scale or unit — a nm result
+    and a um one are not comparable however well their shapes line up.
+
+    Metadata-only, like the stacking check: no pixel data is read.
+    """
+    results = list(results or [])
+    if len(results) < 2:
+        return False, "Select two image results"
+
+    try:
+        shape = tuple(shape_for_result(results[0]))
+        labels = list(axis_labels_for_result(results[0]))
+        scales = list(axis_scales_for_result(results[0]))
+    except Exception:
+        return False, "Could not read the shape of the first input"
+    unit = getattr(results[0], "scale_unit", "px")
+    first_name = getattr(results[0], "name", "input 1")
+
+    for index, result in enumerate(results[1:], start=2):
+        result_name = getattr(result, "name", f"input {index}")
+        try:
+            other_shape = tuple(shape_for_result(result))
+            other_labels = list(axis_labels_for_result(result))
+            other_scales = list(axis_scales_for_result(result))
+        except Exception:
+            return False, f"Could not read the shape of '{result_name}'"
+
+        alignment = _broadcast_alignment(shape, other_shape)
+        if alignment is None:
+            return False, (
+                f"'{result_name}' shape {other_shape} cannot be lined up with "
+                f"'{first_name}' shape {shape}"
+            )
+        _result_shape, offset, other_offset = alignment
+
+        # Only the axes both inputs actually have are compared. A broadcast
+        # axis has no counterpart to disagree with, so demanding a matching
+        # label there is demanding a label for an axis that is not there.
+        shared = min(len(shape), len(other_shape))
+        for position in range(1, shared + 1):
+            mine, theirs = len(shape) - position, len(other_shape) - position
+            if shape[mine] == 1 or other_shape[theirs] == 1:
+                continue
+            if labels[mine] != other_labels[theirs]:
+                return False, (
+                    f"'{result_name}' axis '{other_labels[theirs]}' does not "
+                    f"match '{first_name}' axis '{labels[mine]}'"
+                )
+            if not _scales_close([other_scales[theirs]], [scales[mine]]):
+                return False, (
+                    f"'{result_name}' pixel scales along "
+                    f"'{other_labels[theirs]}' do not match '{first_name}'"
+                )
+
+        other_unit = getattr(result, "scale_unit", "px")
+        if other_unit != unit and "px" not in (other_unit, unit):
             return False, (
                 f"'{result_name}' scale unit '{other_unit}' does not match "
                 f"'{first_name}' unit '{unit}'"

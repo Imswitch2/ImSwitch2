@@ -638,13 +638,7 @@ class ScanControllerAdvanced(SuperScanController):
                 isFinalPart = not getattr(
                     self, "doingNonFinalPartOfSequence", False
                 )
-                try:
-                    self._resetReturnToCenterPositionersAfterScan()
-                except Exception:
-                    self._logger.warning(
-                        "Failed to reset positioners after scan:\n%s",
-                        traceback.format_exc(),
-                    )
+                self._restoreScanPositioners()
                 if isFinalPart:
                     try:
                         self._widget.setScanButtonChecked(False)

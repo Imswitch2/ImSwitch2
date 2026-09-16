@@ -22,6 +22,12 @@ Contract: a laser in the scan's TTL list is gated by the scan and its paired
 power device is switched on, both regardless of their manual toggles and both
 off afterwards; their on/off buttons lock while the setpoints stay editable;
 lasers outside the list are never touched.
+
+Between the parts of a multi-part run (timelapse timepoints), the run stays
+armed but the power devices the arming switched on are paused on each part's
+``sigScanDone`` and switched back on when the next part republishes
+membership — so the sample sits in darkness through the waits. Repeat frames
+never publish a part terminal and are unaffected.
 """
 
 
@@ -125,6 +131,8 @@ def _controller(names=('561', '561AOTF'), pairs=None, zeroesOnExit=()):
     ctrl._widget = _Widget()
     ctrl._logger = _Logger()
     ctrl._scanArmedLasers = []
+    ctrl._scanEnabledLasers = []
+    ctrl._scanLasersPaused = False
     ctrl._setupInfo = _SetupInfo(
         {name: _LaserInfo(pairs.get(name)) for name in names}
     )
@@ -217,6 +225,115 @@ def test_arming_is_independent_of_the_manual_toggle():
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
 
     assert ('scanMode', True) in ctrl._master.lasersManager['561AOTF'].calls
+
+
+# --------------------------------------------------------------------------- #
+# Waits between the parts of a multi-part run (timelapse timepoints)           #
+# --------------------------------------------------------------------------- #
+
+def test_power_device_pauses_when_a_lapse_part_ends():
+    """The run stays armed through the wait (sigScanEnded is withheld for
+    non-final parts), so a serially-enabled AOTF kept emitting into the sample
+    for the whole waiting time."""
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    ctrl._master.lasersManager['561AOTF'].calls.clear()
+    ctrl._master.lasersManager['561'].calls.clear()
+
+    LaserController.scanPartDone(ctrl)
+
+    assert ctrl._master.lasersManager['561AOTF'].calls == [('enabled', False)]
+    assert ctrl._master.lasersManager['561'].calls == []
+    assert ctrl._widget.active['561AOTF'] is False
+    # Still the scan's laser: armed, and the buttons stay locked.
+    assert ctrl._scanArmedLasers == ['561', '561AOTF']
+    assert ctrl._widget.enableEditable['561AOTF'] is False
+
+
+def test_paused_power_device_resumes_when_the_next_part_arms():
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    LaserController.scanPartDone(ctrl)
+    ctrl._master.lasersManager['561AOTF'].calls.clear()
+    ctrl._master.lasersManager['561'].calls.clear()
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert ctrl._master.lasersManager['561AOTF'].calls == [('enabled', True)]
+    assert ctrl._widget.active['561AOTF'] is True
+    # The gate is not re-armed; membership republish is not a new run.
+    assert ctrl._master.lasersManager['561'].calls == []
+
+
+def test_repeat_frame_republish_does_not_toggle_the_power_device():
+    """Repeat frames republish membership without a part terminal in between;
+    they must stay free of per-frame RS232 writes."""
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    ctrl._master.lasersManager['561AOTF'].calls.clear()
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert ctrl._master.lasersManager['561AOTF'].calls == []
+
+
+def test_pause_is_idempotent():
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    ctrl._master.lasersManager['561AOTF'].calls.clear()
+
+    LaserController.scanPartDone(ctrl)
+    LaserController.scanPartDone(ctrl)
+
+    assert ctrl._master.lasersManager['561AOTF'].calls == [('enabled', False)]
+
+
+def test_a_manually_enabled_laser_is_not_paused():
+    """The pause covers exactly the emission the arming switched on. A laser
+    in the TTL list with no power pairing was enabled by hand (or gates over
+    its own line) and keeps its manual state, just as it does at arming."""
+    ctrl = _controller(names=('561AOTF',))
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+    ctrl._master.lasersManager['561AOTF'].calls.clear()
+
+    LaserController.scanPartDone(ctrl)
+
+    assert ctrl._master.lasersManager['561AOTF'].calls == []
+
+
+def test_scan_done_outside_a_run_touches_nothing():
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+
+    LaserController.scanPartDone(ctrl)
+
+    assert ctrl._master.lasersManager['561AOTF'].calls == []
+    assert ctrl._master.lasersManager['561'].calls == []
+
+
+def test_teardown_clears_the_pause_so_a_new_run_starts_hot():
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    LaserController.scanPartDone(ctrl)
+    LaserController.scanChanged(ctrl, False)
+    ctrl._master.lasersManager['561AOTF'].calls.clear()
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert ('enabled', True) in ctrl._master.lasersManager['561AOTF'].calls
+    assert ctrl._scanArmedLasers == ['561', '561AOTF']
+
+
+def test_stray_scan_done_after_teardown_is_ignored():
+    """sigScanDone is global; a queued delivery can arrive after the run was
+    torn down and must not switch anything off."""
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+    LaserController.scanChanged(ctrl, False)
+    ctrl._master.lasersManager['561AOTF'].calls.clear()
+
+    LaserController.scanPartDone(ctrl)
+
+    assert ctrl._master.lasersManager['561AOTF'].calls == []
 
 
 # --------------------------------------------------------------------------- #

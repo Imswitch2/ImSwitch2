@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -38,8 +38,7 @@ _RECMODE_TO_MODE = {
     'ScanLapse': MODE_SCAN_LAPSE,
 }
 
-_SPACE_UNIT = 'µm'   # OME UnitsLength for micrometer
-_TIME_UNIT = 's'     # OME UnitsTime for second
+from imswitch.imcommon.model.ome_metadata import _SPACE_UNIT, _TIME_UNIT  # noqa: E402
 
 
 def normalize_mode(rec_mode_name: Optional[str], *, is_snap: bool = False) -> str:
@@ -85,163 +84,15 @@ def axes_for_recording(mode: str, n_frames: int,
     return lead + yx
 
 
-@dataclass(frozen=True)
-class OmeAxis:
-    """A single OME axis: ``name`` in {x,y,z,t,c}, ``type`` in {space,time,channel}."""
-    name: str
-    type: str
-    unit: Optional[str] = None
-
-
-@dataclass
-class OmeImageMeta:
-    """Format-agnostic description of one recorded image (one detector)."""
-    name: str
-    axes: List[OmeAxis]
-    scale: List[float]                 # physical size per axis, same order as ``axes``
-    dtype: Optional[np.dtype] = None
-    channels: List[Dict[str, Any]] = field(default_factory=list)
-    acquisition_time: Optional[str] = None
-    annotations: Dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self):
-        if len(self.axes) != len(self.scale):
-            raise ValueError(
-                f'axes ({len(self.axes)}) and scale ({len(self.scale)}) length mismatch')
-
-    @property
-    def axes_string(self) -> str:
-        """Upper-case axis string, e.g. ``'TYX'`` (the form tifffile expects)."""
-        return ''.join(a.name.upper() for a in self.axes)
-
-    def padded_to(self, ndim: int) -> 'OmeImageMeta':
-        """Return a copy whose axes/scale match ``ndim``.
-
-        Missing leading dimensions follow OME's ``T, C, Z, Y, X`` order.
-        This matters for scan-driven detector frames shaped ``(T, C, Y, X)``,
-        where ``C`` represents separately retained line-step planes.
-        """
-        axes = list(self.axes)
-        scale = list(self.scale)
-        missing = max(0, ndim - len(axes))
-        existing = {axis.name for axis in axes}
-        candidates = [
-            OmeAxis('t', 'time', _TIME_UNIT),
-            OmeAxis('c', 'channel'),
-            OmeAxis('z', 'space', _SPACE_UNIT),
-        ]
-        additions = [
-            axis for axis in candidates if axis.name not in existing
-        ][:missing]
-        while len(additions) < missing:
-            additions.insert(0, OmeAxis('t', 'time', _TIME_UNIT))
-        axes = additions + axes
-        scale = [1.0] * len(additions) + scale
-        canonical = {'t': 0, 'c': 1, 'z': 2, 'y': 3, 'x': 4}
-        if len({axis.name for axis in axes}) == len(axes):
-            ordered = sorted(
-                zip(axes, scale),
-                key=lambda item: canonical.get(item[0].name, 99),
-            )
-            axes = [item[0] for item in ordered]
-            scale = [item[1] for item in ordered]
-        if len(axes) > ndim:
-            axes = axes[len(axes) - ndim:]
-            scale = scale[len(scale) - ndim:]
-        return OmeImageMeta(self.name, axes, scale, self.dtype, self.channels,
-                            self.acquisition_time, self.annotations)
-
-    # ---- serializers -------------------------------------------------------
-
-    def tiff_metadata(self) -> Dict[str, Any]:
-        """``metadata=`` dict for ``tifffile.imwrite(..., ome=True, metadata=...)``."""
-        md: Dict[str, Any] = {'axes': self.axes_string}
-        for axis, size in zip(self.axes, self.scale):
-            if axis.name == 'x':
-                md['PhysicalSizeX'] = float(size); md['PhysicalSizeXUnit'] = axis.unit
-            elif axis.name == 'y':
-                md['PhysicalSizeY'] = float(size); md['PhysicalSizeYUnit'] = axis.unit
-            elif axis.name == 'z':
-                md['PhysicalSizeZ'] = float(size); md['PhysicalSizeZUnit'] = axis.unit
-            elif axis.name == 't':
-                md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
-        if self.channels:
-            md['Channel'] = {'Name': [c.get('name', self.name) for c in self.channels]}
-        return md
-
-    def ngff_ome_metadata(self, path: str = '0', ndim: Optional[int] = None) -> Dict[str, Any]:
-        """The ``ome`` group attribute for OME-NGFF 0.5 (``zarr.json`` ``attributes.ome``).
-
-        Single-resolution image: one dataset at ``path`` (default ``'0'``).
-        ``ndim`` pads/truncates the axes to match the stored array's rank -- some
-        stores always carry a leading frame axis (e.g. a 2D snap stored as
-        ``(1, Y, X)``), so a leading ``t`` axis (scale 1) is prepended as needed.
-        """
-        src = self.padded_to(ndim) if ndim is not None else self
-        axes_objs = list(src.axes)
-        scale = [float(s) for s in src.scale]
-
-        axes = []
-        for a in axes_objs:
-            entry: Dict[str, Any] = {'name': a.name, 'type': a.type}
-            if a.unit:
-                entry['unit'] = 'micrometer' if a.unit == _SPACE_UNIT else (
-                    'second' if a.unit == _TIME_UNIT else a.unit)
-            axes.append(entry)
-        return {
-            'version': '0.5',
-            'multiscales': [{
-                'name': self.name,
-                'axes': axes,
-                'datasets': [{
-                    'path': path,
-                    'coordinateTransformations': [
-                        {'type': 'scale', 'scale': scale}
-                    ],
-                }],
-            }],
-        }
-
-    def element_size_um(self) -> List[float]:
-        """Fiji/ilastik ``element_size_um`` triplet ``[z, y, x]`` (HDF5 interop)."""
-        by_name = {a.name: s for a, s in zip(self.axes, self.scale)}
-        return [float(by_name.get('z', 1.0)), float(by_name.get('y', 1.0)),
-                float(by_name.get('x', 1.0))]
-
-
-def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
-    """ASCII-safe OME-XML string for a data array of ``shape`` described by ``meta``.
-
-    Used where OME metadata can't be written natively at stream time and must be
-    injected/embedded after the fact: OME-TIFF finalize (``tifffile.tiffcomment``)
-    and HDF5. ``len(shape)`` must equal ``len(meta.axes)`` -- the leading axes
-    collapse into the OME plane count. Non-ASCII units (``µ``) are emitted as XML
-    character references so the string is valid in a 7-bit-ASCII TIFF tag.
-    """
-    import tifffile  # lazy: only needed when actually serializing
-
-    shp = tuple(int(s) for s in shape)
-    ny, nx = shp[-2], shp[-1]
-    planecount = 1
-    for s in shp[:-2]:
-        planecount *= int(s)
-    stored = (planecount, 1, 1, ny, nx, 1)  # tifffile StoredShape 6-tuple
-
-    md: Dict[str, Any] = {}
-    for axis, size in zip(meta.axes, meta.scale):
-        if axis.name == 'x':
-            md['PhysicalSizeX'] = float(size); md['PhysicalSizeXUnit'] = axis.unit
-        elif axis.name == 'y':
-            md['PhysicalSizeY'] = float(size); md['PhysicalSizeYUnit'] = axis.unit
-        elif axis.name == 'z':
-            md['PhysicalSizeZ'] = float(size); md['PhysicalSizeZUnit'] = axis.unit
-        elif axis.name == 't':
-            md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
-
-    dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
-    xml = tifffile.OmeXml()
-    xml.addimage(dtype, shp, stored, axes=meta.axes_string, **md)
-    return xml.tostring().encode('ascii', 'xmlcharrefreplace').decode('ascii')
+# The format-agnostic core lives in imcommon: ImProcess writes images too, and
+# a reconstruction whose calibration disagreed with the recording it came from
+# would be a file that cannot be compared with its own source. Re-exported here
+# so every existing importer of this module keeps working unchanged.
+from imswitch.imcommon.model.ome_metadata import (  # noqa: F401
+    OmeAxis,
+    OmeImageMeta,
+    build_ome_xml,
+)
 
 
 def build_ome_image_meta(
@@ -257,6 +108,7 @@ def build_ome_image_meta(
     channels: Optional[List[Dict[str, Any]]] = None,
     acquisition_time: Optional[str] = None,
     annotations: Optional[Dict[str, Any]] = None,
+    stage_position_um: Optional[Sequence[float]] = None,
 ) -> OmeImageMeta:
     """Build an :class:`OmeImageMeta` from recording context.
 
@@ -285,4 +137,8 @@ def build_ome_image_meta(
         channels=channels or [{'name': name}],
         acquisition_time=acquisition_time or datetime.now(timezone.utc).isoformat(),
         annotations=annotations or {},
+        stage_position_um=(
+            tuple(float(v) for v in stage_position_um)
+            if stage_position_um is not None else None
+        ),
     )

@@ -134,7 +134,7 @@ class CommunicationChannel(SignalInterface):
         ReconstructionViewController, ReconstructorManagerController,
         ResultProcessorController
     Listeners: GraphController, ImProcessMainController, ImageToolbarController,
-        ResultProcessorController
+        ResultProcessorController, SmlmRenderController
     """
 
     sigResultProduced = Signal(object, str)
@@ -215,6 +215,72 @@ class CommunicationChannel(SignalInterface):
     Emitters: LiveReconstructionController
     Listeners: ReconstructionViewController
     """
+
+    sigResultsChanged = Signal()
+    """Fires when the set of loaded results, or which of them are selected,
+    changes.
+
+    Companion to the pull accessors below: ``sigCurrentResultChanged`` only
+    ever describes *one* result, so a panel offering an operation over several
+    reconstruction objects has nothing to refresh on when a result is added,
+    removed, or ctrl-clicked into the selection.
+
+    Emitters: ReconstructionViewController
+    Listeners: ImProcessMainController, ResultProcessorController
+    """
+
+    sigSmlmRenderSettingsChanged = Signal(object, object, object)
+    """(result, gaussianOverrides, renderRange) — how to draw a point cloud.
+
+    Emitted by the render-controls panel and applied by the reconstruction
+    viewer's controller, which owns the renderer. Routed through the channel so
+    the panel needs no reference to the viewer, matching how results are
+    published in the other direction.
+
+    Emitters: SmlmRenderController
+    Listeners: ReconstructionViewController
+    """
+
+    sigSmlmRenderAppearanceChanged = Signal(object, object)
+    """(result, appearance) — colormap and opacity for a point cloud.
+
+    Separate from the settings signal because appearance rebuilds no geometry
+    on napari-storm's side, so dragging an opacity slider must not replan.
+
+    Emitters: SmlmRenderController
+    Listeners: ReconstructionViewController
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.__resultProvider = None
+
+    def setResultProvider(self, provider) -> None:
+        """Register who can enumerate the loaded/selected results.
+
+        The reconstruction list widget stays the single source of truth —
+        this only lets any widget reach it through the channel instead of
+        needing a direct reference to ``ReconstructionViewController``, which
+        is what previously limited multi-result operations to one controller.
+        A provider implements ``getAllResults()`` and ``getSelectedResults()``,
+        each returning ``(displayName, result)`` pairs.
+        """
+        self.__resultProvider = provider
+
+    def getAllResults(self) -> list:
+        """Every loaded result as ``(displayName, result)``; empty if unknown."""
+        return self.__queryProvider("getAllResults")
+
+    def getSelectedResults(self) -> list:
+        """The selected results as ``(displayName, result)``; empty if unknown."""
+        return self.__queryProvider("getSelectedResults")
+
+    def __queryProvider(self, method: str) -> list:
+        provider = self.__resultProvider
+        getter = getattr(provider, method, None) if provider is not None else None
+        if not callable(getter):
+            return []
+        return list(getter())
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

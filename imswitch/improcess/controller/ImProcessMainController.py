@@ -21,6 +21,7 @@ from .basecontrollers import ImProcessWidgetControllerFactory
 # 'GuiLayout' so both modules can persist their layouts side by side when
 # enabled together.
 _GUI_LAYOUT_STATE_KEY = 'ImProcessGuiLayout'
+_ROI_MANAGER_STATE_KEY = 'ImProcessROIManager'
 
 
 class ImProcessMainController(MainController):
@@ -67,6 +68,11 @@ class ImProcessMainController(MainController):
         # like Multicolor) expose sigResultProduced; we forward it to the comm
         # channel once. Tracks which panels have had that bridge connected.
         self._panelResultBridges = set()
+        # Measurement panels re-measuring on every result change; tracked by
+        # widget identity so reopening a dock cannot double-connect.
+        self._resultFollowers = set()
+        # ROI manager panels already given their shortcuts and autosave hook.
+        self._roiManagerPanels = set()
 
         # Configurable keyboard shortcuts (shared imcommon ShortcutManager,
         # Fiji-parity defaults, per-user JSON overrides). Never let shortcut
@@ -81,6 +87,9 @@ class ImProcessMainController(MainController):
         # persistence service so it is auto-restored at startup and auto-saved
         # at shutdown. Failures here must never block ImProcess from coming up.
         self.__guiLayoutStateAdapter = None
+        # Assigned before the try so `_wire_runtime_result_processor` can look
+        # for it whether or not persistence is available at all.
+        self.__roiManagerStateAdapter = None
         try:
             from imswitch.imcommon.model import getWidgetStatePersistence
 
@@ -89,12 +98,26 @@ class ImProcessMainController(MainController):
             )
             persistence = getWidgetStatePersistence()
             persistence.register(_GUI_LAYOUT_STATE_KEY, self.__guiLayoutStateAdapter)
+            # Owned here, not by the panel: the ROI manager is runtime-loaded
+            # and is usually absent when startup state is restored, so a
+            # widget-registered adapter would silently drop the saved sets
+            # (A-09).
+            self.__roiManagerStateAdapter = _ROIManagerStateAdapter(
+                self.__mainView, logger=self.__logger,
+            )
+            persistence.register(
+                _ROI_MANAGER_STATE_KEY, self.__roiManagerStateAdapter
+            )
             try:
                 persistence.loadWidgetState(_GUI_LAYOUT_STATE_KEY, 'default')
             except Exception as e:
                 self.__logger.warning(
                     f'Failed to restore ImProcess dock layout: {e}'
                 )
+            try:
+                persistence.loadWidgetState(_ROI_MANAGER_STATE_KEY, 'default')
+            except Exception as e:
+                self.__logger.warning(f'Failed to restore ImProcess ROI sets: {e}')
         except Exception as e:
             self.__logger.debug(
                 f'Widget-state persistence unavailable for ImProcess layout: {e}'
@@ -421,6 +444,13 @@ class ImProcessMainController(MainController):
         widget = self.__mainView.getRuntimeAnalysisWidget(processor_id)
         if widget is None:
             return
+        if processor_id == "roi-manager":
+            # The panel exists now; hand it the state that was restored before
+            # it did (A-09). Idempotent — the stash is cleared once applied.
+            adapter = getattr(self, '_ImProcessMainController__roiManagerStateAdapter', None)
+            if adapter is not None:
+                adapter.applyStashTo(widget)
+            self._wire_roi_manager_panel(widget)
         if processor_id == "graph":
             if self.mainViewController.graphController is None:
                 self.mainViewController.graphController = self.__factory.createController(
@@ -460,6 +490,77 @@ class ImProcessMainController(MainController):
         # reconstruction list and feed them the current result.
         if hasattr(widget, "sigResultProduced"):
             self._wire_producing_panel(widget)
+            return
+        # Measurement panels (Profile, ROI stats, ROI manager) neither run a
+        # processor nor publish results, so neither branch above reaches them
+        # — and they read their pixels from the viewer, which switching
+        # reconstruction silently changes underneath them.
+        self._wire_result_follower(widget)
+
+    def _wire_roi_manager_panel(self, widget) -> None:
+        """Undo/redo shortcuts and crash-recovery autosave for the ROI panel.
+
+        Both are wired when the panel is built, not at startup: it is
+        runtime-loaded, so binding earlier would bind to nothing.
+        """
+        if id(widget) in self._roiManagerPanels:
+            return
+        self._roiManagerPanels.add(id(widget))
+
+        if self._shortcutManager is not None:
+            try:
+                from .shortcuts import register_roi_manager_shortcuts
+
+                register_roi_manager_shortcuts(
+                    self._shortcutManager, widget, owner=self.__mainView
+                )
+            except Exception:
+                self.__logger.debug(
+                    "Could not register ROI manager shortcuts", exc_info=True
+                )
+
+        signal = getattr(widget, "sigStateChanged", None)
+        if signal is not None:
+            signal.connect(self._autosaveROIState)
+
+    def _autosaveROIState(self) -> None:
+        """Persist the ROI sets between shutdowns, so a crash costs seconds.
+
+        Straight into the existing state store — the same place shutdown
+        writes — rather than a recovery file of its own, so there is one
+        payload and no question of which is newer (C-13/A-25).
+        """
+        try:
+            from imswitch.imcommon.model import getWidgetStatePersistence
+
+            getWidgetStatePersistence().saveWidgetState(
+                _ROI_MANAGER_STATE_KEY, 'default'
+            )
+        except Exception:
+            self.__logger.debug('Could not autosave ROI sets', exc_info=True)
+
+    def _wire_result_follower(self, widget) -> None:
+        """Have a panel recompute when the selected result changes.
+
+        A measurement panel that keeps showing numbers from the previous
+        reconstruction is worse than one showing none: nothing on screen says
+        which result the values belong to.
+        """
+        setter = getattr(type(widget), "setCurrentResult", None)
+        if not callable(setter) or id(widget) in self._resultFollowers:
+            return
+        self.__commChannel.sigCurrentResultChanged.connect(widget.setCurrentResult)
+        # A follower that can list results must also hear about the *set*
+        # changing, not only the selection (C-11): loading a reconstruction
+        # while the panel is open would otherwise leave its picker showing the
+        # results that existed when it was opened.
+        available = getattr(type(widget), "setAvailableResults", None)
+        if callable(available):
+            self.__commChannel.sigResultsChanged.connect(
+                lambda w=widget: self._seed_runtime_result_processor(w)
+            )
+        self._resultFollowers.add(id(widget))
+        self._seed_runtime_result_processor(widget)
 
     def _seed_graph_controller(self) -> None:
         """Render the active result's plot payloads into a freshly opened Graph."""
@@ -509,19 +610,38 @@ class ImProcessMainController(MainController):
                 comm_channel.sigCurrentResultChanged.emit(result)
 
             widget.sigResultProduced.connect(_forward)
-            if hasattr(widget, "setCurrentResult"):
-                comm_channel.sigCurrentResultChanged.connect(widget.setCurrentResult)
             self._panelResultBridges.add(id(widget))
-        self._seed_runtime_result_processor(widget)
+        # Publishing and following are not alternatives. The ROI manager does
+        # both — it produces a label image *and* measures whatever result is
+        # selected — and routing it here used to cost it the follower wiring
+        # entirely, so its across-results list went stale the moment it gained
+        # a publish path. `_wire_result_follower` is idempotent.
+        self._wire_result_follower(widget)
 
     def _seed_runtime_result_processor(self, widget) -> None:
-        """Populate a newly opened processor dock with the current result.
+        """Populate a newly opened processor dock with the loaded results.
 
         Runtime result-processor widgets are often opened after a
         reconstruction has already been selected. Those widgets only receive
-        future sigCurrentResultChanged events, so seed them explicitly with the
-        active reconstruction result at wire time.
+        future sigCurrentResultChanged / sigResultsChanged events, so seed
+        them explicitly at wire time — a multi-input panel opened after the
+        reconstructions were loaded would otherwise show an empty picker.
         """
+        # Looked up on the class: a Qt widget that does not define the method
+        # answers a plain instance getattr by raising, not by returning None.
+        available = getattr(type(widget), "setAvailableResults", None)
+        if callable(available):
+            available = available.__get__(widget)
+            try:
+                available(
+                    self.__commChannel.getAllResults(),
+                    self.__commChannel.getSelectedResults(),
+                )
+            except Exception:
+                self.__logger.debug(
+                    "Could not seed runtime processor widget with the result set",
+                    exc_info=True,
+                )
         setter = getattr(widget, "setCurrentResult", None)
         if not callable(setter):
             return
@@ -549,20 +669,27 @@ class ImProcessMainController(MainController):
         self._bridgeResultToImcontrol(result, name)
 
     def _routeResultToAnalysisPanels(self, result) -> None:
-        """Show non-image results in the panel that can actually render them.
+        """Show non-image results in the panels that can actually render them.
 
         Table- and curve-kind results carry nothing the reconstruction viewer
         can draw, so producing one used to leave the user staring at a cleared
         canvas. Route their rows to the shared Results dock and reveal the
         Graph dock for curves, gated on ``kind`` so ordinary image results
         (many of which also expose plot payloads) never steal focus.
+
+        The two are not exclusive. An analysis that fits something produces
+        both a curve and the parameters of the fit; a result may therefore
+        render into the Graph *and* contribute rows, and one that says so via
+        ``publishes_table_rows`` gets both. Rows stay opt-in outside
+        ``kind == "table"`` because a localization result's ``table_records()``
+        can run to six figures.
         """
         from imswitch.improcess.model.result import result_kind
 
         kind = result_kind(result)
-        if kind == "table":
+        if kind == "table" or getattr(result, "publishes_table_rows", False):
             self._appendResultTableRecords(result)
-        elif kind == "curve" and self._resultHasPlotPayloads(result):
+        if kind == "curve" and self._resultHasPlotPayloads(result):
             try:
                 self.__mainView.raiseDockByTitle('Graph')
             except Exception:
@@ -675,13 +802,127 @@ class ImProcessMainController(MainController):
                 self.__logger.warning(
                     f'Failed to save ImProcess dock layout: {e}'
                 )
-        self.__factory.closeAllCreatedControllers()
+        self.__factory.closeAllCreatedControllers(waitTimeoutS=5)
 
 
 def _runtime_tool_display_title(spec) -> str:
     category = str(getattr(spec, "category", "") or "").strip()
     title = str(getattr(spec, "title", "") or getattr(spec, "id", ""))
     return f"{category}: {title}" if category else title
+
+
+class _ROIManagerStateAdapter:
+    """Persistence for the ROI manager's sets, owned by the controller (A-09).
+
+    The panel is runtime-loaded, so at startup it usually does not exist yet.
+    Two behaviours follow, and both matter:
+
+    * a restore that arrives before the panel is **stashed**, and applied when
+      the panel is next built;
+    * a save that cannot read a panel falls back to the **last state known** —
+      whether that came from a restore this session or from the last
+      successful read. Returning an empty state there is the silent data loss
+      this class exists to prevent, and there are two ways to reach it: never
+      opening the panel, and *closing* it, which leaves the attribute pointing
+      at a destroyed C++ object whose every method raises.
+
+    It deliberately does not force the panel open.
+    """
+
+    def __init__(self, view: Any, logger: Any = None) -> None:
+        self._view = view
+        self._logger = logger
+        self._stash: Dict[str, Any] | None = None
+        # The last state anyone knew about: a restore, or the last time the
+        # panel could be read. This is what a closed panel falls back to.
+        self._lastKnown: Dict[str, Any] | None = None
+
+    def _panel(self):
+        return getattr(self._view, 'roiManagerWidget', None)
+
+    def _fallback(self) -> Dict[str, Any]:
+        """What to save when the panel cannot be asked."""
+        return dict(self._lastKnown or self._stash or {})
+
+    def getWidgetState(self) -> Dict[str, Any]:
+        panel = self._panel()
+        if panel is None:
+            return self._fallback()
+        try:
+            payload = panel.roiState()
+        except Exception:
+            # A destroyed panel raises from every method, including this one.
+            # Saving what it last said beats saving nothing.
+            if self._logger is not None:
+                self._logger.debug('Could not read ROI manager state', exc_info=True)
+            return self._fallback()
+        self._lastKnown = payload
+
+        from imswitch.imcommon.model import dirtools
+        from imswitch.improcess.model.roi_persistence import (
+            should_spill,
+            spill_marker,
+            write_spill,
+        )
+
+        if not should_spill(payload):
+            return payload
+        try:
+            write_spill(payload, dirtools.UserFileDirs.Root)
+        except Exception:
+            # Falling back to the state store is slow but correct; failing to
+            # save at all because a file could not be written is not.
+            if self._logger is not None:
+                self._logger.warning(
+                    'Could not write the ROI spill file; keeping the sets in '
+                    'the state store instead',
+                    exc_info=True,
+                )
+            return payload
+        return spill_marker(payload)
+
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        if not isinstance(state, dict) or not state:
+            return
+        from imswitch.imcommon.model import dirtools
+        from imswitch.improcess.model.roi_persistence import ROIStateError, unpack
+
+        try:
+            sets, active, options, _dropped = unpack(state, dirtools.UserFileDirs.Root)
+        except ROIStateError as exc:
+            if self._logger is not None:
+                self._logger.warning(f'Could not restore ROI sets: {exc}')
+            return
+
+        from imswitch.improcess.model.roi_persistence import sets_payload
+
+        payload = sets_payload(sets, active, options)
+        self._lastKnown = payload
+        panel = self._panel()
+        if panel is None:
+            # Stashed, applied when the panel is next built.
+            self._stash = payload
+            return
+        try:
+            panel.setRoiState(payload)
+        except Exception:
+            if self._logger is not None:
+                self._logger.warning('Could not apply ROI sets', exc_info=True)
+
+    def applyStashTo(self, panel) -> None:
+        """Hand a freshly built panel the state that arrived before it existed."""
+        if self._stash is None or panel is None:
+            return
+        try:
+            panel.setRoiState(self._stash)
+        except Exception:
+            if self._logger is not None:
+                self._logger.warning('Could not apply stashed ROI sets', exc_info=True)
+        else:
+            self._stash = None
+
+    def getStateSchemaVersion(self) -> int:
+        return 1
 
 
 class _GuiLayoutStateAdapter:

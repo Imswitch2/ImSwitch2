@@ -271,11 +271,13 @@ confocal processing remain the main open modality targets.
 - ✅ **Generic analysis panels.** Optional graph, profile, projection, FRC,
   segmentation, PSF resolution, colocalization, ROI manager and ROI statistics
   panels are available through the `processing:` config block.
-- 🔄 **Flip controllers onto the registry (Phase B.2 — pending).**
-  Plugin code is in place but `ImProcessMainViewController` and
-  `ReconstructionViewController` still use the legacy direct-call path.
-  Verification needs Windows + `GPU_acc_recon.dll`; lands when that
-  setup is available.
+- ✅ **Registry-backed controllers (Phase B.2).** Offline reconstruction
+  dispatches through the active reconstructor plugin, except for the legacy
+  coefficient-based MoNaLISA method; Fast Gauss MoNaLISA uses the plugin path.
+  Live reconstruction uses a plugin streaming session where available and the
+  plugin's batch `process()` method otherwise. The remaining MoNaLISA exception
+  is tracked as a narrow legacy-path follow-up, not as an unimplemented
+  registry migration.
 - 🔄 **Per-modality reconstructors.** Surface-level targets — flesh out
   with owners later:
   - STED / confocal: frame-averaging, drift correction, lifetime overlay
@@ -380,9 +382,10 @@ dependency).
 **Goal:** Make ImSwitch2 a first-class SMLM platform end to end — acquire a
 blinking image stack, localize single emitters into a coordinate table with
 properties, process that table (drift correction, grouping, filtering), and
-render it in-house — while treating the external
-[napari-storm](https://github.com/napari-storm/napari-storm) plugin as the
-premium GPU point-cloud renderer via a clean data handoff, not a dependency.
+render it in-house — with the external
+[napari-storm](https://pypi.org/project/napari-storm/) package as the
+optional premium GPU point-cloud viewer: embedded behind a lazy import and the
+`storm` extra, never a hard dependency.
 
 **Detailed plan:**
 [docs/design/plans/smlm-localization-port.md](docs/design/plans/smlm-localization-port.md)
@@ -412,8 +415,9 @@ initial scope.
   "render" is a pure-numpy step that turns the coordinate table back into an
   image — 2D/3D **histogram binning** or **fixed-Gaussian splatting**. The
   rendered volume is a normal image `ProcessingResult` the embedded napari
-  viewer already displays (3D via the dims slider). napari-storm stays the
-  separate, cutting-edge GPU particle renderer, fed the same recarray.
+  viewer already displays (3D via the dims slider). napari-storm is the
+  optional cutting-edge GPU particle renderer, fed the same recarray in place
+  when the `storm` extra is installed and `napariStormViewer` is on.
 
 **Surface-level plan (refined in the plan doc):**
 
@@ -444,6 +448,18 @@ initial scope.
   dark-frame tolerance) — each a `Processor` on `LocalizationResult`
   (`analysis/smlm_tables.py` pure-numpy core), gated by the `localization`
   result kind.
+- ✅ **napari-storm embedded viewer** (2026-09, `feat/napari-storm-viewer`).
+  napari-storm is on PyPI (2.1.0) and installed by the `storm` extra; with
+  `napariStormViewer` on, `LocalizationResult`s draw as GPU summed Gaussians
+  through a retained display channel (`view/NapariStormDisplay.py`) that
+  reads our nm recarray in place, gated by headless contract tests against
+  the released package. Render-controls panel (`smlmRenderPanel`): width
+  mode, colour-by-depth, render range, appearance.
+- ✅ **Localization import + precision columns** (2026-09). ThunderSTORM
+  CSV, Picasso HDF5 and mapped generic CSV open straight into the results
+  list (`analysis/smlm_import.py`, `LocalizationImportDialog`); schema gained
+  `lp_*_nm` localization precision beside `sigma_*_nm` PSF width, filled by
+  the localizer via Thompson/Mortensen and preferred for rendering.
 - ⬜ **Future phases (out of initial scope):** COMET/RCC all-pairs drift
   refinement (GPU-optional), 3D (astigmatism/PSF) fitting,
   throughput-oriented (vectorized/GPU) localization.

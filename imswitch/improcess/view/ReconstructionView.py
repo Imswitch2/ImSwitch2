@@ -7,6 +7,7 @@ from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view.guitools import naparitools
 from imswitch.improcess.model.contrast import safe_display_levels
 from . import guitools
+from .NapariStormDisplay import NapariStormDisplay
 
 
 def _spec_kind(spec) -> str:
@@ -27,17 +28,58 @@ def _spec_component(spec) -> str:
     return str(getattr(spec, "name", "layer"))
 
 
+#: Keys carrying spatial provenance, written onto every rendered layer.
+IDENTITY_KEYS = (
+    "result_uid",
+    "dataset_uid",
+    "coordinate_space_uid",
+    "identity_kind",
+    "lineage",
+    "plane_axes",
+    "view_mode",
+    "axes",
+)
+
+
+def _applyIdentityMetadata(layer, identity, *, overrides=None) -> None:
+    """Write spatial provenance onto a layer, or clear it when unknown.
+
+    Cleared rather than left stale when ``identity`` is None: metadata from a
+    previously displayed result would otherwise claim this image is something
+    it is not, which is worse than having no provenance at all.
+    """
+    if layer is None:
+        return
+    if not identity:
+        for key in IDENTITY_KEYS:
+            layer.metadata.pop(key, None)
+        return
+    for key in IDENTITY_KEYS:
+        if key in identity:
+            layer.metadata[key] = identity[key]
+    for key, value in (overrides or {}).items():
+        if value is not None:
+            layer.metadata[key] = value
+
+
 class ReconstructionView(QtWidgets.QFrame):
     """ Frame for showing the reconstructed image"""
 
     # Signals
     sigItemSelected = QtCore.Signal()
     sigSelectionChanged = QtCore.Signal()
+    sigResultsRemoved = QtCore.Signal()
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
 
     # Methods
-    def __init__(self, *args, showLayerControls: bool = True, **kwargs):
+    def __init__(
+        self,
+        *args,
+        showLayerControls: bool = True,
+        useNapariStormViewer: bool = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self)
 
@@ -53,6 +95,14 @@ class ReconstructionView(QtWidgets.QFrame):
         self.setNapariLayerControlsVisible(showLayerControls)
         self._displayLayers = []
         self._imgLayerIsDisplayAnchor = False
+        # Optional GPU point-cloud backend for localization results. Retained
+        # across selections, so it deliberately sits outside _displayLayers,
+        # which is cleared and rebuilt on every result change. None unless the
+        # config asks for it; the adapter then gates itself again on the
+        # optional package actually being installed.
+        self.napariStormDisplay = (
+            NapariStormDisplay(self.napariViewer) if useNapariStormViewer else None
+        )
         # Tracks which managed/protected layer is the selected result's canonical
         # output (may be a labels/points layer, not imgLayer) so the toolbar and
         # active-image accessors can target it by role rather than by identity.
@@ -356,7 +406,8 @@ class ReconstructionView(QtWidgets.QFrame):
             warnings.simplefilter('ignore', FutureWarning)
             self.napariViewer.scale_bar.unit = unit
 
-    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
+    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip",
+                 name=None, identity=None):
         self._clearDisplayLayers()
         self._imgLayerIsDisplayAnchor = False
         # A prior labels/points-primary result may have hidden imgLayer; a plain
@@ -410,10 +461,14 @@ class ReconstructionView(QtWidgets.QFrame):
             else:
                 self.imgLayer.metadata.pop("source_result", None)
             self._setScaleBarUnit("µm" if scaleUnit == "um" else scaleUnit)
+            # Spatial provenance travels with the layer, beside the scale and
+            # unit that were already written here, so anything measuring this
+            # image can read what it is measuring from one object.
+            _applyIdentityMetadata(self.imgLayer, identity)
         except Exception as exc:
             self._logger.debug("setImage: could not set scale_bar unit: %s", exc)
 
-    def setDisplayLayers(self, layerSpecs):
+    def setDisplayLayers(self, layerSpecs, identity=None):
         self._clearDisplayLayers()
         specs = list(layerSpecs or [])
         if not specs:
@@ -440,6 +495,16 @@ class ReconstructionView(QtWidgets.QFrame):
                 layer = self._applyImageSpecToImgLayer(spec)
             else:
                 layer = self._addManagedLayer(spec)
+            # A display layer can sit on its own pixel grid, so its own
+            # coordinate space wins over the parent result's.
+            _applyIdentityMetadata(
+                layer,
+                identity,
+                overrides={
+                    'coordinate_space_uid': getattr(spec, 'coordinate_space_uid', None),
+                    'component': _spec_component(spec),
+                },
+            )
             if layer is None:
                 continue
             if _spec_role(spec) == "primary":
@@ -641,7 +706,15 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer.contrast_limits_range = safe_display_levels(minimum, maximum)
 
     def getActiveImageLayer(self):
-        """Return the active image-like Napari layer, falling back to imgLayer."""
+        """Return the active image-like Napari layer, falling back to imgLayer.
+
+        "Image-like" means the data really is an array, not merely that the
+        layer has the two attributes. A point-cloud layer has ``contrast_limits``
+        *and* a ``data`` holding a tuple of geometry arrays, so attribute
+        presence alone let it through to every contrast tool built on this
+        accessor, where the tuple then failed whatever tried to take its min
+        and max.
+        """
         layer = None
         try:
             layer = self.napariViewer.layers.selection.active
@@ -649,8 +722,8 @@ class ReconstructionView(QtWidgets.QFrame):
             layer = None
         if (
             layer is not None
-            and hasattr(layer, "data")
             and hasattr(layer, "contrast_limits")
+            and isinstance(getattr(layer, "data", None), np.ndarray)
         ):
             return layer
         return self.imgLayer
@@ -722,9 +795,13 @@ class ReconstructionView(QtWidgets.QFrame):
             rows = [self.reconList.currentRow()]
         for row in rows:
             self.reconList.takeItem(row)
+        # Explicit rather than relying on the selection signal: consumers
+        # listing the loaded results must never keep offering a removed one.
+        self.sigResultsRemoved.emit()
 
     def removeAllRecon(self):
         self.reconList.clear()
+        self.sigResultsRemoved.emit()
 
     def resetView(self):
         self.napariViewer.reset_view()

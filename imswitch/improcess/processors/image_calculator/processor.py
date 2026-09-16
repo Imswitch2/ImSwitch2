@@ -21,7 +21,7 @@ from imswitch.improcess.processors._axis_split import (
     shape_for_result,
 )
 from imswitch.improcess.processors.base import Processor
-from imswitch.improcess.processors.combine import combine_compatibility
+from imswitch.improcess.processors.combine import elementwise_compatibility
 
 _OPERATIONS: dict[str, Callable[[np.ndarray, np.ndarray], np.ndarray]] = {
     "add": np.add,
@@ -46,24 +46,55 @@ class ImageCalculatorProcessor(Processor):
     name = "Image calculator"
     id = "image-calculator"
     category = "Math"
+    min_inputs = 2
+    max_inputs = 2
+    # A label image is an image as far as arithmetic is concerned, and
+    # multiplying by one is what a mask *is* — `image * (labels > 0)`. The
+    # kinds gate exists to keep a metrics table with a 2D array away from an
+    # image processor, not to stop a mask being applied to the image it was
+    # drawn on.
+    kinds = ("image", "labels")
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2
 
+    def check_inputs(self, results) -> tuple[bool, str]:
+        results = list(results or [])
+        if len(results) == 2 and results[0] is results[1]:
+            # Same pick twice is meaningful (image minus itself) and is always
+            # compatible with itself.
+            return True, ""
+        ok, reason = super().check_inputs(results)
+        if not ok:
+            return ok, reason
+        # Element-wise, not stacking: arithmetic needs the operands to line
+        # up, which is a weaker thing than building one array out of them.
+        return elementwise_compatibility(results)
+
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget(parent)
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.addWidget(
-            QtWidgets.QLabel(
-                "Image calculator combines two results;\n"
-                "use the Image calculator toolbar action to pick them."
-            )
+        layout = QtWidgets.QFormLayout(widget)
+
+        operation_combo = QtWidgets.QComboBox()
+        operation_combo.addItems(list(CALCULATOR_OPERATIONS))
+        operation_combo.setToolTip(
+            "Applied as A <operation> B, in the order the inputs are listed"
         )
-        layout.addStretch()
+        layout.addRow("Operation:", operation_combo)
+
+        float_check = QtWidgets.QCheckBox("32-bit float result")
+        float_check.setChecked(True)
+        float_check.setToolTip(
+            "Compute in float32 so subtraction and division never clip or wrap"
+        )
+        layout.addRow("", float_check)
 
         def get_values():
-            return {}
+            return {
+                "operation": operation_combo.currentText(),
+                "float32": float_check.isChecked(),
+            }
 
         widget.get_values = get_values
         return widget
@@ -105,7 +136,9 @@ def calculate_results(
     name: str | None = None,
 ) -> ArrayProcessingResult:
     """Combine two compatible results pixel-wise into a new result."""
-    ok, reason = combine_compatibility([first, second], mode="stack")
+    # The same rule the UI gate applies: if the offer said yes, the run must
+    # not then say no.
+    ok, reason = elementwise_compatibility([first, second])
     if not ok:
         raise ValueError(reason)
     if operation not in _OPERATIONS:

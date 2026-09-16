@@ -6,7 +6,9 @@ import time
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
 from .._scan_execution import PARTICIPANTS_KEY
-from .DetectorManager import DetectorManager, scanPixelSizesToZYX
+from .DetectorManager import (
+    ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
+)
 from ._live_display import LiveDisplayThrottle
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
@@ -102,6 +104,21 @@ class APDManager(DetectorManager):
         self._activeScanGeneration = None
         self._tearingDownScanGenerations = set()
         self._completedScanGenerations = set()
+        # Raw-chunk latch. `_onFrameBoundary` fires once per Z plane, so
+        # `_image` is a volume still being filled; a recording that took the
+        # first one would keep a stack with plane 0 written and the rest zero.
+        # The volume is only published once its scan reaches a terminal state,
+        # which happens during teardown -- after the last boundary -- so this
+        # cannot be driven off a frame event and needs its own state.
+        self._rawGeneration = None
+        self._rawReady = False
+        self._rawDelivered = True
+        self._rawAborted = False
+        # Generations whose scan did not finish normally. Raw readiness keys
+        # on the *outcome* of a generation, not on teardown having run:
+        # teardown runs on every path, including the ones that leave the
+        # volume half-written.
+        self._rawFailedGenerations = set()
         self._finishAcks = {}
         self._scanTeardownOperation = None
         self.__newFrameReady = False
@@ -161,6 +178,12 @@ class APDManager(DetectorManager):
             participants is None or self.name in participants
         )
         self._preparedScanGeneration = None
+        # A new scan clears the abort veto and any volume the last one left:
+        # otherwise one cancelled scan would silence the raw chunk for the
+        # rest of the session, and a stale buffer could be published as this
+        # scan's result.
+        self._rawAborted = False
+        self._abandonRaw()
         if not self._scanParticipating:
             return
 
@@ -265,6 +288,11 @@ class APDManager(DetectorManager):
         self.__newFrameReady = False
 
     def stopAcquisition(self):
+        # Whatever is in the raw buffer now was not finished by its scan.
+        # Marking this before teardown is what makes the veto in
+        # _markRawReady effective, since teardown is what would publish it.
+        self._rawAborted = True
+        self._abandonRaw()
         # Last-lease release is fail-closed even if teardown itself fails.
         # DetectorsManager will additionally quarantine a teardown failure.
         self.acquisition = False
@@ -408,6 +436,7 @@ class APDManager(DetectorManager):
                 elif generation is not None:
                     self._tearingDownScanGenerations.discard(generation)
                     self._completedScanGenerations.add(generation)
+                    self._markRawReady(generation)
                     if self._activeScanGeneration == generation:
                         self._activeScanGeneration = None
                     if self._preparedScanGeneration == generation:
@@ -462,6 +491,7 @@ class APDManager(DetectorManager):
         with self._scanLifecycleLock:
             self._tearingDownScanGenerations.discard(generation)
             self._completedScanGenerations.add(generation)
+            self._markRawReady(generation)
             if self._activeScanGeneration == generation:
                 self._activeScanGeneration = None
             if self._preparedScanGeneration == generation:
@@ -484,6 +514,14 @@ class APDManager(DetectorManager):
             self.cancelFinishScan(acknowledge)
             with self._scanLifecycleLock:
                 operation = self._scanTeardownOperation
+                abortedGeneration = (
+                    self._activeScanGeneration
+                    or self._preparedScanGeneration
+                )
+            # Whatever is in the raw buffer belongs to a scan that is being
+            # stopped, not one that finished.
+            self._markRawFailed(abortedGeneration)
+            with self._scanLifecycleLock:
                 generation = (
                     self._activeScanGeneration
                     or self._preparedScanGeneration
@@ -717,6 +755,82 @@ class APDManager(DetectorManager):
             return np.empty((0, 0, 0), dtype=self.dtype)
         self.__newFrameReady = False
         return np.expand_dims(self._image_display, axis=0).copy()
+
+    @property
+    def rawFrameIsDeferred(self) -> bool:
+        """The raw volume is only whole once its scan reaches a terminal."""
+        return True
+
+    def _markRawFailed(self, generation) -> None:
+        """This generation's scan did not finish normally.
+
+        Called from every route that ends a scan without completing it: an
+        abort, and a worker whose run raised. The worker's ``finally`` emits
+        the same completion signal either way, so without this a failed run is
+        indistinguishable downstream from a successful one.
+        """
+        if generation is None:
+            self._rawAborted = True
+        else:
+            self.__dict__.setdefault('_rawFailedGenerations', set()).add(
+                generation
+            )
+        self._abandonRaw()
+
+    def _markRawReady(self, generation) -> None:
+        """The scan that filled the raw buffer has finished; publish it once.
+
+        Refused for a generation that aborted or failed. Every teardown route
+        reaches here, including the ones a cancelled or broken scan takes, so
+        without this the half-written volume they leave behind would be
+        published -- and nothing downstream could tell it from a complete one.
+        """
+        if self.__dict__.get('_rawAborted', False):
+            return
+        if generation in self.__dict__.get('_rawFailedGenerations', ()):
+            return
+        self._rawGeneration = generation
+        self._rawReady = True
+        self._rawDelivered = False
+
+    def _abandonRaw(self) -> None:
+        """Drop the raw buffer without publishing it.
+
+        For a scan that was cancelled or aborted: the volume is partial, and a
+        partial volume in a recording is worse than a missing one because
+        nothing downstream can tell.
+        """
+        self._rawReady = False
+        self._rawDelivered = True
+
+    def drainChunk(self):
+        """Display frames every boundary; the raw volume once, when whole.
+
+        `_onFrameBoundary` fires at the end of every higher-dimensional step —
+        once per Z plane — so the display half updates plane by plane and the
+        live view fills in as the scan runs. `_image` is that same volume while
+        it is still being written, which is why the raw half stays empty until
+        the scan reaches a terminal state and then yields exactly one complete
+        `(1, ..., Y, X)` frame.
+
+        Exactly once: a recording that received the same volume twice would be
+        as wrong as one that received it half-written.
+        """
+        display = self.getChunk()
+
+        raw = _EMPTY_CHUNK
+        if (self.__dict__.get('_rawReady', False)
+                and not self.__dict__.get('_rawDelivered', True)):
+            self._rawDelivered = True
+            self._rawReady = False
+            # A copy, not a view: `_image` is the live accumulation buffer and
+            # the next scan will write straight into it. The leading axis is
+            # the frame axis the broker fans out on, which `_image` does not
+            # carry -- without it a (C, Z, Y, X) volume would be delivered as C
+            # separate frames.
+            raw = np.expand_dims(np.array(self._image, copy=True), axis=0)
+
+        return ChunkPayload(display=display, raw=raw)
 
     def flushBuffers(self):
         self.__newFrameReady = False
@@ -1108,6 +1222,7 @@ class ScanWorker(Worker):
                 self._ploty = 1
 
     def run(self):
+        failed = False
         try:
             if self._linestep > 1:
                 self.__logger.info(
@@ -1131,6 +1246,7 @@ class ScanWorker(Worker):
                     getattr(self, "_pos", None),
                 )
         except Exception:
+            failed = True
             # An exception escaping a Qt worker slot can terminate the process.
             # Convert it into the same generation-tagged local completion path
             # used by a normal scan instead.
@@ -1146,6 +1262,15 @@ class ScanWorker(Worker):
             )
         finally:
             self.scanning = False
+            if failed:
+                # acqDoneSignal is emitted whether this run succeeded or
+                # raised, so without recording the outcome a broken scan is
+                # indistinguishable downstream from a good one -- and the
+                # half-written volume it left would be published as whole.
+                try:
+                    self._manager._markRawFailed(int(self.scanGeneration))
+                except Exception:
+                    pass
             self.acqDoneSignal.emit(int(self.scanGeneration))
 
     def _runAcquisition(self):

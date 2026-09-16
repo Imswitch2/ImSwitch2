@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from imswitch.imcommon.algorithms.roi_geometry import roi_bounds, roi_mask_local
+
 from .roi_manager import ROIRecord
 
 
@@ -70,7 +72,9 @@ def fit_psf(
     name: str = "PSF",
 ) -> PSFFitRecord:
     """Fit a non-rotated 2D Gaussian to a 2D image or ROI."""
-    arr = np.asarray(image, dtype=np.float64)
+    # float64 once here; fit_psf_batch converts before its loop so a
+    # many-bead batch does not recast the whole image per bead.
+    arr = np.asarray(image, dtype=np.float64, copy=False)
     if arr.ndim != 2:
         raise ValueError(f"PSF fitting expects a 2D image, got shape {arr.shape}")
     bounds, yy, xx, values = _extract_fit_points(arr, roi)
@@ -136,6 +140,8 @@ def fit_psf_batch(
 ) -> PSFResolutionAnalysis:
     """Fit one PSF per ROI, or the full image when no ROIs are given."""
     targets = rois or [None]
+    # Converted once for the whole batch rather than once per ROI.
+    image = np.asarray(image, dtype=np.float64, copy=False)
     fits = [
         fit_psf(
             image,
@@ -166,23 +172,26 @@ def _extract_fit_points(
     image: np.ndarray,
     roi: ROIRecord | tuple[int, int, int, int] | None,
 ) -> tuple[tuple[int, int, int, int], np.ndarray, np.ndarray, np.ndarray]:
-    if isinstance(roi, ROIRecord) and roi.pixels is not None:
-        coords = np.asarray(roi.pixels, dtype=np.int64).reshape((-1, 2))
-        inside = (
-            (coords[:, 0] >= 0)
-            & (coords[:, 0] < image.shape[0])
-            & (coords[:, 1] >= 0)
-            & (coords[:, 1] < image.shape[1])
-        )
-        coords = coords[inside]
-        if coords.size == 0:
+    if isinstance(roi, ROIRecord):
+        # Every ROI shape goes through the shared rasteriser. This branch used
+        # to trigger only for ROIs carrying an explicit pixel list, and
+        # anything else — a polygon, an ellipse, a run-length encoded
+        # segmentation mask — silently fell through to the bounding rectangle
+        # below and fitted the box instead of the region.
+        local, slices = roi_mask_local(roi, image.shape)
+        if local.size == 0 or not local.any():
             raise ValueError(f"ROI {roi.name!r} is empty after clipping")
-        values = image[coords[:, 0], coords[:, 1]]
+        rows, cols = np.nonzero(local)
+        rows = rows + slices[0].start
+        cols = cols + slices[1].start
+        values = image[rows, cols]
         finite = np.isfinite(values)
-        coords = coords[finite]
-        values = values[finite]
-        bounds = roi.bounds
-        return bounds, coords[:, 0].astype(np.float64), coords[:, 1].astype(np.float64), values
+        return (
+            roi_bounds(roi),
+            rows[finite].astype(np.float64),
+            cols[finite].astype(np.float64),
+            values[finite],
+        )
 
     bounds = roi.bounds if isinstance(roi, ROIRecord) else roi
     if bounds is None:

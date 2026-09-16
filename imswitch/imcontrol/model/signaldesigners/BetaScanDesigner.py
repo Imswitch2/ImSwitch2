@@ -6,7 +6,9 @@ from imswitch.imcommon.model import initLogger
 
 class BetaScanDesigner(ScanDesigner):
     """ Scan designer for X/Y/Z stages that move a sample.
+
     Designer params:
+
     - ``return_time`` -- time to wait between lines for the stage to return to
       the first position of the next line, in seconds.
     """
@@ -23,8 +25,33 @@ class BetaScanDesigner(ScanDesigner):
 
     def checkSignalComp(self, scanParameters, setupInfo, scanInfo):
         """ Check analog scanning signals so that they are inside the range of
-        the acceptable scanner voltages."""
-        return True  # TODO
+        the acceptable scanner voltages.
+
+        Every EMITTED waveform is checked, including axes held at a single
+        position: unlike GalvoScanDesigner (which omits inactive axes from its
+        signal dict, so parking is free), Beta drives parked axes to their
+        center for the whole scan -- an out-of-range center is a real
+        out-of-range output. ``scanInfo['minmaxes']`` carries one [min, max]
+        per emitted signal, in ``target_device`` (fast, middle, slow) order.
+        Positioners without ``minVolt``/``maxVolt`` are skipped rather than
+        rejected, since older stage configs omit them.
+        """
+        minmaxes = scanInfo.get('minmaxes') if scanInfo else None
+        if not minmaxes:
+            return True
+        targets = scanParameters['target_device']
+        for i in range(min(len(targets), len(minmaxes))):
+            name = targets[i]
+            if name == 'None' or 'Mock' in name:
+                continue
+            props = setupInfo.positioners[name].managerProperties
+            minv = props.get('minVolt')
+            maxv = props.get('maxVolt')
+            if minv is not None and minmaxes[i][0] < minv:
+                return False
+            if maxv is not None and minmaxes[i][1] > maxv:
+                return False
+        return True
 
     def make_signal(self, parameterDict, setupInfo):
         n_linesteps = int(parameterDict.get("n_linesteps", 1))
@@ -45,10 +72,28 @@ class BetaScanDesigner(ScanDesigner):
                 raise ValueError(f'{self.__class__.__name__} does not support multi-axis'
                                  f' positioners')
 
-        convFactors = [
-            positioner.managerProperties.get('conversionFactor', 1)
-            for positioner in setupInfo.positioners.values() if positioner.forScanning
-        ]
+        # Conversion factors looked up per target device NAME. target_device is
+        # GUI-dim-ordered (fast, middle, slow) and need not match the
+        # setupInfo.positioners order -- the previous positional indexing
+        # silently applied another device's factor when scan dims were
+        # reordered (e.g. a Z piezo on dim 0 under a galvo-first setup got the
+        # galvo's factor: 17x range shrink under example_sted). See
+        # docs/galvo-designer-single-axis-findings.md, defect 4.
+        scanningProps = {
+            name: positioner.managerProperties
+            for name, positioner in setupInfo.positioners.items()
+            if positioner.forScanning
+        }
+        unknown = [dev for dev in parameterDict['target_device']
+                   if dev not in scanningProps]
+        if unknown:
+            raise ValueError(
+                f'{self.__class__.__name__}: target device(s) {unknown} not '
+                f'found among forScanning positioners '
+                f'({sorted(scanningProps)})'
+            )
+        convFactors = [scanningProps[dev].get('conversionFactor', 1)
+                       for dev in parameterDict['target_device']]
 
         # Retrieve sizes
         [fast_axis_size, middle_axis_size, slow_axis_size] = \
@@ -207,6 +252,14 @@ class BetaScanDesigner(ScanDesigner):
             n_linesteps=n_linesteps,
             positions=positions,
             return_time=parameterDict['return_time'],
+            # One [min, max] per EMITTED signal, aligned with sig_dict /
+            # target_device order, so checkSignalComp checks exactly what will
+            # be written to the AO channels (parked axes included -- they are
+            # driven to their center) and nothing that will not.
+            minmaxes=[[float(np.min(s)), float(np.max(s))] for s in
+                      ((fastAxisSignal, middleAxisSignal, slowAxisSignal)
+                       if slow_axis_size > 0 else
+                       (fastAxisSignal, middleAxisSignal))],
         )
         scanInfoDict = contract.to_dict()
 

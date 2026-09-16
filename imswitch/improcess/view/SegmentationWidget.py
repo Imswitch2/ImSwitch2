@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.analysis.segmentation import SegmentationAnalysis, segment_image
@@ -28,13 +29,10 @@ class SegmentationWidget(QtWidgets.QWidget):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._roiManagerWidget = roiManagerWidget
+        self._rois: list = []
         self._last_analysis: SegmentationAnalysis | None = None
         self._currentResult = None
         self.processor = SegmentationProcessor()
-        self._preview_timer = QtCore.QTimer()
-        self._preview_timer.setSingleShot(True)
-        self._preview_timer.setInterval(350)
-        self._preview_timer.timeout.connect(self._update_preview)
         self._dims_connection = None
         self._layer_selection_connection = None
 
@@ -66,9 +64,35 @@ class SegmentationWidget(QtWidgets.QWidget):
 
         self.fillHolesCheck = QtWidgets.QCheckBox("Fill holes")
         self.clearBorderCheck = QtWidgets.QCheckBox("Clear border")
-        self.previewCheck = QtWidgets.QCheckBox("Preview")
+        # A button, not a checkbox. Segmentation over a large frame is not
+        # cheap, and a checkbox meant every spinbox nudge queued another run --
+        # so a value was hard to type without the panel recomputing under it.
+        # A click is the whole trigger now.
+        self.previewButton = QtWidgets.QPushButton("Preview")
+        self.previewButton.setToolTip(
+            "Segment the active layer with these settings and show the result. "
+            "Nothing recomputes until this is pressed again."
+        )
+        self.previewClearButton = QtWidgets.QPushButton("Hide preview")
         self.previewModeCombo = QtWidgets.QComboBox()
         self.previewModeCombo.addItems(["Segmentation labels", "Binarization mask"])
+
+        # Segment inside a region only. The threshold is what makes this worth
+        # having: computed over the ROI's pixels rather than the whole frame,
+        # so a bright structure elsewhere cannot set the level for the region
+        # actually being looked at.
+        self.roiCombo = QtWidgets.QComboBox()
+        self.roiCombo.setToolTip(
+            "Segment only inside an ROI from the ROI manager. The threshold is "
+            "computed from that region's pixels alone."
+        )
+        self.roiModeCombo = QtWidgets.QComboBox()
+        self.roiModeCombo.addItem("Mask outside the region", "mask")
+        self.roiModeCombo.addItem("Crop to the region", "crop")
+        self.roiModeCombo.setToolTip(
+            "Mask keeps the whole frame so the labels stay aligned with the "
+            "input; Crop puts the region on its own smaller grid."
+        )
 
         self.localBlockSpin = QtWidgets.QSpinBox()
         self.localBlockSpin.setRange(3, 9999)
@@ -93,6 +117,25 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.exportCsvButton.setToolTip("Export the last segmentation region table as CSV")
         self.exportJsonButton = QtWidgets.QPushButton("Export JSON")
         self.exportJsonButton.setToolTip("Export the last segmentation labels and region table as JSON")
+        # What the threshold actually did to the data. A number in a label
+        # says where the level landed; the histogram says whether it landed
+        # between two populations or through the middle of one.
+        self.histogramPlot = pg.PlotWidget()
+        self.histogramPlot.setMaximumHeight(140)
+        self.histogramPlot.showGrid(x=True, y=True, alpha=0.2)
+        self.histogramPlot.setLabel("bottom", "Intensity")
+        self.histogramPlot.setLabel("left", "Count")
+        self.histogramPlot.setToolTip(
+            "Intensity histogram of the pixels the preview considered, with "
+            "the threshold it found"
+        )
+        self._thresholdLine = None
+        #: Where the last preview cut, so the histogram marker and the summary
+        #: line cannot describe different numbers.
+        self._last_preview_threshold = None
+        #: Pixel offset of the previewed window within the full frame.
+        self._preview_offset = (0, 0)
+
         self.summaryLabel = QtWidgets.QLabel("Run segmentation on the active image layer.")
         self.summaryLabel.setWordWrap(True)
         self.summaryLabel.setStyleSheet("color:#888; font-size:8pt;")
@@ -110,11 +153,14 @@ class SegmentationWidget(QtWidgets.QWidget):
         form.addRow("Local offset", self.localOffsetSpin)
         form.addRow("Watershed distance", self.watershedDistanceSpin)
         form.addRow("ROI prefix", self.prefixEdit)
-        form.addRow("", self.previewCheck)
+        form.addRow("Region", self.roiCombo)
+        form.addRow("", self.roiModeCombo)
         form.addRow("Preview mode", self.previewModeCombo)
 
         controls = QtWidgets.QHBoxLayout()
         controls.addLayout(form)
+        controls.addWidget(self.previewButton)
+        controls.addWidget(self.previewClearButton)
         controls.addWidget(self.runButton)
         controls.addWidget(self.addRoisButton)
         controls.addWidget(self.exportCsvButton)
@@ -124,6 +170,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addLayout(controls)
+        layout.addWidget(self.histogramPlot)
         layout.addWidget(self.summaryLabel)
         self.setLayout(layout)
 
@@ -132,22 +179,15 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.exportCsvButton.clicked.connect(self.export_csv)
         self.exportJsonButton.clicked.connect(self.export_json)
         self.methodCombo.currentTextChanged.connect(self._update_manual_enabled)
-        self.previewCheck.toggled.connect(self._on_preview_toggled)
-        
-        self.methodCombo.currentTextChanged.connect(self._schedule_preview)
-        self.thresholdSpin.valueChanged.connect(self._schedule_preview)
-        self.minAreaSpin.valueChanged.connect(self._schedule_preview)
-        self.smoothSpin.valueChanged.connect(self._schedule_preview)
-        self.backgroundSpin.valueChanged.connect(self._schedule_preview)
-        self.morphologySpin.valueChanged.connect(self._schedule_preview)
-        self.fillHolesCheck.toggled.connect(self._schedule_preview)
-        self.clearBorderCheck.toggled.connect(self._schedule_preview)
-        self.localBlockSpin.valueChanged.connect(self._schedule_preview)
-        self.localOffsetSpin.valueChanged.connect(self._schedule_preview)
-        self.watershedDistanceSpin.valueChanged.connect(self._schedule_preview)
-        self.previewModeCombo.currentTextChanged.connect(self._schedule_preview)
-        
+        self.previewButton.clicked.connect(self._update_preview)
+        self.previewClearButton.clicked.connect(self._hide_preview)
+
         self._update_manual_enabled()
+        self.refreshROIChoices()
+        # Connected for the panel's lifetime rather than while a checkbox is
+        # ticked: their job now is to drop a preview that no longer matches the
+        # view, which matters whenever one is on screen.
+        self._connect_viewer_events()
 
     def run(self) -> None:
         """Commit button: segment the current result and emit sigRunRequested.
@@ -169,6 +209,9 @@ class SegmentationWidget(QtWidgets.QWidget):
         from imswitch.improcess.processors.segmentation.result import SegmentationResult
         
         self._currentResult = result
+        self.refreshROIChoices()
+        # A preview computed against the previous result describes that one.
+        self._invalidate_preview()
         # Enable/disable Segment button based on whether result has image data
         has_image = result is not None and hasattr(result, 'data') and result.data is not None
         self.runButton.setEnabled(has_image)
@@ -193,7 +236,10 @@ class SegmentationWidget(QtWidgets.QWidget):
         morphology_radius/...), otherwise the processor silently falls back to
         its defaults and the panel's controls are ignored on commit.
         """
-        return {
+        from imswitch.improcess.analysis.roi_restriction import ROI_PARAM
+
+        restriction = self._restriction()
+        params = {
             "threshold_method": self.methodCombo.currentText(),
             "threshold_value": self.thresholdSpin.value(),
             "min_area": self.minAreaSpin.value(),
@@ -206,6 +252,9 @@ class SegmentationWidget(QtWidgets.QWidget):
             "local_offset": self.localOffsetSpin.value(),
             "watershed_min_distance": self.watershedDistanceSpin.value(),
         }
+        if restriction is not None:
+            params[ROI_PARAM] = restriction
+        return params
 
     def setRoiManagerWidget(self, roiManagerWidget) -> None:
         """Wire (or rewire) the ROI Manager dependency at runtime.
@@ -214,6 +263,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         up so 'Push to ROI manager' starts working without restarting the app.
         """
         self._roiManagerWidget = roiManagerWidget
+        self.refreshROIChoices()
 
     def add_rois_to_manager(self) -> None:
         if self._last_analysis is None:
@@ -283,18 +333,164 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.localOffsetSpin.setEnabled(is_local)
         self.watershedDistanceSpin.setEnabled(method == "watershed")
 
-    def _schedule_preview(self) -> None:
-        if self.previewCheck.isChecked():
-            self._preview_timer.start()
+    # -- segmenting inside a region --------------------------------------
 
-    def _on_preview_toggled(self, checked: bool) -> None:
-        if checked:
-            self._connect_viewer_events()
-            self._update_preview()
-        else:
-            self._disconnect_viewer_events()
-            self._preview_timer.stop()
-            self._remove_preview_layer()
+    def refreshROIChoices(self) -> None:
+        """Re-offer the ROI manager's visible ROIs with an extent."""
+        from imswitch.imcommon.algorithms.roi_geometry import roi_capabilities
+
+        rois = []
+        panel = self._roiManagerWidget
+        if panel is not None:
+            try:
+                rois = [
+                    roi for roi in panel.rois()
+                    if roi.visible and roi_capabilities(roi.roi_type).is_area
+                ]
+            except Exception:
+                rois = []
+        self._rois = rois
+
+        current = self.roiCombo.currentData()
+        self.roiCombo.blockSignals(True)
+        self.roiCombo.clear()
+        self.roiCombo.addItem("Whole image", None)
+        for roi in rois:
+            self.roiCombo.addItem(f"{roi.name} ({roi.roi_type})", roi.uid)
+        if current is not None:
+            self.roiCombo.setCurrentIndex(max(0, self.roiCombo.findData(current)))
+        self.roiCombo.blockSignals(False)
+        self.roiCombo.setEnabled(bool(rois))
+        self.roiModeCombo.setEnabled(bool(rois))
+
+    def selectedROIs(self) -> list:
+        uid = self.roiCombo.currentData()
+        if uid is None:
+            return []
+        return [roi for roi in self._rois if roi.uid == uid]
+
+    def _restriction(self):
+        """The P-R restriction this panel is asking for, or None.
+
+        The same object the generic processor panel builds, so the commit path
+        applies it through the machinery that already records which ROI set
+        produced a result -- rather than this panel inventing a second way to
+        crop.
+        """
+        from imswitch.improcess.analysis.roi_restriction import ROIRestriction
+
+        rois = self.selectedROIs()
+        if not rois:
+            return None
+        panel = self._roiManagerWidget
+        active = getattr(panel, "active_set", None)
+        active = active() if callable(active) else None
+        return ROIRestriction(
+            rois=tuple(rois),
+            mode=str(self.roiModeCombo.currentData() or "mask"),
+            set_uid=str(getattr(active, "uid", "")),
+            set_name=str(getattr(active, "name", "")),
+            set_revision=int(getattr(active, "revision", 0) or 0),
+        )
+
+    def _restrict_preview_image(self, image):
+        """``(image_to_segment, mask_of_pixels_considered)``.
+
+        Masked-out pixels become NaN rather than zero. The thresholders ignore
+        non-finite values, so the level is computed from the region's own
+        pixels -- which is the point of restricting at all. Zeros would instead
+        add a large dark population and drag every automatic threshold down.
+        """
+        import numpy as np
+
+        self._preview_offset = (0, 0)
+        rois = self.selectedROIs()
+        if not rois:
+            return image, None
+        from imswitch.imcommon.algorithms.roi_geometry import roi_mask
+
+        mask = np.zeros(image.shape, dtype=bool)
+        for roi in rois:
+            mask |= roi_mask(roi, image.shape)
+        if not mask.any():
+            return image, None
+        if str(self.roiModeCombo.currentData() or "mask") == "crop":
+            rows = np.flatnonzero(mask.any(axis=1))
+            cols = np.flatnonzero(mask.any(axis=0))
+            window = (slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1))
+            # Where the crop sits in the full frame. The preview overlay is a
+            # smaller array than the image it describes, so without this it
+            # would be drawn at the origin -- labels for one part of the frame
+            # sitting over another.
+            self._preview_offset = (int(rows[0]), int(cols[0]))
+            return np.asarray(image[window], dtype=float), mask[window]
+        restricted = np.asarray(image, dtype=float).copy()
+        restricted[~mask] = np.nan
+        return restricted, mask
+
+    def _preview_translate(self, layer) -> list[float]:
+        """Where to draw the preview, in world units.
+
+        Zero unless the preview was cropped to a region, in which case the
+        overlay covers only part of the frame and has to be placed where that
+        part actually is.
+        """
+        offset = getattr(self, "_preview_offset", (0, 0))
+        scale = self._spatial_layer_scale(layer)
+        return [float(offset[0]) * scale[0], float(offset[1]) * scale[1]]
+
+    # -- the intensity histogram ------------------------------------------
+
+    def _update_histogram(self, image, threshold) -> None:
+        """Counts of the pixels the preview considered, and where it cut.
+
+        The pixels *considered*, not the whole frame: with a region selected
+        those differ, and a histogram of everything would not explain the
+        threshold that was chosen.
+        """
+        import numpy as np
+
+        self.histogramPlot.clear()
+        self._thresholdLine = None
+        values = np.asarray(image, dtype=float).ravel()
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return
+        counts, edges = np.histogram(values, bins=min(256, max(16, values.size // 32)))
+        # stepMode draws the bars against bin *edges*, so the plot shows where
+        # each count actually sits rather than at a bin's midpoint.
+        self.histogramPlot.plot(
+            edges, counts, stepMode=True, fillLevel=0,
+            brush=(120, 120, 120, 150), pen=pg.mkPen("#888"),
+        )
+        if threshold is not None and np.isfinite(threshold):
+            self._thresholdLine = pg.InfiniteLine(
+                pos=float(threshold), angle=90,
+                pen=pg.mkPen("#ff5555", width=2),
+                label=f"{float(threshold):.4g}",
+                labelOpts={"position": 0.9, "color": "#ff5555"},
+            )
+            self.histogramPlot.addItem(self._thresholdLine)
+
+    def _hide_preview(self) -> None:
+        self._remove_preview_layer()
+        self.histogramPlot.clear()
+        self._thresholdLine = None
+
+    def _invalidate_preview(self) -> None:
+        """Drop a preview that no longer describes what is on screen.
+
+        Only a click recomputes, but a preview left lying over a different
+        slice or a different layer is not merely stale -- it is a labelling of
+        one image drawn on top of another. Removing it and saying so is the
+        only honest option that still leaves recomputation to the user.
+        """
+        if not self._has_preview_layer():
+            return
+        self._hide_preview()
+        self.summaryLabel.setText(
+            "Preview cleared: the view changed. Press Preview to run it here."
+        )
 
     def _update_preview(self) -> None:
         layer = self._active_image_layer()
@@ -304,6 +500,7 @@ class SegmentationWidget(QtWidgets.QWidget):
             return
         try:
             method = self.methodCombo.currentText()
+            image, considered = self._restrict_preview_image(image)
             analysis = segment_image(
                 image,
                 threshold_method=method,
@@ -317,6 +514,11 @@ class SegmentationWidget(QtWidgets.QWidget):
                 local_block_size=self.localBlockSpin.value(),
                 local_offset=self.localOffsetSpin.value(),
                 watershed_min_distance=self.watershedDistanceSpin.value(),
+            )
+            self._last_preview_threshold = float(analysis.threshold)
+            self._update_histogram(
+                image if considered is None else np.where(considered, image, np.nan),
+                analysis.threshold,
             )
             preview_mode = self._preview_mode()
             preview_name = self._current_preview_layer_name(preview_mode)
@@ -341,6 +543,7 @@ class SegmentationWidget(QtWidgets.QWidget):
                         preview_data,
                         name=preview_name,
                         scale=self._spatial_layer_scale(layer),
+                        translate=self._preview_translate(layer),
                         opacity=0.45,
                         colormap="green",
                         blending="translucent",
@@ -351,6 +554,7 @@ class SegmentationWidget(QtWidgets.QWidget):
                         preview_data,
                         name=preview_name,
                         scale=self._spatial_layer_scale(layer),
+                        translate=self._preview_translate(layer),
                         opacity=0.5,
                         metadata=preview_metadata,
                     )
@@ -362,6 +566,10 @@ class SegmentationWidget(QtWidgets.QWidget):
             else:
                 preview_layer.data = preview_data
                 preview_layer.scale = self._spatial_layer_scale(layer)
+                try:
+                    preview_layer.translate = self._preview_translate(layer)
+                except Exception:
+                    pass
                 try:
                     preview_layer.metadata = preview_metadata
                 except Exception:
@@ -382,14 +590,14 @@ class SegmentationWidget(QtWidgets.QWidget):
         try:
             if self._dims_connection is None:
                 self._dims_connection = self._viewer.dims.events.current_step.connect(
-                    lambda _: self._schedule_preview()
+                    lambda _: self._invalidate_preview()
                 )
         except Exception:
             pass
         try:
             if self._layer_selection_connection is None:
                 self._layer_selection_connection = self._viewer.layers.selection.events.active.connect(
-                    lambda _: self._schedule_preview()
+                    lambda _: self._invalidate_preview()
                 )
         except Exception:
             pass
@@ -439,6 +647,9 @@ class SegmentationWidget(QtWidgets.QWidget):
         except Exception:
             pass
         return None
+
+    def _has_preview_layer(self) -> bool:
+        return self._get_preview_layer() is not None
 
     def _remove_preview_layer(self) -> None:
         try:

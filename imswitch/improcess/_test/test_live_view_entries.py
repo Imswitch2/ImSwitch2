@@ -109,6 +109,9 @@ def _controller():
     stub._logger = MagicMock()
     stub.fullUpdate = lambda **kwargs: None
     stub._advanceLiveTimeSlider = lambda: None
+    # resultProduced notifies the channel that the set of loaded results
+    # changed; the entry-naming behaviour under test does not depend on it.
+    stub._resultsChanged = lambda: None
     stub._liveItemIsAlive = ReconstructionViewController._liveItemIsAlive.__get__(stub)
     # Bound under its real name too: liveTimepointUpdated schedules it by name.
     stub._renderPendingLiveResult = (

@@ -109,7 +109,9 @@ class MonalisaReconstructor(StreamingReconstructor):
         self._logger.info(f'Pattern found: row_offset={row_offset:.2f}, col_offset={col_offset:.2f}, '
                          f'row_period={row_period:.2f}, col_period={col_period:.2f}')
     
-    def process(self, data_obj: 'DataObj', params: dict) -> MonalisaProcessingResult:
+    def process(
+        self, data_obj: 'DataObj', params: dict, context=None
+    ) -> MonalisaProcessingResult:
         """
         Reconstruct MoNaLISA SIM data.
         
@@ -143,6 +145,23 @@ class MonalisaReconstructor(StreamingReconstructor):
         finally:
             if not preloaded:
                 data_obj.checkAndUnloadData()
+
+        recorded_linesteps = MonalisaLiveSession._coerce_positive_int(
+            data_attrs.get('ScanTTL:n_linesteps')
+        )
+        if recorded_linesteps is not None:
+            # Recorded metadata is authoritative for frame order. Keep the
+            # existing result contract by folding conditions into its T axis.
+            scan_params = copy.deepcopy(scan_params)
+            scan_params['n_linesteps'] = recorded_linesteps
+            try:
+                spatial_frames = int(np.prod(
+                    np.asarray(scan_params['steps'][:3], dtype=int)
+                ))
+                if spatial_frames > 0 and data.shape[0] % spatial_frames == 0:
+                    scan_params['steps'][3] = str(data.shape[0] // spatial_frames)
+            except (KeyError, TypeError, ValueError):
+                pass
         
         # Validate data shape
         if data.ndim != 3:
@@ -314,7 +333,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         are not the two scan axes.
         """
         geometry = self._fast_gauss_geometry_from_scan_params(scan_params)
-        frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+        frames_per_stack = geometry['frames_per_stack']
         expected_frames = frames_per_stack * geometry['num_timepoints']
         if data.shape[0] != expected_frames:
             metadata_geometry = self._fast_gauss_geometry_from_attrs(
@@ -327,7 +346,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                     f'{geometry["num_timepoints"]} timepoints), got {data.shape[0]}'
                 )
             geometry = metadata_geometry
-            frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+            frames_per_stack = geometry['frames_per_stack']
 
         session = self.make_session()
         try:
@@ -432,6 +451,15 @@ class MonalisaReconstructor(StreamingReconstructor):
         nx_s = steps[x_index]
         ny_s = steps[y_index]
         num_timepoints = steps[time_index]
+        num_linesteps = int(scan_params.get('n_linesteps', 1))
+        if num_linesteps < 1:
+            raise ValueError('Fast Gauss MoNaLISA n_linesteps must be at least 1')
+        if num_timepoints % num_linesteps != 0:
+            raise ValueError(
+                'Fast Gauss MoNaLISA time/condition steps must be divisible by '
+                f'n_linesteps ({num_timepoints} vs {num_linesteps})'
+            )
+        num_timepoints //= num_linesteps
         step_x_nm = step_sizes[x_index]
         step_y_nm = step_sizes[y_index]
         normalized_dimensions = list(dimensions)
@@ -441,6 +469,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         normalized_dimensions[time_index] = time_label
         normalized_scan_params = dict(scan_params)
         normalized_scan_params['dimensions'] = normalized_dimensions
+        normalized_scan_params['n_linesteps'] = num_linesteps
         attrs = {
             'ScanStage:axis_startpos': [0.0, 0.0, 0.0],
             'ScanStage:axis_length': [
@@ -450,12 +479,16 @@ class MonalisaReconstructor(StreamingReconstructor):
             ],
             'ScanStage:axis_step_size': [step_x_nm, step_y_nm, 1.0],
             'ScanStage:axis_step_size_unit': 'nm',
+            'ScanTTL:n_linesteps': num_linesteps,
+            'recording:frames_per_stack': nx_s * ny_s * num_linesteps,
             'recording:num_timepoints': num_timepoints,
         }
         return {
             'attrs': attrs,
             'nx_s': nx_s,
             'ny_s': ny_s,
+            'n_linesteps': num_linesteps,
+            'frames_per_stack': nx_s * ny_s * num_linesteps,
             'num_timepoints': num_timepoints,
             'step_x_nm': step_x_nm,
             'step_y_nm': step_y_nm,
@@ -505,15 +538,19 @@ class MonalisaReconstructor(StreamingReconstructor):
             frame_hint = session._coerce_positive_int(
                 attrs.get('recording:frames_per_stack')
             )
+            num_linesteps = (
+                session._coerce_positive_int(attrs.get('ScanTTL:n_linesteps'))
+                or 1
+            )
             if frame_hint is not None:
                 for nx_s, ny_s in unique_candidates:
-                    if nx_s * ny_s == frame_hint:
+                    if nx_s * ny_s * num_linesteps == frame_hint:
                         return self._fast_gauss_geometry_from_counts(
                             attrs, nx_s, ny_s, num_frames
                         )
 
             for nx_s, ny_s in unique_candidates:
-                frames_per_stack = nx_s * ny_s
+                frames_per_stack = nx_s * ny_s * num_linesteps
                 if frames_per_stack > 0 and num_frames % frames_per_stack == 0:
                     return self._fast_gauss_geometry_from_counts(
                         attrs, nx_s, ny_s, num_frames
@@ -530,7 +567,13 @@ class MonalisaReconstructor(StreamingReconstructor):
         ny_s: int,
         num_frames: int,
     ) -> dict | None:
-        frames_per_stack = nx_s * ny_s
+        num_linesteps = (
+            MonalisaLiveSession._coerce_positive_int(
+                attrs.get('ScanTTL:n_linesteps')
+            )
+            or 1
+        )
+        frames_per_stack = nx_s * ny_s * num_linesteps
         if frames_per_stack <= 0 or num_frames % frames_per_stack != 0:
             return None
 
@@ -541,6 +584,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
 
         geometry_attrs = dict(attrs)
+        geometry_attrs['ScanTTL:n_linesteps'] = num_linesteps
         geometry_attrs['recording:frames_per_stack'] = frames_per_stack
         geometry_attrs['recording:num_timepoints'] = num_timepoints
 
@@ -552,14 +596,17 @@ class MonalisaReconstructor(StreamingReconstructor):
                 self._axis_labels['timepoints_text'],
             ],
             'directions': ['+', '+', '+', '+'],
-            'steps': [nx_s, ny_s, 1, num_timepoints],
+            'steps': [nx_s, ny_s, 1, num_timepoints * num_linesteps],
             'step_sizes': [step_x_nm, step_y_nm, 1.0, 1.0],
+            'n_linesteps': num_linesteps,
             'unidirectional': False,
         }
         return {
             'attrs': geometry_attrs,
             'nx_s': nx_s,
             'ny_s': ny_s,
+            'n_linesteps': num_linesteps,
+            'frames_per_stack': frames_per_stack,
             'num_timepoints': num_timepoints,
             'step_x_nm': step_x_nm,
             'step_y_nm': step_y_nm,

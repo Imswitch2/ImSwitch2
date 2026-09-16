@@ -10,16 +10,16 @@ Graphical user interface
    so this page stays in sync with the actual UI.  See
    :doc:`how-to/auto-screenshots`.
 
-.. image:: ./images/auto/main-window.png
-   :alt: Imswitch2 main window
+.. image:: ./images/auto/mock-main-window.png
+   :alt: Imswitch2 main window with a mock setup loaded
    :align: center
 
 The Imswitch2 GUI is divided into different modules to make it
-intuitive to explore for both users and developers.
-
-.. image:: ./images/auto/main-window-annotated.png
-   :alt: Annotated Imswitch2 main window
-   :align: center
+intuitive to explore for both users and developers.  The capture above
+is the hardware-control module with a mock setup loaded (``python
+tools/screenshot_widgets.py --mock-setup``): detector settings, acquisition
+selection and recording on the left, the napari image display in the
+middle, positioners and viewer tools along the bottom.
 
 
 Keyboard shortcuts
@@ -362,9 +362,10 @@ each pixel's dwell time:
   locked devices follow it, instead of retyping the same windows.
 * **Power Level (%)** — a per-step power for lasers that have an analog
   channel, held constant across each pass.
-* **Intra-pixel positioners movement** — per-step positioner offsets in µm
-  (**Step(s) (um, comma-separated)**), for moving a stage or galvo within the
-  pixel rather than only gating light.
+* **Intra-pixel positioners movement** — reserved positioner timing/offset
+  metadata. The current built-in scan designers save and restore these fields
+  but do not apply them to a stage or galvo waveform; do not rely on this
+  control for hardware movement.
 
 **Dwell time (ms)** is the time spent per pixel; the widget shows the resulting
 **Dead time** so you can see how much of each pixel is not being used.
@@ -376,6 +377,10 @@ With point detectors, a line-step scan produces one frame per scan holding all
 steps: ``APDManager`` keeps them as separate channels (saved as
 ``(T, C, Y, X)``, one channel per step), while ``PMTManager`` sums them into a
 single image — see :doc:`devices/detectors`.
+
+See :doc:`advanced-scanning` for the exact pixel-count convention, Sequence
+Builder timing semantics, galvo setup requirements, scan-size guards and the
+Advanced Scan + Recording workflow.
 
 
 Alignment tools

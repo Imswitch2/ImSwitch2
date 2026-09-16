@@ -29,15 +29,26 @@ class GalvoScanDesigner(ScanDesigner):
 
     def checkSignalComp(self, scanParameters, setupInfo, scanInfo):
         """ Check analog scanning signals so that they are inside the range of
-        the acceptable scanner voltages."""
-        for i in range(len(scanParameters['target_device'])):
-            if scanParameters['target_device'][i] != 'None' and "Mock" not in scanParameters['target_device'][i]:
-                if pixels_for_length_step(scanParameters['axis_length'][i], scanParameters['axis_step_size'][i]) > 1:
-                    positioner = setupInfo.positioners[scanParameters['target_device'][i]]
-                    minv = positioner.managerProperties['minVolt']
-                    maxv = positioner.managerProperties['maxVolt']
-                    if (scanInfo['minmaxes'][i][0] < minv or scanInfo['minmaxes'][i][1] > maxv):
-                        return False
+        the acceptable scanner voltages.
+
+        Every emitted waveform is checked. ``scanInfo['axis_names']`` lists
+        the active axes in signal order, aligned with
+        ``scanInfo['minmaxes']``; the previous version indexed ``minmaxes``
+        with the unfiltered ``target_device`` order, which misaligns as soon
+        as a configured axis collapses to one step (inactive axes are
+        filtered out of the signals but stayed in the indexing).
+        """
+        for name, (mn, mx) in zip(scanInfo.get('axis_names', []),
+                                  scanInfo.get('minmaxes', [])):
+            if name == 'None' or 'Mock' in name:
+                continue
+            props = setupInfo.positioners[name].managerProperties
+            minv = props.get('minVolt')
+            maxv = props.get('maxVolt')
+            if minv is not None and mn < minv:
+                return False
+            if maxv is not None and mx > maxv:
+                return False
         return True
 
     def checkSignalLength(self, scanParameters, setupInfo):
@@ -156,7 +167,10 @@ class GalvoScanDesigner(ScanDesigner):
         # get list of number of axis scan samples, for first two axes initially
         n_scan_samples_dx = [int(round(parameterDict['sequence_time'] * 1e6 / self.__timestep))]
         n_scan_samples_dx.append(int(round(n_steps_dx[0] * parameterDict['sequence_time'] * 1e6 / self.__timestep)))
-        pixel_sizes = [parameterDict['axis_step_size'][i] for i in range(axis_count_scan)]
+        # Per ACTIVE axis, in signal order -- indexing the unfiltered
+        # parameterDict here reported the wrong step sizes whenever a
+        # configured axis collapsed to one step (see sig_dict below).
+        pixel_sizes = [parameterDict['axis_step_size'][i] for i in active]
 
         # get list of d1 positions for each active axis
         # (must match n_steps_dx / img_dims -- previously this used ceil while
@@ -221,8 +235,12 @@ class GalvoScanDesigner(ScanDesigner):
         # pad all signals with zeros, for initial and final settling of galvos and safety start and end
         axis_signals, pad_max = self.__zero_padding(pos, padlen_base=[int(round(self.__paddingtime_full / self.__timestep)),int(round(self.__paddingtime_full / self.__timestep))])
 
-        # add all signals to a signal dictionary
-        sig_dict = {parameterDict['target_device'][i]: axis_signals[i] for i in range(axis_count_scan)}
+        # add all signals to a signal dictionary, keyed by the ACTIVE axes in
+        # signal order. Indexing the unfiltered target_device list routed
+        # waveforms to the wrong devices whenever a configured axis collapsed
+        # to one step (e.g. d1 with 1 step + active d2/d3: d2's waveform was
+        # keyed under d1's device name and driven onto d1's AO channel).
+        sig_dict = {self.axis_devs_order[i]: axis_signals[i] for i in range(axis_count_scan)}
 
         # create scan information dictionary via ScanInfoContract
         tot_scan_time = n_scan_samples_dx[-1] * self.__timestep * 1e-6

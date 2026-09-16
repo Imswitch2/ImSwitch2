@@ -17,6 +17,13 @@ from imswitch.improcess.processors._axis_split import (
     shape_for_result,
 )
 from imswitch.improcess.processors.base import Processor
+from imswitch.improcess.processors.combine import combine_compatibility
+
+#: Axis label of the channel axis this processor creates.
+CHANNEL_AXIS_LABEL = "C"
+#: Labels that already mean "channel"; a result carrying one wants Make
+#: composite, not a merge.
+_CHANNEL_LIKE_LABELS = ("C", "Channel", "Channels", "Base")
 
 
 class ChannelMergeProcessor(Processor):
@@ -25,17 +32,26 @@ class ChannelMergeProcessor(Processor):
     name = "Merge channels"
     id = "channel-merge"
     category = "Dimensions and channels"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
+    min_inputs = 2
+    max_inputs = None
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2
+
+    def check_inputs(self, results) -> tuple[bool, str]:
+        return merge_compatibility(results)
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget(parent)
         layout = QtWidgets.QVBoxLayout(widget)
         layout.addWidget(
             QtWidgets.QLabel(
-                "Merge channels uses the selected reconstruction-list results."
+                "Merges the checked inputs into one C-axis channel stack, in "
+                "the order listed."
             )
         )
         layout.addStretch()
@@ -53,7 +69,7 @@ class ChannelMergeProcessor(Processor):
         return merge_results(
             results,
             name=params.get("name") or "Merged channels",
-            axis_label=str(params.get("axis_label", "C")),
+            axis_label=str(params.get("axis_label", CHANNEL_AXIS_LABEL)),
         )
 
 
@@ -65,24 +81,15 @@ def merge_results(
 ) -> ArrayProcessingResult:
     """Merge same-shaped image results into one leading-channel stack."""
     results = list(results or [])
-    if len(results) < 2:
-        raise ValueError("Merging channels requires at least two results")
+    ok, reason = merge_compatibility(results, axis_label=axis_label)
+    if not ok:
+        raise ValueError(reason)
 
     first = results[0]
-    shape = shape_for_result(first)
     labels = axis_labels_for_result(first)
     scales = axis_scales_for_result(first)
-    arrays = []
-    source_names = []
-    for result in results:
-        if shape_for_result(result) != shape:
-            raise ValueError("All channel-merge inputs must have the same shape")
-        if axis_labels_for_result(result) != labels:
-            raise ValueError("All channel-merge inputs must have the same axis labels")
-        if not _scales_close(axis_scales_for_result(result), scales):
-            raise ValueError("All channel-merge inputs must have the same axis scales")
-        arrays.append(np.asarray(result.data))
-        source_names.append(getattr(result, "name", "result"))
+    arrays = [np.asarray(result.data) for result in results]
+    source_names = [getattr(result, "name", "result") for result in results]
 
     data = np.stack(arrays, axis=0)
     output_labels = [axis_label, *labels]
@@ -103,34 +110,66 @@ def merge_results(
     )
 
 
-def can_merge_results(results: Sequence[ProcessingResult]) -> bool:
-    """Return True when results can be merged without reading pixel data."""
+def merge_compatibility(
+    results: Sequence[ProcessingResult],
+    *,
+    axis_label: str = CHANNEL_AXIS_LABEL,
+) -> tuple[bool, str]:
+    """Return ``(ok, reason)`` for merging ``results`` into a channel stack.
+
+    A channel merge is a stack along a new ``C`` axis, so the metadata rules
+    are exactly Stack/Combine's and are shared with it rather than restated:
+    same shape, same axis labels, same pixel scales and the same scale unit.
+    Inputs that already carry a ``C`` axis are rejected here — a second one
+    would give the output two identically-labelled axes, and every
+    label-driven axis lookup downstream takes the first match. Metadata-only:
+    lazy inputs are never materialized.
+    """
     results = list(results or [])
     if len(results) < 2:
-        return False
-    try:
-        shape = shape_for_result(results[0])
-        labels = axis_labels_for_result(results[0])
-        scales = axis_scales_for_result(results[0])
-        return all(
-            shape_for_result(result) == shape
-            and axis_labels_for_result(result) == labels
-            and _scales_close(axis_scales_for_result(result), scales)
-            for result in results[1:]
-        )
-    except Exception:
-        return False
+        return False, _too_few_inputs_reason(results)
+    return combine_compatibility(results, mode="stack", new_axis_label=axis_label)
 
 
-def _scales_close(scales: Sequence[float], other: Sequence[float]) -> bool:
-    """Compare axis scales with float tolerance instead of exact equality.
+def _too_few_inputs_reason(results: Sequence[ProcessingResult]) -> str:
+    """Explain a one-input merge, and where the second channel comes from.
 
-    Two independently-produced results with the same nominal pixel size can
-    differ by floating-point noise; that shouldn't block a merge.
+    One selected stack is the common dead end: its planes are images too, but
+    a merge takes whole results, and expanding every plane of a long time
+    series into the picker would make it unusable. Name the operation that
+    does turn those planes into inputs instead of leaving the user at
+    "select two".
     """
-    if len(scales) != len(other):
-        return False
-    return bool(np.allclose(scales, other, rtol=1e-5, atol=1e-8))
+    base = "Select at least two results to merge into channels"
+    if len(results) != 1:
+        return base
+    try:
+        labels = axis_labels_for_result(results[0])
+    except Exception:
+        return base
+    if len(labels) < 3:
+        return base
+    name = getattr(results[0], "name", "the selected result")
+    if any(label in _CHANNEL_LIKE_LABELS for label in labels[:-2]):
+        return (
+            f"{base} — '{name}' already has a channel axis; use Make composite "
+            f"to colour its channels"
+        )
+    return (
+        f"{base} — '{name}' is one stack; use Split stack first to get one "
+        f"result per plane"
+    )
 
 
-__all__ = ["ChannelMergeProcessor", "can_merge_results", "merge_results"]
+def can_merge_results(results: Sequence[ProcessingResult]) -> bool:
+    """Return True when results can be merged without reading pixel data."""
+    return merge_compatibility(results)[0]
+
+
+__all__ = [
+    "CHANNEL_AXIS_LABEL",
+    "ChannelMergeProcessor",
+    "can_merge_results",
+    "merge_compatibility",
+    "merge_results",
+]

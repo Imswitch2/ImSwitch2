@@ -47,10 +47,27 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._commChannel.sigLiveTimepointUpdated.connect(self.liveTimepointUpdated)
         self._commChannel.sigSaveLiveResult.connect(self.saveLiveResult)
         self._commChannel.sigLiveTimepointDone.connect(self._onLiveTimepointDone)
+        # Results that have ever arrived as a live update. Their pixels can be
+        # rewritten between render passes, so they never get a mutation token
+        # and nothing downstream caches a measurement of them.
+        self._liveResultUids: set = set()
+        # The list widget owns the loaded results; registering here is what
+        # lets any panel enumerate them through the channel instead of
+        # reaching for this controller.
+        self._commChannel.setResultProvider(self)
 
         self._widget.sigItemSelected.connect(self.listItemChanged)
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
         self._widget.sigViewChanged.connect(lambda: self.fullUpdate(levels=None))
+        if hasattr(self._widget, "sigSelectionChanged"):
+            self._widget.sigSelectionChanged.connect(self._resultsChanged)
+        if hasattr(self._widget, "sigResultsRemoved"):
+            self._widget.sigResultsRemoved.connect(self._resultsChanged)
+        # The render-controls panel emits intent; the renderer lives here.
+        self._commChannel.sigSmlmRenderSettingsChanged.connect(
+            self.applyNapariStormSettings)
+        self._commChannel.sigSmlmRenderAppearanceChanged.connect(
+            self.applyNapariStormAppearance)
 
     def getActiveResult(self):
         return self._widget.getCurrentItemData()
@@ -65,6 +82,65 @@ class ReconstructionViewController(ImProcessWidgetController):
         if current is None:
             return []
         return [(getattr(current, "name", "result"), current)]
+
+    def _resultsChanged(self) -> None:
+        """Announce that the loaded set or the selection moved."""
+        self._retainNapariStormDatasets()
+        self._commChannel.sigResultsChanged.emit()
+
+    def applyNapariStormSettings(self, result, overrides, renderRange) -> None:
+        """Redraw a point cloud with new Gaussian settings and render range."""
+        display = self._napariStormDisplay()
+        if display is None:
+            return
+        display.apply_settings(result, overrides=overrides, render_range=renderRange)
+
+    def applyNapariStormAppearance(self, result, appearance) -> None:
+        """Recolour a point cloud, which rebuilds no geometry."""
+        display = self._napariStormDisplay()
+        if display is None:
+            return
+        display.set_appearance(result, **appearance)
+
+    def _napariStormDisplay(self):
+        """The point-cloud backend, if there is one and it can draw.
+
+        Two independent gates, either of which leaves localization results on
+        their built-in preview: the view only builds a display when the config
+        asks for it, and the display only reports itself importable when the
+        optional package is installed.
+        """
+        display = getattr(self._widget, "napariStormDisplay", None)
+        if display is None or not display.importable:
+            return None
+        return display
+
+    def _showWithNapariStorm(self, result) -> bool:
+        """Draw a localization result as a point cloud, if we can."""
+        if result_kind(result) != "localization":
+            # Anything else takes the ordinary path, so whatever the point
+            # cloud was showing must stop competing with it for the canvas.
+            display = self._napariStormDisplay()
+            if display is not None:
+                display.hide()
+            return False
+
+        display = self._napariStormDisplay()
+        if display is None:
+            return False
+        return display.show(result)
+
+    def _retainNapariStormDatasets(self) -> None:
+        """Close point clouds whose result has left the list."""
+        display = self._napariStormDisplay()
+        if display is None:
+            return
+        try:
+            results = [data for _name, data in self._widget.getAllItemDatas()]
+        except Exception as exc:
+            self._logger.debug("Could not enumerate results: %s", exc)
+            return
+        display.retain_only(results)
 
     def listItemChanged(self):
         currItem = self._widget.getCurrentItemData()
@@ -109,6 +185,14 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._setProcessingResultSlice(current, autoLevels=autoLevels, levels=levels)
 
     def _setProcessingResultSlice(self, result, autoLevels=False, levels=None):
+        if self._showWithNapariStorm(result):
+            # The point cloud is the display; the preview histogram it would
+            # otherwise fall back to would only sit behind it.
+            self._transposeOrder = []
+            self._displayedAxisLabels = []
+            self._widget.clearImage()
+            return
+
         # display_layers = list(DisplayLayerSpec_0, DisplayLayerSpec_1, ...)
         # DisplayLayerSpec_i(name=..., data=array(...))
         display_layers = result.display_layers() if hasattr(result, "display_layers") else []
@@ -119,7 +203,18 @@ class ReconstructionViewController(ImProcessWidgetController):
             # Display layers carry their own per-layer contrast and have no
             # shared sliced axis, so there is no "Base" axis to rescale against.
             self._displayedAxisLabels = list(display_layers[0].axis_labels)
-            self._widget.setDisplayLayers(display_layers)
+            first = display_layers[0]
+            self._widget.setDisplayLayers(
+                display_layers,
+                identity=self._resultIdentity(
+                    result,
+                    np.asarray(first.data),
+                    list(first.axis_labels),
+                    first.axis_scales,
+                    first.scale_unit,
+                    view_mode=None,
+                ),
+            )
             return
 
         if result_kind(result) in ("curve", "table"):
@@ -150,6 +245,10 @@ class ReconstructionViewController(ImProcessWidgetController):
             else "grayclip"
         )
         result_name = getattr(result, 'name', None)
+        identity = self._resultIdentity(
+            result, im, list(axisLabels), list(axisScales), result.scale_unit,
+            view_mode=mode.name,
+        )
         self._widget.setImage(
             im,
             axisLabels,
@@ -157,6 +256,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             result.scale_unit,
             colormap=colormap,
             name=result_name,
+            identity=identity,
         )
         # Re-activate the main layer so tools operate on the selected result.
         # (setDisplayLayers already does this; here we match that behavior for the setImage path.)
@@ -169,6 +269,58 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.setImageDisplayLevels(*levels)
         elif autoLevels:
             self.updateLevelsRange(base=None)
+
+    def _mutationToken(self, result) -> str | None:
+        """A token that changes whenever this layer's pixels can have changed.
+
+        Minted per render pass, which is exactly when the array behind the
+        layer is replaced — and *withheld* for live results, whose array can be
+        rewritten in place between passes. A token there would certify data
+        that had changed, so the honest answer is None: consumers that cache on
+        it simply do not cache.
+        """
+        uid = getattr(result, "result_uid", None)
+        # Read through __dict__: on a controller whose base __init__ has not
+        # run, plain getattr raises rather than falling back to the default.
+        if uid and uid in self.__dict__.get("_liveResultUids", ()):
+            return None
+        generation = self.__dict__.get("_renderGeneration", 0) + 1
+        self.__dict__["_renderGeneration"] = generation
+        return f"render:{uid or id(result)}:{generation}"
+
+    def _resultIdentity(self, result, data, axis_labels, axis_scales, scale_unit, *, view_mode):
+        """Spatial provenance for the layer about to be rendered.
+
+        Assembled here because this is the only place that knows all of it at
+        once: the result supplies the identities, the view mode decides which
+        two axes are on screen, and the transposed array supplies the sizes.
+        Anything measuring the layer later reads it back off the layer itself.
+        """
+        data = np.asarray(data)
+        labels = [str(label) for label in axis_labels]
+        scales = list(axis_scales or [1.0] * data.ndim)
+        axes = [
+            {
+                "label": labels[axis] if axis < len(labels) else str(axis),
+                "size": int(data.shape[axis]),
+                "scale": float(scales[axis]) if axis < len(scales) else 1.0,
+                "unit": scale_unit,
+            }
+            for axis in range(data.ndim)
+        ]
+        return {
+            "result_uid": getattr(result, "result_uid", None),
+            "dataset_uid": getattr(result, "dataset_uid", None),
+            "coordinate_space_uid": getattr(result, "coordinate_space_uid", None),
+            "identity_kind": getattr(result, "identity_kind", "minted"),
+            "lineage": tuple(getattr(result, "lineage", ()) or ()),
+            # The displayed plane is always the last two axes after the view
+            # mode's transposition.
+            "plane_axes": tuple(labels[-2:]) if len(labels) >= 2 else tuple(labels),
+            "view_mode": view_mode,
+            "axes": axes,
+            "mutation_token": self._mutationToken(result),
+        }
 
     def _processingViewMode(self, result):
         view_name = self._widget.getViewName()
@@ -403,6 +555,7 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         name = displayName or getattr(result, 'name', '') or 'result'
         self._widget.addNewData(result, name)
+        self._resultsChanged()
 
     def liveResultUpdated(self, result):
         """Queue a live reconstruction result for rendering.
@@ -414,6 +567,13 @@ class ReconstructionViewController(ImProcessWidgetController):
         """
         if result is None:
             return
+
+        # Registered here rather than in the render path: coalescing keeps
+        # only the newest result, so a result that never reaches a render
+        # pass must still be known as live.
+        uid = getattr(result, "result_uid", None)
+        if uid:
+            self._liveResultUids.add(uid)
 
         self._pendingLiveResult = result
         if not self._liveRenderScheduled:

@@ -24,6 +24,7 @@ from .DirectoryWatcherFrame import DirectoryWatcherFrame
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
+from .SmlmRenderWidget import SmlmRenderWidget
 from .ProfileWidget import ProfileWidget
 from .PSFResolutionWidget import PSFResolutionWidget
 from .ROIManagerWidget import ROIManagerWidget
@@ -45,6 +46,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigSetSaveFolder = QtCore.Signal()
 
     sigReconstuctCurrent = QtCore.Signal()
+    sigCancelReconstruction = QtCore.Signal()
     sigReconstructMultiConsolidated = QtCore.Signal()
     sigReconstructMultiIndividual = QtCore.Signal()
     sigQuickLoadData = QtCore.Signal()
@@ -93,6 +95,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self,
         showParameterPanel: bool = True,
         showNapariLayerControls: bool = True,
+        useNapariStormViewer: bool = False,
+        showSmlmRenderPanel: bool = False,
         showReconstructionPanel: bool = True,
         showActionsPanel: bool = True,
         showFileWatcherPanel: bool = True,
@@ -270,13 +274,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         btnFrame = BtnFrame()
         self._btnFrame = btnFrame
         btnFrame.sigReconstuctCurrent.connect(self.sigReconstuctCurrent)
+        btnFrame.sigCancelReconstruction.connect(self.sigCancelReconstruction)
         btnFrame.sigReconstructMultiConsolidated.connect(self.sigReconstructMultiConsolidated)
         btnFrame.sigReconstructMultiIndividual.connect(self.sigReconstructMultiIndividual)
         btnFrame.sigQuickLoadData.connect(self.sigQuickLoadData)
         btnFrame.sigUpdate.connect(self.sigUpdate)
 
         self.reconstructionWidget = ReconstructionView(
-            showLayerControls=showNapariLayerControls
+            showLayerControls=showNapariLayerControls,
+            useNapariStormViewer=useNapariStormViewer,
         )
         self.graphWidget = GraphWidget() if showGraphPanel else None
         self.profileWidget = (
@@ -285,6 +291,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             else None
         )
         self.metadataWidget = MetadataWidget() if showMetadataPanel else None
+        self.smlmRenderWidget = SmlmRenderWidget() if showSmlmRenderPanel else None
         # Registry-backed startup panels are created by the controller after
         # plugin registration. The view is constructed first, so building
         # ResultProcessorWidget instances here would race an empty registry.
@@ -455,6 +462,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             ('Graph', self.graphWidget),
             ('Profile', self.profileWidget),
             ('Metadata', self.metadataWidget),
+            ('SMLM render', self.smlmRenderWidget),
             ('Results', self.resultsTableWidget),
             ('Projection', self.projectionWidget),
             ('Segmentation', self.segmentationWidget),
@@ -514,6 +522,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self._connectResultPusher(self.profileWidget)
         self._connectResultPusher(self.roiStatsWidget)
+        self._connectResultPusher(self.roiManagerWidget)
         self._connectResultPusher(self.graphWidget)
         self._connectResultPusher(self.metadataWidget)
 
@@ -783,7 +792,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if dock is not None:
             dock.show()
             self._safeRaiseDock(dock)
-            if spec.widget_kind == 'roi-manager':
+            if spec.widget_kind in ('roi-manager', 'segmentation'):
                 self._wireROIManagerToDependentWidgets()
             self._syncDockVisibilityActions()
             return title
@@ -816,9 +825,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if runtime_loaded:
                 self._runtimeAnalysisToolIds.add(processor_id)
             setattr(self, spec.attribute, widget)
-            if spec.widget_kind == 'roi-manager':
+            if spec.widget_kind in ('roi-manager', 'segmentation', 'result-processor'):
+                # Any of these may be opened first, and the wiring runs in
+                # both directions, so it is redone whenever one arrives.
                 self._wireROIManagerToDependentWidgets()
-            if spec.widget_kind in ('profile', 'roi-stats', 'metadata'):
+            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager'):
                 self._connectResultPusher(widget)
             if spec.widget_kind == 'graph':
                 self._wireGraphToDependentWidgets()
@@ -907,7 +918,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'duplicate',
             'Duplicate',
-            'Duplicate the active result',
+            'Duplicate the selected results',
             improcessIcon('duplicate', self),
             self.sigImageDuplicateRequested,
             toolbar=self._imageOpsToolbar,
@@ -925,7 +936,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'max-projection',
             'Max projection',
-            'Create a max projection of the active result along the default stack axis',
+            'Create a max projection of each selected result along the default stack axis',
             improcessIcon('max-projection', self),
             self.sigImageMaxProjectionRequested,
             toolbar=self._imageOpsToolbar,
@@ -934,7 +945,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'split-stack',
             'Split stack',
-            'Split the active stack into one result per plane',
+            'Split each selected stack into one result per plane',
             improcessIcon('split-stack', self),
             self.sigImageSplitStackRequested,
             toolbar=self._imageOpsToolbar,
@@ -943,7 +954,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'split-channels',
             'Split channels',
-            'Split a C, Channel or Base axis into one result per channel',
+            'Split a C, Channel or Base axis of each selected result into one result per channel',
             improcessIcon('split-channels', self),
             self.sigImageSplitChannelsRequested,
             toolbar=self._imageOpsToolbar,
@@ -951,9 +962,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         self._addImageAction(
             'merge-channels',
-            'Merge channels',
-            'Merge compatible results into a C-axis channel stack '
-            '(select two or more in the reconstructions list)',
+            'Merge channels...',
+            'Merge loaded results into a C-axis channel stack '
+            '(the reconstructions-list selection is pre-checked)',
             improcessIcon('merge-channels', self),
             self.sigImageMergeChannelsRequested,
             toolbar=self._imageOpsToolbar,
@@ -962,8 +973,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'stack-combine',
             'Stack/Combine...',
-            'Stack or concatenate results into one output '
-            '(select two or more in the reconstructions list)',
+            'Stack or concatenate loaded results into one output '
+            '(the reconstructions-list selection is pre-checked)',
             improcessIcon('stack-combine', self),
             self.sigImageStackCombineRequested,
             toolbar=self._imageOpsToolbar,
@@ -981,7 +992,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'make-composite',
             'Make composite',
-            'Render a C, Channel or Base axis as colored display layers',
+            'Render a C, Channel or Base axis of each selected result as colored display layers',
             improcessIcon('make-composite', self),
             self.sigImageMakeCompositeRequested,
             toolbar=self._imageOpsToolbar,
@@ -1053,6 +1064,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.setImageLutValue(lut_id)
         self.sigImageLutChanged.emit(str(lut_id))
 
+    def showStatusMessage(self, message: str, timeout_ms: int = 6000) -> None:
+        """Show a transient message in the status bar.
+
+        Public counterpart of ``_showStatusMessage`` for controllers: an
+        operation that fails because of what the user picked has to say so
+        somewhere, and a log line is not somewhere.
+        """
+        self._showStatusMessage(message, timeout_ms)
+
     def setImageActionsEnabled(self, enabled: bool) -> None:
         for action in self._imageActions.values():
             action.setEnabled(bool(enabled))
@@ -1100,9 +1120,36 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if widget is None:
             return
         sig = getattr(widget, "sigResultPushed", None)
-        if sig is None:
+        if sig is not None:
+            sig.connect(self._onResultPushed)
+        plot_sig = getattr(widget, "sigPlotPushed", None)
+        if plot_sig is not None:
+            plot_sig.connect(self._onPlotPushed)
+
+    def _onPlotPushed(self, payload) -> None:
+        """Add a curve pushed by a panel to the Graph and bring it into view.
+
+        The Graph otherwise only ever shows the current result's own plots,
+        which is why two profiles could be measured but never compared: the
+        first was replaced the moment the second result was selected.
+        """
+        graph = getattr(self, 'graphWidget', None)
+        if graph is None:
+            # Panels are runtime-loaded; pushing to a panel that has never
+            # been opened should open it, not drop the measurement. The
+            # request goes through the loader so the Graph gets its
+            # controller, exactly as the toolbar button does.
+            self.sigLoadProcessorRequested.emit('graph')
+            graph = getattr(self, 'graphWidget', None)
+        if graph is None:
+            self._showStatusMessage("Could not open the Graph panel; see log.")
             return
-        sig.connect(self._onResultPushed)
+        try:
+            graph.addPlotPayload(payload)
+        except Exception:
+            self._logger.exception("Could not add a pushed plot to the Graph panel")
+            return
+        self.raiseDockByTitle("Graph")
 
     def _onResultPushed(self, columns, records):
         self.appendResultTableRecords(columns, records)
@@ -1254,6 +1301,35 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                     )
             elif hasattr(widget, '_roiManagerWidget'):
                 widget._roiManagerWidget = roi_manager
+        # Processor panels that accept an ROI restriction (P-R) need the same
+        # late binding, and there can be many of them open at once. Iterated
+        # over the runtime tool registry rather than over this view's
+        # attributes: the attribute sweep it started as was gated on `docks`
+        # being non-empty, which has nothing to do with whether a processor
+        # panel exists, and it reached every string and layout on the view.
+        for tool_id in self._runtimeAnalysisToolAttributes():
+            widget = self.getRuntimeAnalysisWidget(tool_id)
+            setter = getattr(type(widget), 'setROIManagerWidget', None)
+            if widget is None or not callable(setter):
+                continue
+            try:
+                setter(widget, roi_manager)
+            except Exception:
+                self._logger.exception(
+                    f'Could not wire the ROI Manager into {tool_id!r}'
+                )
+
+        # The reverse direction: the ROI manager seeds *Limit to threshold*
+        # from the Segmentation panel, and either panel may be opened first.
+        segmentation = getattr(self, 'segmentationWidget', None)
+        setter = getattr(type(roi_manager), 'setSegmentationWidget', None)
+        if segmentation is not None and callable(setter):
+            try:
+                setter(roi_manager, segmentation)
+            except Exception:
+                self._logger.exception(
+                    'Could not wire Segmentation into the ROI Manager'
+                )
 
     def _wireGraphToDependentWidgets(self) -> None:
         """Late-binding: connect table plot requests after Graph runtime load."""
@@ -1347,6 +1423,46 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 )
                 consolidated.setToolTip(tooltip)
                 consolidated.setStatusTip(tooltip)
+
+    def setReconstructionJobState(
+        self, running: bool, *, progress=None, status: str = ""
+    ) -> None:
+        btnFrame = getattr(self, '_btnFrame', None)
+        if btnFrame is not None:
+            btnFrame.setReconstructionJobState(
+                running, progress=progress, status=status
+            )
+
+    def confirmReconstructionMemory(self, estimate, budget: int) -> bool:
+        def human_bytes(value):
+            value = float(value)
+            for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+                if value < 1024 or unit == "TiB":
+                    return f"{value:.1f} {unit}"
+                value /= 1024
+
+        shape = " × ".join(str(size) for size in estimate.output_shape)
+        suggestions = ""
+        if estimate.suggestions:
+            suggestions = "\n\nTo reduce memory: " + "; ".join(
+                estimate.suggestions
+            ) + "."
+        message = (
+            f"The {estimate.description} is estimated to produce {shape} and "
+            f"allocate {human_bytes(estimate.canvas_bytes)} for the canvas plus "
+            f"{human_bytes(estimate.weight_bytes)} for weights "
+            f"({human_bytes(estimate.required_bytes)} total).\n\n"
+            f"The current safety budget is {human_bytes(budget)}. Continue "
+            f"anyway?{suggestions}"
+        )
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Large reconstruction",
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
 
     def setReconstructorChoices(
         self,
@@ -1819,6 +1935,7 @@ class ReconParTree(ParameterTree):
 
 class BtnFrame(QtWidgets.QFrame):
     sigReconstuctCurrent = QtCore.Signal()
+    sigCancelReconstruction = QtCore.Signal()
     sigReconstructMultiConsolidated = QtCore.Signal()
     sigReconstructMultiIndividual = QtCore.Signal()
     sigQuickLoadData = QtCore.Signal()
@@ -1833,6 +1950,18 @@ class BtnFrame(QtWidgets.QFrame):
         self.quickLoadDataBtn.clicked.connect(self.sigQuickLoadData)
         self.updateBtn = BetterPushButton('Update reconstruction')
         self.updateBtn.clicked.connect(self.sigUpdate)
+
+        self.cancelReconstructionBtn = BetterPushButton('Cancel reconstruction')
+        self.cancelReconstructionBtn.clicked.connect(
+            self.sigCancelReconstruction
+        )
+        self.cancelReconstructionBtn.setVisible(False)
+        self.reconstructionProgress = QtWidgets.QProgressBar()
+        self.reconstructionProgress.setRange(0, 1000)
+        self.reconstructionProgress.setVisible(False)
+        self.reconstructionStatus = QtWidgets.QLabel()
+        self.reconstructionStatus.setWordWrap(True)
+        self.reconstructionStatus.setVisible(False)
 
         self.reconMultiBtn = QtWidgets.QToolButton()
         self.reconMultiBtn.setSizePolicy(
@@ -1861,6 +1990,23 @@ class BtnFrame(QtWidgets.QFrame):
         layout.addWidget(self.reconCurrBtn, 1, 0)
         layout.addWidget(self.reconMultiBtn, 1, 1)
         layout.addWidget(self.updateBtn, 2, 0, 1, 2)
+        layout.addWidget(self.reconstructionProgress, 3, 0, 1, 2)
+        layout.addWidget(self.reconstructionStatus, 4, 0, 1, 2)
+        layout.addWidget(self.cancelReconstructionBtn, 5, 0, 1, 2)
+
+    def setReconstructionJobState(
+        self, running: bool, *, progress=None, status: str = ""
+    ) -> None:
+        running = bool(running)
+        self.reconCurrBtn.setEnabled(not running)
+        self.reconMultiBtn.setEnabled(not running)
+        self.cancelReconstructionBtn.setVisible(running)
+        if progress is not None:
+            value = max(0.0, min(1.0, float(progress)))
+            self.reconstructionProgress.setValue(int(round(value * 1000)))
+        self.reconstructionProgress.setVisible(running or progress is not None)
+        self.reconstructionStatus.setText(str(status or ""))
+        self.reconstructionStatus.setVisible(bool(status))
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

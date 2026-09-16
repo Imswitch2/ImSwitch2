@@ -105,7 +105,7 @@ Main module
 ^^^^^^^^^^^^
 The main, and only, module for this use case is used to control all the hardware, screen the sample with widefield, acquiring the images, and inspecting them with the visualization tools. We have provided a more detailed explanation of the GUI :doc:`here <gui>`. To record a confocal image, the user sets the scan parameters that they want for each scan axis (length, pixel size, center position), the pixel dwell time, sets the laser powers they want to use, set the TTL start to 0 and end to 1 (units is lines) for the excitation laser they want to use, and runs the scan. The view of the detectors not in use can be hidden in the visualization tool. The scanning module will build the scanning curves, laser modulation curves, create those tasks in the Nidaq, and start them. The raw data is displayed in the liveview, where the image is updated line-by-line during the acquisition. For recording a STED image the procedure is much the same, with the addition that the use turns on the STED laser in the laser module, and sets the corresponding TTL start and end to the same values, and runs the scan. Before this the SLM has to be configured in order to create a desired depletion pattern, where for using a donut and tophat there are helpful tools in the SLM module to align the mask and the aberration correction that will be specific to each setup.
 
-Previous to any image acquisition, while using either a repeating fast confocal scan or a widefield image, the sample has to be set in focus, and the focus lock can then be used to lock the sample in the focal plane. The focus lock acts independent from the image acquisition and can be continuously turned on for as long as wanted.
+Previous to any image acquisition, while using either a repeating fast confocal scan or a widefield image, the sample has to be set in focus, and the focus lock can then be used to lock the sample in the focal plane. The focus lock can be left on for as long as wanted, including across a whole tiling run. It is not, however, independent of acquisition when the scan drives the focus axis: this setup reaches one piezo both as the analog scanner ``ND-PiezoZ`` and as the serial positioner ``PiezoZ``, so a correcting lock would oppose the intentional Z waveform. ImSwitch suspends focus actuation for the duration of such a scan and waits for the focus signal to be reacquired before correcting again — see :ref:`focuslock-scan-arbitration`.
 
 The user can choose to save the acquired image to a desired folder and with a desired name by using the Snap button in the recording widget. It will be saved in hdf5 format, and will include all user-defined parameters from the GUI as metadata. Functionality to reload metadata parameters from a previously saved hdf5 file can be found in the toolbar, for easy and precise recreation of a previous experiment. Previously recorded images in tiff format can also be loaded in the visualization module in order to be directly compared with the last recorded image or each other. 
 
@@ -175,7 +175,7 @@ The event-triggered imaging does not have a separate manager, but is loaded by a
 Other config parameters and a list of widgets to be loaded are added in this file as well. 
 
 etSTED imaging
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 In order to run etSTED imaging, and record etSTED images, 
 
 

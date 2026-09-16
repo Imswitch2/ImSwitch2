@@ -40,7 +40,7 @@ ImProcess can run in three modes:
    reconstructor + the ``drift-correct`` processor.
 3. **Stand-alone with a minimal setup** — same launcher, but a
    processing-only setup file selects the plugins you want enabled
-   (e.g. MoNaLISA).  See `Example: MoNaLISA-only configuration`_ below.
+   (e.g. MoNaLISA). See :ref:`improcess-processing-presets` below.
 
 Data ingest
 ===========
@@ -110,17 +110,35 @@ The *Image* toolbar and matching *Image* menu provide viewer-level operations:
   persist it on the active result or display-layer component.
 * *Channels...* — show display-layer channel controls with per-layer
   visibility and LUT settings.
-* *Duplicate* — create a new array-backed result from the active result.
+* *Duplicate* — create a new array-backed result from each selected result.
 * *Crop/Substack...* — create a ranged subset with first/last/step controls for
   every result axis.
 * *Max projection* — create a max projection using the projection processor's
-  default stack-axis choice.
-* *Split stack* — split the active stack into one result per plane along the
+  default stack-axis choice.  The **Projection** panel exposes the rest of
+  ImageJ's *Z Project*: the axis, the statistic (max / mean / sum / median /
+  standard deviation) and a *First slice* / *Last slice* range, 1-based and
+  inclusive, defaulting to the whole axis.  Projecting one axis of a
+  hyperstack keeps the others, so a ``TZYX`` stack projected on ``Z`` stays a
+  ``T`` series.
+* *Split stack* — split each selected stack into one result per plane along the
   selected stack axis.
 * *Split channels* — split a ``C``, ``Channel`` or ``Base`` axis into one
   result per channel.
-* *Merge channels* — merge selected compatible grayscale results into a new
-  ``C``-axis channel stack.
+* *Merge channels...* — merge loaded results into a new ``C``-axis channel
+  stack. The dialog lists every loaded result (and the components of
+  multi-layer results), pre-checks the reconstruction-list selection, and
+  merges in the listed order, which is the channel order. *Create composite*
+  publishes the merge as coloured display layers instead of a greyscale stack
+  with a channel slider. Inputs are whole results or named components, so the
+  channels of one multi-layer result can be merged among themselves; the
+  planes of a plain stack are not listed individually — split it first with
+  *Split stack*, which the dialog says when a single stack is checked.
+* *Stack/Combine…* — stack same-shaped selected results along a new axis, or
+  concatenate compatible results along an existing axis. Axis labels, pixel
+  scales and scale units must agree.
+* *Image calculator…* — combine exactly two compatible selected results with
+  pixel-wise add, subtract, multiply, divide, minimum, maximum, average or
+  absolute difference operations.
 * *Make composite* — create a composite result that renders a channel-like axis
   as independently-scaled colored display layers.
 * *Make RGB* — bake a channel-like axis into a channel-last RGB visualization
@@ -131,10 +149,41 @@ The contrast, LUT and channel-visibility operations are display-only: they
 update the Napari image layer and the active
 :py:class:`~imswitch.improcess.model.result.ProcessingResult` display settings,
 including per-display-layer settings for composite outputs, but do not alter
-pixel data.  Duplicate, crop/substack, max projection, merge channels, make
-composite and make RGB publish new ``ProcessingResult`` objects into the
-reconstruction list. Split stack and split channels publish multiple
-``ProcessingResult`` objects and make the final split result current.
+pixel data.  Duplicate, crop/substack, max projection, merge channels,
+stack/combine, image calculator, make composite and make RGB publish new
+``ProcessingResult`` objects into the reconstruction list. Split stack and
+split channels publish multiple ``ProcessingResult`` objects and make the final
+split result current.
+
+.. _improcess-multi-result-operations:
+
+Operating on several reconstructions
+------------------------------------
+
+Two different things are meant by "several results", and ImProcess offers
+both:
+
+* **One operation consuming several results.** Merge channels, Stack/Combine
+  and the Image calculator take two or more results and produce one output.
+  They are enabled whenever at least two results are loaded — not only when a
+  compatible multi-selection exists — and open a picker over everything
+  loaded, with the reconstruction-list selection pre-checked. Inputs that
+  cannot be combined disable OK and name the reason (differing shape, axis
+  labels, pixel scales or scale unit) instead of leaving a silently dead
+  button. Two-image FRC works the same way and can compare two separate
+  reconstructions.
+* **One operation applied to each of several results.** Duplicate, max
+  projection, split stack, split channels and make composite run over every
+  selected result, skipping the ones the operation does not apply to.
+  Processor panels offer the same thing through their *Apply to* selector
+  (*Current result* / *Selected results* / *All results*), so a denoise or a
+  drift correction can sweep a whole session's reconstructions in one run.
+  One input failing does not discard the outputs of the others; the panel
+  reports how many failed and why. Crop/Substack and Make RGB stay
+  single-result, because their dialogs are parameterised by one result's axes.
+
+Both paths publish through the usual result pipeline, so the bulk-publish
+confirmation still guards against flooding napari with layers.
 
 The *Analysis tools* toolbar keeps Fiji-like panel shortcuts visible for Graph,
 Profile, ROI manager, ROI statistics, Projection, Segmentation, Metadata and
@@ -144,6 +193,12 @@ opening a panel registers its processor when needed, raises an existing dock
 when it already exists and preserves the runtime-loaded panel in the
 dock-layout state.  The Results button raises the built-in results-table dock
 directly.
+
+Every registered built-in or drop-in processor is also available through
+*Load tool*. Processors with a dedicated panel open that panel; the rest open a
+generic parameter panel for the active result. This runs one processor at a
+time and publishes its output back to the reconstruction list. It is not yet a
+saved, automatically executed multi-step processing chain.
 
 Toolbar icons are selected through ImProcess semantic action IDs and rendered
 with QtAwesome when available, with Qt standard icons as a fallback.  This
@@ -202,13 +257,36 @@ selection.
   the *active napari layer* and display their measurements in place; they do
   not create results.  All of them resolve their source layer through the
   shared ``imswitch.improcess.layer_selection`` helper, so what counts as an
-  image source cannot drift between tools.
+  image source cannot drift between tools.  They also re-measure when the
+  selected result changes: the ROI stays where it is and the numbers follow
+  the result now under it, rather than lingering from the previous one.
 
 The Profile tool can draw line and rectangle ROIs, plot the sampled profile,
 and optionally overlay fitted curves.  Available profile fits are no fit,
 single Gaussian, two independent Gaussians with center-distance reporting,
 and a single exponential decay/rise model.  Fit metrics are included when the
 profile is pushed to the results table or saved as CSV.
+
+*Z profile* answers the other question a stack raises — how intensity varies
+*through* it rather than across the field, ImageJ's *Plot Z-axis Profile*.  It
+plots mean intensity over a drawn rectangle against the stack axis, or over
+the whole frame when no rectangle is drawn.  The axis is chosen from the
+result's own labels (``Z``, else ``T``, else the first non-spatial axis with
+more than one plane) and is plotted in that axis' physical units when it has a
+scale, falling back to slice number.  On a hyperstack the other axes stay
+where the viewer is, so profiling ``Z`` on a ``TZYX`` result profiles the
+timepoint on screen.  Fits, *Measure Δx*, *Push to table* and *Push to graph*
+all work on it exactly as they do on the in-plane profiles — an exponential
+fit over a ``T`` profile is a bleaching curve.
+
+*Push to graph* sends the profile and its fit to the Graph panel, opening it
+if needed.  Pushed plots are **pinned**: they stay when the selected result
+changes, where the Graph's own content is replaced by each result's plots.
+That is what makes two profiles comparable — measure one reconstruction, push,
+select the next, measure, push — and the Graph's *Overlay* button then draws
+every plot it holds in one set of axes.  *Clear pushed* forgets them again.
+Rows pushed to the Results table carry a ``source`` column naming the result
+they were measured on, since that table accumulates across results.
 
 Ephemeral preview layers (the segmentation preview, multicolor's
 split-boundary and detected-bead overlays) are the exception: they are
@@ -231,15 +309,27 @@ view-only               Reconstructor  Pass-through; raw frames wrapped as a res
 widefield-starss        Reconstructor  H/V WidefieldSTARSS anisotropy maps and region metrics
 snouty                  Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
 snouty-projections      Reconstructor  Fast SNOUTY projection-preview stack
+smlm-localizer          Reconstructor  SMLM localization table from camera frame stacks
+beadrec                 Reconstructor  Raster bead reconstruction from a camera frame stream
+tiling-mosaic           Reconstructor  Offline assembly and refinement of saved tiling datasets
 drift-correct           Processor      FFT cross-correlation drift correction with drift trace plots
 projection              Processor      Generic max/mean/sum/median/std axis projections
 stack-subset            Processor      Crop/substack by labeled axis ranges
 stack-split             Processor      Split a stack axis into one result per plane
+stack-combine           Processor      Stack results on a new axis or concatenate an existing axis
 channel-split           Processor      Split a channel-like C/Channel/Base axis into one result per channel
 channel-merge           Processor      Merge compatible grayscale results into a C-axis channel stack
 make-composite          Processor      Render a channel-like axis as colored display layers
 make-rgb                Processor      Bake a channel-like axis into channel-last RGB visualization data
+resize                  Processor      Resize Y/X while preserving calibrated physical extent
+convert-type            Processor      Convert to 8-bit, 16-bit or 32-bit float, optionally rescaled
+transform               Processor      Rotate or flip every Y/X plane
+filter                  Processor      Gaussian, median, mean and unsharp spatial filtering
+subtract-background     Processor      Rolling-ball background removal, optionally returning the background
+math                    Processor      Constant arithmetic and unary transforms on one image
+image-calculator        Processor      Pixel-wise arithmetic between two compatible results
 segmentation            Processor      Threshold + connected-component labels and ROI export
+label-morphology        Processor      Fill, erode, dilate, open, close or watershed 2D label masks
 psf-resolution          Processor      2D Gaussian bead/PSF FWHM and sigma measurements
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
@@ -281,6 +371,7 @@ accept kind ``image`` unless noted; ``stack-subset``, ``projection``,
 ``colocalization`` also accept ``composite`` (composite data is the source
 intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
 ``smlm-drift``, ``smlm-group``) accept only ``localization``.
+``label-morphology`` accepts only ``labels``.
 
 .. list-table::
    :header-rows: 1
@@ -318,6 +409,13 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        labels and compatible axis scales.
      - ``ArrayProcessingResult`` with a new leading channel axis, default
        label ``C``.
+   * - ``stack-combine``
+     - Dimensions and channels
+     - Two or more rank >= 2 results. Stacking requires identical shape;
+       concatenation permits different lengths only on the chosen join axis.
+       Axis labels, pixel scales and scale units must agree.
+     - ``ArrayProcessingResult`` with either a new leading axis or an enlarged
+       existing axis. A new axis label may not duplicate an existing label.
    * - ``make-composite``
      - Visualization
      - Rank >= 3 result with a multi-plane ``C``, ``Channel``, ``Channels``
@@ -331,6 +429,42 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        channels require explicit channel selection.
      - ``RGBResult`` with channel-last ``uint8`` RGB visualization data.  This
        is a display/export product, not a quantitative intensity result.
+   * - ``resize``
+     - Transform
+     - Any rank >= 2 image-like result.
+     - ``ArrayProcessingResult`` with every Y/X plane resized by nearest,
+       bilinear or cubic interpolation. Pixel scales change inversely so the
+       calibrated physical extent remains constant.
+   * - ``convert-type``
+     - Transform
+     - Any rank >= 2 image-like result.
+     - ``ArrayProcessingResult`` stored as 8-bit, 16-bit or 32-bit float.
+       Integer conversion can rescale the finite data range or clip it.
+   * - ``transform``
+     - Transform
+     - Any rank >= 2 image-like result.
+     - ``ArrayProcessingResult`` rotated 90 degrees or flipped in Y/X. A
+       rotation also swaps the Y/X pixel scales.
+   * - ``filter``
+     - Filters
+     - Any rank >= 2 image-like result.
+     - ``ArrayProcessingResult`` after Gaussian, median, mean or unsharp
+       filtering in each Y/X plane; leading stack axes are not blurred.
+   * - ``subtract-background``
+     - Restoration
+     - Any rank >= 2 image-like result.
+     - One background-subtracted ``ArrayProcessingResult`` and, optionally, a
+       second result containing the rolling-ball background estimate.
+   * - ``math``
+     - Math
+     - Any rank >= 2 image-like result.
+     - Float32 ``ArrayProcessingResult`` after constant add/subtract/multiply/
+       divide/gamma or invert/log/exp/square-root.
+   * - ``image-calculator``
+     - Math
+     - Exactly two results with matching shape, axes, pixel scales and unit.
+     - ``ArrayProcessingResult`` from pixel-wise arithmetic; division by zero
+       yields zero. The toolbar dialog is the normal two-input entry point.
    * - ``drift-correct``
      - Restoration
      - Any result whose ``axis_labels`` contain ``T``.
@@ -350,6 +484,11 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        indices or ``0``.
      - ``SegmentationResult`` with ``Y, X`` integer labels, a context source
        image layer, and region-area plot payload.
+   * - ``label-morphology``
+     - Segmentation
+     - A 2D ``labels``-kind result.
+     - Relabelled ``LabelsResult`` after fill holes, erosion, dilation,
+       opening, closing or watershed splitting.
    * - ``psf-resolution``
      - Measurement
      - Any rank >= 2 image-like result.  Extra axes collapse to index ``0``.
@@ -435,11 +574,33 @@ exposed by the currently selected ``ProcessingResult``.
 
 Use *Measure Δx* to place a draggable horizontal interval between two graph
 features.  The live readout reports both marker positions and their distance.
-*Push to table* appends that measurement to the shared Results dock, where it
-can be accumulated with other measurements and saved through *Save CSV...*.
-The Profile panel offers the same *Measure Δx* interaction; its existing
-*Push to table* and *Save CSV...* actions include the manual distance together
-with the profile statistics and optional fit results.
+*Push to table* appends what the plot says to the shared Results dock: the
+payload's own parameters (a fit's coefficients travel in
+``PlotPayload.metadata``) with one row per curve, plus the Δx row when markers
+are shown.  It no longer requires a measurement to exist — pressing it on a
+plot of fitted data reports the fit.  The Profile panel offers the same
+*Measure Δx* interaction; its *Push to table* and *Save CSV...* actions include
+the manual distance together with the profile statistics and optional fit
+results.
+
+.. _improcess-result-parameters:
+
+Curves and their parameters
+---------------------------
+
+An analysis that fits something produces two outputs — the curve, and the
+parameters of the fit — and the parameters are usually the answer.  A
+``ProcessingResult`` can therefore render into more than one panel at once:
+``plot_payloads()`` draws the curve in this panel while
+``table_columns()``/``table_records()`` contribute rows to the Results dock.
+
+Rows are published automatically for ``kind == "table"`` results.  Any other
+kind opts in by setting ``publishes_table_rows = True``, which keeps bulk rows
+out of the dock by default — a ``localization`` result's ``table_records()``
+can run to six figures.  ``frc`` results publish their resolution and cutoff
+frequency this way, and the photophysics drop-in publishes its fitted
+amplitudes, time constants and R².  Without the opt-in the numbers exist only
+inside the result, drawn but unreadable.
 
 Built-in graph producers include ``drift-correct`` and ``widefield-starss``.
 Drift-corrected results expose Y and X drift traces over frame number.
@@ -631,6 +792,30 @@ if you list ``["view-only", "widefield-starss"]`` under ``reconstructors``,
 those are the two entries the combo offers.  Plugins not in the list are
 not registered and therefore not pickable.
 
+Bead-scan reconstruction
+========================
+
+The ``beadrec`` reconstructor turns a recorded camera frame stream into a 2D
+raster image. Each input frame represents one scan position; the reconstructed
+pixel value is the mean intensity inside the selected camera ROI. It accepts
+HDF5, TIFF/OME-TIFF and Zarr input.
+
+Set **Scan X pixels** and **Scan Y pixels** to the real raster dimensions. A
+value of ``0`` asks the reconstructor to infer the missing dimension from the
+frame count; when both are ``0`` it assumes a square scan. Enter explicit
+dimensions for non-square scans. **Full frame** uses the entire camera image as
+the detection ROI; untick it to enter ``x0, y0, x1, y1`` bounds. **Step X** and
+**Step Y** correct anisotropic scan sampling by rescaling the reconstructed
+image to equal pixel spacing.
+
+**Fit model** can be left at ``none`` or set to one of the available Gaussian/
+donut bead models. A successful fit is stored in the result metadata with the
+model, centre, fitted parameters and :math:`R^2`; a fit failure is reported in
+the metadata without discarding the reconstructed image.
+
+For saved tiling folders, use the separate ``tiling-mosaic`` reconstructor
+described in :doc:`tiling`.
+
 MoNaLISA fast-Gauss mode
 ========================
 
@@ -751,6 +936,121 @@ histogram in the viewer updates in real time to show the growing point cloud.
 The output from a live reconstruction is identical to running the batch 
 reconstruction on the saved data afterwards, ensuring reproducibility.
 
+Importing localization tables
+=============================
+
+Coordinate tables written by other SMLM software open straight into the
+reconstruction list.  A localization table is a *result*, not raw data to
+reconstruct, so it bypasses the data loader and is published the same way a
+reconstructor publishes its output: filter, drift-correct, group, render and
+view it exactly as if the ``smlm-localizer`` had produced it.
+
+Two formats are recognised by content and need no interaction:
+
+* **ThunderSTORM CSV** — units are read from the ``name [unit]`` header
+  rather than assumed, and the 1-based frame numbers become 0-based to match
+  Picasso and ImProcess.  A file whose positions are in pixels cannot be
+  converted without a pixel size and says so instead of guessing.
+* **Picasso HDF5** — recognised by its ``locs`` dataset, so it opens even
+  though it shares the ``.hdf5`` suffix with image stacks.  The pixel size is
+  taken from the ``.yaml`` sidecar Picasso writes next to it.
+
+Any other ``.csv``/``.tsv`` is offered as a localization table only while the
+``smlm-localizer`` reconstructor is active (its accepted sources include
+``localizations``), because a generic table could be anything.  A column
+mapping dialog then asks what each column means, with the mapping pre-filled
+from the header names, plus the position unit, the camera pixel size and the
+first frame number.  X and Y are mandatory; everything else is optional and
+left empty when the file has nothing to put there.
+
+Files that declare no pixel size fall back to an assumed 100 nm, which is
+recorded in ``metadata["pixel_size_assumed"]`` and logged.  The coordinates
+themselves are exact either way — the pixel size only sets the preview
+histogram's bin floor and the scale of a later Picasso export — but nothing
+downstream should report the assumed value as measured.
+
+Localization precision versus PSF width
+---------------------------------------
+
+The localization table carries two different widths on purpose, because they
+are different physical quantities:
+
+* ``sigma_x_nm`` / ``sigma_y_nm`` / ``sigma_z_nm`` — the **PSF width**, how
+  broad the spot was on the camera.  Useful for rejecting bad fits.  Picasso
+  calls these ``sx``/``sy``, ThunderSTORM ``sigma``.
+* ``lp_x_nm`` / ``lp_y_nm`` / ``lp_z_nm`` — the **localization precision**,
+  how well the emitter's position is known.  Picasso calls these
+  ``lpx``/``lpy``, ThunderSTORM ``uncertainty``.
+
+Precision is what an SMLM reconstruction should be rendered with; drawing
+every molecule at its PSF width merely reproduces a diffraction-limited image.
+Import keeps both columns apart, and the ``smlm-localizer`` fills the precision
+columns itself from the Thompson/Larson/Webb closed form with Mortensen's
+correction, using the fitted width, photons, background and pixel size.  Note
+that ImProcess does not yet apply camera gain and offset, so for a camera
+without unit gain that estimate is correct in shape but scaled: good for
+filtering localizations against each other, not for quoting an absolute
+nanometre precision.
+
+.. _improcess-napari-storm:
+
+Localization point clouds (napari-storm)
+========================================
+
+A ``LocalizationResult`` displays by default as a low-resolution histogram
+preview.  Set ``"napariStormViewer": true`` in the ``processing`` block to draw
+localization results instead as GPU-rendered summed Gaussians through the
+optional `napari-storm <https://pypi.org/project/napari-storm/>`_ package,
+which is installed by the ``storm`` extra::
+
+    pip install "imswitch[storm]"
+
+Everything about this backend is best-effort.  Without the package, on a GL
+session without instancing support, or for a table napari-storm refuses, the
+flag does nothing and the result keeps its preview; nothing else in the viewer
+changes.  napari-storm pins ``zarr<3`` for its own MINFLUX reader, so
+resolving the extra moves an environment onto zarr 2.x.  ImSwitch runs on
+either zarr major; to stay on zarr 3, install the package itself with
+``pip install --no-deps napari-storm`` instead of the extra.
+
+The viewer reads the result's nanometre table in place, without a copy or unit
+conversion, and declares the columns to napari-storm rather than renaming
+them.  Each molecule is drawn as a Gaussian of its localization precision
+where the table has one (variable-width mode); a table without usable
+precision falls back to the fitted PSF width, and one with neither to a fixed
+20 nm width.  A 2D result is drawn on the 2D canvas and a 3D one switches the
+canvas to 3D, framed on the cloud.
+
+Point clouds are *retained*: a result is opened in the renderer once, updated
+in place when its settings change, hidden while another kind of result is
+selected, and closed only when it leaves the reconstruction list.  This is
+deliberately not the stateless rebuild-on-click path the other display layers
+take, because opening and closing GPU datasets on every selection is the churn
+napari-storm's architecture exists to avoid.  The remaining napari layers work
+as before; the contrast and layer-control widgets skip point-cloud layers,
+which hold geometry rather than an intensity array.
+
+Render controls
+---------------
+
+Set ``"smlmRenderPanel": true`` in the ``processing`` block to show a panel
+driving the point-cloud renderer for the selected localization result.  It is
+only useful together with ``napariStormViewer``.
+
+* **Gaussian** — *Width mode* chooses between the precision of each
+  localization (variable, available only when the table has one) and a fixed
+  sigma; the fixed XY and Z sigmas are entered in nanometres with the
+  corresponding FWHM shown alongside, since papers quote FWHM while the
+  renderer takes sigma.  *Colour by depth* encodes Z on a hue-sweeping
+  colormap and is available for 3D results in fixed-width mode.
+* **Render range** — per-axis lower and upper bounds, as fractions of the
+  dataset extent, restricting the drawn sub-volume without copying the data.
+* **Appearance** — colormap and opacity, which recolour the cloud without
+  rebuilding any geometry.
+
+Until a control is touched the renderer decides from the data, so an untouched
+panel never overrides what a result would draw on its own.
+
 File watcher save folder
 ========================
 
@@ -863,7 +1163,9 @@ to your Imcontrol setup file (the same JSON you select via
             "frcPanel": true,
             "roiManagerPanel": true,
             "roiStatsPanel": true,
-            "reconstructors": ["monalisa", "view-only"],
+            "smlmRenderPanel": true,
+            "napariStormViewer": true,
+            "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
             "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
         }
     }
@@ -873,6 +1175,12 @@ read at all, e.g. in standalone mode) the registry falls back to::
 
     reconstructors: ["view-only"]
     processors:     ["drift-correct"]
+
+The defaults differ when a setup starts an explicit plugin list but supplies
+only one side of it. If either ``reconstructors`` or ``processors`` is present,
+an omitted ``reconstructors`` key defaults to ``["monalisa"]`` and an omitted
+``processors`` key defaults to ``["drift-correct"]``. Use an explicit empty
+list when that side should load nothing.
 
 Only the plugin IDs you list are instantiated during initial registry setup.
 Runtime-loaded tools, and registry-backed startup panels such as
@@ -891,6 +1199,8 @@ corresponding startup docks.  ``"napariLayerControls": false`` hides napari's
 built-in layer-controls dock, and ``"reconstructionPanel": false`` hides the
 Reconstruction dock until the first result is displayed.  These keys default to
 ``true`` so existing setups keep the full ImProcess window.
+
+.. _improcess-processing-presets:
 
 Processing-only setup presets
 =============================
@@ -940,7 +1250,9 @@ The MoNaLISA preset has the same shape as the others::
             "frcPanel": true,
             "roiManagerPanel": true,
             "roiStatsPanel": true,
-            "reconstructors": ["monalisa", "view-only"],
+            "smlmRenderPanel": true,
+            "napariStormViewer": true,
+            "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
             "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"],
             "liveStallTimeoutS": 300
         }
@@ -959,6 +1271,13 @@ The ``processing:`` block also accepts:
   recorder prepares the next one; the reader automatically disables the
   watchdog for these lapse sources unless you explicitly set a value in this
   config key (an explicit value then applies everywhere).
+* **napariStormViewer** (bool, default ``false``) — draw localization results
+  as GPU point clouds through the optional napari-storm package instead of
+  their histogram preview.  Needs the ``storm`` extra; without it the key has
+  no effect.  See :ref:`improcess-napari-storm`.
+* **smlmRenderPanel** (bool, default ``false``) — show the panel controlling
+  the point-cloud renderer (Gaussian width, colour by depth, render range,
+  appearance).  Only useful together with ``napariStormViewer``.
 
 To launch Imswitch2 with *only* ImProcess (no Imcontrol GUI) and *only*
 the plugins from one of these setup presets:
@@ -1042,20 +1361,28 @@ Done:
 * ``sigResultProduced`` decouples producers from the napari list widget,
   so future processor-chain runners and CLI batch processors can publish
   results without reaching into the main view
+* Registry-backed offline reconstruction for every reconstructor except the
+  legacy full MoNaLISA method; Fast Gauss MoNaLISA uses the plugin path too
+* Registry-backed live reconstruction through ``make_session()`` for streaming
+  reconstructors, with a batch ``process()`` fallback for other plugins
+* Runtime *Load tool* panels for every registered processor, including generic
+  parameter panels for processors without a dedicated dock
+* SMLM localization, BeadRec and tiling-mosaic reconstructors, plus the full
+  built-in processor inventory listed above
+* WidefieldSTARSS batch folder processing, consolidated table display and
+  CSV/HDF5 export
 
 Pending:
 
-* **Phase B.2** — flip the live reconstruction call path through the
-  registry.  Plugin code is present and configurable; the legacy
-  direct-call path in ``ImProcessMainViewController`` is still used at
-  reconstruct time.  Lands when a Windows + ``GPU_acc_recon.dll``
-  setup is available for end-to-end verification.
-* **Processor-chain UI** — processors such as ``frc`` are registered and
-  testable, but the main window does not yet expose a general processor-chain
-  runner.  The FRC panel is available as a direct interactive path meanwhile.
-* **Phase D follow-up** — richer per-modality UI: WFS table/layer display and
-  batch folder mode, STED / confocal averaging, FLIM overlays and SNOUTY
-  validation polish.
+* **Saved processor chains** — individual processors are available now through
+  dedicated or generic runtime panels, but the application cannot yet define,
+  save and automatically execute a multi-step chain.
+* **Legacy full MoNaLISA path** — the coefficient-based offline method still
+  delegates to ``MoNaLISAController``. Fast Gauss offline and all live
+  reconstruction already use the registry-backed plugin path.
+* **Per-modality follow-up** — STED/confocal averaging, FLIM overlays, richer
+  WidefieldSTARSS layer presentation, deconvolution and physical SNOUTY setup
+  validation.
 
 Writing a new plugin
 ====================
@@ -1205,6 +1532,41 @@ The contract is the same as a built-in processor: a unique dotted ``id``,
 ``make_param_widget`` returning a widget with ``get_values() -> dict``, and a
 pure ``apply(result, params)`` returning a new ``ProcessingResult``.  Built-in
 ids always win a collision, so a stray file cannot shadow a core processor.
+
+Processors that consume several results
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``Processor`` declares how many results one run consumes:
+
+.. code-block:: python
+
+    class BlendProcessor(Processor):
+        min_inputs = 2
+        max_inputs = None            # None = unbounded; the default is 1..1
+
+        def check_inputs(self, results):
+            """(ok, reason) — the reason is shown to the user."""
+            ok, reason = super().check_inputs(results)   # count + accepts()
+            if not ok:
+                return ok, reason
+            return combine_compatibility(results, mode="stack")
+
+        def apply(self, result, params):
+            inputs = params["results"]   # ordered, as picked in the UI
+            ...
+
+When ``max_inputs != 1`` the UI hands the ordered inputs to ``apply`` as
+``params["results"]`` (with ``result`` being ``results[0]``), and the generic
+processor panel shows the multi-result picker instead of a single input combo.
+``check_inputs`` is what the picker calls to decide whether *Run* is enabled;
+returning a reason is how the panel explains a refusal, so return one instead
+of a bare ``False``.  Keep the check metadata-only — it runs on every
+selection change, and materializing a lazily-backed result would read it from
+disk.
+
+Single-input processors need no opt-in to run over several reconstructions:
+because ``apply`` is a pure function of one result, the panel's *Apply to*
+scope simply calls it once per result.
 
 .. warning::
 

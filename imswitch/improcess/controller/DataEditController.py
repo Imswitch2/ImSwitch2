@@ -16,6 +16,8 @@ class DataEditController(ImProcessWidgetController):
         self._widget.sigSetDarkFrameClicked.connect(self.setDarkFrame)
 
     def setData(self, inDataObj):
+        if getattr(inDataObj, 'sourceKind', 'image') != 'image':
+            return
         self._dataObj = inDataObj
         self._meanData = self._dataObj.getMeanData()
         self.showMean()
@@ -23,7 +25,10 @@ class DataEditController(ImProcessWidgetController):
                                           self._dataObj.numFrames)
 
     def setImgSlice(self, frameNumber):
-        if self._dataObj is None:
+        if (
+            self._dataObj is None
+            or getattr(self._dataObj, 'sourceKind', 'image') != 'image'
+        ):
             return
 
         data = self._dataObj.data

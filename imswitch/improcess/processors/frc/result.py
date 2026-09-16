@@ -14,6 +14,9 @@ class FRCResult(ProcessingResult):
     """Result wrapper for Fourier ring correlation curves."""
 
     kind = "curve"
+    #: The resolution is the answer FRC is run for; the curve is how it was
+    #: obtained. It belongs in the Results table, not only in the plot title.
+    publishes_table_rows = True
 
     def __init__(self, name: str, analysis: FRCAnalysis, params: dict):
         self.analysis = analysis
@@ -31,6 +34,34 @@ class FRCResult(ProcessingResult):
             view_modes=[ViewMode("Curves", (0, 1))],
             display_levels=None,
         )
+
+    def table_columns(self) -> list[str]:
+        return [
+            "source",
+            "kind",
+            "mode",
+            "resolution",
+            "resolution_unit",
+            "cutoff_frequency",
+            "frequency_unit",
+            "window",
+        ]
+
+    def table_records(self) -> list[dict]:
+        """One row: the measured resolution and how it was measured."""
+        analysis = self.analysis
+        return [
+            {
+                "source": self.name,
+                "kind": "frc",
+                "mode": str(self.params.get("mode", "")),
+                "resolution": float(analysis.resolution),
+                "resolution_unit": str(analysis.resolution_unit),
+                "cutoff_frequency": float(analysis.cutoff_frequency),
+                "frequency_unit": str(analysis.frequency_unit),
+                "window": str(self.params.get("window", "")),
+            }
+        ]
 
     def save(self, path: Path, fmt: str = "hdf5") -> None:
         path = Path(path)

@@ -5,8 +5,9 @@ from __future__ import annotations
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
-from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
+from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.improcess.analysis.roi_stats import ROIStats, compute_roi_stats
+from imswitch.improcess.analysis.roi_frame_adapter import world_to_data
 from imswitch.improcess.layer_selection import active_image_layer
 from .ResultsTableWidget import ResultsTableWidget
 
@@ -16,10 +17,18 @@ class ROIStatsWidget(QtWidgets.QWidget):
 
     sigResultPushed = QtCore.Signal(object, object)
 
+    #: Stable owner key for the shared drawing tool. Not id(self), so a panel
+    #: that is closed and reopened reclaims its own shapes.
+    TOOL_OWNER = "improcess.roi-stats"
+
     def __init__(self, napariViewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
-        self._toolManager = ViewerToolManager(napariViewer)
+        self._toolService = ViewerToolService.for_viewer(napariViewer)
+        # Register, do not acquire: taking the tool at construction time
+        # means startup panels preempt each other before the user has
+        # reached for anything.
+        self._toolToken = self._toolService.register(self.TOOL_OWNER)
         self._current_stats = None
 
         self.modeCombo = QtWidgets.QComboBox()
@@ -47,14 +56,28 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self.runButton.clicked.connect(self.update_stats)
         self.clearButton.clicked.connect(self._clear_roi)
         self.pushButton.clicked.connect(self._push_to_table)
-        self._toolManager.sigShapesChanged.connect(self.update_stats)
+        self._toolService.on_shapes_changed(self._toolToken, self.update_stats)
         try:
-            self._viewer.dims.events.current_step.connect(lambda _event: self.update_stats())
+            # Through the broker so release() tears this down too; connecting
+            # straight to the viewer left the callback firing after close.
+            self._toolService.on_viewer_event(
+                self._toolToken,
+                self._viewer.dims.events.current_step,
+                lambda _event=None: self.update_stats(),
+            )
         except Exception:
             pass
 
         self._mode_changed()
         self._set_message("No statistics computed.")
+
+    def setCurrentResult(self, result) -> None:
+        """Recompute against the newly selected result.
+
+        Same ROI, different pixels: statistics computed from the previous
+        reconstruction are indistinguishable from fresh ones on screen.
+        """
+        self.update_stats()
 
     def update_stats(self) -> None:
         image = self._current_image_2d()
@@ -73,20 +96,39 @@ class ROIStatsWidget(QtWidgets.QWidget):
 
     def _mode_changed(self) -> None:
         if self.modeCombo.currentText() == "Rectangle ROI":
-            self._toolManager.set_mode("rectangle")
-        else:
-            self._toolManager.set_mode("pan")
+            # Acquiring is what makes the next shape drawn ours.
+            self._toolToken = self._toolService.acquire(self.TOOL_OWNER, "rectangle")
+        elif self._toolService.is_active(self.TOOL_OWNER):
+            # Only stand the tool down if it is still ours to stand down.
+            self._toolService.set_mode(self._toolToken, "pan")
         self.update_stats()
 
     def _clear_roi(self) -> None:
-        self._toolManager.clear_shapes()
+        # Clears only this panel's shapes; the Profile panel's line survives.
+        self._toolService.clear(self._toolToken)
         self.update_stats()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        """Give up the drawing tool and disconnect our viewer callbacks.
+
+        There is no dock-close signal to hang teardown on, so without this the
+        handlers this panel installed keep firing after it is gone.
+        """
+        try:
+            self._toolService.release(self._toolToken)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _push_to_table(self) -> None:
         if self._current_stats is None:
             return
         stats = self._current_stats
         record = {
+            # Which result these numbers came from. The Results table is an
+            # accumulating log, so rows pushed from two reconstructions are
+            # otherwise indistinguishable apart from the values themselves.
+            "source": self._source_name(),
             "kind": "roi-stats",
             "area_px": float(stats.area_pixels),
             "finite_px": float(stats.finite_pixels),
@@ -119,30 +161,37 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self.table.set_records(["Metric", "Value"], [{"Metric": "Status", "Value": message}])
 
     def _current_rectangle_roi(self) -> tuple[int, int, int, int] | None:
-        for index, shape_type in enumerate(self._toolManager.get_shape_types()):
+        # Only this panel's shapes: a rectangle drawn for the Profile panel is
+        # not ours to measure.
+        for index, shape_type, _vertices in self._toolService.shapes(self._toolToken):
             if shape_type == "rectangle":
-                r0, c0, r1, c1 = self._toolManager.get_rectangle_bounds(index)
-                # Bounds come from the Shapes layer in world coordinates; convert
-                # to pixel indices via the image scale before cropping (no-op
-                # when scale == 1, but required for scaled reconstructions).
-                row_scale, col_scale = self._visible_pixel_scales()
-                r0, r1 = r0 / row_scale, r1 / row_scale
-                c0, c1 = c0 / col_scale, c1 / col_scale
-                return int(round(r0)), int(round(r1)), int(round(c0)), int(round(c1))
+                r0, c0, r1, c1 = self._toolService.get_rectangle_bounds(index)
+                # Bounds come from the Shapes layer in world coordinates.
+                # Inverted through napari's own mapping rather than divided by
+                # scale, which ignores translate and rotation.
+                corners = self._world_to_pixels([(r0, c0), (r1, c1)])
+                rows = sorted((corners[0][0], corners[1][0]))
+                cols = sorted((corners[0][1], corners[1][1]))
+                return (
+                    int(round(rows[0])), int(round(rows[1])),
+                    int(round(cols[0])), int(round(cols[1])),
+                )
         return None
 
-    def _visible_pixel_scales(self) -> tuple[float, float]:
-        """Return the active image layer's (row, col) scale (1.0 fallback)."""
+    def _world_to_pixels(self, points):
+        """World coordinates → image pixel coordinates, via napari's mapping."""
         layer = self._active_image_layer()
         if layer is None:
-            return 1.0, 1.0
+            return [tuple(point) for point in points]
         try:
-            scale = tuple(float(v) for v in layer.scale)
+            return [tuple(world_to_data(layer, point)) for point in points]
         except Exception:
-            return 1.0, 1.0
-        if len(scale) < 2:
-            return 1.0, 1.0
-        return scale[-2], scale[-1]
+            return [tuple(point) for point in points]
+
+    def _source_name(self) -> str:
+        """Name of the layer the statistics were measured on."""
+        layer = self._active_image_layer()
+        return str(getattr(layer, "name", "") or "image")
 
     def _current_image_2d(self):
         layer = self._active_image_layer()

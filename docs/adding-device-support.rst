@@ -52,7 +52,7 @@ Inside it, the ``managerProperties`` dict field may contain manager-specific pro
 ``name`` is a unique name that is used to identify the device,
 which is defined by the key of the device's entry in the setup file.
 ``lowLevelManagers`` is a dict containing objects that facilitate low-level device interaction,
-which are documented :ref:`here <Available low-level managers>`.
+which are documented :ref:`here <available-low-level-managers>`.
 Note that ``super().__init__`` has a different signature, depending on which base class is used.
 
 When creating a new device manager,
@@ -119,6 +119,8 @@ RotatorManager
    :members:
    :special-members: __init__
 
+
+.. _available-low-level-managers:
 
 Available low-level managers
 ============================

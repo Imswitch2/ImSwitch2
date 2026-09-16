@@ -6,7 +6,9 @@ import time
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
 from .._scan_execution import PARTICIPANTS_KEY
-from .DetectorManager import DetectorManager, scanPixelSizesToZYX
+from .DetectorManager import (
+    ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
+)
 from ._live_display import LiveDisplayThrottle
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
@@ -103,6 +105,18 @@ class PMTManager(DetectorManager):
         self._activeScanGeneration = None
         self._tearingDownScanGenerations = set()
         self._completedScanGenerations = set()
+        # Raw-chunk latch -- see APDManager for the reasoning. `_image` is a
+        # volume filled boundary by boundary, so it is only published once its
+        # scan reaches a terminal state, which is after the last boundary.
+        self._rawGeneration = None
+        self._rawReady = False
+        self._rawDelivered = True
+        self._rawAborted = False
+        # Generations whose scan did not finish normally. Raw readiness keys
+        # on the *outcome* of a generation, not on teardown having run:
+        # teardown runs on every path, including the ones that leave the
+        # volume half-written.
+        self._rawFailedGenerations = set()
         self._finishAcks = {}
         self._scanTeardownOperation = None
 
@@ -197,6 +211,12 @@ class PMTManager(DetectorManager):
             participants is None or self.name in participants
         )
         self._preparedScanGeneration = None
+        # A new scan clears the abort veto and any volume the last one left:
+        # otherwise one cancelled scan would silence the raw chunk for the
+        # rest of the session, and a stale buffer could be published as this
+        # scan's result.
+        self._rawAborted = False
+        self._abandonRaw()
         if not self._scanParticipating:
             return
 
@@ -302,6 +322,11 @@ class PMTManager(DetectorManager):
         self.__newFrameReady = False
 
     def stopAcquisition(self):
+        # Whatever is in the raw buffer now was not finished by its scan.
+        # Marking this before teardown is what makes the veto in
+        # _markRawReady effective, since teardown is what would publish it.
+        self._rawAborted = True
+        self._abandonRaw()
         # Detector stop contract: teardown failure must reach the
         # DetectorsManager, which quarantines this detector as FAULTED.
         # Mark the manager fail-closed even if teardown raises.
@@ -434,6 +459,7 @@ class PMTManager(DetectorManager):
                 elif generation is not None:
                     self._tearingDownScanGenerations.discard(generation)
                     self._completedScanGenerations.add(generation)
+                    self._markRawReady(generation)
                     if self._activeScanGeneration == generation:
                         self._activeScanGeneration = None
                     if self._preparedScanGeneration == generation:
@@ -488,6 +514,7 @@ class PMTManager(DetectorManager):
         with self._scanLifecycleLock:
             self._tearingDownScanGenerations.discard(generation)
             self._completedScanGenerations.add(generation)
+            self._markRawReady(generation)
             if self._activeScanGeneration == generation:
                 self._activeScanGeneration = None
             if self._preparedScanGeneration == generation:
@@ -507,6 +534,14 @@ class PMTManager(DetectorManager):
             self.cancelFinishScan(acknowledge)
             with self._scanLifecycleLock:
                 operation = self._scanTeardownOperation
+                abortedGeneration = (
+                    self._activeScanGeneration
+                    or self._preparedScanGeneration
+                )
+            # Whatever is in the raw buffer belongs to a scan that is being
+            # stopped, not one that finished.
+            self._markRawFailed(abortedGeneration)
+            with self._scanLifecycleLock:
                 generation = (
                     self._activeScanGeneration
                     or self._preparedScanGeneration
@@ -780,6 +815,70 @@ class PMTManager(DetectorManager):
         self.__newFrameReady = False
         return np.expand_dims(self._image_display, axis=0).copy()
 
+    @property
+    def rawFrameIsDeferred(self) -> bool:
+        """The raw volume is only whole once its scan reaches a terminal."""
+        return True
+
+    def _markRawFailed(self, generation) -> None:
+        """This generation's scan did not finish normally.
+
+        Called from every route that ends a scan without completing it: an
+        abort, and a worker whose run raised. The worker's ``finally`` emits
+        the same completion signal either way, so without this a failed run is
+        indistinguishable downstream from a successful one.
+        """
+        if generation is None:
+            self._rawAborted = True
+        else:
+            self.__dict__.setdefault('_rawFailedGenerations', set()).add(
+                generation
+            )
+        self._abandonRaw()
+
+    def _markRawReady(self, generation) -> None:
+        """The scan that filled the raw buffer has finished; publish it once.
+
+        Refused for a generation that aborted or failed. Every teardown route
+        reaches here, including the ones a cancelled or broken scan takes, so
+        without this the half-written volume they leave behind would be
+        published -- and nothing downstream could tell it from a complete one.
+        """
+        if self.__dict__.get('_rawAborted', False):
+            return
+        if generation in self.__dict__.get('_rawFailedGenerations', ()):
+            return
+        self._rawGeneration = generation
+        self._rawReady = True
+        self._rawDelivered = False
+
+    def _abandonRaw(self) -> None:
+        """Drop a partial raw buffer without publishing it, after an abort."""
+        self._rawReady = False
+        self._rawDelivered = True
+
+    def drainChunk(self):
+        """Display frames every boundary; the raw volume once, when whole.
+
+        The PMT collapses line steps for display -- it sets
+        ``_linestep_view_mode = "sum"`` in its constructor, which was only ever
+        meant for `_compute_display_frame` -- so before this split, summing the
+        channels for the screen also summed them for every recording. The raw
+        half is the unsummed measurement.
+        """
+        display = self.getChunk()
+
+        raw = _EMPTY_CHUNK
+        if (self.__dict__.get('_rawReady', False)
+                and not self.__dict__.get('_rawDelivered', True)):
+            self._rawDelivered = True
+            self._rawReady = False
+            # Copy: `_image` is the live accumulation buffer. Leading axis: the
+            # broker fans out on axis 0, which `_image` does not carry.
+            raw = np.expand_dims(np.array(self._image, copy=True), axis=0)
+
+        return ChunkPayload(display=display, raw=raw)
+
     def flushBuffers(self):
         self.__newFrameReady = False
 
@@ -923,11 +1022,23 @@ class ScanWorker(Worker):
         return arr.reshape(int(self._Nx), int(self._frac_det_dwell)).mean(axis=1)
 
     def run(self):
+        failed = False
         try:
             self._runAcquisition()
         except Exception:
+            failed = True
             self.__logger.exception('PMT scan worker crashed')
         finally:
+            self.scanning = False
+            if failed:
+                # acqDoneSignal is emitted whether this run succeeded or
+                # raised, so without recording the outcome a broken scan is
+                # indistinguishable downstream from a good one -- and the
+                # half-written volume it left would be published as whole.
+                try:
+                    self._manager._markRawFailed(int(self.scanGeneration))
+                except Exception:
+                    pass
             self.scanning = False
             self.acqDoneSignal.emit(int(self.scanGeneration))
 
