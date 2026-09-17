@@ -450,7 +450,10 @@ Deviations from the plan as reviewed, all deliberate:
 * **Static audit (A-06)** shipped as the transitive tripwire plus explicit tests; the `loadSetupMode` runtime affinity test was not written (the static flag test and the generic wrapper tests cover it).
 * **`_recordScanStartRejection` and the TriggerScope bookkeeping use `self.__dict__.get`**, not `getattr(..., default)`: on a QObject shell built with `__new__` (the boundary-test pattern) sip raises from `getattr` even with a default.
 
-Rig validation (§8) is still owed; items 1–8 there are the acceptance list for the MoNaLISA run.
+Rig validation (§8) run 1 (2026-09-17, MoNaLISA): items 1–4 and 6 behaved; two findings:
+
+* `ModuleCommunicationChannel.sigExecutionFinished` has no payload; the new handler forwarded the run result and raised at the end of every script. Fixed (`e6968ccd`).
+* **Unchecking REC during a long scan recording** froze the GUI for 30 s and then aborted and deleted the partial file. Pre-existing and outside the branch's scope, but it is the mid-scan stop the acceptance list asks for and it also consumed a stopping script's cleanup budget: `toggleREC(False)` waited on the GUI thread for the recording worker (`RECORDING_THREAD_STOP_TIMEOUT_MS`), and the worker gave the writer a fixed 30 s `join` to drain a queue that can hold 64 chunks of full-size camera frames. Fixed on this branch with Lenny's go-ahead: REC-off calls `endRecording(emitSignal=False, wait=False)` and the worker's own terminal resets the controller (a re-check during the drain is refused); the writer's finish wait is progress-based (`WRITER_STALL_TIMEOUT_S` = 30 s without a written batch, `WRITER_FINALIZE_TIMEOUT_S` = 300 s inside the storer's finalize call, backlog logged after 5 s); aborts keep their fixed bound.
 
 ## Appendix A — the trigger script, written to the new contract **(r2, R-02)**
 
