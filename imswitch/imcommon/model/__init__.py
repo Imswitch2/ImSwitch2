@@ -1,6 +1,6 @@
 from .SharedAttributes import SharedAttributes, JSON_ATTR_PREFIX
 from .VFileCollection import VFileItem, VFileCollection
-from .api import APIExport, generateAPI
+from .api import APIExport, apiGate, generateAPI
 from .cancellation import (
     CancelToken, OperationCancelled, cancellableSleep, checkpoint,
     clearCurrentCancelToken, currentCancelToken, setCurrentCancelToken,
