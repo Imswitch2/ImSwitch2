@@ -128,10 +128,10 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             ScanLifecycleMixin._recordScanStartRejection(self, reason)
             return False
         self._triggerScopeRunToken = runToken
-        completion = getattr(self, '_externalTriggerScopeCompletion', None)
+        completion = self.__dict__.get('_externalTriggerScopeCompletion')
         if completion is not None:
             completion.bind(runToken)
-            self._triggerScopeBoundCompletions.append(completion)
+            self.__dict__.setdefault('_triggerScopeBoundCompletions', []).append(completion)
         if isNewRun:
             self._scanStopRequested = False
 
@@ -455,7 +455,9 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
 
         callbackLock = threading.Lock()
         callbackDelivered = False
-        outcome = self._triggerScopeRunOutcome or (True, '')
+        # __dict__.get, not getattr: on a QObject shell without __init__ (test
+        # doubles) getattr raises instead of returning the default.
+        outcome = self.__dict__.get('_triggerScopeRunOutcome') or (True, '')
         self._triggerScopeRunOutcome = None
 
         def publishEnded():
@@ -497,7 +499,7 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
 
     def _resolveTriggerScopeCompletions(self, runToken, successful, message=''):
         """Resolve the exact request completions bound to ``runToken``."""
-        bound = getattr(self, '_triggerScopeBoundCompletions', None) or []
+        bound = self.__dict__.get('_triggerScopeBoundCompletions') or []
         matched = [c for c in bound if getattr(c, 'runToken', None) is runToken]
         for completion in matched:
             bound.remove(completion)
@@ -556,8 +558,9 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                             'Failed to report the TriggerScope scan request result',
                             exc_info=True,
                         )
-                if not accepted and completion in self._triggerScopeBoundCompletions:
-                    self._triggerScopeBoundCompletions.remove(completion)
+                bound = self.__dict__.setdefault('_triggerScopeBoundCompletions', [])
+                if not accepted and completion in bound:
+                    bound.remove(completion)
 
     def _deliverOnControllerThread(self, callback):
         try:

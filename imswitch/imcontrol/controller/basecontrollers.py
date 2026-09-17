@@ -274,7 +274,7 @@ class ScanLifecycleMixin:
         is emitted for a refusal, on purpose (a running scan must not be
         ended on behalf of a request that never started). """
         self._lastScanStartRejection = str(reason)
-        channel = getattr(self, '_commChannel', None)
+        channel = self.__dict__.get('_commChannel')  # safe on uninitialised QObject shells
         signal = getattr(channel, 'sigScanRequestRejected', None)
         if signal is None:
             return
