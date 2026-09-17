@@ -27,6 +27,11 @@ REINJECT_INTERVAL_S = 1.0
 DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000
 _WATCHDOG_INTERVAL_MS = 100
 
+#: Threads whose script never stopped. Destroying a running QThread makes Qt
+#: abort the whole process, so they are kept referenced for the process
+#: lifetime instead; launchApp exits without finalizers in that case.
+_leakedThreads = []
+
 
 class ScriptExecutor(SignalInterface):
     """Runs scripts on a dedicated thread with cooperative cancellation.
@@ -71,6 +76,7 @@ class ScriptExecutor(SignalInterface):
 
         self._currentResult = None
         self._pendingRun = None  # (scriptPath, code, result) deferred until the current run ends
+        self._leaked = False
         self._cancelRequestedAt = None
         self._escalated = False
         self._lastInjectionAt = None
@@ -81,7 +87,8 @@ class ScriptExecutor(SignalInterface):
 
     def __del__(self):
         try:
-            self.shutdown(timeoutMs=1000)
+            if not getattr(self, '_leaked', False):
+                self.shutdown(timeoutMs=1000)
         except Exception:
             pass
         if hasattr(super(), '__del__'):
@@ -233,7 +240,14 @@ class ScriptExecutor(SignalInterface):
                 'The running script did not stop within '
                 f'{timeoutS:g} s; its thread is left running.'
             )
+            if not getattr(self, '_leaked', False):
+                self._leaked = True
+                _leakedThreads.append((self._executionThread, self._executionWorker))
         return finished
+
+    def isLeaked(self):
+        """Whether a previous shutdown gave up on a still-running script."""
+        return bool(getattr(self, '_leaked', False))
 
     # ------------------------------------------------------------------ #
     # State                                                               #
@@ -355,6 +369,13 @@ class ExecutionThread(Worker):
                         result.mark_cancelled()
                     else:
                         result.mark_succeeded()
+                elif (
+                    result.status == ScriptRunStatus.SUCCEEDED
+                    and token.isStopRequested()
+                ):
+                    # The script caught OperationCancelled and returned
+                    # normally; a stopped run is still reported as cancelled.
+                    result.mark_cancelled()
                 if result.status == ScriptRunStatus.CANCELLED and token.isExpired():
                     result.cleanup_timed_out = True
                     self.__logger.warning(

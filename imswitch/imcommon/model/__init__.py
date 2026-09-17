@@ -6,6 +6,7 @@ from .cancellation import (
     clearCurrentCancelToken, currentCancelToken, setCurrentCancelToken,
 )
 from .logging import initLogger
+from .shutdown import ShutdownState, shutdownState
 from .shortcut import shortcut, generateShortcuts, ShortcutScope, ShortcutAction, getBoundShortcuts
 from .state_contracts import (
     ComponentStateApplyMode, RestoreWarning, isCriticalRestoreWarning,
