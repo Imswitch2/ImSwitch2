@@ -221,10 +221,9 @@ class TriggerScopeLSXYRController(
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
-        self._widget.setRepeatEnabled(False)
-        self.runScanAdvanced(recalculateSignals=recalculateSignals,
-                             isNonFinalPartOfSequence=isNonFinalPartOfSequence,
-                             sigScanStartingEmitted=True)
+        return self._runTriggerScopeScanExternal(
+            recalculateSignals, isNonFinalPartOfSequence
+        )
 
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted):
@@ -312,9 +311,9 @@ class TriggerScopeLSXYRController(
                 devices.append(device)
         return devices
 
-    @APIExport(runOnUIThread=True)
     def runScan(self) -> None:
-        """Runs a scan with the set scanning parameters."""
+        """Runs a scan with the set scanning parameters (GUI Scan button; the
+        API entry point is WorkflowFacadeController.runScan)."""
         self.runScanAdvanced(sigScanStartingEmitted=False)
 
     def setSharedAttr(self, category, attr, value):

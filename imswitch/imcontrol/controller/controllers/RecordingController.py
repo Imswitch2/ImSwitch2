@@ -2953,9 +2953,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setRecButtonChecked(True)
 
     @APIExport(runOnUIThread=True)
-    def stopRecording(self) -> None:
-        """ Stops recording. """
+    def isRecording(self) -> bool:
+        """ Whether a recording is currently active. """
+        return bool(self.recording)
+
+    @APIExport(runOnUIThread=True)
+    def stopRecording(self) -> bool:
+        """ Stops recording. Idempotent: returns True if a recording was
+        active and its stop was requested (``recordingEnded`` or
+        ``recordingFailed`` will follow), False if nothing was recording (no
+        signal will follow, so do not wait for one). """
+        wasRecording = bool(self.recording)
         self._widget.setRecButtonChecked(False)
+        return wasRecording
 
     @APIExport(runOnUIThread=True)
     def setRecModeSpecFrames(self, numFrames: int) -> None:

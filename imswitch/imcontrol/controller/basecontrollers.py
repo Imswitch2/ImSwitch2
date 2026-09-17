@@ -17,6 +17,7 @@ from imswitch.imcommon.controller.basecontrollers import (
 from imswitch.imcontrol.model import InvalidChildClassError
 from imswitch.imcontrol.model.managers._scan_execution import (
     FINISH_ABORT, FINISH_GRACEFUL, getSharedScanExecutionCoordinator,
+    ScanBusyError,
 )
 from imswitch.imcontrol.controller.WorkflowServices import (
     ScanRequestCompletion,
@@ -260,6 +261,30 @@ class ScanLifecycleMixin:
 
     # Class-level default so the getter works before __init__ assigns it
     _isRunningFlag = False
+    #: Why the last scan start request was refused (None when it was not).
+    _lastScanStartRejection = None
+
+    def _recordScanStartRejection(self, reason):
+        """ Make a refused start observable (plan A-05).
+
+        Every scan-controller family used to refuse duplicate/busy starts
+        with a log line only, so an API caller waiting for ``scanEnded``
+        waited forever. The reason is recorded for the API entry point and
+        published on ``sigScanRequestRejected``; no other lifecycle signal
+        is emitted for a refusal, on purpose (a running scan must not be
+        ended on behalf of a request that never started). """
+        self._lastScanStartRejection = str(reason)
+        channel = getattr(self, '_commChannel', None)
+        signal = getattr(channel, 'sigScanRequestRejected', None)
+        if signal is None:
+            return
+        # Emitted directly, not through emitScanSignal: some families gate
+        # lifecycle emissions on widget state (continuous-laser mode), and a
+        # refusal must be observable unconditionally.
+        try:
+            signal.emit(self._lastScanStartRejection)
+        except Exception:
+            self._logger.error('A scan-rejection listener failed', exc_info=True)
 
     @property
     def isRunning(self) -> bool:
@@ -956,12 +981,15 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         to ``arm()``, be refused, and then call ``scanFailed()`` on the
         original still-running scan.
         """
+        self._lastScanStartRejection = None
         if getattr(self, '_scanCompletionPublishing', False):
-            self._logger.warning(
+            reason = (
                 'Ignoring a re-entrant scan start while the previous '
                 'completion is still being published.'
             )
+            self._logger.warning(reason)
             self.isRunning = False
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
             return None
 
         localToken = getattr(self, '_scanRunToken', None)
@@ -976,22 +1004,24 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 or bool(getattr(activeRun, 'releaseRequested', False))
             )
         ):
-            self._logger.warning(
+            reason = (
                 'Ignoring a scan continuation while the current run is '
                 'failed, stopped, or still releasing.'
             )
+            self._logger.warning(reason)
             self.isRunning = activeIteration is not None
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
             return None
         if localToken is not None and activeRun is localToken:
             if activeIteration is not None or not sigScanStartingEmitted:
-                self._logger.warning(
-                    'Ignoring duplicate scan start from the active owner.'
-                )
+                reason = 'Ignoring duplicate scan start from the active owner.'
+                self._logger.warning(reason)
                 # Callers historically mark isRunning before entering this
                 # helper.  Restore the real iteration state so a duplicate
                 # during a repeat/axial gap cannot suppress the legitimate
                 # deferred continuation.
                 self.isRunning = activeIteration is not None
+                ScanLifecycleMixin._recordScanStartRejection(self, reason)
                 return None
         elif localToken is not None:
             # A released token retained by a stale UI path must not be reused.
@@ -999,7 +1029,18 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self._scanRunStartingPublished = False
 
         isNewRun = activeRun is None
-        token = self._scanCoordinator.reserveRun(self)
+        try:
+            token = self._scanCoordinator.reserveRun(self)
+        except ScanBusyError as error:
+            # Another controller's run still owns the coordinator. This is
+            # contention, not a failure of this controller: refuse without
+            # touching the scan button or run state (the TriggerScope family
+            # has always done the same).
+            reason = f'Scan start refused: {error}'
+            self._logger.warning(reason)
+            self.isRunning = activeIteration is not None
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
+            return None
         if getattr(self, '_externalScanRequestInProgress', False):
             self._externalScanRequestAccepted = True
             self._externalScanRequestRunToken = token
@@ -1634,9 +1675,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self.setSharedAttr(_attrCategoryTTL, key, value)
 
 
-    @APIExport(runOnUIThread=True)
     def runScan(self) -> None:
-        """ Runs a scan with the set scanning parameters. """
+        """ Runs a scan with the set scanning parameters (GUI Scan button).
+        The API entry point is WorkflowFacadeController.runScan, exported once
+        so rigs with several scanners do not collide on the name. """
         self.runScanAdvanced(sigScanStartingEmitted=False)
         
     def sendScanParameters(self):

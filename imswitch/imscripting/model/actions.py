@@ -135,6 +135,29 @@ class _Actions:
         return result
 
     @APIExport()
+    def runScanAndWait(self, timeout: Optional[float] = None,
+                       source: Optional[str] = None) -> None:
+        """ Starts one scan through ``api.imcontrol.runScan`` and waits for
+        exactly that scan to end, whatever the timing of its signals. Raises
+        ``RuntimeError`` if the start was refused (``ScanRequestRejectedError``)
+        or the scan ended unsuccessfully, ``TimeoutError`` after ``timeout``
+        seconds, and ``OperationCancelled`` immediately when the script is
+        stopped (the running scan then finishes on its own). ``source`` picks
+        the scan controller on rigs with several. """
+        api = self._scriptScope.get('api')
+        imcontrol = getattr(api, 'imcontrol', None)
+        if imcontrol is None:
+            raise RuntimeError('runScanAndWait requires the imcontrol module')
+        handle = imcontrol.runScan(source) if source is not None else imcontrol.runScan()
+        if not handle.wait(timeout):
+            raise TimeoutError(
+                f'Timed out after {timeout:g} s waiting for scan {handle.requestId} '
+                'to end'
+            )
+        if not handle.successful:
+            raise RuntimeError(f'Scan {handle.requestId} failed: {handle.message}')
+
+    @APIExport()
     def sleep(self, seconds: float) -> None:
         """ Sleeps for the specified number of seconds. Unlike ``time.sleep``,
         this returns immediately (raising ``OperationCancelled``) when the
