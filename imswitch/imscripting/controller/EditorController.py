@@ -136,7 +136,9 @@ class EditorController(ImScrWidgetController):
 
     def _onExecutionFinished(self, result):
         self._widget.setStopping(False)
-        self._moduleCommChannel.sigExecutionFinished.emit(result)
+        # The module-level signal carries no payload (the old signal-to-signal
+        # connection dropped the result silently).
+        self._moduleCommChannel.sigExecutionFinished.emit()
 
     def closeEvent(self):
         """ Module close: stop a running script with a bound. The application
