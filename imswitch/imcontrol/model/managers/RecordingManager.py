@@ -9,6 +9,7 @@ import queue
 from datetime import datetime, timezone
 from io import BytesIO
 from dataclasses import dataclass, replace
+from dataclasses import replace as dataclass_replace
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import h5py
@@ -1634,6 +1635,25 @@ class TiffStorer(Storer):
             detectorName, mode, n_frames or 1,
             pixel_size_yx_um=(py, px), dtype=det.dtype)
 
+    @staticmethod
+    def _with_attr_annotations(meta, detector_attrs):
+        """Copy of ``meta`` with the detector's shared attrs merged into its
+        OME annotations (never mutates -- ``self.omeMeta`` is shared across
+        storers). HDF5/Zarr serialize the shared attributes natively; TIFF's
+        equivalent is the MapAnnotation ``build_ome_xml`` emits, so without
+        this the scan-axis provenance would be absent from OME-TIFF.
+
+        The meta's own annotations win over the raw attrs: they hold the
+        curated recording keys and a layout already adapted to what the file
+        stores (a single-frame TIFF drops the frame axis), while the raw
+        attrs still describe the plan.
+        """
+        annotations = getattr(meta, 'annotations', None)
+        if not detector_attrs or annotations is None:
+            return meta
+        return dataclass_replace(
+            meta, annotations={**detector_attrs, **annotations})
+
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Save snapshot as a native OME-TIFF (one shot, shape known)."""
         attrs = attrs or {}
@@ -1647,9 +1667,27 @@ class TiffStorer(Storer):
                 meta = self._meta_for(channel, image=image)
                 tiff.imwrite(path, image, ome=True, bigtiff=True,
                              metadata=meta.tiff_metadata(image.shape))
-                tiff.tiffcomment(path, _ome.build_ome_xml(meta, image.shape))
+                # tifffile's metadata mapping has no slot for arbitrary
+                # key/values; rewrite the description with our own OME-XML
+                # (same axes/sizes) carrying the layout annotations and the
+                # shared attrs as a MapAnnotation. A metadata failure must
+                # not cost the already-written image -- the native OME
+                # description then stands.
+                try:
+                    stored_meta = self._with_attr_annotations(
+                        meta, (attrs or {}).get(channel))
+                    tiff.tiffcomment(
+                        path, _ome.build_ome_xml(
+                            stored_meta.padded_to(image.ndim), image.shape))
+                except Exception:
+                    logger.error(
+                        f'Could not embed the OME-XML of the OME-TIFF snapshot '
+                        f'for "{channel}"; the image is saved with tifffile\'s '
+                        f'native description only.',
+                        exc_info=True,
+                    )
                 logger.info(f"Saved OME-TIFF snapshot to {path}")
-    
+
         return storedShapes
 
     def openStream(self, fileDests, detectorNames, shapes, attrs, *,
@@ -1659,6 +1697,9 @@ class TiffStorer(Storer):
         self._paths = {}
         self._spatial = {}            # detectorName -> per-frame shape
         self._dtypeWarned = set()
+        # Kept for finalize: the OME-XML embedded there carries these shared
+        # attributes as a MapAnnotation (TIFF's counterpart of the HDF5/Zarr
+        # attribute serialization), completed with the recording's outcome.
         self._attrs = attrs
         for detectorName in detectorNames:
             path = fileDests[detectorName]
@@ -1725,6 +1766,9 @@ class TiffStorer(Storer):
                 else:
                     shape = (n, *frame_shape)
                     stored_meta = meta.padded_to(len(shape))
+                stored_meta = self._with_attr_annotations(
+                    stored_meta,
+                    (getattr(self, '_attrs', None) or {}).get(detectorName))
                 tiff.tiffcomment(path, _ome.build_ome_xml(stored_meta, shape))
             except Exception as e:
                 errors.append((

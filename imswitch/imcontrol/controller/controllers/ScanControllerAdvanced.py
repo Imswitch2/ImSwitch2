@@ -140,6 +140,21 @@ class ScanControllerAdvanced(SuperScanController):
 
         scanSignalsDict, positions, scanInfoDict = scan_des.make_signal(stage_param, self._setupInfo)
 
+        # Voltage compliance, like PointScan's makeFullScan: refuse waveforms
+        # outside a scanner's configured minVolt/maxVolt. Without this the
+        # only remaining bound is the NI-DAQ task's generic +-10 V range, so
+        # e.g. a Z scan centered at 0 um on a 0..10 V piezo would reach the
+        # hardware.
+        if hasattr(scan_des, "checkSignalComp"):
+            if not scan_des.checkSignalComp(
+                scanParameters, self._setupInfo, scanInfoDict
+            ):
+                self._logger.error(
+                    "Signal voltages outside scanner ranges: try scanning a "
+                    "smaller ROI or a slower scan."
+                )
+                return None, None
+
         # --- TTL / digital ---
         ttl_param = copy.deepcopy(getattr(self._setupInfo.scan, "TTLCycleDesignerParams", {}))
         ttl_param.update(self._ttl_parameters_without_positioners(TTLParameters))

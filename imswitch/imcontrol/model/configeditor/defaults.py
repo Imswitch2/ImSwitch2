@@ -41,6 +41,16 @@ def build_default_device(
         # Process props (managerProperties) fields
         for f in template.get("props", []):
             v = f["default"]
+            if f["type"] == "bool_auto":
+                # Tri-state boolean whose absent state is meaningful: the
+                # consumer applies its own fallback (e.g. smoothScan's device
+                # name heuristic). A null/absent default must stay ABSENT --
+                # materializing a value here would silently change behavior
+                # for devices that relied on the fallback.
+                if v in (None, "", "null"):
+                    continue
+                d["managerProperties"][f["key"]] = bool(v)
+                continue
             d["managerProperties"][f["key"]] = (
                 display_to_json(str(v), f["type"]) if v != "" else v
             )

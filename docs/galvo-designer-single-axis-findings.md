@@ -1,14 +1,34 @@
 # Single-axis / piezo-fast-axis scans: findings and fix plan
 
-*Status: defect 4 (Beta convFactor + compliance stub) and defect 5
-(active-axis collapse misrouting, found in review) FIXED on this branch;
-defects 1–3 are findings with the implementation plan below, revised after a
-review round (see the review notes inline). WIP working doc (per repo
-convention, durable docs go to Sphinx `.rst` once this is implemented). Found
-2026-08-21 while rig-testing the ROI Manager 2.0 branch; reproduced headlessly
-with `scripts/diagnostics/repro-single-axis-scan.py` against
-`example_sted.json` (ND-GalvoX conv 17.44, ND-GalvoY conv 16.63, ND-PiezoZ
-conv 1.0 / vel_max 1000 / acc_max 1000).*
+*Status: ALL FIVE DEFECTS FIXED on this branch, and the 1D plan below is
+IMPLEMENTED (Phases A–D; only D3, rig validation, remains open). Phase A
+landed 2026-08-24 as the period-slicing refactor proven byte-identical by the
+pre-captured golden baselines; Phase B as `managerProperties.smoothScan` with
+the stepped fast axis; Phase C as the singleton-line consumer contract +
+write-only recording provenance; Phase D as the tracked
+`galvo_apd_mock_scan_setup.json` fixture and a simulated end-to-end Z-only
+scan test. Review round 2 (2026-08-24, four findings — see the section at the
+end) is RESOLVED: the e2e test now runs the controller signal-construction +
+shared-attribute + RecordingManager chain to a stored file, OME-TIFF carries
+the provenance as a MapAnnotation, provenance skips collapsed axes, the
+config editor got a tri-state smoothScan that preserves absence, and the
+rig's `~/ImSwitchConfig/imcontrol_setups/example_sted.json` now has
+`smoothScan: false` on ND-PiezoZ. Review round 3 (2026-08-24, three
+findings) is RESOLVED: `_make_full_scan` now enforces `checkSignalComp` so
+the Advanced path refuses out-of-range voltages before arming, the TIFF
+attr rewrite preserves channel names, and NumPy-valued shared attributes
+serialize into the MapAnnotation instead of failing the recording. Review
+round 4 (2026-08-25, one finding — final section) is RESOLVED:
+`build_ome_xml` derives `SizeC` from the final axes/shape and replicates a
+single channel name across retained line-step planes, so a two-line-step
+`TCYX` recording no longer fails TIFF finalization (nor silently loses
+HDF5's `ome_xml`). The plan text is kept as the record of what was built
+and why.
+Durable documentation lives in `setupinfo-reference.rst` (smoothScan) and the
+changelog. Found 2026-08-21 while rig-testing the ROI Manager 2.0 branch;
+reproduced headlessly with `scripts/diagnostics/repro-single-axis-scan.py`
+against `example_sted.json` (ND-GalvoX conv 17.44, ND-GalvoY conv 16.63,
+ND-PiezoZ conv 1.0 / vel_max 1000 / acc_max 1000).*
 
 ## Symptom
 
@@ -174,12 +194,33 @@ restart; since the Defect 4 fix, dim order no longer matters and voltages are
 compliance-checked) — but Beta + the point-scan TTL/APD chain is untested on
 this rig, so the degenerate-XZ form remains the recommended interim.
 
-## 1D scan implementation plan (defects 1–3)
+## 1D scan implementation plan (defects 1–3) — IMPLEMENTED
 
 Goal: a Z-piezo-only scan from the advanced widget produces a correct 1-axis
 signal, records a correct one-line `(1, N)` image through the APD/PMT chain,
 and any 1-active-axis collapse (1-step d2) stops crashing. Phases are ordered
 so each lands independently and multi-axis behavior is provably untouched.
+
+All four phases are implemented on this branch (one commit per phase); the
+text below is kept as the record of the contracts that were built.
+Implementation notes where reality differed from the plan:
+
+- The Phase A slice-hardening alone also cured the ZX "argmax of empty
+  sequence" crash (the empty end-slice WAS the whole failure), so a piezo d1
+  generates even on the smooth path; Phase B's stepped profile remains the
+  physically right one and is what `example_sted.json` now selects.
+- Phase C's line-insert dispatch uses squeezed-rank `<= 2` rather than a
+  stored logical rank: buffer-rank or logical-rank dispatch would REROUTE
+  the existing single-plane-3D case (buffer `(1, Ny, Nx)`), which today
+  takes the 2-D writer and gets its per-line live preview from it. `<= 2`
+  extends the dispatch to the new rank-1 case while every existing shape
+  keeps its route; the pixel-content tests are the guarantee.
+- Verifying TTL designers (item 5) found and fixed a real crash:
+  `PointScanTTLCycleDesigner` indexed `n_steps_dx[1]` and a per-frame
+  `scan_samples` level a 1-axis scan does not emit.
+- The provenance (item 6) rides the shared-attribute channel
+  (`updateScanStageAttrs` → every storer), following the
+  `positive_direction` precedent — no serializer changes needed.
 
 ### Phase A — designer hardening (no behavior change for existing scans)
 
@@ -312,7 +353,11 @@ Known sites:
    - the physical scan device and axis are retained as metadata (e.g.
      `scan_axis_device = 'ND-PiezoZ'`, `scan_axis_physical = 'Z'`, sourced
      from `scanInfo.axis_names` plus the positioner's `axes`), written by
-     all three storers (OME-TIFF, HDF5+OME-XML, OME-NGFF);
+     all three storers (OME-TIFF, HDF5+OME-XML, OME-NGFF). **Write-only
+     provenance**: no ImProcess reader is added for these fields — a reader
+     would create a fresh duplicate interpreter to retire later. The
+     acquisition-layout spec side (draft 4) is untouched by any of this: a
+     one-loop scan is trivially within the model;
    - an OME regression test asserts the stored shape, the scales, and the
      physical scan-axis annotation (listed in Phase D).
 7. `SwabianTimeTaggerManager._infer_dims_from_scanInfo` (:1021–1033):
@@ -346,3 +391,124 @@ Estimated effort: A+B are each small and well-bounded (the sketches above are
 worked out); C is the open-ended half — the assembly-loop and
 recording/metadata audit is where unknowns live. The degenerate-XZ workaround
 remains the interim answer on the rig until D2 passes.
+
+## Review round 2 (2026-08-24) — four findings, all RESOLVED
+
+1. **[P1] D2 stopped before the controller and recorder — FIXED.** The
+   "end-to-end" test called `GalvoScanDesigner` directly and checked only
+   `APD.getChunk()`. `test_z_only_stepped_scan_end_to_end_from_galvo_fixture`
+   now runs the layers the real controller runs: the
+   `AdvancedScanParameterSerializer` (widget state → analog/digital dicts,
+   the exact code `ScanControllerAdvanced._buildAnalogParameterDict`
+   delegates to), the real `ScanControllerAdvanced._make_full_scan` unbound
+   on duck-typed controller state (`checkSignalLength` guard +
+   GalvoScanDesigner + AdvancedScanTTLCycleDesigner), an explicit
+   `checkSignalComp` compliance assertion, the real
+   `SuperScanController.updateScanStageAttrs` publishing into a real
+   `SharedAttributes`, and `RecordingManager` (RAM/HDF5, scan-synchronized
+   via `markScanStarted`). It asserts the recorded `(1, 1, 20)` dataset and
+   the `ScanStage` metadata group's `scan_axis_devices == ['Z']` /
+   `scan_axis_physical == ['Z']` in the stored file.
+
+2. **[P1] OME-TIFF dropped scan-axis provenance — FIXED.** `TiffStorer.snap()`
+   and `openStream()` ignored their `attrs` arguments, so
+   `scan_axis_devices`/`scan_axis_physical` were absent from OME-TIFF
+   recordings. The TIFF representation is an OME `MapAnnotation`
+   (`Namespace="https://imswitch.org/ns/acquisition-metadata/1"`, one `M`
+   element per flattened `Category:key` shared attribute, values JSON-encoded,
+   `AnnotationRef` from the image) emitted by `build_ome_xml` when the meta
+   carries annotations — the identical representation the
+   acquisition-layout branch already uses, so the branches converge. Snap
+   rewrites the description via `tifffile.tiffcomment` when attrs exist;
+   streams capture attrs at `openStream` and merge them into the finalize
+   OME-XML. `test_scan_axis_provenance_roundtrip.py` round-trips the
+   provenance through TIFF, HDF5 and Zarr (snap + stream each).
+
+3. **[P1] Provenance included collapsed axes — FIXED.**
+   `scan_axis_provenance()` dropped only `'None'` entries, so an assigned
+   axis the designer collapses (one realized step) was still claimed as
+   scanned. It now also takes the index-aligned `axis_length`/
+   `axis_step_size` lists and applies the designer's own active-axis rule
+   (`pixels_for_length_step > 1`); `updateScanStageAttrs` feeds it the
+   analog dict's `target_device`/lengths/steps, which also filters the
+   1-length dummy entries `build_analog` appends. Collapse regression:
+   `test_scan_axis_provenance_drops_collapsed_axes`.
+
+4. **[P1] Config-editor default defeated the fallback heuristic — FIXED.**
+   `utility_scripts/builtin_templates/positioners/NidaqPositionerManager.json`
+   declared `smoothScan` as `"type": "bool", "default": true`, and the editor
+   materializes template defaults for absent fields — applying an older
+   mock-named Nidaq positioner would have added `smoothScan: true` and
+   flipped its historical stepped behavior to smooth. The field is now the
+   new tri-state type `bool_auto` (`Automatic (not set)` / `On` / `Off`,
+   default Automatic): Automatic keeps the key ABSENT — `build_default_device`
+   (model + script fallback) skips it and the editor's Apply omits it — so
+   the name heuristic stays in charge until the user explicitly chooses.
+   Selecting Automatic on a device that had the key removes it (the merge
+   treats the omission of a known schema key as intent, not as an unknown
+   field to restore). Tests: `TestBoolAutoTriState` in
+   `test_configeditor_schema_defaults.py`, including a regression against
+   the shipped template file.
+
+**Rig config for D3:** `/Users/lenny/ImSwitchConfig/imcontrol_setups/example_sted.json`
+(the config the rig actually loads) now sets `"smoothScan": false` on
+`ND-PiezoZ`, matching the tracked example — the earlier demonstrator ran the
+smooth piezo path because the untracked rig config lacked the key.
+
+## Review round 3 (2026-08-24) — three findings, all RESOLVED
+
+1. **[P1] Advanced scans bypassed voltage compliance — FIXED.**
+   `ScanControllerAdvanced._make_full_scan` checked signal length and went
+   straight to TTL generation; `checkSignalComp` was never called on the
+   Advanced path (it lives in PointScan's `makeFullScan`), and the NI-DAQ
+   task's generic ±10 V range was the only remaining bound — a Z-only scan
+   centered at 0 µm (−4.75..+4.75 V against the piezo's configured 0..10 V)
+   armed successfully. `_make_full_scan` now runs `checkSignalComp` right
+   after the scan designer and returns `(None, None)` with the PointScan-style
+   actionable error when it fails; `runScanAdvanced` already routes that to
+   `scanFailed()`. The D2 e2e no longer asserts compliance separately
+   (which had masked the production gap): the positive flow passes through
+   the production check, and a companion case proves `_make_full_scan`
+   itself refuses the center-0 scan. The demonstrator
+   `repro-single-axis-scan.py` now prints each case's compliance verdict,
+   scans Z centered at 5 µm (mid-range of the rig piezo), and ends with the
+   refused center-0 case.
+
+2. **[P2] The TIFF attr rewrite dropped the channel name — FIXED.**
+   `build_ome_xml` did not serialize `OmeImageMeta.channels`, and the
+   provenance rewrite replaces tifffile's native description (snap when
+   attrs exist; stream finalize always — the stream path was silently
+   channel-lossy even before this branch). `build_ome_xml` now emits
+   `Channel/Name` exactly as `tiff_metadata()` does; regression test
+   asserts 'Laser 488' survives the rewrite.
+
+3. **[P2] NumPy attr values broke TIFF metadata embedding — FIXED.**
+   `_annotation_text` handled top-level NumPy scalars only; an
+   `np.ndarray` (or NumPy values nested in lists/dicts) raised
+   `TypeError: Object of type ndarray is not JSON serializable`, which
+   could fail a snapshot or strip a stream's final OME metadata.
+   `json.dumps` now gets a recursive `default` hook (ndarray → tolist,
+   generic → item, bytes → decode, last-resort `str`) so a recording can
+   never fail over metadata; `TiffStorer.snap` additionally guards the
+   rewrite so a metadata failure keeps the already-written image with its
+   native description. Unit + storer-level tests with nested NumPy values.
+
+## Review round 4 (2026-08-25) — one finding, RESOLVED
+
+**[P1] Multi-line-step TIFF recording failed during finalization — FIXED.**
+The round-3 channel fix supplied one `Channel/Name` per `meta.channels`
+entry (defaulting to one detector entry), but a retained line-step scan is
+stored `TCYX` with `SizeC = n_linesteps` — and tifffile requires exactly
+one name per C plane. With two line-steps the `IndexError` made
+`TiffStorer.finalizeStream` raise `RuntimeError` (the recording failed);
+HDF5's guarded embed caught it, so pixels and `axes` survived but
+`ome_xml` was silently omitted. `build_ome_xml` now derives `SizeC` from
+the FINAL axes/shape: a single channel entry is replicated across the C
+planes (they are line-steps of that one physical channel), an exact
+name-count match is emitted as-is, and any other mismatch omits the
+`Channel` mapping rather than failing the finalize. Tests: TIFF and HDF5
+`TCYX` streams with two line-steps
+(`test_streaming_linestep_tcyx_finalizes_with_per_plane_channels`,
+`test_streaming_linestep_tcyx_keeps_ome_xml`), and the production
+line-step test `test_hdf5_stream_preserves_linestep_axis` now asserts
+`ome_xml` with `SizeC="2"` and both names.

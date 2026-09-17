@@ -347,12 +347,24 @@ Key fields:
 
 **Required devices**: At least one positioner with ``forScanning: true``.  For
 galvo-based scans, the positioners' ``analogChannel`` fields must reference
-valid NI-DAQ analog output channels. Real (non-mock) positioners used with
-``GalvoScanDesigner`` must also define realistic ``vel_max`` (µm/µs) and
+valid NI-DAQ analog output channels. Positioners that are *swept smoothly*
+by ``GalvoScanDesigner`` must also define realistic ``vel_max`` (µm/µs) and
 ``acc_max`` (µm/µs²) values in ``managerProperties``; optional
 ``jerk_max`` is expressed in µm/µs³. Missing velocity or acceleration
 limits stop signal generation with a configuration error rather than producing
-an unsafe or degenerate trajectory. Lasers referenced in
+an unsafe or degenerate trajectory.
+
+Whether a positioner is swept smoothly or *stepped* is the boolean
+``managerProperties.smoothScan``. Smooth (the default for real devices) means
+the galvo-like profile on the fast axis: a continuous constant-velocity sweep
+with spline turnarounds. Stepped means the device is held at each position
+for the dwell time — the right profile for a piezo or stage, which cannot
+follow a galvo flyback; stepped devices need no ``vel_max``/``acc_max``. Set
+``"smoothScan": false`` on piezo/stage axes (``example_sted.json`` does so
+for ``ND-PiezoZ``), which also makes single-axis scans over that device —
+e.g. a Z-only axial profile — run as a step-and-dwell staircase. When the
+key is absent, devices with ``mock`` in their name are stepped and everything
+else is assumed a sweepable galvo. Lasers referenced in
 ``TTLCycleDesignerParams.ttlDeviceList`` must have ``digitalLine`` set.
 
 **See also**: :class:`~imswitch.imcontrol.model.SetupInfo.ScanInfo`,

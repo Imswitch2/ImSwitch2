@@ -63,6 +63,29 @@ before the session, or the first scan will stop with a message naming the field:
 - The Point Scan panel's **phase delay opens at 0 µs** (was 100); put the calibrated
   lag in `scan.scanDesignerParams.phase_delay` (µs) so both panels seed from it.
 
+## 0c. Single-axis (1-D) scans through the Advanced panel
+
+The 1-D designer work (period slicing at the old `np.min` crash site,
+per-device `smoothScan`, the APD/PMT one-line image chain, goldens) is merged
+into this branch as of the rig session. What a 1-D scan needs:
+
+- **Galvo-only line** (one active galvo axis): nothing to configure; the smooth
+  single-sweep path builds the line from one period.
+- **Piezo-only profile (Z-only)**: the piezo's positioner entry needs
+  `"smoothScan": false` in its `managerProperties` (the shipped
+  `example_sted.json` has it on `ND-PiezoZ`; the rig's own copy under
+  `~/ImSwitchConfig` must have it too). A smooth sweep on a piezo declared with
+  the huge `vel_max`/`acc_max` degenerates the spline; stepped is what the
+  device does.
+- Any XZ scan whose Z range collapses to one step is the same 1-D case and
+  works the same way.
+- Expected file: one line stored as `(1, N)` `YX` with the scan step as the
+  fast-axis pixel size and the physical scan device/axis recorded as
+  `ScanStage:scan_axis_devices` / `scan_axis_physical` in all three formats.
+
+Headless rehearsal of every case: `python scripts/diagnostics/repro-single-axis-scan.py`
+(reads the rig's `example_sted.json`).
+
 ## 1. Why this needs a rig at all
 
 The whole effort replaces *inferred* frame semantics with *recorded* ones. Every

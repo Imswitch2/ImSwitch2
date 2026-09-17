@@ -15,6 +15,7 @@ from imswitch.imcommon.controller.basecontrollers import (
     WidgetControllerFactory,
 )
 from imswitch.imcontrol.model import InvalidChildClassError
+from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
 from imswitch.imcontrol.model.managers._scan_execution import (
     FINISH_ABORT, FINISH_GRACEFUL, getSharedScanExecutionCoordinator,
 )
@@ -1626,6 +1627,31 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 positiveDirections.append(positiveDirection)
 
         self.setSharedAttr(_attrCategoryStage, 'positive_direction', positiveDirections)
+
+        # Write-only recording provenance: which devices scan which dims and
+        # their physical stage axes. Recordings store compatibility YX even
+        # for a 1-axis scan, so without this a Z-only profile's file would
+        # say PhysicalSizeX = Z step with nothing preserving that physical Z
+        # was scanned. Follows the positive_direction precedent above; every
+        # storer persists shared attrs; nothing in ImSwitch reads these back.
+        # Derived from the analog dict (device/length/step aligned) so an
+        # assigned axis the designer collapses to one step is not claimed.
+        analogParameterDict = getattr(self, '_analogParameterDict', None) or {}
+        targetDevices = analogParameterDict.get('target_device')
+        if targetDevices:
+            devices, physical = scan_axis_provenance(
+                targetDevices,
+                self._setupInfo.positioners,
+                axis_lengths=analogParameterDict.get('axis_length'),
+                axis_step_sizes=analogParameterDict.get('axis_step_size'),
+            )
+        else:
+            devices, physical = scan_axis_provenance(
+                getattr(self, '_positionersScan', []) or [],
+                self._setupInfo.positioners,
+            )
+        self.setSharedAttr(_attrCategoryStage, 'scan_axis_devices', devices)
+        self.setSharedAttr(_attrCategoryStage, 'scan_axis_physical', physical)
 
     def updateScanTTLAttrs(self):
         self.getParameters()

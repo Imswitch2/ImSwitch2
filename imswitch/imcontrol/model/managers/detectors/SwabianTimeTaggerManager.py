@@ -1118,7 +1118,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             Ny = int(scan_dims[scan_axes.index('y')])
         else:
             Nx = int(scan_dims[-1])
-            Ny = int(scan_dims[-2])
+            # a 1-axis scan is a single line: no second dimension to read
+            Ny = int(scan_dims[-2]) if len(scan_dims) >= 2 else 1
         outer_axes = [a for a in scan_axes if a not in ('y', 'x')]
         outer_dims = [int(scan_dims[scan_axes.index(a)]) for a in outer_axes]
         return Nx, Ny, S, outer_axes, outer_dims

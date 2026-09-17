@@ -303,3 +303,30 @@ def test_a_deduplicated_ome_tiff_keeps_its_two_part_suffix(tmp_path):
     plain = tmp_path / 'rec_Camera.hdf5'
     plain.write_bytes(b'')
     assert manager.getSaveFilePath(str(plain)).endswith('rec_Camera_1.hdf5')
+
+
+def test_streaming_linestep_tcyx_finalizes_with_per_plane_channels(detman, tmp_path):
+    """A retained line-step scan streams (T, C, Y, X) frames with SizeC =
+    n_linesteps, while the meta's channel list defaults to ONE detector
+    entry. build_ome_xml used to hand tifffile that single name against
+    SizeC=2, and the IndexError turned finalize into a RuntimeError -- the
+    recording failed. The single physical channel's name is now replicated
+    across the line-step planes."""
+    path = str(tmp_path / 'ls_Cam.tiff')
+    storer = TiffStorer(str(tmp_path / 'ls'), detman)
+    storer.omeMeta = {'Cam': build_ome_image_meta(
+        'Cam', MODE_SCAN, 1, pixel_size_yx_um=(0.2, 0.1), dtype=np.uint16)}
+    storer.openStream({'Cam': path}, ['Cam'], {'Cam': (2, 4, 5)}, {'Cam': {}},
+                      singleMultiDetectorFile=False, singleLapseFile=False,
+                      saveMode=None)
+    frames = np.arange(1 * 2 * 4 * 5, dtype=np.uint16).reshape(1, 2, 4, 5)
+    storer.writeFrames('Cam', frames)
+    storer.finalizeStream({'Cam': 1}, {'Cam': path}, None, None)
+
+    with tifffile.TiffFile(path) as t:
+        assert t.is_ome
+        xml = t.ome_metadata or ''
+        assert 'SizeC="2"' in xml
+        assert xml.count('Name="Cam"') == 2
+        np.testing.assert_array_equal(
+            np.asarray(t.asarray()).reshape(1, 2, 4, 5), frames)
