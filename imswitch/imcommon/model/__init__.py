@@ -1,6 +1,10 @@
 from .SharedAttributes import SharedAttributes, JSON_ATTR_PREFIX
 from .VFileCollection import VFileItem, VFileCollection
 from .api import APIExport, generateAPI
+from .cancellation import (
+    CancelToken, OperationCancelled, cancellableSleep, checkpoint,
+    clearCurrentCancelToken, currentCancelToken, setCurrentCancelToken,
+)
 from .logging import initLogger
 from .shortcut import shortcut, generateShortcuts, ShortcutScope, ShortcutAction, getBoundShortcuts
 from .state_contracts import (
