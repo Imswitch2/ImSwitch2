@@ -301,3 +301,57 @@ def test_a_genuine_retrace_is_still_a_reverse_traversal_the_fast_path_refuses():
         MonalisaReconstructor()._fast_gauss_geometry_from_layout(
             resolved, STAGE_ATTRS, FRAMES
         )
+
+
+class _ConnectableSignal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, *args):
+        for slot in self.slots:
+            slot(*args)
+
+
+def test_the_scan_params_controller_starts_with_its_own_defaults(qtbot):
+    """ImProcess failed to start on every rig: the controller's default carried
+    two directions while the dialog, since it keeps one combo per axis, read
+    three -- an IndexError in a constructor that took the whole module down."""
+    from imswitch.improcess.controller.ScanParamsController import ScanParamsController
+    from imswitch.improcess.view.ScanParamsDialog import ScanParamsDialog
+
+    dialog = ScanParamsDialog(
+        None, 'Right-Left', 'Up-Down', 'Back-Front', 'Timepoints', 'pos', 'neg'
+    )
+    qtbot.addWidget(dialog)
+    comm = SimpleNamespace(sigScanParamsUpdated=_ConnectableSignal())
+
+    controller = ScanParamsController(comm, dialog, None, None)
+
+    assert len(controller._parDict['directions']) == 3
+    assert dialog.getDirections()[:3] == ['pos', 'pos', 'pos']
+    assert dialog.getSteps() == ['35', '35', '1', '1']
+
+
+def test_a_short_direction_list_fills_the_missing_axes_from_the_first(qtbot):
+    """Older callers and saved state carry one or two directions; the widget
+    used to give every axis the first one, and still does for the missing ones."""
+    from imswitch.improcess.view.ScanParamsDialog import ScanParamsDialog
+
+    dialog = ScanParamsDialog(
+        None, 'Right-Left', 'Up-Down', 'Back-Front', 'Timepoints', 'pos', 'neg'
+    )
+    qtbot.addWidget(dialog)
+    base = {
+        'dimensions': ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'],
+        'steps': ['4', '3', '1', '1'], 'step_sizes': ['1', '1', '1', '1'],
+        'unidirectional': True,
+    }
+    dialog.updateValues(dict(base, directions=['neg']))
+    assert dialog.getDirections()[:3] == ['neg', 'neg', 'neg']
+    dialog.updateValues(dict(base, directions=['neg', 'pos']))
+    assert dialog.getDirections()[:3] == ['neg', 'pos', 'neg']
+    dialog.updateValues(dict(base, directions=[]))
+    assert dialog.getDirections()[:3] == ['pos', 'pos', 'pos']
