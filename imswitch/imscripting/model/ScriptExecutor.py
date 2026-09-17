@@ -1,8 +1,8 @@
 import ctypes
+import sys
 import threading
 import time
 import traceback
-from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 
 from imswitch.imcommon.framework import (
@@ -330,11 +330,14 @@ class ExecutionThread(Worker):
         self._isWorking = True
         self._currentResult = result
 
-        # Per-run output capture: SignaledStringIO emits output live and captures it
+        # Per-run output capture: SignaledStringIO emits output live and captures
+        # it. Only writes from *this* thread are routed to it (contextlib's
+        # redirect_stdout swaps the process-global stream and used to swallow
+        # every other thread's output while a script ran).
         outputIO = SignaledStringIO(self.sigOutputAppended, result)
 
         try:
-            with redirect_stdout(outputIO), redirect_stderr(outputIO):
+            with _routeThisThreadsOutputTo(outputIO):
                 self.__logger.info('Started script')
                 print()  # Blank line
 
@@ -399,6 +402,76 @@ class ExecutionThread(Worker):
     def getCurrentResult(self):
         """Returns the current ScriptRunResult, or None if not executing."""
         return self._currentResult
+
+
+class _ThreadRoutingStream:
+    """A ``sys.stdout``/``sys.stderr`` replacement that routes each thread's
+    writes to a registered sink and everything else to the stream it
+    wrapped. Installed once per process, lazily, and never removed: it
+    delegates to the original stream, so leaving it in place is harmless,
+    while a foreign replacement of ``sys.stdout`` made later (the pyqtgraph
+    console swaps it around its own commands) is simply wrapped anew by the
+    next run."""
+
+    def __init__(self, fallback):
+        self._fallback = fallback
+        self._sinks = {}
+        self._lock = threading.Lock()
+
+    def register(self, threadIdent, sink):
+        with self._lock:
+            self._sinks[threadIdent] = sink
+
+    def unregister(self, threadIdent):
+        with self._lock:
+            self._sinks.pop(threadIdent, None)
+
+    def _target(self):
+        return self._sinks.get(threading.get_ident(), self._fallback)
+
+    def write(self, text):
+        return self._target().write(text)
+
+    def writelines(self, lines):
+        target = self._target()
+        for line in lines:
+            target.write(line)
+
+    def flush(self):
+        target = self._target()
+        flush = getattr(target, 'flush', None)
+        if callable(flush):
+            flush()
+
+    def __getattr__(self, name):
+        return getattr(self._fallback, name)
+
+
+class _routeThisThreadsOutputTo:
+    """Context manager: route this thread's stdout/stderr writes to ``sink``."""
+
+    def __init__(self, sink):
+        self._sink = sink
+        self._routers = ()
+
+    def __enter__(self):
+        ident = threading.get_ident()
+        routers = []
+        for streamName in ('stdout', 'stderr'):
+            stream = getattr(sys, streamName)
+            if not isinstance(stream, _ThreadRoutingStream):
+                stream = _ThreadRoutingStream(stream)
+                setattr(sys, streamName, stream)
+            stream.register(ident, self._sink)
+            routers.append(stream)
+        self._routers = tuple(routers)
+        return self
+
+    def __exit__(self, *_exc):
+        ident = threading.get_ident()
+        for router in self._routers:
+            router.unregister(ident)
+        return False
 
 
 class SignaledStringIO(StringIO):
