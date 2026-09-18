@@ -71,6 +71,9 @@ class ReconstructionView(QtWidgets.QFrame):
     sigResultsRemoved = QtCore.Signal()
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
+    #: (layer metadata, (min, max)) -- a rendered layer's contrast changed,
+    #: however it was changed: our toolbar, napari's own slider, or a render.
+    sigImageLevelsChanged = QtCore.Signal(object, object)
 
     # Methods
     def __init__(
@@ -92,6 +95,7 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer = self.napariViewer.add_image(
             np.zeros((1, 1)), rgb=False, name='Reconstruction', colormap='grayclip', protected=True
         )
+        self._watchLevels(self.imgLayer)
         self.setNapariLayerControlsVisible(showLayerControls)
         self._displayLayers = []
         # Optional GPU point-cloud backend for localization results. Retained
@@ -355,6 +359,11 @@ class ReconstructionView(QtWidgets.QFrame):
                 self.imgLayer.metadata["source_result"] = str(name)
             else:
                 self.imgLayer.metadata.pop("source_result", None)
+            # A single-image result has no components. Leaving the previous
+            # result's component behind made this layer claim to be one, and
+            # its display settings were then filed under a component name
+            # nothing would ever look for again.
+            self.imgLayer.metadata.pop("component", None)
             # Spatial provenance travels with the layer, beside the scale and
             # unit that were already written here, so anything measuring this
             # image can read what it is measuring from one object.
@@ -539,6 +548,7 @@ class ReconstructionView(QtWidgets.QFrame):
             )
             return None
 
+        self._watchLevels(layer)
         self._displayLayers.append(layer)
         return layer
 
@@ -573,6 +583,32 @@ class ReconstructionView(QtWidgets.QFrame):
                 context, old_ndim, new_ndim, exc,
             )
 
+    def _watchLevels(self, layer) -> None:
+        """Announce this layer's contrast whenever it changes.
+
+        Contrast is changed from three places -- our toolbar, napari's own
+        slider, and a render that applies a result's remembered levels -- and
+        only the first of those used to be noticed. Listening to the layer
+        itself catches all three, so what is on screen is recorded the moment
+        it changes rather than at some later moment that has to be arranged.
+        """
+        events = getattr(getattr(layer, 'events', None), 'contrast_limits', None)
+        if events is None:
+            return
+        try:
+            events.connect(
+                lambda event, layer=layer: self._onLevelsChanged(layer)
+            )
+        except Exception as exc:
+            self._logger.debug("Could not watch contrast limits: %s", exc)
+
+    def _onLevelsChanged(self, layer) -> None:
+        metadata = dict(getattr(layer, 'metadata', None) or {})
+        levels = getattr(layer, 'contrast_limits', None)
+        if levels is None:
+            return
+        self.sigImageLevelsChanged.emit(metadata, tuple(float(v) for v in levels))
+
     def _clearDisplayLayers(self):
         for layer in list(getattr(self, "_displayLayers", [])):
             try:
@@ -586,6 +622,7 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer.visible = True
         self.imgLayer.name = 'Reconstruction'
         self.imgLayer.metadata.pop("source_result", None)
+        self.imgLayer.metadata.pop("component", None)
         self.imgLayer.data = np.zeros((1, 1))
         self._primaryLayer = self.imgLayer
         self._primaryComponent = None
@@ -638,12 +675,20 @@ class ReconstructionView(QtWidgets.QFrame):
             layer_id = self._imageLayerId(layer)
             if layer_id is None:
                 continue
+            levels = getattr(layer, "contrast_limits", None)
             states.append(
                 {
                     "id": layer_id,
                     "name": str(getattr(layer, "name", layer_id)),
                     "visible": bool(getattr(layer, "visible", True)),
                     "colormap": self._colormapName(layer),
+                    # Every layer's contrast, not only the active one's. The
+                    # two used to disagree: switching results remembered the
+                    # colormap of each layer and the levels of one.
+                    "display_levels": (
+                        tuple(float(v) for v in levels)
+                        if levels is not None else None
+                    ),
                     "metadata": dict(getattr(layer, "metadata", {}) or {}),
                 }
             )
