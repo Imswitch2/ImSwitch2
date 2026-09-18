@@ -157,21 +157,46 @@ class ReconstructionViewController(ImProcessWidgetController):
         self.__dict__["_displayedResult"] = currItem
 
         retrievedLevels = currItem.getDispLevels() if hasattr(currItem, "getDispLevels") else None
+        remembered = self._hasRememberedLevels(currItem)
         self._logger.debug(
-            "listItemChanged: %r -> remembered levels %s, layer settings %s",
-            getattr(currItem, "name", currItem), retrievedLevels,
+            "listItemChanged: %r -> remembered=%s levels %s, layer settings %s",
+            getattr(currItem, "name", currItem), remembered, retrievedLevels,
             getattr(currItem, "displayLayerSettings", dict)(),
         )
         # A result nobody has set a contrast on yet is scaled to its own data.
         # Inheriting the previous result's levels is worse than useless when
         # the two are being compared *because* their ranges differ -- which is
         # the reason for having them both in the list.
-        self.fullUpdate(autoLevels=retrievedLevels is None, levels=retrievedLevels)
+        self.fullUpdate(autoLevels=not remembered, levels=retrievedLevels)
         if retrievedLevels is not None:
             self._widget.setImageDisplayLevels(retrievedLevels[0], retrievedLevels[1])
 
         self._currItemInd = self._widget.getCurrentItemIndex()
         self._commChannel.sigCurrentResultChanged.emit(currItem)
+
+    @staticmethod
+    def _hasRememberedLevels(result) -> bool:
+        """Whether this result has a contrast of its own waiting to be restored.
+
+        A result that renders display layers keeps its contrast per component,
+        so asking ``getDispLevels()`` alone answers "never set" on every visit,
+        however many times its contrast has been adjusted. That answer is what
+        decides whether to rescale automatically, and a reconstruction that
+        gets rescaled every time it is clicked is the whole complaint.
+        """
+        if result is None:
+            return False
+        try:
+            if result.getDispLevels() is not None:
+                return True
+        except AttributeError:
+            pass
+        try:
+            settings = result.displayLayerSettings()
+        except AttributeError:
+            return False
+        return any("display_levels" in (entry or {})
+                   for entry in (settings or {}).values())
 
     def imageLevelsChanged(self, layerMetadata, levels) -> None:
         """Remember a contrast the moment it changes.

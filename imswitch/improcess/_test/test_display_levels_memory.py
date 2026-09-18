@@ -371,6 +371,31 @@ def test_every_layer_keeps_its_contrast_not_only_the_active_one():
     assert adjusted["background"] == (1.0, 2.0)
 
 
+def test_a_layered_result_counts_as_having_a_remembered_contrast():
+    """Its contrast lives per component, so asking the whole result says None.
+
+    That answer decides whether to rescale automatically, and a reconstruction
+    rescaled on every click is the whole complaint -- the layer path happens to
+    handle its own levels today, which is the only reason this was invisible.
+    """
+    view = _View()
+    controller = _controller(view)
+    result = _layered("recon", [("signal", 10.0)])
+
+    view.add(result)
+    controller.listItemChanged()
+    view.userDragsSlider(1.0, 2.0)
+
+    assert result.getDispLevels() is None
+    assert controller._hasRememberedLevels(result) is True
+
+
+def test_a_result_nobody_has_touched_has_nothing_remembered():
+    assert ReconstructionViewController._hasRememberedLevels(
+        _dim("fresh", 1.0)) is False
+    assert ReconstructionViewController._hasRememberedLevels(None) is False
+
+
 def test_layered_results_keep_their_contrast_across_a_switch():
     view = _View()
     controller = _controller(view)
