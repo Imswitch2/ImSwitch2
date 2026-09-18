@@ -5,7 +5,7 @@ import traceback
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from .model import dirtools, pythontools, initLogger
+from .model import dirtools, pythontools, initLogger, shutdownState
 from .view.guitools import getBaseStyleSheet
 
 
@@ -54,6 +54,38 @@ def prepareApp(scale=None):
     return app
 
 
+def shutdownModules(moduleMainControllers, logger=None):
+    """ Shut the modules down in two phases.
+
+    1. ``prepareShutdown()`` on every module that has one, in **reverse**
+       creation order (imscripting is created last so that its API scope can
+       see every other module; it must therefore stop first). This is where
+       threads able to reach hardware are drained and the API gate closes.
+    2. ``closeEvent()`` on every module in creation order, as before.
+
+    Exceptions in either phase are logged and do not stop the others. """
+    if logger is None:
+        logger = initLogger('launchApp')
+    controllers = list(moduleMainControllers)
+
+    for controller in reversed(controllers):
+        prepare = getattr(controller, 'prepareShutdown', None)
+        if not callable(prepare):
+            continue
+        try:
+            prepare()
+        except Exception:
+            logger.error(f'Error preparing shutdown of {type(controller).__name__}')
+            logger.error(traceback.format_exc())
+
+    for controller in controllers:
+        try:
+            controller.closeEvent()
+        except Exception:
+            logger.error(f'Error closing {type(controller).__name__}')
+            logger.error(traceback.format_exc())
+
+
 def launchApp(app, mainView, moduleMainControllers):
     """ Launches the app. The program will exit when the app is exited. """
 
@@ -65,12 +97,19 @@ def launchApp(app, mainView, moduleMainControllers):
     exitCode = app.exec_()
 
     # Clean up
-    for controller in moduleMainControllers:
-        try:
-            controller.closeEvent()
-        except Exception:
-            logger.error(f'Error closing {type(controller).__name__}')
-            logger.error(traceback.format_exc())
+    shutdownModules(moduleMainControllers, logger)
+
+    if not shutdownState.hardwareFinalizationAllowed():
+        # A script thread is still alive: hardware managers were deliberately
+        # not finalized (fail closed). Destroying that running QThread during
+        # interpreter finalization would make Qt abort the process, so leave
+        # without running finalizers at all.
+        logger.error(
+            'Exiting without finalizers because a script did not stop: '
+            + '; '.join(shutdownState.reasons)
+        )
+        logging.shutdown()
+        os._exit(exitCode or 1)
 
     # Exit
     sys.exit(exitCode)

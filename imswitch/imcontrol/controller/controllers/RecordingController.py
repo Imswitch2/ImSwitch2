@@ -279,6 +279,20 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             # endRecording() and truncate a scan recording that is still draining
             # toward its frame target (the worker ends itself via should_stop).
             return
+        if checked and self.recording:
+            # REC-off no longer waits for the writer: the previous recording
+            # is still being finalized in the background. Refuse quietly and
+            # keep the button honest; recordingEnded will reset the state.
+            self.__logger.info(
+                'The previous recording is still being finalized; wait for '
+                'it to end before starting a new one.'
+            )
+            self._finalizingRecCycle = True
+            try:
+                self._widget.setRecButtonChecked(False)
+            finally:
+                self._finalizingRecCycle = False
+            return
         if checked and not self.recording:
             self.stopRequested = False
             # Open a fresh two-terminal window before the writer can arm. A
@@ -598,9 +612,18 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         # begin recording with REC switched off.
                         self._cancelPendingScanSourceArm()
                         return
-                    self._master.recordingManager.endRecording()
+                    self._stopManagerRecordingInBackground()
                     return
-            self._master.recordingManager.endRecording()
+            self._stopManagerRecordingInBackground()
+
+    def _stopManagerRecordingInBackground(self):
+        """ Ask the manager to end the recording without waiting for the
+        writer to drain and finalize. The worker publishes recordingEnded (or
+        recordingFailed) itself once the file is complete, which is what
+        resets this controller; waiting here blocked the GUI thread for up to
+        30 s on a large backlog and consumed a stopping script's cleanup
+        budget. """
+        self._master.recordingManager.endRecording(emitSignal=False, wait=False)
 
     def _validateCameraLapse(
         self,
@@ -2953,9 +2976,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setRecButtonChecked(True)
 
     @APIExport(runOnUIThread=True)
-    def stopRecording(self) -> None:
-        """ Stops recording. """
+    def isRecording(self) -> bool:
+        """ Whether a recording is currently active. """
+        return bool(self.recording)
+
+    @APIExport(runOnUIThread=True)
+    def stopRecording(self) -> bool:
+        """ Stops recording. Idempotent: returns True if a recording was
+        active and its stop was requested (``recordingEnded`` or
+        ``recordingFailed`` will follow), False if nothing was recording (no
+        signal will follow, so do not wait for one). """
+        wasRecording = bool(self.recording)
         self._widget.setRecButtonChecked(False)
+        return wasRecording
 
     @APIExport(runOnUIThread=True)
     def setRecModeSpecFrames(self, numFrames: int) -> None:

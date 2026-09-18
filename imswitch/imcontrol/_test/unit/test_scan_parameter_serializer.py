@@ -38,6 +38,7 @@ class FakeScanWidget:
         self.enable = {}            # (dev, s) -> bool
         self.pulse_segments = {}    # (dev, s) -> list[(t0, t1)] or None
         self.power = {}             # (dev, s) -> float
+        self.power_enabled = {}     # dev -> bool, missing means enabled
         self.lock_master = {}
         self.lock_target = {}
         self.sequence_rows = []
@@ -91,6 +92,9 @@ class FakeScanWidget:
     def getLineStepPowerPercent(self, dev, s):
         return self.power.get((dev, s), 0.0)
 
+    def isLinestepPowerEnabled(self, dev):
+        return self.power_enabled.get(dev, True)
+
     def isIntraPixelPositionersMode(self):
         return self.intra_pixel
 
@@ -143,6 +147,9 @@ class FakeScanWidget:
     def setLineStepPowerPercent(self, dev, s, val):
         self.power[(dev, s)] = val
 
+    def setLinestepPowerEnabled(self, dev, val):
+        self.power_enabled[dev] = bool(val)
+
     def setIntraPixelPositionersMode(self, val):
         self.intra_pixel = val
 
@@ -190,6 +197,7 @@ def _configured_widget():
     w.enable = {("488", 0): True, ("488", 1): False, ("561", 0): False, ("561", 1): True}
     w.pulse_segments = {("488", 0): [(0.0, 1.0e-5)], ("561", 1): [(0.5e-5, 1.5e-5)]}
     w.power = {("488", 0): 80.0, ("488", 1): 0.0, ("561", 0): 0.0, ("561", 1): 50.0}
+    w.power_enabled = {"488": True, "561": False}
     w.lock_master = {"488": True}
     w.lock_target = {"561": "488"}
     return w
@@ -239,6 +247,7 @@ def test_build_digital_includes_enabled_and_pulsed_devices():
     assert digital["linestep_enable"]["561"] == [False, True]
     assert digital["pulse_starts_s"]["488"][0] == [0.0]
     assert digital["linestep_power_percent"]["488"] == [80.0, 0.0]
+    assert digital["linestep_power_enabled"] == {"488": True, "561": False}
     assert digital["advanced_device_lock_master"] == {"488": True}
 
 
@@ -276,6 +285,23 @@ def test_round_trip_build_apply_build_is_stable():
     assert (digital2["Nx"], digital2["Ny"]) == (digital["Nx"], digital["Ny"])
     assert digital2["advanced_device_lock_master"] == digital["advanced_device_lock_master"]
     assert digital2["linestep_power_percent"] == digital["linestep_power_percent"]
+    assert digital2["linestep_power_enabled"] == digital["linestep_power_enabled"]
+
+
+def test_apply_old_scan_defaults_power_modulation_to_enabled():
+    serializer = AdvancedScanParameterSerializer()
+    fresh = FakeScanWidget()
+    fresh.power_enabled = {"488": False, "561": False}
+
+    serializer.apply(
+        fresh,
+        {},
+        {"n_linesteps": 1, "linestep_power_percent": {"488": [25.0]}},
+        _POSITIONERS,
+        _TTL,
+    )
+
+    assert fresh.power_enabled == {"488": True, "561": True}
 
 
 def test_apply_tolerates_partial_dicts():

@@ -71,6 +71,14 @@ class EditorView(QtWidgets.QTabWidget):
             if widget.getID() == instanceID:
                 return widget
 
+    def setStopping(self, stopping):
+        """ Shows in every editor instance whether the running script is
+        currently being stopped. """
+        for i in range(self.count()):
+            instance = self.widget(i)
+            if hasattr(instance, 'setStopping'):
+                instance.setStopping(stopping)
+
     def closeInstance(self, instanceID):
         """ Closes the editor instance with the specified ID. """
         for i in range(self.count()):
@@ -144,6 +152,12 @@ class EditorInstanceView(QtWidgets.QWidget):
     def setText(self, text):
         """ Sets the text in the editor instance. """
         self.scintilla.setText(text)
+
+    def setStopping(self, stopping):
+        """ Disables the stop button and labels it while a script is being
+        stopped. """
+        self.stopButton.setEnabled(not stopping)
+        self.stopButton.setText('Stopping…' if stopping else 'Stop')
 
 
 class Scintilla(Qsci.QsciScintilla):

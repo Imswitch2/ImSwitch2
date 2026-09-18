@@ -23,7 +23,15 @@ class ScriptRunResult:
         self.error: Optional[str] = None
         self.started_at: datetime = datetime.now()
         self.ended_at: Optional[datetime] = None
+        # True when the run was cancelled and its cleanup did not finish
+        # within the executor's cleanup budget (see imcommon.model.cancellation).
+        self.cleanup_timed_out: bool = False
     
+    def mark_started(self):
+        """Reset the start time (a deferred run starts later than it was
+        requested)."""
+        self.started_at = datetime.now()
+
     def mark_succeeded(self):
         """Mark the run as successfully completed."""
         self.status = ScriptRunStatus.SUCCEEDED

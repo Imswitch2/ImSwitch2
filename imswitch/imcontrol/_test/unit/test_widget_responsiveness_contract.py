@@ -57,8 +57,14 @@ def test_laser_scan_uses_current_setpoints_not_scan_default_presets():
     assert 'presetBeforeScan' not in controller_source
     assert 'defaultLaserPresetForScan' not in controller_source
     assert 'scanDefaultPreset' not in controller_source
-    assert 'def changeScanPower(self, laserName, laserValue):' in controller_source
-    assert 'self.setLaserValue(laserName, laserValue)' in controller_source
+    assert (
+        'def changeScanPower(self, laserName: str, laserValue: Union[int, float]) -> None:'
+        in controller_source
+    )
+    # Runs on the UI thread and goes straight to the current-setpoint path.
+    assert 'self._setLaserValue(laserName, laserValue)' in controller_source
+    from imswitch.imcontrol.controller.controllers.LaserController import LaserController
+    assert LaserController.changeScanPower._APIRunOnUIThread is True
 
 
 def test_recording_widget_uses_internal_scroll_area():

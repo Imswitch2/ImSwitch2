@@ -212,8 +212,11 @@ class AdvancedScanParameterSerializer:
                 pulse_starts_s[deviceName] = starts_steps
                 pulse_ends_s[deviceName] = ends_steps
 
-        # Per-device per-linestep power (%) for AO-capable lasers
+        # Per-device per-linestep power (%) for AO-capable lasers. The
+        # enable flag is device-wide; missing support in older widgets defaults
+        # to enabled to preserve historical scan behaviour.
         linestep_power_percent = {}
+        linestep_power_enabled = {}
         for deviceName in ttl_devices.keys():
             try:
                 vec = [float(widget.getLineStepPowerPercent(deviceName, s)) for s in range(S)]
@@ -221,6 +224,12 @@ class AdvancedScanParameterSerializer:
                 linestep_power_percent[deviceName] = vec
             except Exception:
                 pass
+            try:
+                linestep_power_enabled[deviceName] = bool(
+                    widget.isLinestepPowerEnabled(deviceName)
+                )
+            except Exception:
+                linestep_power_enabled[deviceName] = True
 
         # Intra-pixel positioner movement metadata travels with the advanced
         # UI state, but only scan designers that understand these keys consume it.
@@ -278,6 +287,7 @@ class AdvancedScanParameterSerializer:
             "sequence_time": seq_time,
             "advanced_mode": advanced_mode,
             "linestep_power_percent": linestep_power_percent,
+            "linestep_power_enabled": linestep_power_enabled,
             "intra_pixel_positioner_movement": intra_pixel_positioner_movement,
             "positioner_target_device": positioner_target_device,
             "positioner_linestep_enable": positioner_linestep_enable,
@@ -374,6 +384,18 @@ class AdvancedScanParameterSerializer:
             try:
                 for s in range(min(S, len(vec))):
                     widget.setLineStepPowerPercent(dev, s, float(vec[s]))
+            except Exception:
+                pass
+
+        # Older saved scans have no enable map and must load with modulation
+        # enabled, matching the pre-checkbox behaviour.
+        linestep_power_enabled = dig.get("linestep_power_enabled", None)
+        for dev in ttl_devices.keys():
+            try:
+                enabled = True if linestep_power_enabled is None else bool(
+                    (linestep_power_enabled or {}).get(dev, True)
+                )
+                widget.setLinestepPowerEnabled(dev, enabled)
             except Exception:
                 pass
 
