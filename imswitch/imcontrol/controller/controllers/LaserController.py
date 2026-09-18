@@ -342,7 +342,19 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             try:
                 self._master.lasersManager[lName].setScanModeActive(True)
                 if powerDevice is not None:
-                    self._master.lasersManager[powerDevice].setEnabled(True)
+                    enableResult = self._master.lasersManager[
+                        powerDevice].setEnabled(True)
+                    # Managers on the old interface return None (no result
+                    # reported yet); only an explicit False -- a manager that
+                    # rejected the request, e.g. AAAOTFLaserManager on a
+                    # transport failure or MPBLaserManager with no positive
+                    # setpoint -- is a confirmed failure worth a warning here.
+                    if enableResult is False:
+                        self._logger.warning(
+                            f'Laser "{powerDevice}" (power device for '
+                            f'"{lName}") rejected the scan enable request; '
+                            f'it may not emit for this scan.'
+                        )
                     # Sync the toggle to the hardware we just switched on.
                     # Without this the button reads OFF while the laser emits,
                     # which looks exactly like "I still have to press ON".
