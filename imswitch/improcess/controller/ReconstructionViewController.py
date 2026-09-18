@@ -1,9 +1,19 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
-from imswitch.improcess.model.contrast import finite_range
+from imswitch.improcess.model.contrast import auto_levels, finite_range
 from imswitch.improcess.model.result import result_kind
 from .basecontrollers import ImProcessWidgetController
+
+
+#: Total percentage of pixels allowed to saturate when a result is scaled
+#: automatically -- 2% is 1% off each tail, which is the rule a result's own
+#: display layers already use for their per-component levels. The two have to
+#: agree: a MoNaLISA reconstruction renders through the display-layer path and
+#: a duplicate of it through the plain-image path, and clipping the outliers in
+#: one while spanning the full range in the other made the same picture look
+#: like two different pictures depending on which was clicked.
+AUTO_SATURATED_PERCENT = 2.0
 
 
 class ReconstructionViewController(ImProcessWidgetController):
@@ -147,6 +157,11 @@ class ReconstructionViewController(ImProcessWidgetController):
         self.__dict__["_displayedResult"] = currItem
 
         retrievedLevels = currItem.getDispLevels() if hasattr(currItem, "getDispLevels") else None
+        self._logger.debug(
+            "listItemChanged: %r -> remembered levels %s, layer settings %s",
+            getattr(currItem, "name", currItem), retrievedLevels,
+            getattr(currItem, "displayLayerSettings", dict)(),
+        )
         # A result nobody has set a contrast on yet is scaled to its own data.
         # Inheriting the previous result's levels is worse than useless when
         # the two are being compared *because* their ranges differ -- which is
@@ -168,6 +183,12 @@ class ReconstructionViewController(ImProcessWidgetController):
         runs on the change itself, so there is no window to lose it in.
         """
         result = self.getActiveResult()
+        self._logger.debug(
+            "imageLevelsChanged: levels=%s layer=%s/%s -> result %r",
+            levels, (layerMetadata or {}).get("source_result"),
+            (layerMetadata or {}).get("component"),
+            getattr(result, "name", result),
+        )
         if result is None or levels is None:
             return
         self._storeDisplayLevels(result, layerMetadata, levels)
@@ -201,6 +222,14 @@ class ReconstructionViewController(ImProcessWidgetController):
         if display_layers:
             if hasattr(result, "applyDisplayLayerSettings"):
                 display_layers = result.applyDisplayLayerSettings(display_layers)
+            self._logger.debug(
+                "_setProcessingResultSlice: %r renders %d display layer(s), "
+                "levels after persisted overrides: %s",
+                getattr(result, "name", result), len(display_layers),
+                [(getattr(layer, "component", None)
+                  or (layer.metadata or {}).get("component"), layer.display_levels)
+                 for layer in display_layers],
+            )
             self._transposeOrder = list(range(np.asarray(display_layers[0].data).ndim))
             # Display layers carry their own per-layer contrast and have no
             # shared sliced axis, so there is no "Base" axis to rescale against.
@@ -376,28 +405,32 @@ class ReconstructionViewController(ImProcessWidgetController):
     def updateLevelsRange(self, base=None):
         """Scale the contrast to the data currently on screen.
 
-        Through ``finite_range`` rather than a plain ``min()``/``max()``: this
-        now runs whenever a result is shown for the first time, not only for
-        the first result of a session, so it meets lazy HDF5/Zarr arrays that
-        it must not materialize in full, and results holding NaN, whose raw
-        minimum is NaN and produces an image that renders as nothing.
+        The slider spans the data's full range; the view clips the outermost
+        1% at each end, which is the rule a result's own display layers
+        already use, so the same picture looks the same whichever path renders
+        it. Both go through the contrast helpers rather than a plain
+        ``min()``/``max()``: this runs whenever a result is shown for the first
+        time, not only for the first result of a session, so it meets lazy
+        HDF5/Zarr arrays it must not materialize in full, and results holding
+        NaN, whose raw minimum is NaN and renders as nothing at all.
         """
         im = self._widget.getImage()
         baseAxisIndex = self._baseAxisIndex()
 
-        if baseAxisIndex is None:
-            # No Base axis — rescale to the whole displayed image's range.
-            levels = finite_range(im)
-        else:
+        if baseAxisIndex is not None:
+            # Components of a Base axis have their own ranges, so the one on
+            # screen is what gets measured rather than the whole stack.
             if base is None:
                 base = (self._axisStep[baseAxisIndex]
                         if baseAxisIndex < len(self._axisStep) else 0)
             indexForImage = [slice(None) for _ in range(im.ndim)]
             indexForImage[baseAxisIndex] = base
-            levels = finite_range(im[tuple(indexForImage)])
+            im = im[tuple(indexForImage)]
 
-        self._widget.setImageDisplayLevelsRange(*levels)
-        self._widget.setImageDisplayLevels(*levels)
+        self._widget.setImageDisplayLevelsRange(*finite_range(im))
+        self._widget.setImageDisplayLevels(
+            *auto_levels(im, saturated_percent=AUTO_SATURATED_PERCENT)
+        )
 
     def updateRecon(self):
         reconObj = self._widget.getCurrentItemData()
@@ -526,6 +559,11 @@ class ReconstructionViewController(ImProcessWidgetController):
         if result is None or levels is None:
             return
         layer_id = self._displayLayerId(result, layerMetadata)
+        self._logger.debug(
+            "_storeDisplayLevels: %r <- %s under %s",
+            getattr(result, "name", result), levels,
+            layer_id if layer_id is not None else "the result as a whole",
+        )
         if layer_id is not None and hasattr(result, "setDisplayLayerLevels"):
             result.setDisplayLayerLevels(layer_id, levels)
         elif hasattr(result, "setDispLevels"):

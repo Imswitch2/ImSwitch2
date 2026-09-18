@@ -248,7 +248,11 @@ def test_a_result_shown_for_the_first_time_scales_to_its_own_data():
     view.add(_dim("b", 10.0))
     controller.listItemChanged()
 
-    assert tuple(view.imgLayer.contrast_limits) == (0.0, 190.0)
+    # b spans 0..190, a spans 0..19: the levels must describe b, not the
+    # (3.0, 7.0) that was set on a.
+    low, high = view.imgLayer.contrast_limits
+    assert 150.0 < high <= 190.0
+    assert view.imgLayer.contrast_limits_range == (0.0, 190.0)
 
 
 def test_contrast_survives_a_re_render_that_is_not_a_selection_change():
@@ -285,6 +289,44 @@ def test_removing_a_result_does_not_move_another_result_contrast():
 
     assert c.getDispLevels() == (5.0, 6.0)
     assert b.getDispLevels() != (5.0, 6.0)
+
+
+def test_auto_levels_clip_outliers_like_a_display_layer_does():
+    """Both render paths must scale the same picture the same way.
+
+    A MoNaLISA reconstruction renders through the display-layer path, which
+    clips 1% off each tail; a duplicate of it renders through the plain-image
+    path. Spanning the full range in one and clipping in the other made the
+    same data look like two different pictures depending which was clicked.
+    """
+    view = _View()
+    controller = _controller(view)
+    data = np.zeros((40, 40), dtype=np.float32)
+    data[0, 0] = 1000.0          # one hot pixel, well outside the bulk
+    data[1:, :] = 1.0
+
+    view.add(_Result("spiky", data))
+    controller.listItemChanged()
+
+    low, high = view.imgLayer.contrast_limits
+    assert high < 1000.0, "the hot pixel must not set the top of the scale"
+    # ...while the slider still spans everything, so it can be dragged there.
+    assert view.imgLayer.contrast_limits_range == (0.0, 1000.0)
+
+
+def test_a_result_and_a_copy_of_it_open_at_the_same_contrast():
+    view = _View()
+    controller = _controller(view)
+    data = np.linspace(0, 1, 400, dtype=np.float32).reshape(20, 20)
+
+    view.add(_Result("original", data))
+    controller.listItemChanged()
+    first = tuple(view.imgLayer.contrast_limits)
+
+    view.add(_Result("original (duplicate)", data.copy()))
+    controller.listItemChanged()
+
+    assert tuple(view.imgLayer.contrast_limits) == first
 
 
 # --- results that render several layers -------------------------------------

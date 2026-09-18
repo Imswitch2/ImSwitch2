@@ -594,13 +594,20 @@ class ReconstructionView(QtWidgets.QFrame):
         """
         events = getattr(getattr(layer, 'events', None), 'contrast_limits', None)
         if events is None:
+            self._logger.warning(
+                "Layer %r has no contrast_limits event; contrast changes made "
+                "on it cannot be remembered per result.",
+                getattr(layer, 'name', layer),
+            )
             return
         try:
             events.connect(
                 lambda event, layer=layer: self._onLevelsChanged(layer)
             )
+            self._logger.debug("Watching contrast limits of layer %r",
+                               getattr(layer, 'name', layer))
         except Exception as exc:
-            self._logger.debug("Could not watch contrast limits: %s", exc)
+            self._logger.warning("Could not watch contrast limits: %s", exc)
 
     def _onLevelsChanged(self, layer) -> None:
         metadata = dict(getattr(layer, 'metadata', None) or {})
