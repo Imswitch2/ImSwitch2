@@ -529,9 +529,12 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         uses. """
         self._setLaserValue(laserName, value)
 
-    @APIExport()
-    def changeScanPower(self, laserName, laserValue):
-        self.setLaserValue(laserName, laserValue)
+    @APIExport(runOnUIThread=True)
+    def changeScanPower(self, laserName: str, laserValue: Union[int, float]) -> None:
+        """ Sets the value of the specified laser, in the units that the laser
+        uses (alias of setLaserValue kept for existing scripts). Runs on the
+        UI thread because it updates the laser widget. """
+        self._setLaserValue(laserName, laserValue)
 
     @APIExport(runOnUIThread=True)
     def sendTrigger(self, triggerId: int):

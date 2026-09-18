@@ -16,6 +16,67 @@ e.g. the global ``getWaitForSignal`` scripting function.
 There are example scripts under the scripting module to see how the
 scripting functionality works in action.
 
+Threading model and waiting for events
+======================================
+
+A script runs on its own thread. Every ``api.*`` call that touches the
+GUI runs on the GUI thread and **blocks the script until it has run**,
+returning the function's value or raising its exception in the script.
+Statements therefore execute in order, and ``x =
+api.imcontrol.snapImage(output=True)`` really yields an array.
+
+**Create the waiter before the trigger.** ``getWaitForSignal`` only
+listens from the moment it is created; an emission that happened earlier
+is never seen. Either create the waiter first::
+
+    waitForScanToEnd = getWaitForSignal(api.imcontrol.signals().scanEnded, timeout=600)
+    api.imcontrol.runScan()
+    waitForScanToEnd()
+
+or use ``callAndWaitForSignal``, which does exactly that in one line and
+also catches a signal emitted synchronously inside the call::
+
+    callAndWaitForSignal(api.imcontrol.signals().recordingEnded,
+                         api.imcontrol.stopRecording, timeout=60)
+
+**Scans have an exact completion.** ``api.imcontrol.runScan()`` returns a
+handle bound to that scan: ``handle.wait(timeout)`` returns ``True`` when
+it has ended (``False`` on timeout), and ``handle.successful`` /
+``handle.message`` say how. ``runScanAndWait(timeout)`` wraps both and
+raises on refusal, failure or timeout. A start that is refused (a scan is
+already running, the previous one is still finishing) raises
+``ScanRequestRejectedError`` immediately; no ``scanEnded`` follows for it.
+On rigs with several scanners, ``getScanSourceNames()`` lists the choices
+for ``runScan(source=...)``.
+
+**Stopping a script.** Pressing *Stop* (or *Run* while a script runs, or
+closing ImSwitch) delivers ``OperationCancelled`` **once**, at the script's
+next wait (``getWaitForSignal``, ``sleep``, ``waitUntil``,
+``runScanAndWait``, ``handle.wait`` or any API call). Do not catch it. Your
+``finally`` blocks then run inside a *cleanup window* of 30 seconds in
+which waits and API calls work normally, so a recording can still be
+stopped and a stage parked; when the window expires, cancellation re-arms.
+A script that never reaches a wait (``while True: pass``, or a long
+``time.sleep``) is interrupted after 2 seconds — use ``sleep()`` rather
+than ``time.sleep`` to stop promptly. ``stopRecording()`` returns whether a
+recording was active, so cleanup can decide whether to wait for
+``recordingEnded``::
+
+    api.imcontrol.setRecModeUntilStop()
+    try:
+        callAndWaitForSignal(api.imcontrol.signals().recordingStarted,
+                             api.imcontrol.startRecording, timeout=30)
+        for power in (0, 5, 10, 50):
+            api.imcontrol.changeScanPower(laser, power)
+            runScanAndWait(timeout=600)
+    finally:
+        waitForRecordingToEnd = getWaitForSignal(api.imcontrol.signals().recordingEnded, timeout=60)
+        if api.imcontrol.stopRecording():
+            waitForRecordingToEnd()
+
+``example_scan_power_series.py`` under the scripting module is this
+pattern in full.
+
 Workflow Scripting Cookbooks
 =============================
 

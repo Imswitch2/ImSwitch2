@@ -5320,3 +5320,75 @@ def test_waitForAcquisitionStarted_timeout(qtbot):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+# ---------------------------------------------------------------------------
+# Progress-aware writer drain: a slow disk is not a stall (rig regression:
+# stopping a long scan recording aborted and deleted the file after 30 s).
+# ---------------------------------------------------------------------------
+
+def _enqueue_chunks(writer, nChunks, framesPerChunk=4):
+    for _ in range(nChunks):
+        writer.enqueue_frames('CAM', np.zeros((framesPerChunk, 2, 2), dtype=np.uint16))
+
+
+def test_writer_finish_waits_for_a_slow_but_progressing_drain(monkeypatch):
+    import importlib
+    rm = importlib.import_module('imswitch.imcontrol.model.managers.RecordingManager')
+    monkeypatch.setattr(rm, 'WRITER_STALL_TIMEOUT_S', 0.3)
+    storer = _FakeStorer(writeDelay=0.12)          # each batch write takes 120 ms
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    _enqueue_chunks(writer, nChunks=16, framesPerChunk=32)   # 16 batches ≈ 1.9 s total
+    t0 = time.monotonic()
+    writer.finish()                                 # must not time out at 0.3 s
+    assert time.monotonic() - t0 > 1.0
+    assert not writer.is_alive()
+    assert storer.finalized and not storer.aborted
+    assert sum(len(b) for b in storer.writes['CAM']) == 16 * 32
+
+
+def test_writer_finish_gives_up_only_on_a_real_stall(monkeypatch):
+    import importlib
+    rm = importlib.import_module('imswitch.imcontrol.model.managers.RecordingManager')
+    monkeypatch.setattr(rm, 'WRITER_STALL_TIMEOUT_S', 0.3)
+    import threading
+    release = threading.Event()
+
+    class _StuckStorer(_FakeStorer):
+        def writeFrames(self, detectorName, frames):
+            release.wait(5.0)                       # a hung storage backend
+            super().writeFrames(detectorName, frames)
+
+    storer = _StuckStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    _enqueue_chunks(writer, nChunks=2, framesPerChunk=32)
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError, match='no progress for 0.3 s while writing'):
+        writer.finish()
+    assert 0.3 <= time.monotonic() - t0 < 2.0
+    release.set()
+    writer.join(timeout=5.0)
+
+
+def test_writer_finalize_phase_has_its_own_longer_bound(monkeypatch):
+    import importlib
+    rm = importlib.import_module('imswitch.imcontrol.model.managers.RecordingManager')
+    monkeypatch.setattr(rm, 'WRITER_STALL_TIMEOUT_S', 0.2)
+    monkeypatch.setattr(rm, 'WRITER_FINALIZE_TIMEOUT_S', 2.0)
+
+    class _SlowFinalizeStorer(_FakeStorer):
+        def finalizeStream(self, *args, **kwargs):
+            time.sleep(0.6)                         # longer than the stall bound
+            super().finalizeStream(*args, **kwargs)
+
+    storer = _SlowFinalizeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    _enqueue_chunks(writer, nChunks=1, framesPerChunk=2)
+    writer.finish()
+    assert storer.finalized and not storer.aborted

@@ -13,6 +13,18 @@ from functools import wraps
 app = FastAPI()
 
 
+def serializeApiResult(value):
+    """ Turn API return values that are live objects into transport-safe
+    data: anything exposing ``to_dict()`` (e.g. a ScanRunHandle) becomes its
+    dict; everything else is returned as is. """
+    if isinstance(value, (dict, list, tuple, str, bytes, int, float, bool)) or value is None:
+        return value
+    toDict = getattr(value, 'to_dict', None)
+    if callable(toDict):
+        return toDict()
+    return value
+
+
 class ImSwitchServer(Worker):
 
     def __init__(self, api, setupInfo):
@@ -108,13 +120,13 @@ class ImSwitchServer(Worker):
             @app.get(str)
             @wraps(func)
             async def wrapper(*args, **kwargs):
-                return func(*args, **kwargs)
+                return serializeApiResult(func(*args, **kwargs))
             return wrapper
 
         def includePyro(func):
             @Pyro5.server.expose
             def wrapper(*args, **kwargs):
-                return func(*args, **kwargs)
+                return serializeApiResult(func(*args, **kwargs))
             return wrapper
 
         for f in functions:

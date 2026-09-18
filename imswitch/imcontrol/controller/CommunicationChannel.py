@@ -134,6 +134,9 @@ class CommunicationChannel(SignalInterface):
     sigScanStarted = Signal()
     sigScanDone = Signal()
     sigScanEnded = Signal()
+    # A scan start request was refused before any lifecycle signal was
+    # published (reason text). Emitted by every scan-controller family.
+    sigScanRequestRejected = Signal(str)
     sigToggleBlockScanWidget = Signal(bool)
     sigRequestScanParameters = Signal()
     sigSendScanParameters = Signal(dict, dict, object)  # (analogParams, digitalParams, scannerList)
@@ -712,7 +715,12 @@ class CommunicationChannel(SignalInterface):
          - recordingStarted
          - recordingEnded
          - recordingFailed
-         - scanEnded
+         - scanStarting (the run-level start, before hardware arms)
+         - scanStarted (the execution backend started the iteration)
+         - scanDone (an iteration finished)
+         - scanEnded (the run is over, on every terminal path)
+         - scanRejected(reason) (a start request was refused; no scanEnded
+           will follow for it)
 
         They can be accessed like this: api.imcontrol.signals().scanEnded
         """
@@ -723,7 +731,11 @@ class CommunicationChannel(SignalInterface):
             'recordingStarted': self.sigRecordingStarted,
             'recordingEnded': self.sigRecordingEnded,
             'recordingFailed': self.sigRecordingFailed,
+            'scanStarting': self.sigScanStarting,
+            'scanStarted': self.sigScanStarted,
+            'scanDone': self.sigScanDone,
             'scanEnded': self.sigScanEnded,
+            'scanRejected': self.sigScanRequestRejected,
             'saveFocus': self.sigSaveFocus
         })
 

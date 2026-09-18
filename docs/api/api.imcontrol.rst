@@ -37,6 +37,12 @@ api.imcontrol
 
       set the d3Stepdelay parameter (additional parameter rom the pointscan widget, mostly relevant for the polarization during scan)
 
+   .. method:: changeScanPower(laserName: str, laserValue: Union[int, float]) -> None
+
+      Sets the value of the specified laser, in the units that the laser
+      uses (alias of setLaserValue kept for existing scripts). Runs on the
+      UI thread because it updates the laser widget. 
+
    .. method:: changeScanSize(positionerName: str, size: float) -> None
 
       change scan size of positioner
@@ -46,10 +52,40 @@ api.imcontrol
       Moves the specified positioner axis by the specified number of
       micrometers. 
 
-   .. method:: runScan() -> None
+   .. method:: getScanRequestStatus(requestId: str) -> dict
 
-      Runs a scan with the set scanning parameters. 
-   
+      Status of a scan started with runScan, as ``{requestId, source,
+      state, message, exact}`` with state ``pending``, ``succeeded`` or
+      ``failed``. Raises KeyError for an unknown or evicted request id. 
+
+   .. method:: getScanSourceNames() -> List[str]
+
+      Widget keys of every scan controller that runScan(source=...) can
+      target on this setup. 
+
+   .. method:: isRecording() -> bool
+
+      Whether a recording is currently active. 
+
+   .. method:: runScan(source: Optional[str] = None) -> ScanRunHandle
+
+      Starts one scan with the parameters set in the scan widget and
+      returns a handle for its completion.
+      
+      The request is pre-flighted before any lifecycle signal is published;
+      a refused start (a scan is already running, the previous one is still
+      finishing, ...) raises ``ScanRequestRejectedError`` (a RuntimeError)
+      and nothing else happens. On rigs with several scanners ``source``
+      selects one by its widget key (see getScanSourceNames); without it the
+      canonical Scan controller or a lone capable controller is used, and
+      ambiguity raises. Repeat is switched off for the scan.
+      
+      The returned handle resolves for exactly this scan whatever the order
+      of any waiter: ``handle.wait(timeout)`` (from a script), ``handle.done``
+      / ``handle.successful`` / ``handle.message``, or
+      ``getScanRequestStatus(handle.requestId)`` (remote clients receive the
+      handle as ``{requestId, source, state, message}``). 
+
    .. method:: saveScanParamsToFile(filePath: str) -> None
 
       Saves the set scanning parameters to the specified file. 
@@ -145,7 +181,13 @@ api.imcontrol
       - acquisitionStopped
       - recordingStarted
       - recordingEnded
-      - scanEnded
+      - recordingFailed
+      - scanStarting (the run-level start, before hardware arms)
+      - scanStarted (the execution backend started the iteration)
+      - scanDone (an iteration finished)
+      - scanEnded (the run is over, on every terminal path)
+      - scanRejected(reason) (a start request was refused; no scanEnded
+        will follow for it)
       
       They can be accessed like this: api.imcontrol.signals().scanEnded
       
@@ -168,9 +210,12 @@ api.imcontrol
       Moves the specified positioner axis in positive direction by its
       set step size. 
 
-   .. method:: stopRecording() -> None
+   .. method:: stopRecording() -> bool
 
-      Stops recording. 
+      Stops recording. Idempotent: returns True if a recording was
+      active and its stop was requested (``recordingEnded`` or
+      ``recordingFailed`` will follow), False if nothing was recording (no
+      signal will follow, so do not wait for one). 
    
    .. method:: setMask(maskMode: str) -> None 
       
