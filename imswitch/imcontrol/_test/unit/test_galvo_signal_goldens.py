@@ -1,4 +1,4 @@
-"""Golden byte-identity tests for GalvoScanDesigner.make_signal.
+"""Golden tests for GalvoScanDesigner.make_signal.
 
 Phase A of docs/galvo-designer-single-axis-findings.md refactors the smooth
 fast-axis generation (period slicing instead of the tiled middle). These
@@ -14,6 +14,17 @@ the refactor (see the capturing commit). Regenerate deliberately with::
 
 A regeneration is a statement that the output was MEANT to change — never
 regenerate to silence a mismatch you cannot explain.
+
+Everything that carries meaning exactly — the set of emitted devices, array
+shapes and dtypes, sample counts, pixel counts, axis names — is compared
+exactly. Floating-point waveforms are compared to ``FLOAT_RTOL``/``FLOAT_ATOL``
+rather than bit-for-bit, because bit-for-bit is not a portable property: the
+baselines were captured on arm64 and CI runs x86_64, where the same
+Bernstein-spline evaluation lands one ULP away (the observed drift was
+1.7e-18 V on a 0.0129 V value — exactly ``np.spacing`` of it). The tolerance
+is still ~1e9 times tighter than the smallest change the refactor could have
+made to a voltage, so the test keeps its teeth; ``test_the_comparison_still
+_rejects_a_real_change`` pins that.
 """
 import os
 from pathlib import Path
@@ -27,6 +38,12 @@ from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
 )
 
 GOLDEN_DIR = Path(__file__).parent / "data" / "galvo_goldens"
+
+#: Float comparison tolerance (see the module docstring). Roughly 1e4 x the
+#: ULP drift seen between architectures, and ~1e9 x smaller than any change
+#: to a generated voltage that would mean the designer behaves differently.
+FLOAT_RTOL = 1e-12
+FLOAT_ATOL = 1e-15
 
 # scanInfo fields pinned alongside the waveforms. tot_scan_time_s is included
 # on purpose: it was made truthful (scan_samples_total * scan_time_step)
@@ -170,17 +187,55 @@ def test_galvo_golden(case):
             f"only-new={sorted(set(flat) - stored_keys)}"
         )
         for key in sorted(flat):
-            got, want = np.asarray(flat[key]), stored[key]
-            assert got.shape == want.shape, (
-                f"{case}/{key}: shape {got.shape} != golden {want.shape}")
-            if got.dtype.kind in "US" or want.dtype.kind in "US":
-                assert list(got.astype(str)) == list(want.astype(str)), (
-                    f"{case}/{key} differs")
-            else:
-                assert got.dtype == want.dtype, (
-                    f"{case}/{key}: dtype {got.dtype} != golden {want.dtype}")
-                assert np.array_equal(got, want, equal_nan=True), (
-                    f"{case}/{key}: values differ from golden "
-                    f"(max |diff| = "
-                    f"{np.max(np.abs(got.astype(float) - want.astype(float)))})"
-                )
+            _assert_matches_golden(f"{case}/{key}", flat[key], stored[key])
+
+
+def _assert_matches_golden(label, got, want):
+    """Compare one stored array with its baseline.
+
+    Exact everywhere the value is a count, a name, a shape or a dtype;
+    tolerant only where it is a computed double, and then far below any
+    difference the designer could make on purpose.
+    """
+    got, want = np.asarray(got), np.asarray(want)
+    assert got.shape == want.shape, (
+        f"{label}: shape {got.shape} != golden {want.shape}")
+    if got.dtype.kind in "US" or want.dtype.kind in "US":
+        assert list(got.astype(str)) == list(want.astype(str)), (
+            f"{label} differs")
+        return
+    assert got.dtype == want.dtype, (
+        f"{label}: dtype {got.dtype} != golden {want.dtype}")
+    if got.dtype.kind != "f":
+        assert np.array_equal(got, want), f"{label}: values differ from golden"
+        return
+    if np.allclose(got, want, rtol=FLOAT_RTOL, atol=FLOAT_ATOL, equal_nan=True):
+        return
+    difference = np.abs(got - want)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        relative = np.nanmax(difference / np.abs(want))
+    raise AssertionError(
+        f"{label}: values differ from golden beyond rtol={FLOAT_RTOL:g} "
+        f"atol={FLOAT_ATOL:g} (max |diff| = {np.nanmax(difference)}, "
+        f"max relative = {relative})"
+    )
+
+
+def test_the_comparison_still_rejects_a_real_change():
+    """The float tolerance exists for cross-architecture ULP drift, not for
+    changes to the waveform. A nanovolt -- far below anything the designer
+    could do on purpose -- must still fail."""
+    baseline = np.array([-0.01285892, 0.01285984, -4.75, 4.75])
+
+    one_ulp = baseline + np.spacing(np.abs(baseline))
+    _assert_matches_golden("ulp-drift", one_ulp, baseline)
+
+    nanovolt = baseline.copy()
+    nanovolt[0] += 1e-9
+    with pytest.raises(AssertionError, match="beyond rtol"):
+        _assert_matches_golden("real-change", nanovolt, baseline)
+
+    # Counts stay exact whatever the tolerance says about voltages.
+    with pytest.raises(AssertionError, match="values differ from golden"):
+        _assert_matches_golden(
+            "counts", np.array([3, 2, 2]), np.array([3, 2, 1]))
