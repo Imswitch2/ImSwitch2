@@ -176,10 +176,9 @@ class TriggerScopePLSRController(
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
-        self._widget.setRepeatEnabled(False)
-        self.runScanAdvanced(recalculateSignals=recalculateSignals,
-                             isNonFinalPartOfSequence=isNonFinalPartOfSequence,
-                             sigScanStartingEmitted=True)
+        return self._runTriggerScopeScanExternal(
+            recalculateSignals, isNonFinalPartOfSequence
+        )
 
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted):

@@ -8,25 +8,24 @@ NOTE: This script will only work if the recording widget is enabled in your
 current hardware control setup.
 """
 
-import time
-
 getLogger().info('Starting recording in "until stop" mode...')
 api.imcontrol.setRecModeUntilStop()
 api.imcontrol.startRecording()
 
 getLogger().info('Recording started. Showing hardware control tab for a few seconds before stopping.')
-time.sleep(3)
+sleep(3)  # sleep() stops immediately when the script is stopped; time.sleep does not
 mainWindow.setCurrentModule('imcontrol')
-time.sleep(5)
+sleep(5)
 
 getLogger().info('Going back to scripting tab.')
 mainWindow.setCurrentModule('imscripting')
-time.sleep(2)
+sleep(2)
 
 getLogger().info('Stopping recording...')
-waitForRecordingToEnd = getWaitForSignal(api.imcontrol.signals().recordingEnded)
-api.imcontrol.stopRecording()  # It's important to call this after getWaitForSignal!
-waitForRecordingToEnd()
+# Create the waiter BEFORE the call that causes the signal: a signal emitted
+# before the waiter exists is never seen. callAndWaitForSignal does both.
+callAndWaitForSignal(api.imcontrol.signals().recordingEnded,
+                     api.imcontrol.stopRecording, timeout=60)
 
 getLogger().info('Recording stopped.')
 

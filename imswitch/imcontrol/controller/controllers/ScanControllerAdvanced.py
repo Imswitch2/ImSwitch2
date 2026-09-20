@@ -874,6 +874,7 @@ class ScanControllerAdvanced(SuperScanController):
         - aligned using the generated line_clock (most robust across axis configs)
         """
         powers = (TTLParameters or {}).get("linestep_power_percent", {}) or {}
+        power_enabled = (TTLParameters or {}).get("linestep_power_enabled", {}) or {}
         if not powers:
             return
 
@@ -908,6 +909,11 @@ class ScanControllerAdvanced(SuperScanController):
             line_starts = rises.astype(int)
 
         for laserName, vec in powers.items():
+            # Missing flag means enabled for backward compatibility with scans
+            # saved before power modulation became optional.
+            if not bool(power_enabled.get(laserName, True)):
+                continue
+
             laserInfo = getattr(self._setupInfo, "lasers", {}).get(laserName, None)
             if laserInfo is None:
                 continue

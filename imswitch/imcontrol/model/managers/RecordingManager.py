@@ -82,13 +82,21 @@ RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
 #: use its own buffer.
 WRITER_QUEUE_MAX_BYTES = 512 * 1024 * 1024
 
-#: How long the writer may write *nothing at all* during shutdown before it is
-#: declared stuck. This is a liveness bound, not a throughput one: a slow disk
-#: keeps draining and keeps its recording, while a wedged writer is still
-#: caught. The deadline it replaced was a fixed 30 s for the whole drain, which
-#: with the budget above silently required about 17 MiB/s -- and missing it
-#: deleted a recording whose frames had all been captured.
-WRITER_NO_PROGRESS_TIMEOUT_S = 30.0
+# Finishing a recording drains whatever the writer queue holds -- up to
+# WRITER_QUEUE_MAX_BYTES of full-size camera frames, minutes of writing on a
+# slow disk -- so the drain is bounded by *progress*, not by a deadline: a
+# fixed one asserts a disk throughput nobody declared (512 MiB in 30 s is
+# 17 MiB/s), and missing it was not a warning -- the caller raised, cleanup
+# aborted, and the abort DELETED a recording whose frames had all been
+# captured. The writer is given up on only after this long without writing
+# anything (stall), or after WRITER_FINALIZE_TIMEOUT_S inside the storer's
+# single finalize call, which reports no progress of its own: queued bytes
+# have reached zero by then, so a bytes-only progress signal would call a
+# long compression flush a stall. Aborting discards the output anyway, so it
+# keeps a fixed bound.
+WRITER_STALL_TIMEOUT_S = 30.0
+WRITER_FINALIZE_TIMEOUT_S = 300.0
+WRITER_ABORT_TIMEOUT_S = 30.0
 
 
 def _framesNBytes(frames) -> int:
@@ -3054,6 +3062,10 @@ class WriterThread(threading.Thread):
         self._stop_requested = threading.Event()
         self._stop_lock = threading.Lock()
         self._stream_cleanup_done = threading.Event()
+        # Progress ticks (queue items consumed, batches written, finalize
+        # steps) and the current phase, read by _request_stop's drain wait.
+        self._progress = 0
+        self._phase = 'writing'
 
     def _abort_partial_stream(self):
         """Best-effort partial-output cleanup, owned by the writer thread."""
@@ -3193,6 +3205,7 @@ class WriterThread(threading.Thread):
                     # overdue on disk.
                     self._flush_stale_batches()
                     continue
+                self._progress += 1
                 if isinstance(item, tuple) and len(item) == 3:
                     # Release the producer's reservation as soon as the chunk
                     # leaves the queue: from here the frames are this thread's
@@ -3237,12 +3250,14 @@ class WriterThread(threading.Thread):
                             noteDiscarded = getattr(self._storer, 'noteDiscardedFrames', None)
                             if callable(noteDiscarded):
                                 noteDiscarded(dict(self._discardedFrames))
+                            self._phase = 'finalizing'
                             self._storer.finalizeStream(
                                 self._currentFrames,
                                 self._filePaths,
                                 self._recordingManager,
                                 self._saveMode,
                             )
+                            self._progress += 1
                             if self._abort_event.is_set():
                                 self._storer.abortStream(
                                     self._filePaths,
@@ -3302,6 +3317,7 @@ class WriterThread(threading.Thread):
         
         # Update counters
         self._currentFrames[detectorName] += len(batch)
+        self._progress += 1
         
         # Clear batch
         self._batches[detectorName] = []
@@ -3340,36 +3356,6 @@ class WriterThread(threading.Thread):
             )
         self._raise_if_failed()
     
-    def _joinWhileDraining(self) -> None:
-        """Wait for the writer while it is still making progress.
-
-        A fixed deadline here asserts a disk throughput nobody declared: with a
-        512 MiB queue budget, "finish within 30 seconds" means "write at least
-        17 MiB/s", and a NAS, a busy share or a spinning disk need not. What
-        happened when it was missed was the worst outcome in the file -- the
-        caller raises, the worker's cleanup calls abort(), and abortStream
-        DELETES a recording whose frames were all captured.
-
-        Progress is the thing actually worth waiting for, so that is what is
-        measured: as long as queued bytes are going down, the writer is working
-        and gets as long as it needs. Only when nothing has been written for
-        ``WRITER_NO_PROGRESS_TIMEOUT_S`` is it declared stuck.
-        """
-        lastBytes = None
-        lastProgress = time.monotonic()
-        while True:
-            self.join(timeout=0.25)
-            if not self.is_alive():
-                return
-            with self._queuedBytesLock:
-                queued = self._queuedBytes
-            if lastBytes is None or queued < lastBytes:
-                lastBytes = queued
-                lastProgress = time.monotonic()
-                continue
-            if time.monotonic() - lastProgress > WRITER_NO_PROGRESS_TIMEOUT_S:
-                return
-
     def enqueue_frames(self, detectorName, frames):
         """Enqueue frames for the writer thread.
 
@@ -3491,19 +3477,71 @@ class WriterThread(threading.Thread):
             self._raise_if_failed()
             raise RuntimeError('RecordingWriterThread was never started')
 
-        self._joinWhileDraining()
-        if self.is_alive():
-            raise TimeoutError(
-                f'RecordingWriterThread stopped making progress with '
-                f'{self._queuedBytes / (1024 * 1024):.0f} MiB still queued; '
-                f'it wrote nothing for '
-                f'{WRITER_NO_PROGRESS_TIMEOUT_S:g}s'
-            )
+        if abort:
+            self.join(timeout=WRITER_ABORT_TIMEOUT_S)
+            if self.is_alive():
+                raise TimeoutError(
+                    'RecordingWriterThread did not finish within '
+                    f'{WRITER_ABORT_TIMEOUT_S:g} seconds'
+                )
+        else:
+            self._join_while_progressing()
         self._raise_if_failed()
         if stopped_unexpectedly:
             raise RuntimeError(
                 'RecordingWriterThread stopped before finalization completed'
             )
+
+
+    def pendingFrames(self):
+        """Frames not yet on disk: queued chunks are counted by their length,
+        plus the per-detector batches still being accumulated."""
+        pending = sum(self._batch_frame_counts.values())
+        with self._queue.mutex:
+            items = list(self._queue.queue)
+        for item in items:
+            if item is not None:
+                pending += len(item[1])
+        return pending
+
+    def _join_while_progressing(self):
+        """Wait for the writer to drain and finalize, giving up only on a
+        stall. Raises TimeoutError naming the phase and the backlog."""
+        startedAt = time.monotonic()
+        lastProgress = self._progress
+        lastChange = startedAt
+        loggedSlow = False
+        while True:
+            self.join(timeout=0.5)
+            if not self.is_alive():
+                return
+            now = time.monotonic()
+            progress = self._progress
+            if progress != lastProgress:
+                lastProgress = progress
+                lastChange = now
+            phase = self._phase
+            limit = (
+                WRITER_FINALIZE_TIMEOUT_S if phase == 'finalizing'
+                else WRITER_STALL_TIMEOUT_S
+            )
+            if now - lastChange >= limit:
+                raise TimeoutError(
+                    f'RecordingWriterThread made no progress for {limit:g} s '
+                    f'while {phase} ({self._queue.qsize()} queued chunks, '
+                    f'{self.pendingFrames()} frames pending, '
+                    f'{self._queuedBytes / (1024 * 1024):.0f} MiB in flight)'
+                )
+            if not loggedSlow and now - startedAt >= 5.0:
+                loggedSlow = True
+                logger.info(
+                    'Recording writer is still draining: '
+                    f'{self._queue.qsize()} queued chunks, '
+                    f'{self.pendingFrames()} frames pending, '
+                    f'{self._queuedBytes / (1024 * 1024):.0f} MiB in flight; '
+                    'waiting for it to finish rather than discarding the '
+                    'recording.'
+                )
 
 
 class RecordingWorker(Worker):

@@ -189,7 +189,7 @@ to the ImSwitch core.
 
 
 Extracting an in-tree manager into a plugin
-==========================================
+===========================================
 
 Existing in-tree managers can be moved into plugin packages gradually. New
 device support should default to a plugin; established in-tree devices stay until

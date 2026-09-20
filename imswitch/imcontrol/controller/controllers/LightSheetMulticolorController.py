@@ -226,10 +226,9 @@ class LightSheetMulticolorController(
         return {'deviceParameters': dp, 'scanParameters': sp}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
-        self._widget.setRepeatEnabled(False)
-        self.runScanAdvanced(recalculateSignals=recalculateSignals,
-                             isNonFinalPartOfSequence=isNonFinalPartOfSequence,
-                             sigScanStartingEmitted=True)
+        return self._runTriggerScopeScanExternal(
+            recalculateSignals, isNonFinalPartOfSequence
+        )
 
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted):

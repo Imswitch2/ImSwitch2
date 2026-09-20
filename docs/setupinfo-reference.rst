@@ -292,6 +292,8 @@ Mode-switch shortcuts are stored per-mode (in the Setup Modes data), **not** her
    }
 
 
+.. _setupinfo-scan:
+
 scan
 ----
 
@@ -368,7 +370,7 @@ else is assumed a sweepable galvo. Lasers referenced in
 ``TTLCycleDesignerParams.ttlDeviceList`` must have ``digitalLine`` set.
 
 **See also**: :class:`~imswitch.imcontrol.model.SetupInfo.ScanInfo`,
-:ref:`Signal designers <Signal designers>`, :doc:`advanced-scanning`
+:ref:`Signal designers <signal-designers>`, :doc:`advanced-scanning`
 
 
 nidaq

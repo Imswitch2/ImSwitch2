@@ -8,7 +8,8 @@ import zarr
 from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
     ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes,
-    isCriticalRestoreWarning
+    isCriticalRestoreWarning,
+    shutdownState,
 )
 from imswitch.imcommon.framework import Thread
 from .server.ImSwitchServer import ImSwitchServer
@@ -543,6 +544,19 @@ class ImConMainController(MainController):
             self.__logger.error(
                 'Skipping hardware-manager finalization because the server '
                 'thread did not drain within the shutdown deadline.'
+            )
+            return False
+        if (
+            self.__masterController is not None
+            and not shutdownState.hardwareFinalizationAllowed()
+        ):
+            # Same fail-closed rule as for the server thread and controller
+            # workers: a script thread that did not drain may still be inside
+            # a manager call.
+            self.__logger.error(
+                'Skipping hardware-manager finalization because a script did '
+                'not stop within the shutdown deadline: '
+                + '; '.join(shutdownState.reasons)
             )
             return False
         if self.__masterController is not None and controllersClosed is not False:

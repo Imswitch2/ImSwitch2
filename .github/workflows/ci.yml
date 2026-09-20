@@ -30,10 +30,13 @@ jobs:
 
   test:
     # Path-scoped lanes running concurrently, so a failure localizes to its area
-    # and the slow lane doesn't gate feedback from the fast one. The lanes are a
-    # clean partition of the old single-job path list (parity proven by
-    # --collect-only: unit 1297 + improcess 473 == combined 1770); the union
-    # collects exactly the same tests, just split across two runners.
+    # and the slow lane doesn't gate feedback from the fast one. The unit and
+    # improcess lanes are a clean partition of the old single-job path list
+    # (parity proven by --collect-only: unit 1297 + improcess 473 == combined
+    # 1770); the `core` lane was added afterwards because imcommon/imscripting
+    # were in neither the old list nor the split, so their tests -- the API
+    # layer, the framework wrappers and the whole scripting module -- had never
+    # run in CI at all.
     # Still excluded from every lane (run in the manual `imswitch-test` workflow,
     # which has a real display via xvfb): imswitch/imcontrol/_test/ui (napari GUI
     # tests) — a dedicated `ui` lane with a proven offscreen/xvfb strategy is the
@@ -56,6 +59,13 @@ jobs:
             # TODO: drop this ignore once the SNOUTY CPU deskew all-zero-output
             # failure is fixed (pre-existing failure on main).
             extra: "--ignore=imswitch/improcess/_test/test_snouty.py"
+          - lane: core
+            # imcommon (API export/threading contracts, framework wrappers,
+            # cancellation, shutdown) and the imscripting module.
+            paths: >-
+              imswitch/imcommon/_test
+              imswitch/imscripting/_test
+            extra: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
