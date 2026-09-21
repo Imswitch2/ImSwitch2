@@ -1,0 +1,10 @@
+{
+  "category": "rs232devices",
+  "device": {
+    "managerName": "ElliptecManager",
+    "managerProperties": {
+      "port": "example",
+      "posConvFac": "example"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "CoboltLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "digitalPorts": "example"
+    }
+  }
+}

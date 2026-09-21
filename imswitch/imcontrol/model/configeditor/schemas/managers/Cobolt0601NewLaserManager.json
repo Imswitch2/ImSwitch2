@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "digitalPorts": {
+      "description": "COM ports to connect to.  Only the first port is used (the",
+      "x-imswitch-kind": "array",
+      "x-imswitch-source": [
+        "code:required",
+        "example:array"
+      ]
+    },
+    "emissionControl": {
+      "description": "``\"master\"`` uses ``l0``/``l1`` and is the default fail-safe off path.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "modulationPowerMw": {
+      "description": "Digital-modulation setpoint used for the idle safe state.  Defaults to",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "protocolProfile": {
+      "description": "``\"auto\"`` (the default) selects a command profile using read-only",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "scpiPowerUnit": {
+      "description": "Unit used by SCPI power setpoint commands.  Defaults to ``\"mW\"``, which",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "simulation": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "startupControl": {
+      "description": "``\"external\"`` (the default) never sends a software-start command.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "useMockOnFailure": {
+      "description": "Defaults to ``true``. When the configured port cannot be opened, start",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "digitalPorts"
+  ],
+  "title": "Cobolt0601NewLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "Cobolt0601NewLaserManager",
+    "LaserManager"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "cameraListIndex": {
+      "description": "Index of the camera in the enumerated Daheng camera list (0-based).  Set to an invalid value (e.g. ``\"mock\"``) to force the mock fallback.",
+      "x-imswitch-kind": [
+        "integer",
+        "string"
+      ],
+      "x-imswitch-source": [
+        "code:required",
+        "docs:integer",
+        "docs:string"
+      ]
+    },
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "gxipycam": {
+      "description": "Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:mapping-use",
+        "code:required",
+        "docs:object"
+      ]
+    }
+  },
+  "required": [
+    "cameraListIndex",
+    "gxipycam"
+  ],
+  "title": "GXPIPYManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "GXPIPYManager",
+    "DetectorManager"
+  ]
+}

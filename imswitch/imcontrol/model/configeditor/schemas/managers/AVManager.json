@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "avcam": {
+      "description": "Dictionary of AV camera property name → value pairs applied via ``setPropertyValue`` at startup.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:mapping-use",
+        "code:required",
+        "example:object"
+      ]
+    },
+    "cameraListIndex": {
+      "description": "Index of the camera in the enumerated AV camera list (0-based).  Set to an invalid value (e.g. ``\"mock\"``) to force the mock fallback.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    },
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "avcam",
+    "cameraListIndex"
+  ],
+  "title": "AVManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "AVManager",
+    "DetectorManager"
+  ]
+}

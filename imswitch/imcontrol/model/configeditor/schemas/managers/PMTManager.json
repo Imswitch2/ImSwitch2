@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "analogInputLine": {
+      "description": "NI-DAQ analog input line the PMT is wired to.  If an int ``N`` is given it is expanded to ``\"<deviceName>/ai<N>\"``; otherwise the string is used verbatim.",
+      "x-imswitch-kind": [
+        "integer",
+        "string"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer",
+        "docs:string"
+      ]
+    },
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "deviceName": {
+      "description": "NI-DAQ device prefix used when ``analogInputLine`` is given as an int.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "liveUpdateIntervalMs": {
+      "description": "Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  Same meaning as for ``APDManager``; bounds GUI redraws only, never acquired data.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "mockRandomSeed": {
+      "x-imswitch-aliases": [
+        "mock_random_seed"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "mockVoltageMax": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-aliases": [
+        "mock_voltage_max"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "mockVoltageMean": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-aliases": [
+        "mock_voltage_mean"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "mockVoltageMin": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-aliases": [
+        "mock_voltage_min"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "mockVoltageNoiseStd": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-aliases": [
+        "mock_voltage_noise_std"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "mock_random_seed": {
+      "x-imswitch-alias-of": "mockRandomSeed",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "mock_voltage_max": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-alias-of": "mockVoltageMax",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "mock_voltage_mean": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-alias-of": "mockVoltageMean",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "mock_voltage_min": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-alias-of": "mockVoltageMin",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "mock_voltage_noise_std": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-alias-of": "mockVoltageNoiseStd",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "offset_v": {
+      "description": "Voltage offset subtracted from each sample before being treated as signal.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "simulation_mode": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "PMTManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PMTManager",
+    "DetectorManager"
+  ]
+}

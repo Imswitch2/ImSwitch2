@@ -1,0 +1,7 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "MockPositionerManager",
+    "managerProperties": {}
+  }
+}

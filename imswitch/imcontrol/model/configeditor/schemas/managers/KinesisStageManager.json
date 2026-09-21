@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "driverUnitsPerPositionUnit": {
+      "description": "Conversion factor between ImSwitch position units and the raw values",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:number"
+      ]
+    },
+    "homeOnInit": {
+      "description": "If true, home both axes during construction.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "isRackSystem": {
+      "description": "Whether the device is rack-mounted.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "scale": {
+      "description": "Stage scale identifier passed to the pylablib driver.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "snr": {
+      "description": "Kinesis serial number of the device.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    },
+    "unitsPerUm": {
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "snr"
+  ],
+  "title": "KinesisStageManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "KinesisStageManager",
+    "PositionerManager"
+  ]
+}

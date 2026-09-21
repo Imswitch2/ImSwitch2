@@ -2,8 +2,56 @@
 
 Date: 2026-09-21 (plan; revision 2 after first review; revision 3 recorded the
 decisions; revision 4 after second review; revision 5 records what Phase 0
-measured). Status: **Phase 0 implemented on `feat/config-editor-schema-extraction`;
-Phases 1–6 as planned.**
+measured; revision 6 records Phase 1; revision 7 folds in the review of
+Phase 0). Status: **Phases 0–1 implemented on
+`feat/config-editor-schema-extraction` (draft PR #35); Phases 2–6 as planned.**
+
+## Changes in revision 7 (review of Phase 0)
+
+Six findings against the Phase 0 extractor, all verified and fixed before the
+schemas were generated from it, plus one qualification:
+
+| Finding | What was wrong | Fix |
+| --- | --- | --- |
+| The command imported the manager and Qt stack | `imswitch/imcontrol/model/__init__.py` imports every manager on import, and the catalog imported the managers package to find its directory. | The tool installs a bare package object for `imswitch.imcontrol.model` before importing beneath it, and builds the catalog from the explicit managers root. A test runs the tool in a fresh process with `imswitch.imcontrol.model.managers*` and Qt imports forbidden. |
+| Unsupported reads disappeared | Only literal keys were read: `DetectorManager`'s `CAMERA_PIXEL_SIZE_KEY` (a module constant, read inside a *module-level* function handed the dict) and `ThorlabsMFF`'s `_read_info(key)` helper were invisible, so `cameraPixelSizeUm` was missing from every detector and the MFF "read nothing". | Module and class string constants resolve; a method whose key is a parameter is followed to its call sites (`self._read_info("invert", False)`), carrying the *helper's own* access — `hasProperty` is an `in`, `getProperty` a `.get` — so call sites are as optional as the helper; module functions and methods handed the dict or the Info are followed to the parameter they read; a nested dict read through a local alias (`defaults = props.get("defaults", {})`) yields sub-properties with their own kinds. Anything still unnameable is an **unresolved read**: listed in the report, counted in the snapshot, stamped on the schema. |
+| Receiver provenance was not strict | Any attribute ending in `Info` was trusted by name (`self.otherInfo = other` leaked), and a `props` bound in the constructor made an unrelated method's `props` parameter count. | Attributes count only when a method of the class or a base bound them from an Info parameter; name bindings are scoped to their function; an Info-named parameter of *any* method is this manager's Info within that method. |
+| Some "proven object" constraints rejected arrays | `props["channels"][0]` and `.pop()` produced `type: object`. | Only a string-keyed subscript or a mapping-only method (`items`, `keys`, `values`, `get`, `setdefault`, `update`) proves an object. |
+| Writes counted as required reads | No `ast.Load` check: `props["created"] = 1` became a required property. | Store and Del contexts are writes, reported separately and never properties. |
+| Coverage depended on installed plugins | `build_catalog()` ran plugin discovery. | `build_default_registry(discover=False)` and the explicit root everywhere; registry `python_name` resolves a contribution to its class, a legacy stem resolves through its module (a re-export, or a single manager class), and a vendor-driver module (`PyCoboltManager.py`) stays unresolved on purpose. |
+
+*Qualification — the snapshot pins counts, not contracts.* Correct: the Phase 0
+snapshot is a coverage-regression check. The full contract comparison is Phase
+1's checked-in schemas with `test_checked_in_schemas_match_the_source_tree`,
+which regenerates every schema in memory and diffs it against disk: a renamed
+property changes the file.
+
+Measured after the fixes, on the core catalog with discovery off: **58** of 64
+managers read properties (was 54), **216** canonical keys plus 9 alias
+spellings (was 179 + 9), **68** required (unchanged — the guard-aware rule
+held), 148 optional, 0 uncertain, **47** with a provable constraint,
+**3 unresolved reads** (all `SwabianTimeTaggerManager` indexing
+`trigger_levels` by a runtime channel number — reported, not guessed), 0
+writes, and docs agreement **117/118** counting sub-properties (the one
+documented key nothing reads is `PiezoconceptZManager.range_um`). Generation
+covers **65** managers (only `PyCoboltManager` has no class).
+
+## Changes in revision 6 (Phase 1 implemented)
+
+`configeditor/schemagen.py` and `tools/extract_manager_schemas.py --write /
+--check` now exist; `schemas/managers/`, `schemas/fixtures/` and
+`schemas/index.json` are checked in (131 files for **65** managers: the 64 in
+the catalog minus `PyCoboltManager`, whose module is a vendor driver, plus the
+2 template-backed names the catalog's legacy scan skips; the two mock
+contributions resolve through their registry `python_name`). Four things
+implementation surfaced:
+
+| Found | Consequence |
+| --- | --- |
+| Some docs cards have four columns (`Field / Type / Default / Meaning`); the Phase 0 parser read cells by position and took AAAOTF's defaults as descriptions. | The parser reads the header row; 17 schemas' descriptions changed. Kinds and the Phase 0 snapshot did not move. |
+| A required property with an alias cannot come from extraction: the nested `.get` that reveals the alias also makes the key optional. | The either-spelling `anyOf` is emitted after overrides, and only an override can reach it. Tested that way. |
+| "One line in the fixture" is one *property*: JSON's trailing comma moves the previous line. | Exit criterion reworded below; the test compares parsed fixtures and comma-insensitive lines. |
+| `protocolProfile` is a closed set (`build_profiles()`): `aa.compatibility`, `aa.frequency-startup`, or omitted/empty for the default. | The seed override is an `enum` with `null` and `""`, not a loose string type. |
 
 ## Changes in revision 5 (Phase 0 measurements)
 
@@ -62,18 +110,18 @@ import, no side effects. A probe over the current tree shows that works:
 | Measure | Result |
 | --- | --- |
 | Selectable managers in the catalog | 64 (9 registry, 55 legacy scan) |
-| … that read any `managerProperties` at all | **54** (`PyCoboltManager` takes constructor kwargs; the mocks take nothing) |
-| … whose keys static extraction recovers | **54** |
-| Distinct keys recovered | **179** canonical, plus 9 alias spellings folded in (188 spellings); none dynamic (no `props[f"…"]` anywhere) |
-| Required under a guard-aware rule (unguarded subscript, no `.get`/`in` read of the same key) | 68 (a naive subscript rule says 91) |
-| Optional | 111 (0 of them `uncertain` today) |
-| Keys with an *editor preference* from code alone (non-`None` `.get` default or `int()`/`float()`/`bool()`/`Path()` wrapper) | 88 (49 %) |
-| … plus the kind of value in the 15 shipped setups (22 managers) | 117 (65 %) |
-| … plus the *Type* column of the hand-written `docs/devices` cards | 148 (82 %) |
-| Keys whose only default is `None` | 13 (6 still untyped after every source) |
+| … that read any `managerProperties` at all | **58** (`PyCoboltManager.py` is a vendor driver, not a manager; the rest take nothing) |
+| … whose keys static extraction recovers | **58** |
+| Distinct keys recovered | **216** canonical, plus 9 alias spellings folded in; 3 reads remain unresolved (dynamic sub-keys), reported |
+| Required under a guard-aware rule (unguarded subscript, no `.get`/`in` read of the same key) | 68 |
+| Optional | 148 (0 of them `uncertain` today) |
+| Keys with an *editor preference* from code alone (non-`None` `.get` default or `int()`/`float()`/`bool()`/`Path()` wrapper) | 90 (41 %) |
+| … plus the kind of value in the 15 shipped setups (22 managers) | 120 (55 %) |
+| … plus the *Type* column of the hand-written `docs/devices` cards | 151 (69 %) |
+| Keys whose only default is `None` | 31 (24 still untyped after every source) |
 | Device references recovered by data-flow (`props['x']` → `lowLevelManagers['rs232sManager'][x]`) | 14 |
-| Properties with a *provable* validation constraint | 46 |
-| Agreement of extraction with the 118 fields the docs cards document | 111 (94 %) |
+| Properties with a *provable* validation constraint | 47 |
+| Agreement of extraction with the 118 fields the docs cards document | 117 (99 %), counting nested sub-properties |
 
 That last row is the point: [docs/devices/README.md](../../devices/README.md)
 says the cards were hand-derived from "the `managerProperties[...]` and
@@ -462,8 +510,9 @@ tests instead of skipping them; product runtime keeps it optional.
   each guard form, a base-class `.get` for a subclass subscript, and the
   provable-constraint cases (`Path()`, nested subscript, `.items()`).
 
-**Exit criterion (met):** the report reproduces 54 recovered / 179 canonical
-keys (+9 alias spellings) / 68 required / 14 refs on the current tree;
+**Exit criterion (met, re-pinned after review):** the report reproduces 58
+recovered / 216 canonical keys (+9 alias spellings) / 68 required / 14 refs /
+3 unresolved on the current tree;
 `AAAOTFLaserManager` reports `calibCsvPath`, `ttlToggling`, `toggleTrueExternal`
 as optional and no property as constrained; `cameraSerial` on
 `ThorCamTSIManager` is nullable with kind `string` from examples; every row of
@@ -489,11 +538,18 @@ checked-in snapshot regenerated with `--report --json`.
   reviewed" rule are exercised from day one.
 - `jsonschema` added to the `test` extra.
 
-**Exit criterion:** adding a `props.get("newKey", 3)` to any manager without
-running the tool fails CI with a message that says how to fix it; running the
-tool produces a one-property diff plus one line in that manager's fixture.
+**Exit criterion (met):** adding a `props.get("newKey", 3)` to any manager
+without running the tool fails CI with a message that says how to fix it
+(`test_checked_in_schemas_match_the_source_tree`, quoting
+`python tools/extract_manager_schemas.py --write`); running the tool produces a
+one-property diff in the schema and one new property in that manager's fixture
+(`TestExitCriterion`). Every generated schema passes
+`Draft202012Validator.check_schema`, every fixture satisfies its schema, and a
+validation `type` appears only with a provable source or an override
+(`test_generated_schemas_never_narrow_without_an_override`). `jsonschema` is in
+the `test` extra; the tests fail rather than skip without it.
 
-*Estimate: ~0.5 day.*
+*Estimate: ~0.5 day — actual, plus the parser fix.*
 
 ### Phase 2 — Resolve schemas in the model layer; editor consumption gated
 

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "cameraHost": {
+      "description": "Hostname / IP address of the ESP32-CAM web server.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "docs:string"
+      ]
+    },
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "cameraPort": {
+      "description": "TCP port the camera is listening on.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "docs:integer"
+      ]
+    },
+    "esp32cam": {
+      "description": "Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:mapping-use",
+        "code:required",
+        "docs:object"
+      ]
+    }
+  },
+  "required": [
+    "cameraHost",
+    "cameraPort",
+    "esp32cam"
+  ],
+  "title": "ESP32CamManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ESP32CamManager",
+    "DetectorManager"
+  ]
+}

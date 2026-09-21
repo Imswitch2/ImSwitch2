@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "home": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "invertJogAxes": {
+      "x-imswitch-kind": "array",
+      "x-imswitch-source": [
+        "code:default:array",
+        "code:optional(get)"
+      ]
+    },
+    "port": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "travelRangeUm": {
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "BSC203StageManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "BSC203StageManager",
+    "PositionerManager"
+  ]
+}

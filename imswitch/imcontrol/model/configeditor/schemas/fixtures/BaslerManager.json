@@ -1,0 +1,11 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "BaslerManager",
+    "managerProperties": {
+      "basler": {},
+      "cameraListIndex": 1,
+      "cameraPixelSizeUm": null
+    }
+  }
+}

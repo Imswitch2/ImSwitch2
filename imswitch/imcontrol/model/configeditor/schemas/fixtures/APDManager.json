@@ -1,0 +1,17 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "APDManager",
+    "managerProperties": {
+      "cameraPixelSizeUm": null,
+      "ctrInputLine": "example",
+      "deviceName": "example",
+      "liveUpdateIntervalMs": 1.5,
+      "mockPhotonCountMax": 1,
+      "mockPhotonCountMean": 1.5,
+      "mockRandomSeed": null,
+      "simulation_mode": true,
+      "terminal": "example"
+    }
+  }
+}

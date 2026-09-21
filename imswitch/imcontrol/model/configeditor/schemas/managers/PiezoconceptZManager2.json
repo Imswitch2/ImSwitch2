@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "range_um": {
+      "x-imswitch-source": [
+        "code:optional(try/except Exception)"
+      ]
+    },
+    "rs232device": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:optional(try/except Exception)",
+        "code:ref"
+      ],
+      "x-imswitch-widget": "ref"
+    }
+  },
+  "title": "PiezoconceptZManager2 managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PiezoconceptZManager2",
+    "PositionerManager"
+  ]
+}

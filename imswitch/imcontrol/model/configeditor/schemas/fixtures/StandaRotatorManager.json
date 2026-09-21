@@ -1,0 +1,12 @@
+{
+  "category": "rotators",
+  "device": {
+    "managerName": "StandaRotatorManager",
+    "managerProperties": {
+      "microstepsPerStep": 1,
+      "motorListIndex": 1,
+      "stepsPerTurn": 1,
+      "ximcLibLocation": "example"
+    }
+  }
+}

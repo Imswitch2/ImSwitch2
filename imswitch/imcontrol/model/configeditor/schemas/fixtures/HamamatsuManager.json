@@ -1,0 +1,11 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "HamamatsuManager",
+    "managerProperties": {
+      "cameraListIndex": 1,
+      "cameraPixelSizeUm": null,
+      "hamamatsu": {}
+    }
+  }
+}

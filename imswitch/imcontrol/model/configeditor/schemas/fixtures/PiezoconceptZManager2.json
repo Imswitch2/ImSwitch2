@@ -1,0 +1,10 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "PiezoconceptZManager2",
+    "managerProperties": {
+      "range_um": "example",
+      "rs232device": "example"
+    }
+  }
+}
