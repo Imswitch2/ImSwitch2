@@ -1,9 +1,27 @@
 # Config Editor Schema Extraction Plan
 
 Date: 2026-09-21 (plan; revision 2 after first review; revision 3 recorded the
-decisions; revision 4 after second review). Status: **proposed — revision 4
-awaiting review.** Not marked ready to implement: the second review found the
-acceptance criterion, the type rules and the role fragments unsound as written.
+decisions; revision 4 after second review; revision 5 records what Phase 0
+measured). Status: **Phase 0 implemented on `feat/config-editor-schema-extraction`;
+Phases 1–6 as planned.**
+
+## Changes in revision 5 (Phase 0 measurements)
+
+Phase 0 replaced the throwaway probes with `configeditor/extraction.py` and
+`tools/extract_manager_schemas.py --report`. Three figures moved, each for a
+reason the tool now shows:
+
+| Figure | Probe said | Extractor says | Why |
+| --- | --- | --- | --- |
+| Managers that read any `managerProperties` | 55 | **54** | `PulseGeneratorLaserManager`'s one mention of the word is in its docstring. |
+| Distinct keys | 188 | **179 canonical + 9 alias spellings** | The alias rule folds APD/PMT's `mock_*` snake-case spellings into their camelCase properties, as the plan requires; the probe had counted both. |
+| AAAOTF's constrained properties | `calibCsvPath` via `Path()` | **none** | The code passes the read to `create_lut_from_calib(...)`; nothing at the read site proves a type. Its path widget comes from the template/docs, as presentation. |
+
+Also measured for the first time: **46** properties carry a provable
+validation constraint; **0** reads are `uncertain` on today's tree (the rule
+is exercised by fixture tests); `RS232Manager` is selectable by name in shipped
+setups and has a template, yet the catalog's legacy scan skips it as a base
+class — a catalog gap to close in Phase 2 alongside `schema_for()`.
 
 Extends [config-editor-discovery-and-schema.md](config-editor-discovery-and-schema.md)
 (the "discovery plan" below). Nothing here contradicts its target architecture;
@@ -44,16 +62,17 @@ import, no side effects. A probe over the current tree shows that works:
 | Measure | Result |
 | --- | --- |
 | Selectable managers in the catalog | 64 (9 registry, 55 legacy scan) |
-| … that read any `managerProperties` at all | 55 |
-| … whose keys static extraction recovers | **54** (the 55th, `PyCoboltManager`, takes constructor kwargs) |
-| Distinct keys recovered | **188**, none dynamic (no `props[f"…"]` anywhere) |
+| … that read any `managerProperties` at all | **54** (`PyCoboltManager` takes constructor kwargs; the mocks take nothing) |
+| … whose keys static extraction recovers | **54** |
+| Distinct keys recovered | **179** canonical, plus 9 alias spellings folded in (188 spellings); none dynamic (no `props[f"…"]` anywhere) |
 | Required under a guard-aware rule (unguarded subscript, no `.get`/`in` read of the same key) | 68 (a naive subscript rule says 91) |
-| Optional | 120 |
-| Keys with an *editor preference* from code alone (non-`None` `.get` default or `int()`/`float()`/`bool()`/`Path()` wrapper) | 88 (47 %) |
-| … plus the kind of value in the 15 shipped setups (22 managers) | 116 (61 %) |
-| … plus the *Type* column of the hand-written `docs/devices` cards | 149 (79 %) |
-| Keys whose only default is `None` | 13 |
+| Optional | 111 (0 of them `uncertain` today) |
+| Keys with an *editor preference* from code alone (non-`None` `.get` default or `int()`/`float()`/`bool()`/`Path()` wrapper) | 88 (49 %) |
+| … plus the kind of value in the 15 shipped setups (22 managers) | 117 (65 %) |
+| … plus the *Type* column of the hand-written `docs/devices` cards | 148 (82 %) |
+| Keys whose only default is `None` | 13 (6 still untyped after every source) |
 | Device references recovered by data-flow (`props['x']` → `lowLevelManagers['rs232sManager'][x]`) | 14 |
+| Properties with a *provable* validation constraint | 46 |
 | Agreement of extraction with the 118 fields the docs cards document | 111 (94 %) |
 
 That last row is the point: [docs/devices/README.md](../../devices/README.md)
@@ -329,24 +348,25 @@ A generated schema, for illustration (AAAOTF, under the revised rules):
                     "x-imswitch-source": ["code:required", "code:ref"]},
     "channel":     {"x-imswitch-kind": "integer",
                     "x-imswitch-source": ["code:required", "example:int"]},
-    "calibCsvPath":{"type": "string", "x-imswitch-kind": "string", "x-imswitch-widget": "path",
-                    "x-imswitch-source": ["code:optional(try/except KeyError)", "code:Path()", "template:path"]},
+    "calibCsvPath":{"x-imswitch-kind": "string", "x-imswitch-widget": "path",
+                    "x-imswitch-source": ["code:optional(try/except KeyError)", "docs:string", "template:path"]},
     "frequencyMHz":{"x-imswitch-kind": "number", "x-imswitch-nullable": true,
                     "x-imswitch-source": ["code:optional", "code:nullable", "example:float"]},
     "ttlToggling": {"x-imswitch-kind": "boolean",
                     "x-imswitch-source": ["code:optional(in-guard)", "docs:type"]},
     "toggleTrueExternal": {"x-imswitch-kind": "boolean",
                     "x-imswitch-source": ["code:optional(in-guard)", "docs:type"]},
-    "protocolProfile": {"x-imswitch-nullable": true,
-                    "x-imswitch-source": ["code:optional", "code:nullable"]}
+    "protocolProfile": {"x-imswitch-kind": "string", "x-imswitch-nullable": true,
+                    "x-imswitch-source": ["code:optional", "code:nullable", "docs:string"]}
   }
 }
 ```
 
-Only `calibCsvPath` carries a validation `type`, because only there does the
-code (`Path(...)`) prove one. `channel` is *displayed* as an integer and
-accepts anything until an override says otherwise. `protocolProfile` has no
-kind and no constraint: the JSON widget, and validation that passes.
+Nothing here carries a validation `type`: the code never wraps a read in
+`Path()`, `int()` or `.items()`, so nothing is provable and every property
+accepts anything until an override says otherwise. `channel` is *displayed* as
+an integer; `calibCsvPath` gets the path picker from the template. This is
+the measured output of Phase 0, not a sketch.
 
 `x-imswitch-*` is the annotation vocabulary the discovery plan's item D
 proposed. This plan introduces `kind`, `widget`, `ref-category`, `aliases`,
@@ -442,14 +462,16 @@ tests instead of skipping them; product runtime keeps it optional.
   each guard form, a base-class `.get` for a subclass subscript, and the
   provable-constraint cases (`Path()`, nested subscript, `.items()`).
 
-**Exit criterion:** the report reproduces 54 / 188 / 68 required / 14 refs on
-the current tree; `AAAOTFLaserManager` reports `calibCsvPath`, `ttlToggling`,
-`toggleTrueExternal` as optional, `calibCsvPath` as the only constrained
-property, and `cameraSerial` on `ThorCamTSIManager` as nullable with kind
-`string` from examples; every row of the tables has a failing-then-passing
-test.
+**Exit criterion (met):** the report reproduces 54 recovered / 179 canonical
+keys (+9 alias spellings) / 68 required / 14 refs on the current tree;
+`AAAOTFLaserManager` reports `calibCsvPath`, `ttlToggling`, `toggleTrueExternal`
+as optional and no property as constrained; `cameraSerial` on
+`ThorCamTSIManager` is nullable with kind `string` from examples; every row of
+the tables has a test (`test_configeditor_extraction.py`, 74 cases), and the
+tree figures are pinned by `test_configeditor_extraction_tree.py` against a
+checked-in snapshot regenerated with `--report --json`.
 
-*Estimate: ~1 day.*
+*Estimate: ~1 day — actual.*
 
 ### Phase 1 — Checked-in schemas, fixtures and the drift guard
 

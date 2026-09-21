@@ -1,0 +1,535 @@
+{
+  "managers": [
+    {
+      "constrained": 0,
+      "keys": 7,
+      "name": "AAAOTFLaserManager",
+      "refs": 1,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 3,
+      "keys": 8,
+      "name": "APDManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 2,
+      "name": "AVManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 4,
+      "name": "BSC203StageManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 2,
+      "name": "BaslerManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "Cobolt0601LaserManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 8,
+      "name": "Cobolt0601NewLaserManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "CoboltLaserManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "CoolLEDLaserManager",
+      "refs": 1,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 3,
+      "name": "ESP32CamManager",
+      "refs": 0,
+      "required": 3,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "ESP32LEDLaserManager",
+      "refs": 1,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "ESP32LEDMatrixManager",
+      "refs": 1,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "ESP32LightSheetManager",
+      "refs": 1,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "ESP32Manager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "ESP32StageManager",
+      "refs": 1,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "ElliptecManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 4,
+      "name": "ElliptecRotatorManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "GRBLLaserManager",
+      "refs": 1,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "GRBLManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "GRBLStageManager",
+      "refs": 1,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 2,
+      "name": "GXPIPYManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 2,
+      "name": "HamamatsuManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "HamamatsuSLMdviManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "HamamatsuSLMusbManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 5,
+      "name": "JenaPiezoZManager",
+      "refs": 1,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 1,
+      "name": "JetsonCamManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 4,
+      "name": "KDC101Manager",
+      "refs": 0,
+      "required": 4,
+      "uncertain": 0
+    },
+    {
+      "constrained": 3,
+      "keys": 6,
+      "name": "KDC101PositionerManager",
+      "refs": 0,
+      "required": 4,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "KinesisRotatorManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 4,
+      "name": "KinesisStageManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "LEDMatrixManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "LantzLaserManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "LeicaDMIManager",
+      "refs": 1,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "LeicaDMIStandMockManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "MHXYStageManager",
+      "refs": 1,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 3,
+      "keys": 6,
+      "name": "MPBLaserManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "MockPositionerManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "NidaqLaserManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "NidaqPositionerManager",
+      "refs": 0,
+      "required": 3,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 2,
+      "name": "OxxiusCombinerLaserManager",
+      "refs": 1,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "OxxiusLaserManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "PIStageManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 6,
+      "keys": 10,
+      "name": "PMTManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 2,
+      "name": "PhotometricsManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 3,
+      "name": "PiCamManager",
+      "refs": 0,
+      "required": 3,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "PiezoconceptZManager",
+      "refs": 1,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "PulseGeneratorLaserManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "PulseStreamerLaserManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "PulseStreamerManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "PyCoboltManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "PyMicroscopeLaserManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "SQUIDManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 1,
+      "name": "SQUIDStageManager",
+      "refs": 1,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 8,
+      "keys": 13,
+      "name": "SerialDacZManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "SmarACTPositionerManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 4,
+      "name": "StandaRotatorManager",
+      "refs": 0,
+      "required": 4,
+      "uncertain": 0
+    },
+    {
+      "constrained": 11,
+      "keys": 14,
+      "name": "SwabianTimeTaggerManager",
+      "refs": 0,
+      "required": 3,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 2,
+      "name": "TISManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "TeensyPulseManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 4,
+      "name": "ThorCamTSIManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "ThorlabsMFFManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 0,
+      "name": "ThorlabsMFFMockManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "TriggerScopeLaserManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "TriggerScopePositionerManager",
+      "refs": 0,
+      "required": 3,
+      "uncertain": 0
+    }
+  ],
+  "totals": {
+    "alias_spellings": 9,
+    "constrained": 46,
+    "docs_agree": 111,
+    "docs_documented": 118,
+    "keys": 179,
+    "managers": 64,
+    "none_default_only": 13,
+    "none_only": 6,
+    "optional": 111,
+    "reads_any": 54,
+    "refs": 14,
+    "required": 68,
+    "typed_by_code": 88,
+    "typed_with_docs": 148,
+    "typed_with_examples": 117,
+    "uncertain": 0,
+    "with_keys": 54
+  }
+}
