@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from imswitch.imcommon.model import memory_limits
+
 # A plain in-memory ndarray is downsampled before computing percentiles or
 # histograms once the working set the exact path allocates -- a float64 copy,
 # a finite mask and the compacted result, _WORKING_SET_BYTES_PER_ELEMENT per
@@ -13,9 +15,25 @@ import numpy as np
 # (64 Mi), which is dtype-blind and measures the one quantity that does not
 # determine the cost: a 16-frame 2048x2048 uint16 stack, exactly at it, paid
 # a ~1 GiB transient for two numbers on the contrast slider.
+#
+# The literal is the default; ``memory.processingWorkingSetMB`` in
+# ``imcontrol_options.json`` overrides it per machine, and the sample size
+# follows it (see ``_sample_working_set_bytes`` / ``_max_samples``): lowering
+# the allowance must lower what gets read, or the setting means nothing here.
 _SAMPLE_WORKING_SET_BYTES = 256 * 1024 * 1024
 _WORKING_SET_BYTES_PER_ELEMENT = 8 + 1 + 8
 _MAX_SAMPLE_VALUES = 2_000_000
+
+
+def _sample_working_set_bytes() -> int:
+    """The working set in force: the configured setting, else the literal."""
+    return memory_limits.effectiveBytes('processingWorkingSetBytes', _SAMPLE_WORKING_SET_BYTES)
+
+
+def _max_samples() -> int:
+    """How many values a sample may hold within the working set in force."""
+    return max(1, min(_MAX_SAMPLE_VALUES,
+                      _sample_working_set_bytes() // _WORKING_SET_BYTES_PER_ELEMENT))
 
 
 def _flatten_finite(arr: np.ndarray) -> np.ndarray:
@@ -34,7 +52,7 @@ def _should_sample(data: Any) -> bool:
     materialized in full via ``np.asarray``/``__array__``.
     """
     if isinstance(data, np.ndarray):
-        return data.size * _WORKING_SET_BYTES_PER_ELEMENT > _SAMPLE_WORKING_SET_BYTES
+        return data.size * _WORKING_SET_BYTES_PER_ELEMENT > _sample_working_set_bytes()
     return True
 
 
@@ -47,14 +65,21 @@ def _group_stride(axis_sizes: tuple[int, ...], remaining_factor: float) -> int:
     return max(1, min(stride, max(axis_sizes)))
 
 
-def sample_values(data: Any, *, max_samples: int = _MAX_SAMPLE_VALUES) -> np.ndarray:
+def sample_values(data: Any, *, max_samples: int | None = None) -> np.ndarray:
     """Return a bounded flat sample of finite values without full materialization.
+
+    ``max_samples`` defaults to what the working set in force allows, so a
+    smaller ``processingWorkingSetMB`` reads fewer values rather than the same
+    two million under a smaller nominal budget.
 
     Reads a strided subset via a single ``__getitem__`` slice call. Leading
     (non-spatial) axes are downsampled first so full image planes are
     preferred over degrading in-plane resolution; the last two axes are only
     strided if downsampling the leading axes alone isn't enough.
     """
+    if max_samples is None:
+        max_samples = _max_samples()
+    max_samples = max(1, int(max_samples))
     shape = tuple(int(size) for size in (getattr(data, "shape", None) or ()))
     if not shape:
         return _flatten_finite(np.asarray(data))

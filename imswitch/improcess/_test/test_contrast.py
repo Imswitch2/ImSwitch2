@@ -155,3 +155,24 @@ def test_safe_display_levels_coerces_mixed_nan_to_zero_span():
     minimum, maximum = safe_display_levels(5.0, np.nan, min_span=2.0)
     assert minimum == 0.0
     assert maximum == 2.0
+
+
+def test_a_configured_working_set_lowers_the_sample_count():
+    """memory.processingWorkingSetMB is honoured by the sampler, not only by the threshold."""
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+    from imswitch.improcess.model import contrast as contrast_module
+
+    data = np.arange(4 * 512 * 512, dtype=np.uint16).reshape(4, 512, 512)
+    assert data.size > 2_000_000 // 4  # big enough that the sample size matters
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    allowed = (1024 * 1024) // contrast_module._WORKING_SET_BYTES_PER_ELEMENT
+    assert contrast_module._should_sample(data)
+    values = contrast_module.finite_values(data)
+    assert values.size <= allowed
+    assert values.size > allowed // 8
+
+    memory_limits.reset()
+    assert contrast_module._max_samples() == contrast_module._MAX_SAMPLE_VALUES

@@ -19,7 +19,16 @@ class DataEditController(ImProcessWidgetController):
         if getattr(inDataObj, 'sourceKind', 'image') != 'image':
             return
         self._dataObj = inDataObj
-        self._meanData = self._dataObj.getMeanData()
+        # Opening the edit window is not a request for the mean; above the
+        # processing working set it waits for the Show mean button, which
+        # computes it as asked (see DataFrameController.showMean).
+        notice = getattr(self._dataObj, 'meanPreviewNotice', None)
+        notice = notice() if callable(notice) else None
+        if notice is not None:
+            self._logger.info(f'{notice} Not computed on opening the edit window.')
+            self._meanData = None
+        else:
+            self._meanData = self._dataObj.getMeanData()
         self.showMean()
         self._widget.updateDataProperties(self._dataObj.name, self._dataObj.datasetName,
                                           self._dataObj.numFrames)
@@ -43,6 +52,12 @@ class DataEditController(ImProcessWidgetController):
         pass
 
     def showMean(self):
+        if self._meanData is None and self._dataObj is not None:
+            notice = getattr(self._dataObj, 'meanPreviewNotice', None)
+            notice = notice() if callable(notice) else None
+            if notice is not None:
+                self._logger.warning(f'{notice} Computing it as requested.')
+            self._meanData = self._dataObj.getMeanData()
         if self._meanData is None:
             return
 

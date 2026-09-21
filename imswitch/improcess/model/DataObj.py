@@ -6,7 +6,7 @@ import tifffile as tiff
 import zarr
 import time
 
-from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import initLogger, memory_limits
 from imswitch.improcess.model.dataset_sources import resolve_dataset_source
 from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
@@ -26,6 +26,7 @@ from imswitch.improcess.model.image_sources import (
     resolve_image,
 )
 from imswitch.improcess.model.plane_navigation import (
+    plane_axes,
     extract_plane,
     iter_planes,
     mean_plane,
@@ -36,6 +37,21 @@ from imswitch.improcess.model.virtual_image import virtual_source_from_resolved_
 
 #: Planes the Data panel's mean preview averages at most.
 MEAN_PREVIEW_MAX_PLANES = 256
+
+#: Working set automatic work may spend: the mean preview computed on load, and
+#: the notice before a dataset larger than this is materialised. The literal
+#: is the default; ``memory.processingWorkingSetMB`` in
+#: ``imcontrol_options.json`` overrides it per machine.
+_PROCESSING_WORKING_SET_BYTES = 256 * 1024 * 1024
+#: What ``getMeanData`` allocates per pixel of one plane: a float64
+#: accumulator and a float32 result.
+_MEAN_PREVIEW_BYTES_PER_PIXEL = 8 + 4
+
+
+def _processing_working_set_bytes() -> int:
+    return memory_limits.effectiveBytes(
+        'processingWorkingSetBytes', _PROCESSING_WORKING_SET_BYTES
+    )
 
 
 class DataObj:
@@ -312,10 +328,119 @@ class DataObj:
         if not self.dataLoaded:
             try:
                 self.checkAndOpenData()
+                # Said before it starts, not after: a dataset larger than the
+                # working set is about to be decoded whole, and the operator
+                # who did not mean that has a lazy alternative to know about.
+                notice = self.materializationNotice()
+                if notice:
+                    self.__logger.warning(notice)
                 if self.data is not None:
                     self.__logger.debug('Data loaded')
             except Exception:
                 pass
+
+    # --- what loading and previewing would cost --------------------------
+
+    def decodedBytes(self):
+        """Bytes the selected dataset occupies once decoded, or None if unknown.
+
+        Read from the source's shape and dtype without materialising anything:
+        a compressed HDF5 well under a gigabyte on disk can decode to many, a
+        Zarr source is a directory, and one file can hold several datasets of
+        which only this one is being opened.
+        """
+        if self.sourceKind != "image":
+            return None
+        if self._data is not None:
+            return int(getattr(self._data, 'nbytes', 0))
+        source = self.data_source
+        array = getattr(source, 'array', None)
+        if array is None:
+            return None
+        try:
+            shape = tuple(int(size) for size in array.shape)
+            itemsize = int(np.dtype(array.dtype).itemsize)
+        except Exception:
+            return None
+        return int(np.prod(shape, dtype=np.int64)) * itemsize
+
+    def sourceHasLazyPath(self):
+        """Whether the open source serves planes without reading the whole.
+
+        A TIFF series without zarr support answers False: its virtual array
+        serves every plane by a whole-series read, so opening it "virtually"
+        bounds nothing.
+        """
+        array = getattr(self._dataSource, 'array', None)
+        return bool(getattr(array, 'supports_lazy_indexing', False))
+
+    def materializationNotice(self):
+        """Why loading this dataset whole is worth saying first, or None.
+
+        None when the data is already in memory, its size is unknown, or it
+        fits the processing working set. The notice names the size, the
+        setting and whether a lazy path exists for this source.
+        """
+        if self._data is not None:
+            return None
+        nbytes = self.decodedBytes()
+        if nbytes is None:
+            return None
+        budget = _processing_working_set_bytes()
+        if nbytes <= budget:
+            return None
+        if self.sourceHasLazyPath():
+            alternative = 'this source can be opened lazily instead (Open virtual)'
+        else:
+            alternative = 'this source has no lazy path, so opening it means decoding it whole'
+        return (
+            f'Materialising {memory_limits.describeBytes(nbytes)} for '
+            f'{self.name}/{self.datasetName}, above the '
+            f'{memory_limits.describeBytes(budget)} processing working set '
+            f'({memory_limits.settingRef("processingWorkingSetBytes")}); '
+            f'{alternative}.'
+        )
+
+    def meanPreviewBytes(self):
+        """What ``getMeanData`` allocates: one float64 plane plus a float32 result.
+
+        None when the plane cannot be determined. The preview is bounded in
+        plane count already (``MEAN_PREVIEW_MAX_PLANES``); this is its
+        in-plane cost, which that bound says nothing about.
+        """
+        if self.sourceKind != "image":
+            return None
+        if self._data is not None:
+            shape = tuple(int(size) for size in np.shape(self._data))
+        else:
+            handle = self.data_handle
+            if handle is None:
+                return None
+            try:
+                shape = tuple(int(size) for size in handle.shape)
+            except Exception:
+                return None
+        if len(shape) < 2:
+            return None
+        plane = plane_axes(shape, self.axis_labels)
+        if plane is None:
+            return None
+        return int(shape[plane[0]]) * int(shape[plane[1]]) * _MEAN_PREVIEW_BYTES_PER_PIXEL
+
+    def meanPreviewNotice(self):
+        """Why computing the mean preview is worth saying first, or None."""
+        nbytes = self.meanPreviewBytes()
+        if nbytes is None:
+            return None
+        budget = _processing_working_set_bytes()
+        if nbytes <= budget:
+            return None
+        return (
+            f'The mean preview of {self.name}/{self.datasetName} needs '
+            f'{memory_limits.describeBytes(nbytes)} for one plane, above the '
+            f'{memory_limits.describeBytes(budget)} processing working set '
+            f'({memory_limits.settingRef("processingWorkingSetBytes")}).'
+        )
 
     def checkAndOpenData(self):
         if self.sourceKind != "image":

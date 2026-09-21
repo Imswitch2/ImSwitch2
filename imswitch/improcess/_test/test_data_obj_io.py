@@ -506,3 +506,85 @@ def test_view_only_reports_how_the_acquisition_was_interpreted(tmp_path):
     assert inspection is not None
     assert inspection.metadata["acquisition_layout_confidence"] == "low"
     assert inspection.warning  # the guess is stated, not buried in a log
+
+
+# ----------------------------------------------------------------------
+# What loading and previewing would cost, read without materialising
+# ----------------------------------------------------------------------
+
+
+class _LogLines:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, message, *_a, **_k):
+        self.warnings.append(str(message))
+
+    def debug(self, *_a, **_k):
+        pass
+
+    def error(self, *_a, **_k):
+        pass
+
+
+def test_decoded_bytes_comes_from_the_source_without_materializing(tmp_path) -> None:
+    path = tmp_path / "size.h5"
+    data = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=data, chunks=(1, 4, 5), compression="gzip")
+
+    data_obj = DataObj("size.h5", "CAM", path=str(path))
+
+    assert data_obj.decodedBytes() == data.nbytes
+    assert data_obj.meanPreviewBytes() == 4 * 5 * 12
+    assert data_obj.sourceHasLazyPath()
+    assert not data_obj.dataMaterialized
+    assert data_obj.materializationNotice() is None      # fits the working set
+
+
+def test_a_load_above_the_working_set_is_announced_before_it_starts(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+
+    path = tmp_path / "big.h5"
+    data = np.zeros((3, 1024, 512), dtype=np.uint16)           # 3 MiB decoded
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=data, chunks=(1, 1024, 512), compression="gzip")
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    data_obj = DataObj("big.h5", "CAM", path=str(path))
+    log = _LogLines()
+    data_obj._DataObj__logger = log
+
+    notice = data_obj.materializationNotice()
+    assert notice is not None
+    assert "3.0 MiB" in notice and "1.0 MiB" in notice
+    assert "memory.processingWorkingSetMB in imcontrol_options.json" in notice
+    assert "Open virtual" in notice                         # HDF5 has a lazy path
+    assert not data_obj.dataMaterialized                    # saying it cost nothing
+
+    data_obj.checkAndLoadData()
+
+    assert log.warnings == [notice]                         # said, then loaded
+    assert data_obj.dataMaterialized
+    assert data_obj.materializationNotice() is None         # nothing left to warn about
+
+
+def test_the_mean_preview_notice_is_about_the_plane_not_the_plane_count(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+
+    path = tmp_path / "wide.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", shape=(2, 512, 512), dtype=np.uint16, chunks=(1, 512, 512))
+
+    data_obj = DataObj("wide.h5", "CAM", path=str(path))
+    assert data_obj.meanPreviewNotice() is None             # 3 MiB fits 256 MiB
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    notice = data_obj.meanPreviewNotice()
+    assert notice is not None
+    assert "3.0 MiB for one plane" in notice
+    assert "memory.processingWorkingSetMB" in notice
