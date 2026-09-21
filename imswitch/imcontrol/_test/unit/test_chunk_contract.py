@@ -159,6 +159,7 @@ class _Silent:
 _BROKER_METHODS = ('readChunk', 'startChunkConsumer', 'releaseChunkConsumer',
                    '_distributeChunkLocked', '_chunkKinds',
                    '_chunkConsumerBytes', '_frameBytes',
+                   '_oversizedWarned', '_warnOversizedDelivery',
                    'getLatestFrameShared', '_latchIsUnconsumed',
                    '_markLatchConsumed')
 
@@ -603,3 +604,142 @@ def test_an_overflowed_consumer_stops_costing_the_ones_still_reading():
     detector.produceFrame()
     detector._distributeChunkLocked(detector.drainChunk())
     assert len(detector.readChunk('idle')) == 1
+
+
+# ----------------------------------------------------------------------
+# One delivery to an empty queue is admitted whatever its size
+# ----------------------------------------------------------------------
+#
+# The queue budget bounds a backlog. A scan-driven detector's raw frame is
+# its whole assembled volume, which can exceed the budget on its own; the
+# byte budget (862786bd) refused it -- dropped at publish, consumer blamed
+# for "falling behind" -- where the frame count it replaced had admitted any
+# single frame. The writer's enqueue_frames has always admitted a payload to
+# an empty queue; the detector boundary now applies the same rule.
+
+
+class _Recorder:
+    def __init__(self):
+        self.lines = []
+
+    def warning(self, message, *_a, **_k):
+        self.lines.append(str(message))
+
+
+def _shrinkBudget(monkeypatch, nbytes):
+    from imswitch.imcontrol.model.managers.detectors import DetectorManager as module
+    monkeypatch.setattr(module, 'MAX_QUEUED_CONSUMER_BYTES', int(nbytes))
+
+
+def _scan(detector):
+    """One complete scan: every plane written, then the terminal state."""
+    detector._written = 0
+    for _ in range(detector._planes):
+        detector.writePlane()
+    detector.finishScan()
+
+
+def test_one_raw_volume_larger_than_the_budget_is_delivered_whole(monkeypatch):
+    """The volume form: one frame, bigger than the whole queue budget."""
+    detector = _detector(planes=4, channels=2, size=64)
+    _shrinkBudget(monkeypatch, detector._volume.nbytes // 2)
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+
+    _scan(detector)
+    frames = detector.readChunk('rec')
+
+    assert len(frames) == 1
+    assert frames[0].shape == detector._volume.shape
+    np.testing.assert_array_equal(frames[0], detector._volume)
+    assert 'rec' not in detector._chunkConsumersOverflowed
+
+
+def test_one_burst_larger_than_the_budget_is_delivered_whole(monkeypatch):
+    """The burst form: many frames in one delivery, each small, the sum not."""
+    from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+        DetectorManager,
+    )
+
+    camera = _cameraDetector(size=64)
+    perFrame = DetectorManager._frameBytes(np.zeros((64, 64), np.uint16))
+    _shrinkBudget(monkeypatch, 4 * perFrame)
+    camera.startChunkConsumer('rec', kind=ChunkKind.RAW)
+
+    for _ in range(10):
+        camera.produceFrame()
+    frames = camera.readChunk('rec')
+
+    assert len(frames) == 10
+    assert [int(frame[0, 0]) for frame in frames] == list(range(1, 11))
+    assert 'rec' not in camera._chunkConsumersOverflowed
+
+
+def test_a_delivery_behind_an_oversized_one_overflows_as_before(monkeypatch):
+    """What the budget still bounds: anything queued behind such a delivery."""
+    detector = _detector(planes=4, channels=2, size=64)
+    _shrinkBudget(monkeypatch, detector._volume.nbytes // 2)
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+
+    _scan(detector)
+    detector._distributeChunkLocked(detector.drainChunk())   # admitted alone
+    _scan(detector)
+    detector._distributeChunkLocked(detector.drainChunk())   # nothing fits behind it
+
+    assert 'rec' in detector._chunkConsumersOverflowed
+    with pytest.raises(ChunkConsumerOverflowError, match='stream is incomplete'):
+        detector.readChunk('rec')
+
+
+def test_deliveries_that_fit_are_admitted_after_an_oversized_one_is_read(monkeypatch):
+    """Admitting one oversized delivery does not loosen the budget afterwards."""
+    from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+        DetectorManager,
+    )
+
+    camera = _cameraDetector(size=64)
+    perFrame = DetectorManager._frameBytes(np.zeros((64, 64), np.uint16))
+    _shrinkBudget(monkeypatch, 4 * perFrame)
+    camera.startChunkConsumer('rec', kind=ChunkKind.RAW)
+
+    for _ in range(10):
+        camera.produceFrame()
+    assert len(camera.readChunk('rec')) == 10          # oversized, alone
+
+    for _ in range(2):
+        camera.produceFrame()
+    camera._distributeChunkLocked(camera.drainChunk())  # two held
+    camera.produceFrame()
+    assert len(camera.readChunk('rec')) == 3           # three fit in four
+
+    for _ in range(3):
+        camera.produceFrame()
+    camera._distributeChunkLocked(camera.drainChunk())  # three held
+    for _ in range(2):
+        camera.produceFrame()
+    camera._distributeChunkLocked(camera.drainChunk())  # five do not
+    with pytest.raises(ChunkConsumerOverflowError):
+        camera.readChunk('rec')
+
+
+def test_an_oversized_delivery_is_said_once_and_names_the_setting(monkeypatch):
+    """Not a fault, but the operator learns that no backlog fits behind it."""
+    detector = _detector(planes=4, channels=2, size=64)
+    _shrinkBudget(monkeypatch, detector._volume.nbytes // 2)
+    log = _Recorder()
+    detector._DetectorManager__logger = log
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+
+    for _ in range(3):
+        _scan(detector)
+        detector.readChunk('rec')
+
+    assert len(log.lines) == 1
+    assert 'MAX_QUEUED_CONSUMER_BYTES' in log.lines[0]
+    assert 'admitted' in log.lines[0]
+    assert 'rec' not in detector._chunkConsumersOverflowed
+
+    # A fresh registration is a fresh consumer, and is told again.
+    detector.startChunkConsumer('rec', kind=ChunkKind.RAW)
+    _scan(detector)
+    detector.readChunk('rec')
+    assert len(log.lines) == 2

@@ -809,12 +809,26 @@ class DetectorManager(SignalInterface):
                 # memory alive and make every later drain trim it again.
                 continue
 
-            consumerQueue.extend(newFrames)
-            total = queuedBytes.get(key, 0) + sum(
-                self._frameBytes(frame) for frame in newFrames
-            )
-            if total <= MAX_QUEUED_CONSUMER_BYTES:
+            held = queuedBytes.get(key, 0)
+            arriving = sum(self._frameBytes(frame) for frame in newFrames)
+            total = held + arriving
+            if total <= MAX_QUEUED_CONSUMER_BYTES or not consumerQueue:
+                # Within budget -- or nothing was waiting, in which case one
+                # delivery is admitted however large. The budget bounds a
+                # *backlog*: frames a consumer has not read yet. A delivery
+                # that arrives to an empty queue is not a backlog, and for a
+                # scan-driven detector it is the whole assembled volume, one
+                # frame that can exceed the budget on its own. Refusing it
+                # bounded nothing and dropped the measurement (the budget
+                # replaced a frame count that admitted any single frame). The
+                # writer applies the same rule on its side
+                # (RecordingWriterThread.enqueue_frames). What the budget
+                # still bounds is everything *behind* such a delivery: the
+                # next one overflows until this one is read.
+                consumerQueue.extend(newFrames)
                 queuedBytes[key] = total
+                if total > MAX_QUEUED_CONSUMER_BYTES:
+                    self._warnOversizedDelivery(key, arriving, len(newFrames))
                 continue
 
             # Over budget: this consumer has stopped keeping up, and from here
@@ -823,7 +837,7 @@ class DetectorManager(SignalInterface):
             # every subsequent drain -- popping one frame at a time moved the
             # whole remaining queue each time, tens of thousands of frames of
             # it, while holding the lock every other consumer needs to read.
-            dropped = len(consumerQueue)
+            dropped = len(consumerQueue) + len(newFrames)
             consumerQueue.clear()
             queuedBytes[key] = 0
 
@@ -832,16 +846,44 @@ class DetectorManager(SignalInterface):
                 continue
             self._chunkConsumersWarned.add(key)
             perFrame = self._frameBytes(newFrames[-1])
+            mib = 1024 * 1024
             self.__logger.warning(
-                f'readChunk consumer "{key}" is registered but not polling; '
-                f'dropped the {dropped} frame(s) held for it after exceeding '
-                f'{MAX_QUEUED_CONSUMER_BYTES // (1024 * 1024)} MiB '
+                f'readChunk consumer "{key}" has not read what was held for '
+                f'it: {held / mib:.0f} MiB were waiting when a further '
+                f'{arriving / mib:.0f} MiB arrived, exceeding its '
+                f'{MAX_QUEUED_CONSUMER_BYTES // mib} MiB queue budget '
                 f'(about {max(1, MAX_QUEUED_CONSUMER_BYTES // max(1, perFrame))} '
-                f'frames at this detector\'s {perFrame} bytes each). Its '
-                f'stream is incomplete, so it will fail on its next read '
-                f'rather than accept a gap; call releaseChunkConsumer when '
-                f'done.'
+                f'frames at this detector\'s {perFrame} bytes each); dropped '
+                f'all {dropped} frame(s). Its stream is incomplete, so it will '
+                f'fail on its next read rather than accept a gap; call '
+                f'releaseChunkConsumer when done.'
             )
+
+    def _oversizedWarned(self) -> set:
+        """Consumers already told that one delivery outgrew the budget."""
+        return self.__dict__.setdefault('_chunkConsumersOversizedWarned', set())
+
+    def _warnOversizedDelivery(self, key, arriving, frameCount) -> None:
+        """Say once per consumer that a delivery was admitted over budget.
+
+        Not a fault -- the delivery was taken whole -- but the operator should
+        know that no further backlog fits behind it: a scan-lapse whose
+        volumes outgrow the budget has no slack at this queue, and only what
+        the writer queue holds stands between a slow disk and a lost volume.
+        """
+        warned = self._oversizedWarned()
+        if key in warned:
+            return
+        warned.add(key)
+        mib = 1024 * 1024
+        self.__logger.warning(
+            f'readChunk consumer "{key}" was handed one delivery of '
+            f'{arriving / mib:.0f} MiB ({frameCount} frame(s)) that alone '
+            f'exceeds its {MAX_QUEUED_CONSUMER_BYTES // mib} MiB queue '
+            f'budget (MAX_QUEUED_CONSUMER_BYTES). It was admitted, since '
+            f'nothing was waiting, but no further backlog fits behind it '
+            f'until it is read.'
+        )
 
     def releaseChunkConsumer(self, consumerKey: str) -> None:
         """ Unregisters a readChunk() consumer and drops any frames still
@@ -854,6 +896,7 @@ class DetectorManager(SignalInterface):
                 kinds.pop(consumerKey, None)
             self._chunkConsumersWarned.discard(consumerKey)
             self._chunkConsumersOverflowed.discard(consumerKey)
+            self._oversizedWarned().discard(consumerKey)
             self._chunkConsumerBytes().pop(consumerKey, None)
 
     def startChunkConsumer(self, consumerKey: str,
@@ -878,6 +921,7 @@ class DetectorManager(SignalInterface):
                 kinds.pop(consumerKey, None)
             self._chunkConsumersWarned.discard(consumerKey)
             self._chunkConsumersOverflowed.discard(consumerKey)
+            self._oversizedWarned().discard(consumerKey)
             self._chunkConsumerBytes().pop(consumerKey, None)
 
             self._distributeChunkLocked(self.drainChunk())
