@@ -10,7 +10,7 @@
   "props": [
     {"key": "analogInputLine", "label": "Analog Input", "type": "text",  "default": "Dev1/ai1", "req": true,  "grp": "DAQ", "tip": "", "opts": []},
     {"key": "offset_v",        "label": "Offset (V)",   "type": "float", "default": 0.1,        "req": false, "grp": "DAQ", "tip": "", "opts": []},
-    {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": "0", "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": ["0", "90", "180", "270"]},
+    {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": 0, "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": [0, 90, 180, 270]},
     {"key": "displayFlipX", "label": "Mirror X", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only horizontal mirror.", "opts": []},
     {"key": "displayFlipY", "label": "Mirror Y", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only vertical mirror.", "opts": []}
   ]

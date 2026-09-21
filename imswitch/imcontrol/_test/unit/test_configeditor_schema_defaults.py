@@ -80,12 +80,14 @@ class TestConfigEditorSchemaDefaults:
         # Check props fields
         props = result["managerProperties"]
         assert props["cameraListIndex"] == 0
-        assert props["displayRotation"] == "0"
-        # Bool *props* are byte-identical to the pre-refactor editor: the
-        # template default False round-trips through _display_to_json as the
-        # string "False" (top-level bools, handled separately, stay real bools).
-        assert props["displayFlipX"] == "False"
-        assert props["displayFlipY"] == "False"
+        # A default the template states as a value keeps its kind. These used
+        # to come out as the strings "0" and "False"; display_transform.py had
+        # grown parsers to absorb exactly that, which is how the quirk survived
+        # long enough to be pinned here as "byte-identical" behaviour.
+        assert props["displayRotation"] == 0
+        assert isinstance(props["displayRotation"], int)
+        assert props["displayFlipX"] is False
+        assert props["displayFlipY"] is False
         
         # Check nested dict
         assert "hamamatsu" in props

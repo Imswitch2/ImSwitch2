@@ -10,7 +10,7 @@
   "props": [
     {"key": "ctrInputLine", "label": "Counter Input", "type": "text", "default": "Dev1/ctr0", "req": true,  "grp": "DAQ", "tip": "e.g. Dev1/ctr0", "opts": []},
     {"key": "terminal",     "label": "Terminal",      "type": "text", "default": "PFI0",      "req": true,  "grp": "DAQ", "tip": "e.g. PFI0",      "opts": []},
-    {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": "0", "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": ["0", "90", "180", "270"]},
+    {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": 0, "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": [0, 90, 180, 270]},
     {"key": "displayFlipX", "label": "Mirror X", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only horizontal mirror.", "opts": []},
     {"key": "displayFlipY", "label": "Mirror Y", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only vertical mirror.", "opts": []}
   ]

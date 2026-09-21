@@ -584,6 +584,13 @@ def _build_default_device(manager_name: str) -> dict:
         pass
     
     # Legacy inline implementation (fallback)
+    def _default_value(v, tp):
+        # A default stated as the value itself keeps its kind; only text
+        # needs the field type to say what it is.
+        if v == "" or not isinstance(v, str):
+            return v
+        return _display_to_json(v, tp)
+
     d: dict = {"managerName": manager_name, "managerProperties": {}}
     for f in schema.get("top", []):
         v = f["default"]
@@ -592,17 +599,13 @@ def _build_default_device(manager_name: str) -> dict:
         elif v == "null":
             d[f["key"]] = None
         else:
-            d[f["key"]] = _display_to_json(str(v), f["type"]) if v != "" else v
+            d[f["key"]] = _default_value(v, f["type"])
     for f in schema.get("props", []):
-        v = f["default"]
-        d["managerProperties"][f["key"]] = (
-            _display_to_json(str(v), f["type"]) if v != "" else v
-        )
+        d["managerProperties"][f["key"]] = _default_value(f["default"], f["type"])
     for nest_key, nest_fields in schema.get("nested", {}).items():
         sub = {}
         for f in nest_fields:
-            v = f["default"]
-            sub[f["key"]] = _display_to_json(str(v), f["type"]) if v != "" else v
+            sub[f["key"]] = _default_value(f["default"], f["type"])
         d["managerProperties"][nest_key] = sub
     return d
 
@@ -1166,6 +1169,10 @@ class FieldWidget(QWidget):
         # device_pool: {category_name: [device_name, ...]} — used to populate
         # ref-type combo boxes that reference devices in the live config.
         self._device_pool = device_pool or {}
+        # The value as the file had it. A text field cannot tell an int from
+        # the string of that int once rendered, so read-back consults this to
+        # give back the same kind of value it was handed.
+        self._original = current_value
         self._init_widget(current_value)
 
     def _init_widget(self, value):
@@ -1186,14 +1193,22 @@ class FieldWidget(QWidget):
             self._w.setValue(float(value) if value is not None else 0.0)
         elif tp == "select":
             self._w = QComboBox()
-            for option in self._def.get("opts", []):
+            options = self._def.get("opts", [])
+            if _coercion_module is not None:
+                options = _coercion_module.options_like(options, value)
+            for option in options:
                 self._w.addItem(str(option), option)
             # Configs can outlive their template/plugin version.  Keeping the
             # saved value selectable prevents an open-and-save cycle from
             # silently changing it to the first currently known option.
-            if value is not None and self._w.findData(value) < 0:
+            idx = self._w.findData(value) if value is not None else -1
+            if idx < 0 and value is not None:
+                # A ``"9600"`` saved by an older editor should still land on
+                # the 9600 entry rather than gaining a second, identical one.
+                idx = self._w.findText(str(value))
+            if idx < 0 and value is not None:
                 self._w.addItem(str(value), value)
-            idx = self._w.findData(value)
+                idx = self._w.findData(value)
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
         elif tp == "multiselect":
@@ -1300,9 +1315,11 @@ class FieldWidget(QWidget):
                 return txt  # caller validates; preserve raw on error
         # text / path
         txt = self._w.text().strip()
-        if txt.lower() == "null":
-            return None
-        return txt
+        if tp == "path" or _coercion_module is None:
+            if txt.lower() == "null":
+                return None
+            return txt
+        return _coercion_module.text_to_json(txt, self._original, tp)
 
 
 # =============================================================================
@@ -1676,6 +1693,9 @@ class PropertyEditor(QWidget):
             for k, v in items.items():
                 display = json.dumps(v) if not isinstance(v, str) else v
                 le = QLineEdit(display)
+                # Bare text cannot say whether "5" was a string or a number;
+                # the read-back asks the original rather than guessing.
+                le.setProperty("originalValue", v)
                 form.addRow(QLabel(k), le)
                 self._field_widgets[(section_key, k)] = le
             scroll.setWidget(inner)
@@ -1732,10 +1752,14 @@ class PropertyEditor(QWidget):
         for (section, key), fw in self._field_widgets.items():
             if section in ("raw", "raw_prop"):
                 raw_val = fw.text().strip()  # type: ignore[attr-defined]
-                try:
-                    value = json.loads(raw_val)
-                except Exception:
-                    value = raw_val
+                original = fw.property("originalValue")  # type: ignore[attr-defined]
+                if _coercion_module is not None:
+                    value = _coercion_module.raw_text_to_json(raw_val, original)
+                else:
+                    try:
+                        value = json.loads(raw_val)
+                    except Exception:
+                        value = raw_val
                 if section == "raw_prop":
                     props[key] = value
                 else:

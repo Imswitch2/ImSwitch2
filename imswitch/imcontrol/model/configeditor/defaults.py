@@ -36,21 +36,19 @@ def build_default_device(
             elif v == "null":
                 d[f["key"]] = None
             else:
-                d[f["key"]] = display_to_json(str(v), f["type"]) if v != "" else v
+                d[f["key"]] = _default_value(v, f["type"])
         
         # Process props (managerProperties) fields
         for f in template.get("props", []):
             v = f["default"]
-            d["managerProperties"][f["key"]] = (
-                display_to_json(str(v), f["type"]) if v != "" else v
-            )
+            d["managerProperties"][f["key"]] = _default_value(v, f["type"])
         
         # Process nested fields
         for nest_key, nest_fields in template.get("nested", {}).items():
             sub = {}
             for f in nest_fields:
                 v = f["default"]
-                sub[f["key"]] = display_to_json(str(v), f["type"]) if v != "" else v
+                sub[f["key"]] = _default_value(v, f["type"])
             d["managerProperties"][nest_key] = sub
     
     # Add schema-only properties if no template or template doesn't cover them
@@ -81,6 +79,21 @@ def build_default_device(
                         d["managerProperties"][prop_key] = None
     
     return d
+
+
+def _default_value(default, field_type: str):
+    """A template default as the JSON value a new device should carry.
+
+    A template may state a default as the value itself (``9600``) or as the
+    text of it (``"9600"``); only the latter needs the field type to say what
+    kind it is. Running the former through ``str()`` and back turned a numeric
+    select default into a string on every new device.
+    """
+    if default == "":
+        return default
+    if isinstance(default, str):
+        return display_to_json(default, field_type)
+    return default
 
 
 def merge_preserving_unknown(
