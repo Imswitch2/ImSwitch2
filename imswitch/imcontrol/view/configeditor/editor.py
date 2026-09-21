@@ -1162,13 +1162,26 @@ class DeviceCanvas(QScrollArea):
         self._selected = None
 
 
-def _looks_like_json_literal(text: str) -> bool:
-    """Whether ``text`` is itself JSON, as a template default like ``"{}"`` is."""
-    try:
-        json.loads(text)
-    except (ValueError, TypeError):
-        return False
-    return True
+_MISSING = object()
+
+
+def _field_default(field_def: dict):
+    """The value a field starts from when the file has no such key.
+
+    Templates write a ``json`` field's default as JSON *text* (``"{}"``), and
+    the widget must never guess whether a string is text-that-is-JSON or a
+    string value -- that guess is how a saved ``"5"`` became ``5``. So the
+    decoding happens here, once, on the template side of the boundary.
+    """
+    default = field_def.get("default", "")
+    if field_def.get("type") == "json" and isinstance(default, str):
+        if not default.strip():
+            return {}
+        try:
+            return json.loads(default)
+        except (ValueError, TypeError):
+            return {}
+    return default
 
 
 # =============================================================================
@@ -1181,27 +1194,42 @@ class FieldWidget(QWidget):
         # device_pool: {category_name: [device_name, ...]} — used to populate
         # ref-type combo boxes that reference devices in the live config.
         self._device_pool = device_pool or {}
-        # The value as the file had it. A text field cannot tell an int from
-        # the string of that int once rendered, so read-back consults this to
-        # give back the same kind of value it was handed.
+        # The value as the file had it. Until the operator interacts with the
+        # widget, get_value() returns exactly this object: a widget can alter a
+        # value it merely displays -- a spin box clamps and rounds, a check box
+        # turns None into False, a text box turns the string "null" into null
+        # -- and none of that is an edit anyone made.
         self._original = current_value
+        self._touched = False
         self._init_widget(current_value)
+        self._watch_for_edits()
+
+    # QSpinBox is a C++ int; QDoubleSpinBox is clamped silently by Qt.
+    _INT_WIDGET_MIN, _INT_WIDGET_MAX = -2**31, 2**31 - 1
+    _FLOAT_WIDGET_LIMIT = 1e15
 
     def _init_widget(self, value):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         tp = self._def["type"]
+        if tp in ("int", "float") and not self._typed_widget_can_show(tp, value):
+            # A file can hold anything under an int-typed key -- a string, an
+            # int beyond what the spin box can represent. Refusing to open, or
+            # showing a clamped substitute the operator may then save, are
+            # both worse than a text box that keeps the value as it is.
+            self._def = dict(self._def, type="text")
+            tp = "text"
         if tp == "bool":
             self._w = QCheckBox()
             self._w.setChecked(bool(value) if value is not None else False)
         elif tp == "int":
             self._w = QSpinBox()
-            self._w.setRange(-999999, 999999)
+            self._w.setRange(self._INT_WIDGET_MIN, self._INT_WIDGET_MAX)
             self._w.setValue(int(value) if value is not None else 0)
         elif tp == "float":
             self._w = QDoubleSpinBox()
-            self._w.setRange(-1e9, 1e9)
-            self._w.setDecimals(4)
+            self._w.setRange(-self._FLOAT_WIDGET_LIMIT, self._FLOAT_WIDGET_LIMIT)
+            self._w.setDecimals(9)
             self._w.setValue(float(value) if value is not None else 0.0)
         elif tp == "select":
             self._w = QComboBox()
@@ -1262,13 +1290,7 @@ class FieldWidget(QWidget):
             # property no schema can type -- so it must round-trip *every*
             # value. A string shows quoted and None shows as null: showing them
             # bare made "5" come back as 5 and null come back as {}.
-            if isinstance(value, str) and self._def.get("default") == value \
-                    and _looks_like_json_literal(value):
-                # A template default written as JSON text ("{}", "[]").
-                display = value
-            else:
-                display = json.dumps(value)
-            self._w = QLineEdit(display)
+            self._w = QLineEdit(json.dumps(value))
         elif tp == "path":
             row = QWidget()
             rl = QHBoxLayout(row)
@@ -1295,12 +1317,59 @@ class FieldWidget(QWidget):
         if self._def.get("tip"):
             self._w.setToolTip(self._def["tip"])
 
+    @classmethod
+    def _typed_widget_can_show(cls, tp: str, value) -> bool:
+        """Whether a spin box can hold ``value`` without changing what it is."""
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return False
+        try:
+            if tp == "int":
+                return isinstance(value, int) and cls._INT_WIDGET_MIN <= value <= cls._INT_WIDGET_MAX
+            return (isinstance(value, (int, float))
+                    and abs(float(value)) <= cls._FLOAT_WIDGET_LIMIT)
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    def _watch_for_edits(self):
+        """Mark the field touched on user interaction, never on construction.
+
+        Signals that also fire programmatically (``valueChanged``,
+        ``itemChanged``) are connected only after the initial value is in
+        place, so construction cannot trip them; ``textEdited``, ``clicked``
+        and ``activated`` are user-only by contract.
+        """
+        def touch(*_args):
+            self._touched = True
+
+        w = self._w
+        if isinstance(w, QCheckBox):
+            w.clicked.connect(touch)
+        elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
+            w.valueChanged.connect(touch)
+        elif isinstance(w, QComboBox):
+            w.activated.connect(touch)
+            if w.isEditable():
+                w.lineEdit().textEdited.connect(touch)
+        elif isinstance(w, QListWidget):
+            w.itemChanged.connect(touch)
+        elif isinstance(w, QLineEdit):
+            w.textEdited.connect(touch)
+
+    def is_touched(self) -> bool:
+        """Whether the operator interacted with this field since it was built."""
+        return self._touched
+
     def _pick_path(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select file")
         if path:
             self._w.setText(path)
+            self._touched = True
 
     def get_value(self):
+        if not self._touched:
+            return self._original
         tp = self._def["type"]
         if tp == "bool":
             return self._w.isChecked()
@@ -1673,12 +1742,14 @@ class PropertyEditor(QWidget):
 
             for section, f in groups[grp]:
                 if section == "top":
-                    current = self._device.get(f["key"], f["default"])
+                    current = self._device.get(f["key"], _MISSING)
                 elif section == "props":
-                    current = props.get(f["key"], f["default"])
+                    current = props.get(f["key"], _MISSING)
                 else:
                     nest_key = section.split(":", 1)[1]
-                    current = (props.get(nest_key) or {}).get(f["key"], f["default"])
+                    current = (props.get(nest_key) or {}).get(f["key"], _MISSING)
+                if current is _MISSING:
+                    current = _field_default(f)
 
                 fw = FieldWidget(f, current)
                 lbl = f["label"]
@@ -2647,10 +2718,12 @@ class SectionEditorDialog(QDialog):
             form.setSpacing(6)
             form.setLabelAlignment(Qt.AlignRight)
             for f in groups[grp]:
-                cur = (current or {}).get(f["key"], f.get("default", ""))
-                # Normalize default sentinels.
-                if cur == "null":
-                    cur = None
+                cur = (current or {}).get(f["key"], _MISSING)
+                if cur is _MISSING:
+                    cur = _field_default(f)
+                    # Normalize the template's null sentinel.
+                    if cur == "null":
+                        cur = None
                 fw = FieldWidget(f, cur, device_pool=pool)
                 label = f["label"]
                 if f.get("req"):
