@@ -130,6 +130,8 @@ def build_catalog(
     *,
     include_legacy_scan: bool = True,
     managers_root: Optional[Path] = None,
+    include_generated_schemas: bool = False,
+    schemas_root: Optional[Path] = None,
 ) -> ManagerCatalog:
     """Build a manager catalog from the registry and optional legacy scan.
     
@@ -140,11 +142,25 @@ def build_catalog(
             in the registry (preserves legacy behavior).
         managers_root: Root directory for manager scanning. If None, resolves
             from the package structure.
+        include_generated_schemas: If True, a manager without a schema of its
+            own gets the generated one from package data (``schemas/managers``).
+            Off by default: the editor turns any ``properties_schema`` into form
+            fields on the spot, and until it preserves omitted and aliased
+            keys on Apply (Phase 3 of the schema-extraction plan) that would
+            rewrite setup files. The CLI validator resolves generated schemas
+            itself and does not go through this flag.
+        schemas_root: Where to read generated schemas from (tests).
     
     Returns:
         A populated ManagerCatalog instance.
     """
     logger = logging.getLogger(__name__)
+    generated = None
+    if include_generated_schemas:
+        from imswitch.imcontrol.model.configeditor import resources as _resources
+
+        def generated(name):
+            return _resources.generated_schema_for(name, schemas_root)
     
     # Build or use provided registry
     if registry is None:
@@ -178,13 +194,16 @@ def build_catalog(
         # Determine if builtin (from imswitch-core plugin)
         is_builtin = contrib.plugin_name == "imswitch-core"
         
-        # Resolve schema if available
+        # Resolve schema if available: the contribution's own first, else the
+        # generated one when asked for.
         schema = None
         try:
             from imswitch.imcontrol.model.plugins.validation import resolve_schema
             schema = resolve_schema(contrib)
         except (ImportError, Exception) as e:
             logger.debug(f"Could not resolve schema for {contrib.id}: {e}")
+        if schema is None and generated is not None:
+            schema = generated(contrib.id)
         
         info = ManagerInfo(
             manager_name=contrib.id,
@@ -211,6 +230,11 @@ def build_catalog(
     # Add legacy filesystem scan results
     if include_legacy_scan:
         legacy_infos = _scan_legacy_managers(managers_root, seen_names)
+        if generated is not None:
+            legacy_infos = [
+                ManagerInfo(**{**info.__dict__, "properties_schema": generated(info.manager_name)})
+                for info in legacy_infos
+            ]
         infos.extend(legacy_infos)
         if legacy_infos:
             logger.info(
@@ -280,7 +304,9 @@ def _scan_legacy_managers(
         logger.warning(f"Managers root does not exist: {managers_root}")
         return []
     
-    # Base manager class names to skip
+    # Base manager class names to skip. ``RS232Manager`` is deliberately not
+    # here: it is the base of the RS232 managers *and* the manager shipped
+    # setups select by that name, so it must be offered.
     base_managers = {
         "DetectorManager",
         "LaserManager",
@@ -289,7 +315,6 @@ def _scan_legacy_managers(
         "FlipMirrorManager",
         "PulseGeneratorManager",
         "StandManager",
-        "RS232Manager",
         "SLMManager",
     }
     

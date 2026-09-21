@@ -461,6 +461,15 @@
     },
     {
       "constrained": 0,
+      "keys": 2,
+      "name": "RS232Manager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
       "keys": 1,
       "name": "SQUIDManager",
       "refs": 0,
@@ -582,20 +591,20 @@
     "constrained": 47,
     "docs_agree": 117,
     "docs_documented": 118,
-    "keys": 216,
-    "managers": 64,
+    "keys": 218,
+    "managers": 65,
     "none_default_only": 31,
     "none_only": 24,
     "optional": 148,
-    "reads_any": 58,
+    "reads_any": 59,
     "refs": 14,
-    "required": 68,
+    "required": 70,
     "typed_by_code": 90,
-    "typed_with_docs": 151,
-    "typed_with_examples": 120,
+    "typed_with_docs": 153,
+    "typed_with_examples": 122,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 58,
+    "with_keys": 59,
     "writes": 0
   }
 }

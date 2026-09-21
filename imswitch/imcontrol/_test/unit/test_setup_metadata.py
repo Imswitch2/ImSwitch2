@@ -94,6 +94,8 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("rs232", "SQUIDManager"),
     ("slm", "HamamatsuSLMdviManager"),
     ("slm", "HamamatsuSLMusbManager"),
+    # Offered since the schema-extraction work: shipped setups select it by name.
+    ("rs232", "RS232Manager"),
 }
 
 

@@ -75,13 +75,13 @@ def test_checked_in_schemas_match_the_source_tree(generated):
 
 def test_the_generation_set_is_the_catalog_plus_template_backed_managers(inputs):
     names = set(inputs.extractions)
-    assert {"RS232Manager", "PiezoconceptZManager2"} <= names, "template-backed, catalog-invisible"
+    assert {"RS232Manager", "PiezoconceptZManager2"} <= names, "template-backed (RS232Manager is in the catalog too now)"
     assert {"AAAOTFLaserManager", "HamamatsuManager", "MockPositionerManager"} <= names
     # The two mock contributions resolve through their python_name; the one
     # name left is a vendor driver module the legacy scan mistook for a manager.
     assert set(inputs.unresolved) == {"PyCoboltManager"}
-    # 64 in the catalog, minus that one, plus the 2 template-backed names the
-    # catalog's legacy scan skips.
+    # 65 in the catalog, minus that one, plus PiezoconceptZManager2, which only
+    # a template names.
     assert len(names) == 65
 
 

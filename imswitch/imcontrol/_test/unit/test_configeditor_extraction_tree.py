@@ -56,18 +56,19 @@ def report(extractions):
 
 # ── the numbers the plan quotes ───────────────────────────────────────────
 def test_the_coverage_the_plan_is_built_on(report):
-    assert report.managers == 64
+    assert report.managers == 65, "64 plus RS232Manager, which the legacy scan no longer skips"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
     # methods other than __init__ are all followed now.
-    assert report.reads_any == 58
-    assert report.with_keys == 58
+    # ... plus RS232Manager itself, once the catalog stopped skipping it.
+    assert report.reads_any == 59
+    assert report.with_keys == 59
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
-    assert report.keys == 216
+    assert report.keys == 218
     assert report.alias_spellings == 9
-    assert report.required == 68, "the guard-aware rule; unchanged by the review round"
+    assert report.required == 70, "68 under the guard-aware rule, plus RS232Manager's port and recv_termination"
     assert report.optional == 148
     assert report.refs == 14
     assert report.none_default_only == 31
@@ -245,5 +246,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 64
+    assert totals["managers"] == 65
 

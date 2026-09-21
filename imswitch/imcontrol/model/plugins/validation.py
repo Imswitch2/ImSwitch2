@@ -85,6 +85,34 @@ def resolve_schema(contribution: DeviceManagerContribution) -> dict | None:
         return None
 
 
+def schema_for(
+    kind: str,
+    manager_name: str,
+    contribution: DeviceManagerContribution | None,
+    *,
+    schemas_root: Path | None = None,
+) -> dict | None:
+    """The one place a manager's ``managerProperties`` schema is looked up.
+
+    A contribution that ships its own schema wins. Otherwise the generated
+    schema from package data, by the contribution's id if there is one, else
+    by the manager name -- which is how the legacy-scanned core managers get
+    theirs. Returns None when nothing describes this manager.
+    """
+    if contribution is not None:
+        schema = resolve_schema(contribution)
+        if schema is not None:
+            return schema
+    from imswitch.imcontrol.model.configeditor import resources
+
+    for name in ((contribution.id if contribution is not None else None), manager_name):
+        if name:
+            schema = resources.generated_schema_for(name, schemas_root)
+            if schema is not None:
+                return schema
+    return None
+
+
 def validate_manager_properties(schema: dict, properties: dict) -> list[str]:
     """Validate manager properties against a JSON schema.
     
@@ -362,20 +390,30 @@ def _validate_device_manager(
             path=path,
         ))
 
-    # Schema validation
-    if contribution is not None and jsonschema is not None:
-        schema = resolve_schema(contribution)
-        if schema is not None:
-            schema_errors = validate_manager_properties(schema, manager_properties)
-            for error_msg in schema_errors:
-                # Try to extract field name from error message
-                field_path = (section_name, device_name, "managerProperties") if device_name else (section_name, "managerProperties")
-                diagnostics.append(SetupDiagnostic(
-                    severity="warning",
-                    code="manager.schema",
-                    message=error_msg,
-                    path=field_path,
-                ))
+    # Schema validation: the contribution's own schema, else the generated
+    # one -- for registered and legacy-scanned managers alike.
+    schema = schema_for(kind, manager_name, contribution)
+    field_path = (section_name, device_name, "managerProperties") if device_name else (section_name, "managerProperties")
+    if schema is not None and jsonschema is not None:
+        for error_msg in validate_manager_properties(schema, manager_properties):
+            diagnostics.append(SetupDiagnostic(
+                severity="warning",
+                code="manager.schema",
+                message=error_msg,
+                path=field_path,
+            ))
+    if schema is not None and isinstance(manager_properties, dict):
+        from imswitch.imcontrol.model.configeditor import resources
+
+        for canonical, spellings in resources.alias_conflicts(schema, manager_properties):
+            others = ", ".join(f"'{s}'" for s in spellings if s != canonical)
+            diagnostics.append(SetupDiagnostic(
+                severity="warning",
+                code="manager.alias-conflict",
+                message=(f"'{canonical}' is also given as {others}; the manager reads "
+                         f"'{canonical}' and ignores the other spelling."),
+                path=field_path + (canonical,),
+            ))
 
     return diagnostics
 

@@ -3,8 +3,28 @@
 Date: 2026-09-21 (plan; revision 2 after first review; revision 3 recorded the
 decisions; revision 4 after second review; revision 5 records what Phase 0
 measured; revision 6 records Phase 1; revision 7 folds in the review of
-Phase 0). Status: **Phases 0–1 implemented on
-`feat/config-editor-schema-extraction` (draft PR #35); Phases 2–6 as planned.**
+Phase 0; revision 8 records Phase 2). Status: **Phases 0–2 implemented on
+`feat/config-editor-schema-extraction` (draft PR #35); Phases 3–6 as planned.**
+
+## Changes in revision 8 (Phase 2 implemented)
+
+- `configeditor/resources.py` is the stdlib-only loader (`generated_schema_for`,
+  `index`, `alias_conflicts`, `canonical_spelling`); `schema_for()` lives in
+  `plugins/validation.py` beside `resolve_schema` so the plugins package does
+  not import the config editor.
+- `_validate_device_manager` resolves a schema on every branch — registered,
+  legacy, and the stand mock fallbacks — and emits `manager.alias-conflict`
+  per device there, not in `_validate_cross_references` as first written: the
+  schema is already in hand at that point.
+- `build_catalog(include_generated_schemas=...)` defaults to off; the editor's
+  catalog is unchanged, the validator does not go through the flag. The CLI
+  keeps plugin discovery on: it validates a user's real setup.
+- The catalog's legacy scan no longer skips `RS232Manager`: the core catalog
+  is **65** managers and `test_setup_metadata.py` records it as unregistered.
+- New merge-gate test: every shipped setup validates with zero `manager.schema`
+  and `manager.alias-conflict` diagnostics.
+- Role diagnostics are Phase 4's, where the fragments they evaluate are
+  generated; Phase 2 ships the alias half of the shared validator work.
 
 ## Changes in revision 7 (review of Phase 0)
 
@@ -574,11 +594,15 @@ the `test` extra; the tests fail rather than skip without it.
   `test_fake_plugin_contribution` still passes with its own schema winning
   over a generated one of the same id.
 
-**Checkpoint (not a shipped state):** the CLI validates every manager that
-has a schema, registered or not; with the gate down, the editor's behaviour is
-unchanged.
+**Checkpoint (met):** the CLI validates every manager that has a schema,
+registered or not (`test_configeditor_schema_resolution.py`: a legacy-scanned
+`SerialDacZManager`, a registered `HamamatsuManager` and its alias
+`hamamatsu.orca`, an APD alias spelling, a both-spellings conflict); with the
+gate down the editor's catalog carries no schema; the 15 shipped setups
+validate cleanly.
 
-*Estimate: ~1 day (was 0.5; aliases and roles).*
+*Estimate: ~1 day — actual ~0.5; the role half moved to Phase 4 with its
+fragments.*
 
 ### Phase 3 — Schema is the type authority in the editor
 
