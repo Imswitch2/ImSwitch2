@@ -1,14 +1,14 @@
 # Memory limits: buffering and automatic work, not what can be measured
 
-*Status: proposal, revised after review rounds 3 and 4 (2026-09-21). Round 3
-reversed the direction rounds 1 and 2 had taken; round 4 accepted that
-direction and corrected its claims. Written out of the question the
-magic-number audit left open — the audit replaced frame counts with byte
-budgets, and the byte budgets are still literals in the source. This note says
-how to make them settable without recreating the defect class the audit closed.
-Phase A — the regression round 3 found, a large scan volume dropped by the byte
-budget already on this branch — is implemented (`d648967d`); nothing else is.
-Records of all four rounds at the end.*
+*Status: **implemented** on `feat/memory-limits` (stacked on PR #29), after
+review rounds 3 and 4 (2026-09-21). Round 3 reversed the direction rounds 1
+and 2 had taken; round 4 accepted that direction and corrected its claims.
+Written out of the question the magic-number audit left open — the audit
+replaced frame counts with byte budgets, and the byte budgets were literals in
+the source. Phase A (the regression, `d648967d`) landed on PR #29 itself;
+phases A′, B, C and D are on the stacked branch — see *Implementation* — with
+one deviation from the reviewed text, recorded there. Records of all four
+rounds at the end.*
 
 ## The principle
 
@@ -207,15 +207,25 @@ file was opened with Open or Open virtual. So:
 - **Opening a file stays possible, and a log line does not make it safer.**
   Ordinary Open (`quickLoadData` → `checkAndLoadData`) materialises the whole
   dataset today; Open virtual is a separate action that opens only the lazy
-  handle. Above the working set, ordinary Open takes the lazy path when the
-  source truly supports one (`supports_lazy_indexing`; `TiffVirtualArray`
-  without `aszarr()` serves every plane by a whole-series `asarray()` and must
-  not be called bounded — round 1, kept) and says so; where it cannot, it says
-  what it is about to materialise — the decoded size of the *selected*
-  dataset, `shape × itemsize` from metadata (round 1, kept) — *before* it
-  starts. An explicit full load remains. No threshold refuses an open. This
-  narrows the unbounded-load finding to sources without a lazy path; it does
-  not close it.
+  handle. Above the working set, ordinary Open says what it is about to
+  materialise — the decoded size of the *selected* dataset, `shape ×
+  itemsize` from metadata (round 1, kept) — *before* it starts, in the status
+  bar and the log, and says whether Open virtual offers a genuine lazy path
+  for this source (`supports_lazy_indexing`; `TiffVirtualArray` without
+  `aszarr()` serves every plane by a whole-series `asarray()` and must not be
+  called bounded — round 1, kept). No threshold refuses an open.
+
+  **Deviation from the round-4 text, deliberate:** Open does *not* switch to
+  the lazy path automatically. Round 4 asked for both "prefer a genuine lazy
+  path where available" and "do not silently change either meaning of the
+  mean in this work" — and for a stack of more than 256 planes those
+  conflict, because a lazily opened source gets the plane-sampled mean and a
+  materialised one the exact mean, and `findPattern` takes whichever it is
+  handed. Switching large files to lazy would change what the pattern finder
+  receives for exactly the MoNaLISA stacks that are large. Until the
+  follow-up settles what `findPattern` should receive, Open keeps its
+  meaning and announces its cost; the automatic switch is the next step
+  after that follow-up, not before it.
 - **An exact bounded preview for in-plane-huge sources** — tiled accumulation,
   identical values, more reads — is the later answer if a rig ever has 16k²
   planes. Not a stride.
@@ -352,15 +362,22 @@ before Phase B changes anything else about the queues.
   the warning is said once and again for a fresh registration.
 - **A′ — the four-shape stall test**, before B: actual arrival schedules,
   per-queue occupancy; the gate for every later queue change (*Acceptance*).
-- **B — the settings.** `MemoryOptions` on `Options`; the three literals read
-  from it; contrast sample count follows the working set. Defaults reproduce
-  every literal. Tests: defaults unchanged; small-budget behaviour for each.
-- **C — estimates and diagnostics.** The arm-time estimate line; the
-  oversized-payload warning; warn on first block; messages name the setting.
-- **D — safer automatic work.** Mean preview estimated, automatic skip above
-  the working set, explicit warn-and-proceed; decoded size and
-  `supports_lazy_indexing` on open. Narrows the unbounded-`asarray` finding
-  to sources without a lazy path.
+- **A′ — the four-shape stall test. Done.** `test_memory_limits_recording.py`:
+  real broker, real `WriterThread`, a storer whose disk the test stalls;
+  per-queue occupancy asserted at every step.
+- **B — the settings. Done.** `MemoryOptions` on `Options`; the three
+  literals read through `memory_limits.effectiveBytes` with the literal as
+  the default (so an unconfigured process, and a test that patches a
+  literal, behave exactly as before); contrast sample count follows the
+  working set. Defaults reproduce every literal.
+- **C — estimates and diagnostics. Done.** The arm-time estimate line
+  (`_memoryEstimateLine`); the point detector's volume line at scan build;
+  the oversized-delivery warning; the block reported at once and repeated;
+  every message names the setting.
+- **D — safer automatic work. Done, with the Open deviation above.** Mean
+  preview estimated (`DataObj.meanPreviewNotice`), automatic skip to the
+  first plane above the working set, explicit warn-and-proceed; decoded size
+  and lazy-path check announced before an Open materialises.
 - **E — optional.** Config-editor fields.
 
 ## Follow-ups outside this note
@@ -370,6 +387,20 @@ before Phase B changes anything else about the queues.
   materialised one. Decide which the pattern finder wants and make it
   independent of the open path.
 - **The Hamamatsu comment** says 2 GB where the code allocates 4 GiB.
+
+## Implementation
+
+| What | Where |
+|---|---|
+| The three limits, adopted once, literal until configured | `imswitch/imcommon/model/memory_limits.py`; `Options.MemoryOptions`; adopted in `imcontrol/__init__.py` and `improcess/model/processing_config.py` |
+| Detector queue honours `perDetectorQueueMB`; admit-when-empty; messages | `DetectorManager._queueBudgetBytes`, `_distributeChunkLocked`, `readChunk` |
+| Writer honours `writerQueueMB`; block reported at once; arm estimate | `RecordingManager._writerQueueMaxBytes`, `enqueue_frames`, `_memoryEstimateLine` |
+| Point detector's volume line at scan build | `APDManager.initiateImage`, `PMTManager.initiateImage` |
+| Contrast sample size follows the working set | `contrast._max_samples`, `sample_values` |
+| Decoded size, lazy path, preview estimate, notice before a load | `DataObj.decodedBytes`, `sourceHasLazyPath`, `materializationNotice`, `meanPreviewNotice`, `checkAndLoadData` |
+| Automatic vs explicit mean; status line | `DataFrameController.showMean(explicit=…)`, `DataEditController`, `FileIOController._loadAsCurrent`, `CommunicationChannel.sigStatusMessage` |
+| Tests | `imcommon/_test/test_memory_limits.py`; `imcontrol/_test/unit/test_memory_limits_recording.py`, `test_chunk_contract.py`; `improcess/_test/test_contrast.py`, `test_data_obj_io.py`, `test_data_frame_virtual.py` |
+| Docs | `docs/improcess.rst` *Memory limits*; changelog |
 
 ## Decisions
 

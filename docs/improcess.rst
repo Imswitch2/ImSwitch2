@@ -1136,6 +1136,64 @@ the widget can open the selected output folder directly.  When the graph panel
 is enabled, completed batches also publish aggregate plots for region
 anisotropy, area-vs-anisotropy and per-sample summaries.
 
+.. _improcess-memory-limits:
+
+Memory limits
+=============
+
+How much RAM ImSwitch may spend on buffering and on automatic work is a
+property of the computer, so it lives in the per-machine options file
+``imcontrol_options.json`` (under the user config directory) rather than in
+the setup file, which travels between machines. The ``memory`` group holds
+three limits in MiB, each named for the one thing it bounds; the values
+shown are the defaults, which are what the code did before they were
+settable::
+
+    {
+        "setupFileName": "example_sted.json",
+        "memory": {
+            "writerQueueMB": 512,
+            "perDetectorQueueMB": 256,
+            "processingWorkingSetMB": 256
+        }
+    }
+
+``writerQueueMB``
+    The backlog the recording writer may hold before the acquisition loop
+    blocks. Blocking is graceful backpressure: frames wait in the detector's
+    chunk queue meanwhile, and the log says the moment it starts.
+
+``perDetectorQueueMB``
+    The backlog any one *(detector, consumer)* chunk queue may hold before
+    that consumer's stream is declared incomplete -- for a recording, the
+    point at which it fails. It is per queue: a rig with several detectors
+    and several consumers (the recording, BeadRec, a workflow) can hold this
+    much in each. A recording's stall tolerance is roughly the two numbers
+    added: a smaller writer queue backed by a larger detector queue absorbs a
+    short stall as well, but only the writer's share is graceful.
+
+    One delivery larger than this -- a scan-driven detector's whole volume,
+    or a burst of camera frames after a late poll -- is still admitted when
+    the queue is empty, and warned about once, because refusing it would
+    refuse the measurement rather than bound a backlog; nothing further fits
+    behind it until it is read.
+
+``processingWorkingSetMB``
+    The working set ImProcess may spend on work nobody asked for: contrast
+    sampling (the sample size follows it) and the mean preview computed when
+    data is loaded. Above it, the current-data panel shows the first plane
+    instead of the mean and says so; *Show mean* still computes the mean on
+    request. Opening a dataset whose decoded size exceeds it is announced in
+    the status bar before decoding starts, naming the size and whether
+    *Open virtual* offers a lazy path for that source. Nothing is refused.
+
+None of these is a process limit and ImSwitch claims none: camera drivers
+allocate their own buffers, datasets and results are as large as the data.
+A value that is not a positive whole number is reported at startup and the
+default stands. Every message that quotes a limit names the setting that
+moves it, so the line in the log is the line to act on. There is no dialog
+for these yet; edit the file and restart.
+
 Config schema
 =============
 
