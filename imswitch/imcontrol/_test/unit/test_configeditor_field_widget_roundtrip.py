@@ -70,3 +70,41 @@ def test_raw_line_edit_reads_back_through_its_original(qapp):
     assert editor._coercion_module.raw_text_to_json(le.text(), le.property("originalValue")) == "5"
     le.setProperty("originalValue", 5)
     assert editor._coercion_module.raw_text_to_json(le.text(), le.property("originalValue")) == 5
+
+
+# ── the JSON widget must round-trip every value ───────────────────────────
+# It is where every property no schema can type will land, so None, "" and a
+# string that happens to look like JSON must all come back as they went in.
+@pytest.mark.parametrize("value", [None, "", "5", "true", "abc", "null", {"a": 1}, [1, "x"], 0, 2.5, False])
+def test_json_widget_round_trips_untouched(qapp, value):
+    fw = editor.FieldWidget(_field("free", "json"), value)
+    assert fw.get_value() == value
+    assert type(fw.get_value()) is type(value)
+
+
+def test_json_widget_shows_a_string_quoted_and_none_as_null(qapp):
+    assert editor.FieldWidget(_field("free", "json"), "5")._w.text() == '"5"'
+    assert editor.FieldWidget(_field("free", "json"), None)._w.text() == "null"
+
+
+def test_json_widget_still_accepts_a_template_default_written_as_json_text(qapp):
+    """Section templates state dict defaults as the text "{}"; that stays a dict."""
+    fw = editor.FieldWidget(dict(_field("params", "json"), default="{}"), "{}")
+    assert fw._w.text() == "{}"
+    assert fw.get_value() == {}
+
+
+def test_json_widget_keeps_invalid_text_rather_than_losing_it(qapp):
+    fw = editor.FieldWidget(_field("free", "json"), {"a": 1})
+    fw._w.setText("{not json")
+    assert fw.get_value() == "{not json"
+
+
+def test_section_default_none_stays_none(qapp):
+    schema = {"fields": [{"key": "pinMap", "type": "json", "default": None},
+                         {"key": "params", "type": "json", "default": "{}"},
+                         {"key": "empty", "type": "json", "default": ""}]}
+    out = editor._build_default_section(schema)
+    assert out["pinMap"] is None
+    assert out["params"] == {}
+    assert out["empty"] == {}

@@ -631,8 +631,11 @@ def _build_default_section(schema: dict) -> dict:
                     out[f["key"]] = json.loads(v)
                 except json.JSONDecodeError:
                     out[f["key"]] = {}
+            elif v == "":
+                out[f["key"]] = {}
             else:
-                out[f["key"]] = v if isinstance(v, (dict, list)) else {}
+                # A default stated as a value keeps its kind -- None included.
+                out[f["key"]] = v
         elif v == "null":
             out[f["key"]] = None
         elif v == "" and tp in ("ref", "text", "path", "select"):
@@ -1159,6 +1162,15 @@ class DeviceCanvas(QScrollArea):
         self._selected = None
 
 
+def _looks_like_json_literal(text: str) -> bool:
+    """Whether ``text`` is itself JSON, as a template default like ``"{}"`` is."""
+    try:
+        json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 # =============================================================================
 # FieldWidget – single editable field row
 # =============================================================================
@@ -1246,11 +1258,13 @@ class FieldWidget(QWidget):
                 self._w.setCurrentIndex(idx)
         elif tp == "json":
             # Free-form JSON value rendered as a single-line edit, parsed on
-            # read. Used for dicts like scanDesignerParams.
-            if value in (None, "", "null"):
-                display = "{}"
-            elif isinstance(value, str):
-                # Treat a string default like "{}" as the JSON literal.
+            # read. Used for dicts like scanDesignerParams, and for any
+            # property no schema can type -- so it must round-trip *every*
+            # value. A string shows quoted and None shows as null: showing them
+            # bare made "5" come back as 5 and null come back as {}.
+            if isinstance(value, str) and self._def.get("default") == value \
+                    and _looks_like_json_literal(value):
+                # A template default written as JSON text ("{}", "[]").
                 display = value
             else:
                 display = json.dumps(value)
