@@ -1,20 +1,15 @@
 """
 Test config editor device coverage: category registry, blanks, and auto-discovery.
 """
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("PyQt5")
 
-# Import the config editor module by file path
-_SCRIPT_PATH = Path(__file__).resolve().parents[4] / "utility_scripts" / "imswitch_config_editor.py"
-spec = importlib.util.spec_from_file_location("imswitch_config_editor", _SCRIPT_PATH)
-editor = importlib.util.module_from_spec(spec)
-sys.modules["imswitch_config_editor"] = editor
-spec.loader.exec_module(editor)
+from imswitch.imcontrol.view.configeditor import editor
+
+_MANAGERS_ROOT = Path(editor.__file__).resolve().parents[2] / "model" / "managers"
 
 
 def test_authoritative_category_registry_exists():
@@ -64,7 +59,7 @@ def test_auto_discovery_finds_templated_managers():
 def test_auto_discovery_finds_non_templated_managers():
     """Auto-discovery must find managers that have no template."""
     # BaslerManager exists in the codebase but may not have a template
-    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    managers_root = _MANAGERS_ROOT
     if not managers_root.is_dir():
         pytest.skip("Managers tree not found")
     
@@ -107,7 +102,7 @@ def test_build_default_device_with_template():
 def test_build_default_device_without_template():
     """Building a device for a non-templated manager uses category blank."""
     # Use a known non-templated manager if discovered, or a fake one
-    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    managers_root = _MANAGERS_ROOT
     if not managers_root.is_dir():
         pytest.skip("Managers tree not found")
     
@@ -128,7 +123,7 @@ def test_category_for_manager_lookup():
         assert editor._get_category_for_manager("TISManager") == "detectors"
     
     # Discovered non-templated
-    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    managers_root = _MANAGERS_ROOT
     if not managers_root.is_dir():
         pytest.skip("Managers tree not found")
     

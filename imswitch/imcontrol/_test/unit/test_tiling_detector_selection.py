@@ -154,7 +154,7 @@ def test_the_selection_is_read_before_the_worker_starts():
 def test_config_editor_exposes_the_required_detector_transform_map():
     template = (
         Path(__file__).parents[4]
-        / 'utility_scripts/builtin_templates/sections/tiling.json'
+        / 'imswitch/imcontrol/view/configeditor/builtin_templates/sections/tiling.json'
     )
     fields = {
         field['key']: field

@@ -233,7 +233,10 @@ class TestConfigEditorCatalog:
         # CRITICAL: Verify no template file was created
         # (This is a no-op check in the test, but the key point is that the
         # manager is discoverable without any template file existing)
-        builtin_templates_dir = Path(__file__).parents[4] / "utility_scripts" / "builtin_templates"
+        builtin_templates_dir = (
+            Path(__file__).parents[4] / "imswitch" / "imcontrol" / "view"
+            / "configeditor" / "builtin_templates"
+        )
         if builtin_templates_dir.exists():
             # Verify no file for this fake manager was created
             for template_file in builtin_templates_dir.rglob("*.json"):

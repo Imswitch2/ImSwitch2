@@ -34,6 +34,13 @@ from imswitch.imcontrol.model.plugins.registry import (
 )
 from imswitch.imcontrol.model.plugins.manifest import DeviceManagerContribution
 
+#: The Config Studio's built-in manager templates, which ship inside the
+#: package alongside the editor itself.
+_BUILTIN_TEMPLATES = (
+    Path(__file__).resolve().parents[4]
+    / "imswitch" / "imcontrol" / "view" / "configeditor" / "builtin_templates"
+)
+
 
 class TestConfigEditorSchemaDefaults:
     """Test suite for config editor schema and defaults (Phase 2)."""
@@ -45,7 +52,7 @@ class TestConfigEditorSchemaDefaults:
         defaults that the editor currently produces.
         """
         # Load the actual HamamatsuManager template
-        template_path = Path(__file__).parents[4] / "utility_scripts" / "builtin_templates" / "detectors" / "HamamatsuManager.json"
+        template_path = _BUILTIN_TEMPLATES / "detectors" / "HamamatsuManager.json"
         
         if not template_path.exists():
             pytest.skip("HamamatsuManager.json template not found")
@@ -97,7 +104,7 @@ class TestConfigEditorSchemaDefaults:
     
     def test_default_device_parity_nidaq_laser(self):
         """Test that build_default_device produces identical output for NidaqLaserManager."""
-        template_path = Path(__file__).parents[4] / "utility_scripts" / "builtin_templates" / "lasers" / "NidaqLaserManager.json"
+        template_path = _BUILTIN_TEMPLATES / "lasers" / "NidaqLaserManager.json"
         
         if not template_path.exists():
             pytest.skip("NidaqLaserManager.json template not found")
@@ -122,13 +129,7 @@ class TestConfigEditorSchemaDefaults:
 
     def test_cobolt_editor_exposes_protocol_emission_and_startup_controls(self):
         """The Studio form must expose the complete Cobolt policy tuple."""
-        template_path = (
-            Path(__file__).parents[4]
-            / "utility_scripts"
-            / "builtin_templates"
-            / "lasers"
-            / "Cobolt0601NewLaserManager.json"
-        )
+        template_path = _BUILTIN_TEMPLATES / "lasers" / "Cobolt0601NewLaserManager.json"
         with open(template_path, encoding="utf-8") as handle:
             template = json.load(handle)
 

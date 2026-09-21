@@ -1,4 +1,5 @@
 graft imswitch/_data
+graft imswitch/imcontrol/view/configeditor/builtin_templates
 graft imswitch/imcommon/_test
 graft imswitch/imcontrol/_test
 graft imswitch/improcess/_test
