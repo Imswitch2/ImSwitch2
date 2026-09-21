@@ -353,13 +353,22 @@ class ProcessingResult(ABC):
     ) -> list[DisplayLayerSpec]:
         """Apply persisted per-layer display overrides to layer specs."""
         adjusted = []
-        for layer in layers:
+        for index, layer in enumerate(layers):
             layer_id = _display_layer_component_id(layer)
             settings = self._display_layer_settings.get(layer_id, {})
+            levels = settings.get("display_levels")
+            if levels is None and index == 0 and self.display_levels is not None:
+                # This result's own display_levels is a *default* for its
+                # first layer, not an override: a producer that measured a
+                # range for the whole result (MoNaLISA's reconstructor takes
+                # the 1st and 99.9th percentile) should have it honoured until
+                # that layer is given a contrast of its own -- after which the
+                # layer's wins, which is the point of remembering it.
+                levels = self.display_levels
             adjusted.append(
                 replace(
                     layer,
-                    display_levels=settings.get("display_levels", layer.display_levels),
+                    display_levels=levels if levels is not None else layer.display_levels,
                     colormap=settings.get("colormap", layer.colormap),
                     visible=settings.get("visible", layer.visible),
                 )

@@ -331,7 +331,7 @@ def test_a_result_and_a_copy_of_it_open_at_the_same_contrast():
 
 # --- results that render several layers -------------------------------------
 
-def _layered(name, components):
+def _layered(name, components, display_levels=None):
     layers = [
         DisplayLayerSpec(
             name=f"{name}_{component}",
@@ -343,7 +343,9 @@ def _layered(name, components):
         )
         for index, (component, value) in enumerate(components)
     ]
-    return _Result(name, np.zeros((4, 5), np.float32), display_layers=layers)
+    result = _Result(name, np.zeros((4, 5), np.float32), display_layers=layers)
+    result.display_levels = display_levels
+    return result
 
 
 def test_every_layer_keeps_its_contrast_not_only_the_active_one():
@@ -417,6 +419,47 @@ def test_layered_results_keep_their_contrast_across_a_switch():
     view.select(1)
     controller.listItemChanged()
     assert tuple(view.imgLayer.contrast_limits) == (300.0, 400.0)
+
+
+def test_a_reconstructors_own_levels_do_not_outrank_the_ones_you_set():
+    """The regression the rig caught, and the reason six harnesses missed it.
+
+    MoNaLISA's reconstructor measures the 1st/99.9th percentile at
+    construction and stores it on the result. Selecting the result then
+    re-applied that whole-result default *after* the render had restored the
+    per-component contrast, so the reconstruction came back at the
+    reconstructor's levels every single time it was clicked. A synthetic
+    result built without display_levels never showed it.
+    """
+    view = _View()
+    controller = _controller(view)
+    reconstructed = _layered("recon", [("signal", 10.0)],
+                             display_levels=(-23.8, 39.6))
+    other = _layered("other", [("signal", 10.0)], display_levels=(-23.8, 39.6))
+
+    view.add(reconstructed)
+    controller.listItemChanged()
+    view.userDragsSlider(-23.8, 134.8)          # the contrast the operator sets
+
+    view.add(other)
+    controller.listItemChanged()
+    view.select(0)
+    controller.listItemChanged()
+
+    assert tuple(view.imgLayer.contrast_limits) == (-23.8, 134.8)
+
+
+def test_a_reconstructors_own_levels_are_used_until_one_is_set():
+    """It is a default, though -- an explicit producer choice still shows."""
+    view = _View()
+    controller = _controller(view)
+    reconstructed = _layered("recon", [("signal", 10.0)],
+                             display_levels=(-23.8, 39.6))
+
+    view.add(reconstructed)
+    controller.listItemChanged()
+
+    assert tuple(view.imgLayer.contrast_limits) == (-23.8, 39.6)
 
 
 def test_a_plain_result_does_not_inherit_a_component_from_the_last_one():

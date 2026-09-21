@@ -167,9 +167,14 @@ class ReconstructionViewController(ImProcessWidgetController):
         # Inheriting the previous result's levels is worse than useless when
         # the two are being compared *because* their ranges differ -- which is
         # the reason for having them both in the list.
+        # The render applies the levels; nothing may be applied after it.
+        # There used to be a second, unconditional setImageDisplayLevels here,
+        # which for a result rendering display layers wrote the whole-result
+        # default over the per-component contrast the render had just restored
+        # -- so a MoNaLISA reconstruction came back at the 1st/99.9th
+        # percentile its reconstructor measured at construction, every single
+        # time it was clicked, however often its contrast had been set.
         self.fullUpdate(autoLevels=not remembered, levels=retrievedLevels)
-        if retrievedLevels is not None:
-            self._widget.setImageDisplayLevels(retrievedLevels[0], retrievedLevels[1])
 
         self._currItemInd = self._widget.getCurrentItemIndex()
         self._commChannel.sigCurrentResultChanged.emit(currItem)
