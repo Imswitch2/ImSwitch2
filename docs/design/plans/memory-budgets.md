@@ -1,10 +1,14 @@
 # Memory budgets: one declared number, derived shares
 
-*Status: proposal, awaiting review. Written 2026-09-21 out of the question the
-magic-number audit left open — the audit replaced frame counts with byte
-budgets, and the byte budgets are still literals in the source. This note says
-how to make them settable without recreating the defect class the audit closed.
-Nothing here is implemented. Not part of PR #29.*
+*Status: proposal, revised after review round 1 (2026-09-21). Written out of
+the question the magic-number audit left open — the audit replaced frame counts
+with byte budgets, and the byte budgets are still literals in the source. This
+note says how to make them settable without recreating the defect class the
+audit closed. Nothing here is implemented. Not part of PR #29.*
+
+*Review round 1 found six defects in the first draft, four of them P1. The
+corrections are folded into the text below and recorded at the end; three of
+them changed the design rather than the wording.*
 
 ## The question
 
@@ -17,33 +21,81 @@ distinction is the whole content of this note.
 
 ## Why not one field per constant
 
-The budgets are not independent numbers. They stand in a fixed order, and the
-order is what makes them work:
+Not because the constants must stand in a fixed order — they need not, see
+below — but because **they compose into one quantity the operator actually
+cares about and none of them is that quantity**.
 
-| Budget | Today | Its job |
-|---|---|---|
-| `WRITER_QUEUE_MAX_BYTES` (`RecordingManager.py:83`) | 512 MiB | absorbs a disk or compression hiccup between the acquisition loop and the storer |
-| `MAX_QUEUED_CONSUMER_BYTES` (`DetectorManager.py:95`) | 256 MiB | per-detector chunk queue, shared by every consumer (recorder, live view, tiling) |
-| `PRODUCER_STALL_WARN_S` (`RecordingManager.py`) | 1.0 s | warns that the producer is blocked, *before* the overflow it causes |
+A recording survives a disk or compression stall for as long as the frames it
+cannot yet write have somewhere to sit. Those places are, in order:
 
-The writer queue must stay **larger** than the detector chunk queue. It is the
-buffer that is supposed to absorb the hiccup; if it is the smaller of the two,
-the acquisition loop blocks on a full writer queue, the detector's own queue
-fills behind it and overflows first, and the recording aborts where it should
-have waited. That is the Snouty chunk-cap failure in a new costume — and it is
-exactly what the branch found and fixed: before the byte budget the writer
-queue held 64 *items* (about 64 frames, ~7 ms), which was already shorter than
-the detector-side budget downstream of it, so *a recording could not use its
-own buffer*.
+1. the **writer queue** (`WRITER_QUEUE_MAX_BYTES`, 512 MiB): the acquisition
+   loop blocks on `enqueue_frames` once it is full — graceful backpressure;
+2. the **detector chunk queue** (`MAX_QUEUED_CONSUMER_BYTES`, 256 MiB): while
+   the acquisition loop is blocked it is not calling `readChunk`, so the
+   recording's own consumer queue grows behind it. When *that* overflows the
+   consumer is marked overflowed and its stream is declared incomplete — the
+   recording fails.
 
-Expose the three as three fields and a well-meaning operator "optimising for a
-weaker laptop" sets the writer queue to 64 MB, leaves the detector queue at
-256 MB, and the failure returns — this time with a user-authored config to
-blame it on, and no test that can catch it because the configuration is not in
-the repository.
+So the tolerance is **additive**: roughly `(writer + detector) / byte-rate`
+seconds, and the split decides only *how much of the tolerance is graceful*.
+An operator asked to set two numbers has to know all of this to set either.
+Asked to set one — "how much RAM may ImSwitch hold between the camera and the
+disk" — they can answer from what their machine has.
 
-**The audit's rule applies to its own numbers: state the fact once, derive
-what follows from it.**
+The historical defect that motivated bytes at all was not an ordering
+violation: the writer queue held 64 *items*, which at the 0.1 ms poll interval
+is about 64 frames — 7 ms on a fast camera, not the seconds the number
+suggested. The unit was wrong, and the fix was to state the buffer in the unit
+that bounds memory.
+
+## What the budget must account for
+
+A declared total is only honest if the accounting covers everything the
+declaration implies. Two gaps in the current code have to close as part of
+this work, or the number promises something it does not deliver.
+
+### The detector allowance is per queue, not per process
+
+`DetectorManager._distributeChunkLocked` applies `MAX_QUEUED_CONSUMER_BYTES`
+to **each consumer key on each detector** (`total = queuedBytes.get(key, 0) +
+…; if total <= MAX_QUEUED_CONSUMER_BYTES`). Three detectors with a recorder and
+a live-view consumer each is six independent 256 MiB allowances — 1.5 GiB,
+under a setting that claims 1 GiB total.
+
+**Contract:** the detector share is a single pool, reserved and released
+against one allocator owned by `DetectorsManager`, keyed by
+`(detector, consumer)`. Per-queue bookkeeping stays (that is what the overflow
+message quotes), but admission tests the pool.
+
+If that proves too invasive for a first pass, then the *setting* must be
+renamed to what it is — `perDetectorQueueMB` — and the note's claim of a
+process-wide total withdrawn. A number that silently means "× the number of
+queues" is the defect this note exists to avoid.
+
+### Writer batches and their temporaries are outside the accounting
+
+The writer releases a chunk's byte reservation when it **dequeues** it, then
+accumulates up to `WRITE_BATCH_FRAMES` (32) frames in `self._batches` and
+`np.concatenate`s them. For a 2048 × 2048 uint16 camera that is 256 MiB of
+accumulated input plus another 256 MiB for the concatenated copy — 512 MiB
+that no budget sees, against the 25 % this note's first draft "reserved" for
+exactly such data.
+
+**Contract:**
+
+- the reservation is released when the batch is **written**, not when it is
+  dequeued, so accumulated frames stay inside the queue budget;
+- the batch is filled into a **preallocated** `(WRITE_BATCH_FRAMES, *shape)`
+  buffer per detector instead of being concatenated, which removes the
+  transient double and makes the batch's cost exactly one buffer, declared
+  and constant;
+- a single payload larger than the whole budget is admitted **alone** (the
+  existing `queuedBytes == 0 or …` rule) — waiting for room that can never
+  appear is a deadlock, not backpressure. A frame larger than the batch buffer
+  is written directly, bypassing batching.
+
+With both closed, in-flight bytes = queue (including accumulated batches) +
+one batch buffer per recording detector, and both terms are in the budget.
 
 ## What is exposed
 
@@ -59,16 +111,19 @@ processingMemoryBudgetMB  = 1024   # RAM ImProcess may spend on one display-time
 | Derived | Share | At the default | Today's literal |
 |---|---|---|---|
 | writer queue (`WRITER_QUEUE_MAX_BYTES`) | 50 % | 512 MiB | 512 MiB |
-| detector chunk queue (`MAX_QUEUED_CONSUMER_BYTES`) | 25 % | 256 MiB | 256 MiB |
+| detector queue pool (`MAX_QUEUED_CONSUMER_BYTES`) | 25 % | 256 MiB **across all queues** | 256 MiB *per queue* |
+| batch buffers (`WRITE_BATCH_FRAMES` × frame × detectors) | ≤ 25 % | derived, capped | unaccounted |
 
-The remaining 25 % is deliberately unallocated: it is the headroom the frames
-in flight *outside* either queue occupy (the batch being assembled, the chunk
-being compressed, the copy a storer makes). Budgeting it away would make the
-declared number a lie in the direction that matters.
+The batch share is not a free parameter: it is `WRITE_BATCH_FRAMES × frame
+bytes × recording detectors`, computed when the recording arms. If that
+exceeds its share the batch depth is reduced for that recording (and logged),
+rather than the budget being exceeded silently. That makes the third row a
+*consequence* of the first two, which is the property the whole note is after.
 
-The defaults reproduce today's constants exactly, so an installation that never
-opens the setting behaves identically. The ordering invariant (writer >
-detector) holds at every budget by construction, and a test pins it.
+The defaults reproduce today's constants for the single-detector,
+single-consumer case, which is every in-tree test and most rigs. A multi-camera
+rig gets a *smaller* per-queue allowance than today — that is the point, and it
+is a behaviour change to call out in the changelog rather than hide.
 
 ### Processing (improcess)
 
@@ -82,24 +137,36 @@ The third row is the one worth having. `FileIOController._loadAsCurrent`
 defaults to `virtual=False`, so opening a file materialises it whole —
 `DataObj.checkAndLoadData()` does an unbounded `.asarray()` **on the GUI
 thread**, which the audit verified and this branch did not fix (it bounded the
-*preview*, not the load). Today the only way to avoid it is knowing to pick
-"Open data as a lazy virtual stack" from the toolbar. With a budget the rule
-writes itself: a file larger than the budget opens virtually, with a log line
-saying so and naming the setting. That converts a trap into a declared policy.
+*preview*, not the load). With a budget the rule writes itself: a dataset
+larger than the budget opens virtually, with a log line naming the setting.
+
+Two things that rule must get right (review round 1):
+
+- **The comparison is the decoded dataset, not the file.** `shape ×
+  dtype.itemsize` of the *selected* dataset, read from metadata without
+  materialising. A compressed HDF5 well under a gigabyte expands to many; a
+  Zarr source is a directory; one HDF5 file holds several datasets, and only
+  the selected one is being opened.
+- **Virtual is not automatically bounded.** `TiffVirtualArray.__init__` sets
+  `supports_lazy_indexing = False` when `series.aszarr()` fails, and then
+  `__getitem__` serves *every* plane by `self.asarray()[key]` — a whole-series
+  read per plane. Opening such a file "virtually" and letting the mean preview
+  stride 256 planes is 256 full-series reads: worse than materialising once.
+  Phase C must consult `supports_lazy_indexing` and, when it is false, either
+  refuse with a message naming the reason or fall back to a single bounded
+  materialisation — never pretend the virtual path bounded anything. The same
+  applies to `EagerVirtualArray`.
 
 `MEAN_PREVIEW_MAX_PLANES` (256) stays a count: it bounds *how representative*
-the preview is, not how much memory it costs, and 256 planes of a large frame
-is already inside any sane budget.
+the preview is, not how much memory it costs.
 
 ## What is deliberately NOT exposed
 
-**`TARGET_CHUNK_BYTES` (4 MiB, `RecordingManager.py:126`).** It is not an
-in-flight budget — it is the on-disk chunk layout, and its bound comes from the
-*reader's* chunk cache (h5py's default is 8 MiB), not from the writing
-machine's RAM. Raising it on a strong machine makes every file produced there
-slower to read on every machine that later opens it, including the strong one.
-If it is ever settable it belongs beside the save format as a storage choice,
-never inside a memory budget.
+**`TARGET_CHUNK_BYTES` (4 MiB).** Not an in-flight budget — the on-disk chunk
+layout, bounded by the *reader's* chunk cache (h5py's default is 8 MiB), not by
+the writing machine's RAM. Raising it on a strong machine makes every file
+produced there slower to read on every machine that later opens it. If it is
+ever settable it belongs beside the save format as a storage choice.
 
 **`QUEUED_FRAME_OVERHEAD_BYTES` (128 B).** A measured property of a Python
 object, not a policy.
@@ -122,39 +189,60 @@ class MemoryOptions:
 **Not the setup file.** The setup file describes the microscope; it is copied
 between machines and shared with collaborators. A memory budget is a property
 of the computer, and putting it there means a laptop's budget riding into a
-workstation's rig config — a fresh instance of "a fact right for the case it
-was written for, silently wrong for its neighbour".
+workstation's rig config.
 
 ImProcess can read this without a new dependency: `load_processing_config`
 already calls `configfiletools.loadOptions()` through the single allowlisted
 improcess → imcontrol edge, so the budget comes back from the same call that
-already happens. The layering guard test needs no change.
+already happens.
 
-**UI.** There is no preferences dialog today (options are edited by the config
-tooling and by individual controllers). Two honest choices: add the two fields
-to the config editor beside the existing sections, or ship the contract first
-and let the file be hand-edited until a dialog exists. I would do the latter —
-the value of this change is the derivation and the validation, not the widget,
-and a dialog that edits two integers can follow whenever it is wanted.
+**UI.** There is no preferences dialog today. Ship the contract first and let
+the file be hand-edited; a dialog that edits two integers can follow. The value
+of this change is the derivation and the validation, not the widget.
 
 ## Validation: what stops the knob becoming the next trap
 
-A settable budget that can be set wrong is only an improvement if being wrong
-is *loud*. Three rules:
+A settable budget is only an improvement if being wrong is *loud*.
 
-1. **A floor, checked at startup against the configured detectors.** A budget
-   that cannot hold a handful of frames of the largest configured detector is
-   refused by name at construction, with the frame size in the message —
-   not discovered mid-scan as an overflow. (2048 × 2048 × uint16 = 8 MiB per
-   frame; a 64 MB budget is eight frames of it.)
-2. **Every message that quotes a budget names the setting that changes it.**
-   The detector overflow warning and the `readChunk` overflow exception
-   already quote the budget in MiB and the frames it bought for *this*
-   detector; they must end with the setting name, so the operator reading the
-   failure knows which control produced it. Same rule the rest of the branch
-   follows: a refusal names the control that fixes it.
-3. **The ordering invariant is a test, not a comment.** `writer > detector` at
-   the default, at the floor, and at a large budget.
+1. **A floor at startup**, against the configured detectors' *display* frames:
+   a budget that cannot hold a handful of frames of the largest one is refused
+   by name at construction, with the frame size in the message.
+2. **Revalidation when the payload is known.** The startup check is necessary
+   and not sufficient: a point detector's raw frame is the assembled scan
+   volume, whose dimensions come from the scan, not from the manager
+   (`APDManager` constructs with `fullShape = (100, 100)` and reallocates in
+   `initiateImage` from `ScanWorker._output_image_dims`; a 512 × 512 × 256
+   uint16 volume is 128 MiB against a 20 kB construction-time shape). The
+   budget is therefore re-checked against the real raw payload and dtype when
+   the scan is built and when the recording arms, and a scan whose single raw
+   frame does not fit is refused there — where the numbers exist — rather than
+   discovered as an overflow mid-run.
+3. **Every message that quotes a budget names the setting.** The detector
+   overflow warning and the `readChunk` overflow exception already quote the
+   budget in MiB and the frames it bought for *this* detector; they must end
+   with the setting name. Same rule as the rest of the branch: a refusal names
+   the control that fixes it.
+
+### The test is stall behaviour, not an inequality
+
+The first draft made `writer > detector` the correctness argument. It is not
+one. Tolerance is additive, so a smaller writer queue backed by a larger
+detector queue absorbs a short stall perfectly well, and any split fails a
+long enough one; what actually decides survival is incoming byte rate,
+total capacity, drain rate and payload size. The 50/25 split is a **policy** —
+spend the budget where exhaustion is graceful backpressure rather than a fatal
+overflow — worth keeping as a default and not worth asserting as a law.
+
+So the test is a stall test: a storer that blocks for `T`, a producer paced at
+`R` bytes/s, and the assertion that the recording
+
+- survives when `T·R` fits the total capacity, with no frame lost, and
+- fails **predictably and loudly** when it does not — the producer-stall
+  warning first, then an overflow naming the detector, the budget and the
+  setting; never a silent gap.
+
+Run it at the default split and at an inverted one, to pin that the behaviour
+degrades with capacity rather than with which side holds it.
 
 ## VRAM: deferred, and why
 
@@ -162,47 +250,79 @@ There is real GPU code — `cupy` in the Snouty deskew
 (`reconstructors/snouty/deskew_gpu.py`) and `torch` in the Denoiser/UNet — and
 neither manages memory at all: no pool limit, no chunking, no OOM handling.
 
-So a `gpuMemoryBudgetMB` today would be a number that nothing reads, and a
-number that nothing reads is worse than no number: in a preferences dialog it
-reads as a guarantee. The budget becomes meaningful the moment a GPU path can
-*obey* it — when the deskew chunks its volume to fit a declared cap, and the
-denoiser sizes its batch from one. That is implementation work in those two
-reconstructors, and it is the work that should be scheduled; the setting is
-the easy part and follows it.
+A `gpuMemoryBudgetMB` today would be a number nothing reads, and a number
+nothing reads is worse than no number: in a preferences dialog it reads as a
+guarantee. It becomes meaningful when a GPU path can *obey* it — when the
+deskew chunks its volume to fit a declared cap and the denoiser sizes its batch
+from one. That is the work to schedule; the setting follows it.
 
-Note also which problem is actually being reported today: every ImProcess
-memory defect the audit verified was **host** RAM — the mean preview, the
-contrast working set, the live poll, the unbounded open. A VRAM setting would
-have touched none of them.
+Note also which problem is actually reported today: every ImProcess memory
+defect the audit verified was **host** RAM — the mean preview, the contrast
+working set, the live poll, the unbounded open. A VRAM setting touches none.
 
 ## Phases
 
-- **A — contract, no behaviour change.** `MemoryOptions` on `Options`; a
-  single `memory_budgets.py` in imcommon that derives the shares; the five
-  literals become module-level values read from it. Defaults identical to
-  today. Tests: derivation table, ordering invariant, defaults-unchanged.
-- **B — validation.** Startup floor check against configured detectors;
-  messages name the setting; refusal test.
-- **C — the materialise-on-open rule.** `_loadAsCurrent` consults the
-  processing budget and opens virtually above it, with a log line. This is the
-  phase with user-visible value; it also closes the unbounded-`asarray`
-  finding the audit left open.
-- **D — optional.** Config-editor fields.
+- **A — accounting, no setting yet.** Close the two gaps: pool the detector
+  allowance across queues; hold the writer reservation until the batch is
+  written and fill a preallocated batch buffer. Behaviour at today's constants
+  is unchanged for one detector with one consumer; the multi-detector change
+  is real and goes in the changelog. Tests: pool admission across two
+  detectors, batch accounted, oversized payload admitted alone.
+- **B — the contract.** `MemoryOptions` on `Options`; one `memory_budgets.py`
+  in imcommon deriving the shares; the literals read from it. Defaults
+  identical to A. Tests: derivation table, defaults unchanged, batch share
+  reduces batch depth rather than overrunning.
+- **C — validation.** Startup floor; revalidation at scan build and at arm;
+  messages name the setting; the stall test above.
+- **D — materialise-on-open.** Decoded-size comparison, `supports_lazy_indexing`
+  check with an explicit refusal or bounded fallback, and a test for the
+  non-lazy TIFF path specifically. Closes the unbounded-`asarray` finding.
+- **E — optional.** Config-editor fields.
 - **Later, separately.** GPU chunking in the Snouty deskew and the denoiser;
   `gpuMemoryBudgetMB` once either can honour it.
 
 ## Open questions for review
 
-1. **The shares.** 50/25 (acquisition) and 25/6.25 (processing) are chosen to
-   land exactly on today's constants at a 1 GiB budget, which makes the change
-   provably behaviour-neutral. Is reproducing today's numbers the right anchor,
-   or should the split be re-derived from what the hardware actually needs?
-2. **One budget or two?** A single `imswitchMemoryBudgetMB` covering both
-   modules is simpler to explain, but acquisition and processing usually run in
-   different processes and compete for the same RAM only when they do not.
-3. **Per-rig override.** Should a setup file be allowed to *lower* the
-   machine budget (a rig that shares a workstation), or does that reintroduce
-   the travelling-config problem this note argues against?
-4. **Phase C's threshold** is "file larger than the budget opens virtually".
-   Should the comparison be against the file, or against the working set the
-   *first* operation on it would allocate (the contrast path's 17 B/element)?
+1. **Aggregate or per-queue.** The note specifies a pooled detector allowance
+   because that is what makes the declared number true. It is the largest piece
+   of work here. Is the honest alternative — naming the setting
+   `perDetectorQueueMB` and dropping the process-wide claim — preferable for a
+   first pass?
+2. **The shares.** 50/25/≤25 lands on today's constants for the common case.
+   Is reproducing them the right anchor, or should the split be re-derived from
+   measured rig throughput?
+3. **One budget or two?** A single `imswitchMemoryBudgetMB` is simpler to
+   explain, but acquisition and processing usually run in different processes.
+4. **Per-rig override.** May a setup file *lower* the machine budget (a rig
+   sharing a workstation), or does that reintroduce the travelling-config
+   problem?
+
+## Review round 1 (2026-09-21)
+
+Six findings, all confirmed against the code; four changed the design.
+
+1. **[P1] The detector share was not a module-wide limit.** The allowance is
+   per `(detector, consumer)`. Draft claimed a process-wide total. → pooled
+   allocator specified, with the honest per-queue naming as the stated
+   fallback.
+2. **[P1] The reserved 25 % could not cover writer batches.** The reservation
+   is released on dequeue and `np.concatenate` doubles the batch transiently:
+   512 MiB for a 2048² camera against 256 MiB of "headroom". → reservation
+   held until written, preallocated batch buffer, batch share derived and
+   capped, oversized-payload rule stated.
+3. **[P1] The open threshold must use decoded dataset size.** "A file larger
+   than the budget" is wrong for compressed HDF5, Zarr directories and
+   multi-dataset files. → `shape × itemsize` of the selected dataset, resolved
+   before the phase rather than left to implementation.
+4. **[P1] Opening virtually does not always bound anything.**
+   `TiffVirtualArray` falls back to whole-series `asarray()` per plane when
+   `aszarr()` fails, so a bounded preview becomes 256 full-series reads. →
+   `supports_lazy_indexing` consulted, explicit refusal or bounded fallback,
+   test for that path.
+5. **[P2] Startup validation cannot see later scan payloads.** A point
+   detector's raw frame is the assembled volume, known at scan build. →
+   revalidation at scan build and arm.
+6. **[P2] `writer > detector` is policy, not a safety invariant.** Tolerance
+   is additive; survival depends on rate, capacity, drain and payload size. →
+   the ordering is demoted to a default policy and the correctness argument
+   replaced by a stall test at two splits.
