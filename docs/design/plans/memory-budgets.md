@@ -1,4 +1,4 @@
-# Memory budgets: one declared number, derived shares
+# Memory budgets: declared numbers, derived shares
 
 *Status: proposal, revised after review rounds 1 and 2 (2026-09-21). Written
 out of the question the magic-number audit left open — the audit replaced frame
@@ -8,9 +8,9 @@ class the audit closed. Nothing here is implemented. Not part of PR #29.*
 
 *Eleven findings across two rounds, all confirmed against the code. Round 1
 corrected the accounting and demoted the ordering invariant; round 2 closed the
-custody gap between the two pools, bounded the preview's spatial extent, and
-settled that both modules share one process — which merges the two budgets into
-one. Records at the end.*
+custody gap between the two queues, bounded the preview's spatial extent, and
+settled that both modules share one process. Records at the end, followed by
+the two decisions taken on them.*
 
 ## The question
 
@@ -40,9 +40,10 @@ cannot yet write have somewhere to sit. Those places are, in order:
    recording fails.
 
 So the tolerance is **additive**, and the split decides only *how much of it is
-graceful*. An operator asked to set three numbers has to know all of this to
-set any. Asked to set one — "how much RAM may ImSwitch hold" — they can answer
-from what their machine has.
+graceful*. An operator asked to set five numbers has to know all of this to set
+any. Asked for a pooled total and one per-queue limit — "how much RAM may
+ImSwitch hold, and how much may any one detector queue hold" — they can answer
+both from what their machine has.
 
 The historical defect that motivated bytes at all was not an ordering
 violation: the writer queue held 64 *items*, which at the 0.1 ms poll interval
@@ -61,33 +62,44 @@ this work, or the number promises what it cannot deliver.
 `DetectorManager._distributeChunkLocked` applies `MAX_QUEUED_CONSUMER_BYTES`
 to **each consumer key on each detector**. Three detectors with a recorder and
 a live-view consumer each is six independent 256 MiB allowances — 1.5 GiB,
-under a setting that claims 1 GiB.
+under a setting that would claim 1 GiB.
 
-**Contract:** the detector share is a single pool, reserved and released
-against one allocator owned by `DetectorsManager`, keyed by
-`(detector, consumer)`. Per-queue bookkeeping stays — that is what the overflow
-message quotes — but admission tests the pool.
+**Decided (see Decisions): the first pass keeps the per-queue limit and names
+it accordingly.** Pooling it behind one allocator is the better end state but
+is the largest piece of work in this note, and a wrong name is the more urgent
+defect: a number that silently means "× the number of queues" is exactly what
+this note exists to avoid.
 
-If pooling proves too invasive for a first pass, the *setting* must be renamed
-to what it is (`perDetectorQueueMB`) and the process-wide claim withdrawn. A
-number that silently means "× the number of queues" is the defect this note
-exists to avoid.
+So the detector allowance is `perDetectorQueueMB`, a second setting that is
+**not** drawn from the pooled total, and the note claims no process-wide total
+that includes it. What the operator gets instead is the worst case, computed
+where it is known and stated plainly at startup:
 
-### 2. Custody is dropped between the pools
+> Memory budget: 2048 MiB pooled, plus up to 6 × 256 MiB of detector queues
+> (2 detectors × 3 consumers) — 3584 MiB worst case.
+
+That line is honest, it is derived from the configuration rather than assumed,
+and it tells an operator on a small machine exactly what to lower. Pooling
+later collapses the two settings into one without changing any default; until
+then, two numbers that each mean what they say beat one that does not.
+
+### 2. Custody is dropped between the queues
 
 `readChunk` ends with `frames = list(queue); queue.clear();
 self._chunkConsumerBytes()[consumerKey] = 0; return frames` — the detector pool
 is credited **before** the caller owns the frames. `_getNewFrames` then
 `np.stack`s them into a fresh array, and `enqueue_frames` may block on a full
-writer queue while holding it. During that block the pool is empty and free to
-refill to its full allowance, so the peak is `writer + detector + chunk in
-hand`, and the middle term is invisible to both.
+writer queue while holding it. During that block the queue is empty and free to
+refill to its full allowance, so the peak is `writer + detector queue + chunk
+in hand`, and the middle term is invisible to both.
 
 **Contract: the reservation follows the payload.** `readChunk` returns the
-frames *and* a reservation covering their bytes; the detector pool is credited
-only when that reservation is released, and releasing it is the same act as
+frames *and* a reservation covering their bytes; the queue is credited only
+when that reservation is released, and releasing it is the same act as
 acquiring against the writer queue — a transfer, not a release followed by an
-acquire. A consumer that drops the frames releases it directly.
+acquire. A consumer that drops the frames releases it directly. This holds
+whether the allowance is per queue or pooled, so it is not deferred with the
+pooling.
 
 `np.stack` should also go. With the preallocated batch buffer below, the chunk
 is copied twice today (once into the stacked array, once into the batch); the
@@ -116,7 +128,7 @@ accumulated input plus another 256 MiB for the concatenated copy.
 Today a single payload larger than the whole budget is admitted **alone** — the
 `queuedBytes == 0 or …` rule — because waiting for room that can never appear
 is a deadlock rather than backpressure. But "alone" bounds only the writer
-queue: the detector pool and the batch buffers still hold their own bytes, so
+queue: the detector queues and the batch buffers still hold their own bytes, so
 the declared total is exceeded while the rule congratulates itself.
 
 **Contract:**
@@ -134,12 +146,19 @@ the declared total is exceeded while the rule congratulates itself.
 
 Both modules load into **one process** — `imswitch/__main__.py` imports every
 enabled module package and builds them into a single `MultiModuleWindow` under
-one `QApplication` — so two independent budgets would double-count the same
-RAM. One declared total, split by module, sub-split by role:
+one `QApplication` — so a separate budget per module would double-count the
+same RAM. One pooled total, split by module, sub-split by role; plus the
+per-queue detector limit, which stands outside it until pooling lands:
 
 ```
-imswitchMemoryBudgetMB = 2048      # RAM ImSwitch may hold, whole application
+imswitchMemoryBudgetMB = 2048      # pooled: writer queue, batch buffers, processing
+perDetectorQueueMB     = 256       # each (detector, consumer) chunk queue, on top
 ```
+
+The total is a **fixed** 2048 MiB, not a fraction of physical RAM: every
+machine then starts from the same number, a bug report quotes a value that
+means the same thing everywhere, and the default can be written in a document
+instead of being discovered. A machine that wants something else says so.
 
 | Module | Share | At the default |
 |---|---|---|
@@ -151,19 +170,23 @@ imswitchMemoryBudgetMB = 2048      # RAM ImSwitch may hold, whole application
 | Derived | Share of the module's | At the default | Today's literal |
 |---|---|---|---|
 | writer queue (`WRITER_QUEUE_MAX_BYTES`) | 50 % | 512 MiB | 512 MiB |
-| detector queue pool (`MAX_QUEUED_CONSUMER_BYTES`) | 25 % | 256 MiB **across all queues** | 256 MiB *per queue* |
 | batch buffers (`WRITE_BATCH_FRAMES` × frame × detectors) | ≤ 25 % | derived, capped | unaccounted |
+| in-flight headroom (chunks in custody transfer) | 25 % | 256 MiB | unaccounted |
 
-The batch share is not a free parameter: it is `WRITE_BATCH_FRAMES × frame
-bytes × recording detectors`, computed when the recording arms. If it exceeds
-its share the batch depth is reduced for that recording and logged, rather than
-the budget being exceeded silently — the third row is a *consequence* of the
-first two, which is the property the whole note is after.
+Neither of the last two rows is a free parameter. The batch share is
+`WRITE_BATCH_FRAMES × frame bytes × recording detectors`, computed when the
+recording arms; if it exceeds its share the batch depth is reduced for that
+recording and logged, rather than the budget being exceeded silently. The
+headroom row is the chunk each recording detector holds between `readChunk` and
+writer admission (gap 2) — named here because round 2 found it accounted
+nowhere, and sized to one chunk per recording detector with room to spare.
 
-Defaults reproduce today's constants for the single-detector, single-consumer
-case, which is every in-tree test and most rigs. A multi-camera rig gets a
-*smaller* per-queue allowance than today — that is the point, and it belongs in
-the changelog rather than hidden.
+`MAX_QUEUED_CONSUMER_BYTES` is `perDetectorQueueMB`, applied per queue exactly
+as today. For the single-detector, single-consumer case — every in-tree test
+and most rigs — the defaults reproduce today's constants exactly, and a
+recording's stall tolerance is still `512 + 256 = 768 MiB`. A multi-camera rig
+gets what it gets today too, and is *told* so by the startup line above rather
+than left to find out.
 
 ### Processing
 
@@ -231,9 +254,14 @@ existing `RecordingOptions` and `WatcherOptions` groups:
 ```python
 @dataclass(frozen=True)
 class MemoryOptions:
-    budgetMB: int = 2048
+    budgetMB: int = 2048                # pooled
+    perDetectorQueueMB: int = 256       # each (detector, consumer) queue, on top
     acquisitionSharePercent: int = 50   # override; processing takes the rest
 ```
+
+`perDetectorQueueMB` disappears into the pooled total when the queues are
+pooled; keeping it a named field now means that change can drop it without
+having to explain what a previously-pooled number used to mean.
 
 **Not the setup file.** The setup file describes the microscope; it is copied
 between machines and shared with collaborators. A memory budget is a property
@@ -265,7 +293,13 @@ of this change is the derivation and the validation, not the widget.
 3. **Every message that quotes a budget names the setting.** The detector
    overflow warning and the `readChunk` overflow exception already quote the
    budget in MiB and the frames it bought for *this* detector; they must end
-   with the setting name. A refusal names the control that fixes it.
+   with the setting name — `perDetectorQueueMB` for those two,
+   `imswitchMemoryBudgetMB` for the writer's. A refusal names the control that
+   fixes it.
+4. **The worst case is stated at startup**, once the detectors and their
+   consumers are known: pooled total, plus queues × `perDetectorQueueMB`, plus
+   the sum. Until the queues are pooled this line is the only place the real
+   ceiling appears, so it is part of the contract rather than a nicety.
 
 ### Backpressure is reported when it starts
 
@@ -320,47 +354,55 @@ working set, the live poll, the unbounded open.
 
 ## Phases
 
-- **A — accounting, no setting yet.** Pool the detector allowance across
-  queues; make the reservation follow the payload into the writer queue and
-  drop `np.stack`; hold the writer reservation until the batch is written and
-  fill a preallocated buffer; split oversized multi-frame payloads. Behaviour
-  at today's constants is unchanged for one detector with one consumer; the
-  multi-detector change is real and goes in the changelog. Tests: pool
-  admission across two detectors, custody across a blocked enqueue, batch
-  accounted, oversized payload split.
+- **A — accounting, no setting yet.** Make the reservation follow the payload
+  into the writer queue and drop `np.stack`; hold the writer reservation until
+  the batch is written and fill a preallocated buffer; split oversized
+  multi-frame payloads. No behaviour change at today's constants — this phase
+  only makes the bytes visible to whoever counts them. Tests: custody across a
+  blocked enqueue, batch accounted, oversized payload split.
 - **B — the contract.** `MemoryOptions` on `Options`; one `memory_budgets.py`
-  in imcommon deriving module shares and role shares; the literals read from
-  it. Defaults identical to A. Tests: derivation table, defaults unchanged,
-  batch share reduces batch depth rather than overrunning, contrast sample
-  count follows the allowance at small budgets.
-- **C — validation.** Startup floor; revalidation at scan build and arm, with
-  the indivisible-frame refusal; immediate backpressure reporting; messages
-  name the setting; the stall test at two splits and two throughputs.
+  in imcommon deriving module shares and role shares from the pooled total, and
+  passing `perDetectorQueueMB` through unpooled; the literals read from it.
+  Defaults identical to A. Tests: derivation table, defaults unchanged, batch
+  share reduces batch depth rather than overrunning, contrast sample count
+  follows the allowance at small budgets.
+- **C — validation.** Startup floor and the worst-case line; revalidation at
+  scan build and arm, with the indivisible-frame refusal; immediate
+  backpressure reporting; messages name the setting; the stall test at two
+  splits and two throughputs.
 - **D — the preview and the open rule.** Spatial stride for `getMeanData`
   derived from the preview share; decoded-size comparison on open;
   `supports_lazy_indexing` check with an explicit refusal or bounded fallback,
   tested on the non-lazy TIFF path. Closes the unbounded-`asarray` finding.
 - **E — optional.** Config-editor fields.
+- **Later — pool the detector queues.** One allocator on `DetectorsManager`
+  keyed by `(detector, consumer)`; `perDetectorQueueMB` folds into the pooled
+  total as a share, the startup worst-case line loses its second term, and a
+  multi-camera rig gets a real ceiling instead of a stated one. Defaults do not
+  move. This is the end state the first pass is honest about not having
+  reached.
 - **Later, separately.** GPU chunking in the Snouty deskew and the denoiser;
   `gpuMemoryBudgetMB` once either can honour it.
 
+## Decisions
+
+- **Per-queue naming for the first pass** (2026-09-21). The detector allowance
+  stays per `(detector, consumer)` and the setting is named `perDetectorQueueMB`
+  rather than being pooled into the total. Pooling becomes a later phase, and
+  the startup worst-case line carries the real ceiling until it lands.
+- **The default total is a fixed 2048 MiB** (2026-09-21), not a fraction of
+  physical RAM. Every machine starts from the same number, a bug report quotes
+  a value that means the same thing everywhere, and the default can be written
+  down rather than discovered.
+
 ## Open questions for review
 
-1. **Aggregate or per-queue.** The note specifies a pooled detector allowance
-   because that is what makes the declared number true, and it is the largest
-   piece of work here. Is the honest alternative — naming the setting
-   `perDetectorQueueMB` and dropping the process-wide claim — preferable for a
-   first pass?
-2. **The shares.** 50/25/≤25 lands on today's constants for the common case.
+1. **The shares.** 50/25/≤25 lands on today's constants for the common case.
    Is reproducing them the right anchor, or should the split be re-derived from
    measured rig throughput?
-3. **Per-rig override.** May a setup file *lower* the machine budget (a rig
+2. **Per-rig override.** May a setup file *lower* the machine budget (a rig
    sharing a workstation), or does that reintroduce the travelling-config
    problem?
-4. **Is 2048 MiB the right default total?** It is today's two modules summed.
-   A machine-fraction default (say 25 % of physical RAM, floored and capped)
-   would suit a laptop and a workstation without either being told to edit a
-   file — at the cost of a number that differs between machines by default.
 
 ## Review round 1 (2026-09-21)
 
@@ -368,7 +410,8 @@ Six findings, all confirmed; four changed the design.
 
 1. **[P1] The detector share was not a module-wide limit.** Per
    `(detector, consumer)`. → pooled allocator, with honest per-queue naming as
-   the stated fallback.
+   the stated fallback — and the fallback is what was chosen (see *Decisions*),
+   with pooling scheduled as a later phase.
 2. **[P1] The reserved 25 % could not cover writer batches.** Reservation
    released on dequeue; `np.concatenate` doubles the batch — 512 MiB for a
    2048² camera against 256 MiB of "headroom". → reservation held until
@@ -415,5 +458,6 @@ design and one changed the shape of the setting.
 6. **[fact] Both modules run in one process.** `__main__.py` imports every
    enabled module and builds them into one `MultiModuleWindow` under a single
    `QApplication`. → two independent budgets would double-count the same RAM;
-   merged into one total with module shares, and open question 3 of round 1
-   resolved rather than left open.
+   merged into one pooled total with module shares, and open question 3 of
+   round 1 resolved rather than left open. (The detector queues sit outside
+   that total for now — see *Decisions*.)
