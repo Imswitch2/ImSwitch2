@@ -6,23 +6,26 @@
       "name": "AAAOTFLaserManager",
       "refs": 1,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 3,
-      "keys": 8,
+      "keys": 9,
       "name": "APDManager",
       "refs": 0,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 1,
-      "keys": 2,
+      "keys": 3,
       "name": "AVManager",
       "refs": 0,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -30,79 +33,89 @@
       "name": "BSC203StageManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
-    },
-    {
-      "constrained": 1,
-      "keys": 2,
-      "name": "BaslerManager",
-      "refs": 0,
-      "required": 2,
-      "uncertain": 0
-    },
-    {
-      "constrained": 0,
-      "keys": 1,
-      "name": "Cobolt0601LaserManager",
-      "refs": 0,
-      "required": 1,
-      "uncertain": 0
-    },
-    {
-      "constrained": 1,
-      "keys": 8,
-      "name": "Cobolt0601NewLaserManager",
-      "refs": 0,
-      "required": 1,
-      "uncertain": 0
-    },
-    {
-      "constrained": 0,
-      "keys": 1,
-      "name": "CoboltLaserManager",
-      "refs": 0,
-      "required": 1,
-      "uncertain": 0
-    },
-    {
-      "constrained": 0,
-      "keys": 2,
-      "name": "CoolLEDLaserManager",
-      "refs": 1,
-      "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 1,
       "keys": 3,
+      "name": "BaslerManager",
+      "refs": 0,
+      "required": 2,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "Cobolt0601LaserManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 9,
+      "name": "Cobolt0601NewLaserManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "CoboltLaserManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
+      "name": "CoolLEDLaserManager",
+      "refs": 1,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 4,
       "name": "ESP32CamManager",
       "refs": 0,
       "required": 3,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "ESP32LEDLaserManager",
       "refs": 1,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "ESP32LEDMatrixManager",
       "refs": 1,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "ESP32LightSheetManager",
       "refs": 1,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -110,7 +123,8 @@
       "name": "ESP32Manager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -118,7 +132,8 @@
       "name": "ESP32StageManager",
       "refs": 1,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -126,7 +141,8 @@
       "name": "ElliptecManager",
       "refs": 0,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -134,15 +150,17 @@
       "name": "ElliptecRotatorManager",
       "refs": 0,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "GRBLLaserManager",
       "refs": 1,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -150,7 +168,8 @@
       "name": "GRBLManager",
       "refs": 0,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -158,23 +177,26 @@
       "name": "GRBLStageManager",
       "refs": 1,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 1,
-      "keys": 2,
+      "keys": 3,
       "name": "GXPIPYManager",
       "refs": 0,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 1,
-      "keys": 2,
+      "keys": 3,
       "name": "HamamatsuManager",
       "refs": 0,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -182,7 +204,8 @@
       "name": "HamamatsuSLMdviManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -190,7 +213,8 @@
       "name": "HamamatsuSLMusbManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -198,15 +222,17 @@
       "name": "JenaPiezoZManager",
       "refs": 1,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 1,
-      "keys": 1,
+      "keys": 2,
       "name": "JetsonCamManager",
       "refs": 0,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -214,7 +240,8 @@
       "name": "KDC101Manager",
       "refs": 0,
       "required": 4,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 3,
@@ -222,7 +249,8 @@
       "name": "KDC101PositionerManager",
       "refs": 0,
       "required": 4,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -230,15 +258,17 @@
       "name": "KinesisRotatorManager",
       "refs": 0,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 4,
+      "keys": 6,
       "name": "KinesisStageManager",
       "refs": 0,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -246,15 +276,17 @@
       "name": "LEDMatrixManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 1,
+      "keys": 2,
       "name": "LantzLaserManager",
       "refs": 0,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -262,7 +294,8 @@
       "name": "LeicaDMIManager",
       "refs": 1,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -270,7 +303,8 @@
       "name": "LeicaDMIStandMockManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -278,15 +312,17 @@
       "name": "MHXYStageManager",
       "refs": 1,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 3,
-      "keys": 6,
+      "keys": 7,
       "name": "MPBLaserManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -294,7 +330,8 @@
       "name": "MockPositionerManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -302,7 +339,8 @@
       "name": "NidaqLaserManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -310,23 +348,26 @@
       "name": "NidaqPositionerManager",
       "refs": 0,
       "required": 3,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 1,
-      "keys": 2,
+      "keys": 3,
       "name": "OxxiusCombinerLaserManager",
       "refs": 1,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 3,
+      "keys": 4,
       "name": "OxxiusLaserManager",
       "refs": 0,
       "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -334,31 +375,35 @@
       "name": "PIStageManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 6,
-      "keys": 10,
+      "keys": 11,
       "name": "PMTManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
-    },
-    {
-      "constrained": 1,
-      "keys": 2,
-      "name": "PhotometricsManager",
-      "refs": 0,
-      "required": 1,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 1,
       "keys": 3,
+      "name": "PhotometricsManager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 4,
       "name": "PiCamManager",
       "refs": 0,
       "required": 3,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -366,23 +411,26 @@
       "name": "PiezoconceptZManager",
       "refs": 1,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 0,
+      "keys": 1,
       "name": "PulseGeneratorLaserManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 0,
+      "keys": 1,
       "name": "PulseStreamerLaserManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -390,7 +438,8 @@
       "name": "PulseStreamerManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -398,15 +447,17 @@
       "name": "PyCoboltManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "PyMicroscopeLaserManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -414,7 +465,8 @@
       "name": "SQUIDManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -422,7 +474,8 @@
       "name": "SQUIDStageManager",
       "refs": 1,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 8,
@@ -430,7 +483,8 @@
       "name": "SerialDacZManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -438,7 +492,8 @@
       "name": "SmarACTPositionerManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -446,23 +501,26 @@
       "name": "StandaRotatorManager",
       "refs": 0,
       "required": 4,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 11,
-      "keys": 14,
+      "keys": 15,
       "name": "SwabianTimeTaggerManager",
       "refs": 0,
       "required": 3,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 3
     },
     {
       "constrained": 1,
-      "keys": 2,
+      "keys": 3,
       "name": "TISManager",
       "refs": 0,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -470,39 +528,44 @@
       "name": "TeensyPulseManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
-      "constrained": 1,
-      "keys": 4,
+      "constrained": 2,
+      "keys": 5,
       "name": "ThorCamTSIManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
-      "keys": 0,
+      "keys": 4,
       "name": "ThorlabsMFFManager",
       "refs": 0,
       "required": 0,
-      "uncertain": 0
-    },
-    {
-      "constrained": 0,
-      "keys": 0,
-      "name": "ThorlabsMFFMockManager",
-      "refs": 0,
-      "required": 0,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
       "keys": 2,
+      "name": "ThorlabsMFFMockManager",
+      "refs": 0,
+      "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 3,
       "name": "TriggerScopeLaserManager",
       "refs": 0,
       "required": 2,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     },
     {
       "constrained": 0,
@@ -510,26 +573,29 @@
       "name": "TriggerScopePositionerManager",
       "refs": 0,
       "required": 3,
-      "uncertain": 0
+      "uncertain": 0,
+      "unresolved": 0
     }
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 46,
-    "docs_agree": 111,
+    "constrained": 47,
+    "docs_agree": 117,
     "docs_documented": 118,
-    "keys": 179,
+    "keys": 216,
     "managers": 64,
-    "none_default_only": 13,
-    "none_only": 6,
-    "optional": 111,
-    "reads_any": 54,
+    "none_default_only": 31,
+    "none_only": 24,
+    "optional": 148,
+    "reads_any": 58,
     "refs": 14,
     "required": 68,
-    "typed_by_code": 88,
-    "typed_with_docs": 148,
-    "typed_with_examples": 117,
+    "typed_by_code": 90,
+    "typed_with_docs": 151,
+    "typed_with_examples": 120,
     "uncertain": 0,
-    "with_keys": 54
+    "unresolved_reads": 3,
+    "with_keys": 58,
+    "writes": 0
   }
 }

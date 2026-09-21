@@ -12,18 +12,30 @@ the discovery plan rejected runtime introspection -- and nothing here needs Qt.
 See ``docs/design/plans/config-editor-schema-extraction.md`` for the rules the
 code below implements; the tests pin them idiom by idiom.
 
-Two ideas run through everything:
+Three ideas run through everything:
 
 * **Evidence is not a constraint.** A default literal or an ``int()`` call says
   what a manager *prefers*, not what it accepts (``BSC203StageManager`` divides
   an integer-defaulted ``travelRangeUm``). So a property's *kind* -- the
   editor's widget preference -- is inferred from anything, while its
   *constraint* -- what validation may reject -- is emitted only where the code
-  proves it (``Path(...)``, a nested subscript, ``.items()``).
+  proves it (``Path(...)``, a string-keyed nested subscript, ``.items()``).
 * **A subscript is not "required".** ``AAAOTFLaserManager`` reads
   ``calibCsvPath`` inside ``try/except KeyError``; a shipped setup omits it.
   Requiredness is decided over every read of a key, guards included, and what
   the analysis cannot classify is reported as ``uncertain`` rather than guessed.
+* **What cannot be read is reported, not dropped.** A key that is a variable
+  the module does not define as a string constant, a helper the analysis does
+  not follow: each is an *unresolved read*, listed in the report and stamped
+  on the schema, so "54 managers, zero uncertain" never hides an omission.
+
+Receivers are strict. Only a properties dict that traces to an ``*Info``
+parameter -- of the constructor or of the method reading it -- or to an
+attribute a method of this class (or a base) bound from one, is this
+manager's own. ``TriggerScopeManager`` reading ``targetInfo.managerProperties``
+is reading a positioner's contract; it is listed as discarded. Name bindings
+are scoped to the function that made them, so a ``props`` parameter of an
+unrelated method is not the constructor's ``props``.
 """
 
 from __future__ import annotations
@@ -80,8 +92,8 @@ _WRAPPER_CONSTRAINTS = {
     "open": {"type": KIND_STRING},
 }
 
-#: Mapping-only methods: calling one on a read proves the value is an object.
-_MAPPING_METHODS = {"items", "keys", "values", "get", "setdefault", "update", "pop"}
+#: Methods only a mapping has. ``pop`` is not one: lists have it too.
+_MAPPING_METHODS = {"items", "keys", "values", "get", "setdefault", "update"}
 
 #: Exception handlers under which a missing key is tolerated.
 _MISSING_KEY_HANDLERS = {"KeyError", "LookupError", "Exception", "BaseException"}
@@ -109,6 +121,10 @@ _DOCS_KINDS = {
 }
 
 
+def _is_info_name(name: Optional[str]) -> bool:
+    return bool(name) and name.lower().endswith("info")
+
+
 # =============================================================================
 # Results
 # =============================================================================
@@ -133,23 +149,44 @@ class PropertyRead:
     nullable: bool = False
     #: ``int(...)``, ``float(...)``, ``Path(...)`` ... around the read.
     wrapper: Optional[str] = None
-    #: The read is itself subscripted or has a mapping method called on it.
+    #: The read is subscripted by a string or has a mapping-only method called.
     used_as_mapping: bool = False
+    #: How the key was known: a literal, a module constant, a helper call.
+    via: Optional[str] = None
+    #: For ``defaults = props.get("defaults", {})`` then ``defaults.get("x")``:
+    #: the read is of sub-key ``x`` of property ``defaults``.
+    subkey: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class DiscardedRead:
-    """A ``managerProperties`` read the strict receiver rule refused.
-
-    Only reads whose receiver traces to the constructor's ``*Info`` parameter
-    count as this manager's own properties. ``TriggerScopeManager`` reading
-    ``targetInfo.managerProperties["minVolt"]`` is reading a *positioner's*
-    contract, and belongs in a role rule, not here.
-    """
+    """A ``managerProperties`` read the strict receiver rule refused."""
 
     key: str
     receiver: str
     lineno: int
+
+
+@dataclass(frozen=True)
+class UnresolvedRead:
+    """A read whose key the analysis could not name.
+
+    A variable that is not a module string constant, or a helper call with a
+    non-literal key. Reported, never guessed: the schema carries their count.
+    """
+
+    expr: str
+    lineno: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class PropertyWrite:
+    """``props["k"] = v`` or ``del props["k"]``: not a configuration input."""
+
+    key: str
+    lineno: int
+    kind: str  # "store" | "delete"
 
 
 @dataclass
@@ -168,10 +205,32 @@ class PropertySpec:
     widget: Optional[str] = None
     description: Optional[str] = None
     reads: list[PropertyRead] = field(default_factory=list)
+    #: Keys the manager reads *inside* this property's dict, with their own
+    #: kinds: ``defaults.exposure_us``. A dict read this way is an object.
+    sub_properties: dict[str, "PropertySpec"] = field(default_factory=dict)
 
     @property
     def typed_by_code(self) -> bool:
         return any(tag.startswith("code:") for tag in self.kind_source)
+
+
+@dataclass
+class KeyHelper:
+    """A method that reads a key given as a parameter: ``self._read_info("k")``.
+
+    ``access`` is the most permissive read the body makes of that parameter --
+    ``get`` or ``in`` make every call site optional, a guarded subscript too,
+    and only a bare subscript makes the key a call site requires.
+    """
+
+    method: str
+    key_index: int
+    default_index: Optional[int]
+    default_kind: Optional[str]
+    default_nullable: bool
+    access: str
+    guarded: bool = False
+    guard: Optional[str] = None
 
 
 @dataclass
@@ -186,8 +245,14 @@ class ClassExtraction:
     aliases: dict[str, str] = field(default_factory=dict)  # alias -> canonical
     refs: dict[str, str] = field(default_factory=dict)  # key -> category
     discarded: list[DiscardedRead] = field(default_factory=list)
+    unresolved: list[UnresolvedRead] = field(default_factory=list)
+    writes: list[PropertyWrite] = field(default_factory=list)
     #: The whole dict was handed to something opaque (a driver, ``serial.Serial``).
     open_passthrough: bool = False
+    #: Attributes a method bound from an Info parameter / from the dict.
+    info_attrs: set[str] = field(default_factory=set)
+    props_attrs: set[str] = field(default_factory=set)
+    key_helpers: dict[str, KeyHelper] = field(default_factory=dict)
 
 
 @dataclass
@@ -199,10 +264,13 @@ class ManagerExtraction:
     properties: dict[str, PropertySpec]
     discarded: list[DiscardedRead]
     open_passthrough: bool
+    unresolved: list[UnresolvedRead] = field(default_factory=list)
+    writes: list[PropertyWrite] = field(default_factory=list)
 
     @property
     def reads_any(self) -> bool:
-        return bool(self.properties) or self.open_passthrough or bool(self.discarded)
+        return (bool(self.properties) or self.open_passthrough
+                or bool(self.discarded) or bool(self.unresolved))
 
 
 # =============================================================================
@@ -222,6 +290,15 @@ def _ancestry(node: ast.AST, parents: dict) -> Iterable[tuple[ast.AST, ast.AST]]
         child = parent
 
 
+def _enclosing_function(node: ast.AST, parents: dict) -> Optional[ast.FunctionDef]:
+    for ancestor, _ in _ancestry(node, parents):
+        if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return ancestor
+        if isinstance(ancestor, ast.ClassDef):
+            return None
+    return None
+
+
 def _name_of(node: ast.AST) -> Optional[str]:
     """The simple name a ``Name`` or ``Attribute`` node ends in."""
     if isinstance(node, ast.Name):
@@ -231,8 +308,12 @@ def _name_of(node: ast.AST) -> Optional[str]:
     return None
 
 
+def _is_self_attr(node: ast.AST) -> bool:
+    return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self"
+
+
 def _unwrap_props_expr(node: ast.AST) -> ast.AST:
-    """See through ``X or {}`` and ``getattr(X, "managerProperties", ...)``."""
+    """See through ``X or {}``, ``getattr(X, "managerProperties", ...)``, ``dict(X)``."""
     if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or) and node.values:
         return _unwrap_props_expr(node.values[0])
     if (
@@ -275,6 +356,10 @@ def _constant_kind(node: ast.AST) -> Optional[str]:
     return None
 
 
+def _is_none(node: Optional[ast.AST]) -> bool:
+    return node is None or (isinstance(node, ast.Constant) and node.value is None)
+
+
 def _is_low_level_collection(node: ast.AST) -> bool:
     return _name_of(node) in _LOW_LEVEL_NAMES
 
@@ -286,206 +371,506 @@ def _handler_tolerates_missing_key(handler: ast.ExceptHandler) -> bool:
     return any(_name_of(name) in _MISSING_KEY_HANDLERS for name in names)
 
 
+def _string_constants(body: list[ast.stmt]) -> dict[str, str]:
+    """``NAME = "text"`` assignments in a module or class body."""
+    constants: dict[str, str] = {}
+    for node in body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and isinstance(value, ast.Constant) and isinstance(value.value, str):
+            constants[target.id] = value.value
+    return constants
+
+
+# =============================================================================
+# Module context: constants and functions that read a properties parameter
+# =============================================================================
+
+@dataclass
+class _ParamReads:
+    """Reads a function makes on one of its parameters, by parameter index."""
+
+    reads: dict[int, list[PropertyRead]] = field(default_factory=dict)
+    unresolved: dict[int, list[UnresolvedRead]] = field(default_factory=dict)
+
+
+class _ModuleContext:
+    """Everything a class scan needs to know about the module around it."""
+
+    def __init__(self, tree: ast.Module, module: str):
+        self.tree = tree
+        self.module = module
+        self.parents = _parent_map(tree)
+        self.constants = _string_constants(tree.body)
+        self.functions: dict[str, ast.FunctionDef] = {
+            node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+        }
+        self.param_reads: dict[str, _ParamReads] = {}
+        for name, function in self.functions.items():
+            reads = _scan_parameter_reads(function, self)
+            if reads.reads or reads.unresolved:
+                self.param_reads[name] = reads
+
+    def resolve_key(self, node: ast.AST, class_constants: Optional[dict[str, str]] = None):
+        """``(key, via)`` for a literal or a known string constant, else ``None``."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value, "literal"
+        name = _name_of(node)
+        if name and class_constants and name in class_constants:
+            return class_constants[name], f"constant:{name}"
+        if isinstance(node, ast.Name) and node.id in self.constants:
+            return self.constants[node.id], f"constant:{node.id}"
+        return None
+
+
+def _scan_parameter_reads(function: ast.FunctionDef, context: _ModuleContext) -> _ParamReads:
+    """Reads a module-level function makes on its parameters (a props dict or an Info)."""
+    params = [arg.arg for arg in function.args.args]
+    result = _ParamReads()
+
+    def index_of(receiver: ast.AST) -> Optional[int]:
+        receiver = _unwrap_props_expr(receiver)
+        if isinstance(receiver, ast.Attribute) and receiver.attr == PROPS_ATTR:
+            receiver = receiver.value
+        if isinstance(receiver, ast.Name) and receiver.id in params:
+            return params.index(receiver.id)
+        return None
+
+    for node in ast.walk(function):
+        found = _read_shape(node)
+        if found is None:
+            continue
+        key_node, receiver, access = found
+        index = index_of(receiver)
+        if index is None:
+            continue
+        resolved = context.resolve_key(key_node)
+        if resolved is None:
+            result.unresolved.setdefault(index, []).append(
+                UnresolvedRead(ast.unparse(node), node.lineno, "key is not a literal or a module string constant")
+            )
+            continue
+        key, via = resolved
+        result.reads.setdefault(index, []).append(_make_read(node, key, access, via, context.parents))
+    return result
+
+
+def _read_shape(node: ast.AST):
+    """``(key_node, receiver_node, access)`` if ``node`` has the shape of a read."""
+    if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
+        return node.slice, node.value, "subscript"
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+    ):
+        return node.args[0], node.func.value, "get"
+    if (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], (ast.In, ast.NotIn))
+        and len(node.comparators) == 1
+    ):
+        return node.left, node.comparators[0], "in"
+    return None
+
+
+def _wrapper_and_mapping(node: ast.AST, parents: dict) -> tuple[Optional[str], bool]:
+    parent = parents.get(node)
+    wrapper = None
+    if isinstance(parent, ast.Call) and node in parent.args:
+        name = _name_of(parent.func)
+        if name in _WRAPPER_KINDS:
+            wrapper = name
+    used_as_mapping = (
+        (isinstance(parent, ast.Subscript) and parent.value is node
+         and isinstance(parent.slice, ast.Constant) and isinstance(parent.slice.value, str))
+        or (isinstance(parent, ast.Attribute) and parent.attr in _MAPPING_METHODS)
+    )
+    return wrapper, used_as_mapping
+
+
+def _make_read(node: ast.AST, key: str, access: str, via: str, parents: dict,
+               guard=(False, None, False)) -> PropertyRead:
+    """A ``PropertyRead`` for a node already known to read ``key``."""
+    wrapper, used_as_mapping = _wrapper_and_mapping(node, parents)
+    if access == "get":
+        default = node.args[1] if len(node.args) > 1 else None
+        return PropertyRead(
+            key, "get", node.lineno, guarded=True, guard="get",
+            default_kind=_constant_kind(default) if default is not None else None,
+            nullable=_is_none(default), wrapper=wrapper, used_as_mapping=used_as_mapping, via=via,
+        )
+    if access == "in":
+        return PropertyRead(key, "in", node.lineno, guarded=True, guard="in", via=via)
+    guarded, guard_text, uncertain = guard
+    return PropertyRead(
+        key, "subscript", node.lineno, guarded=guarded, guard=guard_text, uncertain=uncertain,
+        wrapper=wrapper, used_as_mapping=used_as_mapping, via=via,
+    )
+
+
 # =============================================================================
 # Per-class extraction
 # =============================================================================
 
 class _ClassScanner:
-    """Scan one ``ClassDef`` for reads of its own ``managerProperties``."""
+    """Scan one ``ClassDef`` for reads of its own ``managerProperties``.
 
-    def __init__(self, cls: ast.ClassDef, parents: dict, module: str):
+    Two passes. :meth:`bind` records what names and attributes stand for --
+    it needs no other class. :meth:`scan` reads, and is run once attribute
+    aliases and key helpers inherited from base classes are known.
+    """
+
+    def __init__(self, cls: ast.ClassDef, context: _ModuleContext):
         self.cls = cls
-        self.parents = parents
-        self.module = module
-        self.info_params = self._constructor_info_params()
-        self.info_aliases = set(self.info_params)
-        self.props_aliases: set[str] = set()
-        self.foreign_props_aliases: set[str] = set()
-        self._bind_aliases()
+        self.context = context
+        self.parents = context.parents
+        self.class_constants = _string_constants(cls.body)
+        self.methods: dict[str, ast.FunctionDef] = {
+            node.name: node for node in cls.body if isinstance(node, ast.FunctionDef)
+        }
+        # Per function: parameters that are Info objects, and names bound to
+        # the properties dict inside that function only.
+        self.info_params_by_func: dict[ast.FunctionDef, set[str]] = {}
+        self.props_names_by_func: dict[ast.FunctionDef, set[str]] = {}
+        #: ``defaults = props.get("defaults", {})``: a name standing for one key's dict.
+        self.nested_names_by_func: dict[ast.FunctionDef, dict[str, str]] = {}
+        #: Reads each method makes on its own parameters (a dict or an Info).
+        self.method_param_reads: dict[str, _ParamReads] = {}
         self.result = ClassExtraction(
             name=cls.name,
             bases=tuple(_name_of(base) or "?" for base in cls.bases),
-            module=module,
-            info_params=self.info_params,
+            module=context.module,
+            info_params=tuple(
+                arg.arg for arg in self.methods["__init__"].args.args[1:]
+                if _is_info_name(arg.arg)
+            ) if "__init__" in self.methods else (),
         )
+        # Filled before scan(): attributes bound in bases, and their helpers.
+        self.inherited_info_attrs: set[str] = set()
+        self.inherited_props_attrs: set[str] = set()
+        self.inherited_helpers: dict[str, KeyHelper] = {}
+        self.bind()
 
-    # -- what counts as "this manager's" properties object -------------------
+    # -- pass 1: what stands for what ----------------------------------------
 
-    def _constructor_info_params(self) -> tuple[str, ...]:
-        for node in self.cls.body:
-            if isinstance(node, ast.FunctionDef) and node.name == "__init__":
-                return tuple(
-                    arg.arg for arg in node.args.args[1:] if arg.arg.lower().endswith("info")
-                )
-        return ()
+    def bind(self) -> None:
+        for function in self.methods.values():
+            self.info_params_by_func[function] = {
+                arg.arg for arg in function.args.args[1:] if _is_info_name(arg.arg)
+            }
+            self.props_names_by_func[function] = set()
+            self.nested_names_by_func[function] = {}
+        # Fixed point: ``p = props`` after ``props = info.managerProperties``.
+        changed = True
+        while changed:
+            changed = False
+            for node in ast.walk(self.cls):
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+                    continue
+                function = _enclosing_function(node, self.parents)
+                if function is None or function not in self.info_params_by_func:
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                value = node.value
+                if isinstance(value, ast.Name) and value.id in self.info_params_by_func[function]:
+                    for target in targets:
+                        if _is_self_attr(target) and target.attr not in self.result.info_attrs:
+                            self.result.info_attrs.add(target.attr)
+                            changed = True
+                        elif isinstance(target, ast.Name) and target.id not in self.info_params_by_func[function]:
+                            self.info_params_by_func[function].add(target.id)
+                            changed = True
+                    continue
+                if self._classify(value, function)[0] == "own":
+                    for target in targets:
+                        if _is_self_attr(target) and target.attr not in self.result.props_attrs:
+                            self.result.props_attrs.add(target.attr)
+                            changed = True
+                        elif isinstance(target, ast.Name) and target.id not in self.props_names_by_func[function]:
+                            self.props_names_by_func[function].add(target.id)
+                            changed = True
+                    continue
+                nested_key = self._nested_dict_key(value, function)
+                if nested_key is not None:
+                    for target in targets:
+                        if isinstance(target, ast.Name) and target.id not in self.nested_names_by_func[function]:
+                            self.nested_names_by_func[function][target.id] = nested_key
+                            changed = True
 
-    def _receiver_is_info(self, receiver: ast.AST) -> bool:
-        """Whether ``receiver.managerProperties`` is this manager's own dict."""
-        name = _name_of(receiver)
-        if name is None:
-            return False  # a subscript, a call: some other device's Info
-        if name in self.info_aliases:
-            return True
-        # ``self._laserInfo`` bound by a base class __init__ this class does
-        # not repeat: the attribute name says what it is.
-        return isinstance(receiver, ast.Attribute) and name.lower().endswith("info")
+    def _nested_dict_key(self, value: ast.AST, function) -> Optional[str]:
+        """``props.get("k", {})``, ``props.get("k") or {}``, ``props["k"]``: the key ``k``."""
+        value = _unwrap_props_expr(value) if isinstance(value, ast.BoolOp) else value
+        found = _read_shape(value)
+        if found is None:
+            return None
+        key_node, receiver, access = found
+        if access == "in" or self._classify(receiver, function)[0] != "own":
+            return None
+        resolved = self.context.resolve_key(key_node, self.class_constants)
+        return resolved[0] if resolved else None
 
-    def _bind_aliases(self) -> None:
-        """Record names bound to the Info parameter or to its properties dict."""
-        for node in ast.walk(self.cls):
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                continue
-            value = node.value
-            if value is None:
-                continue
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            names = [name for name in (_name_of(target) for target in targets) if name]
-            if isinstance(value, ast.Name) and value.id in self.info_aliases:
-                self.info_aliases.update(names)
-                continue
-            props = _unwrap_props_expr(value)
-            if isinstance(props, ast.Attribute) and props.attr == PROPS_ATTR:
-                if self._receiver_is_info(props.value):
-                    self.props_aliases.update(names)
-                else:
-                    self.foreign_props_aliases.update(names)
-            elif _name_of(props) in self.props_aliases:
-                self.props_aliases.update(names)
+    def _nested_alias(self, node: ast.AST, function) -> Optional[str]:
+        """The property key a nested-dict alias name stands for, if ``node`` is one."""
+        if isinstance(node, ast.Name) and function is not None:
+            return self.nested_names_by_func.get(function, {}).get(node.id)
+        return None
 
-    def _classify_props_node(self, node: ast.AST) -> tuple[str, Optional[str]]:
+    def _classify(self, node: ast.AST, function: Optional[ast.FunctionDef]) -> tuple[str, Optional[str]]:
         """``("own", None)``, ``("foreign", receiver)`` or ``("no", None)``."""
         node = _unwrap_props_expr(node)
         if isinstance(node, ast.Attribute) and node.attr == PROPS_ATTR:
-            if self._receiver_is_info(node.value):
+            receiver = node.value
+            if isinstance(receiver, ast.Name) and function is not None \
+                    and receiver.id in self.info_params_by_func.get(function, set()):
                 return "own", None
-            return "foreign", ast.unparse(node.value)
-        name = _name_of(node)
-        if name in self.props_aliases:
+            if _is_self_attr(receiver) and receiver.attr in (self.result.info_attrs | self.inherited_info_attrs):
+                return "own", None
+            return "foreign", ast.unparse(receiver)
+        if isinstance(node, ast.Name):
+            if function is not None and node.id in self.props_names_by_func.get(function, set()):
+                return "own", None
+            return "no", None
+        if _is_self_attr(node) and node.attr in (self.result.props_attrs | self.inherited_props_attrs):
             return "own", None
-        if name in self.foreign_props_aliases:
-            return "foreign", name
         return "no", None
 
-    # -- reads ----------------------------------------------------------------
+    def _is_own_info(self, node: ast.AST, function) -> bool:
+        """Whether ``node`` is this manager's Info object (not its dict)."""
+        node = _unwrap_props_expr(node)
+        if isinstance(node, ast.Name):
+            return function is not None and node.id in self.info_params_by_func.get(function, set())
+        return _is_self_attr(node) and node.attr in (self.result.info_attrs | self.inherited_info_attrs)
+
+    # -- pass 2: reads -------------------------------------------------------
 
     def scan(self) -> ClassExtraction:
-        bound_from_read: dict[str, str] = {}  # name -> key, for ref data-flow
+        bound_from_read: dict[tuple, str] = {}
         for node in ast.walk(self.cls):
-            read = self._read_at(node)
-            if read is None:
+            function = _enclosing_function(node, self.parents)
+            # Writes and deletions are not configuration inputs.
+            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)) \
+                    and self._classify(node.value, function)[0] == "own":
+                resolved = self.context.resolve_key(node.slice, self.class_constants)
+                key = resolved[0] if resolved else ast.unparse(node.slice)
+                self.result.writes.append(PropertyWrite(
+                    key, node.lineno, "store" if isinstance(node.ctx, ast.Store) else "delete"))
                 continue
-            key, props_node, verdict, receiver = read
-            if verdict == "foreign":
-                self.result.discarded.append(DiscardedRead(key, receiver or "?", node.lineno))
+            found = _read_shape(node)
+            if found is not None:
+                key_node, receiver, access = found
+                parent_key = self._nested_alias(_unwrap_props_expr(receiver), function)
+                if parent_key is not None and access != "in":
+                    resolved = self.context.resolve_key(key_node, self.class_constants)
+                    if resolved is None:
+                        self.result.unresolved.append(UnresolvedRead(
+                            ast.unparse(node), node.lineno, f"sub-key of {parent_key!r} is not a literal"))
+                        continue
+                    read = _make_read(node, parent_key, access, resolved[1], self.parents)
+                    self._record(PropertyRead(**{**read.__dict__, "subkey": resolved[0]}))
+                    continue
+                verdict, receiver_text = self._classify(receiver, function)
+                if verdict == "no":
+                    self._maybe_helper_call(node, function, bound_from_read)
+                    continue
+                if self._is_helper_definition_read(key_node, function):
+                    continue  # the helper's call sites carry the keys
+                resolved = self.context.resolve_key(key_node, self.class_constants)
+                if verdict == "foreign":
+                    key = resolved[0] if resolved else ast.unparse(key_node)
+                    self.result.discarded.append(DiscardedRead(key, receiver_text or "?", node.lineno))
+                    continue
+                if resolved is None:
+                    self.result.unresolved.append(UnresolvedRead(
+                        ast.unparse(node), node.lineno, "key is not a literal or a known string constant"))
+                    continue
+                key, via = resolved
+                guard = self._guard_status(node, key, function) if access == "subscript" else (False, None, False)
+                read = _make_read(node, key, access, via, self.parents, guard)
+                if access == "get":
+                    read = self._fold_alias(node, key, read, function)
+                self._record(read)
+                self._note_binding(node, key, function, bound_from_read)
                 continue
-            if isinstance(node, ast.Compare):
-                self._record(PropertyRead(key, "in", node.lineno, guarded=True, guard="in"))
-                continue
-            if isinstance(node, ast.Call):
-                self._record_get(node, key)
-            else:
-                self._record_subscript(node, key)
-            # Data flow for device references: ``name = props["k"]``.
-            parent = self.parents.get(node)
-            if isinstance(parent, ast.Call) and _name_of(parent.func) in _WRAPPER_KINDS:
-                parent = self.parents.get(parent)
-            if isinstance(parent, (ast.Assign, ast.AnnAssign)):
-                targets = parent.targets if isinstance(parent, ast.Assign) else [parent.target]
-                for name in (_name_of(target) for target in targets):
-                    if name:
-                        bound_from_read[name] = key
+            self._maybe_helper_call(node, function, bound_from_read)
         self._scan_refs(bound_from_read)
         self._scan_passthrough()
         return self.result
 
-    def _read_at(self, node: ast.AST):
-        """Return ``(key, props_node, verdict, receiver)`` if ``node`` reads a key."""
-        if (
-            isinstance(node, ast.Subscript)
-            and isinstance(node.slice, ast.Constant)
-            and isinstance(node.slice.value, str)
-        ):
-            verdict, receiver = self._classify_props_node(node.value)
-            if verdict != "no":
-                return node.slice.value, node.value, verdict, receiver
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "get"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-        ):
-            verdict, receiver = self._classify_props_node(node.func.value)
-            if verdict != "no":
-                return node.args[0].value, node.func.value, verdict, receiver
-        if (
-            isinstance(node, ast.Compare)
-            and isinstance(node.left, ast.Constant)
-            and isinstance(node.left.value, str)
-            and len(node.ops) == 1
-            and isinstance(node.ops[0], (ast.In, ast.NotIn))
-        ):
-            verdict, receiver = self._classify_props_node(node.comparators[0])
-            if verdict != "no":
-                return node.left.value, node.comparators[0], verdict, receiver
-        return None
-
     def _record(self, read: PropertyRead) -> None:
         self.result.reads.setdefault(read.key, []).append(read)
 
-    def _wrapper_and_mapping(self, node: ast.AST) -> tuple[Optional[str], bool]:
-        parent = self.parents.get(node)
-        wrapper = None
-        if isinstance(parent, ast.Call) and node in parent.args:
-            name = _name_of(parent.func)
-            if name in _WRAPPER_KINDS:
-                wrapper = name
-        used_as_mapping = (
-            (isinstance(parent, ast.Subscript) and parent.value is node)
-            or (isinstance(parent, ast.Attribute) and parent.attr in _MAPPING_METHODS)
+    @staticmethod
+    def _is_helper_definition_read(key_node: ast.AST, function) -> bool:
+        """``props.get(key, default)`` where ``key`` is the function's own parameter."""
+        return (
+            function is not None
+            and isinstance(key_node, ast.Name)
+            and key_node.id in {arg.arg for arg in function.args.args}
         )
-        return wrapper, used_as_mapping
 
-    def _record_get(self, node: ast.Call, key: str) -> None:
+    def _note_binding(self, node, key, function, bound_from_read) -> None:
+        """``name = props["k"]`` (possibly wrapped): remember for ref data-flow."""
+        parent = self.parents.get(node)
+        if isinstance(parent, ast.Call) and _name_of(parent.func) in _WRAPPER_KINDS:
+            parent = self.parents.get(parent)
+        if isinstance(parent, (ast.Assign, ast.AnnAssign)):
+            targets = parent.targets if isinstance(parent, ast.Assign) else [parent.target]
+            for target in targets:
+                name = _name_of(target)
+                if not name:
+                    continue
+                if _is_self_attr(target):
+                    bound_from_read[("attr", name)] = key  # attributes carry across methods
+                else:
+                    bound_from_read[(function, name)] = key
+
+    def _fold_alias(self, node: ast.Call, key: str, read: PropertyRead, function) -> PropertyRead:
+        """``props.get("camelK", props.get("snake_k", d))``: one property, two spellings."""
         default = node.args[1] if len(node.args) > 1 else None
-        # ``props.get("camelK", props.get("snake_k", d))``: one property, two
-        # spellings, the outer one preferred by the manager.
         if (
             isinstance(default, ast.Call)
             and isinstance(default.func, ast.Attribute)
             and default.func.attr == "get"
             and default.args
-            and isinstance(default.args[0], ast.Constant)
-            and self._classify_props_node(default.func.value)[0] == "own"
+            and self._classify(default.func.value, function)[0] == "own"
         ):
-            alias = default.args[0].value
-            self.result.aliases[alias] = key
-            default = default.args[1] if len(default.args) > 1 else None
-        wrapper, used_as_mapping = self._wrapper_and_mapping(node)
-        self._record(PropertyRead(
-            key, "get", node.lineno, guarded=True, guard="get",
-            default_kind=_constant_kind(default) if default is not None else None,
-            nullable=default is None or (isinstance(default, ast.Constant) and default.value is None),
-            wrapper=wrapper, used_as_mapping=used_as_mapping,
-        ))
+            inner = self.context.resolve_key(default.args[0], self.class_constants)
+            if inner is not None:
+                self.result.aliases[inner[0]] = key
+                inner_default = default.args[1] if len(default.args) > 1 else None
+                return PropertyRead(
+                    key, "get", read.lineno, guarded=True, guard="get",
+                    default_kind=_constant_kind(inner_default) if inner_default is not None else None,
+                    nullable=_is_none(inner_default), wrapper=read.wrapper,
+                    used_as_mapping=read.used_as_mapping, via=read.via,
+                )
+        return read
 
-    def _record_subscript(self, node: ast.Subscript, key: str) -> None:
-        guarded, guard, uncertain = self._guard_status(node, key)
-        wrapper, used_as_mapping = self._wrapper_and_mapping(node)
-        self._record(PropertyRead(
-            key, "subscript", node.lineno, guarded=guarded, guard=guard,
-            uncertain=uncertain, wrapper=wrapper, used_as_mapping=used_as_mapping,
-        ))
+    # -- helpers: a key given as a parameter, a dict given as an argument -----
 
-    def _guard_status(self, node: ast.AST, key: str) -> tuple[bool, Optional[str], bool]:
-        """Whether a missing ``key`` can raise at this subscript.
+    def find_key_helpers(self) -> None:
+        """Methods like ``def _read_info(self, key, default=None)``, and methods
+        that read a parameter handed the dict (``_resolve(self, manager_properties)``)."""
+        for name, function in self.methods.items():
+            reads = _scan_parameter_reads(function, self.context)
+            if reads.reads or reads.unresolved:
+                self.method_param_reads[name] = reads
+        for name, function in self.methods.items():
+            params = [arg.arg for arg in function.args.args[1:]]
+            defaults = function.args.defaults
+            default_nodes = {
+                params[len(params) - len(defaults) + i]: default for i, default in enumerate(defaults)
+            }
+            helper: Optional[KeyHelper] = None
+            for node in ast.walk(function):
+                found = _read_shape(node)
+                if found is None:
+                    continue
+                key_node, receiver, access = found
+                if not (isinstance(key_node, ast.Name) and key_node.id in params):
+                    continue
+                if self._classify(receiver, function)[0] != "own":
+                    continue
+                default_index = None
+                default_kind = None
+                default_nullable = False
+                if access == "get" and len(node.args) > 1 and isinstance(node.args[1], ast.Name) \
+                        and node.args[1].id in params:
+                    default_param = node.args[1].id
+                    default_index = params.index(default_param) + 1
+                    literal = default_nodes.get(default_param)
+                    default_kind = _constant_kind(literal) if literal is not None else None
+                    default_nullable = literal is None or _is_none(literal)
+                guarded, guard, _uncertain = (
+                    self._guard_status(node, key_node.id, function) if access == "subscript" else (True, access, False)
+                )
+                candidate = KeyHelper(
+                    name, params.index(key_node.id) + 1, default_index, default_kind, default_nullable,
+                    access, guarded, guard,
+                )
+                # Keep the most permissive read of the parameter.
+                if helper is None or (candidate.guarded and not helper.guarded) \
+                        or (candidate.access == "get" and helper.access != "get"):
+                    helper = candidate
+            if helper is not None:
+                self.result.key_helpers[name] = helper
 
-        Walks up the tree. A ``try`` whose handlers tolerate a missing key, or
-        an ``if "key" in props:``, guards a read in its body. A condition that
-        mentions the properties object but is not a recognised guard for this
-        key makes the read *uncertain* rather than required.
-        """
+    def _maybe_helper_call(self, node: ast.AST, function, bound_from_read) -> None:
+        """Resolve ``self._read_info("k")`` and ``helper(props)`` call sites."""
+        if not isinstance(node, ast.Call):
+            return
+        # A key-parameter helper of this class or a base.
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id == "self":
+            helper = self.result.key_helpers.get(node.func.attr) or self.inherited_helpers.get(node.func.attr)
+            if helper is not None:
+                args = [None] + list(node.args)  # index 0 is self
+                key_node = args[helper.key_index] if helper.key_index < len(args) else None
+                if key_node is None:
+                    return
+                resolved = self.context.resolve_key(key_node, self.class_constants)
+                if resolved is None:
+                    self.result.unresolved.append(UnresolvedRead(
+                        ast.unparse(node), node.lineno, f"key passed to {helper.method}() is not a literal"))
+                    return
+                key, _via = resolved
+                default = args[helper.default_index] if helper.default_index and helper.default_index < len(args) else None
+                default_kind = _constant_kind(default) if default is not None else helper.default_kind
+                nullable = _is_none(default) if default is not None else helper.default_nullable
+                if helper.access == "get":
+                    read = PropertyRead(key, "get", node.lineno, guarded=True, guard="get",
+                                        default_kind=default_kind, nullable=nullable, via=f"helper:{helper.method}")
+                elif helper.access == "in":
+                    read = PropertyRead(key, "in", node.lineno, guarded=True, guard="in",
+                                        via=f"helper:{helper.method}")
+                else:
+                    read = PropertyRead(key, "subscript", node.lineno, guarded=helper.guarded,
+                                        guard=helper.guard, via=f"helper:{helper.method}")
+                self._record(read)
+                self._note_binding(node, key, function, bound_from_read)
+                return
+        # A method of this class handed the dict (or the Info) as an argument.
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id == "self" and node.func.attr in self.method_param_reads:
+            reads = self.method_param_reads[node.func.attr]
+            for index, arg in enumerate(node.args, start=1):  # index 0 is self
+                if not (self._classify(arg, function)[0] == "own" or self._is_own_info(arg, function)):
+                    continue
+                for read in reads.reads.get(index, []):
+                    self._record(PropertyRead(**{**read.__dict__, "lineno": node.lineno,
+                                                 "via": f"method:{node.func.attr}"}))
+                for unresolved in reads.unresolved.get(index, []):
+                    self.result.unresolved.append(UnresolvedRead(
+                        unresolved.expr, unresolved.lineno, f"in {node.func.attr}(): {unresolved.reason}"))
+            return
+        # A module-level function handed the dict (or the Info) as an argument.
+        if isinstance(node.func, ast.Name) and node.func.id in self.context.param_reads:
+            reads = self.context.param_reads[node.func.id]
+            for index, arg in enumerate(node.args):
+                if not (self._classify(arg, function)[0] == "own" or self._is_own_info(arg, function)):
+                    continue
+                for read in reads.reads.get(index, []):
+                    self._record(PropertyRead(
+                        read.key, read.access, node.lineno, guarded=read.guarded, guard=read.guard,
+                        uncertain=read.uncertain, default_kind=read.default_kind, nullable=read.nullable,
+                        wrapper=read.wrapper, used_as_mapping=read.used_as_mapping,
+                        via=f"function:{node.func.id}",
+                    ))
+                for unresolved in reads.unresolved.get(index, []):
+                    self.result.unresolved.append(UnresolvedRead(
+                        unresolved.expr, unresolved.lineno, f"in {node.func.id}(): {unresolved.reason}"))
+
+    # -- guards ---------------------------------------------------------------
+
+    def _guard_status(self, node: ast.AST, key: str, function) -> tuple[bool, Optional[str], bool]:
+        """Whether a missing ``key`` can raise at this subscript."""
         uncertain = False
         for ancestor, child in _ancestry(node, self.parents):
             if isinstance(ancestor, ast.Try):
@@ -493,7 +878,7 @@ class _ClassScanner:
                     _handler_tolerates_missing_key(handler) for handler in ancestor.handlers
                 ):
                     handled = ", ".join(
-                        _name_of(h.type) or "bare" if h.type is not None else "bare"
+                        (_name_of(h.type) or "bare") if h.type is not None else "bare"
                         for h in ancestor.handlers
                     )
                     return True, f"try/except {handled}", False
@@ -501,48 +886,38 @@ class _ClassScanner:
                 in_body = child is ancestor.body or (
                     isinstance(ancestor.body, list) and child in ancestor.body
                 )
-                if in_body and self._test_guards_key(ancestor.test, key):
+                if in_body and self._test_guards_key(ancestor.test, key, function):
                     return True, "in-guard", False
-                if self._test_mentions_props(ancestor.test) and not (
-                    in_body and self._test_guards_key(ancestor.test, key)
-                ):
+                if self._test_mentions_props(ancestor.test, function):
                     uncertain = True
             elif isinstance(ancestor, (ast.FunctionDef, ast.ClassDef)):
                 break
         return False, None, uncertain
 
-    def _test_guards_key(self, test: ast.AST, key: str) -> bool:
+    def _test_guards_key(self, test: ast.AST, key: str, function) -> bool:
         if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
-            return any(self._test_guards_key(value, key) for value in test.values)
-        if (
-            isinstance(test, ast.Compare)
-            and isinstance(test.left, ast.Constant)
-            and test.left.value == key
-            and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.In)
-        ):
-            return self._classify_props_node(test.comparators[0])[0] == "own"
-        if (
-            isinstance(test, ast.Call)
-            and isinstance(test.func, ast.Attribute)
-            and test.func.attr == "get"
-            and test.args
-            and isinstance(test.args[0], ast.Constant)
-            and test.args[0].value == key
-        ):
-            return self._classify_props_node(test.func.value)[0] == "own"
-        return False
+            return any(self._test_guards_key(value, key, function) for value in test.values)
+        found = _read_shape(test)
+        if found is None:
+            return False
+        key_node, receiver, access = found
+        if access not in ("in", "get"):
+            return False
+        if isinstance(test, ast.Compare) and isinstance(test.ops[0], ast.NotIn):
+            return False
+        resolved = self.context.resolve_key(key_node, self.class_constants)
+        return resolved is not None and resolved[0] == key and self._classify(receiver, function)[0] == "own"
 
-    def _test_mentions_props(self, test: ast.AST) -> bool:
+    def _test_mentions_props(self, test: ast.AST, function) -> bool:
         return any(
-            self._classify_props_node(sub)[0] == "own"
+            self._classify(sub, function)[0] == "own"
             for sub in ast.walk(test)
             if isinstance(sub, (ast.Name, ast.Attribute, ast.Call, ast.BoolOp))
         )
 
     # -- device references and pass-through -----------------------------------
 
-    def _scan_refs(self, bound_from_read: dict[str, str]) -> None:
+    def _scan_refs(self, bound_from_read: dict) -> None:
         """``lowLevelManagers["rs232sManager"][name]`` where ``name`` came from a read."""
         for node in ast.walk(self.cls):
             if not (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Subscript)):
@@ -554,23 +929,24 @@ class _ClassScanner:
             category = _bucket_category(str(bucket_node.slice.value))
             if category is None:
                 continue
+            function = _enclosing_function(node, self.parents)
             index = node.slice
             key = None
-            if isinstance(index, ast.Subscript) and isinstance(index.slice, ast.Constant):
-                if self._classify_props_node(index.value)[0] == "own":
-                    key = index.slice.value
-            elif isinstance(index, ast.Call) and isinstance(index.func, ast.Attribute) \
-                    and index.func.attr == "get" and index.args \
-                    and isinstance(index.args[0], ast.Constant) \
-                    and self._classify_props_node(index.func.value)[0] == "own":
-                key = index.args[0].value
+            found = _read_shape(index)
+            if found is not None and self._classify(found[1], function)[0] == "own":
+                resolved = self.context.resolve_key(found[0], self.class_constants)
+                key = resolved[0] if resolved else None
             else:
-                key = bound_from_read.get(_name_of(index) or "")
+                name = _name_of(index)
+                if _is_self_attr(index):
+                    key = bound_from_read.get(("attr", name))
+                else:
+                    key = bound_from_read.get((function, name))
             if key is not None:
                 self.result.refs[key] = category
 
     def _scan_passthrough(self) -> None:
-        """The whole dict handed to a call: the driver decides the keys."""
+        """The whole dict handed to a call the analysis does not follow."""
         for node in ast.walk(self.cls):
             if not isinstance(node, ast.Call):
                 continue
@@ -578,9 +954,15 @@ class _ClassScanner:
                 continue
             if _name_of(node.func) in _COPY_CALLS:
                 continue
+            if isinstance(node.func, ast.Name) and node.func.id in self.context.param_reads:
+                continue  # followed: its reads were imported
+            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+                    and node.func.value.id == "self" and node.func.attr in self.method_param_reads:
+                continue  # followed likewise
+            function = _enclosing_function(node, self.parents)
             candidates = list(node.args) + [kw.value for kw in node.keywords if kw.arg is None]
             for candidate in candidates:
-                if self._classify_props_node(candidate)[0] == "own":
+                if self._classify(candidate, function)[0] == "own":
                     self.result.open_passthrough = True
                     return
 
@@ -594,33 +976,132 @@ def _bucket_category(bucket: str) -> Optional[str]:
     return metadata.editor_category if metadata else None
 
 
-def extract_module(source: str, module: str = "<string>") -> dict[str, ClassExtraction]:
-    """Extract every class in one Python source text."""
+# =============================================================================
+# Module and tree extraction
+# =============================================================================
+
+@dataclass
+class ModuleIndex:
+    """What a module defines and re-exports, for name -> class resolution."""
+
+    classes: list[str]
+    reexports: dict[str, str]  # local name -> imported name
+
+
+def _scanners_for_module(source: str, module: str) -> tuple[dict[str, _ClassScanner], ModuleIndex]:
     tree = ast.parse(source)
-    parents = _parent_map(tree)
-    return {
-        node.name: _ClassScanner(node, parents, module).scan()
+    context = _ModuleContext(tree, module)
+    scanners = {
+        node.name: _ClassScanner(node, context)
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef)
     }
+    reexports = {}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                reexports[alias.asname or alias.name] = alias.name
+    index = ModuleIndex(classes=[n.name for n in tree.body if isinstance(n, ast.ClassDef)], reexports=reexports)
+    return scanners, index
 
 
-def extract_tree(root: Path) -> dict[str, ClassExtraction]:
-    """Extract every class under ``root`` (recursively), keyed by class name."""
-    classes: dict[str, ClassExtraction] = {}
+def _finish(scanners: dict[str, _ClassScanner]) -> dict[str, ClassExtraction]:
+    """Run pass 2 with attribute aliases and key helpers inherited from bases."""
+    for scanner in scanners.values():
+        scanner.find_key_helpers()
+
+    def inherited(name: str, seen=()) -> tuple[set[str], set[str], dict[str, KeyHelper]]:
+        scanner = scanners.get(name)
+        if scanner is None or name in seen:
+            return set(), set(), {}
+        info_attrs = set(scanner.result.info_attrs)
+        props_attrs = set(scanner.result.props_attrs)
+        helpers = dict(scanner.result.key_helpers)
+        for base in scanner.result.bases:
+            base_info, base_props, base_helpers = inherited(base, seen + (name,))
+            info_attrs |= base_info
+            props_attrs |= base_props
+            for helper_name, helper in base_helpers.items():
+                helpers.setdefault(helper_name, helper)
+        return info_attrs, props_attrs, helpers
+
+    for name, scanner in scanners.items():
+        info_attrs, props_attrs, helpers = set(), set(), {}
+        for base in scanner.result.bases:
+            base_info, base_props, base_helpers = inherited(base, (name,))
+            info_attrs |= base_info
+            props_attrs |= base_props
+            for helper_name, helper in base_helpers.items():
+                helpers.setdefault(helper_name, helper)
+        scanner.inherited_info_attrs = info_attrs
+        scanner.inherited_props_attrs = props_attrs
+        scanner.inherited_helpers = helpers
+    return {name: scanner.scan() for name, scanner in scanners.items()}
+
+
+def extract_module(source: str, module: str = "<string>") -> dict[str, ClassExtraction]:
+    """Extract every class in one Python source text (bases resolve within it)."""
+    scanners, _ = _scanners_for_module(source, module)
+    return _finish(scanners)
+
+
+@dataclass
+class TreeExtraction:
+    classes: dict[str, ClassExtraction]
+    modules: dict[str, ModuleIndex]  # file stem -> what it defines
+
+
+def extract_tree_indexed(root: Path) -> TreeExtraction:
+    """Extract every class under ``root`` and index what each module defines."""
+    scanners: dict[str, _ClassScanner] = {}
+    modules: dict[str, ModuleIndex] = {}
     for path in sorted(Path(root).rglob("*.py")):
         if path.name.startswith("_"):
             continue
         try:
-            source = path.read_text(encoding="utf-8")
-            module_classes = extract_module(source, str(path))
+            module_scanners, index = _scanners_for_module(path.read_text(encoding="utf-8"), str(path))
         except (SyntaxError, UnicodeDecodeError):
             continue
-        for name, extraction in module_classes.items():
+        modules.setdefault(path.stem, index)
+        for name, scanner in module_scanners.items():
             # Same class name in two files (a mock beside its real manager):
-            # the first in sorted order wins, and the report shows the module.
-            classes.setdefault(name, extraction)
-    return classes
+            # the first in sorted order wins.
+            scanners.setdefault(name, scanner)
+    return TreeExtraction(classes=_finish(scanners), modules=modules)
+
+
+def extract_tree(root: Path) -> dict[str, ClassExtraction]:
+    """Extract every class under ``root`` (recursively), keyed by class name."""
+    return extract_tree_indexed(root).classes
+
+
+def resolve_class_name(
+    name: str,
+    tree: TreeExtraction,
+    python_name: Optional[str] = None,
+) -> Optional[str]:
+    """The class that implements manager ``name``, or None.
+
+    A registry contribution says so directly (``module:Class``). A legacy
+    stem may be the class name, or a module that re-exports it
+    (``ThorlabsMFFManager.py`` is ``from .ThorlabsMFF import ThorlabsMFFManager``),
+    or a module defining exactly one manager class. ``PyCoboltManager.py``
+    defines a vendor driver and no manager: it stays unresolved, on purpose.
+    """
+    if python_name and ":" in python_name:
+        candidate = python_name.rsplit(":", 1)[1]
+        if candidate in tree.classes:
+            return candidate
+    if name in tree.classes:
+        return name
+    module = tree.modules.get(name)
+    if module is None:
+        return None
+    if name in module.reexports and module.reexports[name] in tree.classes:
+        return module.reexports[name]
+    if len(module.classes) == 1 and module.classes[0] in tree.classes and module.classes[0].endswith("Manager"):
+        return module.classes[0]
+    return None
 
 
 # =============================================================================
@@ -696,15 +1177,22 @@ def merge_manager(
     name: str,
     classes: dict[str, ClassExtraction],
     *,
+    class_name: Optional[str] = None,
     example_kinds: Optional[dict[tuple[str, str], set[str]]] = None,
     docs_cards: Optional[dict[str, dict[str, "DocsField"]]] = None,
 ) -> ManagerExtraction:
-    """One manager's contract: its own reads plus every base class's."""
-    order = resolution_order(name, classes)
+    """One manager's contract: its own reads plus every base class's.
+
+    ``class_name`` is the implementing class when it differs from the
+    manager's name (see :func:`resolve_class_name`).
+    """
+    order = resolution_order(class_name or name, classes)
     reads: dict[str, list[PropertyRead]] = {}
     aliases: dict[str, str] = {}
     refs: dict[str, str] = {}
     discarded: list[DiscardedRead] = []
+    unresolved: list[UnresolvedRead] = []
+    writes: list[PropertyWrite] = []
     passthrough = False
     for cls_name in reversed(order):  # base first, so a subclass can add
         extraction = classes[cls_name]
@@ -713,6 +1201,8 @@ def merge_manager(
         aliases.update(extraction.aliases)
         refs.update(extraction.refs)
         discarded.extend(extraction.discarded)
+        unresolved.extend(extraction.unresolved)
+        writes.extend(extraction.writes)
         passthrough = passthrough or extraction.open_passthrough
 
     # Fold each alias's reads into its canonical property.
@@ -724,10 +1214,26 @@ def merge_manager(
     example_kinds = example_kinds or {}
     card = (docs_cards or {}).get(name, {})
     for key in sorted(reads):
-        key_reads = reads[key]
+        sub_reads = [read for read in reads[key] if read.subkey]
+        key_reads = [read for read in reads[key] if not read.subkey]
+        if not key_reads:
+            # Only ever read through an alias of the dict: the alias binding
+            # was itself a read of the key; treat it as a guarded one.
+            key_reads = [PropertyRead(key, "get", sub_reads[0].lineno, guarded=True, guard="get",
+                                      nullable=False, via="nested")]
         spec = PropertySpec(key=key, reads=list(key_reads))
         spec.required = _decide_required(key_reads)
         spec.nullable = any(read.nullable for read in key_reads)
+        if sub_reads:
+            for subkey in sorted({read.subkey for read in sub_reads}):
+                these = [read for read in sub_reads if read.subkey == subkey]
+                sub = PropertySpec(key=subkey, reads=list(these))
+                sub.required = _decide_required(these)
+                sub.nullable = any(read.nullable for read in these)
+                sub_kinds, sub_tags = _code_kinds(these)
+                sub.kind, sub.kind_source = _as_kind(sub_kinds), sub_tags
+                sub.constraint, sub.constraint_source = _provable_constraint(these)
+                spec.sub_properties[subkey] = sub
         spec.aliases = tuple(sorted(alias for alias, canonical in aliases.items() if canonical == key))
 
         kinds, tags = _code_kinds(key_reads)
@@ -747,6 +1253,10 @@ def merge_manager(
             spec.description = docs_field.description
 
         spec.constraint, spec.constraint_source = _provable_constraint(key_reads)
+        if spec.sub_properties and spec.constraint is None:
+            spec.constraint, spec.constraint_source = {"type": KIND_OBJECT}, "code:sub-keys"
+            if spec.kind is None:
+                spec.kind, spec.kind_source = KIND_OBJECT, ["code:sub-keys"]
         if key in refs:
             spec.ref_category = refs[key]
             spec.widget = "ref"
@@ -763,6 +1273,8 @@ def merge_manager(
         properties=properties,
         discarded=discarded,
         open_passthrough=passthrough,
+        unresolved=unresolved,
+        writes=writes,
     )
 
 
@@ -858,32 +1370,60 @@ def parse_docs_type(text: str) -> tuple[tuple[str, ...], bool]:
 
 _CARD_HEADING = re.compile(r"^([A-Za-z0-9]+Manager)$")
 _CARD_ROW = re.compile(r"^\s+\* - ``([A-Za-z0-9_.]+)``")
+_CARD_HEADER = re.compile(r"^\s+\* - (Field|Key|Property)\s*$")
 _CARD_CELL = re.compile(r"^\s+- (.*)$")
+
+#: Header labels, lowercased, that name the two columns a card is read for.
+_TYPE_HEADERS = {"type"}
+_MEANING_HEADERS = {"meaning", "description", "purpose"}
+
+
+def _row_cells(lines: list[str], start: int) -> list[str]:
+    """The cells of one list-table row: the ``* -`` cell and the ``-`` cells after it."""
+    first = re.match(r"^\s+\* - (.*)$", lines[start])
+    cells = [first.group(1).strip() if first else ""]
+    index = start + 1
+    while index < len(lines):
+        cell = _CARD_CELL.match(lines[index])
+        if not cell or lines[index].lstrip().startswith("* -"):
+            break
+        cells.append(cell.group(1).strip())
+        index += 1
+    return cells
 
 
 def docs_cards(docs_dir: Path) -> dict[str, dict[str, DocsField]]:
-    """``manager -> key -> DocsField`` from the ``docs/devices/*.rst`` cards."""
+    """``manager -> key -> DocsField`` from the ``docs/devices/*.rst`` cards.
+
+    Cards are ``list-table`` blocks whose header row names the columns. Most
+    are ``Field / Type / Meaning``; some carry a ``Default`` column between --
+    reading cells by position took AAAOTF's defaults for its descriptions. The
+    header decides which cell is the type and which the meaning.
+    """
     cards: dict[str, dict[str, DocsField]] = {}
     for path in sorted(Path(docs_dir).glob("*.rst")):
         lines = path.read_text(encoding="utf-8").splitlines()
         current: Optional[str] = None
+        type_col, meaning_col = 1, 2
         for index, line in enumerate(lines):
             heading = _CARD_HEADING.match(line)
             if heading:
                 current = heading.group(1)
                 cards.setdefault(current, {})
+                type_col, meaning_col = 1, 2
+                continue
+            if _CARD_HEADER.match(line):
+                header = [cell.lower() for cell in _row_cells(lines, index)]
+                type_col = next((i for i, h in enumerate(header) if h in _TYPE_HEADERS), 1)
+                meaning_col = next((i for i, h in enumerate(header) if h in _MEANING_HEADERS), len(header) - 1)
                 continue
             row = _CARD_ROW.match(line)
             if not row or current is None:
                 continue
+            cells = _row_cells(lines, index)
             key = row.group(1).split(".")[0]
-            type_text = description = ""
-            if index + 1 < len(lines):
-                cell = _CARD_CELL.match(lines[index + 1])
-                type_text = cell.group(1).strip() if cell else ""
-            if index + 2 < len(lines):
-                cell = _CARD_CELL.match(lines[index + 2])
-                description = cell.group(1).strip() if cell else ""
+            type_text = cells[type_col] if type_col < len(cells) else ""
+            description = cells[meaning_col] if meaning_col < len(cells) else ""
             kinds, nullable = parse_docs_type(type_text)
             cards[current].setdefault(
                 key, DocsField(key, type_text, kinds, nullable, description)
@@ -903,6 +1443,7 @@ class ManagerRow:
     uncertain: int
     refs: int
     constrained: int
+    unresolved: int
     reads_any: bool
     passthrough: bool
 
@@ -927,12 +1468,16 @@ class CoverageReport:
     #: Alias spellings folded into canonical properties (``mock_random_seed``).
     alias_spellings: int
     constrained: int
+    #: Reads whose key the analysis could not name, and writes it ignored.
+    unresolved_reads: int
+    writes: int
     docs_documented: int
     docs_agree: int
     rows: list[ManagerRow]
     uncertain_keys: list[str]
     unconstrained_keys: list[str]
     discarded: list[str]
+    unresolved: list[str]
 
     def snapshot(self) -> dict:
         """The part of the report a checked-in snapshot pins."""
@@ -942,14 +1487,15 @@ class CoverageReport:
                 "managers", "reads_any", "with_keys", "keys", "required", "optional",
                 "uncertain", "typed_by_code", "typed_with_examples", "typed_with_docs",
                 "none_default_only", "none_only", "refs", "alias_spellings", "constrained",
-                "docs_documented", "docs_agree",
+                "unresolved_reads", "writes", "docs_documented", "docs_agree",
             )
         }
         return {
             "totals": totals,
             "managers": [
                 {"name": row.name, "keys": row.keys, "required": row.required,
-                 "uncertain": row.uncertain, "refs": row.refs, "constrained": row.constrained}
+                 "uncertain": row.uncertain, "refs": row.refs, "constrained": row.constrained,
+                 "unresolved": row.unresolved}
                 for row in self.rows
             ],
         }
@@ -961,12 +1507,19 @@ def extract_managers(
     managers_root: Path,
     setups_dir: Optional[Path] = None,
     docs_dir: Optional[Path] = None,
+    class_names: Optional[dict[str, Optional[str]]] = None,
 ) -> dict[str, ManagerExtraction]:
-    classes = extract_tree(managers_root)
+    """Extract the named managers; ``class_names`` maps a name to its class when they differ."""
+    tree = extract_tree_indexed(managers_root)
     example_kinds = example_kinds_from_setups(setups_dir) if setups_dir else {}
     cards = docs_cards(docs_dir) if docs_dir else {}
+    class_names = class_names or {}
     return {
-        name: merge_manager(name, classes, example_kinds=example_kinds, docs_cards=cards)
+        name: merge_manager(
+            name, tree.classes,
+            class_name=class_names.get(name) or resolve_class_name(name, tree),
+            example_kinds=example_kinds, docs_cards=cards,
+        )
         for name in sorted(manager_names)
     }
 
@@ -979,13 +1532,15 @@ def coverage_report(
     rows: list[ManagerRow] = []
     keys = required = optional = uncertain = 0
     typed_code = typed_examples = typed_docs = none_only = refs = constrained = 0
-    none_default_only = alias_spellings = 0
+    none_default_only = alias_spellings = unresolved_reads = writes = 0
     uncertain_keys: list[str] = []
     unconstrained_keys: list[str] = []
     discarded: list[str] = []
+    unresolved: list[str] = []
     docs_documented = docs_agree = 0
     for name, extraction in extractions.items():
-        row = ManagerRow(name, 0, 0, 0, 0, 0, extraction.reads_any, extraction.open_passthrough)
+        row = ManagerRow(name, 0, 0, 0, 0, 0, len(extraction.unresolved),
+                         extraction.reads_any, extraction.open_passthrough)
         for key, spec in extraction.properties.items():
             row.keys += 1
             keys += 1
@@ -1023,10 +1578,19 @@ def coverage_report(
                 unconstrained_keys.append(f"{name}.{key}")
         for item in extraction.discarded:
             discarded.append(f"{name}.{item.key} via {item.receiver} (line {item.lineno})")
+        for item in extraction.unresolved:
+            unresolved.append(f"{name}: {item.expr} (line {item.lineno}; {item.reason})")
+        unresolved_reads += len(extraction.unresolved)
+        writes += len(extraction.writes)
         if docs and name in docs and extraction.properties:
             documented = set(docs[name])
             docs_documented += len(documented)
-            docs_agree += len(documented & set(extraction.properties))
+            # Cards list nested keys flat (ThorCamTSI's ``exposure_us`` lives
+            # under ``defaults``), so a sub-property counts as agreement.
+            known = set(extraction.properties) | {
+                sub for spec in extraction.properties.values() for sub in spec.sub_properties
+            }
+            docs_agree += len(documented & known)
         rows.append(row)
     return CoverageReport(
         managers=len(extractions),
@@ -1036,9 +1600,10 @@ def coverage_report(
         typed_by_code=typed_code, typed_with_examples=typed_examples,
         typed_with_docs=typed_docs, none_default_only=none_default_only,
         none_only=none_only, refs=refs, alias_spellings=alias_spellings,
-        constrained=constrained, docs_documented=docs_documented, docs_agree=docs_agree,
+        constrained=constrained, unresolved_reads=unresolved_reads, writes=writes,
+        docs_documented=docs_documented, docs_agree=docs_agree,
         rows=rows, uncertain_keys=uncertain_keys,
-        unconstrained_keys=unconstrained_keys, discarded=discarded,
+        unconstrained_keys=unconstrained_keys, discarded=discarded, unresolved=unresolved,
     )
 
 
@@ -1061,9 +1626,11 @@ def format_report(report: CoverageReport, extractions: Optional[dict[str, Manage
         f"{'Only a None default in code':52s} {report.none_default_only}  (still untyped after all sources: {report.none_only})",
         f"{'Device references (data-flow)':52s} {report.refs}",
         f"{'Validation-constrained (provable)':52s} {report.constrained}",
+        f"{'Unresolved reads (key not nameable)':52s} {report.unresolved_reads}",
+        f"{'Writes/deletes ignored':52s} {report.writes}",
         f"{'Docs fields agreeing with extraction':52s} {report.docs_agree}/{report.docs_documented}",
         "",
-        f"{'manager':34s} keys  req  unc  refs  constr  notes",
+        f"{'manager':34s} keys  req  unc  refs  constr  unres  notes",
     ]
     for row in report.rows:
         notes = []
@@ -1073,10 +1640,12 @@ def format_report(report: CoverageReport, extractions: Optional[dict[str, Manage
             notes.append("reads nothing")
         lines.append(
             f"{row.name:34s} {row.keys:4d} {row.required:4d} {row.uncertain:4d} "
-            f"{row.refs:5d} {row.constrained:7d}  {', '.join(notes)}"
+            f"{row.refs:5d} {row.constrained:7d} {row.unresolved:6d}  {', '.join(notes)}"
         )
     if report.uncertain_keys:
         lines += ["", "Uncertain requiredness (treated as optional):"] + [f"  {k}" for k in report.uncertain_keys]
+    if report.unresolved:
+        lines += ["", "Unresolved reads (reported, never guessed):"] + [f"  {u}" for u in report.unresolved]
     if report.discarded:
         lines += ["", "Reads discarded (receiver is not this manager's Info):"] + [f"  {d}" for d in report.discarded]
     if extractions:
@@ -1092,6 +1661,9 @@ def format_report(report: CoverageReport, extractions: Optional[dict[str, Manage
                     flags.append("aliases=" + ",".join(spec.aliases))
                 if spec.ref_category:
                     flags.append(f"ref->{spec.ref_category}")
+                vias = sorted({read.via for read in spec.reads if read.via and read.via != "literal"})
+                if vias:
+                    flags.append("via=" + ",".join(vias))
                 lines.append(
                     f"  {name}.{key}: {spec.required}; kind={kind} <- {','.join(spec.kind_source) or '-'};"
                     f" constraint={constraint}{'; ' + ' '.join(flags) if flags else ''}"
