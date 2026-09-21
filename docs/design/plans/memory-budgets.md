@@ -1,13 +1,14 @@
 # Memory limits: buffering and automatic work, not what can be measured
 
-*Status: proposal, revised after review round 3 (2026-09-21), which reversed
-the direction rounds 1 and 2 had taken. Written out of the question the
+*Status: proposal, revised after review rounds 3 and 4 (2026-09-21). Round 3
+reversed the direction rounds 1 and 2 had taken; round 4 accepted that
+direction and corrected its claims. Written out of the question the
 magic-number audit left open — the audit replaced frame counts with byte
 budgets, and the byte budgets are still literals in the source. This note says
 how to make them settable without recreating the defect class the audit closed.
-Nothing here is implemented, with one exception flagged below: round 3 found
-that the byte budget already on this branch drops a large scan volume, and that
-fix belongs in PR #29 before it merges. Records of all three rounds at the end.*
+Phase A — the regression round 3 found, a large scan volume dropped by the byte
+budget already on this branch — is implemented (`d648967d`); nothing else is.
+Records of all four rounds at the end.*
 
 ## The principle
 
@@ -109,9 +110,10 @@ known.
 ## Large payloads: one rule, at both boundaries
 
 A "frame" is not always a camera image. For a scan-driven detector it is the
-**whole assembled volume**: `APDManager.getChunk` returns
-`expand_dims(self._image_display, 0)`, the raw volume is published once per
-completed scan (`rawFrameIsDeferred`), and its dimensions come from
+**whole assembled volume**: the raw half of `APDManager.drainChunk` publishes
+`expand_dims(np.array(self._image, copy=True), 0)` exactly once per completed
+scan (`rawFrameIsDeferred`), the display half (`getChunk`) is the same volume
+in its display form, and the dimensions come from
 `ScanWorker._output_image_dims`, not from anything the manager declares. A
 1024 × 1024 × 128 uint16 Z-stack is one 256 MiB frame; 2048 × 2048 × 64 is
 512 MiB. These are measurements, and a buffering limit has no standing to
@@ -132,19 +134,29 @@ budget (862786bd, this branch) the raw cap was **16 frames**, which admitted
 one volume of any size; this is a regression the audit introduced, and PR #29
 must not merge with it.
 
-**Rule, at both boundaries:** a payload is admitted whenever the queue is
-empty, however large; a second payload waits (writer) or overflows (detector)
-as today. That is a controlled exception — one oversized payload, never an
-unbounded backlog — and it is the same rule in both places. A refusal mode for
+**Rule, at both boundaries:** one *delivery* is admitted whenever the queue
+is empty, however large; a further delivery waits (writer) or overflows
+(detector) as today. A delivery is what one drain hands a consumer — one
+assembled volume for a scan-driven detector, or a burst of many frames for a
+camera that was polled late — so the exception admits one delivery, which may
+be more than one frame. That is a controlled exception — one oversized
+delivery, never an unbounded backlog — and it is the same rule in both places.
+Implemented at the detector boundary (`d648967d`), with tests for both forms, a
+delivery arriving behind an oversized one (overflows, as before), deliveries
+that fit after the oversized one is read (admitted, as before), and the
+warning said once per consumer and naming the setting. A refusal mode for
 constrained installations is not built: it is the rule that restricted
 measurement, and nobody has asked for it.
 
 **Estimate, where the payload is known.** A point detector's raw payload is
 known when the scan is built and again when the recording arms
 (`_output_image_dims` × dtype). At arm the recording logs its estimate against
-both limits — and *warns* when one payload exceeds a limit, because the
-consequence is real and otherwise invisible: with no backlog possible, a
-writer stall is fatal for the next volume. Warn, name the setting, proceed.
+both limits — and *warns* when one delivery exceeds a limit, because the
+consequence is real and otherwise invisible: an oversized delivery leaves no
+room for further backlog in *that* queue until it is read. Not "the next
+volume is lost": the writer queue admits its own oversized payload when empty
+and the worker holds one in hand, so two volumes can be in flight before a
+third finds every queue occupied. Warn, name the setting, proceed.
 
 **No startup floor.** `DetectorsManager` constructs every configured detector
 whether or not a session uses it; a floor check against "the largest
@@ -161,29 +173,49 @@ traced who consumes that image:
   would receive period/*k*.
 - `ReconstructorManagerController._updateSmlmPreview` runs
   `compute_detection_preview(image, threshold, roi, sigma)` on
-  `getDisplayedImage2D()`, with `sigma` in pixels.
+  `getDisplayedImage2D()`, with `sigma` in pixels. This affects the preview
+  and how the operator reads the parameters, not the localised array.
 - The pattern grid overlay is drawn on the displayed image's coordinates.
 
-A strided preview is not a coarse picture; it is wrong input to two
-reconstructions. So:
+A strided preview is not a coarse picture; it is wrong input to one
+reconstruction and one preview. But "exact, as today" is not what today does
+either, and round 4 caught the note assuming it. `getMeanData` has **two
+meanings already**: for a lazy, non-materialised source it averages at most
+`MEAN_PREVIEW_MAX_PLANES` (256) planes taken at an even stride — a 512-plane
+stack alternating between 0 and 100 returns 0 — while a materialised source
+gets `mean_plane` over every plane, which returns 50. Native spatial
+coordinates in both; which one `findPattern` receives depends on whether the
+file was opened with Open or Open virtual. So:
 
+- **This work changes neither meaning.** A preview that keeps native spatial
+  coordinates and may sample across planes, and an exact mean over every
+  selected plane, are two different things; making them one, and deciding
+  which `findPattern` should get, is a separate check (*Follow-ups*).
 - **The mean preview is estimated before it is computed**: accumulator plus
   result, from the plane shape and dtype. Within `processingWorkingSetMB` it
-  is computed exactly, as today. Above it, the *automatic* preview (on load)
-  is skipped with a status line naming the estimate and the setting; the
-  *explicit* one (the Show-mean button) proceeds after a warning naming the
-  same numbers. The operator chose it; the note does not second-guess that.
+  is computed as today. Above it, the *automatic* preview (on load, in
+  `DataFrameController.showMean`) is skipped with a status line naming the
+  estimate and the setting; the *explicit* one (the Show-mean button) proceeds
+  after a warning naming the same numbers. The skip lives in the caller,
+  **never in `getMeanData`**: `findPattern` calls it directly and returns
+  silently on an empty result, so an empty value there would turn a skipped
+  preview into a silently skipped pattern search.
 - **The contrast sample count follows the working set** (round 2, kept):
   `max_samples = min(_MAX_SAMPLE_VALUES, allowance // _WORKING_SET_BYTES_PER_ELEMENT)`,
   tested at small budgets. Sampling is already an approximation with no
   coordinates in it, so this one is free.
-- **Opening a file is explicit**, so it is estimate-and-say, not refuse: the
-  decoded size of the *selected* dataset (`shape × itemsize`, from metadata —
-  round 1, kept), a lazy path where the source truly supports one
-  (`supports_lazy_indexing`; `TiffVirtualArray` without `aszarr()` serves
-  every plane by a whole-series `asarray()` and must not be called bounded —
-  round 1, kept), and one line naming the decoded size when a large dataset is
-  materialised anyway. No threshold refuses an open.
+- **Opening a file stays possible, and a log line does not make it safer.**
+  Ordinary Open (`quickLoadData` → `checkAndLoadData`) materialises the whole
+  dataset today; Open virtual is a separate action that opens only the lazy
+  handle. Above the working set, ordinary Open takes the lazy path when the
+  source truly supports one (`supports_lazy_indexing`; `TiffVirtualArray`
+  without `aszarr()` serves every plane by a whole-series `asarray()` and must
+  not be called bounded — round 1, kept) and says so; where it cannot, it says
+  what it is about to materialise — the decoded size of the *selected*
+  dataset, `shape × itemsize` from metadata (round 1, kept) — *before* it
+  starts. An explicit full load remains. No threshold refuses an open. This
+  narrows the unbounded-load finding to sources without a lazy path; it does
+  not close it.
 - **An exact bounded preview for in-plane-huge sources** — tiled accumulation,
   identical values, more reads — is the later answer if a rig ever has 16k²
   planes. Not a stride.
@@ -195,10 +227,13 @@ reconstructions. So:
   (the writer batches by count, and `np.concatenate` doubles it for the
   flush); one chunk in hand per detector. An estimate, not a cap: it tells the
   operator what a stall costs and which setting moves it.
-- **Warn on the first block, with no delay** (round 2, kept).
-  `enqueue_frames` today waits `PRODUCER_STALL_WARN_S` (1 s) before logging,
-  and a 256 MiB queue at 512 MiB/s fills in half that, so today the overflow
-  can arrive before the line that explains it.
+- **Warn on the first block, with no delay** (round 2, kept as a
+  diagnostic, not as an ordering guarantee). `enqueue_frames` today waits
+  `PRODUCER_STALL_WARN_S` (1 s) before logging, and a 256 MiB queue at
+  512 MiB/s fills in half that. A detector overflow can also happen with the
+  writer never blocked — BeadRec falling behind, or the acquisition worker
+  slow for its own reasons — so no test may require the block line before
+  every overflow.
 - **Every message that quotes a limit names the setting**, and the overflow
   message stops blaming the consumer when the payload alone exceeded the
   limit.
@@ -261,7 +296,14 @@ file be hand-edited; a dialog that edits three integers can follow.
   scan generation; workflows release on abort). Returning `(frames,
   reservation)` is a compatibility and lifetime design in its own right, and
   the chunk-in-hand it would account for is one chunk per recording detector:
-  stated in the estimate line, not worth an API.
+  stated in the estimate line, not worth an API. **The return contract — a
+  list of frames — is preserved.** Any later ownership change needs a
+  demonstrated problem and tests across cancellation, concurrent consumers
+  and detector-buffer lifetimes.
+- **Splitting a multi-frame delivery into admissions that fit.** Moot while
+  both boundaries admit when empty. If ever revisited, measure it on its own:
+  unlike holding reservations longer it does not reduce backlog, and can use
+  free space sooner.
 - **The preallocated batch buffer.** Removes the `np.concatenate` double (up
   to 32 frames per detector) and the `np.stack` copy in `_getNewFrames`. An
   optimisation; measure a rig first.
@@ -272,29 +314,44 @@ file be hand-edited; a dialog that edits three integers can follow.
 ## Acceptance
 
 Not "no behaviour change" — round 3 showed that claim was false for what
-rounds 1–2 proposed, and it is not the right criterion anyway. **Output
-compatibility:** every existing recording test produces byte-identical files;
-and a stall test — a storer that blocks for `T`, a producer paced at `R` — run
-across four acquisition shapes:
+rounds 1–2 proposed, and it is not the right criterion anyway. Not
+"byte-identical files" either: recordings carry timestamps, and a container
+may represent the same data differently. **Output compatibility** means the
+acquired values, dtype, dimensions, ordering and completeness, and the
+metadata that carries meaning, compare equal, with the volatile fields named
+and allowed.
 
-- a large single volume (one frame above `perDetectorQueueMB`);
+**Any change to queue behaviour** — this note's Phase A included, and any
+later one — is gated on a stall test across four acquisition shapes. It is
+not an optional phase:
+
+- a large single volume (one delivery above `perDetectorQueueMB`);
 - small rapid frames (a fast camera on a small ROI);
-- burst delivery (many frames per `readChunk`);
+- burst delivery (many frames per drain, after a late poll);
 - multiple detectors with concurrent consumers (recording plus BeadRec or
   live view).
 
-In each: no frame lost while `T·R` fits the backlog; a predictable, loud
-failure when it does not — the block reported first, then an overflow naming
-the detector, the limit and the setting; and the oversized volume delivered
-intact at both boundaries.
+The test drives **actual arrival schedules** and asserts on **per-queue
+occupancy**, not on an average `T·R`: bursts and contention between consumers
+are what an average hides. In each shape: no frame lost while the backlog
+fits; a predictable, loud failure when it does not — an overflow naming the
+detector, the limit and the setting, with the writer's block line present
+when the writer was in fact the cause; and the oversized delivery delivered
+intact at both boundaries. Phase A ships with its unit tests (both forms, the
+delivery behind, the fit after, the warning); the four-shape test is owed
+before Phase B changes anything else about the queues.
 
 ## Phases
 
-- **A — the regression, in PR #29.** Admit an oversized payload at the
-  detector boundary when the queue is empty, mirroring the writer; the
-  overflow message no longer blames a consumer that was handed nothing. Test:
-  one raw volume above `MAX_QUEUED_CONSUMER_BYTES` reaches `readChunk` whole;
-  a second one behind it overflows as today.
+- **A — the regression, in PR #29. Done (`d648967d`).** One delivery is
+  admitted to an empty queue at the detector boundary whatever its size,
+  mirroring the writer; an oversized admission is said once per consumer and
+  names the setting; the overflow message quotes what was held and what
+  arrived. Five tests: the volume form, the burst form, a delivery behind an
+  oversized one overflows, deliveries that fit are admitted after it is read,
+  the warning is said once and again for a fresh registration.
+- **A′ — the four-shape stall test**, before B: actual arrival schedules,
+  per-queue occupancy; the gate for every later queue change (*Acceptance*).
 - **B — the settings.** `MemoryOptions` on `Options`; the three literals read
   from it; contrast sample count follows the working set. Defaults reproduce
   every literal. Tests: defaults unchanged; small-budget behaviour for each.
@@ -302,9 +359,17 @@ intact at both boundaries.
   oversized-payload warning; warn on first block; messages name the setting.
 - **D — safer automatic work.** Mean preview estimated, automatic skip above
   the working set, explicit warn-and-proceed; decoded size and
-  `supports_lazy_indexing` on open. Closes the unbounded-`asarray` finding.
-- **E — optional.** Config-editor fields; the four-shape stall test as a
-  slow-marked suite.
+  `supports_lazy_indexing` on open. Narrows the unbounded-`asarray` finding
+  to sources without a lazy path.
+- **E — optional.** Config-editor fields.
+
+## Follow-ups outside this note
+
+- **What `findPattern` should receive.** Today it depends on how the file was
+  opened: a ≤ 256-plane sampled mean for a lazy source, the exact mean for a
+  materialised one. Decide which the pattern finder wants and make it
+  independent of the open path.
+- **The Hamamatsu comment** says 2 GB where the code allocates 4 GiB.
 
 ## Decisions
 
@@ -314,8 +379,8 @@ intact at both boundaries.
 - **Fixed defaults, not machine fractions** (2026-09-21, round 2, as "a fixed
   2048 MiB total"). The pooled total that number applied to is gone after
   round 3; what survives of the decision is its reason — the same default on
-  every machine — applied to the three literals. *Flagged for confirmation:
-  this restates a decision rather than keeping it verbatim.*
+  every machine — applied to the three literals. Restated as
+  512 / 256 / 256 MiB and accepted in round 4.
 
 ## Review round 1 (2026-09-21)
 
@@ -404,3 +469,45 @@ stands but is deferred as an optimisation. The Hamamatsu comment says 2 GB
 where the code allocates 4 GiB; worth a one-line comment fix when someone is
 in that file. The reproduction script for item 1 lives in the session
 scratchpad and becomes the Phase A test.
+
+## Review round 4 (2026-09-21)
+
+Accepted the round-3 direction; corrected its claims. Each correction was
+verified against the code before it was folded in.
+
+1. **The regression is real; fix before merge.** Independently reproduced by
+   the reviewer. Terminology corrected: the raw volume is the raw half of
+   `drainChunk`; `getChunk` is the display half. "Payload" defined as one
+   *delivery*, which may be one volume or a burst; both forms tested, plus a
+   delivery behind an oversized one and deliveries that fit after it. "A
+   writer stall is fatal for the next volume" withdrawn as too categorical: an
+   oversized delivery leaves no room for further backlog in that queue. →
+   Phase A implemented (`d648967d`); note corrected.
+2. **Dropping the pooled total is correct.** Estimates stay estimates. → no
+   change.
+3. **Striding is wrong, but "exactly, as today" was too.** Verified: for a
+   lazy source `getMeanData` already averages at most `MEAN_PREVIEW_MAX_PLANES`
+   planes at an even stride, so a 512-plane 0/100 stack gives 0 where the
+   materialised mean gives 50. The SMLM connection is a preview, not a
+   reconstruction. A skipped automatic mean must not make `getMeanData` return
+   empty to `findPattern`. → both meanings named and neither changed here; the
+   skip placed in the caller; follow-up recorded.
+4. **Deferring reservation tokens is justified.** → return contract stated as
+   preserved; later changes need a demonstrated problem and tests across
+   cancellation, concurrent consumers and buffer lifetimes.
+5. **The stall-tolerance objection is correct, with one qualification.**
+   Splitting deliveries does not necessarily reduce tolerance and should be
+   measured on its own. "Byte-identical files" was the wrong criterion. →
+   splitting separated and deferred; acceptance restated as values, dtype,
+   dimensions, ordering, completeness and meaningful metadata, with volatile
+   fields allowed.
+
+**Two synthesis corrections.** Verified that ordinary Open materialises today
+(`quickLoadData` → `_loadAsCurrent(virtual=False)` → `checkAndLoadData`) and
+that Open virtual is a separate action, so a log line makes nothing safer: the
+lazy path is preferred where real, an expensive fallback is announced before
+it starts, the explicit full load stays, and the finding is narrowed rather
+than closed. The four-shape test is required for any queue change, on actual
+arrival schedules and per-queue occupancy, and warning-before-overflow is not
+universal. The fixed 512 / 256 / 256 MiB defaults are accepted as the
+restatement of the round-2 decision.
