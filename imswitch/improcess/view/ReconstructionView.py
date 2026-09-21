@@ -594,6 +594,9 @@ class ReconstructionView(QtWidgets.QFrame):
         """
         events = getattr(getattr(layer, 'events', None), 'contrast_limits', None)
         if events is None:
+            # Not silent: a layer nobody can watch is a layer whose contrast
+            # is quietly not remembered, and that is the failure this exists
+            # to end.
             self._logger.warning(
                 "Layer %r has no contrast_limits event; contrast changes made "
                 "on it cannot be remembered per result.",
@@ -604,8 +607,6 @@ class ReconstructionView(QtWidgets.QFrame):
             events.connect(
                 lambda event, layer=layer: self._onLevelsChanged(layer)
             )
-            self._logger.debug("Watching contrast limits of layer %r",
-                               getattr(layer, 'name', layer))
         except Exception as exc:
             self._logger.warning("Could not watch contrast limits: %s", exc)
 
