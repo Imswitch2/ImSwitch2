@@ -5,7 +5,7 @@ import traceback
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from .model import dirtools, pythontools, initLogger, shutdownState
+from .model import dirtools, ostools, pythontools, initLogger, shutdownState
 from .view.guitools import getBaseStyleSheet
 
 
@@ -87,7 +87,12 @@ def shutdownModules(moduleMainControllers, logger=None):
 
 
 def launchApp(app, mainView, moduleMainControllers):
-    """ Launches the app. The program will exit when the app is exited. """
+    """ Launches the app. The program will exit when the app is exited.
+
+    If something asked for a restart while the app was running (see
+    ``ostools.requestRestart``), the restart happens here rather than at the
+    point of the request -- after the modules have shut down, so that hardware
+    is left in a known state instead of whatever it happened to be doing. """
 
     logger = initLogger('launchApp')
 
@@ -99,6 +104,8 @@ def launchApp(app, mainView, moduleMainControllers):
     # Clean up
     shutdownModules(moduleMainControllers, logger)
 
+    restartModule = ostools.restartRequested()
+
     if not shutdownState.hardwareFinalizationAllowed():
         # A script thread is still alive: hardware managers were deliberately
         # not finalized (fail closed). Destroying that running QThread during
@@ -109,7 +116,16 @@ def launchApp(app, mainView, moduleMainControllers):
             + '; '.join(shutdownState.reasons)
         )
         logging.shutdown()
+        if restartModule is not None:
+            # execv replaces this process image, which drops the stuck thread
+            # just as _exit would -- the restart is no less safe than leaving.
+            ostools.restartSoftware(restartModule)
         os._exit(exitCode or 1)
+
+    if restartModule is not None:
+        logger.info('Restarting ImSwitch')
+        logging.shutdown()
+        ostools.restartSoftware(restartModule)
 
     # Exit
     sys.exit(exitCode)

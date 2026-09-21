@@ -17,8 +17,64 @@ def openFolderInOS(folderPath):
 
 
 def restartSoftware(module='imswitch'):
-    """ Restarts the software. """
-    os.execv(sys.executable, ['"' + sys.executable + '"', '-m', module])
+    """ Restarts the software immediately, without shutting anything down.
+
+    ``os.execv`` replaces this process image, so no finalizer runs: hardware
+    managers are never closed and whatever state the devices are in is what the
+    new process inherits. Prefer :func:`requestRestart`, which lets the normal
+    shutdown run first and restarts from ``launchApp``.
+
+    The command line is carried over, so a session started with ``--debug`` or
+    ``--scale`` comes back the same way.
+    """
+    if getattr(sys, 'frozen', False):
+        # A frozen build has no interpreter to hand a -m to; sys.executable is
+        # the bundled application itself.
+        os.execv(sys.executable, [sys.executable] + sys.argv[1:])
+    else:
+        os.execv(sys.executable,
+                 ['"' + sys.executable + '"', '-m', module] + sys.argv[1:])
+
+
+_restartRequest = None
+
+
+def requestRestart(module='imswitch'):
+    """ Ask for ImSwitch to be restarted once it has finished shutting down.
+
+    Closing the main window still runs the ordinary shutdown -- widget states
+    saved, controller workers drained, hardware managers finalized -- and
+    ``launchApp`` then re-execs instead of exiting. This is the difference
+    between a restart that leaves a laser as it was found and one that does
+    not, which is why it exists alongside :func:`restartSoftware`.
+    """
+    global _restartRequest
+    _restartRequest = module
+
+
+def restartAfterShutdown(closeApplication, module='imswitch'):
+    """ Ask for a restart, then close the application so it can happen.
+
+    The single way anything in ImSwitch should restart itself. ``closeApplication``
+    is the main window's ``close``; if it returns False the close was vetoed --
+    an unsaved-work prompt the user backed out of, a module that refused -- so
+    nothing is going to restart and the request is withdrawn rather than left
+    armed for whenever the window is next closed.
+    """
+    requestRestart(module)
+    if closeApplication() is False:
+        cancelRestart()
+
+
+def cancelRestart():
+    """ Withdraw a pending restart request. """
+    global _restartRequest
+    _restartRequest = None
+
+
+def restartRequested():
+    """ The module to restart into, or None if no restart was asked for. """
+    return _restartRequest
 
 
 class OSToolsError(Exception):
