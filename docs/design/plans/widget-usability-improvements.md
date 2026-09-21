@@ -16,6 +16,18 @@ scrolling rather than being clipped by minimum-size constraints.
   full content minimum width.
 - Laser widgets no longer force their scroll area and parent widget to the
   full content minimum width.
+- No docked widget pins its own minimum *height* either. Docks stack
+  vertically and a splitter's minimum is the sum of its children's, so a panel
+  insisting on 320 px added 320 px to the smallest size the window could take;
+  a laser column, a scan panel and a TriggerScope panel in one column pushed
+  that past the screen, at which point Qt holds the window at its minimum and
+  the bottom is cut off -- the maximize / restore / maximize cycle worked
+  around exactly that. The panels already scrolled their own contents, so the
+  minimum was doing nothing for them and everything to the window. Removed
+  from Laser (320), the six TriggerScope/light-sheet panels, ScanWidgetBase
+  and Console (200 / 180 each), which took the example STED profile's window
+  minimum from 999x649 to 1105x383. A source-level contract test keeps them
+  out.
 - Recording keeps Snap/REC controls visible while its settings grid scrolls
   internally.
 - Positioner keeps its existing controls and signals but places the per-axis

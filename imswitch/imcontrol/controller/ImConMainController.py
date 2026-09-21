@@ -46,6 +46,8 @@ class ImConMainController(MainController):
         self.__mainView.sigSaveWidgetState.connect(self.saveWidgetState)
         self.__mainView.sigLoadWidgetState.connect(self.loadWidgetState)
         self.__mainView.sigOpenShortcutEditor.connect(self.openShortcutEditor)
+        self.__mainView.sigOpenSessionNotes.connect(self.openSessionNotes)
+        self.__mainView.sessionNotesDialog.sigNotesChanged.connect(self.setSessionNote)
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel(self, self.__setupInfo)
@@ -435,6 +437,26 @@ class ImConMainController(MainController):
         
         dialog = ShortcutEditorDialog(self.__mainView, self.__shortcutManager, self.__setupInfo)
         dialog.exec_()
+
+    def openSessionNotes(self):
+        """Show the session-notes editor, seeded with the current note.
+
+        Seeded rather than trusted to remember: the note lives in the shared
+        attributes, which the rest of the application can also write -- loading
+        parameters from a saved file brings that file's note along with
+        everything else it restores.
+        """
+        dialog = self.__mainView.sessionNotesDialog
+        dialog.setNotes(self.__commChannel.getSessionNote())
+        self.__mainView.showSessionNotesDialog()
+
+    def setSessionNote(self, note: str) -> None:
+        """Publish the operator's free-text note for this session.
+
+        Recordings snapshot the shared attributes when they start, so this
+        reaches every file saved after it and none saved before.
+        """
+        self.__commChannel.setSessionNote(note)
 
     def _registerPositionerJogActions(self):
         """Register dynamic per-positioner axis jog actions with shortcutModifier alias expansion.

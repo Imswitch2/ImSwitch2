@@ -89,6 +89,8 @@ def axes_for_recording(mode: str, n_frames: int,
 # would be a file that cannot be compared with its own source. Re-exported here
 # so every existing importer of this module keeps working unchanged.
 from imswitch.imcommon.model.ome_metadata import (  # noqa: F401
+    ANNOTATION_NAMESPACE,
+    NOTE_KEY,
     OmeAxis,
     OmeImageMeta,
     build_ome_xml,

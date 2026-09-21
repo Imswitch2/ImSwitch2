@@ -25,7 +25,13 @@ class LaserWidget(Widget):
         super().__init__(*args, **kwargs)
         self.laserModules = {}
 
-        self.setMinimumHeight(320)
+        # No minimum height of its own: docks stack vertically and a
+        # splitter's minimum is the sum of its children's, so a panel that
+        # insists on 320 px makes the window that much taller to open --
+        # and a few of them together make it taller than the screen, at
+        # which point Qt keeps the window at its minimum and the bottom is
+        # cut off. The lasers grid below scrolls instead.
+        self.setMinimumSize(0, 0)
 
         self.layout = QtWidgets.QGridLayout()
         self.setLayout(self.layout)

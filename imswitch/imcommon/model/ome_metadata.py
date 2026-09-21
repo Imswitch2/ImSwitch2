@@ -29,6 +29,13 @@ import numpy as np
 _SPACE_UNIT = '\u00b5m'
 _TIME_UNIT = 's'
 
+#: Namespace for ImSwitch's own OME StructuredAnnotations.
+ANNOTATION_NAMESPACE = 'https://imswitch.readthedocs.io/ome/annotations'
+
+#: The one annotation key that is free text rather than a key/value pair: what
+#: the operator typed about this session ("BFP power was 10 mW at 405 nm").
+NOTE_KEY = 'note'
+
 @dataclass(frozen=True)
 class OmeAxis:
     """A single OME axis: ``name`` in {x,y,z,t,c}, ``type`` in {space,time,channel}."""
@@ -104,6 +111,35 @@ class OmeImageMeta:
 
     # ---- serializers -------------------------------------------------------
 
+    def annotation_metadata(self) -> Dict[str, Any]:
+        """OME annotation entries for :attr:`annotations`.
+
+        The ``note`` entry is free text a human wrote, so it becomes the OME
+        ``Description`` -- the field Fiji's image properties and OMERO both
+        show as the image's own description, and the only place in OME-TIFF
+        where a sentence like "BFP power was 10 mW" belongs. Everything else
+        is a key/value pair, which is what ``MapAnnotation`` is for.
+
+        Empty values are dropped rather than written as empty elements: a note
+        the operator cleared is not a note.
+        """
+        if not self.annotations:
+            return {}
+
+        md: Dict[str, Any] = {}
+        note = self.annotations.get(NOTE_KEY)
+        if note is not None and str(note).strip():
+            md['Description'] = str(note)
+
+        pairs = {
+            str(key): str(value)
+            for key, value in self.annotations.items()
+            if key != NOTE_KEY and value is not None and str(value) != ''
+        }
+        if pairs:
+            md['MapAnnotation'] = {'Namespace': ANNOTATION_NAMESPACE, **pairs}
+        return md
+
     def tiff_metadata(self, shape: Optional[Sequence[int]] = None) -> Dict[str, Any]:
         """``metadata=`` dict for ``tifffile.imwrite(..., ome=True, metadata=...)``.
 
@@ -124,6 +160,7 @@ class OmeImageMeta:
                 md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
         if self.channels:
             md['Channel'] = {'Name': [c.get('name', self.name) for c in self.channels]}
+        md.update(self.annotation_metadata())
         md.update(self.plane_position_metadata(shape))
         return md
 
@@ -250,6 +287,7 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
         elif axis.name == 't':
             md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
 
+    md.update(meta.annotation_metadata())
     md.update(meta.plane_position_metadata(shp))
 
     dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
@@ -258,4 +296,5 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
     return xml.tostring().encode('ascii', 'xmlcharrefreplace').decode('ascii')
 
 
-__all__ = ['OmeAxis', 'OmeImageMeta', 'build_ome_xml', '_SPACE_UNIT', '_TIME_UNIT']
+__all__ = ['OmeAxis', 'OmeImageMeta', 'build_ome_xml', 'ANNOTATION_NAMESPACE',
+           'NOTE_KEY', '_SPACE_UNIT', '_TIME_UNIT']

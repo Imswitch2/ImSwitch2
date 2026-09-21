@@ -9,6 +9,16 @@ from imswitch.imcommon.framework import Signal, SignalInterface
 # of being silently dropped.
 JSON_ATTR_PREFIX = '__imswitch_json__:'
 
+# Attribute category holding free text the operator wrote about this session
+# rather than a value some device reported (Tools -> Session notes...). It is a
+# category of its own so the recording storers can find it again -- both to
+# write it into the structured metadata group and to turn it into an OME
+# annotation, which is the only way it reaches an OME-TIFF at all.
+NOTES_ATTR_CATEGORY = 'notes'
+
+#: The note that is a sentence rather than a key/value pair.
+SESSION_NOTE_KEY = (NOTES_ATTR_CATEGORY, 'session')
+
 
 class SharedAttributes(SignalInterface):
     sigAttributeSet = Signal(object, object)  # (key, value)
@@ -39,6 +49,20 @@ class SharedAttributes(SignalInterface):
             parent[key[-1]] = value
 
         return json.dumps(attrs)
+
+    def getSessionNote(self) -> str:
+        """The operator's free-text note for this session, '' when unset."""
+        value = self._data.get(SESSION_NOTE_KEY, '')
+        return '' if value is None else str(value)
+
+    def setSessionNote(self, note) -> None:
+        """Publish the operator's free-text note for this session.
+
+        Clearing the note stores an empty string rather than removing the key:
+        every consumer already treats blank as "no note", and a recording made
+        after the note was cleared should not silently inherit it.
+        """
+        self[SESSION_NOTE_KEY] = '' if note is None else str(note)
 
     def update(self, data):
         """ Updates this object with the data in the given dictionary or
