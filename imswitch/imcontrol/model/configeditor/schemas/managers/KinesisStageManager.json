@@ -43,6 +43,7 @@
       ]
     },
     "unitsPerUm": {
+      "description": "**Deprecated** spelling of ``driverUnitsPerPositionUnit``; still read",
       "x-imswitch-kind": "number",
       "x-imswitch-source": [
         "code:default:number",

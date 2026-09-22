@@ -77,7 +77,15 @@ def _compare(value, condition: dict) -> bool:
         return value in condition["in"]
     if "exists" in condition:
         return (value is not None) == bool(condition["exists"])
+    if "starts_with" in condition:
+        return isinstance(value, str) and value.startswith(condition["starts_with"])
     raise ValueError(f"condition has no comparison: {sorted(condition)}")
+
+
+def sections_of(role: dict) -> tuple:
+    """The setup sections a role applies to (``applies_to`` is one name or a list)."""
+    applies = role.get("applies_to") or ()
+    return (applies,) if isinstance(applies, str) else tuple(applies)
 
 
 def _dotted(document, path: str):
@@ -91,22 +99,22 @@ def _dotted(document, path: str):
 
 def evaluate(role: dict, data: dict) -> list[RoleFinding]:
     """The devices ``role`` applies to, with what each one lacks."""
-    section = role["applies_to"]
-    entries = data.get(section) or {}
-    if not isinstance(entries, dict):
-        return []
     findings: list[RoleFinding] = []
-    for name, device in entries.items():
-        if not isinstance(device, dict) or not holds(role.get("when") or {}, device=device, name=name, setup=data):
+    for section in sections_of(role):
+        entries = data.get(section) or {}
+        if not isinstance(entries, dict):
             continue
-        props = device.get("managerProperties")
-        props = props if isinstance(props, dict) else {}
-        missing_required = tuple(key for key in role.get("requires") or [] if key not in props)
-        missing_reads = tuple(
-            MissingRead(read["key"], read.get("fallback"))
-            for read in _reads(role) if read["key"] not in props
-        )
-        findings.append(RoleFinding(role["role"], section, name, missing_required, missing_reads))
+        for name, device in entries.items():
+            if not isinstance(device, dict) or not holds(role.get("when") or {}, device=device, name=name, setup=data):
+                continue
+            props = device.get("managerProperties")
+            props = props if isinstance(props, dict) else {}
+            missing_required = tuple(key for key in role.get("requires") or [] if key not in props)
+            missing_reads = tuple(
+                MissingRead(read["key"], read.get("fallback"))
+                for read in _reads(role) if read["key"] not in props
+            )
+            findings.append(RoleFinding(role["role"], section, name, missing_required, missing_reads))
     return findings
 
 
@@ -125,7 +133,7 @@ def applicable(roles: Iterable[dict], *, section: str, name: str, device: dict, 
     """The roles whose predicate holds for one device (what the editor shows as optional fields)."""
     return [
         role for role in roles
-        if role.get("applies_to") == section
+        if section in sections_of(role)
         and holds(role.get("when") or {}, device=device, name=name, setup=setup or {})
     ]
 

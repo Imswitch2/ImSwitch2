@@ -83,12 +83,30 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
 
 **managerProperties**
 
-* ``port`` — serial port of the BSC203 controller (default ``"COM9"``).
-* ``home`` — when ``true``, perform an APT homing operation on startup
-  (default ``false``).  Homing parks each axis at its end-stop (position 0).
-* ``travelRangeUm`` — full travel per axis in µm (default ``8000``, for
-  DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm`` and
-  every move is clamped to that range.
+.. list-table::
+   :widths: 22 12 18 48
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Default
+     - Meaning
+   * - ``port``
+     - str
+     - ``"COM9"``
+     - Serial port of the BSC203 controller.
+   * - ``home``
+     - bool
+     - ``false``
+     - When ``true``, perform an APT homing operation on startup.  Homing parks each axis at its end-stop (position 0).
+   * - ``travelRangeUm``
+     - int or float
+     - ``8000``
+     - Full travel per axis in µm (``8000`` for DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm`` and every move is clamped to that range.
+   * - ``invertJogAxes``
+     - list[str]
+     - ``[]``
+     - Axis labels whose jog direction should be flipped; see **Movement model** below.
 
 **Movement model**
 
@@ -386,6 +404,11 @@ Thorlabs MLS203 two-axis motorized stage driven via the Kinesis stack.
        accepted/reported by the pylablib driver. Keep at ``1.0`` when pylablib
        recognizes the stage scale. Set only when pylablib falls back to raw
        internal units.
+   * - ``unitsPerUm``
+     - float
+     - ``1.0``
+     - **Deprecated** spelling of ``driverUnitsPerPositionUnit``; still read
+       when the new key is absent, with a warning at startup.
 
 **PositionerInfo fields used**
 

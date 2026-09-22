@@ -1421,7 +1421,7 @@ def parse_docs_type(text: str) -> tuple[tuple[str, ...], bool]:
     return tuple(kinds), nullable
 
 
-_CARD_HEADING = re.compile(r"^([A-Za-z0-9]+Manager)$")
+_CARD_HEADING = re.compile(r"^([A-Za-z0-9]+Manager[0-9]*)$")
 _CARD_ROW = re.compile(r"^\s+\* - ``([A-Za-z0-9_.]+)``")
 _CARD_HEADER = re.compile(r"^\s+\* - (Field|Key|Property)\s*$")
 _CARD_CELL = re.compile(r"^\s+- (.*)$")

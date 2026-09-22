@@ -4,9 +4,56 @@ Date: 2026-09-21 (plan; revision 2 after first review; revision 3 recorded the
 decisions; revision 4 after second review; revision 5 records what Phase 0
 measured; revision 6 records Phase 1; revision 7 folds in the review of
 Phase 0; revision 8 records Phase 2; revision 9 folds in the review of
-Phases 1–2; revision 10 records Phase 3; revision 11 records Phase 4).
-Status: **Phases 0–4 implemented on `feat/config-editor-schema-extraction`
-(draft PR #35); Phases 5–6 as planned.**
+Phases 1–2; revision 10 records Phase 3; revision 11 records Phase 4;
+revision 12 records Phase 5). Status: **Phases 0–5 implemented on
+`feat/config-editor-schema-extraction` (draft PR #35); Phase 6 as planned.**
+
+## Changes in revision 12 (Phase 5 implemented)
+
+- **Templates are overlays.** 129 template `type`s that merely repeated the
+  schema kind (props) or the dataclass annotation (top) were stripped; 6
+  that contradicted the schema were dropped so the schema decides
+  (Hamamatsu `cameraListIndex` `int` over a union — the text box that holds
+  `0` and `"mock"`; five `rs232device` `text`s over the `ref` widget); one
+  field that was never a property was removed (SwabianTimeTagger's
+  `accumulate_mode` is a runtime `DetectorListParameter`). What remains is
+  label, group, tooltip, options, and refinements (`select`, `path`,
+  `text` over an array — comma-separated editing of a list, added as a
+  refinement for Cobolt's `digitalPorts`). A template field without a type
+  is typed by the schema or the kind; the form never sees an untyped field.
+- **Three more role rules**, because the template survey showed keys no
+  manager reads: `display_transform` (`displayRotation`/`displayFlipX`/
+  `displayFlipY`/`displayTransform`, read by
+  `controller/display_transform.py` for any detector), `beta_scan_axis`
+  (`conversionFactor`/`minVolt`/`maxVolt`, read by `BetaScanDesigner` for
+  scanning axes under that designer; no fallback notes — the designer
+  tolerates their absence and the shipped mock setups omit them) and
+  `triggerscope_target` (`minVolt`/`maxVolt` with fallbacks ±10 V for any
+  device whose `analogChannel` is a `Triggerscope/DAC…`). A role may now
+  apply to several sections and test a field by prefix.
+- **`test_configeditor_template_drift.py`**: every template key is one the
+  code reads (the manager schema under either spelling, a role that applies
+  to the category, or anything for an open pass-through manager such as
+  `RS232Manager`); every nested section is an object property; every
+  top-level key is in the kind schema; every remaining type is a
+  refinement and never a repeat; the form still types every field; and
+  at most 40 % of template fields carry a type at all.
+- **`test_devices_docs_drift.py`** (decision 3): for every manager with a
+  card, every schema property is a card row — or a property every manager
+  on the page inherits, documented once in the page intro
+  (`cameraPixelSizeUm` for detectors, `calibCsvPath` for lasers, and the
+  test checks the intro really says so) — and every card row names a
+  property the code reads (sub-keys of nested objects included). The 23
+  managers without a card are pinned by name, so a new manager without one
+  is noticed. Seventeen rows were added to make the cards true (APD and
+  PMT mock and simulation properties, ThorCamTSI `flushFrameLimit`,
+  Cobolt0601New `simulation`, Kinesis's deprecated `unitsPerUm`), BSC203's
+  bullets became the table every other card uses, CoboltLaserManager's
+  inherited property became a row, and a "Power calibration file" intro
+  documents `calibCsvPath` for every laser. The card parser stopped reading
+  `PiezoconceptZManager2` as `PiezoconceptZManager` (`range_um` belongs to
+  the former), so the docs figures moved from 117/118 to **135/135** — every
+  documented key is read, and every read key with a card is documented.
 
 ## Changes in revision 11 (Phase 4 implemented)
 

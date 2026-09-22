@@ -4,7 +4,7 @@
     "managerName": "CoboltLaserManager",
     "managerProperties": {
       "calibCsvPath": "example",
-      "digitalPorts": "example"
+      "digitalPorts": []
     }
   }
 }

@@ -74,6 +74,7 @@
       ]
     },
     "flushFrameLimit": {
+      "description": "Most frames drained from the SDK's queue in one flush before acquisition restarts; raise it if stale frames survive a restart on a fast camera.",
       "type": [
         "integer",
         "number",

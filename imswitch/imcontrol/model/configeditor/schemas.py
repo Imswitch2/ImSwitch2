@@ -50,6 +50,7 @@ _REFINEMENTS = {
     "multiselect": ("array",),
     "ref": ("string",),
     "path": ("string",),
+    "text": ("array",),  # a list of names as comma-separated text; read back as a list
 }
 
 _SCALAR_KINDS = ("integer", "number", "string")

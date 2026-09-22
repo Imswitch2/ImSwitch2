@@ -8,8 +8,11 @@
       ]
     },
     "digitalPorts": {
+      "description": "COM ports to connect to; only the first is used.  **Required**.",
+      "x-imswitch-kind": "array",
       "x-imswitch-source": [
-        "code:required"
+        "code:required",
+        "docs:array"
       ]
     }
   },

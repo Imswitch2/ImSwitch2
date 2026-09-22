@@ -55,6 +55,7 @@
       ]
     },
     "simulation": {
+      "description": "Defaults to ``false``. When ``true`` the real serial transport is never",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:default:boolean",

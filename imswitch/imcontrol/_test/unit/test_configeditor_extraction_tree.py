@@ -72,8 +72,10 @@ def test_the_coverage_the_plan_is_built_on(report):
     assert report.optional == 148
     assert report.refs == 14
     assert report.none_default_only == 31
-    assert (report.docs_agree, report.docs_documented) == (117, 118), (
-        "the one documented key not read anywhere is PiezoconceptZManager.range_um")
+    # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
+    # (range_um belongs to it), and the docs drift test made every card list
+    # every property its manager reads -- 17 rows added, all agreeing.
+    assert (report.docs_agree, report.docs_documented) == (135, 135)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):

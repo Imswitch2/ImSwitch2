@@ -44,15 +44,19 @@
       ]
     },
     "mockRandomSeed": {
+      "description": "Seed of the mock source's random generator, for reproducible mock scans.  Also read as ``mock_random_seed``.",
       "x-imswitch-aliases": [
         "mock_random_seed"
       ],
+      "x-imswitch-kind": "integer",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:optional(get)"
+        "code:optional(get)",
+        "docs:integer"
       ]
     },
     "mockVoltageMax": {
+      "description": "Upper bound of the mock voltage signal.  Also read as ``mock_voltage_max``.",
       "type": [
         "integer",
         "number",
@@ -69,6 +73,7 @@
       ]
     },
     "mockVoltageMean": {
+      "description": "Mean of the mock voltage signal.  Also read as ``mock_voltage_mean``.",
       "type": [
         "integer",
         "number",
@@ -85,6 +90,7 @@
       ]
     },
     "mockVoltageMin": {
+      "description": "Lower bound of the mock voltage signal.  Also read as ``mock_voltage_min``; swapped with the maximum if given the wrong way round.",
       "type": [
         "integer",
         "number",
@@ -101,6 +107,7 @@
       ]
     },
     "mockVoltageNoiseStd": {
+      "description": "Standard deviation of the mock signal's noise (clamped at 0).  Also read as ``mock_voltage_noise_std``.",
       "type": [
         "integer",
         "number",
@@ -117,13 +124,17 @@
       ]
     },
     "mock_random_seed": {
+      "description": "Seed of the mock source's random generator, for reproducible mock scans.  Also read as ``mock_random_seed``.",
       "x-imswitch-alias-of": "mockRandomSeed",
+      "x-imswitch-kind": "integer",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:optional(get)"
+        "code:optional(get)",
+        "docs:integer"
       ]
     },
     "mock_voltage_max": {
+      "description": "Upper bound of the mock voltage signal.  Also read as ``mock_voltage_max``.",
       "type": [
         "integer",
         "number",
@@ -138,6 +149,7 @@
       ]
     },
     "mock_voltage_mean": {
+      "description": "Mean of the mock voltage signal.  Also read as ``mock_voltage_mean``.",
       "type": [
         "integer",
         "number",
@@ -152,6 +164,7 @@
       ]
     },
     "mock_voltage_min": {
+      "description": "Lower bound of the mock voltage signal.  Also read as ``mock_voltage_min``; swapped with the maximum if given the wrong way round.",
       "type": [
         "integer",
         "number",
@@ -166,6 +179,7 @@
       ]
     },
     "mock_voltage_noise_std": {
+      "description": "Standard deviation of the mock signal's noise (clamped at 0).  Also read as ``mock_voltage_noise_std``.",
       "type": [
         "integer",
         "number",
@@ -194,6 +208,7 @@
       ]
     },
     "simulation_mode": {
+      "description": "Run the mock voltage source instead of the NI-DAQ analog-input task, even when a DAQ is present.",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:default:boolean",

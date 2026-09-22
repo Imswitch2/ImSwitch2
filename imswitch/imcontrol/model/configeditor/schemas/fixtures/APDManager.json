@@ -9,7 +9,7 @@
       "liveUpdateIntervalMs": 1.5,
       "mockPhotonCountMax": 1,
       "mockPhotonCountMean": 1.5,
-      "mockRandomSeed": null,
+      "mockRandomSeed": 1,
       "simulation_mode": true,
       "terminal": "example"
     }

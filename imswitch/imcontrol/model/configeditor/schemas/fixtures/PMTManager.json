@@ -7,7 +7,7 @@
       "cameraPixelSizeUm": null,
       "deviceName": "example",
       "liveUpdateIntervalMs": 1.5,
-      "mockRandomSeed": null,
+      "mockRandomSeed": 1,
       "mockVoltageMax": 1.5,
       "mockVoltageMean": 1.5,
       "mockVoltageMin": 1.5,
