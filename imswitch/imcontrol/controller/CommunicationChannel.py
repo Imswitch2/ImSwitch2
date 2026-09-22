@@ -705,6 +705,21 @@ class CommunicationChannel(SignalInterface):
     def isExecuting(self):
         return self._scriptExecution
 
+    @APIExport(runOnUIThread=True)
+    def setSessionNote(self, note: str) -> None:
+        """ Set the free-text note attached to recordings made from now on.
+
+        The same text the Tools -> Session notes... dialog edits. Recordings
+        snapshot the shared attributes when they start, so this reaches every
+        file saved after the call and none saved before it. Pass '' to clear.
+        """
+        self.__sharedAttrs.setSessionNote(note)
+
+    @APIExport()
+    def getSessionNote(self) -> str:
+        """ Return the free-text note attached to new recordings ('' if none). """
+        return self.__sharedAttrs.getSessionNote()
+
     @APIExport()
     def signals(self) -> Mapping[str, Signal]:
         """ Returns signals that can be used with e.g. the getWaitForSignal

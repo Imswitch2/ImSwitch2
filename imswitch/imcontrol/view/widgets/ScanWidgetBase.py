@@ -22,7 +22,13 @@ class SuperScanWidget(Widget):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self, instanceName='ScanWidget')
 
-        self.setMinimumHeight(200)
+        # No minimum height of its own: docks stack vertically and a
+        # splitter's minimum is the sum of its children's, so a panel that
+        # insists on 200 px makes the window that much taller to open --
+        # and a few of them together make it taller than the screen, at
+        # which point Qt keeps the window at its minimum and the bottom is
+        # cut off. The scan parameters below scroll instead.
+        self.setMinimumSize(0, 0)
 
         self.scanInLiveviewWar = QtWidgets.QMessageBox()
         self.scanInLiveviewWar.setInformativeText(

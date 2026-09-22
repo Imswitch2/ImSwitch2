@@ -1,8 +1,19 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.contrast import auto_levels, finite_range
 from imswitch.improcess.model.result import result_kind
 from .basecontrollers import ImProcessWidgetController
+
+
+#: Total percentage of pixels allowed to saturate when a result is scaled
+#: automatically -- 2% is 1% off each tail, which is the rule a result's own
+#: display layers already use for their per-component levels. The two have to
+#: agree: a MoNaLISA reconstruction renders through the display-layer path and
+#: a duplicate of it through the plain-image path, and clipping the outliers in
+#: one while spanning the full range in the other made the same picture look
+#: like two different pictures depending on which was clicked.
+AUTO_SATURATED_PERCENT = 2.0
 
 
 class ReconstructionViewController(ImProcessWidgetController):
@@ -12,6 +23,10 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         self._currItemInd = None
         self._prevViewId = None
+        # The result currently on screen, held by reference rather than by
+        # list index: removing a result shifts every index after it, and the
+        # index was what decided whose display settings were being saved.
+        self._displayedResult = None
 
         self._transposeOrder = [0, 1, 2, 3, 4, 5]
         self._axisStep = (0, 0, 0, 0, 0, 0)
@@ -34,6 +49,8 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         self._widget.sigItemSelected.connect(self.listItemChanged)
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
+        if hasattr(self._widget, "sigImageLevelsChanged"):
+            self._widget.sigImageLevelsChanged.connect(self.imageLevelsChanged)
         self._widget.sigViewChanged.connect(lambda: self.fullUpdate(levels=None))
         if hasattr(self._widget, "sigSelectionChanged"):
             self._widget.sigSelectionChanged.connect(self._resultsChanged)
@@ -125,24 +142,80 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def listItemChanged(self):
         currItem = self._widget.getCurrentItemData()
-        if self._currItemInd is not None:
-            prevItem = self._widget.getDataAtIndex(self._currItemInd)
-            self._persistActiveViewerSettings(prevItem)
+        # Read through __dict__: on a controller whose base __init__ has not
+        # run, plain getattr raises rather than falling back to the default.
+        displayed = self.__dict__.get("_displayedResult")
+        if displayed is not None and displayed is not currItem:
+            self._persistActiveViewerSettings(displayed)
         self._syncViewModes(currItem)
 
         if currItem is None:
+            self.__dict__["_displayedResult"] = None
             self.fullUpdate(levels=None)
             self._currItemInd = self._widget.getCurrentItemIndex()
             self._commChannel.sigCurrentResultChanged.emit(None)
             return
 
+        # Set before rendering: the render itself moves the layers' contrast,
+        # and what that reports has to be filed against the result it belongs
+        # to rather than the one that was on screen a moment ago.
+        self.__dict__["_displayedResult"] = currItem
+
+        # A result nobody has set a contrast on yet is scaled to its own data.
+        # Inheriting the previous result's levels is worse than useless when
+        # the two are being compared *because* their ranges differ -- which is
+        # the reason for having them both in the list.
         retrievedLevels = currItem.getDispLevels() if hasattr(currItem, "getDispLevels") else None
-        self.fullUpdate(autoLevels=self._currItemInd is None, levels=retrievedLevels)
-        if retrievedLevels is not None:
-            self._widget.setImageDisplayLevels(retrievedLevels[0], retrievedLevels[1])
+        remembered = self._hasRememberedLevels(currItem)
+
+        # The render applies the levels, and nothing may be applied after it.
+        # A second, unconditional apply here used to write the whole-result
+        # default over the per-component contrast a display-layer render had
+        # just restored -- which is how a reconstruction came back at the
+        # levels its reconstructor measured at construction, every time it was
+        # clicked, however often its contrast had been set.
+        self.fullUpdate(autoLevels=not remembered, levels=retrievedLevels)
 
         self._currItemInd = self._widget.getCurrentItemIndex()
         self._commChannel.sigCurrentResultChanged.emit(currItem)
+
+    @staticmethod
+    def _hasRememberedLevels(result) -> bool:
+        """Whether this result has a contrast of its own waiting to be restored.
+
+        A result that renders display layers keeps its contrast per component,
+        so asking ``getDispLevels()`` alone answers "never set" on every visit,
+        however many times its contrast has been adjusted. That answer is what
+        decides whether to rescale automatically, and a reconstruction that
+        gets rescaled every time it is clicked is the whole complaint.
+        """
+        if result is None:
+            return False
+        try:
+            if result.getDispLevels() is not None:
+                return True
+        except AttributeError:
+            pass
+        try:
+            settings = result.displayLayerSettings()
+        except AttributeError:
+            return False
+        return any("display_levels" in (entry or {})
+                   for entry in (settings or {}).values())
+
+    def imageLevelsChanged(self, layerMetadata, levels) -> None:
+        """Remember a contrast the moment it changes.
+
+        The alternative -- reading the levels back when the selection moves --
+        only works if a selection move is the next thing that happens. It is
+        not: re-running a reconstruction, switching the view, or any toolbar
+        operation re-renders first and overwrites what was never saved. This
+        runs on the change itself, so there is no window to lose it in.
+        """
+        result = self.getActiveResult()
+        if result is None or levels is None:
+            return
+        self._storeDisplayLevels(result, layerMetadata, levels)
 
     def fullUpdate(self, autoLevels=False, levels=None):
         reconObj = self._widget.getCurrentItemData()
@@ -366,23 +439,34 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._axisStep = newAxisStep
 
     def updateLevelsRange(self, base=None):
+        """Scale the contrast to the data currently on screen.
+
+        The slider spans the data's full range; the view clips the outermost
+        1% at each end, which is the rule a result's own display layers
+        already use, so the same picture looks the same whichever path renders
+        it. Both go through the contrast helpers rather than a plain
+        ``min()``/``max()``: this runs whenever a result is shown for the first
+        time, not only for the first result of a session, so it meets lazy
+        HDF5/Zarr arrays it must not materialize in full, and results holding
+        NaN, whose raw minimum is NaN and renders as nothing at all.
+        """
         im = self._widget.getImage()
         baseAxisIndex = self._baseAxisIndex()
 
-        if baseAxisIndex is None:
-            # No Base axis — rescale to the whole displayed image's range.
-            levels = im.min(), im.max()
-        else:
+        if baseAxisIndex is not None:
+            # Components of a Base axis have their own ranges, so the one on
+            # screen is what gets measured rather than the whole stack.
             if base is None:
                 base = (self._axisStep[baseAxisIndex]
                         if baseAxisIndex < len(self._axisStep) else 0)
             indexForImage = [slice(None) for _ in range(im.ndim)]
             indexForImage[baseAxisIndex] = base
-            imAtBase = im[tuple(indexForImage)]
-            levels = imAtBase.min(), imAtBase.max()
+            im = im[tuple(indexForImage)]
 
-        self._widget.setImageDisplayLevelsRange(*levels)
-        self._widget.setImageDisplayLevels(*levels)
+        self._widget.setImageDisplayLevelsRange(*finite_range(im))
+        self._widget.setImageDisplayLevels(
+            *auto_levels(im, saturated_percent=AUTO_SATURATED_PERCENT)
+        )
 
     def updateRecon(self):
         reconObj = self._widget.getCurrentItemData()
@@ -494,7 +578,23 @@ class ReconstructionViewController(ImProcessWidgetController):
     def _storeActiveDisplayLevels(self, result, levels) -> None:
         if result is None:
             return
-        layer_id = self._activeDisplayLayerId(result)
+        metadata = {}
+        if hasattr(self._widget, "getActiveImageLayerMetadata"):
+            metadata = self._widget.getActiveImageLayerMetadata()
+        self._storeDisplayLevels(result, metadata, levels)
+
+    def _storeDisplayLevels(self, result, layerMetadata, levels) -> None:
+        """File ``levels`` under whichever part of ``result`` the layer shows.
+
+        A layer naming a component belongs to a result that renders several of
+        them and keeps their contrast apart; a layer naming none is the whole
+        result. The layer's own metadata is what decides, so a levels change
+        reported by any layer lands where that layer's own render will read it
+        back from.
+        """
+        if result is None or levels is None:
+            return
+        layer_id = self._displayLayerId(result, layerMetadata)
         if layer_id is not None and hasattr(result, "setDisplayLayerLevels"):
             result.setDisplayLayerLevels(layer_id, levels)
         elif hasattr(result, "setDispLevels"):
@@ -504,6 +604,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         if result is None:
             return
         layer_id = self._activeDisplayLayerId(result)
+        # (resolved from the active layer; colormap has only ever had one)
         if layer_id is not None and hasattr(result, "setDisplayLayerColormap"):
             result.setDisplayLayerColormap(layer_id, colormap)
         elif hasattr(result, "setDisplayColormap"):
@@ -522,13 +623,31 @@ class ReconstructionViewController(ImProcessWidgetController):
             result.setDisplayLayerVisible(layer_id, bool(state.get("visible", True)))
         if state.get("colormap") and hasattr(result, "setDisplayLayerColormap"):
             result.setDisplayLayerColormap(layer_id, str(state["colormap"]))
+        # Levels for every layer, not just the active one. Saving a layer's
+        # colormap while dropping its contrast is the sort of split that reads
+        # as "the viewer forgot" from the outside.
+        levels = state.get("display_levels")
+        if levels is not None and metadata.get("component") \
+                and hasattr(result, "setDisplayLayerLevels"):
+            result.setDisplayLayerLevels(layer_id, levels)
 
     def _activeDisplayLayerId(self, result):
-        if result is None:
-            return None
         metadata = {}
         if hasattr(self._widget, "getActiveImageLayerMetadata"):
             metadata = self._widget.getActiveImageLayerMetadata()
+        return self._displayLayerId(result, metadata)
+
+    @staticmethod
+    def _displayLayerId(result, layerMetadata):
+        """The component id a layer's settings belong under, or None.
+
+        None means "the result as a whole", which is both the single-image
+        case and the case where the layer turns out to belong to a different
+        result than the one being written to.
+        """
+        if result is None:
+            return None
+        metadata = dict(layerMetadata or {})
         if metadata.get("source_result") not in (None, getattr(result, "name", None)):
             return None
         component = metadata.get("component")

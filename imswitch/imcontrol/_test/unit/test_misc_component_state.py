@@ -407,6 +407,43 @@ class TestRecordingController:
         )
         assert hazards == []
 
+    def test_output_folder_is_not_persisted(self, controller):
+        """The folder defaults to today's date, so it must stay out of state.
+
+        Persisting it pinned every later session to the day the snapshot was
+        taken, and the widget rebuilds the dated default on every startup.
+        """
+        state = controller.getComponentState()
+
+        assert 'recFolder' not in state
+        controller._widget.getRecFolder.assert_not_called()
+
+    def test_legacy_missing_folder_is_ignored_without_warning(self, controller):
+        """A folder from an older state file is neither applied nor complained about.
+
+        Recordings create their output folder on demand, so a folder that does
+        not exist yet was never a problem worth a warning.
+        """
+        state = controller.getComponentState()
+        state['recFolder'] = '/nonexistent/folder/from/an/older/state/file'
+
+        warnings = controller.applyComponentState(
+            state,
+            applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+        )
+
+        assert not any('folder' in warning.lower() for warning in warnings)
+        controller._widget.setRecFolder.assert_not_called()
+
+    def test_describe_omits_the_folder(self, controller):
+        """The inspector does not advertise a setting that is no longer saved."""
+        state = controller.getComponentState()
+        state['recFolder'] = '/some/old/folder'
+
+        description = controller.describeComponentState(state)
+
+        assert not any('folder' in line for line in description)
+
 
 class TestBeadRecController:
     """Test BeadRecController StatefulComponentMixin implementation."""
