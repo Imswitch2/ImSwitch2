@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "host": {
+      "x-imswitch-source": [
+        "code:optional(try/except KeyError)"
+      ]
+    },
+    "identity": {
+      "x-imswitch-source": [
+        "code:optional(try/except KeyError)"
+      ]
+    },
+    "serialport": {
+      "x-imswitch-source": [
+        "code:optional(try/except KeyError)"
+      ]
+    }
+  },
+  "title": "ESP32Manager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ESP32Manager"
+  ]
+}

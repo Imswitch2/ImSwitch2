@@ -10,18 +10,14 @@ sources, ensuring that:
 """
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from imswitch.imcontrol.model.configeditor.catalog import (
-    ManagerCatalog,
-    ManagerInfo,
     build_catalog,
 )
 from imswitch.imcontrol.model.configeditor.schemas import (
-    FieldSpec,
     materialize_device_schema,
     normalized_fields,
 )
@@ -34,6 +30,13 @@ from imswitch.imcontrol.model.plugins.registry import (
 )
 from imswitch.imcontrol.model.plugins.manifest import DeviceManagerContribution
 
+#: The Config Studio's built-in manager templates, which ship inside the
+#: package alongside the editor itself.
+_BUILTIN_TEMPLATES = (
+    Path(__file__).resolve().parents[4]
+    / "imswitch" / "imcontrol" / "view" / "configeditor" / "builtin_templates"
+)
+
 
 class TestConfigEditorSchemaDefaults:
     """Test suite for config editor schema and defaults (Phase 2)."""
@@ -45,7 +48,7 @@ class TestConfigEditorSchemaDefaults:
         defaults that the editor currently produces.
         """
         # Load the actual HamamatsuManager template
-        template_path = Path(__file__).parents[4] / "utility_scripts" / "builtin_templates" / "detectors" / "HamamatsuManager.json"
+        template_path = _BUILTIN_TEMPLATES / "detectors" / "HamamatsuManager.json"
         
         if not template_path.exists():
             pytest.skip("HamamatsuManager.json template not found")
@@ -73,12 +76,14 @@ class TestConfigEditorSchemaDefaults:
         # Check props fields
         props = result["managerProperties"]
         assert props["cameraListIndex"] == 0
-        assert props["displayRotation"] == "0"
-        # Bool *props* are byte-identical to the pre-refactor editor: the
-        # template default False round-trips through _display_to_json as the
-        # string "False" (top-level bools, handled separately, stay real bools).
-        assert props["displayFlipX"] == "False"
-        assert props["displayFlipY"] == "False"
+        # A default the template states as a value keeps its kind. These used
+        # to come out as the strings "0" and "False"; display_transform.py had
+        # grown parsers to absorb exactly that, which is how the quirk survived
+        # long enough to be pinned here as "byte-identical" behaviour.
+        assert props["displayRotation"] == 0
+        assert isinstance(props["displayRotation"], int)
+        assert props["displayFlipX"] is False
+        assert props["displayFlipY"] is False
         
         # Check nested dict
         assert "hamamatsu" in props
@@ -97,7 +102,7 @@ class TestConfigEditorSchemaDefaults:
     
     def test_default_device_parity_nidaq_laser(self):
         """Test that build_default_device produces identical output for NidaqLaserManager."""
-        template_path = Path(__file__).parents[4] / "utility_scripts" / "builtin_templates" / "lasers" / "NidaqLaserManager.json"
+        template_path = _BUILTIN_TEMPLATES / "lasers" / "NidaqLaserManager.json"
         
         if not template_path.exists():
             pytest.skip("NidaqLaserManager.json template not found")
@@ -122,13 +127,7 @@ class TestConfigEditorSchemaDefaults:
 
     def test_cobolt_editor_exposes_protocol_emission_and_startup_controls(self):
         """The Studio form must expose the complete Cobolt policy tuple."""
-        template_path = (
-            Path(__file__).parents[4]
-            / "utility_scripts"
-            / "builtin_templates"
-            / "lasers"
-            / "Cobolt0601NewLaserManager.json"
-        )
+        template_path = _BUILTIN_TEMPLATES / "lasers" / "Cobolt0601NewLaserManager.json"
         with open(template_path, encoding="utf-8") as handle:
             template = json.load(handle)
 
@@ -254,7 +253,7 @@ class TestConfigEditorSchemaDefaults:
         
         # Find the triggerMode field (schema-only, inferred)
         trigger_field = next(f for f in fields if f.key == "triggerMode")
-        assert trigger_field.label == "Triggermode"  # Inferred from key (title-cased)
+        assert trigger_field.label == "Trigger Mode"  # Inferred from the key
         assert trigger_field.type == "select"  # Inferred from enum
         assert trigger_field.default == "internal"
         assert trigger_field.required is True  # From schema
@@ -628,14 +627,18 @@ class TestNullableSchemaTypes:
         assert _infer_type_from_schema({"type": "string"}) == "text"
         assert _infer_type_from_schema({"type": "integer"}) == "int"
 
-    def test_genuine_multi_type_unions_still_fall_back_to_json(self):
-        """Only a single non-null member is representable; a real union has no
-        safe native control and must keep its value type intact."""
+    def test_scalar_unions_take_the_text_box_and_the_rest_fall_back_to_json(self):
+        """A union within integer/number/string is the text box, which reads a
+        value back as the kind it was (the type-preservation rule); a union that
+        reaches into object or array, or nothing known at all, keeps the JSON
+        widget, which round-trips every value."""
         from imswitch.imcontrol.model.configeditor.schemas import (
             _infer_type_from_schema,
         )
 
-        assert _infer_type_from_schema({"type": ["string", "integer"]}) == "json"
+        assert _infer_type_from_schema({"type": ["string", "integer"]}) == "text"
+        assert _infer_type_from_schema({"type": ["integer", "number"]}) == "float"
+        assert _infer_type_from_schema({"type": ["string", "object"]}) == "json"
         assert _infer_type_from_schema({"type": ["null"]}) == "json"
         assert _infer_type_from_schema({"type": "object"}) == "json"
 

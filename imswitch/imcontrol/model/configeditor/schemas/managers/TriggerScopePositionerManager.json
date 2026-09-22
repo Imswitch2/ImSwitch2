@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "conversionFactor": {
+      "x-imswitch-source": [
+        "code:required"
+      ]
+    },
+    "maxVolt": {
+      "x-imswitch-source": [
+        "code:required"
+      ]
+    },
+    "minVolt": {
+      "x-imswitch-source": [
+        "code:required"
+      ]
+    }
+  },
+  "required": [
+    "conversionFactor",
+    "maxVolt",
+    "minVolt"
+  ],
+  "title": "TriggerScopePositionerManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "TriggerScopePositionerManager",
+    "PositionerManager"
+  ]
+}

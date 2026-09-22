@@ -85,6 +85,60 @@ def resolve_schema(contribution: DeviceManagerContribution) -> dict | None:
         return None
 
 
+#: The package whose manager classes the generated schemas describe.
+CORE_MANAGERS_PACKAGE = "imswitch.imcontrol.model.managers"
+
+
+def implemented_by_core(contribution: DeviceManagerContribution, schema: dict) -> bool:
+    """Whether ``contribution`` runs the core class a generated ``schema`` was extracted from.
+
+    A generated schema describes one class in ``imswitch.imcontrol.model.managers``
+    (its first ``x-imswitch-classes`` entry). A plugin that registers the same
+    manager *name* but its own class -- a fork, or an unrelated driver that
+    happens to reuse a core name -- must not inherit that contract: it would
+    be validated against keys its code never reads.
+    """
+    module, _, class_name = (contribution.python_name or "").partition(":")
+    if not (module == CORE_MANAGERS_PACKAGE or module.startswith(CORE_MANAGERS_PACKAGE + ".")):
+        return False
+    classes = schema.get("x-imswitch-classes") or []
+    return bool(classes) and class_name == classes[0]
+
+
+def schema_for(
+    kind: str,
+    manager_name: str,
+    contribution: DeviceManagerContribution | None,
+    *,
+    schemas_root: Path | None = None,
+    generated: bool = True,
+) -> dict | None:
+    """The one place a manager's ``managerProperties`` schema is looked up.
+
+    A contribution that ships its own schema wins. Otherwise the generated
+    schema from package data: for a contribution, by its id, and only when the
+    contribution is implemented by the core class the schema was extracted
+    from (:func:`implemented_by_core`); without a contribution, by the manager
+    name -- the legacy-scanned core managers, whose module *is* the core one.
+    Returns None when nothing describes this manager. The catalog and the
+    validator both go through here; ``generated=False`` is the catalog's gate.
+    """
+    if contribution is not None:
+        schema = resolve_schema(contribution)
+        if schema is not None:
+            return schema
+    if not generated:
+        return None
+    from imswitch.imcontrol.model.configeditor import resources
+
+    if contribution is not None:
+        schema = resources.generated_schema_for(contribution.id, schemas_root)
+        if schema is not None and implemented_by_core(contribution, schema):
+            return schema
+        return None
+    return resources.generated_schema_for(manager_name, schemas_root) if manager_name else None
+
+
 def validate_manager_properties(schema: dict, properties: dict) -> list[str]:
     """Validate manager properties against a JSON schema.
     
@@ -221,12 +275,16 @@ def validate_setup_data(
     
     # 1. Manager resolution checks
     diagnostics.extend(_validate_manager_resolution(data, registry, jsonschema))
+
+    # 1b. The top-level keys of each device entry, against its SetupInfo dataclass
+    diagnostics.extend(_validate_kind_fields(data, jsonschema))
     
     # 2. DAQ conflict checks
     diagnostics.extend(_validate_daq_channels(data))
     
-    # 3. Cross-reference checks
+    # 3. Cross-reference checks, including role rules
     diagnostics.extend(_validate_cross_references(data, context))
+    diagnostics.extend(_validate_roles(data))
     
     return ValidationReport(
         path=source_path,
@@ -362,21 +420,102 @@ def _validate_device_manager(
             path=path,
         ))
 
-    # Schema validation
-    if contribution is not None and jsonschema is not None:
-        schema = resolve_schema(contribution)
-        if schema is not None:
-            schema_errors = validate_manager_properties(schema, manager_properties)
-            for error_msg in schema_errors:
-                # Try to extract field name from error message
-                field_path = (section_name, device_name, "managerProperties") if device_name else (section_name, "managerProperties")
+    # Schema validation: the contribution's own schema, else the generated
+    # one -- for registered and legacy-scanned managers alike.
+    schema = schema_for(kind, manager_name, contribution)
+    field_path = (section_name, device_name, "managerProperties") if device_name else (section_name, "managerProperties")
+    if schema is not None and jsonschema is not None:
+        for error_msg in validate_manager_properties(schema, manager_properties):
+            diagnostics.append(SetupDiagnostic(
+                severity="warning",
+                code="manager.schema",
+                message=error_msg,
+                path=field_path,
+            ))
+    if schema is not None and isinstance(manager_properties, dict):
+        from imswitch.imcontrol.model.configeditor import resources
+
+        for canonical, spellings in resources.alias_conflicts(schema, manager_properties):
+            others = ", ".join(f"'{s}'" for s in spellings if s != canonical)
+            diagnostics.append(SetupDiagnostic(
+                severity="warning",
+                code="manager.alias-conflict",
+                message=(f"'{canonical}' is also given as {others}; the manager reads "
+                         f"'{canonical}' and ignores the other spelling."),
+                path=field_path + (canonical,),
+            ))
+
+    return diagnostics
+
+
+def _validate_kind_fields(data: dict, jsonschema) -> list[SetupDiagnostic]:
+    """Each device entry's top-level keys against the generated ``kinds/<kind>.json``.
+
+    The dataclass is the contract: a key of the wrong type, or a required
+    key that is missing, loads as something the widgets do not expect
+    (``infer_missing`` turns a missing required field into ``None``). A
+    warning, because the file still loads.
+    """
+    if jsonschema is None:
+        return []
+    from imswitch.imcontrol.model.configeditor import resources
+
+    diagnostics: list[SetupDiagnostic] = []
+    for section_name, kind in SETUP_SECTION_TO_KIND.items():
+        schema = resources.kind_schema_for(kind)
+        section_data = data.get(section_name)
+        if schema is None or section_data is None:
+            continue
+        if section_name == "microscopeStand":
+            entries = {None: section_data} if isinstance(section_data, dict) else {}
+        elif isinstance(section_data, dict):
+            entries = section_data
+        else:
+            continue
+        for device_name, device in entries.items():
+            if not isinstance(device, dict):
+                continue
+            path = (section_name, device_name) if device_name is not None else (section_name,)
+            for error_msg in validate_manager_properties(schema, device):
                 diagnostics.append(SetupDiagnostic(
                     severity="warning",
-                    code="manager.schema",
+                    code="kind.schema",
                     message=error_msg,
-                    path=field_path,
+                    path=path,
                 ))
+    return diagnostics
 
+
+def _validate_roles(data: dict) -> list[SetupDiagnostic]:
+    """Role rules (``schemas/roles/``): properties a consumer other than the manager reads.
+
+    One evaluation serves the CLI and the editor's validation panel. A key
+    the consumer requires and the device lacks is an error carrying the
+    consumer's own message; an optional read the consumer has a stated
+    fallback for is a note.
+    """
+    from imswitch.imcontrol.model.configeditor import resources, roles as roles_module
+
+    diagnostics: list[SetupDiagnostic] = []
+    for role in resources.roles():
+        for finding in roles_module.evaluate(role, data):
+            path = (finding.section, finding.name, "managerProperties")
+            if finding.missing_required:
+                diagnostics.append(SetupDiagnostic(
+                    severity="error",
+                    code="role.missing-required",
+                    message=roles_module.message_for(role, finding),
+                    path=path,
+                ))
+            for read in finding.missing_reads:
+                if read.fallback:
+                    diagnostics.append(SetupDiagnostic(
+                        severity="note",
+                        code="role.missing-read",
+                        message=(f"'{read.key}' is not set for '{finding.name}'; "
+                                 f"{role.get('title', role['role'])} assumes {read.fallback}."),
+                        path=path + (read.key,),
+                    ))
     return diagnostics
 
 

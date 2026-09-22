@@ -1,0 +1,7 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "LEDMatrixManager",
+    "managerProperties": {}
+  }
+}

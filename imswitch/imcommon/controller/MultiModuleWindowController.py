@@ -56,7 +56,9 @@ class MultiModuleWindowController(WidgetController):
             return
 
         modulesconfigtools.setEnabledModuleIds(moduleIds)
-        ostools.restartSoftware()
+        # Close first, restart after: an immediate execv would leave every
+        # module's hardware exactly as it stood.
+        ostools.restartAfterShutdown(self._widget.close)
 
     def openUserDir(self):
         """ Shows the user files directory in system file explorer. """

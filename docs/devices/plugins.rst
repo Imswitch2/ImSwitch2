@@ -155,6 +155,61 @@ Required ``device_managers`` fields are ``id``, ``kind``, ``display_name`` and
 ``manager_properties_schema``, ``setup_templates``, ``docs_url`` and
 ``supported_platforms`` are optional.
 
+Generating the managerProperties schema
+---------------------------------------
+
+You do not have to write ``manager_properties_schema`` by hand. The same
+extractor that produces the core managers' schemas
+(``imswitch/imcontrol/model/configeditor/schemas/``) runs over an installed
+plugin, from an ImSwitch checkout:
+
+.. code-block:: bash
+
+   python tools/extract_manager_schemas.py --package imswitch_my_plugin --report --properties
+   python tools/extract_manager_schemas.py --package imswitch_my_plugin --write
+   python tools/extract_manager_schemas.py --package imswitch_my_plugin --check   # in the plugin's CI
+
+The package is located with ``importlib.util.find_spec`` and **never
+imported** -- vendor SDK imports in your ``__init__`` do not run. For every
+``device_managers`` entry of ``imswitch.json`` the tool finds the class
+``python_name`` names in the package's own source, reads how it uses
+``managerProperties`` (``props["key"]``, ``props.get("key", default)``,
+``"key" in props``, guards such as ``try/except KeyError``, helper methods
+handed the dict, camelCase/snake_case alias pairs) and writes, into the
+package:
+
+* ``schemas/managers/<id>.json`` -- a JSON Schema (Draft 2020-12): a key read
+  without a guard is ``required``; a default or an ``int()``/``float()`` call
+  gives the editor a widget preference (``x-imswitch-kind``); a validation
+  ``type`` is emitted only where the code proves one (``Path(...)``,
+  ``.items()``, a nested subscript);
+* ``schemas/fixtures/<id>.json`` -- a synthetic device the schema accepts;
+* ``schemas/index.json`` -- source hashes and coverage, so ``--check`` can say
+  *why* a schema moved.
+
+Point each contribution at its file and ship the directory as package data:
+
+.. code-block:: json
+
+   "manager_properties_schema": "schemas/managers/vendor.device.json"
+
+.. code-block:: toml
+
+   [tool.setuptools.package-data]
+   imswitch_my_plugin = ["imswitch.json", "schemas/**/*.json", "setup_templates/*.json"]
+
+ImSwitch then validates setup files against it (``validate-setup``) and the
+config editor shows a typed field per property, without a hand-written
+template. Where the code cannot prove a constraint you know (an accepted
+set of values, a numeric range), put a hand-written
+``schemas/overrides/<id>.json`` beside the generated files; it is merged
+last and never overwritten. See
+``imswitch/imcontrol/model/configeditor/schemas/overrides/README.md`` for
+the format, and ``docs/design/plans/config-editor-schema-extraction.md``
+for the extraction rules and what they can and cannot see (a dict handed
+whole to a vendor driver is an open pass-through, a key computed at runtime
+is reported as an unresolved read rather than guessed).
+
 Mock selection
 --------------
 

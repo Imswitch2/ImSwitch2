@@ -20,6 +20,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigLoadWidgetState = QtCore.Signal()
     sigOpenShortcutEditor = QtCore.Signal()
     sigOpenSessionNotes = QtCore.Signal()
+    sigOpenConfigEditor = QtCore.Signal()
     # Emitted on show/hide (i.e. module tab switches in the multi-module
     # window) so the ShortcutManager only keeps the visible module's set live.
     sigModuleVisibilityChanged = QtCore.Signal(bool)
@@ -76,6 +77,14 @@ class ImConMainView(QtWidgets.QMainWindow):
         )
         self.sessionNotesAction.triggered.connect(self.sigOpenSessionNotes)
         tools.addAction(self.sessionNotesAction)
+
+        self.configEditorAction = QtWidgets.QAction('Edit hardware configuration…', self)
+        self.configEditorAction.setToolTip(
+            'Open the Config Studio on this microscope’s setup files.'
+            ' Saved changes take effect when ImSwitch is restarted.'
+        )
+        self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
+        tools.addAction(self.configEditorAction)
         
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)

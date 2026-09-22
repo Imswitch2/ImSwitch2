@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "axis_lookup_table": {
+      "description": "Mapping from axis label to MCS channel index.",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:optional(in)",
+        "docs:object"
+      ]
+    },
+    "holdTime": {
+      "description": "Closed-loop hold time in milliseconds after each move, passed",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:optional(in)",
+        "docs:integer"
+      ]
+    }
+  },
+  "title": "SmarACTPositionerManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "SmarACTPositionerManager",
+    "PositionerManager"
+  ]
+}

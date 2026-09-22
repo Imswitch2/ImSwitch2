@@ -1,0 +1,11 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "TISManager",
+    "managerProperties": {
+      "cameraListIndex": 1,
+      "cameraPixelSizeUm": null,
+      "tis": {}
+    }
+  }
+}

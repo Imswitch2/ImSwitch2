@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "home": {
+      "description": "When ``true``, perform an APT homing operation on startup.  Homing parks each axis at its end-stop (position 0).",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "invertJogAxes": {
+      "description": "Axis labels whose jog direction should be flipped; see **Movement model** below.",
+      "x-imswitch-kind": "array",
+      "x-imswitch-source": [
+        "code:default:array",
+        "code:optional(get)"
+      ]
+    },
+    "port": {
+      "description": "Serial port of the BSC203 controller.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "travelRangeUm": {
+      "description": "Full travel per axis in µm (``8000`` for DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm`` and every move is clamped to that range.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "BSC203StageManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "BSC203StageManager",
+    "PositionerManager"
+  ]
+}

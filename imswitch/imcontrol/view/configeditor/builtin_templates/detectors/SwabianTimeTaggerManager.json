@@ -1,0 +1,26 @@
+{
+  "display": "Swabian Time Tagger (FLIM)",
+  "category": "detectors",
+  "top": [
+    {"key": "analogChannel",  "label": "Analog Channel",  "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",    "label": "Digital Line",    "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forAcquisition", "label": "For Acquisition", "default": true,   "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forFocusLock",   "label": "For Focus Lock",  "default": false,  "req": false, "grp": "Basic", "tip": "", "opts": []}
+  ],
+  "props": [
+    {"key": "click_channel",        "label": "Click Channel",    "default": 1,       "req": true,  "grp": "Channels",       "tip": "Single-photon input",       "opts": []},
+    {"key": "start_channel",        "label": "Start Channel",    "default": 2,       "req": true,  "grp": "Channels",       "tip": "Laser SYNC / start pulse",  "opts": []},
+    {"key": "line_channel",         "label": "Line Channel",     "default": 3,       "req": true,  "grp": "Channels",       "tip": "Line clock from scanner",   "opts": []},
+    {"key": "click_trigger",        "label": "Click Trigger (V)","default": 0.5,     "req": false, "grp": "Trigger Levels", "tip": "Discriminator voltage",     "opts": []},
+    {"key": "start_trigger",        "label": "Start Trigger (V)","default": 0.5,     "req": false, "grp": "Trigger Levels", "tip": "Discriminator voltage",     "opts": []},
+    {"key": "line_trigger",         "label": "Line Trigger (V)", "default": -0.5,    "req": false, "grp": "Trigger Levels", "tip": "Discriminator voltage",     "opts": []},
+    {"key": "n_bins",               "label": "N Bins",              "default": 64,      "req": false, "grp": "TCSPC",    "tip": "",                                                        "opts": []},
+    {"key": "binwidth_ps",          "label": "Bin Width (ps)",      "default": 32,      "req": false, "grp": "TCSPC",    "tip": "",                                                        "opts": []},
+    {"key": "t0_ps",                "label": "T0 Offset (ps)",      "default": 0,       "req": false, "grp": "TCSPC",    "tip": "IRF peak position in ps — applied via setInputDelay on click channel", "opts": []},
+    {"key": "min_counts_per_pixel", "label": "Min Counts/Pixel",    "default": 20,      "req": false, "grp": "TCSPC",    "tip": "",                                                        "opts": []},
+    {"key": "fit_method",           "label": "Fit Method",          "type": "select", "default": "moment","req": false, "grp": "TCSPC",       "tip": "",                                                                              "opts": ["moment","phasor","exp1"]},
+    {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": 0, "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": [0, 90, 180, 270]},
+    {"key": "displayFlipX", "label": "Mirror X", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only horizontal mirror.", "opts": []},
+    {"key": "displayFlipY", "label": "Mirror Y", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only vertical mirror.", "opts": []}
+  ]
+}

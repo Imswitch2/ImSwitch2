@@ -10,20 +10,14 @@ way needs neither a Qt event loop nor this machine's real config.
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("PyQt5")
 
-_SCRIPT = Path(__file__).resolve().parents[4] / "utility_scripts" / "imswitch_config_editor.py"
-_spec = importlib.util.spec_from_file_location("imswitch_config_editor", _SCRIPT)
-editor = importlib.util.module_from_spec(_spec)
-sys.modules["imswitch_config_editor"] = editor
-_spec.loader.exec_module(editor)
+from imswitch.imcontrol.view.configeditor import editor
 
 
 class _Resolver:

@@ -1,0 +1,11 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "ESP32StageManager",
+    "managerProperties": {
+      "PHYS_FACTOR": "example",
+      "SPEED": "example",
+      "rs232device": "example"
+    }
+  }
+}

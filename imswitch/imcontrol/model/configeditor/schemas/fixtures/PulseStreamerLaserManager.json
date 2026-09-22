@@ -1,0 +1,9 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "PulseStreamerLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example"
+    }
+  }
+}

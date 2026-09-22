@@ -1,0 +1,11 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "PyMicroscopeLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "digitalPorts": "example",
+      "pyMicroscopeDriver": "example"
+    }
+  }
+}

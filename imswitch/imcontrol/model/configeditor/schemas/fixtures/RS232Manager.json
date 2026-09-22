@@ -1,0 +1,10 @@
+{
+  "category": "rs232devices",
+  "device": {
+    "managerName": "RS232Manager",
+    "managerProperties": {
+      "port": "example",
+      "recv_termination": "example"
+    }
+  }
+}

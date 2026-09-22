@@ -1,0 +1,12 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "BSC203StageManager",
+    "managerProperties": {
+      "home": true,
+      "invertJogAxes": [],
+      "port": "example",
+      "travelRangeUm": 1
+    }
+  }
+}

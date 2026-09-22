@@ -8,6 +8,22 @@ from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
 
+def scan_axes_missing_limits(positioners) -> list:
+    """Names of scanning positioners this designer refuses to drive.
+
+    Real (non-mock) galvo axes need ``vel_max``/``acc_max`` for the
+    smooth-scan spline; an axis whose *name* contains ``mock`` is non-smooth
+    and exempt. This is the rule ``schemas/roles/galvo_scan_axis.json``
+    states for the setup validator; a test holds the two to the same answer.
+    """
+    return [
+        name for name, info in positioners.items()
+        if info.forScanning
+        and 'mock' not in name.lower()
+        and ('vel_max' not in info.managerProperties or 'acc_max' not in info.managerProperties)
+    ]
+
+
 class GalvoScanDesigner(ScanDesigner):
     """ Scan designer for scan systems with galvanometric mirrors.
 
@@ -100,11 +116,7 @@ class GalvoScanDesigner(ScanDesigner):
         # and then produced degenerate spline knots + an opaque BPoly crash mid
         # build. Require them explicitly so a misconfigured setup fails early with
         # an actionable message. (Mock/alignment axes are non-smooth and exempt.)
-        missing = [
-            name for name, props in zip(positionerNames, positionersProps)
-            if 'mock' not in name.lower()
-            and ('vel_max' not in props or 'acc_max' not in props)
-        ]
+        missing = scan_axes_missing_limits(setupInfo.positioners)
         if missing:
             raise ValueError(
                 "GalvoScanDesigner requires 'vel_max' (µm/µs) and 'acc_max' "

@@ -1,20 +1,15 @@
 """
 Test config editor device coverage: category registry, blanks, and auto-discovery.
 """
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("PyQt5")
 
-# Import the config editor module by file path
-_SCRIPT_PATH = Path(__file__).resolve().parents[4] / "utility_scripts" / "imswitch_config_editor.py"
-spec = importlib.util.spec_from_file_location("imswitch_config_editor", _SCRIPT_PATH)
-editor = importlib.util.module_from_spec(spec)
-sys.modules["imswitch_config_editor"] = editor
-spec.loader.exec_module(editor)
+from imswitch.imcontrol.view.configeditor import editor
+
+_MANAGERS_ROOT = Path(editor.__file__).resolve().parents[2] / "model" / "managers"
 
 
 def test_authoritative_category_registry_exists():
@@ -42,14 +37,23 @@ def test_category_labels_and_colors():
 
 
 def test_blank_schemas_exist():
-    """Every category in the registry must have a non-None blank schema."""
+    """Every category in the registry must have a non-None blank schema.
+
+    A blank no longer carries a ``top`` list: the top-level keys of a device
+    entry are typed from the kind's SetupInfo dataclass (``schemas/kinds/``),
+    so the form for an untemplated manager still shows them.
+    """
     for cat in editor._CATEGORY_REGISTRY:
         assert cat in editor.BLANK_SCHEMAS, f"Missing blank schema for {cat}"
         blank = editor.BLANK_SCHEMAS[cat]
         assert blank is not None
         assert blank.get("category") == cat
-        assert "top" in blank
+        assert "top" not in blank
         assert "props" in blank
+    form = editor._schema_for_manager("BaslerManager")
+    top = {f["key"]: f for f in form["top"]}
+    assert top["forAcquisition"]["type"] == "bool" and top["forAcquisition"]["grp"] == "Device"
+    assert top["analogChannel"]["type"] == "text"
 
 
 def test_auto_discovery_finds_templated_managers():
@@ -64,7 +68,7 @@ def test_auto_discovery_finds_templated_managers():
 def test_auto_discovery_finds_non_templated_managers():
     """Auto-discovery must find managers that have no template."""
     # BaslerManager exists in the codebase but may not have a template
-    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    managers_root = _MANAGERS_ROOT
     if not managers_root.is_dir():
         pytest.skip("Managers tree not found")
     
@@ -107,7 +111,7 @@ def test_build_default_device_with_template():
 def test_build_default_device_without_template():
     """Building a device for a non-templated manager uses category blank."""
     # Use a known non-templated manager if discovered, or a fake one
-    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    managers_root = _MANAGERS_ROOT
     if not managers_root.is_dir():
         pytest.skip("Managers tree not found")
     
@@ -116,9 +120,12 @@ def test_build_default_device_without_template():
         device = editor._build_default_device("BaslerManager")
         assert device["managerName"] == "BaslerManager"
         assert "managerProperties" in device
-        # Should have detector blank's top-level fields
-        assert "analogChannel" in device
-        assert "forAcquisition" in device
+        # No top-level key the dataclass gives a default for is seeded: an
+        # omitted forAcquisition *means* False, and the form shows exactly
+        # that. Only what the manager's own schema requires is carried.
+        assert "analogChannel" not in device
+        assert "forAcquisition" not in device
+        assert "cameraListIndex" in device["managerProperties"]
 
 
 def test_category_for_manager_lookup():
@@ -128,7 +135,7 @@ def test_category_for_manager_lookup():
         assert editor._get_category_for_manager("TISManager") == "detectors"
     
     # Discovered non-templated
-    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    managers_root = _MANAGERS_ROOT
     if not managers_root.is_dir():
         pytest.skip("Managers tree not found")
     
