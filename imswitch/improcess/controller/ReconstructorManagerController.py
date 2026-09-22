@@ -79,6 +79,20 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 self._install_reconstructor_params(self._main._activeReconstructor)
         self._publishReconstructorChoices()
 
+    def reconstructorLoaded(self, plugin_id: str) -> bool:
+        """A reconstructor was registered at runtime: offer it in the picker
+        and make it active.
+
+        Returns whether it became the active one. It does not when it cannot
+        take the current source and the user's selection cannot be reopened
+        for it; the picker then does not offer it until a file it accepts is
+        open, and the caller says so.
+        """
+        self._publishReconstructorChoices()
+        self._on_user_changed_reconstructor(plugin_id)
+        active = self._main._activeReconstructor
+        return active is not None and active.id == plugin_id
+
     def _select_reconstructor(self):
         from imswitch.improcess.reconstructors.registry import get_registry
 

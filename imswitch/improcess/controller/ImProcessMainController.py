@@ -34,6 +34,10 @@ class ImProcessMainController(MainController):
         # Connect view signals
         self.__mainView.sigClosing.connect(self.closeEvent)
         self.__mainView.sigLoadProcessorRequested.connect(self._load_runtime_processor)
+        if hasattr(self.__mainView, 'sigLoadReconstructorRequested'):
+            self.__mainView.sigLoadReconstructorRequested.connect(
+                self._load_runtime_reconstructor
+            )
         if hasattr(self.__mainView, 'sigReloadPluginsRequested'):
             self.__mainView.sigReloadPluginsRequested.connect(self._reload_user_plugins)
 
@@ -42,6 +46,7 @@ class ImProcessMainController(MainController):
         self._register_startup_runtime_processors()
         self.__mainView.createStartupRuntimeAnalysisWidgets()
         self._refresh_runtime_processor_choices()
+        self._refresh_reconstructor_choices()
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel()
@@ -482,6 +487,73 @@ class ImProcessMainController(MainController):
 
         self._reload_user_reconstructors(registry, loaded.reconstructors)
         self._refresh_runtime_processor_choices()
+        self._refresh_reconstructor_choices()
+
+    def _refresh_reconstructor_choices(self) -> None:
+        """Offer every known-but-unregistered reconstructor in Tools -> Load
+        reconstructor: the built-ins the setup file did not name, plus any
+        drop-in that is discovered but not registered."""
+        from imswitch.improcess.reconstructors import available_reconstructor_specs
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        setter = getattr(self.__mainView, 'setAvailableReconstructors', None)
+        if not callable(setter):
+            return
+        loaded = {plugin.id for plugin in get_registry().reconstructors()}
+        setter(
+            [
+                (plugin_id, name, description)
+                for plugin_id, name, description in available_reconstructor_specs()
+                if plugin_id not in loaded
+            ]
+        )
+
+    def _load_runtime_reconstructor(self, plugin_id: str) -> None:
+        """Register a reconstructor for this session and make it active.
+
+        The counterpart of the processors' *Load tool* combo: a built-in the
+        setup file did not name (or a drop-in that is discovered but not
+        registered) is instantiated, offered in the Parameters-dock picker and
+        selected. Nothing is written to the setup file; to keep it across
+        sessions, add it to ``processing.reconstructors`` there.
+        """
+        from imswitch.improcess.reconstructors import register_reconstructor_by_id
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        registry = get_registry()
+        plugin = registry.get_reconstructor(plugin_id, raise_on_missing=False)
+        if plugin is None:
+            try:
+                plugin = register_reconstructor_by_id(registry, plugin_id)
+            except Exception:
+                self.__logger.exception(f"Failed to load reconstructor {plugin_id!r}")
+                self._show_status_message(
+                    f"Could not load reconstructor {plugin_id!r}; see the log for why"
+                )
+                self._refresh_reconstructor_choices()
+                return
+            self.__logger.info(
+                f"Runtime-loaded reconstructor: {plugin.id} ({plugin.name})"
+            )
+        else:
+            self.__logger.info(f"Reconstructor already loaded: {plugin_id}")
+
+        manager = getattr(
+            getattr(self, 'mainViewController', None), 'reconstructorManager', None
+        )
+        activated = (
+            bool(manager.reconstructorLoaded(plugin_id)) if manager is not None else False
+        )
+        if activated:
+            self._show_status_message(
+                f"Loaded {plugin.name}; it is now the active reconstructor"
+            )
+        else:
+            self._show_status_message(
+                f"Loaded {plugin.name}; select it in the Parameters dock once a "
+                "file it accepts is open"
+            )
+        self._refresh_reconstructor_choices()
 
     def _reload_user_reconstructors(self, registry, loaded_ids) -> bool:
         """Bring the registry's drop-in reconstructors in line with the folder.

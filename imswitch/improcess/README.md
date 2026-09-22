@@ -284,6 +284,12 @@ Beyond startup, processors can also be **runtime-loaded** on demand: the main
 controller calls `register_processor_by_id(registry, id)` when the user adds an
 analysis tool from the UI, and `_restore_runtime_processor` re-registers any
 processor that was loaded in a previous session (persisted layout state).
+Reconstructors likewise: **Tools → Load reconstructor** lists every known but
+unregistered reconstructor (`available_reconstructor_specs()` minus the
+registry), and `_load_runtime_reconstructor` calls
+`register_reconstructor_by_id(registry, id)` and has the reconstructor manager
+offer it in the picker and activate it (`reconstructorLoaded`). This is
+per-session; the setup file's `processing.reconstructors` makes it permanent.
 Runtime tool metadata lives in
 [`model/runtime_tools.py`](model/runtime_tools.py): processor-backed tools point
 at their processor id and widget kind, while panel-only tools such as

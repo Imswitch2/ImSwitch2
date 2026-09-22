@@ -97,6 +97,24 @@ def available_reconstructor_ids() -> list[str]:
     return sorted(_all_reconstructor_classes())
 
 
+def available_reconstructor_specs() -> list[tuple[str, str, str]]:
+    """Return ``(id, name, description)`` for every known reconstructor.
+
+    Built-ins and discovered drop-ins alike, whether or not they are
+    registered: the *Load reconstructor* menu offers what is known but not
+    loaded. The description is the class's ``description`` attribute, or
+    ``""`` when it declares none.
+    """
+    return sorted(
+        (
+            plugin_id,
+            str(getattr(plugin_cls, "name", plugin_id) or plugin_id),
+            str(getattr(plugin_cls, "description", "") or ""),
+        )
+        for plugin_id, plugin_cls in _all_reconstructor_classes().items()
+    )
+
+
 def register_reconstructor_by_id(registry: PluginRegistry, plugin_id: str) -> Reconstructor:
     """Instantiate and register one reconstructor (built-in or user plugin) by id."""
     try:
@@ -153,6 +171,7 @@ __all__ = [
     "PluginRegistry",
     "get_registry",
     "available_reconstructor_ids",
+    "available_reconstructor_specs",
     "builtin_reconstructor_ids",
     "clear_user_reconstructors",
     "register_default_reconstructors",

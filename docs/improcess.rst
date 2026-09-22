@@ -200,6 +200,18 @@ generic parameter panel for the active result. This runs one processor at a
 time and publishes its output back to the reconstruction list. It is not yet a
 saved, automatically executed multi-step processing chain.
 
+Reconstructors have the same runtime path.  The reconstructor picker at the
+top of the Parameters dock offers only the reconstructors that are registered,
+and the setup file's ``processing.reconstructors`` list decides which
+built-ins those are — so a setup that names only MoNaLISA never shows the
+others.  **Tools → Load reconstructor** lists every reconstructor ImProcess
+knows about but has not loaded (the built-ins the setup file did not name,
+plus any drop-in that is discovered but not registered) with a one-line
+description; picking one registers it for the session, adds it to the picker
+and makes it active.  Nothing is written to the setup file: to keep a
+reconstructor across sessions, add it to ``processing.reconstructors`` (the
+config editor offers every known id, drop-ins included).
+
 Toolbar icons are selected through ImProcess semantic action IDs and rendered
 with QtAwesome when available, with Qt standard icons as a fallback.  This
 keeps icon choices centralized while allowing each action to retain its

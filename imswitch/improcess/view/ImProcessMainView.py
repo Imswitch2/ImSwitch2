@@ -66,6 +66,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     # dock header. Carries the plugin id (e.g. "view-only", "monalisa").
     sigActiveReconstructorChanged = QtCore.Signal(str)
     sigLoadProcessorRequested = QtCore.Signal(str)
+    # Emitted when the user picks a reconstructor to load at runtime from
+    # Tools -> Load reconstructor. Carries the plugin id.
+    sigLoadReconstructorRequested = QtCore.Signal(str)
     # Emitted when the user asks to re-scan the drop-in analysis plugins folder.
     sigReloadPluginsRequested = QtCore.Signal()
     # Workflows: export the current result's provenance as a workflow file,
@@ -293,6 +296,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addSeparator()
         self._processorToolbar.addWidget(QtWidgets.QLabel('Panels: '))
         self._buildAnalysisToolShortcuts()
+        self._buildLoadReconstructorMenu()
 
         self._pluginsToolbar = self.addToolBar('Plugins')
         self._pluginsToolbar.setObjectName('ImProcessPluginsToolbar')
@@ -612,6 +616,48 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         combo.setEnabled(bool(choices))
         combo.setCurrentIndex(0)
         combo.blockSignals(False)
+
+    def _buildLoadReconstructorMenu(self) -> None:
+        """Add Tools -> Load reconstructor, filled by the controller.
+
+        The Parameters-dock picker only offers reconstructors that are
+        registered, and the setup file decides which built-ins those are. This
+        submenu lists every reconstructor ImProcess knows about but has not
+        loaded, so one can be brought in for the session without editing the
+        setup file or hunting for its source.
+        """
+        self._analysisMenu.addSeparator()
+        self._loadReconstructorMenu = self._analysisMenu.addMenu('Load reconstructor')
+        self._loadReconstructorMenu.setToolTipsVisible(True)
+        self._loadReconstructorActions: dict[str, QtWidgets.QAction] = {}
+        self.setAvailableReconstructors([])
+
+    def setAvailableReconstructors(
+        self,
+        choices: list[tuple[str, str, str]],
+        placeholder: str = 'All reconstructors loaded',
+    ) -> None:
+        """Fill Tools -> Load reconstructor with ``(id, name, description)``
+        entries; an empty list leaves a disabled placeholder."""
+        menu = self._loadReconstructorMenu
+        menu.clear()
+        self._loadReconstructorActions = {}
+        if not choices:
+            action = menu.addAction(placeholder)
+            action.setEnabled(False)
+            return
+        for plugin_id, plugin_name, description in choices:
+            action = QtWidgets.QAction(str(plugin_name or plugin_id), menu)
+            tooltip = str(description or '') or f'Load the {plugin_name} reconstructor'
+            action.setToolTip(tooltip)
+            action.setStatusTip(tooltip)
+            action.triggered.connect(
+                lambda _checked=False, pid=str(plugin_id): (
+                    self.sigLoadReconstructorRequested.emit(pid)
+                )
+            )
+            menu.addAction(action)
+            self._loadReconstructorActions[str(plugin_id)] = action
 
     def setLoadedRuntimeProcessors(self, choices: list[tuple[str, str]]) -> None:
         combo = self._loadedProcessorCombo
