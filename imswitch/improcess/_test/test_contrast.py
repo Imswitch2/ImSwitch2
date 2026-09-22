@@ -176,3 +176,33 @@ def test_a_configured_working_set_lowers_the_sample_count():
 
     memory_limits.reset()
     assert contrast_module._max_samples() == contrast_module._MAX_SAMPLE_VALUES
+
+
+def test_a_singleton_leading_axis_does_not_defeat_the_sample_bound():
+    """(1, 100, 100, 100) at a 1 MiB working set came back with 200 000 values
+    against 61 680 allowed: the singleton axis was charged a share of the
+    reduction it could not deliver."""
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+    from imswitch.improcess.model import contrast as contrast_module
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    allowed = contrast_module._max_samples()
+    values = contrast_module.finite_values(np.zeros((1, 100, 100, 100), np.uint16))
+    assert values.size <= allowed
+    assert values.size > allowed // 4          # and not needlessly starved
+
+
+@pytest.mark.parametrize('shape', [
+    (1, 100, 100, 100), (3, 1, 512, 512), (1, 1, 1000, 1000), (7, 5, 3, 64, 64),
+    (1, 30, 30), (1000, 1, 1), (2, 2), (1, 1, 1, 1, 4096),
+])
+@pytest.mark.parametrize('max_samples', [1, 7, 100, 61_680])
+def test_the_strided_key_keeps_at_most_the_allowed_count(shape, max_samples):
+    from imswitch.improcess.model import contrast as contrast_module
+
+    key = contrast_module._strided_key(shape, max_samples)
+    kept = int(np.prod([len(range(0, size, s.step or 1)) for size, s in zip(shape, key)]))
+    assert kept <= max_samples
+    assert kept >= 1

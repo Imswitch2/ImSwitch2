@@ -396,10 +396,10 @@ before Phase B changes anything else about the queues.
 | Detector queue honours `perDetectorQueueMB`; admit-when-empty; messages | `DetectorManager._queueBudgetBytes`, `_distributeChunkLocked`, `readChunk` |
 | Writer honours `writerQueueMB`; block reported at once; arm estimate | `RecordingManager._writerQueueMaxBytes`, `enqueue_frames`, `_memoryEstimateLine` |
 | Point detector's volume line at scan build | `APDManager.initiateImage`, `PMTManager.initiateImage` |
-| Contrast sample size follows the working set | `contrast._max_samples`, `sample_values` |
-| Decoded size, lazy path, preview estimate, notice before a load | `DataObj.decodedBytes`, `sourceHasLazyPath`, `materializationNotice`, `meanPreviewNotice`, `checkAndLoadData` |
+| Contrast sample size follows the working set; strides from what a slice keeps | `contrast._max_samples`, `_strided_key`, `sample_values` |
+| Decoded size, lazy path, preview estimate (measured against the peak; a non-lazy source charged its series), notice before a load | `DataObj.decodedBytes`, `sourceHasLazyPath`, `planeReadIsBounded`, `materializationNotice`, `meanPreviewNotice`, `checkAndLoadData` |
 | Automatic vs explicit mean; status line | `DataFrameController.showMean(explicit=…)`, `DataEditController`, `FileIOController._loadAsCurrent`, `CommunicationChannel.sigStatusMessage` |
-| Tests | `imcommon/_test/test_memory_limits.py`; `imcontrol/_test/unit/test_memory_limits_recording.py`, `test_chunk_contract.py`; `improcess/_test/test_contrast.py`, `test_data_obj_io.py`, `test_data_frame_virtual.py` |
+| Tests | `imcommon/_test/test_memory_limits.py`; `imcontrol/_test/unit/test_memory_limits_recording.py`, `test_chunk_contract.py`; `improcess/_test/test_contrast.py`, `test_data_obj_io.py`, `test_data_frame_virtual.py`, `test_data_edit_controller.py` |
 | Docs | `docs/improcess.rst` *Memory limits*; changelog |
 
 ## Decisions
@@ -542,3 +542,38 @@ than closed. The four-shape test is required for any queue change, on actual
 arrival schedules and per-queue occupancy, and warning-before-overflow is not
 universal. The fixed 512 / 256 / 256 MiB defaults are accepted as the
 restatement of the round-2 decision.
+
+## Review round 6 (2026-09-22)
+
+Reviewed the implementation (`49f23eff`). Five findings, all reproduced and
+fixed without adding an acquisition restriction; the reviewer found no new
+acquisition-path blocker.
+
+1. **[P1] Invalid settings crashed at load, before validation.** The JSON
+   loader coerces `int` fields itself: `"lots"` raised `ValueError` and `2.5`
+   silently became `2`, so the promised warn-and-default never ran for a real
+   file. → the three fields are typed `Any` so the raw value reaches
+   `configure`; the bad-value test now goes through `Options.from_json`.
+2. **[P1] A non-lazy TIFF bypassed the preview safeguard.** The estimate
+   looked at the plane's size, not at whether reading a plane decodes the
+   whole series (`TiffVirtualArray` without `aszarr()`); 150 whole-series
+   reads with no warning, and the first-plane fallback cost the same. →
+   `meanPreviewBytes` charges such a source its decoded size on top, the
+   notice says why, and `planeReadIsBounded` tells the panels to show
+   nothing rather than read a plane that costs the series.
+3. **[P2] The edit window computed the mean it had just deferred.**
+   `setData` set it aside and then called the same method the button uses.
+   → automatic display (first plane, or nothing) and the explicit mean are
+   separate methods, as in the current-data panel.
+4. **[P2] Contrast sampling overshot for shapes with a singleton leading
+   axis.** The stride arithmetic charged the singleton a share of the
+   reduction it could not deliver: `(1, 100, 100, 100)` at 1 MiB returned
+   200 000 values against 61 680. → strides are derived from what each
+   slice actually keeps, only reducible axes count towards the exponent,
+   and the spatial stride is raised until the counted total fits; a shape
+   sweep pins the bound.
+5. **[P2] The preview estimate omitted live allocations.** 12 B/px charged;
+   22 B/px measured, from the retained input plane and a second float64
+   plane the division made. → the division is in place (measured peak
+   12 B/px) and the estimate charges 12 B/px plus the input plane's dtype;
+   a tracemalloc test keeps the estimate a ceiling.

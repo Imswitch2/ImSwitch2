@@ -80,13 +80,21 @@ def test_the_group_round_trips_through_the_options_file():
 
 @pytest.mark.parametrize('bad', [0, -1, 2.5, 'lots', True, None])
 def test_a_value_that_cannot_be_honoured_is_named_and_the_literal_stands(bad):
-    from types import SimpleNamespace
+    """Through the real loader: the JSON coerced ``int`` fields itself, so
+    ``"lots"`` raised before any validation ran and ``2.5`` silently became
+    ``2``. The raw value has to reach ``configure`` untouched."""
+    import json
 
+    from imswitch.imcontrol.model.Options import Options
+
+    options = Options.from_json(json.dumps({
+        'setupFileName': 'x.json',
+        'memory': {'writerQueueMB': bad, 'perDetectorQueueMB': 64,
+                   'processingWorkingSetMB': None},
+    }), infer_missing=True)
+    assert options.memory.writerQueueMB == bad or (bad is None and options.memory.writerQueueMB is None)
     log = _Log()
-    memory_limits.configure(
-        SimpleNamespace(writerQueueMB=bad, perDetectorQueueMB=64, processingWorkingSetMB=None),
-        logger=log,
-    )
+    memory_limits.configure(options.memory, logger=log)
 
     assert memory_limits.configuredBytes('writerQueueBytes') is None
     assert memory_limits.effectiveBytes('writerQueueBytes', 512 * MIB) == 512 * MIB

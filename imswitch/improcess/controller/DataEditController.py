@@ -20,16 +20,27 @@ class DataEditController(ImProcessWidgetController):
             return
         self._dataObj = inDataObj
         # Opening the edit window is not a request for the mean; above the
-        # processing working set it waits for the Show mean button, which
-        # computes it as asked (see DataFrameController.showMean).
+        # processing working set the window opens on the first plane (or on
+        # nothing, where a plane read decodes the whole series) and the mean
+        # waits for the Show mean button, which computes it as asked -- the
+        # same split as the current-data panel.
         notice = getattr(self._dataObj, 'meanPreviewNotice', None)
         notice = notice() if callable(notice) else None
-        if notice is not None:
-            self._logger.info(f'{notice} Not computed on opening the edit window.')
-            self._meanData = None
-        else:
+        self._meanData = None
+        if notice is None:
             self._meanData = self._dataObj.getMeanData()
-        self.showMean()
+            self._displayMean()
+        else:
+            bounded = getattr(self._dataObj, 'planeReadIsBounded', None)
+            bounded = bool(bounded()) if callable(bounded) else True
+            if bounded:
+                self._logger.info(f'{notice} Opening on the first plane; Show mean '
+                                  f'computes it on request.')
+                self.setImgSlice(0)
+            else:
+                self._logger.info(f'{notice} Nothing shown until asked; Show mean '
+                                  f'computes it on request.')
+                self._widget.setImage(np.zeros((1, 1)), autoLevels=True)
         self._widget.updateDataProperties(self._dataObj.name, self._dataObj.datasetName,
                                           self._dataObj.numFrames)
 
@@ -52,15 +63,18 @@ class DataEditController(ImProcessWidgetController):
         pass
 
     def showMean(self):
+        """The Show mean button: compute the mean if it was deferred, then show it."""
         if self._meanData is None and self._dataObj is not None:
             notice = getattr(self._dataObj, 'meanPreviewNotice', None)
             notice = notice() if callable(notice) else None
             if notice is not None:
                 self._logger.warning(f'{notice} Computing it as requested.')
             self._meanData = self._dataObj.getMeanData()
+        self._displayMean()
+
+    def _displayMean(self):
         if self._meanData is None:
             return
-
         self._widget.setImage(self._meanData, autoLevels=True)
 
 

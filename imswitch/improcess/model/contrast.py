@@ -56,13 +56,53 @@ def _should_sample(data: Any) -> bool:
     return True
 
 
+def _kept(size: int, stride: int) -> int:
+    """How many elements ``slice(0, size, stride)`` keeps."""
+    return len(range(0, int(size), max(1, int(stride))))
+
+
 def _group_stride(axis_sizes: tuple[int, ...], remaining_factor: float) -> int:
     """Pick one stride, applied uniformly across ``axis_sizes``, that reduces
-    the group's element count by roughly ``remaining_factor``."""
-    if not axis_sizes or remaining_factor <= 1:
+    the group's element count by roughly ``remaining_factor``.
+
+    Only axes longer than one count towards the exponent: a singleton axis
+    keeps its one element whatever the stride, and charging it a share of
+    the reduction left the other axes under-strided (a ``(1, 100, 100, 100)``
+    stack came back with three times its allowance)."""
+    reducible = [size for size in axis_sizes if size > 1]
+    if not reducible or remaining_factor <= 1:
         return 1
-    stride = int(np.ceil(remaining_factor ** (1.0 / len(axis_sizes))))
-    return max(1, min(stride, max(axis_sizes)))
+    stride = int(np.ceil(remaining_factor ** (1.0 / len(reducible))))
+    return max(1, min(stride, max(reducible)))
+
+
+def _strided_key(shape: tuple[int, ...], max_samples: int) -> tuple:
+    """A slice key over ``shape`` keeping at most ``max_samples`` elements.
+
+    Leading (non-spatial) axes are strided first so full image planes are
+    preferred over degrading in-plane resolution; the last two axes only if
+    that is not enough. The count is taken from what each slice actually
+    keeps, not from the stride arithmetic, and the spatial stride is raised
+    until the total fits -- the arithmetic is a first guess, the count is
+    the contract."""
+    max_samples = max(1, int(max_samples))
+    leading_shape = shape[:-2] if len(shape) > 2 else ()
+    spatial_shape = shape[-2:]
+
+    total = int(np.prod(shape))
+    leading_stride = _group_stride(leading_shape, total / max_samples)
+    leading_kept = int(np.prod([_kept(size, leading_stride) for size in leading_shape])) if leading_shape else 1
+    spatial_total = int(np.prod(spatial_shape))
+    spatial_stride = _group_stride(spatial_shape, (leading_kept * spatial_total) / max_samples)
+
+    def count(spatial_stride):
+        return leading_kept * int(np.prod([_kept(size, spatial_stride) for size in spatial_shape]))
+
+    while count(spatial_stride) > max_samples and spatial_stride < max(spatial_shape):
+        spatial_stride += 1
+    key = tuple(slice(0, size, leading_stride) for size in leading_shape)
+    key += tuple(slice(0, size, spatial_stride) for size in spatial_shape)
+    return key
 
 
 def sample_values(data: Any, *, max_samples: int | None = None) -> np.ndarray:
@@ -91,18 +131,7 @@ def sample_values(data: Any, *, max_samples: int | None = None) -> np.ndarray:
     if total <= max_samples:
         key = tuple(slice(None) for _ in shape)
     else:
-        leading_shape = shape[:-2] if len(shape) > 2 else ()
-        spatial_shape = shape[-2:] if len(shape) >= 1 else ()
-
-        remaining = total / max_samples
-        leading_stride = _group_stride(leading_shape, remaining)
-        if leading_shape:
-            remaining = remaining / (leading_stride ** len(leading_shape))
-
-        spatial_stride = _group_stride(spatial_shape, remaining)
-
-        key = tuple(slice(0, size, leading_stride) for size in leading_shape)
-        key += tuple(slice(0, size, spatial_stride) for size in spatial_shape)
+        key = _strided_key(shape, max_samples)
 
     sampled = data[key] if hasattr(data, "__getitem__") else data
     return _flatten_finite(np.asarray(sampled))

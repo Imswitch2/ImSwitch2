@@ -536,7 +536,8 @@ def test_decoded_bytes_comes_from_the_source_without_materializing(tmp_path) -> 
     data_obj = DataObj("size.h5", "CAM", path=str(path))
 
     assert data_obj.decodedBytes() == data.nbytes
-    assert data_obj.meanPreviewBytes() == 4 * 5 * 12
+    assert data_obj.meanPreviewBytes() == 4 * 5 * (12 + 2)     # accumulator, result, one uint16 plane
+    assert data_obj.planeReadIsBounded()
     assert data_obj.sourceHasLazyPath()
     assert not data_obj.dataMaterialized
     assert data_obj.materializationNotice() is None      # fits the working set
@@ -586,5 +587,55 @@ def test_the_mean_preview_notice_is_about_the_plane_not_the_plane_count(tmp_path
     memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
     notice = data_obj.meanPreviewNotice()
     assert notice is not None
-    assert "3.0 MiB for one plane" in notice
+    assert "3.5 MiB for one plane" in notice          # 512 x 512 x (12 + 2) bytes
+    assert "memory.processingWorkingSetMB" in notice
+
+
+def test_the_preview_estimate_covers_what_the_lazy_mean_actually_allocates(tmp_path) -> None:
+    """Measured, not argued: the lazy mean used to peak at 22 B/px against a
+    12 B/px estimate (a second float64 plane from ``accumulator / n``)."""
+    import tracemalloc
+
+    path = tmp_path / "peak.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=np.ones((4, 256, 256), np.uint16), chunks=(1, 256, 256))
+    data_obj = DataObj("peak.h5", "CAM", path=str(path))
+    estimate = data_obj.meanPreviewBytes()
+    assert estimate == 256 * 256 * 14
+    data_obj.data_handle                                       # open the source outside the trace
+
+    tracemalloc.start()
+    try:
+        mean = data_obj.getMeanData()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert mean.dtype == np.float32 and float(mean.mean()) == 1.0
+    assert peak <= estimate + 64 * 1024                         # the estimate is a ceiling
+
+
+def test_a_source_without_a_lazy_path_is_charged_the_whole_series_for_its_preview(tmp_path) -> None:
+    """A TIFF whose ``aszarr()`` failed serves every plane by a whole-series
+    read; its "plane" costs the decoded dataset, and so does the first plane."""
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+
+    path = tmp_path / "nolazy.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", shape=(150, 128, 128), dtype=np.uint16, chunks=(1, 128, 128))
+    data_obj = DataObj("nolazy.h5", "CAM", path=str(path))
+    handle = data_obj.data_handle
+    handle.supports_lazy_indexing = False                     # what the TIFF fallback declares
+
+    assert not data_obj.sourceHasLazyPath()
+    assert not data_obj.planeReadIsBounded()
+    decoded = 150 * 128 * 128 * 2                              # 4.7 MiB
+    assert data_obj.meanPreviewBytes() == 128 * 128 * 14 + decoded
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    notice = data_obj.meanPreviewNotice()
+    assert notice is not None
+    assert "no lazy path" in notice and "decodes the whole series" in notice
     assert "memory.processingWorkingSetMB" in notice

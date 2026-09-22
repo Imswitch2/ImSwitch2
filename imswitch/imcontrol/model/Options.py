@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field
+from typing import Any
 
 from dataclasses_json import dataclass_json, Undefined, CatchAll
 
@@ -27,15 +28,21 @@ class MemoryOptions:
     (camera drivers and datasets are outside them). Adopted at startup by
     ``imswitch.imcommon.model.memory_limits.configure``; a value that is not
     a positive whole number is reported and the default stands.
+
+    The fields are typed ``Any`` on purpose: the JSON loader coerces an
+    ``int`` field itself -- ``"lots"`` raised before any validation could
+    run, and ``2.5`` silently became ``2`` -- so the raw value has to reach
+    ``configure`` untouched for the promise above to hold.
     """
-    #: Backlog the recording writer may hold before the acquisition loop blocks.
-    writerQueueMB: int = 512
+    #: Backlog the recording writer may hold before the acquisition loop
+    #: blocks. MiB, a positive whole number.
+    writerQueueMB: Any = 512
     #: Backlog any one (detector, consumer) chunk queue may hold before that
-    #: consumer's stream is declared incomplete.
-    perDetectorQueueMB: int = 256
+    #: consumer's stream is declared incomplete. MiB, a positive whole number.
+    perDetectorQueueMB: Any = 256
     #: Working set ImProcess may spend on automatic work: contrast sampling and
-    #: the mean preview computed on load.
-    processingWorkingSetMB: int = 256
+    #: the mean preview computed on load. MiB, a positive whole number.
+    processingWorkingSetMB: Any = 256
 
 
 @dataclass_json(undefined=Undefined.INCLUDE)

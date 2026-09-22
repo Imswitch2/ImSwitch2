@@ -21,6 +21,17 @@ def _mean_preview_notice(data_obj):
         return None
 
 
+def _plane_read_is_bounded(data_obj):
+    """False only when the object says a plane read decodes the whole series."""
+    bounded = getattr(data_obj, 'planeReadIsBounded', None)
+    if not callable(bounded):
+        return True
+    try:
+        return bool(bounded())
+    except Exception:
+        return True
+
+
 def _say(controller, message):
     """A line where the operator is looking, if the channel has a status bar."""
     signal = getattr(getattr(controller, '_commChannel', None), 'sigStatusMessage', None)
@@ -122,13 +133,18 @@ class DataFrameController(ImProcessWidgetController):
         else:
             notice = _mean_preview_notice(self._dataObj)
             if notice is not None and not explicit:
-                self._logger.info(f'{notice} Showing the first plane instead; '
-                                  f'Show mean computes it on request.')
-                _say(self, f'{notice} Showing the first plane; Show mean computes it.')
                 data = self._currentDataArray()
-                if data is not None:
+                if data is not None and _plane_read_is_bounded(self._dataObj):
+                    self._logger.info(f'{notice} Showing the first plane instead; '
+                                      f'Show mean computes it on request.')
+                    _say(self, f'{notice} Showing the first plane; Show mean computes it.')
                     self.setImgSlice(0)
                     return
+                # A plane read that decodes the whole series is the very cost
+                # being avoided, so nothing is read until asked.
+                self._logger.info(f'{notice} Nothing shown until asked; Show mean '
+                                  f'computes it on request.')
+                _say(self, f'{notice} Nothing shown until asked; Show mean computes it.')
                 img = np.zeros((1, 1))
             else:
                 if notice is not None:

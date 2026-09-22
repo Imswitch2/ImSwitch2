@@ -43,8 +43,9 @@ MEAN_PREVIEW_MAX_PLANES = 256
 #: is the default; ``memory.processingWorkingSetMB`` in
 #: ``imcontrol_options.json`` overrides it per machine.
 _PROCESSING_WORKING_SET_BYTES = 256 * 1024 * 1024
-#: What ``getMeanData`` allocates per pixel of one plane: a float64
-#: accumulator and a float32 result.
+#: What ``getMeanData`` allocates per pixel of one plane besides the input
+#: plane it holds: a float64 accumulator (divided in place) and the float32
+#: result. The input plane's own bytes are added per its dtype.
 _MEAN_PREVIEW_BYTES_PER_PIXEL = 8 + 4
 
 
@@ -402,30 +403,45 @@ class DataObj:
         )
 
     def meanPreviewBytes(self):
-        """What ``getMeanData`` allocates: one float64 plane plus a float32 result.
+        """What ``getMeanData`` allocates at its peak, or None if unknown.
 
-        None when the plane cannot be determined. The preview is bounded in
-        plane count already (``MEAN_PREVIEW_MAX_PLANES``); this is its
-        in-plane cost, which that bound says nothing about.
+        Per pixel of one plane: the float64 accumulator, the float32 result
+        and the input plane in its own dtype. The preview is bounded in plane
+        count already (``MEAN_PREVIEW_MAX_PLANES``); this is its in-plane
+        cost, which that bound says nothing about.
+
+        A source without a lazy path is charged the whole decoded dataset on
+        top: its "plane" read decodes the entire series (see
+        :meth:`sourceHasLazyPath`), so the preview loop does that once per
+        sampled plane, and the reader's capability, not the plane's size, is
+        what decides whether it is affordable.
         """
         if self.sourceKind != "image":
             return None
         if self._data is not None:
-            shape = tuple(int(size) for size in np.shape(self._data))
+            array = self._data
         else:
-            handle = self.data_handle
-            if handle is None:
+            array = self.data_handle
+            if array is None:
                 return None
-            try:
-                shape = tuple(int(size) for size in handle.shape)
-            except Exception:
-                return None
+        try:
+            shape = tuple(int(size) for size in array.shape)
+            itemsize = int(np.dtype(array.dtype).itemsize)
+        except Exception:
+            return None
         if len(shape) < 2:
             return None
         plane = plane_axes(shape, self.axis_labels)
         if plane is None:
             return None
-        return int(shape[plane[0]]) * int(shape[plane[1]]) * _MEAN_PREVIEW_BYTES_PER_PIXEL
+        planeBytes = int(shape[plane[0]]) * int(shape[plane[1]]) * (
+            _MEAN_PREVIEW_BYTES_PER_PIXEL + itemsize
+        )
+        if self._data is None and not self.sourceHasLazyPath():
+            decoded = self.decodedBytes()
+            if decoded is not None:
+                planeBytes += decoded
+        return planeBytes
 
     def meanPreviewNotice(self):
         """Why computing the mean preview is worth saying first, or None."""
@@ -435,12 +451,27 @@ class DataObj:
         budget = _processing_working_set_bytes()
         if nbytes <= budget:
             return None
+        if self._data is None and not self.sourceHasLazyPath():
+            how = (
+                f'needs {memory_limits.describeBytes(nbytes)}: this source has '
+                f'no lazy path, so every plane read decodes the whole series'
+            )
+        else:
+            how = f'needs {memory_limits.describeBytes(nbytes)} for one plane'
         return (
-            f'The mean preview of {self.name}/{self.datasetName} needs '
-            f'{memory_limits.describeBytes(nbytes)} for one plane, above the '
+            f'The mean preview of {self.name}/{self.datasetName} {how}, above the '
             f'{memory_limits.describeBytes(budget)} processing working set '
             f'({memory_limits.settingRef("processingWorkingSetBytes")}).'
         )
+
+    def planeReadIsBounded(self):
+        """Whether reading one plane costs one plane.
+
+        True for data in memory and for sources with a lazy path; False for
+        a virtual source whose plane read decodes the whole series, where
+        showing even the first plane costs as much as loading everything.
+        """
+        return self._data is not None or self.sourceHasLazyPath()
 
     def checkAndOpenData(self):
         if self.sourceKind != "image":
@@ -506,10 +537,13 @@ class DataObj:
                         if accumulator is None:
                             accumulator = np.zeros(frame.shape, dtype=np.float64)
                         accumulator += frame
-                    self._meanData = np.asarray(
-                        accumulator / len(indices),
-                        dtype=np.float32,
-                    )
+                    # Divide in place: ``accumulator / n`` made a second
+                    # float64 plane that lived alongside the first until the
+                    # float32 conversion, which is what the estimate charges
+                    # for and what a 16k x 16k plane cannot afford twice.
+                    del frame
+                    accumulator /= len(indices)
+                    self._meanData = accumulator.astype(np.float32)
                 else:
                     self._meanData = mean_plane(self.data, labels)
             else:
