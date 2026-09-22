@@ -2,11 +2,11 @@
   "display": "Mock Positioner (Simulation)",
   "category": "positioners",
   "top": [
-    {"key": "analogChannel",  "label": "Analog Channel",   "type": "text",  "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
-    {"key": "digitalLine",    "label": "Digital Line",     "type": "text",  "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
-    {"key": "axes",           "label": "Axes (comma-sep)", "type": "text",  "default": "X",    "req": true,  "grp": "Basic", "tip": "e.g. X  or  M-TM", "opts": []},
-    {"key": "forPositioning", "label": "For Positioning",  "type": "bool",  "default": true,   "req": true,  "grp": "Basic", "tip": "", "opts": []},
-    {"key": "forScanning",    "label": "For Scanning",     "type": "bool",  "default": false,  "req": true,  "grp": "Basic", "tip": "", "opts": []}
+    {"key": "analogChannel",  "label": "Analog Channel",   "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",    "label": "Digital Line",     "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "axes",           "label": "Axes (comma-sep)", "default": "X",    "req": true,  "grp": "Basic", "tip": "e.g. X  or  M-TM", "opts": []},
+    {"key": "forPositioning", "label": "For Positioning",  "default": true,   "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forScanning",    "label": "For Scanning",     "default": false,  "req": true,  "grp": "Basic", "tip": "", "opts": []}
   ],
   "props": [
     {"key": "conversionFactor", "label": "Conversion Factor", "type": "float", "default": 1.0,   "req": false, "grp": "Basic",    "tip": "um/V", "opts": []},

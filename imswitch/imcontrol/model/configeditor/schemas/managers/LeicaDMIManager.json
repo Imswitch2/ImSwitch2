@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "description": "Path to a calibration CSV used to build look-up tables between",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:optional(try/except AttributeError, KeyError, Exception)",
+        "docs:string"
+      ]
+    },
+    "rs232device": {
+      "description": "Name of the RS-232 channel registered in ``rs232sManager``.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:required",
+        "docs:string"
+      ],
+      "x-imswitch-widget": "ref"
+    }
+  },
+  "required": [
+    "rs232device"
+  ],
+  "title": "LeicaDMIManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "LeicaDMIManager",
+    "PositionerManager"
+  ]
+}

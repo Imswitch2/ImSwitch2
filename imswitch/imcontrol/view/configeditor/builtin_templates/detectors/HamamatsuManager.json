@@ -2,13 +2,13 @@
   "display": "Hamamatsu Camera",
   "category": "detectors",
   "top": [
-    {"key": "analogChannel",  "label": "Analog Channel",  "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
-    {"key": "digitalLine",    "label": "Digital Line",    "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
-    {"key": "forAcquisition", "label": "For Acquisition", "type": "bool", "default": true,   "req": true,  "grp": "Basic", "tip": "", "opts": []},
-    {"key": "forFocusLock",   "label": "For Focus Lock",  "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "", "opts": []}
+    {"key": "analogChannel",  "label": "Analog Channel",  "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",    "label": "Digital Line",    "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forAcquisition", "label": "For Acquisition", "default": true,   "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forFocusLock",   "label": "For Focus Lock",  "default": false,  "req": false, "grp": "Basic", "tip": "", "opts": []}
   ],
   "props": [
-    {"key": "cameraListIndex", "label": "Camera List Index", "type": "int", "default": 0, "req": true, "grp": "Basic", "tip": "0-based index", "opts": []},
+    {"key": "cameraListIndex", "label": "Camera List Index", "default": 0, "req": true, "grp": "Basic", "tip": "0-based index", "opts": []},
     {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": 0, "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": [0, 90, 180, 270]},
     {"key": "displayFlipX", "label": "Mirror X", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only horizontal mirror.", "opts": []},
     {"key": "displayFlipY", "label": "Mirror Y", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only vertical mirror.", "opts": []}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a rs232 entry in a setup file, as imswitch.imcontrol.model.SetupInfo.RS232Info declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "managerName": {
+      "description": "RS232 manager class name.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:RS232Info.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "description": "Properties to be read by the RS232 manager.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:RS232Info.managerProperties: Dict[str, Any]"
+      ]
+    }
+  },
+  "required": [
+    "managerName",
+    "managerProperties"
+  ],
+  "title": "rs232 device entry (RS232Info)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "RS232Info"
+  ],
+  "x-imswitch-info-class": "RS232Info"
+}

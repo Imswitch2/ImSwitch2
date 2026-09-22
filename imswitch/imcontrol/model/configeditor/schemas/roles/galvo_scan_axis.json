@@ -1,0 +1,25 @@
+{
+  "role": "galvo_scan_axis",
+  "title": "Scan axis (GalvoScanDesigner)",
+  "applies_to": "positioners",
+  "consumer": "imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner:scan_axes_missing_limits",
+  "when": {
+    "all": [
+      {"setup": "scan.scanDesigner", "equals": "GalvoScanDesigner"},
+      {"field": "forScanning", "equals": true},
+      {"name": {"not_contains": "mock"}}
+    ]
+  },
+  "requires": ["vel_max", "acc_max"],
+  "reads": [
+    {"key": "conversionFactor", "fallback": "a conversion factor of 1 (V per um)"},
+    {"key": "jerk_max"}
+  ],
+  "message": "GalvoScanDesigner requires 'vel_max' (µm/µs) and 'acc_max' (µm/µs^2) in managerProperties for scanning positioner(s) {names}. Add realistic values (example_sted uses vel_max=0.1, acc_max=0.0001); without them the smooth-scan spline degenerates.",
+  "properties": {
+    "vel_max": {"x-imswitch-kind": "number", "description": "Maximum axis velocity in µm/µs; GalvoScanDesigner builds the smooth-scan spline to it."},
+    "acc_max": {"x-imswitch-kind": "number", "description": "Maximum axis acceleration in µm/µs²."},
+    "jerk_max": {"x-imswitch-kind": "number", "description": "Optional maximum jerk in µm/µs³; sets the jerk-transition time of the spline."},
+    "conversionFactor": {"x-imswitch-kind": "number", "description": "Micrometres per volt for this axis; GalvoScanDesigner assumes 1 when it is absent."}
+  }
+}

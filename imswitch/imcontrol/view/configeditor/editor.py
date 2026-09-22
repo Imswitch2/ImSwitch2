@@ -23,8 +23,8 @@ import re
 import sys
 from pathlib import Path
 import glob
-from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint
-from PyQt5.QtGui import QFont, QPalette, QColor
+from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint, QRegularExpression
+from PyQt5.QtGui import QFont, QPalette, QColor, QRegularExpressionValidator
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
@@ -41,13 +41,17 @@ _MANAGER_CATALOG = None
 _coercion_module = None
 _io_module = None
 _schema_module = None
+_resources_module = None
+_roles_module = None
 _setup_kind_metadata = ()
 try:
     from imswitch.imcontrol.model.configeditor.catalog import build_catalog
-    _MANAGER_CATALOG = build_catalog()
+    _MANAGER_CATALOG = build_catalog(include_generated_schemas=True)
     from imswitch.imcontrol.model.configeditor import coercion as _coercion_module
     from imswitch.imcontrol.model.configeditor import io as _io_module
     from imswitch.imcontrol.model.configeditor import schemas as _schema_module
+    from imswitch.imcontrol.model.configeditor import resources as _resources_module
+    from imswitch.imcontrol.model.configeditor import roles as _roles_module
     from imswitch.imcontrol.model.plugins.setup_metadata import setup_kinds
     _setup_kind_metadata = setup_kinds()
 except ImportError as e:
@@ -527,9 +531,10 @@ def _all_known_managers() -> list[str]:
 def _schema_for_manager(manager_name: str) -> dict:
     """Return the editor form schema for a manager, including plugin fields.
 
-    Built-in templates provide the curated layout.  For a registry-provided
-    manager without one, the category blank template provides the common
-    device fields and the plugin's JSON Schema supplies its properties.
+    Built-in templates provide the curated layout. The top-level keys of the
+    device entry come from the kind's ``SetupInfo`` dataclass
+    (``schemas/kinds/``), the ``managerProperties`` from the manager's own
+    schema -- generated from its source, or shipped by its plugin.
     """
     template = SCHEMAS.get(manager_name)
     if template is None:
@@ -541,9 +546,42 @@ def _schema_for_manager(manager_name: str) -> dict:
 
     if _schema_module is not None:
         return _schema_module.materialize_device_schema(
-            template=template, json_schema=json_schema
+            template=template, json_schema=json_schema,
+            kind_schema=_kind_schema_for_manager(manager_name),
         )
     return copy.deepcopy(template) if template else {}
+
+
+def _kind_schema_for_category(category: str | None) -> dict | None:
+    """The generated schema for the top-level keys of a device in ``category``."""
+    if not category or _resources_module is None:
+        return None
+    kind = next((meta.kind for meta in _setup_kind_metadata if meta.editor_category == category), None)
+    return _resources_module.kind_schema_for(kind) if kind else None
+
+
+def _kind_schema_for_manager(manager_name: str) -> dict | None:
+    return _kind_schema_for_category(_get_category_for_manager(manager_name))
+
+
+def _with_role_fields(schema: dict, category: str, name: str, device: dict, setup: dict | None) -> dict:
+    """Optional fields for the properties a consumer reads from this device (``schemas/roles/``).
+
+    A role never requires or seeds a property; it only gives the key a typed
+    field in its own group, on the devices its predicate selects.
+    """
+    if _roles_module is None or _resources_module is None:
+        return schema
+    known = {f["key"] for f in schema.get("props", [])} | set(schema.get("nested", {}))
+    for role in _roles_module.applicable(_resources_module.roles(), section=category, name=name,
+                                         device=device, setup=setup or {}):
+        for key, prop in (role.get("properties") or {}).items():
+            if key in known or not isinstance(prop, dict):
+                continue
+            schema.setdefault("props", []).append(
+                _schema_module.role_field(key, prop, group=role.get("title", role["role"])))
+            known.add(key)
+    return schema
 
 
 def _plugin_schema_for_manager(manager_name: str) -> dict | None:
@@ -578,6 +616,7 @@ def _build_default_device(manager_name: str) -> dict:
             manager_name,
             template=template,
             json_schema=_plugin_schema_for_manager(manager_name),
+            kind_schema=_kind_schema_for_manager(manager_name),
         )
     except ImportError:
         # Phase 2 module unavailable - use legacy inline implementation
@@ -593,19 +632,19 @@ def _build_default_device(manager_name: str) -> dict:
 
     d: dict = {"managerName": manager_name, "managerProperties": {}}
     for f in schema.get("top", []):
-        v = f["default"]
-        if f["type"] == "bool" and isinstance(v, bool):
+        v = f.get("default", "")
+        if f.get("type", "text") == "bool" and isinstance(v, bool):
             d[f["key"]] = v
         elif v == "null":
             d[f["key"]] = None
         else:
-            d[f["key"]] = _default_value(v, f["type"])
+            d[f["key"]] = _default_value(v, f.get("type", "text"))
     for f in schema.get("props", []):
-        d["managerProperties"][f["key"]] = _default_value(f["default"], f["type"])
+        d["managerProperties"][f["key"]] = _default_value(f.get("default", ""), f.get("type", "text"))
     for nest_key, nest_fields in schema.get("nested", {}).items():
         sub = {}
         for f in nest_fields:
-            sub[f["key"]] = _default_value(f["default"], f["type"])
+            sub[f["key"]] = _default_value(f.get("default", ""), f.get("type", "text"))
         d["managerProperties"][nest_key] = sub
     return d
 
@@ -1164,6 +1203,34 @@ class DeviceCanvas(QScrollArea):
 
 _MISSING = object()
 
+#: What may be typed into a numeric field. Regular expressions, not
+#: QIntValidator/QDoubleValidator: those carry a C++ int range and a decimal
+#: count, and refuse the tenth digit of a serial number. An empty box is null.
+_INT_PATTERN = r"[-+]?\d*"
+_FLOAT_PATTERN = r"[-+]?(\d+\.?\d*|\.\d*)([eE][-+]?\d*)?"
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _parse_number(text: str):
+    """What an edited numeric field means: an int, else a float, else the text.
+
+    Empty is null -- clearing a box is how a nullable number is unset -- and
+    text that is neither kind is kept as it is rather than lost; validation
+    says what is wrong with it.
+    """
+    stripped = text.strip()
+    if not stripped or stripped.lower() == "null":
+        return None
+    for parse in (int, float):
+        try:
+            return parse(stripped)
+        except ValueError:
+            continue
+    return stripped
+
 
 def _field_default(field_def: dict):
     """The value a field starts from when the file has no such key.
@@ -1204,33 +1271,24 @@ class FieldWidget(QWidget):
         self._init_widget(current_value)
         self._watch_for_edits()
 
-    # QSpinBox is a C++ int; QDoubleSpinBox is clamped silently by Qt.
-    _INT_WIDGET_MIN, _INT_WIDGET_MAX = -2**31, 2**31 - 1
-    _FLOAT_WIDGET_LIMIT = 1e15
-
     def _init_widget(self, value):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         tp = self._def["type"]
-        if tp in ("int", "float") and not self._typed_widget_can_show(tp, value):
-            # A file can hold anything under an int-typed key -- a string, an
-            # int beyond what the spin box can represent. Refusing to open, or
-            # showing a clamped substitute the operator may then save, are
-            # both worse than a text box that keeps the value as it is.
-            self._def = dict(self._def, type="text")
-            tp = "text"
         if tp == "bool":
             self._w = QCheckBox()
             self._w.setChecked(bool(value) if value is not None else False)
-        elif tp == "int":
-            self._w = QSpinBox()
-            self._w.setRange(self._INT_WIDGET_MIN, self._INT_WIDGET_MAX)
-            self._w.setValue(int(value) if value is not None else 0)
-        elif tp == "float":
-            self._w = QDoubleSpinBox()
-            self._w.setRange(-self._FLOAT_WIDGET_LIMIT, self._FLOAT_WIDGET_LIMIT)
-            self._w.setDecimals(9)
-            self._w.setValue(float(value) if value is not None else 0.0)
+        elif tp in ("int", "float"):
+            # A validated line edit, not a spin box: a spin box is a C++ int
+            # that clamps, rounds to its decimals and cannot hold a string a
+            # file put under this key. Whatever the file held is shown as it
+            # is; the validator shapes what is typed, and only when the box
+            # started out holding a number (or nothing) -- a string under a
+            # numeric key is edited as free text, so it can be fixed at all.
+            self._w = QLineEdit("" if value is None else str(value))
+            if value is None or _is_number(value):
+                pattern = _INT_PATTERN if tp == "int" else _FLOAT_PATTERN
+                self._w.setValidator(QRegularExpressionValidator(QRegularExpression(pattern), self._w))
         elif tp == "select":
             self._w = QComboBox()
             options = self._def.get("opts", [])
@@ -1317,21 +1375,6 @@ class FieldWidget(QWidget):
         if self._def.get("tip"):
             self._w.setToolTip(self._def["tip"])
 
-    @classmethod
-    def _typed_widget_can_show(cls, tp: str, value) -> bool:
-        """Whether a spin box can hold ``value`` without changing what it is."""
-        if value is None:
-            return True
-        if isinstance(value, bool):
-            return False
-        try:
-            if tp == "int":
-                return isinstance(value, int) and cls._INT_WIDGET_MIN <= value <= cls._INT_WIDGET_MAX
-            return (isinstance(value, (int, float))
-                    and abs(float(value)) <= cls._FLOAT_WIDGET_LIMIT)
-        except (TypeError, ValueError, OverflowError):
-            return False
-
     def _watch_for_edits(self):
         """Mark the field touched on user interaction, never on construction.
 
@@ -1346,8 +1389,6 @@ class FieldWidget(QWidget):
         w = self._w
         if isinstance(w, QCheckBox):
             w.clicked.connect(touch)
-        elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
-            w.valueChanged.connect(touch)
         elif isinstance(w, QComboBox):
             w.activated.connect(touch)
             if w.isEditable():
@@ -1373,10 +1414,8 @@ class FieldWidget(QWidget):
         tp = self._def["type"]
         if tp == "bool":
             return self._w.isChecked()
-        if tp == "int":
-            return self._w.value()
-        if tp == "float":
-            return self._w.value()
+        if tp in ("int", "float"):
+            return _parse_number(self._w.text())
         if tp == "select":
             return self._w.currentData()
         if tp == "multiselect":
@@ -1421,6 +1460,7 @@ class PropertyEditor(QWidget):
         self._name = ""
         self._device = {}
         self._data: dict = {}                 # Reference to full config data for config settings view
+        self._setup: dict = {}                # The document the loaded device belongs to
         self._field_widgets: dict[tuple, FieldWidget] = {}   # (section, key) → widget
 
         outer = QVBoxLayout(self)
@@ -1659,10 +1699,12 @@ class PropertyEditor(QWidget):
         self._refresh_sections()
         self._show_config_view()
 
-    def load_device(self, cat: str, name: str, device: dict):
+    def load_device(self, cat: str, name: str, device: dict, setup: dict | None = None):
         self._cat = cat
         self._name = name
         self._device = copy.deepcopy(device)
+        # The whole document, for role predicates (``scan.scanDesigner``).
+        self._setup = setup if setup is not None else self._data
         self._name_lbl.setText(name)
 
         # Switch to device view
@@ -1701,13 +1743,19 @@ class PropertyEditor(QWidget):
     def _rebuild_form(self):
         self._tabs.clear()
         self._field_widgets.clear()
+        # What the file had, so Apply can leave alone what it did not have:
+        # presence of an optional key changes a manager's behaviour, and an
+        # aliased key is written back under the spelling it was found in.
+        self._present_keys: set = set()
+        self._field_defs: dict = {}
+        self._alias_spelling: dict = {}
 
         raw_mgr = self._mgr_combo.currentData()
         if raw_mgr == "__custom__":
             mgr = self._custom_mgr_edit.text().strip() or self._device.get("managerName", "")
         else:
             mgr = raw_mgr or self._device.get("managerName", "")
-        schema = _schema_for_manager(mgr)
+        schema = _with_role_fields(_schema_for_manager(mgr), self._cat, self._name, self._device, self._setup)
         props = self._device.get("managerProperties") or {}
 
         # Collect fields grouped by grp
@@ -1741,15 +1789,27 @@ class PropertyEditor(QWidget):
             form.setLabelAlignment(Qt.AlignRight)
 
             for section, f in groups[grp]:
+                spelling = f["key"]
                 if section == "top":
                     current = self._device.get(f["key"], _MISSING)
                 elif section == "props":
                     current = props.get(f["key"], _MISSING)
+                    if current is _MISSING:
+                        # Saved under an alias spelling: load it from there.
+                        for alias in f.get("aliases") or []:
+                            if alias in props:
+                                current, spelling = props[alias], alias
+                                break
                 else:
                     nest_key = section.split(":", 1)[1]
-                    current = (props.get(nest_key) or {}).get(f["key"], _MISSING)
+                    container = props.get(nest_key)
+                    current = container.get(f["key"], _MISSING) if isinstance(container, dict) else _MISSING
                 if current is _MISSING:
                     current = _field_default(f)
+                else:
+                    self._present_keys.add((section, f["key"]))
+                self._field_defs[(section, f["key"])] = f
+                self._alias_spelling[(section, f["key"])] = spelling
 
                 fw = FieldWidget(f, current)
                 lbl = f["label"]
@@ -1798,6 +1858,8 @@ class PropertyEditor(QWidget):
         unknown_top = {k: v for k, v in self._device.items() if k not in known_top}
 
         known_props = {f["key"] for f in schema.get("props", [])}
+        for f in schema.get("props", []):
+            known_props |= set(f.get("aliases") or [])
         known_props |= set(schema.get("nested", {}).keys())
         props = self._device.get("managerProperties") or {}
         # Expose scalar/list props; leave nested dicts collapsed in JSON
@@ -1851,6 +1913,16 @@ class PropertyEditor(QWidget):
                     new_device[key] = value
                 continue
             val = fw.get_value()
+            field = self._field_defs.get((section, key), {})
+            # A property the file did not have is written only if the
+            # manager's code requires it or the operator edited it; a form
+            # may show a default without saving one unasked. A template's
+            # own "req" is a hint for the label and the warning below, not
+            # proof: the file loaded without the key.
+            if not (field.get("schema_req") or (section, key) in self._present_keys or fw.is_touched()):
+                continue
+            if section == "props":
+                key = self._alias_spelling.get((section, key), key)
             if section == "top":
                 if key == "axes":
                     # Axes stored as array in JSON
@@ -1866,16 +1938,27 @@ class PropertyEditor(QWidget):
                 nest_key = section.split(":", 1)[1]
                 nested_keys[nest_key][key] = val
 
+        props_on_load = self._device.get("managerProperties") or {}
         for nest_key, nest_vals in nested_keys.items():
+            original = props_on_load.get(nest_key, _MISSING)
             if nest_vals:
                 props[nest_key] = nest_vals
+            elif original is not _MISSING:
+                # The container was there with nothing the form knows inside
+                # (empty, or not a dict at all): keep it exactly as it was.
+                props[nest_key] = copy.deepcopy(original)
+
+        # A device the file wrote without a managerProperties key, and into
+        # which nothing was written now, stays without one.
+        if not props and "managerProperties" not in self._device:
+            del new_device["managerProperties"]
 
         # Validate required fields
         warnings = []
         for f in schema.get("top", []) + schema.get("props", []):
             if f["req"]:
                 v = new_device.get(f["key"]) if f in schema.get("top", []) else props.get(f["key"])
-                if v is None or v == "":
+                if v is None or v == "" or v == []:
                     warnings.append(f"⚠  Required: {f['label']}")
         self._val_lbl.setText("\n".join(warnings))
 
@@ -3784,7 +3867,7 @@ class MainWindow(QMainWindow):
     def _on_device_selected(self, cat: str, name: str):
         device = (self._data.get(cat) or {}).get(name)
         if device is not None:
-            self._editor.load_device(cat, name, device)
+            self._editor.load_device(cat, name, device, setup=self._data)
 
     def _on_editor_apply(self, cat: str, name: str, new_device: dict):
         if cat not in self._data or not isinstance(self._data[cat], dict):
@@ -3920,7 +4003,7 @@ class MainWindow(QMainWindow):
         self._modified = True
         self._refresh_canvas()
         self._canvas._on_card_clicked(cat, name)
-        self._editor.load_device(cat, name, device)
+        self._editor.load_device(cat, name, device, setup=self._data)
 
     def _on_save_template(self, cat: str, name: str):
         device = (self._data.get(cat) or {}).get(name)

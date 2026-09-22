@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a stand entry in a setup file, as imswitch.imcontrol.model.SetupInfo.MicroscopeStandInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "managerName": {
+      "description": "Name of the manager to use.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:MicroscopeStandInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "description": "Dict with microscope stand-specific info such as available cubes",
+      "type": [
+        "object",
+        "null"
+      ],
+      "x-imswitch-kind": "object",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:MicroscopeStandInfo.managerProperties: Optional[dict]"
+      ]
+    },
+    "rs232device": {
+      "description": "Name of the rs232 device to use.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:MicroscopeStandInfo.rs232device: str"
+      ]
+    }
+  },
+  "required": [
+    "managerName",
+    "managerProperties",
+    "rs232device"
+  ],
+  "title": "stand device entry (MicroscopeStandInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "MicroscopeStandInfo"
+  ],
+  "x-imswitch-info-class": "MicroscopeStandInfo"
+}

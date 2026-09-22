@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "device": {
+      "description": "PI controller model identifier (e.g. ``\"C-663.11\"``).  If",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "usb_description": {
+      "description": "Optional explicit USB description string.  If omitted the",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    }
+  },
+  "title": "PIStageManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PIStageManager",
+    "PositionerManager"
+  ]
+}

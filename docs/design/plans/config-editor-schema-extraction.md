@@ -1,9 +1,284 @@
 # Config Editor Schema Extraction Plan
 
 Date: 2026-09-21 (plan; revision 2 after first review; revision 3 recorded the
-decisions; revision 4 after second review). Status: **proposed — revision 4
-awaiting review.** Not marked ready to implement: the second review found the
-acceptance criterion, the type rules and the role fragments unsound as written.
+decisions; revision 4 after second review; revision 5 records what Phase 0
+measured; revision 6 records Phase 1; revision 7 folds in the review of
+Phase 0; revision 8 records Phase 2; revision 9 folds in the review of
+Phases 1–2; revision 10 records Phase 3; revision 11 records Phase 4;
+revision 12 records Phase 5; revision 13 records Phase 6). Status: **all six
+phases implemented on `feat/config-editor-schema-extraction` (draft PR #35);
+merge gate: rebase onto `main` once PR #34 merges.**
+
+## Changes in revision 13 (Phase 6 implemented)
+
+- Phase 6 was planned as documentation only, but the tool as built could
+  not do what the documentation would have promised: `generation_inputs`
+  starts from the core catalog and templates, so pointing it at a plugin
+  would have written the core managers' schemas into the plugin. So
+  `--package <name>` exists now: the package is located with
+  `importlib.util.find_spec` and never imported (a test package whose
+  `__init__` raises proves it), its `imswitch.json` names the managers
+  (`id`, `kind` → category, `python_name` → class), extraction runs over the
+  package's own tree only (no shipped-setup examples, no docs cards), and
+  `--write`/`--check`/`--report` write, compare and print
+  `<package>/schemas/{managers,fixtures,index.json}`; a hand-written
+  `schemas/overrides/<id>.json` in the package is merged last as in core;
+  no kind schemas are written (those belong to the core dataclasses). A
+  contribution that is not in the tree is listed under `unresolved`.
+- `docs/devices/plugins.rst` gains "Generating the managerProperties
+  schema": the three commands, what the extractor reads, where to point
+  `manager_properties_schema`, the package-data glob, and the override
+  escape hatch. `schema_for()` then resolves the plugin's own schema
+  through the ordinary contribution path (pinned by a test that writes a
+  package, points its manifest at the written file and resolves it).
+
+## Changes in revision 12 (Phase 5 implemented)
+
+- **Templates are overlays.** 129 template `type`s that merely repeated the
+  schema kind (props) or the dataclass annotation (top) were stripped; 6
+  that contradicted the schema were dropped so the schema decides
+  (Hamamatsu `cameraListIndex` `int` over a union — the text box that holds
+  `0` and `"mock"`; five `rs232device` `text`s over the `ref` widget); one
+  field that was never a property was removed (SwabianTimeTagger's
+  `accumulate_mode` is a runtime `DetectorListParameter`). What remains is
+  label, group, tooltip, options, and refinements (`select`, `path`,
+  `text` over an array — comma-separated editing of a list, added as a
+  refinement for Cobolt's `digitalPorts`). A template field without a type
+  is typed by the schema or the kind; the form never sees an untyped field.
+- **Three more role rules**, because the template survey showed keys no
+  manager reads: `display_transform` (`displayRotation`/`displayFlipX`/
+  `displayFlipY`/`displayTransform`, read by
+  `controller/display_transform.py` for any detector), `beta_scan_axis`
+  (`conversionFactor`/`minVolt`/`maxVolt`, read by `BetaScanDesigner` for
+  scanning axes under that designer; no fallback notes — the designer
+  tolerates their absence and the shipped mock setups omit them) and
+  `triggerscope_target` (`minVolt`/`maxVolt` with fallbacks ±10 V for any
+  device whose `analogChannel` is a `Triggerscope/DAC…`). A role may now
+  apply to several sections and test a field by prefix.
+- **`test_configeditor_template_drift.py`**: every template key is one the
+  code reads (the manager schema under either spelling, a role that applies
+  to the category, or anything for an open pass-through manager such as
+  `RS232Manager`); every nested section is an object property; every
+  top-level key is in the kind schema; every remaining type is a
+  refinement and never a repeat; the form still types every field; and
+  at most 40 % of template fields carry a type at all.
+- **`test_devices_docs_drift.py`** (decision 3): for every manager with a
+  card, every schema property is a card row — or a property every manager
+  on the page inherits, documented once in the page intro
+  (`cameraPixelSizeUm` for detectors, `calibCsvPath` for lasers, and the
+  test checks the intro really says so) — and every card row names a
+  property the code reads (sub-keys of nested objects included). The 23
+  managers without a card are pinned by name, so a new manager without one
+  is noticed. Seventeen rows were added to make the cards true (APD and
+  PMT mock and simulation properties, ThorCamTSI `flushFrameLimit`,
+  Cobolt0601New `simulation`, Kinesis's deprecated `unitsPerUm`), BSC203's
+  bullets became the table every other card uses, CoboltLaserManager's
+  inherited property became a row, and a "Power calibration file" intro
+  documents `calibCsvPath` for every laser. The card parser stopped reading
+  `PiezoconceptZManager2` as `PiezoconceptZManager` (`range_um` belongs to
+  the former), so the docs figures moved from 117/118 to **135/135** — every
+  documented key is read, and every read key with a card is documented.
+
+## Changes in revision 11 (Phase 4 implemented)
+
+- **`kinds/<kind>.json`** for the eight kinds with a `SetupInfo` dataclass
+  (`detector`→`DetectorInfo`, `laser`, `positioner`, `rotator`→`DeviceInfo`,
+  `rs232`→`RS232Info`, `slm`→`SLMsInfo`, `flip_mirror`→`FlipMirrorInfo`,
+  `stand`→`MicroscopeStandInfo`; pulse generators have a bespoke loader and
+  none). Read from `SetupInfo.py` with `ast` by `configeditor/kinds.py` —
+  the attribute docstrings are the descriptions and are invisible at runtime
+  — and pinned to `dataclasses.fields()` (names, order, defaults,
+  requiredness) per kind. Annotation → `type` (`Optional[Union[str, int]]` →
+  `["string","integer","null"]`, `List[str]` → array of strings edited as
+  comma-separated text via `x-imswitch-widget: text`, `Any` → no type) and
+  kind; a field without a default is `required`; the default is emitted as
+  `default` because an omitted key *means* it. Generated by the same tool
+  (`--setup-info`), drift-checked with the manager schemas.
+- **The blanks' `top` lists are deleted** (all nine). Every top-level field
+  in the form is typed from its annotation; a templated manager's `top`
+  fields are refined by the kind the way `props` are by the manager schema;
+  kind-only fields (`resetOnClose`, `physicalActuator`, `powerDevice`,
+  `freqRange*`, …) appear in a `Device` group instead of the raw `Other`
+  tab. A dataclass field without a default is `req` for the label and the
+  warning but never `schema_req`: `infer_missing=True` loads a missing one
+  as `None`, so the file was accepted without it and Apply must not invent
+  it. A new device from a blank carries only the keys the dataclass
+  requires, as the empty value of their kind (`None` for a number or string
+  so the required warning fires, `[]` for `axes`); a key with a dataclass
+  default is omitted — omitting it means that default. Consequence worth
+  knowing: a new untemplated detector no longer arrives with
+  `forAcquisition: true`; the form shows the dataclass default (`false`) and
+  the operator ticks it.
+- **`kind.schema` diagnostics** (warning): each device entry validated
+  against its kind schema by the shared validator, `microscopeStand`
+  included. All 15 shipped setups produce none.
+- **Role rules** are hand-written JSON under `schemas/roles/` (never
+  generated; `write()` refuses the directory like `overrides/`), evaluated
+  by `configeditor/roles.py` from the shared validator:
+  `role.missing-required` (error, the consumer's own message) and
+  `role.missing-read` (note, only for reads with a declared `fallback`).
+  `galvo_scan_axis`: `scan.scanDesigner == "GalvoScanDesigner"` and
+  `forScanning` and name without `mock` → requires `vel_max`/`acc_max`,
+  reads `conversionFactor` (fallback 1) and `jerk_max`. `slm`: any SLM,
+  reads `startConfig`. The designer's check moved into one function,
+  `GalvoScanDesigner.scan_axes_missing_limits()`, which `make_signal` calls
+  and the parity test runs on the same fixtures as the rule. The 13 shipped
+  mock scanners get no diagnostic (name or designer exempts them); a real
+  scanning axis without `vel_max` under the galvo designer gets the
+  designer's own message from CLI and editor alike.
+- **The editor shows role properties as optional fields** in the role's own
+  group on the devices the predicate selects — `PropertyEditor.load_device`
+  takes the whole document for the predicate — and never requires or seeds
+  one.
+- The merge-gate test now covers `kind.*` and `role.*` codes too.
+
+## Changes in revision 10 (Phase 3 implemented)
+
+- **The gate is lifted.** The editor's catalog is built with
+  `include_generated_schemas=True`; every one of the 44 untemplated managers
+  with a schema shows typed fields and no raw tab (tested over the generated
+  fixtures), and the 20 templated ones see the schema through their template.
+- **Type authority in all three consumers.** `schemas.resolve_type()` is the
+  one rule: the schema's `x-imswitch-kind` decides the widget; the template's
+  type survives only as a compatible refinement (`select`/`multiselect`/
+  `ref`/`path` over the kinds they can present, or the same kind spelled the
+  template's way), when the schema states no type at all, or — one nuance the
+  plan did not have — when both are numeric and the schema's kind rests on
+  nothing stronger than an example or the docs (`-10` in a shipped setup does
+  not prove `minVolt` is an int). `materialize_device_schema()` writes the
+  resolved type, `opts`, `aliases`, `nullable` and `schema_req` into the
+  template's field; `build_default_device()` seeds template defaults and
+  schema-required keys only, never an optional one, never an alias copy, and
+  tolerates a template field without `type`.
+- **Unions.** `["integer","string"]` → text box (Hamamatsu `cameraListIndex`
+  holds `0` and `"mock"` losslessly); `["integer","number"]` → number box;
+  `["<kind>","null"]` → that kind; nothing known → the JSON widget.
+- **Numeric widgets are line edits with a regular-expression validator**, not
+  `QIntValidator`/`QDoubleValidator`: those carry a C++ `int` range and refuse
+  the tenth digit of a serial number, which is a clamp by another name. The
+  validator is installed only when the box starts out holding a number (or
+  nothing); a string under a numeric key is edited as free text so it can be
+  fixed at all. An empty box is `null`.
+- **Omitted stays omitted, refined.** `_do_apply` writes an absent, untouched
+  field only when the *schema* requires it (`schema_req`); a template's own
+  `req` is a hint for the bold label and the warning, not proof — the file
+  loaded without the key. A `managerProperties` the file never had is not
+  added. A template-known nested container holding nothing the form lists
+  (empty, `null`, vendor keys only) is written back exactly.
+- **Spelling is preserved** per [Aliases](#aliases): loaded from the alias
+  spelling when the canonical is absent, written back under it; both
+  spellings present survive untouched; a key the file never had is written
+  canonically.
+- **Corpus and comparison.** `configeditor_testing.assert_json_identical`
+  (kinds first, then values, path in the message; its own tests pin `1` vs
+  `1.0` vs `True`, `None` vs `{}`, key presence) and `corpus()`: the 15
+  shipped setups (78 devices), the 65 generated fixtures, and 13 hand-written
+  value-shape fixtures under `_test/unit/configeditor_fixtures/` (README
+  states each one's reason). The round trip is type-strictly identical over
+  all of them, and a rewritten shipped setup gets exactly the schema
+  diagnostics the original got.
+- What the corpus found while being built: three shipped flip mirrors have no
+  `managerProperties` key at all (the editor added `{}`); a nested container
+  with nothing the template lists was dropped on Apply.
+
+## Changes in revision 9 (review of Phases 1–2)
+
+Five findings against `c66a1c4d`, each reproduced before it was fixed; none
+changed a checked-in schema (the drift test regenerates byte-identically),
+because no core manager exercises the paths yet — the synthetic cases pin them.
+
+| Finding | Fix |
+| --- | --- |
+| Overrides did not reach alias spellings: copies were made before the override, so `"seed": "wrong"` failed while `"old_seed": "wrong"` passed. | `build_schema` copies each alias from the **final** canonical property; an override that names an alias spelling itself is merged on top of that copy. |
+| A plugin registering an unregistered core *name* with its own class inherited the core contract (`AAAOTFLaserManager` from a vendor package was told `channel` is required). | `schema_for` hands a contribution the generated schema only when `implemented_by_core()`: its `python_name` module is inside `imswitch.imcontrol.model.managers` **and** its class is the schema's first `x-imswitch-classes` entry. The catalog now calls the same `schema_for` (with `generated=` as its gate) instead of its own lookup. |
+| A helper handed the dict lost its guards: `try: return props["k"] except KeyError` came out required through the followed-helper path. | One module-level `_guard_status` walk shared by the class scanner and `_scan_parameter_reads`, with "own" meaning *this parameter* — a check on another dict the helper takes does not count. |
+| The documented deep merge was `dict.update`: overriding `defaults.properties.gain.minimum` dropped `gain`'s kind and its sibling sub-properties. | Recursive merge (objects key by key, anything else replaces); `override` provenance on every touched sub-property. |
+| Fixtures ignored bounds: an override with `minimum: 5` produced `1`, and the mandatory fixture test failed a valid schema. | `_example_for` honours `const`/`examples`/`default`/`enum`, numeric bounds and `multipleOf`, `minLength`/`maxLength`, `minItems`; what it cannot satisfy raises `FixtureError` naming the property and the fix (`"examples": [<value>]` in the override), and `build_fixture` validates against the schema before anything is written. |
+
+## Changes in revision 8 (Phase 2 implemented)
+
+- `configeditor/resources.py` is the stdlib-only loader (`generated_schema_for`,
+  `index`, `alias_conflicts`, `canonical_spelling`); `schema_for()` lives in
+  `plugins/validation.py` beside `resolve_schema` so the plugins package does
+  not import the config editor.
+- `_validate_device_manager` resolves a schema on every branch — registered,
+  legacy, and the stand mock fallbacks — and emits `manager.alias-conflict`
+  per device there, not in `_validate_cross_references` as first written: the
+  schema is already in hand at that point.
+- `build_catalog(include_generated_schemas=...)` defaults to off; the editor's
+  catalog is unchanged, the validator does not go through the flag. The CLI
+  keeps plugin discovery on: it validates a user's real setup.
+- The catalog's legacy scan no longer skips `RS232Manager`: the core catalog
+  is **65** managers and `test_setup_metadata.py` records it as unregistered.
+- New merge-gate test: every shipped setup validates with zero `manager.schema`
+  and `manager.alias-conflict` diagnostics.
+- Role diagnostics are Phase 4's, where the fragments they evaluate are
+  generated; Phase 2 ships the alias half of the shared validator work.
+
+## Changes in revision 7 (review of Phase 0)
+
+Six findings against the Phase 0 extractor, all verified and fixed before the
+schemas were generated from it, plus one qualification:
+
+| Finding | What was wrong | Fix |
+| --- | --- | --- |
+| The command imported the manager and Qt stack | `imswitch/imcontrol/model/__init__.py` imports every manager on import, and the catalog imported the managers package to find its directory. | The tool installs a bare package object for `imswitch.imcontrol.model` before importing beneath it, and builds the catalog from the explicit managers root. A test runs the tool in a fresh process with `imswitch.imcontrol.model.managers*` and Qt imports forbidden. |
+| Unsupported reads disappeared | Only literal keys were read: `DetectorManager`'s `CAMERA_PIXEL_SIZE_KEY` (a module constant, read inside a *module-level* function handed the dict) and `ThorlabsMFF`'s `_read_info(key)` helper were invisible, so `cameraPixelSizeUm` was missing from every detector and the MFF "read nothing". | Module and class string constants resolve; a method whose key is a parameter is followed to its call sites (`self._read_info("invert", False)`), carrying the *helper's own* access — `hasProperty` is an `in`, `getProperty` a `.get` — so call sites are as optional as the helper; module functions and methods handed the dict or the Info are followed to the parameter they read; a nested dict read through a local alias (`defaults = props.get("defaults", {})`) yields sub-properties with their own kinds. Anything still unnameable is an **unresolved read**: listed in the report, counted in the snapshot, stamped on the schema. |
+| Receiver provenance was not strict | Any attribute ending in `Info` was trusted by name (`self.otherInfo = other` leaked), and a `props` bound in the constructor made an unrelated method's `props` parameter count. | Attributes count only when a method of the class or a base bound them from an Info parameter; name bindings are scoped to their function; an Info-named parameter of *any* method is this manager's Info within that method. |
+| Some "proven object" constraints rejected arrays | `props["channels"][0]` and `.pop()` produced `type: object`. | Only a string-keyed subscript or a mapping-only method (`items`, `keys`, `values`, `get`, `setdefault`, `update`) proves an object. |
+| Writes counted as required reads | No `ast.Load` check: `props["created"] = 1` became a required property. | Store and Del contexts are writes, reported separately and never properties. |
+| Coverage depended on installed plugins | `build_catalog()` ran plugin discovery. | `build_default_registry(discover=False)` and the explicit root everywhere; registry `python_name` resolves a contribution to its class, a legacy stem resolves through its module (a re-export, or a single manager class), and a vendor-driver module (`PyCoboltManager.py`) stays unresolved on purpose. |
+
+*Qualification — the snapshot pins counts, not contracts.* Correct: the Phase 0
+snapshot is a coverage-regression check. The full contract comparison is Phase
+1's checked-in schemas with `test_checked_in_schemas_match_the_source_tree`,
+which regenerates every schema in memory and diffs it against disk: a renamed
+property changes the file.
+
+Measured after the fixes, on the core catalog with discovery off: **58** of 64
+managers read properties (was 54), **216** canonical keys plus 9 alias
+spellings (was 179 + 9), **68** required (unchanged — the guard-aware rule
+held), 148 optional, 0 uncertain, **47** with a provable constraint,
+**3 unresolved reads** (all `SwabianTimeTaggerManager` indexing
+`trigger_levels` by a runtime channel number — reported, not guessed), 0
+writes, and docs agreement **117/118** counting sub-properties (the one
+documented key nothing reads is `PiezoconceptZManager.range_um`). Generation
+covers **65** managers (only `PyCoboltManager` has no class).
+
+## Changes in revision 6 (Phase 1 implemented)
+
+`configeditor/schemagen.py` and `tools/extract_manager_schemas.py --write /
+--check` now exist; `schemas/managers/`, `schemas/fixtures/` and
+`schemas/index.json` are checked in (131 files for **65** managers: the 64 in
+the catalog minus `PyCoboltManager`, whose module is a vendor driver, plus the
+2 template-backed names the catalog's legacy scan skips; the two mock
+contributions resolve through their registry `python_name`). Four things
+implementation surfaced:
+
+| Found | Consequence |
+| --- | --- |
+| Some docs cards have four columns (`Field / Type / Default / Meaning`); the Phase 0 parser read cells by position and took AAAOTF's defaults as descriptions. | The parser reads the header row; 17 schemas' descriptions changed. Kinds and the Phase 0 snapshot did not move. |
+| A required property with an alias cannot come from extraction: the nested `.get` that reveals the alias also makes the key optional. | The either-spelling `anyOf` is emitted after overrides, and only an override can reach it. Tested that way. |
+| "One line in the fixture" is one *property*: JSON's trailing comma moves the previous line. | Exit criterion reworded below; the test compares parsed fixtures and comma-insensitive lines. |
+| `protocolProfile` is a closed set (`build_profiles()`): `aa.compatibility`, `aa.frequency-startup`, or omitted/empty for the default. | The seed override is an `enum` with `null` and `""`, not a loose string type. |
+
+## Changes in revision 5 (Phase 0 measurements)
+
+Phase 0 replaced the throwaway probes with `configeditor/extraction.py` and
+`tools/extract_manager_schemas.py --report`. Three figures moved, each for a
+reason the tool now shows:
+
+| Figure | Probe said | Extractor says | Why |
+| --- | --- | --- | --- |
+| Managers that read any `managerProperties` | 55 | **54** | `PulseGeneratorLaserManager`'s one mention of the word is in its docstring. |
+| Distinct keys | 188 | **179 canonical + 9 alias spellings** | The alias rule folds APD/PMT's `mock_*` snake-case spellings into their camelCase properties, as the plan requires; the probe had counted both. |
+| AAAOTF's constrained properties | `calibCsvPath` via `Path()` | **none** | The code passes the read to `create_lut_from_calib(...)`; nothing at the read site proves a type. Its path widget comes from the template/docs, as presentation. |
+
+Also measured for the first time: **46** properties carry a provable
+validation constraint; **0** reads are `uncertain` on today's tree (the rule
+is exercised by fixture tests); `RS232Manager` is selectable by name in shipped
+setups and has a template, yet the catalog's legacy scan skips it as a base
+class — a catalog gap to close in Phase 2 alongside `schema_for()`.
 
 Extends [config-editor-discovery-and-schema.md](config-editor-discovery-and-schema.md)
 (the "discovery plan" below). Nothing here contradicts its target architecture;
@@ -44,17 +319,18 @@ import, no side effects. A probe over the current tree shows that works:
 | Measure | Result |
 | --- | --- |
 | Selectable managers in the catalog | 64 (9 registry, 55 legacy scan) |
-| … that read any `managerProperties` at all | 55 |
-| … whose keys static extraction recovers | **54** (the 55th, `PyCoboltManager`, takes constructor kwargs) |
-| Distinct keys recovered | **188**, none dynamic (no `props[f"…"]` anywhere) |
-| Required under a guard-aware rule (unguarded subscript, no `.get`/`in` read of the same key) | 68 (a naive subscript rule says 91) |
-| Optional | 120 |
-| Keys with an *editor preference* from code alone (non-`None` `.get` default or `int()`/`float()`/`bool()`/`Path()` wrapper) | 88 (47 %) |
-| … plus the kind of value in the 15 shipped setups (22 managers) | 116 (61 %) |
-| … plus the *Type* column of the hand-written `docs/devices` cards | 149 (79 %) |
-| Keys whose only default is `None` | 13 |
+| … that read any `managerProperties` at all | **58** (`PyCoboltManager.py` is a vendor driver, not a manager; the rest take nothing) |
+| … whose keys static extraction recovers | **58** |
+| Distinct keys recovered | **216** canonical, plus 9 alias spellings folded in; 3 reads remain unresolved (dynamic sub-keys), reported |
+| Required under a guard-aware rule (unguarded subscript, no `.get`/`in` read of the same key) | 68 |
+| Optional | 148 (0 of them `uncertain` today) |
+| Keys with an *editor preference* from code alone (non-`None` `.get` default or `int()`/`float()`/`bool()`/`Path()` wrapper) | 90 (41 %) |
+| … plus the kind of value in the 15 shipped setups (22 managers) | 120 (55 %) |
+| … plus the *Type* column of the hand-written `docs/devices` cards | 151 (69 %) |
+| Keys whose only default is `None` | 31 (24 still untyped after every source) |
 | Device references recovered by data-flow (`props['x']` → `lowLevelManagers['rs232sManager'][x]`) | 14 |
-| Agreement of extraction with the 118 fields the docs cards document | 111 (94 %) |
+| Properties with a *provable* validation constraint | 47 |
+| Agreement of extraction with the 118 fields the docs cards document | 117 (99 %), counting nested sub-properties |
 
 That last row is the point: [docs/devices/README.md](../../devices/README.md)
 says the cards were hand-derived from "the `managerProperties[...]` and
@@ -106,20 +382,22 @@ builds a channel name or returns the value verbatim. Therefore:
   what flags the string.
 - **Omitted stays omitted.** Apply writes an optional property only if the file
   already had it or the operator edited its field. A form may *show* a default;
-  it does not *save* one unasked. (Phase 3: `_do_apply` must learn which keys
-  were present on load; today it writes every field.)
+  it does not *save* one unasked. Landed in Phase 3: `_do_apply` records which
+  keys were present on load and writes an absent, untouched one only when the
+  schema requires it — a template's `req` is a hint, not proof.
 - **Spelling is preserved.** A property saved under an alias is loaded from,
   and written back to, that alias. The canonical spelling is used only for a
   property the file never had.
 - **Nothing a widget cannot hold is lost.** A spin box is a C++ `int`;
-  `int("two")` raises. A value the typed widget cannot represent gets the
-  type-preserving text box for that instance (landed in `ec3e02f2`) rather
-  than a crash on load or a clamped substitute.
+  `int("two")` raises. Phase 3 replaced the spin boxes with line edits that
+  show whatever the file held and validate only what is typed, and only when
+  the box started out holding a number; there is no range or decimal count
+  left to clamp or round to.
 - **Unknown stays verbatim.** Already guaranteed by `merge_preserving_unknown`
   (discovery plan Phase 2); this plan does not weaken it.
 
-Until `_do_apply` honours the second and third rules, generated schemas must
-not reach it.
+`_do_apply` honours all five since Phase 3, which is when generated schemas
+first reached it.
 
 ## Sources, and their order of authority
 
@@ -329,24 +607,25 @@ A generated schema, for illustration (AAAOTF, under the revised rules):
                     "x-imswitch-source": ["code:required", "code:ref"]},
     "channel":     {"x-imswitch-kind": "integer",
                     "x-imswitch-source": ["code:required", "example:int"]},
-    "calibCsvPath":{"type": "string", "x-imswitch-kind": "string", "x-imswitch-widget": "path",
-                    "x-imswitch-source": ["code:optional(try/except KeyError)", "code:Path()", "template:path"]},
+    "calibCsvPath":{"x-imswitch-kind": "string", "x-imswitch-widget": "path",
+                    "x-imswitch-source": ["code:optional(try/except KeyError)", "docs:string", "template:path"]},
     "frequencyMHz":{"x-imswitch-kind": "number", "x-imswitch-nullable": true,
                     "x-imswitch-source": ["code:optional", "code:nullable", "example:float"]},
     "ttlToggling": {"x-imswitch-kind": "boolean",
                     "x-imswitch-source": ["code:optional(in-guard)", "docs:type"]},
     "toggleTrueExternal": {"x-imswitch-kind": "boolean",
                     "x-imswitch-source": ["code:optional(in-guard)", "docs:type"]},
-    "protocolProfile": {"x-imswitch-nullable": true,
-                    "x-imswitch-source": ["code:optional", "code:nullable"]}
+    "protocolProfile": {"x-imswitch-kind": "string", "x-imswitch-nullable": true,
+                    "x-imswitch-source": ["code:optional", "code:nullable", "docs:string"]}
   }
 }
 ```
 
-Only `calibCsvPath` carries a validation `type`, because only there does the
-code (`Path(...)`) prove one. `channel` is *displayed* as an integer and
-accepts anything until an override says otherwise. `protocolProfile` has no
-kind and no constraint: the JSON widget, and validation that passes.
+Nothing here carries a validation `type`: the code never wraps a read in
+`Path()`, `int()` or `.items()`, so nothing is provable and every property
+accepts anything until an override says otherwise. `channel` is *displayed* as
+an integer; `calibCsvPath` gets the path picker from the template. This is
+the measured output of Phase 0, not a sketch.
 
 `x-imswitch-*` is the annotation vocabulary the discovery plan's item D
 proposed. This plan introduces `kind`, `widget`, `ref-category`, `aliases`,
@@ -442,14 +721,17 @@ tests instead of skipping them; product runtime keeps it optional.
   each guard form, a base-class `.get` for a subclass subscript, and the
   provable-constraint cases (`Path()`, nested subscript, `.items()`).
 
-**Exit criterion:** the report reproduces 54 / 188 / 68 required / 14 refs on
-the current tree; `AAAOTFLaserManager` reports `calibCsvPath`, `ttlToggling`,
-`toggleTrueExternal` as optional, `calibCsvPath` as the only constrained
-property, and `cameraSerial` on `ThorCamTSIManager` as nullable with kind
-`string` from examples; every row of the tables has a failing-then-passing
-test.
+**Exit criterion (met, re-pinned after review):** the report reproduces 58
+recovered / 216 canonical keys (+9 alias spellings) / 68 required / 14 refs /
+3 unresolved on the current tree;
+`AAAOTFLaserManager` reports `calibCsvPath`, `ttlToggling`, `toggleTrueExternal`
+as optional and no property as constrained; `cameraSerial` on
+`ThorCamTSIManager` is nullable with kind `string` from examples; every row of
+the tables has a test (`test_configeditor_extraction.py`, 74 cases), and the
+tree figures are pinned by `test_configeditor_extraction_tree.py` against a
+checked-in snapshot regenerated with `--report --json`.
 
-*Estimate: ~1 day.*
+*Estimate: ~1 day — actual.*
 
 ### Phase 1 — Checked-in schemas, fixtures and the drift guard
 
@@ -467,11 +749,18 @@ test.
   reviewed" rule are exercised from day one.
 - `jsonschema` added to the `test` extra.
 
-**Exit criterion:** adding a `props.get("newKey", 3)` to any manager without
-running the tool fails CI with a message that says how to fix it; running the
-tool produces a one-property diff plus one line in that manager's fixture.
+**Exit criterion (met):** adding a `props.get("newKey", 3)` to any manager
+without running the tool fails CI with a message that says how to fix it
+(`test_checked_in_schemas_match_the_source_tree`, quoting
+`python tools/extract_manager_schemas.py --write`); running the tool produces a
+one-property diff in the schema and one new property in that manager's fixture
+(`TestExitCriterion`). Every generated schema passes
+`Draft202012Validator.check_schema`, every fixture satisfies its schema, and a
+validation `type` appears only with a provable source or an override
+(`test_generated_schemas_never_narrow_without_an_override`). `jsonschema` is in
+the `test` extra; the tests fail rather than skip without it.
 
-*Estimate: ~0.5 day.*
+*Estimate: ~0.5 day — actual, plus the parser fix.*
 
 ### Phase 2 — Resolve schemas in the model layer; editor consumption gated
 
@@ -496,11 +785,15 @@ tool produces a one-property diff plus one line in that manager's fixture.
   `test_fake_plugin_contribution` still passes with its own schema winning
   over a generated one of the same id.
 
-**Checkpoint (not a shipped state):** the CLI validates every manager that
-has a schema, registered or not; with the gate down, the editor's behaviour is
-unchanged.
+**Checkpoint (met):** the CLI validates every manager that has a schema,
+registered or not (`test_configeditor_schema_resolution.py`: a legacy-scanned
+`SerialDacZManager`, a registered `HamamatsuManager` and its alias
+`hamamatsu.orca`, an APD alias spelling, a both-spellings conflict); with the
+gate down the editor's catalog carries no schema; the 15 shipped setups
+validate cleanly.
 
-*Estimate: ~1 day (was 0.5; aliases and roles).*
+*Estimate: ~1 day — actual ~0.5; the role half moved to Phase 4 with its
+fragments.*
 
 ### Phase 3 — Schema is the type authority in the editor
 

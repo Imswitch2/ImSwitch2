@@ -1,0 +1,11 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "GXPIPYManager",
+    "managerProperties": {
+      "cameraListIndex": 1,
+      "cameraPixelSizeUm": null,
+      "gxipycam": {}
+    }
+  }
+}

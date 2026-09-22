@@ -1,0 +1,14 @@
+{
+  "role": "slm",
+  "title": "SLM (SLMsController)",
+  "applies_to": "slms",
+  "consumer": "imswitch.imcontrol.controller.controllers.SLMsController",
+  "when": {},
+  "requires": [],
+  "reads": [
+    {"key": "startConfig"}
+  ],
+  "properties": {
+    "startConfig": {"x-imswitch-kind": "string", "x-imswitch-widget": "path", "description": "Pattern configuration file SLMsController loads at startup; the controller writes it here when a configuration is saved as the start config."}
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "digitalPorts": {
+      "description": "COM ports to connect to; only the first is used.  **Required**.",
+      "x-imswitch-kind": "array",
+      "x-imswitch-source": [
+        "code:required",
+        "docs:array"
+      ]
+    }
+  },
+  "required": [
+    "digitalPorts"
+  ],
+  "title": "CoboltLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "CoboltLaserManager",
+    "Cobolt0601LaserManager",
+    "LantzLaserManager",
+    "LaserManager"
+  ]
+}

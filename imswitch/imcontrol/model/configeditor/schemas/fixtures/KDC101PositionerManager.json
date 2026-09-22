@@ -1,0 +1,14 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "KDC101PositionerManager",
+    "managerProperties": {
+      "accConvFac": 1.5,
+      "homeOnInit": true,
+      "port": "example",
+      "posConvFac": 1.5,
+      "positionUnit": "example",
+      "velConvFac": 1.5
+    }
+  }
+}

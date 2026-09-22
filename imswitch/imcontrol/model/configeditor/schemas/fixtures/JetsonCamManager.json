@@ -1,0 +1,10 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "JetsonCamManager",
+    "managerProperties": {
+      "avcam": {},
+      "cameraPixelSizeUm": null
+    }
+  }
+}

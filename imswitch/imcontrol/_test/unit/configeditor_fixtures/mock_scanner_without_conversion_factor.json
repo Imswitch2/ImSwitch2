@@ -1,0 +1,13 @@
+{
+  "why": "13 shipped mock positioners scan with no properties at all (the galvo designer exempts axes named mock). The editor must not seed conversionFactor or anything else.",
+  "setup": {
+    "positioners": {
+      "X": {
+        "analogChannel": null, "digitalLine": null,
+        "managerName": "MockPositionerManager",
+        "managerProperties": {},
+        "axes": ["X"], "forScanning": true, "forPositioning": true, "resetOnClose": false
+      }
+    }
+  }
+}

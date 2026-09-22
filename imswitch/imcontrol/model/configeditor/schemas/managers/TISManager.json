@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "cameraListIndex": {
+      "description": "Index of the camera in the enumerated TIS camera list (0-based).  Set to an invalid value (e.g. ``\"mock\"``) to force the mock fallback.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer"
+      ]
+    },
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "tis": {
+      "description": "Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:mapping-use",
+        "code:required",
+        "example:object"
+      ]
+    }
+  },
+  "required": [
+    "cameraListIndex",
+    "tis"
+  ],
+  "title": "TISManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "TISManager",
+    "DetectorManager"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "mockermode": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "HamamatsuSLMdviManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "HamamatsuSLMdviManager"
+  ]
+}
