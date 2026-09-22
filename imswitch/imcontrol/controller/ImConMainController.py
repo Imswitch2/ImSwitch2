@@ -239,6 +239,12 @@ class ImConMainController(MainController):
                 self.__mainView
             )
 
+        # The panels only got their rows once their controllers ran, so the
+        # dock proportions the view guessed while they were still empty are
+        # re-derived here.  Before the saved layout is restored: a saved
+        # layout wins over content-derived sizes.
+        self.__mainView.applyContentAwareDockSizing()
+
         self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
         getWidgetStatePersistence().register('GuiLayout', self.__guiLayoutStateAdapter)
 
@@ -254,6 +260,10 @@ class ImConMainController(MainController):
                 )
         except Exception as e:
             self.__logger.warning(f'Failed to auto-restore widget states: {e}')
+
+        # Everything is built and any saved layout has been applied: settle the
+        # dock proportions once the window is actually on screen.
+        self.__mainView.scheduleInitialDockLayout()
 
         if setupInfo.pyroServerInfo.active:
             self._serverWorker = ImSwitchServer(self.__api, setupInfo)

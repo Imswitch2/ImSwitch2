@@ -25,6 +25,11 @@ class ImConMainView(QtWidgets.QMainWindow):
     # window) so the ShortcutManager only keeps the visible module's set live.
     sigModuleVisibilityChanged = QtCore.Signal(bool)
 
+    # Set when a saved dock layout has been restored: its splitter sizes are
+    # the user's own and must not be replaced by content-derived ones.
+    _layoutRestored = False
+    _initialDockLayoutPending = False
+
     def __init__(self, options, viewSetupInfo, *args, **kwargs):
         self.__logger = initLogger(self)
         self.__logger.debug('Initializing')
@@ -85,6 +90,14 @@ class ImConMainView(QtWidgets.QMainWindow):
         )
         self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
         tools.addAction(self.configEditorAction)
+
+        self.resetLayoutAction = QtWidgets.QAction('Reset panel layout', self)
+        self.resetLayoutAction.setToolTip(
+            'Put every panel back where this hardware setup puts it, at the'
+            ' sizes its contents ask for.'
+        )
+        self.resetLayoutAction.triggered.connect(self.resetDockLayout)
+        tools.addAction(self.resetLayoutAction)
         
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
@@ -138,7 +151,7 @@ class ImConMainView(QtWidgets.QMainWindow):
             self.docks['Image'].addWidget(self.widgets['Image'])
             self.factory.setArgument('napariViewer', self.widgets['Image'].napariViewer)
 
-        rightDocks = self._addDocks(
+        self._addDocks(
             {k: v for k, v in rightDockInfos.items() if k in enabledDockKeys},
             self.dockArea, 'right'
         )
@@ -154,23 +167,163 @@ class ImConMainView(QtWidgets.QMainWindow):
         # Add dock area to layout
         layout.addWidget(self.dockArea)
 
+        # The arrangement this setup file asks for, kept for Tools > Reset
+        # panel layout.  Taken before anything has had a chance to move.
+        self._defaultDockState = self.dockArea.saveState()
+
         # Maximize window
         self.showMaximized()
         self.hide()  # Minimize time the window is displayed while loading multi module window
 
-        # Adjust dock sizes (the window has to be maximized first for this to work properly)
-        if 'Settings' in self.docks:
-            self.docks['Settings'].setStretch(1, 5)
-            self.docks['Settings'].container().setStretch(3, 1)
-        if len(rightDocks) > 0:
-            rightDocks[-1].setStretch(1, 5)
-        if 'Image' in self.docks:
-            self.docks['Image'].setStretch(16, 1)
+        # First pass at the dock proportions.  The panels are still empty at
+        # this point (their controllers populate them afterwards), so this is
+        # only a starting point -- ImConMainController calls
+        # applyContentAwareDockSizing() again once everything is built.
+        self.applyContentAwareDockSizing()
 
         # Reset to a compact size so this widget's size hint doesn't push
         # MultiModuleWindow below the screen bottom when embedded.
         # setStretch ratios are proportional so they survive the resize.
         self.resize(800, 600)
+
+        # showMaximized() above made this a top-level window for a moment, and
+        # Qt writes a layout-derived *explicit* minimum onto a window when its
+        # layout activates.  That minimum outlives the reparenting into
+        # MultiModuleWindow's tab widget, where it is no longer recomputed --
+        # it would pin the application window to whatever the panels happened
+        # to need while they were still empty, and it takes precedence over
+        # minimumSizeHint() below.
+        self.setMinimumSize(0, 0)
+
+    # ------------------------------------------------------------------
+    # Dock sizing
+    # ------------------------------------------------------------------
+
+    def applyContentAwareDockSizing(self):
+        """Give each dock a stretch factor that reflects how tall its panel is.
+
+        pyqtgraph splits a container's space in proportion to its children's
+        stretch factors, so the ``size=(1, 1)`` every dock is created with
+        hands a one-row panel exactly as much height as a thirty-row one.
+        What used to hide that was panels refusing to shrink: a splitter never
+        goes below the sum of its children's minimum heights, so the layout
+        was really being decided by minimums.  That is also what pushed the
+        window past the bottom of the screen, and why dragging a dock (which
+        makes pyqtgraph recompute every size from the stretch factors alone)
+        rearranged everything else.
+
+        Sizing from content instead makes both the startup layout and every
+        later rearrangement land where it should, and lets the panels stay
+        freely shrinkable -- see ``Widget.makeScrollable()``.
+        """
+        widestPanel = 1
+        for widgetKey, dock in self.docks.items():
+            widget = self.widgets.get(widgetKey)
+            if widget is None or widgetKey == 'Image':
+                continue
+
+            hint = (widget.panelContentSizeHint()
+                    if hasattr(widget, 'panelContentSizeHint') else widget.sizeHint())
+            height = min(max(hint.height(), _MIN_DOCK_STRETCH), _MAX_DOCK_STRETCH)
+            width = min(max(hint.width(), _MIN_DOCK_WIDTH_STRETCH),
+                        _MAX_DOCK_WIDTH_STRETCH)
+            widestPanel = max(widestPanel, width)
+            # The splitter divides the column between whole docks, title bar
+            # included, so a dock asking for exactly its panel's height opens
+            # one title bar short of it -- which is enough to cut off the last
+            # row of every panel at once.
+            dock.setStretch(width, height + _dockTitleHeight(dock))
+
+        if 'Image' in self.docks:
+            # Stretch factors share one scale across the whole area, so the
+            # viewer's width share has to be expressed against the panel
+            # columns it sits next to rather than as a bare number.
+            self.docks['Image'].setStretch(widestPanel * _IMAGE_WIDTH_MULTIPLE, 1)
+
+    def resetDockLayout(self):
+        """ Put the panels back where this hardware setup puts them.
+
+        Dragging a dock makes pyqtgraph recompute every other dock's size, so
+        a layout can end up somewhere nobody wanted it; this is the way back
+        without restarting.
+        """
+        if getattr(self, '_defaultDockState', None) is None:
+            return
+        try:
+            self.dockArea.restoreState(
+                self._defaultDockState, missing='ignore', extra='bottom'
+            )
+        except Exception as e:
+            self.__logger.warning(f'Failed to reset GUI dock layout: {e}')
+            return
+        self.applyContentAwareDockSizing()
+        self._redistributeDockSpace()
+
+    def scheduleInitialDockLayout(self):
+        """ Ask for one more sizing pass the next time this window is shown.
+
+        Panels are still empty while this view is being constructed, and a
+        couple of them (the detector parameter trees) only report their real
+        size once they have actually been on screen, so the proportions have
+        to be settled after both have happened.  Skipped when a saved layout
+        was restored: those splitter sizes are the user's own.
+        """
+        if self._layoutRestored:
+            return
+        if self.isVisible():
+            QtCore.QTimer.singleShot(0, self._applyInitialDockLayout)
+        else:
+            self._initialDockLayoutPending = True
+
+    def _applyInitialDockLayout(self):
+        self.applyContentAwareDockSizing()
+        self._redistributeDockSpace()
+
+    def _redistributeDockSpace(self):
+        """Re-run pyqtgraph's stretch-to-size pass at the window's real size.
+
+        ``Container.updateStretch()`` turns stretch factors into splitter
+        sizes using the container's height *at that moment*, and it runs while
+        the docks are being added -- long before the window has been given the
+        size it opens at.  Without this the proportions computed at startup
+        are the ones for an 800x600 window.
+        """
+        def walk(container):
+            # Depth first: a container's own stretch is the sum (or maximum) of
+            # its children's, so the children have to be settled before the
+            # parent divides its width between them.
+            if container is None:
+                return
+            if hasattr(container, 'count') and hasattr(container, 'widget'):
+                for i in range(container.count()):
+                    child = container.widget(i)
+                    if hasattr(child, 'updateStretch'):
+                        walk(child)
+            if hasattr(container, 'updateStretch'):
+                container.updateStretch()
+
+        walk(self.dockArea.topContainer)
+
+    def minimumSizeHint(self):
+        """Never demand more room than the screen has.
+
+        This window is a page of MultiModuleWindow's tab widget, so whatever
+        minimum it reports becomes the application window's minimum -- and a
+        window that cannot be made as small as the screen opens with its
+        bottom edge below it, which no amount of resizing fixes (maximising
+        and restoring is the workaround people find).  Panels scroll their own
+        contents, so being handed less than they asked for costs a scrollbar,
+        not a missing row.
+        """
+        hint = super().minimumSizeHint()
+        screen = self.screen() if hasattr(self, 'screen') else None
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            hint.setWidth(min(hint.width(), int(available.width() * _MAX_MINIMUM_SCREEN_FRACTION)))
+            hint.setHeight(min(hint.height(), int(available.height() * _MAX_MINIMUM_SCREEN_FRACTION)))
+        return hint
 
     def addShortcuts(self, shortcuts):
         """Legacy method - shortcuts are now managed by ShortcutManager.
@@ -237,6 +390,10 @@ class ImConMainView(QtWidgets.QMainWindow):
             self.dockArea.restoreState(dockAreaState, missing='ignore', extra='bottom')
         except Exception as e:
             self.__logger.warning(f'Failed to restore GUI dock layout: {e}')
+        else:
+            # The saved splitter sizes are the user's own; don't overwrite them
+            # with content-derived ones when the window is first shown.
+            self._layoutRestored = True
 
     def closeEvent(self, event):
         self.sigClosing.emit()
@@ -244,6 +401,13 @@ class ImConMainView(QtWidgets.QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if self._initialDockLayoutPending:
+            self._initialDockLayoutPending = False
+            # Queued: the dock area has not been given its final size yet
+            # while this event is being delivered, and a panel that fills
+            # itself in lazily (the detector parameter trees) only reports
+            # its real size once it has been shown.
+            QtCore.QTimer.singleShot(0, self._applyInitialDockLayout)
         self.sigModuleVisibilityChanged.emit(True)
 
     def hideEvent(self, event):
@@ -274,6 +438,34 @@ class ImConMainView(QtWidgets.QMainWindow):
             docks.append(prevDock)
 
         return docks
+
+
+# Stretch factors are relative, and pyqtgraph turns them into splitter sizes
+# in proportion to each other, so these are in "pixels of content" units.
+_MIN_DOCK_STRETCH = 64     # a one-row panel still gets a usable slice
+_MAX_DOCK_STRETCH = 420    # keeps a greedy parameter tree from eating the column
+# A panel column narrower than this is unusable whatever its widgets claim --
+# a tree or list reports Qt's default size hint, not the width of its rows.
+_MIN_DOCK_WIDTH_STRETCH = 240
+# ...and one unusually wide panel must not squeeze every other column (and the
+# viewer) down to nothing. Panels scroll sideways too, so the cost of the cap
+# is a horizontal scrollbar on that one panel.
+_MAX_DOCK_WIDTH_STRETCH = 480
+# Viewer width, in multiples of the widest panel column: with the usual one
+# or two columns of panels beside it this leaves the image ~67-80% of the
+# window, and unlike the hard-coded 16-against-3-against-1 it does not
+# starve a second column of panels.
+_IMAGE_WIDTH_MULTIPLE = 4
+# The largest fraction of the screen this window may insist on. Anything above
+# 1.0 puts the bottom edge off-screen with no way back.
+_MAX_MINIMUM_SCREEN_FRACTION = 0.8
+
+
+def _dockTitleHeight(dock):
+    label = getattr(dock, 'label', None)
+    if label is None or dock.labelHidden:
+        return 0
+    return label.sizeHint().height()
 
 
 @dataclass

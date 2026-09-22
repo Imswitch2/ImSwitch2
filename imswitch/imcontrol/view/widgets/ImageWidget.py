@@ -1,5 +1,5 @@
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import shortcut
 from imswitch.imcommon.view.guitools import naparitools
@@ -36,8 +36,10 @@ class ImageWidget(QtWidgets.QWidget):
         nw = self.napariViewer.get_widget()
         # Napari's _qt_window is a QMainWindow that restores its own saved size
         # from preferences and has a large minimumSizeHint() from its dock layout.
-        # Clear the hard minimum so it doesn't force the parent window taller
-        # than the available screen area when embedded.
+        # setMinimumSize(0, 0) only clears an *explicit* minimum -- Qt still
+        # asks minimumSizeHint() afterwards -- so the hint itself has to go
+        # (see minimumSizeHint() below), or the viewer forces the ImSwitch
+        # window bigger than the screen.
         nw.setMinimumSize(0, 0)
         nw.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
@@ -45,6 +47,20 @@ class ImageWidget(QtWidgets.QWidget):
         )
         self.viewCtrlLayout.addWidget(nw)
         self.setLayout(self.viewCtrlLayout)
+
+    #: The smallest viewer worth showing. Napari's embedded window adds up the
+    #: minimums of its own docks, which on a populated viewer is larger than
+    #: the space ImSwitch has left for it, and reporting that upwards is part
+    #: of what makes the application window open taller than the screen.
+    #: Capped rather than dropped to zero: a previous attempt to report no
+    #: minimum at all collapsed the dock layout during startup, and this keeps
+    #: the viewer weighing something while still fitting any screen.
+    minimumViewerSize = (240, 180)
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        width, height = self.minimumViewerSize
+        return QtCore.QSize(min(hint.width(), width), min(hint.height(), height))
 
     def _removeProtectedLayer(self, layer):
         """Remove a layer from the viewer, bypassing the protected-layer guard.
