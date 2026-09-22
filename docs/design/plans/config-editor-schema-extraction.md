@@ -4,8 +4,58 @@ Date: 2026-09-21 (plan; revision 2 after first review; revision 3 recorded the
 decisions; revision 4 after second review; revision 5 records what Phase 0
 measured; revision 6 records Phase 1; revision 7 folds in the review of
 Phase 0; revision 8 records Phase 2; revision 9 folds in the review of
-Phases 1–2). Status: **Phases 0–2 implemented and reviewed on
-`feat/config-editor-schema-extraction` (draft PR #35); Phases 3–6 as planned.**
+Phases 1–2; revision 10 records Phase 3). Status: **Phases 0–3 implemented on
+`feat/config-editor-schema-extraction` (draft PR #35), gate lifted; Phases 4–6
+as planned.**
+
+## Changes in revision 10 (Phase 3 implemented)
+
+- **The gate is lifted.** The editor's catalog is built with
+  `include_generated_schemas=True`; every one of the 44 untemplated managers
+  with a schema shows typed fields and no raw tab (tested over the generated
+  fixtures), and the 20 templated ones see the schema through their template.
+- **Type authority in all three consumers.** `schemas.resolve_type()` is the
+  one rule: the schema's `x-imswitch-kind` decides the widget; the template's
+  type survives only as a compatible refinement (`select`/`multiselect`/
+  `ref`/`path` over the kinds they can present, or the same kind spelled the
+  template's way), when the schema states no type at all, or — one nuance the
+  plan did not have — when both are numeric and the schema's kind rests on
+  nothing stronger than an example or the docs (`-10` in a shipped setup does
+  not prove `minVolt` is an int). `materialize_device_schema()` writes the
+  resolved type, `opts`, `aliases`, `nullable` and `schema_req` into the
+  template's field; `build_default_device()` seeds template defaults and
+  schema-required keys only, never an optional one, never an alias copy, and
+  tolerates a template field without `type`.
+- **Unions.** `["integer","string"]` → text box (Hamamatsu `cameraListIndex`
+  holds `0` and `"mock"` losslessly); `["integer","number"]` → number box;
+  `["<kind>","null"]` → that kind; nothing known → the JSON widget.
+- **Numeric widgets are line edits with a regular-expression validator**, not
+  `QIntValidator`/`QDoubleValidator`: those carry a C++ `int` range and refuse
+  the tenth digit of a serial number, which is a clamp by another name. The
+  validator is installed only when the box starts out holding a number (or
+  nothing); a string under a numeric key is edited as free text so it can be
+  fixed at all. An empty box is `null`.
+- **Omitted stays omitted, refined.** `_do_apply` writes an absent, untouched
+  field only when the *schema* requires it (`schema_req`); a template's own
+  `req` is a hint for the bold label and the warning, not proof — the file
+  loaded without the key. A `managerProperties` the file never had is not
+  added. A template-known nested container holding nothing the form lists
+  (empty, `null`, vendor keys only) is written back exactly.
+- **Spelling is preserved** per [Aliases](#aliases): loaded from the alias
+  spelling when the canonical is absent, written back under it; both
+  spellings present survive untouched; a key the file never had is written
+  canonically.
+- **Corpus and comparison.** `configeditor_testing.assert_json_identical`
+  (kinds first, then values, path in the message; its own tests pin `1` vs
+  `1.0` vs `True`, `None` vs `{}`, key presence) and `corpus()`: the 15
+  shipped setups (78 devices), the 65 generated fixtures, and 13 hand-written
+  value-shape fixtures under `_test/unit/configeditor_fixtures/` (README
+  states each one's reason). The round trip is type-strictly identical over
+  all of them, and a rewritten shipped setup gets exactly the schema
+  diagnostics the original got.
+- What the corpus found while being built: three shipped flip mirrors have no
+  `managerProperties` key at all (the editor added `{}`); a nested container
+  with nothing the template lists was dropped on Apply.
 
 ## Changes in revision 9 (review of Phases 1–2)
 
@@ -208,20 +258,22 @@ builds a channel name or returns the value verbatim. Therefore:
   what flags the string.
 - **Omitted stays omitted.** Apply writes an optional property only if the file
   already had it or the operator edited its field. A form may *show* a default;
-  it does not *save* one unasked. (Phase 3: `_do_apply` must learn which keys
-  were present on load; today it writes every field.)
+  it does not *save* one unasked. Landed in Phase 3: `_do_apply` records which
+  keys were present on load and writes an absent, untouched one only when the
+  schema requires it — a template's `req` is a hint, not proof.
 - **Spelling is preserved.** A property saved under an alias is loaded from,
   and written back to, that alias. The canonical spelling is used only for a
   property the file never had.
 - **Nothing a widget cannot hold is lost.** A spin box is a C++ `int`;
-  `int("two")` raises. A value the typed widget cannot represent gets the
-  type-preserving text box for that instance (landed in `ec3e02f2`) rather
-  than a crash on load or a clamped substitute.
+  `int("two")` raises. Phase 3 replaced the spin boxes with line edits that
+  show whatever the file held and validate only what is typed, and only when
+  the box started out holding a number; there is no range or decimal count
+  left to clamp or round to.
 - **Unknown stays verbatim.** Already guaranteed by `merge_preserving_unknown`
   (discovery plan Phase 2); this plan does not weaken it.
 
-Until `_do_apply` honours the second and third rules, generated schemas must
-not reach it.
+`_do_apply` honours all five since Phase 3, which is when generated schemas
+first reached it.
 
 ## Sources, and their order of authority
 

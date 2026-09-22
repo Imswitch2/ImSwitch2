@@ -167,17 +167,26 @@ def test_construction_does_not_count_as_an_edit(qapp):
         assert fw.is_touched() is False, tp
 
 
-def test_an_edited_spin_box_is_written_at_full_precision(qapp):
+def _clear(fw):
+    """Empty a line-edit field the way an operator does (select all, backspace)."""
+    from PyQt5.QtCore import Qt
+    fw._w.selectAll()
+    QTest.keyClick(fw._w, Qt.Key_Backspace)
+
+
+def test_an_edited_float_is_written_at_full_precision(qapp):
     fw = editor.FieldWidget(_field("conversionFactor", "float"), 1.0)
-    fw._w.setValue(0.00001234)
+    _type(fw, "0.00001234")
     assert fw.is_touched()
-    assert fw.get_value() == pytest.approx(0.00001234, rel=1e-9)
+    assert fw.get_value() == 0.00001234 and isinstance(fw.get_value(), float)
 
 
 def test_an_edited_int_above_the_old_clamp_survives(qapp):
     fw = editor.FieldWidget(_field("serial", "int"), 1)
-    fw._w.setValue(2_000_000)
+    _type(fw, "2000000")
     assert fw.get_value() == 2_000_000
+    _type(fw, "6000000000")  # past 32 bits, which QIntValidator would have refused
+    assert fw.get_value() == 6_000_000_000 and isinstance(fw.get_value(), int)
 
 
 def test_a_clicked_checkbox_counts_as_an_edit(qapp):
@@ -192,24 +201,56 @@ def test_a_typed_text_edit_counts(qapp):
     assert fw.is_touched() and fw.get_value() == "COM4"
 
 
-# ── a typed widget that cannot hold the value steps aside ─────────────────
+# ── a numeric field is a line edit, never a spin box ──────────────────────
+# A spin box is a C++ int that clamps, rounds and cannot hold a string; the
+# line edit shows whatever the file held and validates only what is typed.
 @pytest.mark.parametrize("tp, value", [("int", "two"), ("int", 5_000_000_000), ("int", 2.5),
                                        ("float", "fast"), ("int", True)])
-def test_a_value_the_spin_box_cannot_hold_gets_a_text_box_and_survives(qapp, tp, value):
+def test_a_value_no_spin_box_could_hold_is_shown_as_it_is_and_survives(qapp, tp, value):
     """int("two") used to crash the editor on load; 5e9 overflowed the C++ int."""
     from PyQt5.QtWidgets import QLineEdit
     fw = editor.FieldWidget(_field("channel", tp), value)
     assert isinstance(fw._w, QLineEdit)
+    assert fw._w.text() == str(value)
     assert fw.get_value() is value
 
 
-def test_the_fallback_text_box_still_edits_like_a_text_field(qapp):
-    fw = editor.FieldWidget(_field("channel", "int"), 5_000_000_000)
-    _type(fw, "6000000000")
-    assert fw.get_value() == 6_000_000_000 and isinstance(fw.get_value(), int)
+def test_a_string_under_a_numeric_key_is_edited_as_free_text(qapp):
+    """No validator stands between the operator and fixing "two"."""
+    fw = editor.FieldWidget(_field("channel", "int"), "two")
+    assert fw._w.validator() is None
+    _type(fw, "3")
+    assert fw.get_value() == 3 and isinstance(fw.get_value(), int)
 
 
-def test_an_in_range_int_still_gets_a_spin_box(qapp):
-    from PyQt5.QtWidgets import QSpinBox
-    assert isinstance(editor.FieldWidget(_field("channel", "int"), 3)._w, QSpinBox)
+def test_the_validator_refuses_letters_but_not_a_long_number(qapp):
+    fw = editor.FieldWidget(_field("channel", "int"), 3)
+    assert fw._w.validator() is not None
+    _type(fw, "12abc34")
+    assert fw._w.text() == "1234"
+    _type(fw, "-6000000000")
+    assert fw.get_value() == -6_000_000_000
 
+
+def test_a_float_field_takes_a_point_and_scientific_notation(qapp):
+    fw = editor.FieldWidget(_field("k", "float"), 1.0)
+    _type(fw, "1.5e-3")
+    assert fw.get_value() == 0.0015
+    _type(fw, "2")
+    assert fw.get_value() == 2 and isinstance(fw.get_value(), int), "what was typed is what is written"
+    _type(fw, "2.0")
+    assert fw.get_value() == 2.0 and isinstance(fw.get_value(), float)
+
+
+def test_clearing_a_numeric_field_writes_null(qapp):
+    fw = editor.FieldWidget(_field("k", "float"), 1.0)
+    _clear(fw)
+    assert fw.is_touched() and fw.get_value() is None
+
+
+def test_a_null_number_shows_an_empty_validated_box(qapp):
+    fw = editor.FieldWidget(_field("k", "int"), None)
+    assert fw._w.text() == "" and fw._w.validator() is not None
+    assert fw.get_value() is None
+    _type(fw, "7")
+    assert fw.get_value() == 7

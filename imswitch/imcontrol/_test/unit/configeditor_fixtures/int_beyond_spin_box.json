@@ -1,0 +1,17 @@
+{
+  "why": "Integers above the old spin box's +-999999 clamp and above the 32-bit range QIntValidator enforces; a serial number is one of these.",
+  "setup": {
+    "detectors": {
+      "apd": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "APDManager",
+        "managerProperties": {"ctrInputLine": "Dev1/ctr0", "terminal": "PFI0", "mockPhotonCountMax": 5000000000, "mockRandomSeed": 123456789012}
+      },
+      "cam": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "ThorCamTSIManager",
+        "managerProperties": {"flushFrameLimit": 5000000000, "cameraSerial": "26925"}
+      }
+    }
+  }
+}

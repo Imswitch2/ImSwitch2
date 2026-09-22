@@ -10,18 +10,14 @@ sources, ensuring that:
 """
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from imswitch.imcontrol.model.configeditor.catalog import (
-    ManagerCatalog,
-    ManagerInfo,
     build_catalog,
 )
 from imswitch.imcontrol.model.configeditor.schemas import (
-    FieldSpec,
     materialize_device_schema,
     normalized_fields,
 )
@@ -631,14 +627,18 @@ class TestNullableSchemaTypes:
         assert _infer_type_from_schema({"type": "string"}) == "text"
         assert _infer_type_from_schema({"type": "integer"}) == "int"
 
-    def test_genuine_multi_type_unions_still_fall_back_to_json(self):
-        """Only a single non-null member is representable; a real union has no
-        safe native control and must keep its value type intact."""
+    def test_scalar_unions_take_the_text_box_and_the_rest_fall_back_to_json(self):
+        """A union within integer/number/string is the text box, which reads a
+        value back as the kind it was (the type-preservation rule); a union that
+        reaches into object or array, or nothing known at all, keeps the JSON
+        widget, which round-trips every value."""
         from imswitch.imcontrol.model.configeditor.schemas import (
             _infer_type_from_schema,
         )
 
-        assert _infer_type_from_schema({"type": ["string", "integer"]}) == "json"
+        assert _infer_type_from_schema({"type": ["string", "integer"]}) == "text"
+        assert _infer_type_from_schema({"type": ["integer", "number"]}) == "float"
+        assert _infer_type_from_schema({"type": ["string", "object"]}) == "json"
         assert _infer_type_from_schema({"type": ["null"]}) == "json"
         assert _infer_type_from_schema({"type": "object"}) == "json"
 
