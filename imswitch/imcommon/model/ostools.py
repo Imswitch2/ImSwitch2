@@ -26,14 +26,45 @@ def restartSoftware(module='imswitch'):
 
     The command line is carried over, so a session started with ``--debug`` or
     ``--scale`` comes back the same way.
+
+    ``argv[0]`` is the interpreter path *unquoted* on POSIX. It used to be
+    wrapped in literal double quotes -- a Windows habit, where ``execv`` joins
+    the arguments into one command line and a path with spaces needs them.
+    On macOS and Linux the quotes are part of the string, and the restarted
+    Python takes its ``sys.executable`` from that argv[0]: a path that does
+    not exist. The first restart works; the next one, from the restarted
+    process, fails with ``FileNotFoundError``. Windows still gets its quotes,
+    around every argument that needs them.
     """
+    executable = _interpreter()
     if getattr(sys, 'frozen', False):
         # A frozen build has no interpreter to hand a -m to; sys.executable is
         # the bundled application itself.
-        os.execv(sys.executable, [sys.executable] + sys.argv[1:])
+        argv = [executable] + sys.argv[1:]
     else:
-        os.execv(sys.executable,
-                 ['"' + sys.executable + '"', '-m', module] + sys.argv[1:])
+        argv = [executable, '-m', module] + sys.argv[1:]
+    os.execv(executable, [_quotedForPlatform(arg) for arg in argv])
+
+
+def _interpreter():
+    """ The interpreter to re-exec: ``sys.executable``, unquoted if a previous
+    restart by the old code left it wrapped in literal quotes.
+
+    A Python started with argv[0] ``'"/env/bin/python"'`` reports
+    ``sys.executable`` as ``'<cwd>/"/env/bin/python"'``; the real path is what
+    the quotes enclose. """
+    executable = sys.executable
+    if os.path.exists(executable) or executable.count('"') < 2:
+        return executable
+    inner = executable[executable.index('"') + 1:executable.rindex('"')]
+    return inner if os.path.isabs(inner) and os.path.exists(inner) else executable
+
+
+def _quotedForPlatform(arg):
+    """ Quote an argument for Windows' command-line joining; leave POSIX alone. """
+    if sys.platform == 'win32' and any(c.isspace() for c in arg) and not arg.startswith('"'):
+        return '"' + arg + '"'
+    return arg
 
 
 _restartRequest = None
