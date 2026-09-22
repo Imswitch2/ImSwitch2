@@ -129,3 +129,81 @@ def test_a_frozen_build_re_execs_itself_rather_than_python_dash_m():
     executable, argv = execv.call_args.args
     assert argv == [executable, '--debug']
     assert '-m' not in argv
+
+
+# ── the interpreter path, and the quotes that broke the second restart ────
+# On the rig: Pick setup -> restart worked; then the config editor -> restart
+# died with FileNotFoundError. The first exec passed argv[0] as '"…/python"',
+# quotes included; the restarted Python took that as its sys.executable, a
+# path that does not exist, and the second exec could not find it.
+def test_posix_argv0_is_the_bare_interpreter_path():
+    with patch.object(ostools.sys, 'platform', 'darwin'), \
+            patch.object(ostools.sys, 'argv', ['imswitch']), \
+            patch.object(ostools.os, 'execv') as execv:
+        ostools.restartSoftware()
+
+    executable, argv = execv.call_args.args
+    assert executable == sys.executable
+    assert argv[0] == sys.executable
+    assert not any('"' in arg for arg in argv)
+
+
+def test_windows_quotes_every_argument_with_a_space_and_nothing_else():
+    with patch.object(ostools.sys, 'platform', 'win32'), \
+            patch.object(ostools.sys, 'executable', r'C:\Program Files\Python\python.exe'), \
+            patch.object(ostools.os.path, 'exists', return_value=True), \
+            patch.object(ostools.sys, 'argv', ['imswitch', '--config', r'C:\My Setups\rig.json', '--debug']), \
+            patch.object(ostools.os, 'execv') as execv:
+        ostools.restartSoftware()
+
+    executable, argv = execv.call_args.args
+    assert executable == r'C:\Program Files\Python\python.exe'
+    assert argv == ['"C:\\Program Files\\Python\\python.exe"', '-m', 'imswitch',
+                    '--config', '"C:\\My Setups\\rig.json"', '--debug']
+
+
+def test_an_executable_left_quoted_by_an_old_restart_is_unquoted(tmp_path):
+    """A process the old code restarted carries the quoted path; its next
+    restart must still find the interpreter."""
+    real = tmp_path / 'python'
+    real.write_text('')
+    inherited = str(tmp_path) + '/"' + str(real) + '"'  # what the exec'd Python computed
+    with patch.object(ostools.sys, 'executable', inherited), \
+            patch.object(ostools.sys, 'platform', 'darwin'), \
+            patch.object(ostools.sys, 'argv', ['imswitch']), \
+            patch.object(ostools.os, 'execv') as execv:
+        ostools.restartSoftware()
+
+    executable, argv = execv.call_args.args
+    assert executable == str(real) and argv[0] == str(real)
+
+
+def test_a_missing_interpreter_is_passed_through_so_the_error_names_it():
+    with patch.object(ostools.sys, 'executable', '/nowhere/python'), \
+            patch.object(ostools.os, 'execv') as execv:
+        ostools.restartSoftware()
+    assert execv.call_args.args[0] == '/nowhere/python'
+
+
+def test_a_failed_exec_exits_cleanly_instead_of_crashing():
+    """The rig saw the FileNotFoundError escape launchApp: no restart, no exit."""
+    log = []
+    app = Mock()
+    app.exec_.return_value = 0
+
+    def _failing_restart(module='imswitch'):
+        log.append('restart-attempt')
+        raise FileNotFoundError(2, 'No such file or directory')
+
+    def _exit(code):
+        log.append(f'sys.exit:{code}')
+        raise _NeverReturns
+
+    ostools.requestRestart()
+    with patch.object(applaunch, 'shutdownModules', lambda *a, **k: log.append('shutdown')), \
+            patch.object(applaunch.ostools, 'restartSoftware', _failing_restart), \
+            patch.object(applaunch.sys, 'exit', _exit), \
+            patch.object(shutdownState, 'hardwareFinalizationAllowed', return_value=True):
+        with pytest.raises(_NeverReturns):
+            applaunch.launchApp(app, Mock(), [])
+    assert log == ['shutdown', 'restart-attempt', 'sys.exit:0']

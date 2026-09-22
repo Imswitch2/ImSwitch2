@@ -119,16 +119,29 @@ def launchApp(app, mainView, moduleMainControllers):
         if restartModule is not None:
             # execv replaces this process image, which drops the stuck thread
             # just as _exit would -- the restart is no less safe than leaving.
-            ostools.restartSoftware(restartModule)
+            _restart(restartModule, logger)
         os._exit(exitCode or 1)
 
     if restartModule is not None:
         logger.info('Restarting ImSwitch')
         logging.shutdown()
-        ostools.restartSoftware(restartModule)
+        _restart(restartModule, logger)
 
     # Exit
     sys.exit(exitCode)
+
+
+def _restart(module, logger):
+    """ Re-exec, or -- if the interpreter cannot be exec'd -- say so and let the
+    caller exit normally. A failed execv used to escape as an uncaught
+    exception, so ImSwitch neither restarted nor exited cleanly. """
+    try:
+        ostools.restartSoftware(module)
+    except OSError as err:
+        logger.error(
+            f'Could not restart ImSwitch ({err}); exiting instead. '
+            f'Start it again by hand.'
+        )
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
