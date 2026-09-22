@@ -34,6 +34,20 @@ class SnoutyReconstructor(Reconstructor):
     file_extensions = ["hdf5", "h5", "tiff"]
     description = "Lightsheet deskew for SNOUTY/OPM/MS-RESOLFT data"
     
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'device': 'CPU',
+        'n_timepoints': 1,
+        'c_px': 100.0,
+        'alpha_deg': 30.0,
+        'dy': 210.0,
+        'sample_vx_size': 200.0,
+        'camera_offset': 100.0,
+        'flip_data': False,
+        'cycles': 1,
+        'planes_in_cycle': 1,
+        'restack': True}
+
     def __init__(self):
         self._logger = initLogger('SnoutyReconstructor')
     

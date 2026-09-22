@@ -19,9 +19,19 @@ class ProjectionProcessor(Processor):
     category = "Dimensions and channels"
     kinds = ("image", "composite")
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'axis': 'Auto', 'mode': 'max', 'start': None, 'stop': None}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
-        return lambda result: result.data.ndim >= 2
+        # A stack, as ImageJ's Z Project requires. Collapsing one of a 2D
+        # image's two axes leaves a 1D profile that is no image at all: the
+        # viewer cannot show it and the TIFF writer cannot store it. The
+        # profile tools exist for that question. Gating here means a batch
+        # over mixed results refuses the flat ones with a reason, instead of
+        # producing a result nothing downstream can take.
+        return lambda result: result.data.ndim >= 3
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget(parent)
@@ -88,8 +98,9 @@ class ProjectionProcessor(Processor):
         name += ")"
         # Collapsing a non-spatial axis (Z, T) leaves every pixel where it was,
         # so the output shares the input's grid. Collapsing one of the two
-        # *displayed* axes — which "Auto" does on 2D data — does not: the
-        # result is a profile, and an ROI from the source means nothing on it.
+        # *displayed* axes (an explicit "X" or "Y") does not: the result is
+        # laid out on another grid, and an ROI from the source means nothing
+        # on it.
         same_grid = axis < result.data.ndim - 2
         return ProjectionResult(
             name=name,

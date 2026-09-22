@@ -64,6 +64,10 @@ class LabelMorphologyProcessor(Processor):
     preserves_grid = True
     kinds = ("labels",)
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'operation': 'fill-holes', 'radius': 1}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) == 2

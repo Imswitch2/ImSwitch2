@@ -310,6 +310,13 @@ class FileIOController(ImProcessWidgetController):
             )
             return 'empty'
 
+        # The table is a result with no ImProcess step behind it; its
+        # provenance is the foreign file itself, fingerprinted, plus an
+        # opaque import node naming the format. A save then says where the
+        # localizations came from instead of recording an anonymous origin.
+        from imswitch.improcess.model.provenance import record_external_table
+
+        record_external_table(result, dataPath, table_format=localizationFormat)
         reconstructionController.resultProduced(result, result.name)
         self._logger.info(
             f"Loaded {len(result)} localizations from {os.path.basename(dataPath)} "
@@ -457,7 +464,19 @@ class FileIOController(ImProcessWidgetController):
         # Two-part suffixes (.ome.tif, .ome.zarr) are why this asks the writer
         # rather than reading Path.suffix, which sees only the last part and
         # would call an OME-Zarr directory a TIFF.
-        reconObj.save(Path(filePath), result_io.format_for_path(filePath))
+        #
+        # The user picked this path in a dialog, so overwriting it is what
+        # they asked for; the staged protocol still writes atomically.
+        receipt = reconObj.save(
+            Path(filePath), result_io.format_for_path(filePath), overwrite=True
+        )
+        files = getattr(receipt, "files", None)
+        if files:
+            self._logger.info(
+                "Saved %s: %s", getattr(reconObj, "name", "result"),
+                ", ".join(str(f) for f in files),
+            )
+        return receipt
 
     def saveCoefficients(self, reconObj, filePath):
         coeffs = copy.deepcopy(reconObj.getCoeffs())

@@ -227,7 +227,7 @@ class _Processor:
         return out
 
 
-def _normalized(output, source=None, processor=None, params=None, inputs=()):
+def _normalized(output, source=None, processor=None, params=None, inputs=(), **kwargs):
     return (output,) if not isinstance(output, tuple) else output
 
 
@@ -237,14 +237,14 @@ def test_the_run_path_narrows_the_input_and_annotates_the_output(monkeypatch):
     # By module path: the package re-exports the *class* under the same name,
     # so a plain attribute lookup gets the class instead.
     module = importlib.import_module(
-        "imswitch.improcess.controller.ResultProcessorController"
+        "imswitch.improcess.processors.run"
     )
     monkeypatch.setattr(module, "normalize_processor_output", _normalized)
     processor = _Processor()
     source = _Result(np.ones((16, 16)))
     restriction = ROIRestriction(rois=_rois(), mode="crop", set_uid="set-1")
 
-    results = module._run_restricted(processor, source, {}, restriction)
+    results = module.run_restricted(processor, source, {}, restriction)
 
     assert processor.seen == [(12, 12)]          # apply saw the region
     assert results[0].roi_provenance["roi_set_uid"] == "set-1"
@@ -253,25 +253,25 @@ def test_the_run_path_narrows_the_input_and_annotates_the_output(monkeypatch):
 
 def test_a_processor_that_did_not_opt_in_is_never_handed_a_cropped_input():
     """The UI cannot make an ROI-unaware processor ROI-aware by guessing."""
-    from imswitch.improcess.controller.ResultProcessorController import (
-        _restriction_for,
+    from imswitch.improcess.processors.run import (
+        restriction_for,
     )
 
     class _Plain:
         accepts_roi = False
 
     restriction = ROIRestriction(rois=_rois())
-    assert _restriction_for(_Plain(), {ROI_PARAM: restriction}) is None
-    assert _restriction_for(_Processor(), {ROI_PARAM: restriction}) is restriction
+    assert restriction_for(_Plain(), {ROI_PARAM: restriction}) is None
+    assert restriction_for(_Processor(), {ROI_PARAM: restriction}) is restriction
 
 
 def test_an_inactive_restriction_is_treated_as_none():
-    from imswitch.improcess.controller.ResultProcessorController import (
-        _restriction_for,
+    from imswitch.improcess.processors.run import (
+        restriction_for,
     )
 
-    assert _restriction_for(_Processor(), {ROI_PARAM: ROIRestriction()}) is None
-    assert _restriction_for(_Processor(), {}) is None
+    assert restriction_for(_Processor(), {ROI_PARAM: ROIRestriction()}) is None
+    assert restriction_for(_Processor(), {}) is None
 
 
 # --------------------------------------------------------------------------
@@ -398,7 +398,7 @@ def test_the_restriction_does_not_travel_into_the_processor(monkeypatch):
     import importlib
 
     module = importlib.import_module(
-        "imswitch.improcess.controller.ResultProcessorController"
+        "imswitch.improcess.processors.run"
     )
     monkeypatch.setattr(module, "normalize_processor_output", _normalized)
 
@@ -409,7 +409,7 @@ def test_the_restriction_does_not_travel_into_the_processor(monkeypatch):
             seen.update(params)
             return _Result(np.asarray(result.data), name="out")
 
-    module._run_restricted(
+    module.run_restricted(
         _Recording(),
         _Result(np.ones((16, 16))),
         {ROI_PARAM: ROIRestriction(rois=_rois()), "sigma": 2.0},

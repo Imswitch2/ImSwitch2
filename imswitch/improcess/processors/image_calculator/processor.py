@@ -55,6 +55,10 @@ class ImageCalculatorProcessor(Processor):
     # drawn on.
     kinds = ("image", "labels")
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'operation': 'add', 'float32': True}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2

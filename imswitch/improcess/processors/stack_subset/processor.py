@@ -27,6 +27,10 @@ class StackSubsetProcessor(Processor):
     category = "Dimensions and channels"
     kinds = ("image", "composite")
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'ranges': [], 'copy': False}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2

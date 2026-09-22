@@ -44,6 +44,25 @@ class MonalisaReconstructor(StreamingReconstructor):
     supports_streaming = True
     supports_consolidation = True
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'pixel_size_nm': 77,
+        'reconstruction_method': 'Fast Gauss MoNaLISA',
+        'device': 'GPU',
+        'row_offset': 9.89,
+        'col_offset': 10.4,
+        'row_period': 11.05,
+        'col_period': 11.05,
+        'psf_fwhm_nm': 220,
+        'bg_modelling': 'Constant',
+        'bg_gaussian_size_nm': 500,
+        'fast_gauss_footprint_mode': 'Rectangular shells',
+        'fast_gauss_footprint_num_rects': 3,
+        'fast_gauss_gaussian_sigma_px': 2.0,
+        'fast_gauss_pinhole_radius_sigma': 1.5,
+        'bleaching_correction': False,
+        'auto_scan_orientation': True}
+
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')
         self._pattern_finder = PatternFinder()
@@ -109,6 +128,30 @@ class MonalisaReconstructor(StreamingReconstructor):
         self._logger.info(f'Pattern found: row_offset={row_offset:.2f}, col_offset={col_offset:.2f}, '
                          f'row_period={row_period:.2f}, col_period={col_period:.2f}')
     
+    #: ``scan_params`` comes from the file (or an explicit override), not a widget.
+    extra_param_keys = ("scan_params",)
+
+    def prepare_params(self, data_obj, params: dict | None) -> dict:
+        """Fill ``scan_params`` from the acquisition attributes when absent.
+
+        The GUI derives the scan geometry from the file the moment it is
+        opened and hands it to ``process`` inside ``params``; a headless run
+        does the same here, through the same pure function.
+        """
+        from .scan_params import DEFAULT_LABELS, apply_scan_attrs, default_scan_params
+
+        params = dict(params or {})
+        if params.get('scan_params') is None:
+            try:
+                frames = int(data_obj.numFrames)
+            except Exception:
+                frames = None
+            params['scan_params'] = apply_scan_attrs(
+                default_scan_params(DEFAULT_LABELS), getattr(data_obj, 'attrs', None) or {},
+                DEFAULT_LABELS, frames,
+            )
+        return params
+
     def process(
         self, data_obj: 'DataObj', params: dict, context=None
     ) -> MonalisaProcessingResult:

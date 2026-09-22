@@ -17,6 +17,7 @@ import glob
 import importlib.util
 import inspect
 import os
+import sys
 import traceback
 from dataclasses import dataclass
 
@@ -42,6 +43,8 @@ graph) with no extra UI code.
 Files are executed as arbitrary Python at startup — only keep code you trust.
 """
 
+import numpy as np
+
 from imswitch.improcess.processors.base import Processor
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 
@@ -52,6 +55,14 @@ class InvertProcessor(Processor):
     category = "User"
     kinds = ("image",)
 
+    @classmethod
+    def default_params(cls) -> dict:
+        # The parameters a freshly opened widget hands apply(): same keys,
+        # same defaults as get_values() below. This declaration is what
+        # workflows, replay and the provenance record use when no widget
+        # exists. A plugin that does not override it is GUI-only.
+        return {}
+
     @property
     def applies_to(self):
         return lambda result: getattr(result.data, "ndim", 0) >= 2
@@ -60,11 +71,11 @@ class InvertProcessor(Processor):
         from qtpy import QtWidgets
 
         widget = QtWidgets.QWidget(parent)
-        widget.get_values = lambda: {}
+        widget.get_values = lambda: dict(self.default_params())
         return widget
 
     def apply(self, result, params):
-        data = result.data
+        data = np.asarray(result.data)   # may be a lazy view over the file
         return ArrayProcessingResult(
             name=f"{result.name} (inverted)",
             data=data.max() - data,
@@ -116,7 +127,16 @@ def _load_module_from_path(path: str):
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not create import spec for {path!r}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Registered like any import, so ``inspect`` can find the file behind a
+    # class defined here (the runtime versions drop-in plugins by a digest
+    # of that file) and dataclasses/pickling inside the plugin work. A
+    # reload simply replaces the entry.
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
@@ -132,6 +152,25 @@ def _processor_classes_in(module) -> list[type]:
         ):
             classes.append(obj)
     return classes
+
+
+def _napari_endpoints_in(module, path: str, errors: list) -> int:
+    """Register a plugin file's ``NAPARI_ENDPOINTS`` adapters; returns how many.
+
+    A drop-in file may describe napari endpoints instead of (or as well as)
+    processors: a list of ``NapariEndpoint`` objects or of the dict form the
+    setup file uses. They are handed to the endpoint registry so the next
+    discovery offers them as verified adapters.
+    """
+    items = getattr(module, "NAPARI_ENDPOINTS", None)
+    if not items:
+        return 0
+    from imswitch.improcess.model.napari_endpoints import register_user_endpoints
+
+    registered, problems = register_user_endpoints(items, source=path)
+    for problem in problems:
+        errors.append(PluginLoadError(path=path, message=problem))
+    return registered
 
 
 def discover_processor_plugins(
@@ -167,11 +206,15 @@ def discover_processor_plugins(
             continue
 
         found = _processor_classes_in(module)
-        if not found:
+        endpoints = _napari_endpoints_in(module, path, errors)
+        if not found and not endpoints:
             errors.append(
                 PluginLoadError(
                     path=path,
-                    message="No Processor subclass defined in this file.",
+                    message=(
+                        "No Processor subclass (or NAPARI_ENDPOINTS list) "
+                        "defined in this file."
+                    ),
                 )
             )
             continue

@@ -1,10 +1,7 @@
 """Projection processing result."""
 
-from pathlib import Path
 
-import h5py
 import numpy as np
-import tifffile
 
 from imswitch.improcess.analysis.projections import ProjectionAnalysis
 from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
@@ -38,12 +35,12 @@ class ProjectionResult(ProcessingResult):
             scale_unit=scale_unit,
         )
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        save_image_result(self, path, fmt, extra={
+    def write_files(self, plan, document) -> None:
+        save_image_result(self, plan.primary, plan.fmt, extra={
             "projection_mode": self.analysis.mode,
             "projection_axis": self.analysis.axis,
             "projection_axis_label": self.analysis.axis_label,
-        })
+        }, document=document)
 
     def plot_payloads(self) -> list[PlotPayload]:
         data = np.asarray(self.data, dtype=np.float64)

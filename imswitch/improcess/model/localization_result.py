@@ -263,21 +263,47 @@ class LocalizationResult(ProcessingResult):
 
     # -- persistence ------------------------------------------------------
 
-    def save(self, path: Path, fmt: str = "csv") -> None:
+
+    supported_formats = ("csv", "hdf5", "picasso")
+
+    def plan_save(self, path: Path, fmt: str):
+        from imswitch.improcess.model.save_protocol import SavePlan, companion_json_path
+
         path = Path(path)
-        if fmt in ("csv",):
-            self._save_csv(path)
-        elif fmt in ("hdf5", "h5", "hdf"):
-            self._save_hdf5(path)
-        elif fmt in ("picasso", "napari-storm"):
+        if fmt == "csv":
+            # CSV has no metadata slot and its first line is the column header
+            # contract; the provenance rides in a listed companion.
+            return SavePlan(path, fmt, (companion_json_path(path),))
+        if fmt == "picasso":
+            if path.suffix.lower() not in (".hdf5", ".h5"):
+                path = path.with_suffix(".hdf5")
+            return SavePlan(path, fmt, (path.with_suffix(".yaml"),))
+        return SavePlan(path, fmt)
+
+    def write_files(self, plan, document) -> None:
+        from imswitch.improcess.model.save_protocol import embed_hdf5_path, write_companion_json
+
+        if plan.fmt == "csv":
+            self._save_csv(plan.primary)
+            write_companion_json(plan.primary, document)
+        elif plan.fmt == "hdf5":
+            self._save_hdf5(plan.primary)
+            embed_hdf5_path(plan.primary, document)
+        elif plan.fmt == "picasso":
             # Deferred import to avoid a model -> analysis import cycle.
             from imswitch.improcess.analysis.smlm_export import export_picasso_hdf5
 
-            export_picasso_hdf5(self, path)
+            export_picasso_hdf5(self, plan.primary)
+            embed_hdf5_path(plan.primary, document)
+            info = plan.companions[0]
+            if not info.exists():
+                # The YAML sidecar is best-effort in the exporter; the plan
+                # promised it, so an empty one is written rather than none.
+                info.write_text("", encoding="utf-8")
         else:
             raise ValueError(
                 f"LocalizationResult supports CSV, HDF5, or picasso/napari-storm, "
-                f"got {fmt!r}"
+                f"got {plan.fmt!r}"
             )
 
     @classmethod
