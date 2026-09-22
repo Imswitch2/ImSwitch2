@@ -29,6 +29,33 @@ def test_main_view_keeps_direct_dock_widget_insertion():
     assert "self.docks['Image'].addWidget(self.widgets['Image'])" in source
 
 
+def test_dock_widgets_do_not_pin_their_own_minimum_height():
+    """A docked panel must not decide how tall the window has to open.
+
+    Docks stack vertically and a splitter's minimum is the sum of its
+    children's, so a panel insisting on 320 px adds 320 px to the smallest
+    size the window can take -- and a few of them together push it past the
+    screen, at which point Qt holds the window at its minimum and the bottom
+    is cut off. That is what the maximize / restore / maximize cycle works
+    around.
+
+    Panels scroll their own contents instead (the same treatment their widths
+    already had), so the minimum belongs on what is inside the scroll area,
+    never on the panel itself.
+    """
+    offenders = []
+    for widgetFile in sorted(WIDGETS_DIR.glob('*.py')):
+        source = widgetFile.read_text()
+        for match in re.finditer(r'self\.setMinimumHeight\s*\(', source):
+            line = source[:match.start()].count('\n') + 1
+            offenders.append(f'{widgetFile.name}:{line}')
+
+    assert offenders == [], (
+        'These widgets pin their own minimum height, which propagates into '
+        'the window minimum: ' + ', '.join(offenders)
+    )
+
+
 def test_scan_widget_base_does_not_force_minimum_width_or_hide_horizontal_scrollbar():
     source = SCAN_BASE_PATH.read_text()
 
@@ -152,6 +179,10 @@ def test_widget_sizing_audit():
     problematic_patterns = [
         (r'scrollArea\.setMinimumWidth\s*\(', 'scrollArea.setMinimumWidth('),
         (r'ScrollBarAlwaysOff', 'ScrollBarAlwaysOff'),
+        # A minimum height on the panel itself, as opposed to on something
+        # inside its scroll area, adds itself to the window's own minimum --
+        # see test_dock_widgets_do_not_pin_their_own_minimum_height.
+        (r'self\.setMinimumHeight\s*\(', 'self.setMinimumHeight('),
     ]
 
     # Files with known, reviewed exceptions (allowlist)

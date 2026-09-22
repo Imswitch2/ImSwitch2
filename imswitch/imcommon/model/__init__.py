@@ -1,4 +1,6 @@
-from .SharedAttributes import SharedAttributes, JSON_ATTR_PREFIX
+from .SharedAttributes import (
+    SharedAttributes, JSON_ATTR_PREFIX, NOTES_ATTR_CATEGORY, SESSION_NOTE_KEY,
+)
 from .VFileCollection import VFileItem, VFileCollection
 from .api import APIExport, apiGate, generateAPI
 from .cancellation import (

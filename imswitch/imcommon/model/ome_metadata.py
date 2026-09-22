@@ -24,7 +24,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import json
-import xml.etree.ElementTree as ET
 
 import numpy as np
 
@@ -36,6 +35,16 @@ _OME_NAMESPACE = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
 #: that OME's standard image fields have no place for.
 _IMSWITCH_ANNOTATION_NAMESPACE = "https://imswitch.org/ns/acquisition-metadata/1"
 _TIME_UNIT = 's'
+
+#: Namespace for ImSwitch's own OME StructuredAnnotations.
+ANNOTATION_NAMESPACE = 'https://imswitch.readthedocs.io/ome/annotations'
+
+#: The one annotation key that is free text rather than a key/value pair: what
+#: the operator typed about this session ("BFP power was 10 mW at 405 nm").
+NOTE_KEY = 'note'
+#: The shared-attribute category notes are stored under; a raw attribute with
+#: this prefix is a note the recording manager has already mapped.
+_RAW_NOTE_PREFIX = 'notes:'
 
 @dataclass(frozen=True)
 class OmeAxis:
@@ -112,6 +121,45 @@ class OmeImageMeta:
 
     # ---- serializers -------------------------------------------------------
 
+    def annotation_metadata(self) -> Dict[str, Any]:
+        """OME annotation entries for :attr:`annotations`.
+
+        The ``note`` entry is free text a human wrote, so it becomes the OME
+        ``Description`` -- the field Fiji's image properties and OMERO both
+        show as the image's own description, and the only place in OME-TIFF
+        where a sentence like "BFP power was 10 mW" belongs. Everything else
+        is a key/value pair, which is what ``MapAnnotation`` is for.
+
+        Empty values are dropped rather than written as empty elements: a note
+        the operator cleared is not a note.
+        """
+        if not self.annotations:
+            return {}
+
+        md: Dict[str, Any] = {}
+        note = self.annotations.get(NOTE_KEY)
+        if note is not None and str(note).strip():
+            md['Description'] = str(note)
+
+        # Everything else is a key/value pair: the acquisition layout and
+        # recording outcome the storers curate, the scan-axis provenance the
+        # TIFF storer merges from the shared attributes, and any further
+        # note. Values that are not text go as JSON, so a list of device
+        # names comes back as a list. A raw ``notes:*`` attribute is the same
+        # note ``annotationsFromAttrs`` already mapped, so it is not repeated.
+        pairs = {}
+        for key, value in self.annotations.items():
+            key = str(key)
+            if key == NOTE_KEY or key.startswith(_RAW_NOTE_PREFIX) or value is None:
+                continue
+            text = _annotation_text(value)
+            if text == '':
+                continue
+            pairs[key] = text
+        if pairs:
+            md['MapAnnotation'] = {'Namespace': ANNOTATION_NAMESPACE, **pairs}
+        return md
+
     def tiff_metadata(self, shape: Optional[Sequence[int]] = None) -> Dict[str, Any]:
         """``metadata=`` dict for ``tifffile.imwrite(..., ome=True, metadata=...)``.
 
@@ -132,6 +180,7 @@ class OmeImageMeta:
                 md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
         if self.channels:
             md['Channel'] = {'Name': [c.get('name', self.name) for c in self.channels]}
+        md.update(self.annotation_metadata())
         md.update(self.plane_position_metadata(shape))
         return md
 
@@ -279,15 +328,15 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
         if len(names) == size_c:
             md['Channel'] = {'Name': names}
 
+    md.update(meta.annotation_metadata())
     md.update(meta.plane_position_metadata(shp))
 
     dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
     xml = tifffile.OmeXml()
     xml.addimage(dtype, shp, stored, axes=meta.axes_string, **md)
-    serialized = xml.tostring()
-    if meta.annotations:
-        serialized = _add_map_annotation(serialized, meta.annotations)
-    return serialized.encode("ascii", "xmlcharrefreplace").decode("ascii")
+    # Annotations went in through addimage (Description, MapAnnotation), so
+    # the document tifffile produced is the document.
+    return xml.tostring().encode('ascii', 'xmlcharrefreplace').decode('ascii')
 
 
 def _annotation_json_default(value: Any):
@@ -307,6 +356,12 @@ def _annotation_json_default(value: Any):
 
 
 def _annotation_text(value: Any) -> str:
+    """One MapAnnotation value as text: strings as they are, the rest as JSON.
+
+    tifffile writes every ``<M>`` value through its XML escaper, which wants
+    a string, and a reader wants the scan-axis provenance (lists of device
+    names) back as data rather than as a Python repr.
+    """
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
     if isinstance(value, str):
@@ -317,39 +372,5 @@ def _annotation_text(value: Any) -> str:
                       sort_keys=True, default=_annotation_json_default)
 
 
-def _add_map_annotation(xml: str, annotations: Dict[str, Any]) -> str:
-    """Attach one OME MapAnnotation and reference it from the image.
-
-    Tifffile's high-level metadata mapping deliberately covers standard OME
-    image fields only. Acquisition layout and recording outcome are arbitrary
-    key/value metadata, for which OME defines ``MapAnnotation``.
-    """
-    root = ET.fromstring(xml)
-    namespace = root.tag.partition("}")[0].lstrip("{") or _OME_NAMESPACE
-    ET.register_namespace("", namespace)
-
-    def qname(name: str) -> str:
-        return f"{{{namespace}}}{name}"
-
-    annotation_id = "Annotation:ImSwitch:0"
-    structured = ET.SubElement(root, qname("StructuredAnnotations"))
-    annotation = ET.SubElement(
-        structured,
-        qname("MapAnnotation"),
-        {
-            "ID": annotation_id,
-            "Namespace": _IMSWITCH_ANNOTATION_NAMESPACE,
-        },
-    )
-    value_element = ET.SubElement(annotation, qname("Value"))
-    for key in sorted(annotations):
-        item = ET.SubElement(value_element, qname("M"), {"K": str(key)})
-        item.text = _annotation_text(annotations[key])
-
-    for image in root.findall(qname("Image")):
-        ET.SubElement(image, qname("AnnotationRef"), {"ID": annotation_id})
-    return ET.tostring(root, encoding="unicode")
-
-
-__all__ = ['OmeAxis', 'OmeImageMeta', 'build_ome_xml', '_SPACE_UNIT', '_TIME_UNIT',
-           '_OME_NAMESPACE', '_IMSWITCH_ANNOTATION_NAMESPACE']
+__all__ = ['OmeAxis', 'OmeImageMeta', 'build_ome_xml', 'ANNOTATION_NAMESPACE',
+           'NOTE_KEY', '_SPACE_UNIT', '_TIME_UNIT']
