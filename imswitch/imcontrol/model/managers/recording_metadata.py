@@ -42,8 +42,6 @@ _RECMODE_TO_MODE = {
 
 from imswitch.imcommon.model.ome_metadata import _SPACE_UNIT, _TIME_UNIT  # noqa: E402
 
-_OME_NAMESPACE = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
-_IMSWITCH_ANNOTATION_NAMESPACE = "https://imswitch.org/ns/acquisition-metadata/1"
 
 
 def normalize_mode(rec_mode_name: Optional[str], *, is_snap: bool = False) -> str:
@@ -94,6 +92,8 @@ def axes_for_recording(mode: str, n_frames: int,
 # would be a file that cannot be compared with its own source. Re-exported here
 # so every existing importer of this module keeps working unchanged.
 from imswitch.imcommon.model.ome_metadata import (  # noqa: F401
+    ANNOTATION_NAMESPACE,
+    NOTE_KEY,
     OmeAxis,
     OmeImageMeta,
     build_ome_xml,

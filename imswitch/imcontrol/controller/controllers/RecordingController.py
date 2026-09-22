@@ -3141,12 +3141,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         Returns recording output settings.
         Does NOT include filename, recording status, or detector/laser selections.
         
+        The output folder is deliberately absent: it defaults to today's date
+        (options.recording.includeDateInOutputFolder), so persisting it would
+        pin every later session to the day this snapshot was taken.
+        
         Returns:
             {
                 'saveFormat': int,
                 'snapSaveMode': int,
                 'recSaveMode': int,
-                'recFolder': str,
                 'recMode': str (enum name),
                 'numFrames': int,
                 'timeToRec': float,
@@ -3160,7 +3163,6 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             'saveFormat': self._widget.getSaveFormat(),
             'snapSaveMode': self._widget.getSnapSaveMode(),
             'recSaveMode': self._widget.getRecSaveMode(),
-            'recFolder': self._widget.getRecFolder(),
             'recMode': self.recMode.name if hasattr(self, 'recMode') else 'UntilStop',
             'numFrames': self._widget.getNumExpositions(),
             'timeToRec': self._widget.getTimeToRec(),
@@ -3183,9 +3185,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         
         IDENTICAL behavior in both STARTUP_RESTORE and SETUP_MODE_APPLY:
         - Restore save format and save mode settings
-        - Restore recording folder (only if it exists)
         - Restore recording mode (frames vs time)
         - Restore frame count and time values
+        
+        The output folder is never restored: the widget derives it from the
+        options (today's date by default), and a snapshot taken yesterday
+        would otherwise keep sending today's recordings to yesterday's folder.
         
         NEVER (in either mode):
         - Start recording
@@ -3221,15 +3226,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         except Exception as e:
             warnings.append(f'Failed to restore rec save mode: {e}')
         
-        recFolder = state.get('recFolder')
-        if recFolder:
-            if os.path.exists(recFolder):
-                try:
-                    self._widget.setRecFolder(recFolder)
-                except Exception as e:
-                    warnings.append(f'Failed to restore rec folder: {e}')
-            else:
-                warnings.append(f'Recording folder "{recFolder}" does not exist; skipped.')
+        # 'recFolder' is ignored, including in states written by older
+        # versions that still recorded it. The folder is session-scoped and is
+        # created on demand when a recording starts, so neither restoring it
+        # nor warning that it is missing would help anyone.
         
         numFrames = state.get('numFrames', 100)
         try:
@@ -3331,10 +3331,6 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             interval = state.get('cameraLapseInterval', 0)
             summaries.append(f'    timepoints: {frames}')
             summaries.append(f'    interval: {interval} s')
-        
-        recFolder = state.get('recFolder')
-        if recFolder:
-            summaries.append(f'  folder: {recFolder}')
         
         return summaries or ['  no recording settings saved']
     

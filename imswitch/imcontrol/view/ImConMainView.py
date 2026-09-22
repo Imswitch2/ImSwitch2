@@ -8,6 +8,7 @@ from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
 from . import widgets
 from .PickSetupDialog import PickSetupDialog
+from .SessionNotesDialog import SessionNotesDialog
 
 
 class ImConMainView(QtWidgets.QMainWindow):
@@ -18,6 +19,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigSaveWidgetState = QtCore.Signal()
     sigLoadWidgetState = QtCore.Signal()
     sigOpenShortcutEditor = QtCore.Signal()
+    sigOpenSessionNotes = QtCore.Signal()
     # Emitted on show/hide (i.e. module tab switches in the multi-module
     # window) so the ShortcutManager only keeps the visible module's set live.
     sigModuleVisibilityChanged = QtCore.Signal(bool)
@@ -30,6 +32,7 @@ class ImConMainView(QtWidgets.QMainWindow):
 
         self.pickSetupDialog = PickSetupDialog(self)
         self.pickDatasetsDialog = PickDatasetsDialog(self, allowMultiSelect=False)
+        self.sessionNotesDialog = SessionNotesDialog(self)
 
         self.viewSetupInfo = viewSetupInfo
 
@@ -65,6 +68,14 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.pickSetupAction = QtWidgets.QAction('Pick hardware setup…', self)
         self.pickSetupAction.triggered.connect(self.sigPickSetup)
         tools.addAction(self.pickSetupAction)
+
+        self.sessionNotesAction = QtWidgets.QAction('Session notes…', self)
+        self.sessionNotesAction.setToolTip(
+            'Free text attached to the metadata of every recording saved'
+            ' during this session'
+        )
+        self.sessionNotesAction.triggered.connect(self.sigOpenSessionNotes)
+        tools.addAction(self.sessionNotesAction)
         
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
@@ -190,6 +201,12 @@ class ImConMainView(QtWidgets.QMainWindow):
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()
         return result == QtWidgets.QDialog.Accepted
+
+    def showSessionNotesDialog(self):
+        """Raise the (modeless) session-notes editor, opening it if needed."""
+        self.sessionNotesDialog.show()
+        self.sessionNotesDialog.raise_()
+        self.sessionNotesDialog.activateWindow()
 
     def showPickDatasetsDialogBlocking(self):
         result = self.pickDatasetsDialog.exec_()

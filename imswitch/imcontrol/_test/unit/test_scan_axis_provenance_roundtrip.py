@@ -63,9 +63,12 @@ def _tiff_map_annotations(path):
     annotations = {}
     for m in root.iter(f'{{{ns}}}M'):
         annotations[m.attrib['K']] = m.text
-    # Structural validity: the image references the annotation.
-    refs = [el.attrib['ID'] for el in root.iter(f'{{{ns}}}AnnotationRef')]
-    assert 'Annotation:ImSwitch:0' in refs
+    # Structural validity: the image references the annotation it carries.
+    # tifffile assigns the IDs, so the check is that they match, not what
+    # they are.
+    refs = {el.attrib['ID'] for el in root.iter(f'{{{ns}}}AnnotationRef')}
+    ids = {el.attrib['ID'] for el in root.iter(f'{{{ns}}}MapAnnotation')}
+    assert ids and refs & ids
     return annotations
 
 

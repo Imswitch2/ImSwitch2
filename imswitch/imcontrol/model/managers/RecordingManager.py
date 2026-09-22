@@ -29,6 +29,7 @@ from imswitch.imcommon.model import (
     AcquisitionLayoutError,
     JSON_ATTR_PREFIX,
     LayoutIssue,
+    NOTES_ATTR_CATEGORY,
     decode_acquisition_layout,
     encode_acquisition_layout,
     initLogger,
@@ -220,6 +221,30 @@ HDF5_STREAM_LIBVER = ('v110', 'v110')
 #: 'stopped_early_on_stall' would have become a valid, wrong 'stopped_early'.
 #: The width now follows the vocabulary it stores.
 COMPLETION_OUTCOME_ATTR_DTYPE = f"S{max(len(value) for value in VALID_COMPLETION_OUTCOMES)}"
+
+def annotationsFromAttrs(detectorAttrs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Pull the OME annotations out of one detector's flat attribute dict.
+
+    The ``notes:`` category is what an operator wrote about this session rather
+    than what a device reported, and is the only part of the shared attributes
+    that OME has a place for: ``notes:session`` is free text and becomes the
+    OME ``Description``, anything else under ``notes:`` becomes a key/value
+    pair. Returns an empty dict when nothing was written, which leaves the
+    emitted OME byte-for-byte identical to a recording made without notes.
+    """
+    if not detectorAttrs:
+        return {}
+
+    annotations: Dict[str, Any] = {}
+    prefix = f'{NOTES_ATTR_CATEGORY}:'
+    for key, value in detectorAttrs.items():
+        if not isinstance(key, str) or not key.startswith(prefix):
+            continue
+        name = key[len(prefix):]
+        if value is None or str(value).strip() == '':
+            continue
+        annotations[_ome.NOTE_KEY if name == 'session' else name] = value
+    return annotations
 
 
 @dataclass(frozen=True)
@@ -2781,7 +2806,8 @@ class RecordingManager(SignalInterface):
                     store.omeMeta = {
                         det: self.buildOmeMeta(
                             det, _ome.MODE_SNAP,
-                            1 if np.asarray(img).ndim == 2 else int(np.asarray(img).shape[0]))
+                            1 if np.asarray(img).ndim == 2 else int(np.asarray(img).shape[0]),
+                            annotations=annotationsFromAttrs((attrs or {}).get(det)))
                         for det, img in images.items()
                     }
                     store.snap(images, attrs)
@@ -2865,14 +2891,15 @@ class RecordingManager(SignalInterface):
             # zStepUm. Without it the leading axis is labelled T, which would
             # mislabel every plane of a 3D tile and silently corrupt its
             # calibration.
+            annotations = annotationsFromAttrs((attrs or {}).get(detectorName))
             if zStepUm:
                 omeMeta[detectorName] = self.buildOmeMeta(
                     detectorName, _ome.MODE_SCAN, nf, scanDims=(1, 1, nf),
-                    scanStepSizes=(0, 0, zStepUm),
+                    scanStepSizes=(0, 0, zStepUm), annotations=annotations,
                     stagePositionUm=stagePositionUm)
             else:
                 omeMeta[detectorName] = self.buildOmeMeta(
-                    detectorName, _ome.MODE_SNAP, nf,
+                    detectorName, _ome.MODE_SNAP, nf, annotations=annotations,
                     stagePositionUm=stagePositionUm)
 
         store.omeMeta = omeMeta
@@ -4059,7 +4086,9 @@ class RecordingWorker(Worker):
                 max(2, int((expected_frames or {}).get(detectorName, 2))),
                 scanDims=scanDims,
                 scanStepSizes=scanStepSizes,
-                frameIntervalS=frameIntervalS)
+                frameIntervalS=frameIntervalS,
+                annotations=annotationsFromAttrs(
+                    augmented_attrs.get(detectorName)))
             for detectorName in self.detectorNames
         }
 
