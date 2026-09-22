@@ -187,11 +187,16 @@ class TestValidation:
         assert _codes(validate_setup_data(one, registry), "manager.alias-conflict") == []
 
     def test_every_shipped_setup_validates_cleanly(self, registry):
-        """The merge gate: generated constraints never reject a file the tree ships."""
+        """The merge gate: generated constraints never reject a file the tree ships.
+
+        Manager schemas, kind schemas (the SetupInfo dataclasses) and role
+        rules alike: the 13 shipped mock scanners get no diagnostic at all.
+        """
         offending = {}
         for path in sorted(SETUPS_DIR.glob("*.json")):
             report = validate_setup_data(json.loads(path.read_text(encoding="utf-8")), registry)
-            bad = [d for d in report.diagnostics if d.code in ("manager.schema", "manager.alias-conflict")]
+            bad = [d for d in report.diagnostics
+                   if d.code in ("manager.schema", "manager.alias-conflict") or d.code.startswith(("kind.", "role."))]
             if bad:
                 offending[path.name] = [f"{'.'.join(map(str, d.path))}: {d.message}" for d in bad]
         assert offending == {}

@@ -20,6 +20,8 @@ from typing import Optional
 _PACKAGE = "imswitch.imcontrol.model.configeditor"
 _SCHEMAS_DIR = "schemas"
 _MANAGERS_DIR = "managers"
+_KINDS_DIR = "kinds"
+_ROLES_DIR = "roles"
 _INDEX_FILE = "index.json"
 
 
@@ -52,9 +54,46 @@ def generated_schema_for(manager_name: str, root: Optional[Path] = None) -> Opti
     return _cached_schema(str(root or default_root()), manager_name)
 
 
+@lru_cache(maxsize=None)
+def _cached_kind_schema(root: str, kind: str) -> Optional[dict]:
+    return _read_json(Path(root) / _KINDS_DIR / f"{kind}.json")
+
+
+def kind_schema_for(kind: str, root: Optional[Path] = None) -> Optional[dict]:
+    """The generated schema for the top-level keys of a device entry of ``kind``, or None.
+
+    ``kind`` is a ``setup_metadata.KIND_METADATA`` key (``detector``,
+    ``laser``, …); the file is read from the SetupInfo dataclass by
+    ``kinds.build_kind_schema``. Callers must not mutate the result.
+    """
+    if not kind or "/" in kind or "\\" in kind:
+        return None
+    return _cached_kind_schema(str(root or default_root()), kind)
+
+
+@lru_cache(maxsize=None)
+def _cached_roles(root: str) -> tuple:
+    directory = Path(root) / _ROLES_DIR
+    if not directory.is_dir():
+        return ()
+    found = []
+    for path in sorted(directory.glob("*.json")):
+        role = _read_json(path)
+        if isinstance(role, dict) and role.get("role"):
+            found.append(role)
+    return tuple(found)
+
+
+def roles(root: Optional[Path] = None) -> tuple:
+    """The hand-written role rules under ``roles/``, in file order. Callers must not mutate them."""
+    return _cached_roles(str(root or default_root()))
+
+
 def clear_cache() -> None:
     """Forget cached schemas (tests that write into a temporary root)."""
     _cached_schema.cache_clear()
+    _cached_kind_schema.cache_clear()
+    _cached_roles.cache_clear()
 
 
 def index(root: Optional[Path] = None) -> Optional[dict]:

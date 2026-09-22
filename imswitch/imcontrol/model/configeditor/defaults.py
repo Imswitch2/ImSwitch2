@@ -15,6 +15,7 @@ def build_default_device(
     *,
     template: Optional[dict],
     json_schema: Optional[dict],
+    kind_schema: Optional[dict] = None,
 ) -> dict:
     """Return a new device dict with default values from template and/or schema.
 
@@ -28,19 +29,25 @@ def build_default_device(
     - a schema-only property is seeded when the schema gives a ``default``,
       or when it is **required** (a kind-appropriate empty value);
     - an optional schema-only property, nullable or not, is left out;
-    - alias spellings are never seeded: the canonical spelling is.
+    - alias spellings are never seeded: the canonical spelling is;
+    - a top-level key the dataclass requires (``kind_schema``) and the
+      template does not seed is carried as the empty value of its kind --
+      ``None`` for a number or a string, so the form's required warning
+      makes the operator fill it -- and one with a dataclass default is left
+      out, since omitting it *means* that default.
 
     Args:
         manager_name: The manager class name
         template: The builtin_templates JSON for this manager (or None)
         json_schema: Resolved managerProperties JSON Schema (or None)
     """
-    from .schemas import _default_for_type, _infer_type_from_schema, normalized_fields
+    from .kinds import NOT_FORM_FIELDS
+    from .schemas import _default_for_type, _infer_type_from_schema, empty_for_kind, normalized_fields
 
     d: dict = {"managerName": manager_name, "managerProperties": {}}
     resolved = {
         (field.location, field.nested_key, field.key): field.type
-        for field in normalized_fields(template=template, json_schema=json_schema)
+        for field in normalized_fields(template=template, json_schema=json_schema, kind_schema=kind_schema)
     }
 
     def field_type(f: dict, location: str, nested_key: Optional[str] = None) -> str:
@@ -63,6 +70,14 @@ def build_default_device(
             for f in nest_fields:
                 sub[f["key"]] = _default_value(f.get("default", ""), field_type(f, "nested", nest_key))
             d["managerProperties"][nest_key] = sub
+
+    if kind_schema:
+        required = set(kind_schema.get("required") or [])
+        for key, prop in (kind_schema.get("properties") or {}).items():
+            if key in NOT_FORM_FIELDS or key in d or not isinstance(prop, dict):
+                continue
+            if key in required:
+                d[key] = empty_for_kind(prop)
 
     if json_schema:
         required = set(json_schema.get("required") or [])

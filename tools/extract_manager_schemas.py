@@ -37,8 +37,13 @@ registry's ``python_name`` when it has one, else through the module it names
 (a re-export, or a single manager class); a name with no class gets no schema
 and is listed under ``unresolved`` in the index.
 
+The top-level keys of a device entry (``forAcquisition``, ``axes``, …) come
+from the ``SetupInfo`` dataclasses, read from ``SetupInfo.py`` with ``ast`` in
+the same run and written as ``kinds/<kind>.json``.
+
 Hand-written overrides in ``schemas/overrides/`` are merged last and never
-written by this tool. The rules live in
+written by this tool; hand-written role rules in ``schemas/roles/`` are never
+written by it either. The rules live in
 ``imswitch.imcontrol.model.configeditor.extraction`` and are described in
 ``docs/design/plans/config-editor-schema-extraction.md``.
 """
@@ -80,12 +85,14 @@ def install_light_model_package() -> None:
 install_light_model_package()
 
 from imswitch.imcontrol.model.configeditor import extraction  # noqa: E402
+from imswitch.imcontrol.model.configeditor import kinds as kinds_module  # noqa: E402
 
 DEFAULT_MANAGERS_ROOT = _REPO_ROOT / "imswitch" / "imcontrol" / "model" / "managers"
 DEFAULT_SETUPS_DIR = _REPO_ROOT / "imswitch" / "_data" / "user_defaults" / "imcontrol_setups"
 DEFAULT_DOCS_DIR = _REPO_ROOT / "docs" / "devices"
 DEFAULT_TEMPLATES_DIR = _REPO_ROOT / "imswitch" / "imcontrol" / "view" / "configeditor" / "builtin_templates"
 DEFAULT_SCHEMAS_ROOT = _REPO_ROOT / "imswitch" / "imcontrol" / "model" / "configeditor" / "schemas"
+DEFAULT_SETUP_INFO = _REPO_ROOT / "imswitch" / "imcontrol" / "model" / "SetupInfo.py"
 
 
 def _schemagen():
@@ -158,6 +165,7 @@ def generation_inputs(args: argparse.Namespace):
         overrides=schemagen.load_overrides(args.schemas_root),
         report=report,
         unresolved=tuple(unresolved),
+        info_classes=kinds_module.load_info_classes(args.setup_info),
     )
 
 
@@ -224,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS_DIR)
     parser.add_argument("--templates-dir", type=Path, default=DEFAULT_TEMPLATES_DIR)
     parser.add_argument("--schemas-root", type=Path, default=DEFAULT_SCHEMAS_ROOT)
+    parser.add_argument("--setup-info", type=Path, default=DEFAULT_SETUP_INFO,
+                        help="the SetupInfo.py whose dataclasses give the top-level device keys")
     parser.add_argument("--no-examples", action="store_true", help="do not read shipped setups for kinds")
     parser.add_argument("--no-docs", action="store_true", help="do not read docs/devices cards")
     args = parser.parse_args(argv)

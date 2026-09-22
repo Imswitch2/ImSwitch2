@@ -7,13 +7,17 @@ can regenerate it and diff. Three kinds of file come out:
 * ``schemas/managers/<Manager>.json`` -- one Draft 2020-12 schema per manager;
 * ``schemas/fixtures/<Manager>.json`` -- a synthetic device satisfying it, so
   every manager exercises the editor's form path without a hand-written setup;
+* ``schemas/kinds/<kind>.json`` -- the top-level keys of a device entry of
+  that kind, read from the ``SetupInfo`` dataclass (:mod:`kinds`);
 * ``schemas/index.json`` -- generator version, per-manager source hashes and
   the coverage totals, so a diff says *why* a schema moved.
 
-``schemas/overrides/<Manager>.json`` is the one directory here that is written
-by people and never by this module: it is merged last, wins, and is where a
-validation type narrower than the code proves comes from (the plan's
-"evidence is not a constraint" rule). :func:`write` refuses to touch it.
+``schemas/overrides/<Manager>.json`` and ``schemas/roles/<role>.json`` are the
+directories written by people and never by this module: an override is
+merged last and wins, and is where a validation type narrower than the code
+proves comes from (the plan's "evidence is not a constraint" rule); a role is
+a consumer's rule for properties no manager reads. :func:`write` refuses to
+touch either.
 
 Everything is sorted and rendered the same way every time; a regeneration that
 changes nothing changes no bytes.
@@ -30,14 +34,18 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from . import extraction as ex
+from . import kinds as kinds_module
 
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 GENERATOR_VERSION = 1
 
 MANAGERS_DIR = "managers"
 FIXTURES_DIR = "fixtures"
+KINDS_DIR = "kinds"
 OVERRIDES_DIR = "overrides"
+ROLES_DIR = "roles"
 INDEX_FILE = "index.json"
+HAND_WRITTEN_DIRS = (OVERRIDES_DIR, ROLES_DIR)
 
 REGENERATE_COMMAND = "python tools/extract_manager_schemas.py --write"
 
@@ -485,6 +493,7 @@ def build_index(
     overrides: dict[str, dict],
     report: ex.CoverageReport,
     unresolved: Iterable[str] = (),
+    info_classes: Optional[dict] = None,
 ) -> dict:
     managers = {}
     for name, manager in sorted(extractions.items()):
@@ -496,7 +505,7 @@ def build_index(
             "overridden": name in overrides,
             "source_sha256": source_hash(manager, classes),
         }
-    return {
+    index = {
         "generator_version": GENERATOR_VERSION,
         "dialect": SCHEMA_DIALECT,
         "regenerate": REGENERATE_COMMAND,
@@ -504,6 +513,16 @@ def build_index(
         "managers": managers,
         "unresolved": sorted(unresolved),
     }
+    if info_classes:
+        index["kinds"] = {
+            kind: {
+                "class": class_name,
+                "fields": len(kinds_module.resolve_fields(class_name, info_classes)[0]),
+                "required": sum(1 for f in kinds_module.resolve_fields(class_name, info_classes)[0] if f.required),
+            }
+            for kind, class_name in sorted(kinds_module.KIND_INFO_CLASSES.items())
+        }
+    return index
 
 
 @dataclass
@@ -514,6 +533,7 @@ class GenerationInputs:
     overrides: dict[str, dict]
     report: ex.CoverageReport
     unresolved: tuple[str, ...] = ()
+    info_classes: Optional[dict] = None  # the SetupInfo dataclasses (kinds.extract_info_classes)
 
 
 def generate_all(inputs: GenerationInputs) -> dict[str, str]:
@@ -524,10 +544,14 @@ def generate_all(inputs: GenerationInputs) -> dict[str, str]:
         files[f"{MANAGERS_DIR}/{name}.json"] = render(schema)
         category = inputs.categories.get(name, "others")
         files[f"{FIXTURES_DIR}/{name}.json"] = render(build_fixture(manager, category, schema))
+    if inputs.info_classes:
+        for kind in sorted(kinds_module.KIND_INFO_CLASSES):
+            files[f"{KINDS_DIR}/{kind}.json"] = render(
+                kinds_module.build_kind_schema(kind, inputs.info_classes, SCHEMA_DIALECT))
     files[INDEX_FILE] = render(build_index(
         inputs.extractions, inputs.classes,
         categories=inputs.categories, overrides=inputs.overrides,
-        report=inputs.report, unresolved=inputs.unresolved,
+        report=inputs.report, unresolved=inputs.unresolved, info_classes=inputs.info_classes,
     ))
     return files
 
@@ -535,7 +559,7 @@ def generate_all(inputs: GenerationInputs) -> dict[str, str]:
 def _generated_on_disk(root: Path) -> dict[str, str]:
     """Files under the generated directories as they are on disk."""
     found: dict[str, str] = {}
-    for directory in (MANAGERS_DIR, FIXTURES_DIR):
+    for directory in (MANAGERS_DIR, FIXTURES_DIR, KINDS_DIR):
         for path in sorted((Path(root) / directory).glob("*.json")):
             found[f"{directory}/{path.name}"] = path.read_text(encoding="utf-8")
     index = Path(root) / INDEX_FILE
@@ -559,11 +583,11 @@ def check(files: dict[str, str], root: Path) -> list[str]:
 
 
 def write(files: dict[str, str], root: Path) -> list[str]:
-    """Write the generated set, remove stale generated files, never touch overrides."""
+    """Write the generated set, remove stale generated files, never touch overrides or roles."""
     root = Path(root)
     for path in files:
-        if path.split("/", 1)[0] == OVERRIDES_DIR:
-            raise ValueError(f"refusing to generate into {OVERRIDES_DIR}/: {path}")
+        if path.split("/", 1)[0] in HAND_WRITTEN_DIRS:
+            raise ValueError(f"refusing to generate into {path.split('/', 1)[0]}/: {path}")
     written: list[str] = []
     for path, text in sorted(files.items()):
         target = root / path

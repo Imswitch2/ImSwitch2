@@ -37,14 +37,23 @@ def test_category_labels_and_colors():
 
 
 def test_blank_schemas_exist():
-    """Every category in the registry must have a non-None blank schema."""
+    """Every category in the registry must have a non-None blank schema.
+
+    A blank no longer carries a ``top`` list: the top-level keys of a device
+    entry are typed from the kind's SetupInfo dataclass (``schemas/kinds/``),
+    so the form for an untemplated manager still shows them.
+    """
     for cat in editor._CATEGORY_REGISTRY:
         assert cat in editor.BLANK_SCHEMAS, f"Missing blank schema for {cat}"
         blank = editor.BLANK_SCHEMAS[cat]
         assert blank is not None
         assert blank.get("category") == cat
-        assert "top" in blank
+        assert "top" not in blank
         assert "props" in blank
+    form = editor._schema_for_manager("BaslerManager")
+    top = {f["key"]: f for f in form["top"]}
+    assert top["forAcquisition"]["type"] == "bool" and top["forAcquisition"]["grp"] == "Device"
+    assert top["analogChannel"]["type"] == "text"
 
 
 def test_auto_discovery_finds_templated_managers():
@@ -111,9 +120,12 @@ def test_build_default_device_without_template():
         device = editor._build_default_device("BaslerManager")
         assert device["managerName"] == "BaslerManager"
         assert "managerProperties" in device
-        # Should have detector blank's top-level fields
-        assert "analogChannel" in device
-        assert "forAcquisition" in device
+        # No top-level key the dataclass gives a default for is seeded: an
+        # omitted forAcquisition *means* False, and the form shows exactly
+        # that. Only what the manager's own schema requires is carried.
+        assert "analogChannel" not in device
+        assert "forAcquisition" not in device
+        assert "cameraListIndex" in device["managerProperties"]
 
 
 def test_category_for_manager_lookup():

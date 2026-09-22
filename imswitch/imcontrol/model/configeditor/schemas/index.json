@@ -22,6 +22,48 @@
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
   "generator_version": 1,
+  "kinds": {
+    "detector": {
+      "class": "DetectorInfo",
+      "fields": 6,
+      "required": 1
+    },
+    "flip_mirror": {
+      "class": "FlipMirrorInfo",
+      "fields": 6,
+      "required": 1
+    },
+    "laser": {
+      "class": "LaserInfo",
+      "fields": 12,
+      "required": 4
+    },
+    "positioner": {
+      "class": "PositionerInfo",
+      "fields": 13,
+      "required": 2
+    },
+    "rotator": {
+      "class": "DeviceInfo",
+      "fields": 4,
+      "required": 1
+    },
+    "rs232": {
+      "class": "RS232Info",
+      "fields": 2,
+      "required": 2
+    },
+    "slm": {
+      "class": "SLMsInfo",
+      "fields": 14,
+      "required": 8
+    },
+    "stand": {
+      "class": "MicroscopeStandInfo",
+      "fields": 3,
+      "required": 3
+    }
+  },
   "managers": {
     "AAAOTFLaserManager": {
       "category": "lasers",

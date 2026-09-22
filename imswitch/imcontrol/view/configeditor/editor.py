@@ -41,6 +41,8 @@ _MANAGER_CATALOG = None
 _coercion_module = None
 _io_module = None
 _schema_module = None
+_resources_module = None
+_roles_module = None
 _setup_kind_metadata = ()
 try:
     from imswitch.imcontrol.model.configeditor.catalog import build_catalog
@@ -48,6 +50,8 @@ try:
     from imswitch.imcontrol.model.configeditor import coercion as _coercion_module
     from imswitch.imcontrol.model.configeditor import io as _io_module
     from imswitch.imcontrol.model.configeditor import schemas as _schema_module
+    from imswitch.imcontrol.model.configeditor import resources as _resources_module
+    from imswitch.imcontrol.model.configeditor import roles as _roles_module
     from imswitch.imcontrol.model.plugins.setup_metadata import setup_kinds
     _setup_kind_metadata = setup_kinds()
 except ImportError as e:
@@ -527,9 +531,10 @@ def _all_known_managers() -> list[str]:
 def _schema_for_manager(manager_name: str) -> dict:
     """Return the editor form schema for a manager, including plugin fields.
 
-    Built-in templates provide the curated layout.  For a registry-provided
-    manager without one, the category blank template provides the common
-    device fields and the plugin's JSON Schema supplies its properties.
+    Built-in templates provide the curated layout. The top-level keys of the
+    device entry come from the kind's ``SetupInfo`` dataclass
+    (``schemas/kinds/``), the ``managerProperties`` from the manager's own
+    schema -- generated from its source, or shipped by its plugin.
     """
     template = SCHEMAS.get(manager_name)
     if template is None:
@@ -541,9 +546,42 @@ def _schema_for_manager(manager_name: str) -> dict:
 
     if _schema_module is not None:
         return _schema_module.materialize_device_schema(
-            template=template, json_schema=json_schema
+            template=template, json_schema=json_schema,
+            kind_schema=_kind_schema_for_manager(manager_name),
         )
     return copy.deepcopy(template) if template else {}
+
+
+def _kind_schema_for_category(category: str | None) -> dict | None:
+    """The generated schema for the top-level keys of a device in ``category``."""
+    if not category or _resources_module is None:
+        return None
+    kind = next((meta.kind for meta in _setup_kind_metadata if meta.editor_category == category), None)
+    return _resources_module.kind_schema_for(kind) if kind else None
+
+
+def _kind_schema_for_manager(manager_name: str) -> dict | None:
+    return _kind_schema_for_category(_get_category_for_manager(manager_name))
+
+
+def _with_role_fields(schema: dict, category: str, name: str, device: dict, setup: dict | None) -> dict:
+    """Optional fields for the properties a consumer reads from this device (``schemas/roles/``).
+
+    A role never requires or seeds a property; it only gives the key a typed
+    field in its own group, on the devices its predicate selects.
+    """
+    if _roles_module is None or _resources_module is None:
+        return schema
+    known = {f["key"] for f in schema.get("props", [])} | set(schema.get("nested", {}))
+    for role in _roles_module.applicable(_resources_module.roles(), section=category, name=name,
+                                         device=device, setup=setup or {}):
+        for key, prop in (role.get("properties") or {}).items():
+            if key in known or not isinstance(prop, dict):
+                continue
+            schema.setdefault("props", []).append(
+                _schema_module.role_field(key, prop, group=role.get("title", role["role"])))
+            known.add(key)
+    return schema
 
 
 def _plugin_schema_for_manager(manager_name: str) -> dict | None:
@@ -578,6 +616,7 @@ def _build_default_device(manager_name: str) -> dict:
             manager_name,
             template=template,
             json_schema=_plugin_schema_for_manager(manager_name),
+            kind_schema=_kind_schema_for_manager(manager_name),
         )
     except ImportError:
         # Phase 2 module unavailable - use legacy inline implementation
@@ -1421,6 +1460,7 @@ class PropertyEditor(QWidget):
         self._name = ""
         self._device = {}
         self._data: dict = {}                 # Reference to full config data for config settings view
+        self._setup: dict = {}                # The document the loaded device belongs to
         self._field_widgets: dict[tuple, FieldWidget] = {}   # (section, key) → widget
 
         outer = QVBoxLayout(self)
@@ -1659,10 +1699,12 @@ class PropertyEditor(QWidget):
         self._refresh_sections()
         self._show_config_view()
 
-    def load_device(self, cat: str, name: str, device: dict):
+    def load_device(self, cat: str, name: str, device: dict, setup: dict | None = None):
         self._cat = cat
         self._name = name
         self._device = copy.deepcopy(device)
+        # The whole document, for role predicates (``scan.scanDesigner``).
+        self._setup = setup if setup is not None else self._data
         self._name_lbl.setText(name)
 
         # Switch to device view
@@ -1713,7 +1755,7 @@ class PropertyEditor(QWidget):
             mgr = self._custom_mgr_edit.text().strip() or self._device.get("managerName", "")
         else:
             mgr = raw_mgr or self._device.get("managerName", "")
-        schema = _schema_for_manager(mgr)
+        schema = _with_role_fields(_schema_for_manager(mgr), self._cat, self._name, self._device, self._setup)
         props = self._device.get("managerProperties") or {}
 
         # Collect fields grouped by grp
@@ -1916,7 +1958,7 @@ class PropertyEditor(QWidget):
         for f in schema.get("top", []) + schema.get("props", []):
             if f["req"]:
                 v = new_device.get(f["key"]) if f in schema.get("top", []) else props.get(f["key"])
-                if v is None or v == "":
+                if v is None or v == "" or v == []:
                     warnings.append(f"⚠  Required: {f['label']}")
         self._val_lbl.setText("\n".join(warnings))
 
@@ -3825,7 +3867,7 @@ class MainWindow(QMainWindow):
     def _on_device_selected(self, cat: str, name: str):
         device = (self._data.get(cat) or {}).get(name)
         if device is not None:
-            self._editor.load_device(cat, name, device)
+            self._editor.load_device(cat, name, device, setup=self._data)
 
     def _on_editor_apply(self, cat: str, name: str, new_device: dict):
         if cat not in self._data or not isinstance(self._data[cat], dict):
@@ -3961,7 +4003,7 @@ class MainWindow(QMainWindow):
         self._modified = True
         self._refresh_canvas()
         self._canvas._on_card_clicked(cat, name)
-        self._editor.load_device(cat, name, device)
+        self._editor.load_device(cat, name, device, setup=self._data)
 
     def _on_save_template(self, cat: str, name: str):
         device = (self._data.get(cat) or {}).get(name)

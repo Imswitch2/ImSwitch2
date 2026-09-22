@@ -18,8 +18,11 @@ schema's kind (the template drift test strips types that merely repeat it).
 """
 
 import copy
+import re
 from dataclasses import dataclass, replace
 from typing import Optional
+
+from .kinds import NOT_FORM_FIELDS
 
 #: Editor widget type for each schema kind.
 _KIND_TO_TYPE = {
@@ -79,14 +82,22 @@ def normalized_fields(
     *,
     template: Optional[dict],
     json_schema: Optional[dict],
+    kind_schema: Optional[dict] = None,
 ) -> list[FieldSpec]:
-    """Merge template and JSON schema into normalized field specifications.
+    """Merge template, kind schema and JSON schema into normalized field specifications.
 
     - The template's ``top``/``props``/``nested`` fields come first, with the
       template's presentation.
-    - A property the schema also describes is *refined*: the resolved type,
-      options from ``enum`` when the template lists none, aliases,
-      nullability, and requiredness (the schema can strengthen, never weaken).
+    - A top-level key the kind schema (the ``SetupInfo`` dataclass, see
+      :mod:`kinds`) describes is refined the same way; one the template does
+      not lay out is appended to the ``Device`` group. Its requiredness is a
+      label hint, never ``required_by_schema``: ``infer_missing`` loads a
+      missing required field as ``None``, so the file was accepted without
+      it and Apply must not invent it.
+    - A property the manager schema also describes is *refined*: the
+      resolved type, options from ``enum`` when the template lists none,
+      aliases, nullability, and requiredness (the schema can strengthen,
+      never weaken).
     - A property only the schema describes is appended to the ``Properties``
       group. Alias spellings (``x-imswitch-alias-of``) are not fields: the
       canonical property carries them.
@@ -104,6 +115,18 @@ def normalized_fields(
             seen_props.add(nest_key)  # the container itself is laid out by the template
             for f in nest_fields:
                 fields.append(_template_field_to_spec(f, location="nested", nested_key=nest_key))
+
+    if kind_schema:
+        kind_required = set(kind_schema.get("required") or [])
+        index_of = {(field.location, field.key): i for i, field in enumerate(fields)}
+        for key, prop in (kind_schema.get("properties") or {}).items():
+            if key in NOT_FORM_FIELDS or not isinstance(prop, dict):
+                continue
+            index = index_of.get(("top", key))
+            if index is not None:
+                fields[index] = _refine(fields[index], prop, required=key in kind_required, proven=False)
+            else:
+                fields.append(_kind_field_to_spec(key, prop, required=key in kind_required))
 
     if json_schema:
         schema_props = json_schema.get("properties") or {}
@@ -174,8 +197,13 @@ def _schema_field_to_spec(key: str, prop: dict, *, required: bool) -> FieldSpec:
     )
 
 
-def _refine(field: FieldSpec, prop: dict, *, required: bool) -> FieldSpec:
-    """A template field and the schema's description of the same property."""
+def _refine(field: FieldSpec, prop: dict, *, required: bool, proven: bool = True) -> FieldSpec:
+    """A template field and the schema's description of the same property.
+
+    ``proven`` says whether ``required`` may drive Apply (a manager reads the
+    key unguarded) or is only a label hint (a dataclass field without a
+    default, which still loads as ``None``).
+    """
     resolved = resolve_type(field.type or None, prop)
     options = field.options
     if not options:
@@ -189,8 +217,68 @@ def _refine(field: FieldSpec, prop: dict, *, required: bool) -> FieldSpec:
         nullable=bool(prop.get("x-imswitch-nullable")),
         widget=prop.get("x-imswitch-widget") or "",
         ref_category=prop.get("x-imswitch-ref-category") or "",
-        required_by_schema=required,
+        required_by_schema=required and proven,
     )
+
+
+def _kind_field_to_spec(key: str, prop: dict, *, required: bool) -> FieldSpec:
+    """A top-level key the template does not lay out, typed from the dataclass.
+
+    The form shows the dataclass default for an absent key -- that is what
+    an omitted key means -- and a required key without one as blank.
+    """
+    field_type = _infer_type_from_schema(prop)
+    if "default" in prop:
+        default = copy.deepcopy(prop["default"])
+    else:
+        default = _blank_for_type(field_type)
+    return FieldSpec(
+        key=key,
+        label=_make_label(key),
+        type=field_type,
+        default=default,
+        required=required,
+        group="Device",
+        tooltip=prop.get("description", "") or "",
+        options=_options_from_schema(prop, field_type),
+        location="top",
+        nested_key=None,
+        nullable=bool(prop.get("x-imswitch-nullable")),
+        widget=prop.get("x-imswitch-widget") or "",
+        required_by_schema=False,
+    )
+
+
+def role_field(key: str, prop: dict, *, group: str) -> dict:
+    """A template-shaped optional field for a property a consumer reads (``schemas/roles/``)."""
+    field_type = _infer_type_from_schema(prop)
+    out = {
+        "key": key,
+        "label": _make_label(key),
+        "type": field_type,
+        "default": _blank_for_type(field_type),
+        "req": False,
+        "grp": group,
+        "tip": prop.get("description", "") or "",
+        "opts": list(_options_from_schema(prop, field_type)),
+    }
+    if prop.get("x-imswitch-nullable"):
+        out["nullable"] = True
+    return out
+
+
+def empty_for_kind(prop: dict) -> object:
+    """The empty value of a property's first kind: what a new device carries for a required key.
+
+    Numbers and strings are ``None`` -- a blank box the operator must fill,
+    flagged by the form's required warning -- because the editor does not
+    invent a wavelength; a list or a dict is empty, which the warning flags
+    too.
+    """
+    kinds = _kinds_of(prop) or []
+    if not kinds:
+        return None
+    return {"array": [], "object": {}}.get(kinds[0])
 
 
 def _options_from_schema(prop: dict, field_type: str) -> tuple:
@@ -241,6 +329,10 @@ def _infer_type_from_schema(prop_schema: dict) -> str:
         return "ref"
     if widget == "path":
         return "path"
+    if widget == "text":
+        # A list of names edited as comma-separated text; the text widget
+        # reads it back as a list when the value was one.
+        return "text"
     kinds = _kinds_of(prop_schema)
     if not kinds:
         return "json"
@@ -309,15 +401,16 @@ def _blank_for_type(field_type: str) -> object:
 
 
 def _make_label(key: str) -> str:
-    """Generate a human-readable label from a property key."""
-    # Replace underscores with spaces and title-case
-    return key.replace("_", " ").title()
+    """A human-readable label from a key: ``forAcquisition`` -> ``For Acquisition``."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", key.replace("_", " "))
+    return " ".join(word[:1].upper() + word[1:] for word in spaced.split())
 
 
 def materialize_device_schema(
     *,
     template: Optional[dict],
     json_schema: Optional[dict],
+    kind_schema: Optional[dict] = None,
 ) -> dict:
     """Return a template-shaped device schema enriched by a JSON Schema.
 
@@ -329,15 +422,40 @@ def materialize_device_schema(
     For a template-backed property the resolved type, options, aliases,
     nullability and requiredness are written into the template's field so
     the form sees the schema; schema-only properties are added to a
-    ``Properties`` group. The inputs are never mutated: they are cached
-    globally by the editor.
+    ``Properties`` group. Top-level keys come from ``kind_schema`` (the
+    ``SetupInfo`` dataclass) the same way, into a ``Device`` group. The
+    inputs are never mutated: they are cached globally by the editor.
     """
     result = copy.deepcopy(template) if template else {}
     result.setdefault("top", [])
     result.setdefault("props", [])
     result.setdefault("nested", {})
 
-    fields = normalized_fields(template=template, json_schema=json_schema)
+    fields = normalized_fields(template=template, json_schema=json_schema, kind_schema=kind_schema)
+    template_top = {field.get("key"): field for field in result["top"]}
+    for field in fields:
+        if field.location != "top":
+            continue
+        if field.key in template_top:
+            existing = template_top[field.key]
+            existing["req"] = field.required
+            existing["type"] = field.type
+            existing["opts"] = list(field.options)
+            _annotate(existing, field)
+            continue
+        new_field = {
+            "key": field.key,
+            "label": field.label,
+            "type": field.type,
+            "default": field.default,
+            "req": field.required,
+            "grp": field.group,
+            "tip": field.tooltip,
+            "opts": list(field.options),
+        }
+        _annotate(new_field, field)
+        result["top"].append(new_field)
+        template_top[field.key] = new_field
     template_props = {field.get("key"): field for field in result["props"]}
     for field in fields:
         if field.location != "prop":

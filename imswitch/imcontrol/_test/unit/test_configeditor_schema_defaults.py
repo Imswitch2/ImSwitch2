@@ -253,7 +253,7 @@ class TestConfigEditorSchemaDefaults:
         
         # Find the triggerMode field (schema-only, inferred)
         trigger_field = next(f for f in fields if f.key == "triggerMode")
-        assert trigger_field.label == "Triggermode"  # Inferred from key (title-cased)
+        assert trigger_field.label == "Trigger Mode"  # Inferred from the key
         assert trigger_field.type == "select"  # Inferred from enum
         assert trigger_field.default == "internal"
         assert trigger_field.required is True  # From schema

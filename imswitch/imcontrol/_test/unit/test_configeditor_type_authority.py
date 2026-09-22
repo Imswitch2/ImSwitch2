@@ -266,7 +266,10 @@ class TestDefaults:
     def test_the_real_thorcam_new_device_seeds_nothing_optional(self):
         device = editor._build_default_device("ThorCamTSIManager")
         assert device["managerProperties"] == {}
-        assert device["forAcquisition"] is True and device["forFocusLock"] is False
+        # The blank template no longer seeds top-level keys: an omitted
+        # forAcquisition *means* the dataclass default (False), and the form
+        # shows exactly that.
+        assert device == {"managerName": "ThorCamTSIManager", "managerProperties": {}}
 
 
 # ── the form ──────────────────────────────────────────────────────────────

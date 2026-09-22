@@ -46,6 +46,7 @@ def inputs(tool):
         managers_root=tool.DEFAULT_MANAGERS_ROOT, setups_dir=tool.DEFAULT_SETUPS_DIR,
         docs_dir=tool.DEFAULT_DOCS_DIR, templates_dir=tool.DEFAULT_TEMPLATES_DIR,
         schemas_root=SCHEMAS_ROOT, no_examples=False, no_docs=False,
+        setup_info=tool.DEFAULT_SETUP_INFO,
     )
     return tool.generation_inputs(args)
 
