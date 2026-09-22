@@ -344,3 +344,133 @@ class TestExitCriterion:
 def _pythonpath() -> dict[str, str]:
     import os
     return {"PYTHONPATH": str(_REPO) + os.pathsep + os.environ.get("PYTHONPATH", "")}
+
+
+# ── review of Phases 1-2: overrides, aliases, nesting, fixtures ───────────
+NESTED = '''
+    class M:
+        def __init__(self, info, name):
+            defaults = info.managerProperties.get("defaults", {})
+            self.gain = defaults.get("gain", 1)
+            self.exposure = defaults.get("exposure", 10)
+'''
+
+
+class TestOverridesReachEverySpelling:
+    def test_an_override_reaches_every_alias_spelling(self):
+        """Alias copies were made before the override: "seed": "wrong" failed, "old_seed": "wrong" passed."""
+        schema = sg.build_schema(_manager(SOURCE), {"properties": {"mockRandomSeed": {"type": "integer"}}})
+        alias = schema["properties"]["mock_random_seed"]
+        assert alias["type"] == "integer"
+        assert alias["x-imswitch-alias-of"] == "mockRandomSeed" and "x-imswitch-aliases" not in alias
+        assert "override" in alias["x-imswitch-source"]
+        jsonschema = pytest.importorskip("jsonschema")
+        for spelling in ("mockRandomSeed", "mock_random_seed"):
+            validator = jsonschema.Draft202012Validator(schema["properties"][spelling])
+            assert not validator.is_valid("wrong"), spelling
+            assert validator.is_valid(3), spelling
+
+    def test_an_override_naming_an_alias_spelling_applies_on_top_of_the_copy(self):
+        schema = sg.build_schema(_manager(SOURCE), {"properties": {
+            "mockRandomSeed": {"type": "integer"},
+            "mock_random_seed": {"description": "the old spelling"},
+        }})
+        alias = schema["properties"]["mock_random_seed"]
+        assert alias["type"] == "integer" and alias["description"] == "the old spelling"
+        assert alias["x-imswitch-alias-of"] == "mockRandomSeed"
+        assert "description" not in schema["properties"]["mockRandomSeed"]
+
+    def test_properties_stay_sorted_after_the_copies_are_added(self):
+        schema = sg.build_schema(_manager(SOURCE), {"properties": {"zzz": {"type": "boolean"}}})
+        assert list(schema["properties"]) == sorted(schema["properties"])
+
+
+class TestOverridesMergeRecursively:
+    def test_a_nested_override_keeps_siblings_and_the_existing_keys(self):
+        """`prop.update()` replaced a nested `properties` wholesale."""
+        schema = sg.build_schema(_manager(NESTED), {"properties": {
+            "defaults": {"properties": {"gain": {"minimum": 5}}},
+        }})
+        defaults = schema["properties"]["defaults"]
+        assert defaults["type"] == "object", "the generated constraint survives"
+        assert set(defaults["properties"]) == {"gain", "exposure"}, "the sibling survives"
+        gain = defaults["properties"]["gain"]
+        assert gain["minimum"] == 5 and gain["x-imswitch-kind"] == "integer", "gain keeps its kind"
+        assert "override" in gain["x-imswitch-source"] and "override" in defaults["x-imswitch-source"]
+        assert "override" not in defaults["properties"]["exposure"]["x-imswitch-source"]
+
+    def test_a_nested_required_list_replaces_and_a_fixture_still_satisfies_it(self):
+        manager = _manager(NESTED)
+        schema = sg.build_schema(manager, {"properties": {
+            "defaults": {"required": ["gain"], "properties": {"gain": {"type": "integer", "minimum": 5}}},
+        }})
+        assert schema["properties"]["defaults"]["required"] == ["gain"]
+        fixture = sg.build_fixture(manager, "detectors", schema)
+        assert fixture["device"]["managerProperties"]["defaults"] == {"gain": 5, "exposure": 1}
+
+    def test_lists_replace_rather_than_merge(self):
+        schema = sg.build_schema(_manager(SOURCE), {"properties": {"calibCsvPath": {"type": ["string", "null"]}}})
+        assert schema["properties"]["calibCsvPath"]["type"] == ["string", "null"]
+
+
+class TestFixturesHonourConstraints:
+    def test_a_bound_moves_the_example_inside_it(self):
+        assert sg._example_for({"type": "integer", "minimum": 5}) == 5
+        assert sg._example_for({"type": "integer", "exclusiveMinimum": 5}) == 6
+        assert sg._example_for({"type": "integer", "maximum": 0}) == 0
+        assert sg._example_for({"type": "integer", "exclusiveMaximum": 1}) == 0
+        assert sg._example_for({"type": "integer", "minimum": 5, "multipleOf": 10}) == 10
+        assert sg._example_for({"type": "number", "minimum": 2, "maximum": 3}) == 2.0
+        assert sg._example_for({"type": "number", "exclusiveMinimum": 0, "maximum": 0.1}) == 0.1
+        assert sg._example_for({"x-imswitch-kind": "integer", "type": ["integer", "string"], "minimum": 9}) == 9
+
+    def test_const_examples_default_enum_in_that_order(self):
+        assert sg._example_for({"const": 4, "examples": [5], "default": 6, "enum": [7]}) == 4
+        assert sg._example_for({"examples": [5], "default": 6, "enum": [7]}) == 5
+        assert sg._example_for({"default": 6, "enum": [7]}) == 6
+        assert sg._example_for({"enum": [7]}) == 7
+
+    def test_a_string_pattern_needs_a_hand_authored_example(self):
+        with pytest.raises(sg.FixtureError, match=r"port: .*examples"):
+            sg._example_for({"type": "string", "pattern": "^COM"}, "port")
+        assert sg._example_for({"type": "string", "pattern": "^COM", "examples": ["COM7"]}) == "COM7"
+
+    def test_min_length_pads_and_max_length_truncates(self):
+        assert sg._example_for({"type": "string", "minLength": 10}) == "exampleexa"
+        assert sg._example_for({"type": "string", "maxLength": 3}) == "exa"
+
+    def test_an_array_with_min_items_is_filled_from_its_items_schema(self):
+        assert sg._example_for({"type": "array", "minItems": 2, "items": {"type": "integer", "minimum": 3}}) == [3, 3]
+        with pytest.raises(sg.FixtureError, match="items"):
+            sg._example_for({"type": "array", "minItems": 1}, "list")
+
+    def test_an_unsatisfiable_bound_names_the_property_and_the_fix(self):
+        with pytest.raises(sg.FixtureError, match=r"level: no example satisfies .*examples"):
+            sg._example_for({"type": "integer", "minimum": 5, "maximum": 4}, "level")
+
+    def test_an_overridden_minimum_is_respected_by_the_fixture(self):
+        """An integer override with minimum 5 generated 1 and failed the fixture test."""
+        manager = _manager(SOURCE)
+        schema = sg.build_schema(manager, {"properties": {"channel": {"type": "integer", "minimum": 5}}})
+        assert sg.build_fixture(manager, "lasers", schema)["device"]["managerProperties"]["channel"] == 5
+
+    def test_the_fixture_is_validated_before_it_is_written(self):
+        """A constraint the example builder does not model fails at --write, naming the fix."""
+        pytest.importorskip("jsonschema")
+        manager = _manager(SOURCE)
+        schema = sg.build_schema(manager, {"properties": {"channel": {"type": "integer", "not": {"const": 1}}}})
+        with pytest.raises(sg.FixtureError, match=r"M: .*channel.*examples"):
+            sg.build_fixture(manager, "lasers", schema)
+        schema = sg.build_schema(manager, {"properties": {
+            "channel": {"type": "integer", "not": {"const": 1}, "examples": [2]},
+        }})
+        assert sg.build_fixture(manager, "lasers", schema)["device"]["managerProperties"]["channel"] == 2
+
+    def test_generate_all_refuses_rather_than_writing_a_rejected_fixture(self, tmp_path):
+        pytest.importorskip("jsonschema")
+        managers, schemas = _tree(tmp_path, SYNTH)
+        (schemas / "overrides").mkdir(parents=True)
+        (schemas / "overrides" / "SynthManager.json").write_text(
+            '{"properties": {"a": {"type": "integer", "not": {"const": 1}}}}', encoding="utf-8")
+        with pytest.raises(sg.FixtureError, match="SynthManager"):
+            sg.generate_all(_inputs(managers, schemas))

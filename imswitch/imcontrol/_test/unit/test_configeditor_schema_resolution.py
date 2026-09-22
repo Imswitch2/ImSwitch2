@@ -195,3 +195,58 @@ class TestValidation:
             if bad:
                 offending[path.name] = [f"{'.'.join(map(str, d.path))}: {d.message}" for d in bad]
         assert offending == {}
+
+
+# ── review of Phases 1-2: a core name is not a core implementation ────────
+def _vendor(python_name: str) -> DeviceManagerContribution:
+    return DeviceManagerContribution(
+        id="AAAOTFLaserManager", kind="laser", display_name="vendor AOTF",
+        python_name=python_name, plugin_name="vendor",
+    )
+
+
+CORE_AOTF = "imswitch.imcontrol.model.managers.lasers.AAAOTFLaserManager:AAAOTFLaserManager"
+
+
+class TestPluginsReusingCoreNames:
+    """A plugin registering an unregistered core name with its own class must
+    not inherit the core contract: it would be told ``channel`` and
+    ``rs232device`` are required by code it does not run."""
+
+    def test_a_plugin_with_its_own_class_gets_no_generated_schema(self):
+        assert schema_for("laser", "AAAOTFLaserManager", _vendor("vendor_plugin.managers:AAAOTFLaserManager")) is None
+
+    def test_a_plugin_running_the_core_class_gets_the_core_schema(self):
+        schema = schema_for("laser", "AAAOTFLaserManager", _vendor(CORE_AOTF))
+        assert schema["title"] == "AAAOTFLaserManager managerProperties"
+
+    def test_a_core_module_with_another_class_is_another_implementation(self):
+        other = "imswitch.imcontrol.model.managers.lasers.AAAOTFLaserManager:SomethingElse"
+        assert schema_for("laser", "AAAOTFLaserManager", _vendor(other)) is None
+
+    def test_a_look_alike_package_prefix_does_not_count(self):
+        assert schema_for("laser", "AAAOTFLaserManager", _vendor("imswitch.imcontrol.model.managersx.A:AAAOTFLaserManager")) is None
+
+    def test_generated_off_is_the_catalogs_gate(self):
+        assert schema_for("positioner", "SerialDacZManager", None, generated=False) is None
+        assert schema_for("positioner", "SerialDacZManager", None) is not None
+
+    def test_the_catalog_uses_the_same_resolver(self):
+        registry = DevicePluginRegistry()
+        registry.register(_vendor("vendor_plugin.managers:AAAOTFLaserManager"), is_builtin=False)
+        catalog = build_catalog(registry=registry, include_legacy_scan=False, include_generated_schemas=True)
+        assert catalog.get("AAAOTFLaserManager").properties_schema is None
+        registry = DevicePluginRegistry()
+        registry.register(_vendor(CORE_AOTF), is_builtin=False)
+        catalog = build_catalog(registry=registry, include_legacy_scan=False, include_generated_schemas=True)
+        assert catalog.get("AAAOTFLaserManager").properties_schema["title"] == "AAAOTFLaserManager managerProperties"
+
+    def test_the_validator_does_not_hold_the_plugin_to_the_core_contract(self):
+        registry = DevicePluginRegistry()
+        registry.register(_vendor("vendor_plugin.managers:AAAOTFLaserManager"), is_builtin=False)
+        report = validate_setup_data(_setup("lasers", "l", "AAAOTFLaserManager", {}), registry)
+        assert _codes(report, "manager.schema") == []
+        registry = DevicePluginRegistry()
+        registry.register(_vendor(CORE_AOTF), is_builtin=False)
+        report = validate_setup_data(_setup("lasers", "l", "AAAOTFLaserManager", {}), registry)
+        assert any("channel" in d.message for d in _codes(report, "manager.schema"))

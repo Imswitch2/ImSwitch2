@@ -143,24 +143,31 @@ def build_catalog(
         managers_root: Root directory for manager scanning. If None, resolves
             from the package structure.
         include_generated_schemas: If True, a manager without a schema of its
-            own gets the generated one from package data (``schemas/managers``).
+            own gets the generated one from package data (``schemas/managers``)
+            through the validator's ``schema_for`` -- a registered manager only
+            when it is implemented by the core class the schema describes.
             Off by default: the editor turns any ``properties_schema`` into form
             fields on the spot, and until it preserves omitted and aliased
             keys on Apply (Phase 3 of the schema-extraction plan) that would
-            rewrite setup files. The CLI validator resolves generated schemas
-            itself and does not go through this flag.
+            rewrite setup files. The CLI validator always resolves generated
+            schemas and does not go through this flag.
         schemas_root: Where to read generated schemas from (tests).
     
     Returns:
         A populated ManagerCatalog instance.
     """
     logger = logging.getLogger(__name__)
-    generated = None
-    if include_generated_schemas:
-        from imswitch.imcontrol.model.configeditor import resources as _resources
 
-        def generated(name):
-            return _resources.generated_schema_for(name, schemas_root)
+    def schema_for(kind, name, contribution):
+        """The same resolver the validator uses; the flag is its gate."""
+        from imswitch.imcontrol.model.plugins.validation import schema_for as _schema_for
+
+        try:
+            return _schema_for(kind, name, contribution,
+                               schemas_root=schemas_root, generated=include_generated_schemas)
+        except Exception as e:  # a broken plugin schema must not take the catalog down
+            logger.debug(f"Could not resolve schema for {name}: {e}")
+            return None
     
     # Build or use provided registry
     if registry is None:
@@ -194,16 +201,9 @@ def build_catalog(
         # Determine if builtin (from imswitch-core plugin)
         is_builtin = contrib.plugin_name == "imswitch-core"
         
-        # Resolve schema if available: the contribution's own first, else the
-        # generated one when asked for.
-        schema = None
-        try:
-            from imswitch.imcontrol.model.plugins.validation import resolve_schema
-            schema = resolve_schema(contrib)
-        except (ImportError, Exception) as e:
-            logger.debug(f"Could not resolve schema for {contrib.id}: {e}")
-        if schema is None and generated is not None:
-            schema = generated(contrib.id)
+        # The contribution's own schema, else -- when asked for -- the
+        # generated one, if the contribution runs the core class it describes.
+        schema = schema_for(contrib.kind, contrib.id, contrib)
         
         info = ManagerInfo(
             manager_name=contrib.id,
@@ -230,9 +230,10 @@ def build_catalog(
     # Add legacy filesystem scan results
     if include_legacy_scan:
         legacy_infos = _scan_legacy_managers(managers_root, seen_names)
-        if generated is not None:
+        if include_generated_schemas:
             legacy_infos = [
-                ManagerInfo(**{**info.__dict__, "properties_schema": generated(info.manager_name)})
+                ManagerInfo(**{**info.__dict__,
+                               "properties_schema": schema_for(info.kind, info.manager_name, None)})
                 for info in legacy_infos
             ]
         infos.extend(legacy_infos)

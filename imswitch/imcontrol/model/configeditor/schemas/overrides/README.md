@@ -24,7 +24,24 @@ One file per manager, `<ManagerName>.json`, with any of:
 }
 ```
 
-`properties` deep-merges per key (a new key creates the property); `required`
-adds, `optional` removes. Every property touched gets `"override"` in its
-`x-imswitch-source`. Any other top-level key is refused, so a typo cannot be
-silently ignored. Regenerate after editing so the merged schema is checked in.
+`properties` merges recursively: objects merge key by key, so a patch of
+`defaults.properties.gain.minimum` keeps `gain`'s other keys and its sibling
+sub-properties; anything else -- lists included, so `enum`, `type` and a
+nested `required` -- replaces. A new key creates the property. `required`
+adds, `optional` removes. Every property and sub-property touched gets
+`"override"` in its `x-imswitch-source`. Any other top-level key is refused,
+so a typo cannot be silently ignored.
+
+An override written for a property with alias spellings (`x-imswitch-aliases`)
+holds under every spelling; name the alias spelling itself only to make the
+two differ on purpose.
+
+The generator also writes a fixture per manager -- a device the schema
+accepts. It shapes the example to `minimum`/`maximum`/`exclusive*`/
+`multipleOf`, `minLength`/`maxLength` and `minItems`; for anything it cannot
+satisfy (a `pattern`, a `not`, a combination) give the value yourself with
+`"examples": [<value>]` on the property, which the fixture uses first. A
+fixture the schema rejects fails `--write` with the property named rather
+than leaving a file behind for CI to reject.
+
+Regenerate after editing so the merged schema is checked in.

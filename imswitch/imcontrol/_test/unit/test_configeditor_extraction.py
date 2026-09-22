@@ -880,3 +880,87 @@ class TestNestedDicts:
         assert fixture["device"]["managerProperties"]["defaults"] == {
             "exposure_us": 1, "gain": 1.5, "operation_mode": "example"}
 
+
+
+class TestGuardsInsideHelpers:
+    """A helper handed the dict keeps its guards; its call sites inherit them.
+
+    Review of Phases 1-2: reads inside a module function or a method that
+    receives the dict were recorded without looking at the surrounding
+    ``try`` or ``if``, so ``try: return props["optional_port"] except
+    KeyError: return "default"`` came out *required* -- the original
+    requiredness error, back through the newly followed helper path.
+    """
+
+    def test_a_try_except_in_a_module_function_keeps_the_key_optional(self):
+        manager = _manager('''
+            def port_of(props):
+                try:
+                    return props["optional_port"]
+                except KeyError:
+                    return "default"
+            class M:
+                def __init__(self, info, name):
+                    self.port = port_of(info.managerProperties)
+        ''')
+        spec = manager.properties["optional_port"]
+        assert spec.required == ex.OPTIONAL
+        assert spec.reads[0].guard == "try/except KeyError"
+        assert spec.reads[0].via == "function:port_of"
+
+    def test_an_in_guard_in_a_method_handed_the_dict(self):
+        manager = _manager('''
+            class M:
+                def __init__(self, info, name):
+                    self._resolve(info.managerProperties)
+                def _resolve(self, props):
+                    if "usb" in props:
+                        self.usb = props["usb"]
+                    self.must = props["must"]
+        ''')
+        assert manager.properties["usb"].required == ex.OPTIONAL
+        subscript = next(r for r in manager.properties["usb"].reads if r.access == "subscript")
+        assert subscript.guard == "in-guard" and subscript.via == "method:_resolve"
+        assert manager.properties["must"].required == ex.REQUIRED
+
+    def test_a_get_guard_on_the_info_parameter_counts_too(self):
+        manager = _manager('''
+            def level(detectorInfo):
+                if detectorInfo.managerProperties.get("level"):
+                    return detectorInfo.managerProperties["level"]
+                return 0
+            class M:
+                def __init__(self, detectorInfo, name):
+                    self.level = level(detectorInfo)
+        ''')
+        assert manager.properties["level"].required == ex.OPTIONAL
+
+    def test_an_unmodelled_condition_on_the_parameter_is_uncertain(self):
+        manager = _manager('''
+            def read(props):
+                if props.get("mode") == "x":
+                    return props["level"]
+                return None
+            class M:
+                def __init__(self, info, name):
+                    self.level = read(info.managerProperties)
+        ''')
+        assert manager.properties["level"].required == ex.UNCERTAIN
+
+    def test_a_guard_on_another_parameter_does_not_count(self):
+        """A check on a second dict the helper takes says nothing about this one."""
+        manager = _manager('''
+            def read(props, other):
+                if "k" in other:
+                    return props["k"]
+            class M:
+                def __init__(self, info, name):
+                    self.k = read(info.managerProperties, {})
+        ''')
+        assert manager.properties["k"].required == ex.REQUIRED
+        assert manager.properties["k"].reads[0].uncertain is False
+
+    def test_the_tree_is_unchanged_by_the_rule(self):
+        """No core helper reads under a guard today; this is the synthetic case only."""
+        # The drift test (test_configeditor_schemas_match_source) pins that:
+        # the checked-in schemas regenerate byte-identically after this fix.

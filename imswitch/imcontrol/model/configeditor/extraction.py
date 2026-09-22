@@ -427,8 +427,81 @@ class _ModuleContext:
         return None
 
 
+def _guard_status(
+    node: ast.AST,
+    key: str,
+    parents: dict,
+    *,
+    guards_key,
+    mentions_props,
+) -> tuple[bool, Optional[str], bool]:
+    """Whether a missing ``key`` can raise at this subscript: ``(guarded, guard, uncertain)``.
+
+    Walks up from the subscript to the enclosing function. A ``try`` whose
+    handler tolerates a missing key, or an ``if`` whose test checks this key
+    on the same dict (``guards_key``), makes the read guarded. An ``if`` whose
+    test mentions the dict in some other way (``mentions_props``) is a
+    condition the analysis cannot model: the read is *uncertain*, never
+    guessed required. The two predicates are what differ between a class
+    reading its own properties and a function reading a parameter.
+    """
+    uncertain = False
+    for ancestor, child in _ancestry(node, parents):
+        if isinstance(ancestor, ast.Try):
+            if child in ancestor.body and any(
+                _handler_tolerates_missing_key(handler) for handler in ancestor.handlers
+            ):
+                handled = ", ".join(
+                    (_name_of(h.type) or "bare") if h.type is not None else "bare"
+                    for h in ancestor.handlers
+                )
+                return True, f"try/except {handled}", False
+        elif isinstance(ancestor, (ast.If, ast.IfExp)):
+            in_body = child is ancestor.body or (
+                isinstance(ancestor.body, list) and child in ancestor.body
+            )
+            if in_body and guards_key(ancestor.test, key):
+                return True, "in-guard", False
+            if mentions_props(ancestor.test):
+                uncertain = True
+        elif isinstance(ancestor, (ast.FunctionDef, ast.ClassDef)):
+            break
+    return False, None, uncertain
+
+
+def _test_guards_key(test: ast.AST, key: str, resolve_key, is_own) -> bool:
+    """``"k" in d`` / ``d.get("k")`` (possibly ``and``-joined) for this key on this dict."""
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+        return any(_test_guards_key(value, key, resolve_key, is_own) for value in test.values)
+    found = _read_shape(test)
+    if found is None:
+        return False
+    key_node, receiver, access = found
+    if access not in ("in", "get"):
+        return False
+    if isinstance(test, ast.Compare) and isinstance(test.ops[0], ast.NotIn):
+        return False
+    resolved = resolve_key(key_node)
+    return resolved is not None and resolved[0] == key and is_own(receiver)
+
+
+def _test_mentions(test: ast.AST, is_own) -> bool:
+    return any(
+        is_own(sub)
+        for sub in ast.walk(test)
+        if isinstance(sub, (ast.Name, ast.Attribute, ast.Call, ast.BoolOp))
+    )
+
+
 def _scan_parameter_reads(function: ast.FunctionDef, context: _ModuleContext) -> _ParamReads:
-    """Reads a module-level function makes on its parameters (a props dict or an Info)."""
+    """Reads a function makes on its parameters (a props dict or an Info).
+
+    Guards count here exactly as they do in a class body: a helper that does
+    ``try: return props["k"] except KeyError: return default`` reads ``k``
+    optionally, and its call sites inherit that. Without this, following
+    helpers would reintroduce the "a subscript is required" error the
+    guard-aware rule exists to prevent.
+    """
     params = [arg.arg for arg in function.args.args]
     result = _ParamReads()
 
@@ -455,7 +528,19 @@ def _scan_parameter_reads(function: ast.FunctionDef, context: _ModuleContext) ->
             )
             continue
         key, via = resolved
-        result.reads.setdefault(index, []).append(_make_read(node, key, access, via, context.parents))
+        guard = (False, None, False)
+        if access == "subscript":
+            # "Own" here is this parameter and no other: a check on a second
+            # dict the function also takes says nothing about this one.
+            def is_this_param(receiver: ast.AST, _index=index) -> bool:
+                return index_of(receiver) == _index
+
+            guard = _guard_status(
+                node, key, context.parents,
+                guards_key=lambda test, k: _test_guards_key(test, k, context.resolve_key, is_this_param),
+                mentions_props=lambda test: _test_mentions(test, is_this_param),
+            )
+        result.reads.setdefault(index, []).append(_make_read(node, key, access, via, context.parents, guard))
     return result
 
 
@@ -870,49 +955,17 @@ class _ClassScanner:
     # -- guards ---------------------------------------------------------------
 
     def _guard_status(self, node: ast.AST, key: str, function) -> tuple[bool, Optional[str], bool]:
-        """Whether a missing ``key`` can raise at this subscript."""
-        uncertain = False
-        for ancestor, child in _ancestry(node, self.parents):
-            if isinstance(ancestor, ast.Try):
-                if child in ancestor.body and any(
-                    _handler_tolerates_missing_key(handler) for handler in ancestor.handlers
-                ):
-                    handled = ", ".join(
-                        (_name_of(h.type) or "bare") if h.type is not None else "bare"
-                        for h in ancestor.handlers
-                    )
-                    return True, f"try/except {handled}", False
-            elif isinstance(ancestor, (ast.If, ast.IfExp)):
-                in_body = child is ancestor.body or (
-                    isinstance(ancestor.body, list) and child in ancestor.body
-                )
-                if in_body and self._test_guards_key(ancestor.test, key, function):
-                    return True, "in-guard", False
-                if self._test_mentions_props(ancestor.test, function):
-                    uncertain = True
-            elif isinstance(ancestor, (ast.FunctionDef, ast.ClassDef)):
-                break
-        return False, None, uncertain
+        """Whether a missing ``key`` can raise at this subscript (see :func:`_guard_status`)."""
+        def is_own(receiver: ast.AST) -> bool:
+            return self._classify(receiver, function)[0] == "own"
 
-    def _test_guards_key(self, test: ast.AST, key: str, function) -> bool:
-        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
-            return any(self._test_guards_key(value, key, function) for value in test.values)
-        found = _read_shape(test)
-        if found is None:
-            return False
-        key_node, receiver, access = found
-        if access not in ("in", "get"):
-            return False
-        if isinstance(test, ast.Compare) and isinstance(test.ops[0], ast.NotIn):
-            return False
-        resolved = self.context.resolve_key(key_node, self.class_constants)
-        return resolved is not None and resolved[0] == key and self._classify(receiver, function)[0] == "own"
+        def resolve_key(key_node: ast.AST):
+            return self.context.resolve_key(key_node, self.class_constants)
 
-    def _test_mentions_props(self, test: ast.AST, function) -> bool:
-        return any(
-            self._classify(sub, function)[0] == "own"
-            for sub in ast.walk(test)
-            if isinstance(sub, (ast.Name, ast.Attribute, ast.Call, ast.BoolOp))
+        return _guard_status(
+            node, key, self.parents,
+            guards_key=lambda test, k: _test_guards_key(test, k, resolve_key, is_own),
+            mentions_props=lambda test: _test_mentions(test, is_own),
         )
 
     # -- device references and pass-through -----------------------------------

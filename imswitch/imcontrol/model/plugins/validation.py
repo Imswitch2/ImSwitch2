@@ -85,32 +85,58 @@ def resolve_schema(contribution: DeviceManagerContribution) -> dict | None:
         return None
 
 
+#: The package whose manager classes the generated schemas describe.
+CORE_MANAGERS_PACKAGE = "imswitch.imcontrol.model.managers"
+
+
+def implemented_by_core(contribution: DeviceManagerContribution, schema: dict) -> bool:
+    """Whether ``contribution`` runs the core class a generated ``schema`` was extracted from.
+
+    A generated schema describes one class in ``imswitch.imcontrol.model.managers``
+    (its first ``x-imswitch-classes`` entry). A plugin that registers the same
+    manager *name* but its own class -- a fork, or an unrelated driver that
+    happens to reuse a core name -- must not inherit that contract: it would
+    be validated against keys its code never reads.
+    """
+    module, _, class_name = (contribution.python_name or "").partition(":")
+    if not (module == CORE_MANAGERS_PACKAGE or module.startswith(CORE_MANAGERS_PACKAGE + ".")):
+        return False
+    classes = schema.get("x-imswitch-classes") or []
+    return bool(classes) and class_name == classes[0]
+
+
 def schema_for(
     kind: str,
     manager_name: str,
     contribution: DeviceManagerContribution | None,
     *,
     schemas_root: Path | None = None,
+    generated: bool = True,
 ) -> dict | None:
     """The one place a manager's ``managerProperties`` schema is looked up.
 
     A contribution that ships its own schema wins. Otherwise the generated
-    schema from package data, by the contribution's id if there is one, else
-    by the manager name -- which is how the legacy-scanned core managers get
-    theirs. Returns None when nothing describes this manager.
+    schema from package data: for a contribution, by its id, and only when the
+    contribution is implemented by the core class the schema was extracted
+    from (:func:`implemented_by_core`); without a contribution, by the manager
+    name -- the legacy-scanned core managers, whose module *is* the core one.
+    Returns None when nothing describes this manager. The catalog and the
+    validator both go through here; ``generated=False`` is the catalog's gate.
     """
     if contribution is not None:
         schema = resolve_schema(contribution)
         if schema is not None:
             return schema
+    if not generated:
+        return None
     from imswitch.imcontrol.model.configeditor import resources
 
-    for name in ((contribution.id if contribution is not None else None), manager_name):
-        if name:
-            schema = resources.generated_schema_for(name, schemas_root)
-            if schema is not None:
-                return schema
-    return None
+    if contribution is not None:
+        schema = resources.generated_schema_for(contribution.id, schemas_root)
+        if schema is not None and implemented_by_core(contribution, schema):
+            return schema
+        return None
+    return resources.generated_schema_for(manager_name, schemas_root) if manager_name else None
 
 
 def validate_manager_properties(schema: dict, properties: dict) -> list[str]:

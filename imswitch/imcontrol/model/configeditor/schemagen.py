@@ -24,6 +24,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -136,15 +137,19 @@ def _alias_copy(canonical: str, prop: dict) -> dict:
 
 
 def build_schema(manager: ex.ManagerExtraction, override: Optional[dict] = None) -> dict:
-    """The manager's ``managerProperties`` schema, override applied last."""
+    """The manager's ``managerProperties`` schema, override applied last.
+
+    Alias spellings are copied from the canonical property *after* the
+    override has been merged, so a constraint written once for ``seed`` holds
+    for ``old_seed`` too; an override that names an alias spelling itself is
+    then merged on top of that copy, so the two can still be told apart on
+    purpose.
+    """
     properties: dict[str, dict] = {}
     required: list[str] = []
     for key in sorted(manager.properties):
         spec = manager.properties[key]
-        prop = _property_schema(spec)
-        properties[key] = prop
-        for alias in spec.aliases:
-            properties[alias] = _alias_copy(key, prop)
+        properties[key] = _property_schema(spec)
         if spec.required == ex.REQUIRED:
             required.append(key)
 
@@ -176,7 +181,25 @@ def build_schema(manager: ex.ManagerExtraction, override: Optional[dict] = None)
         )
     if override:
         schema = apply_override(schema, override)
+    _copy_aliases(schema, (override or {}).get("properties") or {})
     return _finalize_required(schema)
+
+
+def _copy_aliases(schema: dict, override_props: dict) -> None:
+    """Materialise ``x-imswitch-aliases`` as alias-spelled copies of the final property."""
+    properties = schema["properties"]
+    for key in sorted(properties):
+        prop = properties[key]
+        if "x-imswitch-alias-of" in prop:
+            continue
+        for alias in prop.get("x-imswitch-aliases") or []:
+            copy_ = _alias_copy(key, prop)
+            patch = override_props.get(alias)
+            if isinstance(patch, dict):
+                _deep_merge(copy_, patch)
+                _mark_overridden(copy_, patch)
+            properties[alias] = copy_
+    schema["properties"] = dict(sorted(properties.items()))
 
 
 def _finalize_required(schema: dict) -> dict:
@@ -213,9 +236,13 @@ def _finalize_required(schema: dict) -> dict:
 def apply_override(schema: dict, override: dict) -> dict:
     """Merge a hand-written override into a generated schema; the override wins.
 
-    ``properties`` deep-merges per key (a new key creates the property);
-    ``required`` adds, ``optional`` removes; ``description`` replaces. Every
-    property the override touches gets ``override`` in its provenance.
+    ``properties`` merges recursively: objects merge key by key (so a patch of
+    ``defaults.properties.gain.minimum`` keeps ``gain``'s other keys and its
+    sibling sub-properties), anything else -- lists included, so ``enum``,
+    ``type`` and a nested ``required`` -- replaces. A new key creates the
+    property. ``required`` adds, ``optional`` removes; ``description``
+    replaces. Every property and sub-property the override touches gets
+    ``override`` in its provenance.
     """
     unknown = set(override) - _OVERRIDE_TOP_KEYS
     if unknown:
@@ -225,8 +252,8 @@ def apply_override(schema: dict, override: dict) -> dict:
         if not isinstance(patch, dict):
             raise ValueError(f"override for property {key!r} must be an object")
         prop = result["properties"].setdefault(key, {})
-        prop.update(copy.deepcopy(patch))
-        prop["x-imswitch-source"] = sorted(set(prop.get("x-imswitch-source", [])) | {"override"})
+        _deep_merge(prop, patch)
+        _mark_overridden(prop, patch)
     required = set(result.get("required", []))
     required |= set(override.get("required") or [])
     required -= set(override.get("optional") or [])
@@ -237,6 +264,26 @@ def apply_override(schema: dict, override: dict) -> dict:
     if "description" in override:
         result["description"] = override["description"]
     return result
+
+
+def _deep_merge(base: dict, patch: dict) -> None:
+    """Merge ``patch`` into ``base`` in place: dicts recurse, anything else replaces."""
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = copy.deepcopy(value)
+
+
+def _mark_overridden(prop: dict, patch: dict) -> None:
+    """``override`` in the provenance of this property and of every sub-property the patch names."""
+    prop["x-imswitch-source"] = sorted(set(prop.get("x-imswitch-source", [])) | {"override"})
+    sub_patches = patch.get("properties")
+    if isinstance(sub_patches, dict):
+        for key, sub_patch in sub_patches.items():
+            sub = prop.get("properties", {}).get(key)
+            if isinstance(sub, dict) and isinstance(sub_patch, dict):
+                _mark_overridden(sub, sub_patch)
 
 
 def load_overrides(root: Path) -> dict[str, dict]:
@@ -254,28 +301,123 @@ def load_overrides(root: Path) -> dict[str, dict]:
 # Fixtures
 # =============================================================================
 
-def _example_for(prop: dict) -> object:
-    """A value the property's *final* schema accepts."""
+class FixtureError(ValueError):
+    """No example value satisfies a property's schema; the override must supply one."""
+
+
+def _example_for(prop: dict, path: str = "") -> object:
+    """A value the property's *final* schema accepts.
+
+    ``const``, then the first of ``examples`` (the hand-authored value an
+    override gives when nothing below can satisfy its constraints), then
+    ``default``, then the first ``enum`` entry; a nested object is built from
+    its sub-properties; a number or string is shaped to its bounds. What
+    cannot be satisfied raises :class:`FixtureError` naming the property.
+    """
+    if "const" in prop:
+        return copy.deepcopy(prop["const"])
+    if prop.get("examples"):
+        return copy.deepcopy(prop["examples"][0])
+    if "default" in prop:
+        return copy.deepcopy(prop["default"])
     if "enum" in prop and prop["enum"]:
         return prop["enum"][0]
     if prop.get("properties"):
-        return {key: _example_for(sub) for key, sub in prop["properties"].items()}
+        return {key: _example_for(sub, f"{path}.{key}" if path else key)
+                for key, sub in prop["properties"].items()}
     type_value = prop.get("type")
     types = None if type_value is None else ([type_value] if isinstance(type_value, str) else list(type_value))
     kind = prop.get("x-imswitch-kind")
     if isinstance(kind, list):
         kind = kind[0]
-    # The kind is the editor's preference; use its example whenever the
-    # validation type allows it (a float()-proven ["integer", "number",
-    # "string"] should carry 1.5 for a number, not the list's first entry).
+    # The kind is the editor's preference; use it whenever the validation
+    # type allows it (a float()-proven ["integer", "number", "string"] should
+    # carry 1.5 for a number, not the list's first entry).
     if kind is not None and (types is None or kind in types):
-        return _EXAMPLES[kind]
+        return _shaped_example(kind, prop, path)
     if types is not None:
         for candidate in types:
             if candidate != "null":
-                return _EXAMPLES[candidate]
+                return _shaped_example(candidate, prop, path)
         return None
     return None if prop.get("x-imswitch-nullable") else "example"
+
+
+_BOUND_KEYS = ("minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum", "multipleOf")
+
+
+def _shaped_example(kind: str, prop: dict, path: str) -> object:
+    """The kind's example, moved inside whatever bounds the property carries."""
+    if kind in (ex.KIND_INTEGER, ex.KIND_NUMBER):
+        return _numeric_example(kind == ex.KIND_INTEGER, prop, path)
+    if kind == ex.KIND_STRING:
+        if "pattern" in prop or "format" in prop:
+            raise FixtureError(
+                f"{path or 'property'}: a string with a pattern or format needs a hand-authored "
+                f"value; add \"examples\": [\"...\"] to its override")
+        text = _EXAMPLES[ex.KIND_STRING]
+        min_length, max_length = prop.get("minLength"), prop.get("maxLength")
+        if min_length is not None and len(text) < min_length:
+            text = (text * (min_length // len(text) + 1))[:min_length]
+        if max_length is not None and len(text) > max_length:
+            text = text[:max_length]
+        return text
+    if kind == ex.KIND_ARRAY:
+        count = prop.get("minItems") or 0
+        if count and "items" not in prop:
+            raise FixtureError(
+                f"{path or 'property'}: an array with minItems needs an items schema or a hand-authored "
+                f"value; add \"examples\": [[...]] to its override")
+        return [_example_for(prop["items"], f"{path}[]") for _ in range(count)]
+    return copy.deepcopy(_EXAMPLES[kind])
+
+
+def _numeric_example(integer: bool, prop: dict, path: str) -> object:
+    low, exclusive_low = prop.get("minimum"), prop.get("exclusiveMinimum")
+    high, exclusive_high = prop.get("maximum"), prop.get("exclusiveMaximum")
+    step = prop.get("multipleOf")
+
+    def accepted(value) -> bool:
+        if integer and float(value) != int(value):
+            return False
+        if low is not None and value < low:
+            return False
+        if exclusive_low is not None and value <= exclusive_low:
+            return False
+        if high is not None and value > high:
+            return False
+        if exclusive_high is not None and value >= exclusive_high:
+            return False
+        if step and abs(value / step - round(value / step)) > 1e-9:
+            return False
+        return True
+
+    candidates: list = [_EXAMPLES[ex.KIND_INTEGER] if integer else _EXAMPLES[ex.KIND_NUMBER]]
+    lower = low if low is not None else (exclusive_low + 1 if exclusive_low is not None else None)
+    upper = high if high is not None else (exclusive_high - 1 if exclusive_high is not None else None)
+    if lower is not None:
+        candidates.append(lower)
+        if step:
+            candidates.append(step * math.ceil(lower / step))
+    if exclusive_low is not None and not integer:
+        candidates.append(exclusive_low + 0.5)
+    if upper is not None:
+        candidates.append(upper)
+        if step:
+            candidates.append(step * math.floor(upper / step))
+    if exclusive_high is not None and not integer:
+        candidates.append(exclusive_high - 0.5)
+    if step:
+        candidates.append(step)
+    if lower is not None and upper is not None:
+        candidates.append((lower + upper) / 2)
+    for value in candidates:
+        if accepted(value):
+            return int(value) if integer else float(value)
+    constraints = {key: prop[key] for key in _BOUND_KEYS if key in prop}
+    raise FixtureError(
+        f"{path or 'property'}: no example satisfies {constraints}; add \"examples\": [<value>] "
+        f"to its override")
 
 
 def build_fixture(manager: ex.ManagerExtraction, category: str, schema: dict) -> dict:
@@ -285,14 +427,37 @@ def build_fixture(manager: ex.ManagerExtraction, category: str, schema: dict) ->
     be the alias-conflict case, which has its own hand-written fixture.
     """
     props = {
-        key: _example_for(prop)
+        key: _example_for(prop, key)
         for key, prop in schema["properties"].items()
         if "x-imswitch-alias-of" not in prop
     }
+    _validate_fixture(manager.name, schema, props)
     return {
         "category": category,
         "device": {"managerName": manager.name, "managerProperties": props},
     }
+
+
+def _validate_fixture(name: str, schema: dict, props: dict) -> None:
+    """Refuse to generate a fixture its own schema rejects.
+
+    The drift test validates every checked-in fixture anyway; failing here,
+    at ``--write`` time, names the property and the fix instead of leaving a
+    file behind that CI will reject. Needs ``jsonschema`` (the ``test``
+    extra); without it the drift test is the check.
+    """
+    try:
+        import jsonschema
+    except ImportError:
+        return
+    errors = list(jsonschema.Draft202012Validator(schema).iter_errors(props))
+    if errors:
+        where = ", ".join(
+            f"{'.'.join(str(p) for p in error.path) or '(root)'}: {error.message}" for error in errors
+        )
+        raise FixtureError(
+            f"{name}: the generated fixture does not satisfy the schema ({where}); "
+            f"give the property a hand-authored value with \"examples\": [<value>] in its override")
 
 
 # =============================================================================

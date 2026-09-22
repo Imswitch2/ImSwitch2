@@ -3,8 +3,23 @@
 Date: 2026-09-21 (plan; revision 2 after first review; revision 3 recorded the
 decisions; revision 4 after second review; revision 5 records what Phase 0
 measured; revision 6 records Phase 1; revision 7 folds in the review of
-Phase 0; revision 8 records Phase 2). Status: **Phases 0–2 implemented on
+Phase 0; revision 8 records Phase 2; revision 9 folds in the review of
+Phases 1–2). Status: **Phases 0–2 implemented and reviewed on
 `feat/config-editor-schema-extraction` (draft PR #35); Phases 3–6 as planned.**
+
+## Changes in revision 9 (review of Phases 1–2)
+
+Five findings against `c66a1c4d`, each reproduced before it was fixed; none
+changed a checked-in schema (the drift test regenerates byte-identically),
+because no core manager exercises the paths yet — the synthetic cases pin them.
+
+| Finding | Fix |
+| --- | --- |
+| Overrides did not reach alias spellings: copies were made before the override, so `"seed": "wrong"` failed while `"old_seed": "wrong"` passed. | `build_schema` copies each alias from the **final** canonical property; an override that names an alias spelling itself is merged on top of that copy. |
+| A plugin registering an unregistered core *name* with its own class inherited the core contract (`AAAOTFLaserManager` from a vendor package was told `channel` is required). | `schema_for` hands a contribution the generated schema only when `implemented_by_core()`: its `python_name` module is inside `imswitch.imcontrol.model.managers` **and** its class is the schema's first `x-imswitch-classes` entry. The catalog now calls the same `schema_for` (with `generated=` as its gate) instead of its own lookup. |
+| A helper handed the dict lost its guards: `try: return props["k"] except KeyError` came out required through the followed-helper path. | One module-level `_guard_status` walk shared by the class scanner and `_scan_parameter_reads`, with "own" meaning *this parameter* — a check on another dict the helper takes does not count. |
+| The documented deep merge was `dict.update`: overriding `defaults.properties.gain.minimum` dropped `gain`'s kind and its sibling sub-properties. | Recursive merge (objects key by key, anything else replaces); `override` provenance on every touched sub-property. |
+| Fixtures ignored bounds: an override with `minimum: 5` produced `1`, and the mandatory fixture test failed a valid schema. | `_example_for` honours `const`/`examples`/`default`/`enum`, numeric bounds and `multipleOf`, `minLength`/`maxLength`, `minItems`; what it cannot satisfy raises `FixtureError` naming the property and the fix (`"examples": [<value>]` in the override), and `build_fixture` validates against the schema before anything is written. |
 
 ## Changes in revision 8 (Phase 2 implemented)
 
