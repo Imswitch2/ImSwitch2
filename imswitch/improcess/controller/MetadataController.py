@@ -17,6 +17,7 @@ from imswitch.improcess.model.dataset_sources import (
 )
 from imswitch.improcess.model.metadata_tree import (
     metadata_tree_from_container,
+    metadata_tree_from_result,
     read_metadata_tree,
 )
 from .basecontrollers import ImProcessWidgetController
@@ -29,15 +30,38 @@ class MetadataController(ImProcessWidgetController):
         super().__init__(*args, **kwargs)
 
         self._sourcePath = None
+        # The in-session result the panel follows, when the selection in the
+        # reconstruction list is one; None while the panel shows a file.
+        self._currentResult = None
 
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
+        # Results made in the session (a duplicate, a crop, a processor's
+        # output) have no file; the panel follows them through the list's
+        # selection so it stays current with what is being done live.
+        resultChanged = getattr(self._commChannel, "sigCurrentResultChanged", None)
+        if resultChanged is not None:
+            resultChanged.connect(self.currentResultChanged)
         self._widget.sigOpenFileRequested.connect(self.openFile)
         self._widget.sigReloadRequested.connect(self.reload)
 
     # -- entry points --------------------------------------------------------
 
+    def currentResultChanged(self, result) -> None:
+        """Show the selected result's own metadata and provenance.
+
+        A file loaded as data keeps its file view (``currentDataChanged``);
+        selecting a result in the list switches the panel to that result,
+        including everything done to it in this session. Deselecting keeps
+        whatever was last shown rather than blanking the panel.
+        """
+        if result is None or not hasattr(result, "axis_labels"):
+            return
+        self._currentResult = result
+        self._showResult()
+
     def currentDataChanged(self, dataObj) -> None:
         """Show the metadata of the DataObj that just became current."""
+        self._currentResult = None
         if dataObj is None:
             self._sourcePath = None
             self._widget.setMetadataTree(None, sourceLabel="No file loaded")
@@ -80,7 +104,11 @@ class MetadataController(ImProcessWidgetController):
         self.reload()
 
     def reload(self) -> None:
-        """Re-read the metadata of the current source path."""
+        """Re-read the metadata of the current source path, or rebuild the
+        current result's tree (its provenance grows as it is processed)."""
+        if self._currentResult is not None:
+            self._showResult()
+            return
         if not self._sourcePath:
             return
         try:
@@ -94,6 +122,18 @@ class MetadataController(ImProcessWidgetController):
         self._show(tree, self._sourcePath)
 
     # -- internals -----------------------------------------------------------
+
+    def _showResult(self) -> None:
+        result = self._currentResult
+        try:
+            tree = metadata_tree_from_result(result)
+        except Exception as exc:
+            self._logger.warning(f"Could not describe result {getattr(result, 'name', result)!r}: {exc}")
+            self._widget.setStatus(f"Could not describe result: {exc}")
+            return
+        label = f"{getattr(result, 'name', 'result')} (result in session)"
+        self._widget.setMetadataTree(tree, sourceLabel=label)
+        self._widget.setReloadEnabled(True)
 
     def _show(self, tree, path) -> None:
         self._widget.setMetadataTree(tree, sourceLabel=str(path) if path else tree.name)

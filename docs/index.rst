@@ -46,6 +46,8 @@ config files).
     gui
     advanced-scanning
     improcess
+    improcess-napari-plugins
+    improcess-workflows
     tiling
     zstack-workflow
     use-cases

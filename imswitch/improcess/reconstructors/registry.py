@@ -24,16 +24,28 @@ class PluginRegistry:
         self._processors: dict[str, 'Processor'] = {}
     
     def register_reconstructor(self, plugin: 'Reconstructor') -> None:
-        """Register a reconstructor plugin instance."""
+        """Register a reconstructor plugin instance.
+
+        The plugin's ``version`` is stamped here from where its code came
+        from (distribution version, or a digest of a drop-in file), so the
+        provenance of every run names a version nobody had to remember to
+        set.
+        """
+        from imswitch.improcess.model.plugin_versions import stamp_plugin_version
+
         if plugin.id in self._reconstructors:
             self.__logger.warning(f"Reconstructor '{plugin.id}' already registered, replacing")
+        stamp_plugin_version(plugin)
         self._reconstructors[plugin.id] = plugin
         self.__logger.debug(f"Registered reconstructor: {plugin.id} ({plugin.name})")
-    
+
     def register_processor(self, plugin: 'Processor') -> None:
-        """Register a processor plugin instance."""
+        """Register a processor plugin instance (version stamped as above)."""
+        from imswitch.improcess.model.plugin_versions import stamp_plugin_version
+
         if plugin.id in self._processors:
             self.__logger.warning(f"Processor '{plugin.id}' already registered, replacing")
+        stamp_plugin_version(plugin)
         self._processors[plugin.id] = plugin
         self.__logger.debug(f"Registered processor: {plugin.id} ({plugin.name})")
 

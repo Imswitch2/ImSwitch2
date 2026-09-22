@@ -2,9 +2,17 @@ import copy
 
 import numpy as np
 
+from imswitch.improcess.reconstructors.monalisa.legacy import (
+    LegacyMonalisaReconstructor,
+    bleaching_correction,
+)
 from imswitch.improcess.reconstructors.monalisa.pattern_finder import PatternFinder
 from imswitch.improcess.reconstructors.monalisa.result import MonalisaProcessingResult
-from imswitch.improcess.reconstructors.monalisa.signal_extractor import SignalExtractor
+from imswitch.improcess.reconstructors.monalisa.scan_params import (
+    AxisLabels,
+    apply_scan_attrs,
+    positive_int_attr,
+)
 from .basecontrollers import ImProcessWidgetController
 
 
@@ -28,6 +36,7 @@ class MoNaLISAController(ImProcessWidgetController):
         # otherwise the module fails to launch on macOS/Linux even when the user
         # only wants view-only / drag-and-drop.
         self._signalExtractor = None
+        self._legacyAdapter = None
         self._patternFinder = PatternFinder()
 
         self._pattern = self._widget.getPatternParams()
@@ -92,217 +101,111 @@ class MoNaLISAController(ImProcessWidgetController):
         DataObj actually carries Imswitch acquisition metadata (HDF5/Zarr
         written by Imcontrol).  TIFF stacks and most external acquisitions
         have ``attrs is None``; bailing here is the right thing, and is
-        what unblocks the pass-through auto-route in currentDataChanged —
-        otherwise the KeyError-only try/except blocks would let a TypeError
-        escape and the auto-render path never ran."""
+        what unblocks the pass-through auto-route in currentDataChanged.
+
+        The parsing itself is the pure function
+        :func:`~imswitch.improcess.reconstructors.monalisa.scan_params.apply_scan_attrs`,
+        shared with the headless runner; this method only supplies the
+        widget's axis-label strings and stores the answer."""
         attrs = dataObj.attrs if dataObj is not None else None
         if not attrs:
             return
-
-        dimensionMap = {
-            'X': self._widget.r_l_text,
-            'Y': self._widget.u_d_text,
-            'Z': self._widget.b_f_text
-        }
-        try:
-            targetsAttr = attrs['ScanStage:target_device']
-            for i in range(0, min(3, len(targetsAttr))):
-                target = targetsAttr[i]
-                if isinstance(target, (bytes, np.bytes_)):
-                    target = target.decode(errors='ignore')
-                self._scanParDict['dimensions'][i] = dimensionMap[str(target).upper()]
-        except (KeyError, TypeError, AttributeError):
-            pass
-
-        try:
-            positiveDirectionAttr = attrs['ScanStage:positive_direction']
-            for i in range(0, min(3, len(positiveDirectionAttr))):
-                self._scanParDict['directions'][i] = (
-                    self._widget.p_text if positiveDirectionAttr[i]
-                    else self._widget.n_text
-                )
-        except (KeyError, TypeError):
-            pass
-
-        numLinesteps = self._positiveIntAttr(attrs, 'ScanTTL:n_linesteps') or 1
-        self._scanParDict['n_linesteps'] = numLinesteps
-
-        # Prefer the physical X/Y counts recorded by advanced scans.  Unlike
-        # sqrt(numFrames), these remain correct when every physical line is
-        # repeated for multiple line-step conditions.
-        spatialSteps = {
-            self._widget.r_l_text: self._positiveIntAttr(attrs, 'ScanTTL:Nx'),
-            self._widget.u_d_text: self._positiveIntAttr(attrs, 'ScanTTL:Ny'),
-        }
-        for index, dimension in enumerate(self._scanParDict['dimensions'][:3]):
-            if spatialSteps.get(dimension) is not None:
-                self._scanParDict['steps'][index] = str(spatialSteps[dimension])
-
-        # Older recordings may lack ScanTTL:Nx/Ny but still contain physical
-        # axis lengths and pitches. Their convention is positions=length/step.
-        try:
-            axisLengths = np.asarray(attrs['ScanStage:axis_length'], dtype=float).flatten()
-            axisSteps = np.asarray(attrs['ScanStage:axis_step_size'], dtype=float).flatten()
-        except (KeyError, TypeError, ValueError):
-            axisLengths = axisSteps = np.array([])
-        for index in range(min(3, axisLengths.size, axisSteps.size)):
-            if spatialSteps.get(self._scanParDict['dimensions'][index]) is not None:
-                continue
-            if axisSteps[index] != 0:
-                count = max(1, int(round(abs(axisLengths[index] / axisSteps[index]))))
-                self._scanParDict['steps'][index] = str(count)
-
         try:
             numFrames = int(dataObj.numFrames)
         except Exception:
             numFrames = None
-        if numFrames:
-            spatialProduct = int(np.prod(
-                np.asarray(self._scanParDict['steps'][:3], dtype=int)
-            ))
-            if spatialProduct <= 0 or numFrames % spatialProduct != 0:
-                # Last-resort compatibility for metadata-light square scans.
-                framesPerCondition = (
-                    numFrames // numLinesteps
-                    if numFrames % numLinesteps == 0 else numFrames
-                )
-                side = int(np.sqrt(framesPerCondition))
-                if side * side == framesPerCondition:
-                    self._scanParDict['steps'][0] = str(side)
-                    self._scanParDict['steps'][1] = str(side)
-                    spatialProduct = side * side * int(self._scanParDict['steps'][2])
-
-            if spatialProduct > 0 and numFrames % spatialProduct == 0:
-                outputTimeSteps = numFrames // spatialProduct
-                self._scanParDict['steps'][3] = str(outputTimeSteps)
-                if outputTimeSteps % numLinesteps != 0:
-                    # The metadata cannot describe this detector's frame
-                    # stream; retain legacy ordering rather than mis-group it.
-                    self._scanParDict['n_linesteps'] = 1
-
-        try:
-            stepSizesAttr = attrs['ScanStage:axis_step_size']
-        except (KeyError, TypeError):
-            pass
-        else:
-            for i in range(0, min(4, len(stepSizesAttr))):
-                self._scanParDict['step_sizes'][i] = str(stepSizesAttr[i] * 1000)  # convert um->nm
-
+        self._scanParDict = apply_scan_attrs(
+            self._scanParDict, attrs, self._axisLabels(), numFrames
+        )
         self.updateScanParams()
+
+    def _axisLabels(self) -> AxisLabels:
+        return AxisLabels(
+            r_l=self._widget.r_l_text,
+            u_d=self._widget.u_d_text,
+            b_f=self._widget.b_f_text,
+            timepoints=self._widget.timepoints_text,
+            p=self._widget.p_text,
+            n=self._widget.n_text,
+        )
 
     @staticmethod
     def _positiveIntAttr(attrs, key):
         """Return a positive scalar integer metadata value, else ``None``."""
-        try:
-            value = attrs[key]
-            if isinstance(value, (list, tuple, np.ndarray)):
-                value = np.asarray(value).flatten()
-                if value.size != 1:
-                    return None
-                value = value[0]
-            if isinstance(value, (bytes, np.bytes_)):
-                value = value.decode(errors='ignore')
-            number = int(float(value))
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return None
-        return number if number > 0 else None
+        return positive_int_attr(attrs, key)
+
+    def legacyParams(self) -> dict:
+        """Every setting the classic reconstruction reads, as one dict.
+
+        This is what the widgets used to be read for inline; handing it to
+        the adapter as ``params`` is what lets the run be recorded and, later,
+        run again without the widgets.
+        """
+        return {
+            'bleaching_correction': bool(self._widget.bleachBool.value()),
+            'psf_fwhm_nm': [float(v) for v in np.atleast_1d(self._widget.getFwhmNm())],
+            'bg_modelling': str(self._widget.getBgModelling()),
+            'bg_gaussian_size_nm': float(self._widget.getBgGaussianSize()),
+            'pixel_size_nm': float(self._widget.getPixelSizeNm()),
+            'device': str(self._widget.getComputeDevice()),
+            'pattern': self._pattern,
+            'scan_params': copy.deepcopy(self._scanParDict),
+            'axis_label_map': {
+                'r_l_text': self._widget.r_l_text,
+                'u_d_text': self._widget.u_d_text,
+                'b_f_text': self._widget.b_f_text,
+                'timepoints_text': self._widget.timepoints_text,
+                'p_text': self._widget.p_text,
+                'n_text': self._widget.n_text,
+            },
+        }
+
+    def _legacyReconstructor(self) -> LegacyMonalisaReconstructor:
+        if self._legacyAdapter is None:
+            self._legacyAdapter = LegacyMonalisaReconstructor()
+        return self._legacyAdapter
 
     def extractData(self, data):
-        fwhmNm = self._widget.getFwhmNm()
-        bgModelling = self._widget.getBgModelling()
-        if bgModelling == 'Constant':
-            fwhmNm = np.append(fwhmNm, 9999)  # Code for constant bg
-        elif bgModelling == 'No background':
-            fwhmNm = np.append(fwhmNm, 0)  # Code for zero bg
-        elif bgModelling == 'Gaussian':
-            self._logger.debug('In Gaussian version')
-            fwhmNm = np.append(fwhmNm, self._widget.getBgGaussianSize())
-            self._logger.debug('Appended to sigmas')
-        else:
-            raise ValueError(f'Invalid BG modelling "{bgModelling}" specified; must be either'
-                             f' "Constant", "Gaussian" or "No background".')
-
-        sigmas = np.divide(fwhmNm, 2.355 * self._widget.getPixelSizeNm())
-
-        device = self._widget.getComputeDevice()
-        pattern = self._pattern
-        if device == 'CPU' or device == 'GPU':
-            if self._signalExtractor is None:
-                self._signalExtractor = SignalExtractor()
-            coeffs = self._signalExtractor.extractSignal(data, sigmas, pattern, device.lower())
-        else:
-            raise ValueError(f'Invalid device "{device}" specified; must be either "CPU" or "GPU"')
-
-        return coeffs
+        """Coefficients for ``data`` with the current widget settings."""
+        return self._legacyReconstructor().extract(np.asarray(data), self.legacyParams())
 
     def runLegacyReconstruct(self, dataObjs, consolidate):
-        """Legacy MoNaLISA reconstruction workflow. Runs signal extraction
-        and emits MonalisaProcessingResult to the reconstruction viewer."""
-        consolidatedCoeffs = []
-        consolidatedName = None
-        for index, dataObj in enumerate(dataObjs):
-            preloaded = dataObj.dataLoaded
+        """Classic MoNaLISA reconstruction through the adapter, so every
+        result carries its provenance like any other reconstruction."""
+        from imswitch.improcess.reconstructors.run import (
+            run_consolidation,
+            run_reconstruction,
+        )
+
+        adapter = self._legacyReconstructor()
+        params = self.legacyParams()
+        runs = []
+        for dataObj in dataObjs:
             try:
-                dataObj.checkAndLoadData()
-
-                if np.prod(np.array(self._scanParDict['steps'], dtype=int)) < dataObj.numFrames:
-                    self._logger.error('Too many frames in data')
-                    return
-
-                data = dataObj.data
-                if self._widget.bleachBool.value():
-                    data = self.bleachingCorrection(data)
-
-                coeffs = self.extractData(data)
-            finally:
-                if not preloaded:
-                    dataObj.checkAndUnloadData()
-
+                run = run_reconstruction(adapter, dataObj, params)
+            except ValueError as exc:
+                self._logger.error(str(exc))
+                return
             if consolidate:
-                if index == 0:
-                    consolidatedName = dataObj.name
-                consolidatedCoeffs.append(coeffs)
+                runs.append(run)
             else:
-                result = self._buildMonalisaResult(dataObj.name, [coeffs])
-                self._commChannel.sigResultProduced.emit(result, result.name)
+                self._commChannel.sigResultProduced.emit(run.result, run.result.name)
 
-        if consolidate and consolidatedCoeffs:
-            result = self._buildMonalisaResult(consolidatedName, consolidatedCoeffs)
+        if consolidate and runs:
+            result = run_consolidation(adapter, runs)
             self._commChannel.sigResultProduced.emit(result, f'{result.name}_multi')
             self._commChannel.sigExecutionFinished.emit(self._main.reconstructionController.getImage())
 
     def _buildMonalisaResult(self, name, coeffsList):
-        """Assemble a MonalisaProcessingResult from one or more datasets' coeffs.
-
-        ``coeffsList`` holds per-dataset 4D ``(Base, frames, gridRows, gridCols)``
-        arrays from ``extractData``; they are stacked along a new leading Dataset
-        axis. The result retains the coefficients and the widget-text axis-label
-        map so the viewer can re-reconstruct on scan-param edits and export
-        coefficients.
-        """
+        """Assemble a MonalisaProcessingResult from one or more datasets' coeffs
+        (kept for callers that extract coefficients themselves)."""
         coeffs = np.stack(coeffsList, axis=0)
-        axis_label_map = {
-            'r_l_text': self._widget.r_l_text,
-            'u_d_text': self._widget.u_d_text,
-            'b_f_text': self._widget.b_f_text,
-            'timepoints_text': self._widget.timepoints_text,
-            'p_text': self._widget.p_text,
-            'n_text': self._widget.n_text,
-        }
         return MonalisaProcessingResult.from_coeffs(
-            name, coeffs, copy.deepcopy(self._scanParDict), axis_label_map
+            name, coeffs, copy.deepcopy(self._scanParDict), self.legacyParams()['axis_label_map']
         )
 
     def bleachingCorrection(self, data):
-        correctedData = data.copy()
-        energy = np.sum(data, axis=(1, 2))
-        for i in range(data.shape[0]):
-            # Power-1 energy normalization: scale each frame so its total energy
-            # matches the reference frame (sum -> energy[0]). (Was **4, which
-            # over-corrected to energy[0]**4 / energy[i]**3.)
-            c = energy[0] / energy[i]
-            correctedData[i, :, :] = data[i, :, :] * c
-        return correctedData
+        return bleaching_correction(np.asarray(data))
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

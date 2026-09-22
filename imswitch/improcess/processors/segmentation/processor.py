@@ -28,6 +28,24 @@ class SegmentationProcessor(Processor):
     accepts_roi = True
     roi_modes = ('crop', 'mask')
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'threshold_method': 'otsu',
+        'threshold_value': 0.0,
+        'min_area': 10,
+        'smooth_sigma': 0.0,
+        'background_radius': 0.0,
+        'morphology_radius': 0,
+        'fill_holes': False,
+        'clear_border': False,
+        'local_block_size': 51,
+        'local_offset': 0.0,
+        'watershed_min_distance': 5,
+        't_index': 0,
+        'z_index': 0,
+        'c_index': 0,
+        'axis_indices': ''}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         """Require at least a 2-D image; one (Y, X) plane is segmented, with any

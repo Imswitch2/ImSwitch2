@@ -44,6 +44,10 @@ class ResizeProcessor(Processor):
     # on one measures the same features on the other.
     preserves_grid = True
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'factor': 0.5, 'interpolation': 'bilinear'}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2
@@ -110,6 +114,10 @@ class ConvertTypeProcessor(Processor):
     name = "Convert type"
     id = "convert-type"
     category = "Transform"
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'type': '8-bit', 'rescale': True}
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

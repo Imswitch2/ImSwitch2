@@ -132,6 +132,15 @@ class BeadRecReconstructor(Reconstructor):
     description = "Raster-reconstruct a recorded bead scan (+ optional fit)"
     default_save_subdir = "beadrec"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'scan_x': 0,
+        'scan_y': 0,
+        'roi': None,
+        'step_x': 1.0,
+        'step_y': 1.0,
+        'fit_model': 'none'}
+
     def make_param_widget(self, parent):
         return _BeadRecParamWidget(parent)
 

@@ -322,6 +322,17 @@ class ReconstructionView(QtWidgets.QFrame):
             self.imgLayer.name = 'Reconstruction'
         self.imgLayer.colormap = colormap
         im = np.asarray(im)
+        if im.ndim < 2:
+            # napari's image layer holds planes; a lower-rank array leaves its
+            # transform and units disagreeing about the rank and every later
+            # cursor move raises inside napari. Every caller should have
+            # refused already; this is the last gate before the layer.
+            self._logger.warning(
+                "setImage: %r has shape %s and cannot be shown as an image",
+                name or 'Reconstruction', im.shape,
+            )
+            self.clearImage()
+            return
         old_ndim = self.imgLayer.data.ndim
         new_ndim = im.ndim
         if axisScales is None:
@@ -374,7 +385,17 @@ class ReconstructionView(QtWidgets.QFrame):
 
     def setDisplayLayers(self, layerSpecs, identity=None):
         self._clearDisplayLayers()
-        specs = list(layerSpecs or [])
+        specs = []
+        for spec in list(layerSpecs or []):
+            data = spec.data
+            ndim = int(getattr(data, "ndim", np.ndim(data)))
+            if _spec_kind(spec) in ("image", "labels") and ndim < 2:
+                self._logger.warning(
+                    "setDisplayLayers: skipping %r (shape %s): an image layer needs two axes",
+                    spec.name, tuple(getattr(data, "shape", ()) or ()),
+                )
+                continue
+            specs.append(spec)
         if not specs:
             self.clearImage()
             return
