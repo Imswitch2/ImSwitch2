@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.dockarea import Dock, DockArea
@@ -746,6 +748,19 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._pluginsMenu.addAction(open_action)
         self._pluginMenuActions['open-folder'] = open_action
 
+        add_action = QtWidgets.QAction(
+            improcessIcon('plugin-add', self), 'Add plugin file...', self
+        )
+        add_action.setToolTip(
+            'Copy a plugin file (.py) into the plugins folder and reload'
+        )
+        add_action.setStatusTip(add_action.toolTip())
+        add_action.triggered.connect(
+            lambda _checked=False: self._addPluginFiles()
+        )
+        self._pluginsMenu.addAction(add_action)
+        self._pluginMenuActions['add-file'] = add_action
+
         reload_action = QtWidgets.QAction(
             improcessIcon('plugin-reload', self), 'Reload plugins', self
         )
@@ -761,6 +776,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self._pluginsToolbar.addSeparator()
         self._pluginsToolbar.addAction(store_action)
+        self._pluginsToolbar.addAction(add_action)
         self._pluginsToolbar.addAction(reload_action)
 
         # Installed napari plugins as one-way endpoints for results. The menu
@@ -780,6 +796,49 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         directory = user_plugins_directory(create=True)
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(directory))
+
+    def _addPluginFiles(self) -> None:
+        """Copy user-chosen plugin files into the plugins folder and reload.
+
+        The one-click form of "open the folder, copy the file, reload": what
+        someone who just wrote a reconstructor or processor wants from the
+        menu bar. Files that discovery would not see (not ``.py``, or
+        underscore-prefixed) are reported rather than copied.
+        """
+        from imswitch.improcess.plugins import (
+            install_plugin_files,
+            user_plugins_directory,
+        )
+
+        paths, _selected_filter = QtWidgets.QFileDialog.getOpenFileNames(
+            self, 'Add plugin file', '', 'Python plugin (*.py);;All files (*)'
+        )
+        if not paths:
+            return
+        directory = user_plugins_directory(create=True)
+        installed, skipped = install_plugin_files(
+            paths, directory, overwrite=self._confirmPluginOverwrite
+        )
+        parts = []
+        if installed:
+            names = ', '.join(os.path.basename(path) for path in installed)
+            parts.append(f'Added plugin file(s): {names}')
+        if skipped:
+            parts.append('Not added: ' + '; '.join(skipped))
+        self.showStatusMessage('. '.join(parts), timeout_ms=10000)
+        if installed:
+            self.sigReloadPluginsRequested.emit()
+
+    def _confirmPluginOverwrite(self, name: str) -> bool:
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            'Replace plugin file?',
+            f'A plugin file named {name!r} already exists in the plugins '
+            'folder. Replace it?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
 
     def _openPluginStore(self) -> None:
         """Open the online plugin store; reload plugins after any change."""

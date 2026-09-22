@@ -1435,8 +1435,9 @@ provenance embedding and napari conversion already done.  Register the
 reconstructor by adding the class to ``_AVAILABLE_RECONSTRUCTOR_CLASSES``
 in ``imswitch/improcess/reconstructors/__init__.py``.  Processors use the
 analogous ``_AVAILABLE_PROCESSOR_CLASSES`` map in
-``imswitch/improcess/processors/__init__.py``.  (Drop-in discovery, below,
-finds processors only; a reconstructor is always a built-in.)
+``imswitch/improcess/processors/__init__.py``.  Or skip the source tree
+altogether: a ``.py`` file in the plugins folder defining the class is a
+drop-in plugin (below), for reconstructors and processors alike.
 
 .. _improcess-headless-contract:
 
@@ -1521,8 +1522,8 @@ Beyond parameters, the checklist an author should walk through:
   ``.provenance.json`` companion.  napari conversion is automatic only for
   the known layerable kinds (``image``, ``composite``, ``rgb``, ``labels``,
   ``localization``); a new kind needs its own adapter.
-* **Registration**: built-ins go in the class maps above; drop-ins are
-  discovered from the plugins folder (processors only).
+* **Registration**: built-ins go in the class maps above; drop-ins
+  (processors and reconstructors) are discovered from the plugins folder.
 
 Two optional class attributes refine the UX without any extra method:
 
@@ -1552,11 +1553,14 @@ returned ``ProcessingResult`` and return ``PlotPayload`` objects from
 Drop-in analysis plugins
 ========================
 
-Adding a processor by editing the ImProcess source tree is fine for built-ins,
+Adding a plugin by editing the ImProcess source tree is fine for built-ins,
 but ImProcess also supports **Picasso-style drop-in plugins**: a single ``.py``
 file dropped into a user folder is discovered at startup and becomes a fully
-integrated analysis tool — parameter panel, result-kind gating and
-results-table / graph integration — with no packaging and no UI code.
+integrated plugin with no packaging and no UI code.  A ``Processor`` in the
+file becomes an analysis tool — parameter panel, result-kind gating and
+results-table / graph integration; a ``Reconstructor`` appears in the
+reconstructor picker of the Parameters dock, with its parameter widget, the
+file watcher, multidata runs and workflows behind it.
 
 This is deliberately separate from the *device* plugin system
 (:doc:`devices/plugins`), which uses pip-installed packages and entry points for
@@ -1566,26 +1570,37 @@ path.
 Using a plugin
 --------------
 
-#. In any ImProcess window, choose **Analyze → Drop-in plugins → Open plugins
-   folder…**.  The folder is ``~/.imswitch/improcess_plugins/`` and is created
-   on first use with an inert ``_example_plugin.py`` template (underscore-
-   prefixed files are ignored by discovery).
-#. Drop a ``.py`` file that defines one or more ``Processor`` subclasses into
-   that folder.  Ready-to-copy examples live in
-   ``examples/improcess_plugins/`` (``invert.py``, ``gaussian_blur.py``).
-#. Choose **Analyze → Drop-in plugins → Reload plugins** (or restart ImProcess).
-   The processor appears in the **Load tool** dropdown in the analysis toolbar;
-   load it, select a compatible result and run it.
+#. In any ImProcess window, choose **Plugins → Add plugin file…** and pick
+   the ``.py`` file: it is copied into the plugins folder and the plugins are
+   reloaded in one step.  Or choose **Plugins → Open plugins folder…** and
+   drop the file in yourself.  The folder is ``~/.imswitch/improcess_plugins/``
+   and is created on first use with an inert ``_example_plugin.py`` template
+   (underscore-prefixed files are ignored by discovery).  Ready-to-copy
+   examples live in ``examples/improcess_plugins/`` (``invert.py``,
+   ``gaussian_blur.py``, and the reconstructor ``frame_average.py``).
+#. If you copied the file by hand, choose **Plugins → Reload plugins** (or
+   restart ImProcess).
+#. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
+   load it, select a compatible result and run it.  A reconstructor appears in
+   the reconstructor picker at the top of the Parameters dock; pick it and use
+   *Reconstruct current* (or the multidata actions, or the file watcher) as
+   with any built-in.
 
 Reloading re-scans the folder, so newly added or removed plugins take effect
-immediately.  An edited plugin's new code is used the next time its panel is
-opened (an already-open panel keeps the version it was built with until it is
-closed and reopened).
+immediately.  An edited processor's new code is used the next time its panel
+is opened (an already-open panel keeps the version it was built with until it
+is closed and reopened).  An edited reconstructor takes effect at once: if it
+is the active one it is swapped in and its parameter widget rebuilt; a plugin
+whose file did not change keeps its instance and its widget state; a removed
+active reconstructor hands over to the first registered one.  While a
+reconstruction is running the reconstructors are left untouched and the
+status bar says so — reload again when it has finished — so a running job
+never straddles two versions of one plugin.
 
 Installing from the online store
 --------------------------------
 
-**Analyze → Drop-in plugins → Browse online plugins…** opens a store that lists
+**Plugins → Browse online plugins…** opens a store that lists
 plugins from the `Improcess-plugins
 <https://github.com/Imswitch2/Improcess-plugins>`_ registry.  Each entry can be
 installed, updated (when the registry offers a newer version) or uninstalled;
@@ -1645,6 +1660,14 @@ pure ``apply(result, params)`` returning a new ``ProcessingResult``, and
 ``default_params()`` declaring the parameters (see
 :ref:`improcess-headless-contract`).  Built-in ids always win a collision,
 so a stray file cannot shadow a core processor.
+
+A drop-in reconstructor is the same file shape around a ``Reconstructor``
+subclass, with the contract of *Writing a new plugin* above: ``name``, ``id``,
+``file_extensions``, ``default_params()``, ``make_param_widget``,
+``make_metadata_dialog`` (``None`` when there is no acquisition metadata to
+ask for) and ``process(data_obj, params, context=None)`` turning the raw
+``DataObj`` into a result.  ``examples/improcess_plugins/frame_average.py``
+is a complete one, with a parameter.  One file may define both kinds.
 
 Processors that consume several results
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
