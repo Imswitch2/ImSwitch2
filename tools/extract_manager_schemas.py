@@ -21,6 +21,18 @@ Fail if they are out of date with the source (what CI runs)::
 
     python tools/extract_manager_schemas.py --check
 
+Do the same for an installed device plugin, into the plugin's own package
+(``<package>/schemas/``), for the managers its ``imswitch.json`` manifest
+declares::
+
+    python tools/extract_manager_schemas.py --package imswitch_my_plugin --write
+    python tools/extract_manager_schemas.py --package imswitch_my_plugin --check
+
+The package is located with ``importlib.util.find_spec`` and never imported;
+its manifest names the managers (``id``, ``kind``, ``python_name``). Point
+each contribution's ``manager_properties_schema`` at the written
+``schemas/managers/<id>.json`` and ImSwitch validates and edits against it.
+
 Nothing here imports the manager stack. ``imswitch/imcontrol/model/__init__.py``
 imports every manager and the Qt framework on import, so this tool installs a
 bare package object for ``imswitch.imcontrol.model`` before importing the
@@ -86,6 +98,9 @@ install_light_model_package()
 
 from imswitch.imcontrol.model.configeditor import extraction  # noqa: E402
 from imswitch.imcontrol.model.configeditor import kinds as kinds_module  # noqa: E402
+
+MANIFEST_FILE = "imswitch.json"
+PACKAGE_SCHEMAS_DIR = "schemas"
 
 DEFAULT_MANAGERS_ROOT = _REPO_ROOT / "imswitch" / "imcontrol" / "model" / "managers"
 DEFAULT_SETUPS_DIR = _REPO_ROOT / "imswitch" / "_data" / "user_defaults" / "imcontrol_setups"
@@ -169,7 +184,75 @@ def generation_inputs(args: argparse.Namespace):
     )
 
 
+def package_root(package: str) -> Path:
+    """The directory of an installed package, found without importing it."""
+    import importlib.util
+
+    spec = importlib.util.find_spec(package)
+    if spec is None or not spec.submodule_search_locations:
+        raise SystemExit(f"package {package!r} is not installed or is not a package")
+    return Path(next(iter(spec.submodule_search_locations)))
+
+
+def package_managers(root: Path, package: str) -> dict[str, tuple[str, str | None]]:
+    """``id -> (editor category, python_name)`` from the package's ``imswitch.json``."""
+    from imswitch.imcontrol.model.plugins.manifest import parse_manifest
+    from imswitch.imcontrol.model.plugins.setup_metadata import KIND_METADATA
+
+    manifest = root / MANIFEST_FILE
+    if not manifest.is_file():
+        raise SystemExit(f"{package}: no {MANIFEST_FILE} manifest in {root}")
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    contributions = parse_manifest(
+        data, plugin_name=data.get("name", package), plugin_version=data.get("version"), source_package=package,
+    )
+    found: dict[str, tuple[str, str | None]] = {}
+    for contribution in contributions:
+        metadata = KIND_METADATA.get(contribution.kind)
+        if metadata is None:
+            continue
+        found[contribution.id] = (metadata.editor_category, contribution.python_name)
+    return found
+
+
+def package_inputs(args: argparse.Namespace):
+    """Everything ``--package`` needs: the plugin's managers, from its own tree only."""
+    schemagen = _schemagen()
+    root = package_root(args.package)
+    managers = package_managers(root, args.package)
+    tree = extraction.extract_tree_indexed(root)
+    class_names = {
+        name: extraction.resolve_class_name(name, tree, python_name)
+        for name, (_category, python_name) in sorted(managers.items())
+    }
+    resolved = [name for name, cls in class_names.items() if cls]
+    unresolved = [name for name, cls in class_names.items() if not cls]
+    extractions = {
+        name: extraction.merge_manager(name, tree.classes, class_name=class_names[name],
+                                       example_kinds={}, docs_cards={})
+        for name in resolved
+    }
+    schemas_root = args.schemas_root if args.schemas_root_given else root / PACKAGE_SCHEMAS_DIR
+    return schemagen.GenerationInputs(
+        extractions=extractions,
+        classes=tree.classes,
+        categories={name: managers[name][0] for name in resolved},
+        overrides=schemagen.load_overrides(schemas_root),
+        report=extraction.coverage_report(extractions),
+        unresolved=tuple(unresolved),
+    ), schemas_root
+
+
 def run_report(args: argparse.Namespace) -> int:
+    if args.package:
+        inputs, _root = package_inputs(args)
+        if args.json:
+            print(json.dumps(inputs.report.snapshot(), indent=2, sort_keys=True))
+        else:
+            print(extraction.format_report(inputs.report, inputs.extractions if args.properties else None))
+        if inputs.unresolved:
+            print("no class found in the package (no schema): " + ", ".join(inputs.unresolved))
+        return 0
     catalog = catalog_managers(args.managers_root)
     names = args.managers or sorted(catalog)
     extractions = extraction.extract_managers(
@@ -189,13 +272,19 @@ def run_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inputs_and_root(args: argparse.Namespace):
+    if args.package:
+        return package_inputs(args)
+    return generation_inputs(args), args.schemas_root
+
+
 def run_write(args: argparse.Namespace) -> int:
     schemagen = _schemagen()
-    inputs = generation_inputs(args)
+    inputs, schemas_root = _inputs_and_root(args)
     files = schemagen.generate_all(inputs)
-    written = schemagen.write(files, args.schemas_root)
+    written = schemagen.write(files, schemas_root)
     print(f"{len(files)} generated files for {len(inputs.extractions)} managers "
-          f"in {args.schemas_root}; {len(written)} changed")
+          f"in {schemas_root}; {len(written)} changed")
     for path in written:
         print(f"  {path}")
     if inputs.unresolved:
@@ -205,9 +294,9 @@ def run_write(args: argparse.Namespace) -> int:
 
 def run_check(args: argparse.Namespace) -> int:
     schemagen = _schemagen()
-    inputs = generation_inputs(args)
+    inputs, schemas_root = _inputs_and_root(args)
     files = schemagen.generate_all(inputs)
-    problems = schemagen.check(files, args.schemas_root)
+    problems = schemagen.check(files, schemas_root)
     if not problems:
         print(f"schemas in sync with source ({len(inputs.extractions)} managers)")
         return 0
@@ -227,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--properties", action="store_true", help="with --report: list every property and its provenance")
     parser.add_argument("--json", action="store_true", help="with --report: print the snapshot as JSON")
     parser.add_argument("--managers", nargs="*", help="with --report: restrict to these manager names")
+    parser.add_argument("--package", help="an installed device plugin package: extract the managers its "
+                                          "imswitch.json declares, into <package>/schemas/ (never imported)")
     parser.add_argument("--managers-root", type=Path, default=DEFAULT_MANAGERS_ROOT)
     parser.add_argument("--setups-dir", type=Path, default=DEFAULT_SETUPS_DIR)
     parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS_DIR)
@@ -237,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-examples", action="store_true", help="do not read shipped setups for kinds")
     parser.add_argument("--no-docs", action="store_true", help="do not read docs/devices cards")
     args = parser.parse_args(argv)
+    args.schemas_root_given = any(arg.startswith("--schemas-root") for arg in (argv if argv is not None else sys.argv[1:]))
     if args.report:
         return run_report(args)
     if args.write:

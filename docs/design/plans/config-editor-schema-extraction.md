@@ -5,8 +5,32 @@ decisions; revision 4 after second review; revision 5 records what Phase 0
 measured; revision 6 records Phase 1; revision 7 folds in the review of
 Phase 0; revision 8 records Phase 2; revision 9 folds in the review of
 Phases 1–2; revision 10 records Phase 3; revision 11 records Phase 4;
-revision 12 records Phase 5). Status: **Phases 0–5 implemented on
-`feat/config-editor-schema-extraction` (draft PR #35); Phase 6 as planned.**
+revision 12 records Phase 5; revision 13 records Phase 6). Status: **all six
+phases implemented on `feat/config-editor-schema-extraction` (draft PR #35);
+merge gate: rebase onto `main` once PR #34 merges.**
+
+## Changes in revision 13 (Phase 6 implemented)
+
+- Phase 6 was planned as documentation only, but the tool as built could
+  not do what the documentation would have promised: `generation_inputs`
+  starts from the core catalog and templates, so pointing it at a plugin
+  would have written the core managers' schemas into the plugin. So
+  `--package <name>` exists now: the package is located with
+  `importlib.util.find_spec` and never imported (a test package whose
+  `__init__` raises proves it), its `imswitch.json` names the managers
+  (`id`, `kind` → category, `python_name` → class), extraction runs over the
+  package's own tree only (no shipped-setup examples, no docs cards), and
+  `--write`/`--check`/`--report` write, compare and print
+  `<package>/schemas/{managers,fixtures,index.json}`; a hand-written
+  `schemas/overrides/<id>.json` in the package is merged last as in core;
+  no kind schemas are written (those belong to the core dataclasses). A
+  contribution that is not in the tree is listed under `unresolved`.
+- `docs/devices/plugins.rst` gains "Generating the managerProperties
+  schema": the three commands, what the extractor reads, where to point
+  `manager_properties_schema`, the package-data glob, and the override
+  escape hatch. `schema_for()` then resolves the plugin's own schema
+  through the ordinary contribution path (pinned by a test that writes a
+  package, points its manifest at the written file and resolves it).
 
 ## Changes in revision 12 (Phase 5 implemented)
 
