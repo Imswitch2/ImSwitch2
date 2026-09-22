@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1230" width="900" height="1230" role="img" aria-labelledby="svgtitle svgdesc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+  <title id="svgtitle">ImSwitch2 architecture overview</title>
+  <desc id="svgdesc">The three loadable modules ImControl, ImProcess and ImScripting shown as columns, each split into the View, Presenter and Model layers of the model-view-presenter architecture, with the PluginAPI device authoring surface below them and the shared ImCommon foundation underneath.</desc>
+
+  <defs>
+    <marker id="arrowUp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b35309"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="1230" fill="#ffffff"/>
+
+  <!-- ================= application shell ================= -->
+  <rect x="10" y="14" width="880" height="68" rx="8" fill="#eef1f4" stroke="#c7d0d8"/>
+  <text x="28" y="38" font-size="13.5" font-weight="700" fill="#33424f">MultiModuleWindow — the application shell (ImCommon)</text>
+  <text x="28" y="57" font-size="11" fill="#4a5b6b">python -m imswitch reads modules.json, imports each enabled module and calls its getMainViewAndController().</text>
+  <text x="28" y="73" font-size="11" fill="#4a5b6b">Each module is also launchable on its own — e.g. python -m imswitch.improcess for offline processing.</text>
+
+  <!-- ================= module headers ================= -->
+  <rect x="24" y="94" width="276" height="46" rx="6" fill="#1f6fb2"/>
+  <text x="36" y="115" font-size="18" font-weight="700" fill="#ffffff">ImControl</text>
+  <text x="36" y="132" font-size="11" fill="#ffffff" opacity="0.9">hardware control &amp; acquisition</text>
+
+  <rect x="312" y="94" width="276" height="46" rx="6" fill="#15806b"/>
+  <text x="324" y="115" font-size="18" font-weight="700" fill="#ffffff">ImProcess</text>
+  <text x="324" y="132" font-size="11" fill="#ffffff" opacity="0.9">image processing &amp; reconstruction</text>
+
+  <rect x="600" y="94" width="276" height="46" rx="6" fill="#7d3fa0"/>
+  <text x="612" y="115" font-size="18" font-weight="700" fill="#ffffff">ImScripting</text>
+  <text x="612" y="132" font-size="11" fill="#ffffff" opacity="0.9">automation &amp; scripting console</text>
+
+  <!-- ================= VIEW band ================= -->
+  <rect x="10" y="150" width="880" height="136" rx="8" fill="#f9fafb" stroke="#e4e9ed"/>
+  <text x="24" y="172" font-size="12" fill="#6b7a88"><tspan font-size="13" font-weight="700" fill="#33424f">VIEW</tspan>   ·   passive Qt / napari widgets — they render what they are handed and forward user input, and hold no logic</text>
+
+  <rect x="24" y="182" width="276" height="90" rx="6" fill="#eaf3fa" stroke="#b8d6ec"/>
+  <text x="36" y="204" font-size="13" font-weight="700" fill="#1f6fb2">ImConMainView</text>
+  <text x="36" y="226" font-size="12" fill="#1f2a33">~50 Qt widgets around a napari</text>
+  <text x="36" y="243" font-size="12" fill="#1f2a33">canvas: Laser · Positioner · Scan ·</text>
+  <text x="36" y="260" font-size="12" fill="#1f2a33">Recording · Settings · FocusLock</text>
+
+  <rect x="312" y="182" width="276" height="90" rx="6" fill="#e7f5f1" stroke="#b2ded3"/>
+  <text x="324" y="204" font-size="13" font-weight="700" fill="#15806b">ImProcessMainView</text>
+  <text x="324" y="226" font-size="12" fill="#1f2a33">DataFrame — raw data (pyqtgraph)</text>
+  <text x="324" y="243" font-size="12" fill="#1f2a33">ReconstructionView — results</text>
+  <text x="324" y="260" font-size="12" fill="#1f2a33">(napari)</text>
+
+  <rect x="600" y="182" width="276" height="90" rx="6" fill="#f3ebf8" stroke="#d7c0e6"/>
+  <text x="612" y="204" font-size="13" font-weight="700" fill="#7d3fa0">ImScrMainView</text>
+  <text x="612" y="226" font-size="12" fill="#1f2a33">EditorView · ConsoleView</text>
+  <text x="612" y="243" font-size="12" fill="#1f2a33">FilesView · OutputView</text>
+
+  <!-- ================= PRESENTER band ================= -->
+  <rect x="10" y="298" width="880" height="202" rx="8" fill="#f9fafb" stroke="#e4e9ed"/>
+  <text x="24" y="320" font-size="12" fill="#6b7a88"><tspan font-size="13" font-weight="700" fill="#33424f">PRESENTER</tspan>   ·   the controllers hold the logic: they drive the model, push updates to the view, and reach each other only by signals</text>
+
+  <rect x="24" y="330" width="276" height="154" rx="6" fill="#eaf3fa" stroke="#b8d6ec"/>
+  <text x="36" y="352" font-size="13" font-weight="700" fill="#1f6fb2">ImConMainController</text>
+  <text x="36" y="374" font-size="12" fill="#1f2a33">one controller per widget</text>
+  <text x="36" y="391" font-size="12" fill="#1f2a33">LiveUpdatedController — frame-driven</text>
+  <text x="36" y="408" font-size="12" fill="#1f2a33">SuperScanController — scan-driven</text>
+  <line x1="36" y1="420" x2="288" y2="420" stroke="#b8d6ec"/>
+  <text x="36" y="438" font-size="12" fill="#1f2a33">CommunicationChannel — signal bus</text>
+  <text x="36" y="455" font-size="12" fill="#1f2a33">@APIExport methods harvested into</text>
+  <text x="36" y="472" font-size="12" fill="#1f2a33">a REST (FastAPI) + Pyro5 API</text>
+
+  <rect x="312" y="330" width="276" height="154" rx="6" fill="#e7f5f1" stroke="#b2ded3"/>
+  <text x="324" y="352" font-size="13" font-weight="700" fill="#15806b">ImProcessMainViewController</text>
+  <text x="324" y="374" font-size="12" fill="#1f2a33">a thin coordinator that owns the</text>
+  <text x="324" y="391" font-size="12" fill="#1f2a33">sub-controllers: DataFrame,</text>
+  <text x="324" y="408" font-size="12" fill="#1f2a33">ReconstructionView, LiveMode, FileIO</text>
+  <line x1="324" y1="420" x2="576" y2="420" stroke="#b2ded3"/>
+  <text x="324" y="438" font-size="12" fill="#1f2a33">its own CommunicationChannel</text>
+  <text x="324" y="455" font-size="12" fill="#1f2a33">wires the sub-controllers together</text>
+
+  <rect x="600" y="330" width="276" height="154" rx="6" fill="#f3ebf8" stroke="#d7c0e6"/>
+  <text x="612" y="352" font-size="13" font-weight="700" fill="#7d3fa0">ImScrMainController</text>
+  <text x="612" y="374" font-size="12" fill="#1f2a33">Editor · Console · Files · Output</text>
+  <text x="612" y="391" font-size="12" fill="#1f2a33">controllers</text>
+  <line x1="612" y1="420" x2="864" y2="420" stroke="#d7c0e6"/>
+  <text x="612" y="438" font-size="12" fill="#1f2a33">builds the scope scripts run in:</text>
+  <text x="612" y="455" font-size="12" fill="#1f2a33">api, controllers, mainWindow,</text>
+  <text x="612" y="472" font-size="12" fill="#1f2a33">moduleCommChannel</text>
+
+  <!-- ================= MODEL band ================= -->
+  <rect x="10" y="512" width="880" height="238" rx="8" fill="#f9fafb" stroke="#e4e9ed"/>
+  <text x="24" y="534" font-size="12" fill="#6b7a88"><tspan font-size="13" font-weight="700" fill="#33424f">MODEL</tspan>   ·   managers, configuration and algorithms — the domain layer, driven by the controllers and blind to the GUI</text>
+
+  <rect x="24" y="544" width="276" height="190" rx="6" fill="#eaf3fa" stroke="#b8d6ec"/>
+  <text x="36" y="566" font-size="13" font-weight="700" fill="#1f6fb2">MasterController — owns managers</text>
+  <text x="36" y="588" font-size="12" fill="#1f2a33">MultiManager loads each device</text>
+  <text x="36" y="605" font-size="12" fill="#1f2a33">manager by class name from the</text>
+  <text x="36" y="622" font-size="12" fill="#1f2a33">config: Detectors · Lasers ·</text>
+  <text x="36" y="639" font-size="12" fill="#1f2a33">Positioners · Rotators · Scan · DAQ</text>
+  <line x1="36" y1="651" x2="288" y2="651" stroke="#b8d6ec"/>
+  <text x="36" y="669" font-size="12" fill="#1f2a33">SetupInfo — the JSON hardware config</text>
+  <text x="36" y="686" font-size="12" fill="#1f2a33">signal designers · workflow facades</text>
+  <text x="36" y="703" font-size="12" fill="#1f2a33">RecordingManager → WriterThread →</text>
+  <text x="36" y="720" font-size="12" fill="#1f2a33">Storer: Zarr / HDF5 / TIFF</text>
+
+  <rect x="312" y="544" width="276" height="190" rx="6" fill="#e7f5f1" stroke="#b2ded3"/>
+  <text x="324" y="566" font-size="13" font-weight="700" fill="#15806b">PluginRegistry — two contracts</text>
+  <text x="324" y="588" font-size="12" fill="#1f2a33">Reconstructor: raw data → result</text>
+  <text x="324" y="605" font-size="12" fill="#1f2a33">monalisa · view-only · snouty ·</text>
+  <text x="324" y="622" font-size="12" fill="#1f2a33">widefield-starss · smlm-localizer</text>
+  <text x="324" y="639" font-size="12" fill="#1f2a33">Processor: stackable result steps</text>
+  <line x1="324" y1="651" x2="576" y2="651" stroke="#b2ded3"/>
+  <text x="324" y="669" font-size="12" fill="#1f2a33">ProcessingResult ·</text>
+  <text x="324" y="686" font-size="12" fill="#1f2a33">LocalizationResult</text>
+  <text x="324" y="703" font-size="12" fill="#1f2a33">live/: LiveSource → StreamingSession</text>
+  <text x="324" y="720" font-size="12" fill="#1f2a33">reads a recording while it is written</text>
+
+  <rect x="600" y="544" width="276" height="190" rx="6" fill="#f3ebf8" stroke="#d7c0e6"/>
+  <text x="612" y="566" font-size="13" font-weight="700" fill="#7d3fa0">ScriptExecutor</text>
+  <text x="612" y="588" font-size="12" fill="#1f2a33">runs user code on a worker thread,</text>
+  <text x="612" y="605" font-size="12" fill="#1f2a33">cooperatively cancellable, with</text>
+  <text x="612" y="622" font-size="12" fill="#1f2a33">stdout/stderr piped to OutputView</text>
+  <line x1="612" y1="651" x2="864" y2="651" stroke="#d7c0e6"/>
+  <text x="612" y="669" font-size="12" fill="#1f2a33">ScriptStore · ScriptRunResult</text>
+  <text x="612" y="686" font-size="12" fill="#1f2a33">actions: importScript, timing and</text>
+  <text x="612" y="703" font-size="12" fill="#1f2a33">signal-waiting helpers</text>
+
+  <!-- ================= PluginAPI ================= -->
+  <line x1="162" y1="774" x2="162" y2="740" stroke="#b35309" stroke-width="1.8" marker-end="url(#arrowUp)"/>
+  <text x="174" y="762" font-size="11" fill="#b35309">contributes device managers</text>
+
+  <rect x="10" y="776" width="880" height="112" rx="8" fill="#fdf1e4" stroke="#f0d2ad"/>
+  <text x="28" y="802" font-size="13.5" font-weight="700" fill="#b35309">PluginAPI — imswitch.pluginapi</text>
+  <text x="28" y="822" font-size="11" fill="#1f2a33">The stable authoring surface for device support that lives outside this repository: the DeviceInfo / DetectorInfo / LaserInfo /</text>
+  <text x="28" y="839" font-size="11" fill="#1f2a33">PositionerInfo / RS232Info dataclasses and the abstract DetectorManager, LaserManager, PositionerManager and RotatorManager.</text>
+  <text x="28" y="856" font-size="11" fill="#1f2a33">Plugin packages are discovered through imswitch.manifest entry points and merged with the built-ins by DevicePluginRegistry, so a</text>
+  <text x="28" y="873" font-size="11" fill="#1f2a33">setup file can name a manager that ships as a separate pip install. Plugin authors import only from here.</text>
+
+  <!-- ================= ImCommon ================= -->
+  <rect x="10" y="906" width="880" height="310" rx="8" fill="#eef1f4" stroke="#c7d0d8"/>
+  <text x="28" y="934" font-size="14" font-weight="700" fill="#33424f">ImCommon — the shared foundation every module is built on (a library, not a loadable module)</text>
+
+  <rect x="24" y="950" width="852" height="76" rx="6" fill="#ffffff" stroke="#c7d0d8"/>
+  <text x="36" y="972" font-size="12.5" font-weight="700" fill="#4a5b6b">ModuleCommunicationChannel</text>
+  <text x="36" y="993" font-size="11" fill="#1f2a33">The only link between modules — they never import one another. Signals: sigRunScript, sigExecutionFinished, sigLiveReconResult,</text>
+  <text x="36" y="1012" font-size="11" fill="#1f2a33">plus the in-memory recording collection that lets ImProcess open what ImControl just acquired without a round trip through disk.</text>
+
+  <rect x="24" y="1044" width="205" height="158" rx="6" fill="#ffffff" stroke="#c7d0d8"/>
+  <text x="34" y="1066" font-size="12" font-weight="700" fill="#4a5b6b">framework/</text>
+  <text x="34" y="1088" font-size="11" fill="#1f2a33">Signal · SignalInterface</text>
+  <text x="34" y="1105" font-size="11" fill="#1f2a33">Thread · Worker · Timer</text>
+  <text x="34" y="1122" font-size="11" fill="#1f2a33">Mutex</text>
+  <text x="34" y="1146" font-size="11" fill="#1f2a33">An abstract shim with a Qt</text>
+  <text x="34" y="1163" font-size="11" fill="#1f2a33">backend behind it, so app</text>
+  <text x="34" y="1180" font-size="11" fill="#1f2a33">code never imports Qt.</text>
+
+  <rect x="239" y="1044" width="205" height="158" rx="6" fill="#ffffff" stroke="#c7d0d8"/>
+  <text x="249" y="1066" font-size="12" font-weight="700" fill="#4a5b6b">controller/</text>
+  <text x="249" y="1088" font-size="11" fill="#1f2a33">WidgetController and</text>
+  <text x="249" y="1105" font-size="11" fill="#1f2a33">MainController — the base</text>
+  <text x="249" y="1122" font-size="11" fill="#1f2a33">classes every module</text>
+  <text x="249" y="1139" font-size="11" fill="#1f2a33">subclasses</text>
+  <text x="249" y="1163" font-size="11" fill="#1f2a33">MultiModuleWindowController</text>
+  <text x="249" y="1180" font-size="11" fill="#1f2a33">ShortcutManager</text>
+
+  <rect x="454" y="1044" width="205" height="158" rx="6" fill="#ffffff" stroke="#c7d0d8"/>
+  <text x="464" y="1066" font-size="12" font-weight="700" fill="#4a5b6b">view/</text>
+  <text x="464" y="1088" font-size="11" fill="#1f2a33">MultiModuleWindow — the</text>
+  <text x="464" y="1105" font-size="11" fill="#1f2a33">shell hosting each module</text>
+  <text x="464" y="1129" font-size="11" fill="#1f2a33">PickModules · PickDatasets</text>
+  <text x="464" y="1146" font-size="11" fill="#1f2a33">About · ShortcutEditor</text>
+  <text x="464" y="1163" font-size="11" fill="#1f2a33">dialogs</text>
+  <text x="464" y="1187" font-size="11" fill="#1f2a33">guitools/</text>
+
+  <rect x="669" y="1044" width="205" height="158" rx="6" fill="#ffffff" stroke="#c7d0d8"/>
+  <text x="679" y="1066" font-size="12" font-weight="700" fill="#4a5b6b">model/</text>
+  <text x="679" y="1088" font-size="11" fill="#1f2a33">APIExport / generateAPI</text>
+  <text x="679" y="1105" font-size="11" fill="#1f2a33">SharedAttributes</text>
+  <text x="679" y="1122" font-size="11" fill="#1f2a33">WidgetStatePersistence</text>
+  <text x="679" y="1139" font-size="11" fill="#1f2a33">modulesconfigtools —</text>
+  <text x="679" y="1156" font-size="11" fill="#1f2a33">reads modules.json</text>
+  <text x="679" y="1180" font-size="11" fill="#1f2a33">logging · ome_metadata ·</text>
+  <text x="679" y="1197" font-size="11" fill="#1f2a33">dirtools · shortcut</text>
+</svg>
