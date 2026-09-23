@@ -28,8 +28,10 @@ declares::
     python tools/extract_manager_schemas.py --package imswitch_my_plugin --write
     python tools/extract_manager_schemas.py --package imswitch_my_plugin --check
 
-The package is located with ``importlib.util.find_spec`` and never imported;
-its manifest names the managers (``id``, ``kind``, ``python_name``). Point
+The package is located through the import system's finders and never
+imported -- nor, for a dotted name, are its parent packages
+(:func:`find_package_spec`); its manifest names the managers (``id``,
+``kind``, ``python_name``), each resolved by module and class. Point
 each contribution's ``manager_properties_schema`` at the written
 ``schemas/managers/<id>.json`` and ImSwitch validates and edits against it.
 

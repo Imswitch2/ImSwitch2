@@ -169,10 +169,14 @@ plugin, from an ImSwitch checkout:
    python tools/extract_manager_schemas.py --package imswitch_my_plugin --write
    python tools/extract_manager_schemas.py --package imswitch_my_plugin --check   # in the plugin's CI
 
-The package is located with ``importlib.util.find_spec`` and **never
-imported** -- vendor SDK imports in your ``__init__`` do not run. For every
+The package is located through the import system's finders and **never
+imported** -- neither it nor, for a dotted name such as
+``hardware_vendor.imswitch_plugin``, its parent packages run their
+``__init__``, so vendor SDK imports there do not run. For every
 ``device_managers`` entry of ``imswitch.json`` the tool finds the class
-``python_name`` names in the package's own source, reads how it uses
+``python_name`` names in the package's own source -- by module as well as by
+name, so two ``CameraManager`` classes in two modules get two schemas, each
+inheriting from the base class its own module imports -- reads how it uses
 ``managerProperties`` (``props["key"]``, ``props.get("key", default)``,
 ``"key" in props``, guards such as ``try/except KeyError``, helper methods
 handed the dict, camelCase/snake_case alias pairs) and writes, into the
