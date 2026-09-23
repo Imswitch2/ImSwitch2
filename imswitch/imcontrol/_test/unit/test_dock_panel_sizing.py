@@ -41,6 +41,15 @@ pytestmark = pytest.mark.nohardware
 
 SCROLLABLE_PANELS = [ViewWidget, ViewerToolsWidget, FlipMirrorWidget, TriggerScopeScanWidget]
 
+# Laid-out heights are compared to size hints to a few pixels, never exactly.
+# A panel's contents can report a slightly different hint once they have been
+# given a real width (wrapped labels, frame and margin rounding), and how much
+# depends on the platform's fonts -- an exact comparison passed on macOS and
+# failed by 2 px on CI's Ubuntu. The bug these tests are about was a panel
+# stuck at 48 px while its contents wanted 150, so a few pixels of slack costs
+# nothing.
+HINT_TOLERANCE = 8
+
 
 @pytest.fixture
 def factory():
@@ -71,7 +80,7 @@ def test_shrinking_a_panel_does_not_shrink_what_it_asks_to_open_with(
 
     # The wrapper's own margins are the only difference allowed.
     assert abs(wrapped.panelContentSizeHint().height()
-               - bare.sizeHint().height()) <= 8
+               - bare.sizeHint().height()) <= HINT_TOLERANCE
 
 
 def _inTallContainer(widget, qtbot, height=700):
@@ -108,7 +117,8 @@ def test_a_panel_filled_in_after_wrapping_asks_for_its_real_height(factory, qtbo
     qtbot.wait(10)
 
     assert widget.sizeHint().height() > emptyHint
-    assert widget.height() == widget.panelContentSizeHint().height()
+    assert widget.height() >= widget.panelContentSizeHint().height() - HINT_TOLERANCE
+    assert widget.height() > PANEL_MINIMUM_HEIGHT, 'not pinned at the floor'
     assert host.height() > widget.height(), 'the container had room to spare'
 
 
@@ -133,7 +143,7 @@ def test_panels_that_cap_themselves_still_grow_to_their_contents(
     host = _inTallContainer(widget, qtbot)
 
     assert host.height() > widget.panelContentSizeHint().height(), 'room to spare'
-    assert widget.height() >= widget.panelContentSizeHint().height()
+    assert widget.height() >= widget.panelContentSizeHint().height() - HINT_TOLERANCE
 
 
 def test_capped_panels_can_still_shrink(factory, qtbot):
