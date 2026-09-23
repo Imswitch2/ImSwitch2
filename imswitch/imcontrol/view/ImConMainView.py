@@ -63,6 +63,54 @@ class _LayoutPreservingDockArea(DockArea):
             return _StableHContainer(self)
         return super().makeContainer(typ)
 
+    def addDock(self, *args, **kwargs):
+        """ Add or move a dock without resizing the parts of the layout it left alone.
+
+        Suppressing the stretch-change resize (see ``_ResizeOnlyWhatMoved``)
+        is not enough on its own, because rearranging docks *restructures* the
+        containers above them.  Tabbing the two docks of a column together,
+        for instance, leaves that column holding a single tab container, so
+        pyqtgraph dissolves the column and puts the tab container in its place
+        -- a genuine child change for the splitter that holds the columns,
+        which then re-divided the whole window width and undid the widths the
+        user had dragged on the *other* side of the window.
+
+        A container that ends up with the same number of children as it
+        started with did not really gain or lose a pane, whatever happened
+        inside it, so it keeps the sizes it had.  One that did (a new column
+        was split off, or the last dock left one) is laid out by pyqtgraph as
+        before -- the space has to come from somewhere.
+        """
+        sizes = self._containerSizes()
+        try:
+            return super().addDock(*args, **kwargs)
+        finally:
+            self._restoreContainerSizes(sizes)
+
+    def _containerSizes(self):
+        """ {container: sizes} for every splitter currently in the tree. """
+        sizes = {}
+
+        def walk(container):
+            if container is None:
+                return
+            if hasattr(container, 'sizes') and hasattr(container, 'count'):
+                sizes[container] = container.sizes()
+            if hasattr(container, 'count') and hasattr(container, 'widget'):
+                for i in range(container.count()):
+                    walk(container.widget(i))
+
+        walk(self.topContainer)
+        return sizes
+
+    def _restoreContainerSizes(self, sizes):
+        # Walks the tree as it is *now*, so containers that were closed during
+        # the move are never touched -- their Qt objects are already gone.
+        for container in self._containerSizes():
+            previous = sizes.get(container)
+            if previous is not None and len(previous) == container.count():
+                container.setSizes(previous)
+
 
 class ImConMainView(QtWidgets.QMainWindow):
     sigLoadParamsFromHDF5 = QtCore.Signal()

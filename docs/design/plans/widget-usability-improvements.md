@@ -77,6 +77,18 @@ scrolling rather than being clipped by minimum-size constraints.
   arrived. Measured against stock pyqtgraph, columns went from
   `[357, 337, 198]` to `[297, 298, 297]` on a move in the right column; they
   now stay put.
+- **...and the same when rearranging *restructures* the containers.**
+  Suppressing the stretch-change resize does not cover every path: tabbing a
+  two-dock column's docks together leaves that column holding a single tab
+  container, so pyqtgraph dissolves the column and puts the tab container in
+  its place -- a genuine child change for the splitter that holds the
+  columns, which re-divided the window width again. `addDock()` (which
+  `moveDock()` and every drag-and-drop go through) now snapshots every
+  splitter's sizes and puts them back afterwards for any container that ended
+  up with the same number of children it started with: no pane was gained or
+  lost there, whatever happened inside it. A container that really did gain or
+  lose one -- a column split off, or emptied -- is laid out by pyqtgraph as
+  before, because the space has to come from somewhere.
 - **Tools > Reset panel layout** puts the docks back where the setup file puts
   them, at content-derived sizes -- the way back from a layout that a drag
   rearranged.

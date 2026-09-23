@@ -216,6 +216,67 @@ def test_rearranging_one_column_leaves_the_others_where_they_were(qtbot):
     assert top.sizes() == before
 
 
+def test_tabbing_a_column_together_leaves_the_other_columns_alone(qtbot):
+    """The second half of the reported bug, and a different code path.
+
+    Dropping one of a column's two docks onto the other leaves the column
+    holding a single tab container, so pyqtgraph dissolves the column and puts
+    the tab container in its place.  That *is* a child change for the splitter
+    holding the columns -- which is why suppressing the stretch-change resize
+    alone did not cover it -- but no pane was gained or lost there, so its
+    sizes must survive.
+    """
+    area, docks = _threeColumnArea(qtbot)
+    top = area.topContainer
+    top.setSizes([360, 340, 200])
+    qtbot.wait(10)
+    before = top.sizes()
+
+    area.moveDock(docks['RightBottom'], 'above', docks['RightTop'])
+    qtbot.wait(10)
+
+    assert docks['RightTop'].container().type() == 'tab'
+    assert area.topContainer.sizes() == before
+
+
+def test_splitting_a_tab_group_leaves_the_other_columns_alone(qtbot):
+    """...and the same the other way round, when a tab container dissolves."""
+    area, docks = _threeColumnArea(qtbot)
+    area.moveDock(docks['RightBottom'], 'above', docks['RightTop'])
+    qtbot.wait(10)
+    top = area.topContainer
+    top.setSizes([360, 340, 200])
+    qtbot.wait(10)
+    before = top.sizes()
+
+    area.moveDock(docks['RightBottom'], 'bottom', docks['RightTop'])
+    qtbot.wait(10)
+
+    assert docks['RightTop'].container().type() == 'vertical'
+    assert area.topContainer.sizes() == before
+
+
+def test_a_new_column_is_still_given_room(qtbot):
+    """Splitting a dock off into a column of its own must resize the rest.
+
+    The space has to come from somewhere; this is the case where pyqtgraph's
+    own sizing is the right answer.
+    """
+    area, docks = _threeColumnArea(qtbot)
+    top = area.topContainer
+    columnsBefore = top.count()
+
+    # Beside Middle, which sits directly in the top splitter -- so this is a
+    # new column rather than a split inside the existing one.
+    area.moveDock(docks['RightTop'], 'right', docks['Middle'])
+    qtbot.wait(10)
+
+    top = area.topContainer
+    assert top.count() == columnsBefore + 1
+    assert docks['RightTop'].container() is top
+    assert docks['RightTop'].width() > 0
+
+
 def test_a_container_that_gains_a_dock_still_makes_room_for_it(qtbot):
     """The suppression must not stop the moved-into column laying itself out."""
     area, docks = _threeColumnArea(qtbot)
