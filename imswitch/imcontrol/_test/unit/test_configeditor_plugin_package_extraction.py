@@ -148,3 +148,40 @@ def test_a_missing_manifest_or_package_is_an_error(package):
     assert result.returncode != 0 and "imswitch.json" in result.stderr
     result = _run("--package", "no_such_package", "--write", cwd=package.parent)
     assert result.returncode != 0 and "not installed" in result.stderr
+
+
+# ── review of PR #35: identities, and parents that must not run ───────────
+SAME_NAME = '''
+    class CameraManager:
+        def __init__(self, detectorInfo, name, **lowLevelManagers):
+            self.serial = detectorInfo.managerProperties["serial_{mod}"]
+'''
+
+
+def _manifest(name, contributions):
+    return {"name": name, "display_name": name, "schema_version": "0.1", "imswitch_min_version": "0.1",
+            "license": "GPL-3.0-or-later", "contributions": {"device_managers": contributions}}
+
+
+def test_two_classes_of_one_name_get_their_own_schemas_and_check_tells_them_apart(tmp_path):
+    root = tmp_path / "twin_plugin"
+    root.mkdir()
+    (root / "__init__.py").write_text("raise RuntimeError('the tool must not import the plugin')\n", encoding="utf-8")
+    for mod in ("a", "b"):
+        (root / f"{mod}.py").write_text(textwrap.dedent(SAME_NAME.format(mod=mod)), encoding="utf-8")
+    (root / "imswitch.json").write_text(json.dumps(_manifest("twin", [
+        {"id": f"twin.{mod}", "kind": "detector", "display_name": mod,
+         "python_name": f"twin_plugin.{mod}:CameraManager"} for mod in ("a", "b")
+    ])), encoding="utf-8")
+    assert _run("--package", "twin_plugin", "--write", cwd=tmp_path).returncode == 0
+    managers = root / "schemas" / "managers"
+    schema_a = json.loads((managers / "twin.a.json").read_text(encoding="utf-8"))
+    schema_b = json.loads((managers / "twin.b.json").read_text(encoding="utf-8"))
+    assert schema_a["required"] == ["serial_a"] and schema_b["required"] == ["serial_b"]
+    assert _run("--package", "twin_plugin", "--check", cwd=tmp_path).returncode == 0
+    # What the old resolution wrote for b: a's contract. --check must object.
+    (managers / "twin.b.json").write_text((managers / "twin.a.json").read_text(encoding="utf-8")
+                                          .replace("twin.a managerProperties", "twin.b managerProperties"),
+                                          encoding="utf-8")
+    check = _run("--package", "twin_plugin", "--check", cwd=tmp_path)
+    assert check.returncode == 1 and "changed: managers/twin.b.json" in check.stdout

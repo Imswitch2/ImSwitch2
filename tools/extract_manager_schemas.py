@@ -148,14 +148,30 @@ def template_managers(templates_dir: Path) -> dict[str, str]:
     return found
 
 
+def core_python_names(managers_root: Path, categories: dict[str, str]) -> dict[str, str | None]:
+    """``name -> python_name`` for every core manager, exact for registered and legacy alike.
+
+    A registered manager's comes from the registry. An unregistered one's is
+    where ``MultiManager`` imports it from (:func:`extraction.legacy_python_name`),
+    so a class that merely shares its name elsewhere in the tree is never
+    taken for it. ``categories`` is updated with the catalog's category, which
+    wins over a template's.
+    """
+    python_names: dict[str, str | None] = {}
+    for name, (category, python_name) in catalog_managers(managers_root).items():
+        categories[name] = category
+        python_names[name] = python_name
+    for name, category in categories.items():
+        if not python_names.get(name):
+            python_names[name] = extraction.legacy_python_name(name, category)
+    return python_names
+
+
 def generation_inputs(args: argparse.Namespace):
     """Everything ``--write`` and ``--check`` need, computed once."""
     schemagen = _schemagen()
     categories = template_managers(args.templates_dir)
-    python_names: dict[str, str | None] = {}
-    for name, (category, python_name) in catalog_managers(args.managers_root).items():
-        categories[name] = category  # the catalog's category wins
-        python_names[name] = python_name
+    python_names = core_python_names(args.managers_root, categories)
     tree = extraction.extract_tree_indexed(args.managers_root)
     class_names = {
         name: extraction.resolve_class_name(name, tree, python_names.get(name))
@@ -220,7 +236,8 @@ def package_inputs(args: argparse.Namespace):
     schemagen = _schemagen()
     root = package_root(args.package)
     managers = package_managers(root, args.package)
-    tree = extraction.extract_tree_indexed(root)
+    # Named as the package it is, so each class's key is its python_name.
+    tree = extraction.extract_tree_indexed(root, package=args.package)
     class_names = {
         name: extraction.resolve_class_name(name, tree, python_name)
         for name, (_category, python_name) in sorted(managers.items())
@@ -253,15 +270,15 @@ def run_report(args: argparse.Namespace) -> int:
         if inputs.unresolved:
             print("no class found in the package (no schema): " + ", ".join(inputs.unresolved))
         return 0
-    catalog = catalog_managers(args.managers_root)
-    names = args.managers or sorted(catalog)
+    categories: dict[str, str] = {}
+    python_names = core_python_names(args.managers_root, categories)
+    names = args.managers or sorted(catalog_managers(args.managers_root))
     extractions = extraction.extract_managers(
         names,
         managers_root=args.managers_root,
         setups_dir=None if args.no_examples else args.setups_dir,
         docs_dir=None if args.no_docs else args.docs_dir,
-        class_names={name: python_name and python_name.rsplit(":", 1)[1]
-                     for name, (_category, python_name) in catalog.items()},
+        python_names=python_names,
     )
     docs = None if args.no_docs else extraction.docs_cards(args.docs_dir)
     report = extraction.coverage_report(extractions, docs=docs)

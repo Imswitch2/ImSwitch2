@@ -723,21 +723,30 @@ class TestNameToClassResolution:
 
     def test_python_name_from_the_registry_wins(self, tmp_path):
         tree = self._tree(tmp_path, {"ThorlabsMFF_mock.py": "class MockThorlabsMFFManager:\n    pass\n"})
+        # The tree is a plain directory, so its module is "ThorlabsMFF_mock";
+        # the python_name's module ends with it.
         assert ex.resolve_class_name("ThorlabsMFFMockManager", tree,
-                                     "x.ThorlabsMFF_mock:MockThorlabsMFFManager") == "MockThorlabsMFFManager"
+                                     "x.ThorlabsMFF_mock:MockThorlabsMFFManager") == "ThorlabsMFF_mock:MockThorlabsMFFManager"
 
     def test_a_reexporting_module_resolves(self, tmp_path):
         tree = self._tree(tmp_path, {
             "ThorlabsMFF.py": "class ThorlabsMFFManager:\n    pass\n",
             "ThorlabsMFFManager.py": "from .ThorlabsMFF import ThorlabsMFFManager\n",
         })
-        assert ex.resolve_class_name("ThorlabsMFFManager", tree) == "ThorlabsMFFManager"
+        assert ex.resolve_class_name("ThorlabsMFFManager", tree) == "ThorlabsMFF:ThorlabsMFFManager"
+        assert ex.resolve_class_name("ThorlabsMFFManager", tree, "p.ThorlabsMFFManager:ThorlabsMFFManager") \
+            == "ThorlabsMFF:ThorlabsMFFManager", "the attribute a python_name names may be a re-export"
 
     def test_a_module_with_one_manager_class_resolves(self, tmp_path):
         tree = self._tree(tmp_path, {"XStageManager.py": "class XStageManagerImpl:\n    pass\n"})
         assert ex.resolve_class_name("XStageManager", tree) is None, "not named like a manager"
         tree = self._tree(tmp_path, {"YManager.py": "class RealYManager:\n    pass\n"})
-        assert ex.resolve_class_name("YManager", tree) == "RealYManager"
+        assert ex.resolve_class_name("YManager", tree) == "YManager:RealYManager"
+
+    def test_a_python_name_is_exact_like_the_import_it_describes(self, tmp_path):
+        """A module without that attribute is no manager, whatever else it defines."""
+        tree = self._tree(tmp_path, {"YManager.py": "class RealYManager:\n    pass\n"})
+        assert ex.resolve_class_name("YManager", tree, "pkg.YManager:YManager") is None
 
     def test_a_vendor_driver_module_stays_unresolved(self, tmp_path):
         tree = self._tree(tmp_path, {"PyCoboltManager.py": "class CoboltLaser:\n    pass\nclass Cobolt06(CoboltLaser):\n    pass\n"})
@@ -1041,3 +1050,123 @@ class TestGuardsInsideNestedDicts:
         validator = jsonschema.Draft202012Validator(schema)
         assert validator.is_valid({"defaults": {"mode": "x"}})
         assert not validator.is_valid({"defaults": {}}), "mode is still read unguarded"
+
+
+class TestClassesAreModuleQualified:
+    """Review of PR #35: classes were indexed by their short name, so a
+    plugin with ``vendor.a:CameraManager`` and ``vendor.b:CameraManager``
+    got ``vendor.a``'s schema for both -- and ``--check`` agreed with itself."""
+
+    @staticmethod
+    def _package(tmp_path, files: dict[str, str], name: str = "vendor"):
+        root = tmp_path / name
+        root.mkdir()
+        (root / "__init__.py").write_text("", encoding="utf-8")
+        for rel, source in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.parent != root and not (path.parent / "__init__.py").exists():
+                (path.parent / "__init__.py").write_text("", encoding="utf-8")
+            path.write_text(textwrap.dedent(source), encoding="utf-8")
+        return root
+
+    READS = '''
+        class Base:
+            def __init__(self, detectorInfo, name):
+                self._info = detectorInfo
+                self.{key} = detectorInfo.managerProperties["{key}"]
+        class CameraManager(Base):
+            def __init__(self, detectorInfo, name):
+                super().__init__(detectorInfo, name)
+                self.serial = self._info.managerProperties["serial_{mod}"]
+    '''
+
+    def _two_modules(self, tmp_path):
+        root = self._package(tmp_path, {
+            "a.py": self.READS.format(key="base_a", mod="a"),
+            "b.py": self.READS.format(key="base_b", mod="b"),
+        })
+        return ex.extract_tree_indexed(root)
+
+    def test_the_package_is_read_from_the_init_files(self, tmp_path):
+        tree = self._two_modules(tmp_path)
+        assert tree.package == "vendor"
+        assert {"vendor.a:CameraManager", "vendor.b:CameraManager", "vendor.a:Base", "vendor.b:Base"} <= set(tree.classes)
+        assert ex.package_of(tmp_path) == ""
+
+    def test_same_named_classes_resolve_to_their_own_modules(self, tmp_path):
+        tree = self._two_modules(tmp_path)
+        for mod in ("a", "b"):
+            class_id = ex.resolve_class_name(f"vendor.{mod}", tree, f"vendor.{mod}:CameraManager")
+            assert class_id == f"vendor.{mod}:CameraManager"
+            manager = ex.merge_manager(f"vendor.{mod}", tree.classes, class_name=class_id)
+            assert set(manager.properties) == {f"serial_{mod}", f"base_{mod}"}, "and each inherits its own Base"
+            assert manager.class_ids == (f"vendor.{mod}:CameraManager", f"vendor.{mod}:Base")
+            assert manager.classes == ("CameraManager", "Base")
+
+    def test_an_ambiguous_bare_name_resolves_to_nothing_rather_than_the_first(self, tmp_path):
+        tree = self._two_modules(tmp_path)
+        assert ex.resolve_class_name("CameraManager", tree) is None
+
+    def test_bases_follow_the_modules_own_imports(self, tmp_path):
+        root = self._package(tmp_path, {
+            "a.py": self.READS.format(key="base_a", mod="a"),
+            "b.py": self.READS.format(key="base_b", mod="b"),
+            "sub/c.py": '''
+                from ..a import Base as ABase
+                from .. import b
+                import vendor.b as vb
+                class FromRelative(ABase):
+                    pass
+                class FromModuleAttribute(b.Base):
+                    pass
+                class FromAliasedImport(vb.Base):
+                    pass
+            ''',
+            "d.py": '''
+                from vendor.b import Base
+                class FromAbsolute(Base):
+                    pass
+            ''',
+        })
+        tree = ex.extract_tree_indexed(root)
+        assert tree.classes["vendor.sub.c:FromRelative"].base_ids == ("vendor.a:Base",)
+        assert tree.classes["vendor.sub.c:FromModuleAttribute"].base_ids == ("vendor.b:Base",)
+        assert tree.classes["vendor.sub.c:FromAliasedImport"].base_ids == ("vendor.b:Base",)
+        assert tree.classes["vendor.d:FromAbsolute"].base_ids == ("vendor.b:Base",)
+
+    def test_a_re_export_through_a_package_init_is_followed(self, tmp_path):
+        root = self._package(tmp_path, {
+            "impl/cams.py": self.READS.format(key="base_x", mod="x"),
+        })
+        (root / "impl" / "__init__.py").write_text("from .cams import CameraManager\n", encoding="utf-8")
+        tree = ex.extract_tree_indexed(root)
+        assert ex.resolve_class_name("vendor.x", tree, "vendor.impl:CameraManager") == "vendor.impl.cams:CameraManager"
+
+    def test_a_base_imported_from_outside_the_tree_is_not_guessed(self, tmp_path):
+        """``from imswitch.pluginapi import Base`` is not the plugin's own ``Base``."""
+        root = self._package(tmp_path, {
+            "a.py": self.READS.format(key="base_a", mod="a"),
+            "e.py": '''
+                from imswitch.pluginapi import Base
+                class External(Base):
+                    pass
+            ''',
+            "f.py": '''
+                from somewhere import *
+                class Starred(Base):
+                    pass
+            ''',
+        })
+        tree = ex.extract_tree_indexed(root)
+        assert tree.classes["vendor.e:External"].base_ids == ()
+        # Neither defined nor imported by name: the tree-wide name, when unique.
+        assert tree.classes["vendor.f:Starred"].base_ids == ("vendor.a:Base",)
+
+    def test_an_extraction_is_keyed_by_what_a_python_name_says(self, tmp_path):
+        """So the core tree's keys are the registry's python_names."""
+        from imswitch.imcontrol.model.plugins.registry import build_default_registry
+        tree = ex.extract_tree_indexed(Path(ex.__file__).resolve().parents[1] / "managers")
+        assert tree.package == "imswitch.imcontrol.model.managers"
+        for contribution in build_default_registry(discover=False).list_contributions():
+            assert contribution.python_name in tree.classes, contribution.python_name
