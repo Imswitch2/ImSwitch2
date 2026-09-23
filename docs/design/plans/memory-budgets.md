@@ -577,3 +577,34 @@ acquisition-path blocker.
    plane the division made. → the division is in place (measured peak
    12 B/px) and the estimate charges 12 B/px plus the input plane's dtype;
    a tracemalloc test keeps the estimate a ceiling.
+
+## Review round 7 (2026-09-23)
+
+Reviewed `299dfc68` after the first rig tests (settings startup confirmed on
+the rig). Five findings, all reproduced, all in automatic loading and in the
+settings validator; no new acquisition-path blocker.
+
+1. **[P1] Opening the edit window loaded the whole dataset.** The
+   first-plane fallback read through `.data`. → the edit window reads planes
+   through the lazy handle unless the data is already loaded, the same rule
+   as the current-data panel.
+2. **[P2] Switching datasets bypassed "nothing shown until asked".** Lowering
+   the slider maximum clamped it, and the clamp emitted `valueChanged` like a
+   drag, so plane 299 of a non-lazy TIFF was decoded behind a preview that
+   had just declined to read anything (and replaced the mean on screen). →
+   both views set the range with the slider and the frame field signal-
+   blocked, and keep the two in agreement.
+3. **[P2] The non-lazy preview peaked above its estimate.** Each plane was a
+   view of its decoded series and stayed bound while the next series was
+   decoded. → the fallback's plane read returns a detached copy, and the
+   mean loop releases each plane before the next read; the peak measured
+   0.198 MiB against a 0.211 MiB estimate on the reviewer's shape class.
+4. **[P2] Contrast sampling still overshot for lopsided leading axes.**
+   `(2, 1000000, 1, 1)` kept 166 667 against 61 680: one uniform stride
+   cannot shrink a size-2 axis by six, and nothing was left in-plane. → both
+   strides are found by binary search on the counted total (what a stride
+   keeps never grows with the stride), leading axes first so whole planes are
+   kept while that suffices.
+5. **[P2] Non-finite settings raised.** `"NaN"`, `"Infinity"`, `"1e309"`
+   reached `int()`. → finiteness is checked first; tested through
+   `Options.from_json`.

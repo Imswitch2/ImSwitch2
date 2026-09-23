@@ -51,12 +51,26 @@ class DataEditController(ImProcessWidgetController):
         ):
             return
 
-        data = self._dataObj.data
+        data = self._planeSource()
+        if data is None:
+            return
         labels = getattr(self._dataObj, "axis_labels", None)
         if frameNumber >= plane_count(np.shape(data), labels):
             return
 
         self._widget.setImage(extract_plane(data, frameNumber, labels), autoLevels=False)
+
+    def _planeSource(self):
+        """Where one plane is read from: the lazy handle unless already loaded.
+
+        ``.data`` decodes the whole dataset; reading a plane through it is what
+        made opening this window over a deferred mean load everything. Same
+        rule as the current-data panel's ``_currentDataArray``.
+        """
+        handle = getattr(self._dataObj, 'data_handle', None)
+        if handle is not None and not getattr(self._dataObj, 'dataMaterialized', False):
+            return handle
+        return self._dataObj.data
 
     def setDarkFrame(self):
         # self.dataObj.data = self.dataObj.data[0:100]

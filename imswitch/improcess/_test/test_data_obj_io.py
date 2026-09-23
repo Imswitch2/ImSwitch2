@@ -639,3 +639,52 @@ def test_a_source_without_a_lazy_path_is_charged_the_whole_series_for_its_previe
     assert notice is not None
     assert "no lazy path" in notice and "decodes the whole series" in notice
     assert "memory.processingWorkingSetMB" in notice
+
+
+def _non_lazy_tiff(tmp_path, monkeypatch, shape):
+    """A TIFF opened the way the fallback opens it: no zarr view, whole-series reads."""
+    import tifffile
+
+    path = tmp_path / "nonlazy.tif"
+    tifffile.imwrite(path, np.ones(shape, np.uint16))
+
+    def no_zarr(self, *_args, **_kwargs):
+        raise RuntimeError("aszarr unavailable")
+
+    monkeypatch.setattr(tifffile.TiffPageSeries, "aszarr", no_zarr)
+    data_obj = DataObj("nonlazy.tif", "Image0", path=str(path))
+    data_obj.data_handle
+    monkeypatch.undo()
+    assert not data_obj.sourceHasLazyPath()
+    return data_obj
+
+
+def test_a_non_lazy_preview_peaks_inside_its_estimate(tmp_path, monkeypatch) -> None:
+    """Review round 7: estimated 0.84 MiB, peaked at 1.61 MiB -- the previous
+    plane was still bound, pinning its decoded series, while the next series
+    was decoded."""
+    import tracemalloc
+
+    data_obj = _non_lazy_tiff(tmp_path, monkeypatch, (20, 64, 64))
+    estimate = data_obj.meanPreviewBytes()
+
+    tracemalloc.start()
+    try:
+        mean = data_obj.getMeanData()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert float(mean.mean()) == 1.0
+    assert peak <= estimate
+
+
+def test_a_plane_from_a_non_lazy_source_does_not_keep_the_series_alive(tmp_path, monkeypatch) -> None:
+    data_obj = _non_lazy_tiff(tmp_path, monkeypatch, (20, 64, 64))
+
+    plane = data_obj.data_handle[3]
+
+    assert plane.shape == (64, 64)
+    assert plane.base is None or plane.base.nbytes <= plane.nbytes
+    whole = data_obj.data_handle[...]                  # a full read is not copied twice
+    assert whole.shape == (20, 64, 64)

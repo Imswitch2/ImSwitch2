@@ -141,3 +141,27 @@ def test_configure_uses_the_module_logger_when_none_is_given(caplog):
     with caplog.at_level(logging.INFO, logger='imswitch.imcommon.model.memory_limits'):
         memory_limits.configure(SimpleNamespace(writerQueueMB=64))
     assert any('writerQueueMB = 64 MiB' in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize('raw', ['NaN', 'Infinity', '-Infinity', '1e309'])
+def test_a_non_finite_setting_falls_back_instead_of_interrupting_startup(raw):
+    """Review round 7: these parse as floats and then made ``int()`` raise.
+
+    Written into the options file as JSON literals (``NaN``/``Infinity``, which
+    Python's JSON reader accepts) and as the string ``"1e309"``.
+    """
+    from imswitch.imcontrol.model.Options import Options
+
+    literal = raw if raw != '1e309' else '"1e309"'
+    options = Options.from_json(
+        '{"setupFileName": "x.json", "memory": {"writerQueueMB": %s, '
+        '"perDetectorQueueMB": 64}}' % literal,
+        infer_missing=True,
+    )
+    log = _Log()
+
+    memory_limits.configure(options.memory, logger=log)
+
+    assert memory_limits.configuredBytes('writerQueueBytes') is None
+    assert memory_limits.effectiveBytes('perDetectorQueueBytes', 1) == 64 * MIB
+    assert len(log.warnings) == 1 and 'memory.writerQueueMB' in log.warnings[0]

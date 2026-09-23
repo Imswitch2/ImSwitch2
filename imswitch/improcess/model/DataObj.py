@@ -537,11 +537,15 @@ class DataObj:
                         if accumulator is None:
                             accumulator = np.zeros(frame.shape, dtype=np.float64)
                         accumulator += frame
+                        # Released before the next read, not after it: the
+                        # assignment above evaluates the new plane while the
+                        # old one is still bound, which for a source without a
+                        # lazy path meant two decoded series at once.
+                        del frame
                     # Divide in place: ``accumulator / n`` made a second
                     # float64 plane that lived alongside the first until the
                     # float32 conversion, which is what the estimate charges
                     # for and what a 16k x 16k plane cannot afford twice.
-                    del frame
                     accumulator /= len(indices)
                     self._meanData = accumulator.astype(np.float32)
                 else:

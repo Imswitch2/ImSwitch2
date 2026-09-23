@@ -28,6 +28,7 @@ one names the setting that moves it. Design: ``docs/design/plans/memory-budgets.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from typing import Any, Dict, Optional
 
@@ -111,9 +112,11 @@ def _wholeMib(raw: Any) -> Optional[int]:
         return None
     try:
         value = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    if value <= 0 or value != int(value):
+    # "NaN", "Infinity" and "1e309" all parse as floats and then make int()
+    # raise -- at hardware-control startup. Not finite is not a size.
+    if not math.isfinite(value) or value <= 0 or value != int(value):
         return None
     return int(value)
 

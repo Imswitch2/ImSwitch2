@@ -197,6 +197,9 @@ def test_a_singleton_leading_axis_does_not_defeat_the_sample_bound():
 @pytest.mark.parametrize('shape', [
     (1, 100, 100, 100), (3, 1, 512, 512), (1, 1, 1000, 1000), (7, 5, 3, 64, 64),
     (1, 30, 30), (1000, 1, 1), (2, 2), (1, 1, 1, 1, 4096),
+    # Review round 7: leading axes that cannot all shrink by one uniform
+    # factor, with nothing left in-plane to make up the difference.
+    (2, 1_000_000, 1, 1), (3, 500_000, 1, 1), (2, 7, 100_000, 1, 1), (1_000_000, 2, 1),
 ])
 @pytest.mark.parametrize('max_samples', [1, 7, 100, 61_680])
 def test_the_strided_key_keeps_at_most_the_allowed_count(shape, max_samples):
@@ -206,3 +209,25 @@ def test_the_strided_key_keeps_at_most_the_allowed_count(shape, max_samples):
     kept = int(np.prod([len(range(0, size, s.step or 1)) for size, s in zip(shape, key)]))
     assert kept <= max_samples
     assert kept >= 1
+
+
+def test_whole_planes_are_still_preferred_when_the_leading_axes_can_meet_the_allowance():
+    from imswitch.improcess.model import contrast as contrast_module
+
+    key = contrast_module._strided_key((400, 64, 64), 64 * 64 * 10)
+    assert key[1].step in (None, 1) and key[2].step in (None, 1)   # planes untouched
+    kept = len(range(0, 400, key[0].step))
+    assert 1 <= kept <= 10
+
+
+def test_the_reviewers_shape_is_within_its_allowance():
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+    from imswitch.improcess.model import contrast as contrast_module
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    allowed = contrast_module._max_samples()
+    values = contrast_module.finite_values(np.zeros((2, 1_000_000, 1, 1), np.uint16))
+    assert values.size <= allowed           # was 166 667 against 61 680
+    assert values.size > allowed // 2

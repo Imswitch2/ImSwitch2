@@ -61,7 +61,7 @@ def _controller():
         _dataObj=None,
         _meanData=None,
     )
-    for name in ('setData', 'showMean', '_displayMean', 'setImgSlice'):
+    for name in ('setData', 'showMean', '_displayMean', 'setImgSlice', '_planeSource'):
         setattr(controller, name, getattr(DataEditController, name).__get__(controller))
     return controller, images, lines
 
@@ -111,3 +111,47 @@ def test_a_mean_within_the_working_set_is_shown_on_opening_as_before():
 
     assert data_obj.mean_calls == 1
     np.testing.assert_array_equal(images[0][0], np.mean(data, axis=0))
+
+
+class _LazyDataObj:
+    """Lazy: planes come from ``data_handle``; ``.data`` would decode everything."""
+
+    name = "big"
+    datasetName = "CAM"
+    sourceKind = "image"
+    axis_labels = None
+    dataMaterialized = False
+
+    def __init__(self, data, notice):
+        self._frames = _Frames(data)
+        self.data_handle = self._frames
+        self.numFrames = data.shape[0]
+        self._notice = notice
+        self.mean_calls = 0
+
+    @property
+    def data(self):
+        raise AssertionError("opening the edit window materialised the dataset")
+
+    def meanPreviewNotice(self):
+        return self._notice
+
+    def planeReadIsBounded(self):
+        return True
+
+    def getMeanData(self):
+        self.mean_calls += 1
+        return np.mean(self._frames._data, axis=0)
+
+
+def test_opening_over_a_deferred_mean_reads_one_plane_lazily():
+    """Review round 7: the first-plane fallback went through ``.data``."""
+    data = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+    data_obj = _LazyDataObj(data, notice="needs 2 GiB for one plane")
+    controller, images, lines = _controller()
+
+    controller.setData(data_obj)                        # would raise via .data
+
+    assert data_obj.mean_calls == 0
+    assert data_obj._frames.requested == [0]            # exactly one plane read
+    np.testing.assert_array_equal(images[0][0], data[0])

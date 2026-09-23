@@ -89,17 +89,41 @@ def _strided_key(shape: tuple[int, ...], max_samples: int) -> tuple:
     leading_shape = shape[:-2] if len(shape) > 2 else ()
     spatial_shape = shape[-2:]
 
-    total = int(np.prod(shape))
-    leading_stride = _group_stride(leading_shape, total / max_samples)
-    leading_kept = int(np.prod([_kept(size, leading_stride) for size in leading_shape])) if leading_shape else 1
+    def kept(sizes, stride):
+        return int(np.prod([_kept(size, stride) for size in sizes])) if sizes else 1
+
+    def smallest_stride(sizes, fits):
+        """The smallest uniform stride over ``sizes`` for which ``fits`` holds.
+
+        What a stride keeps never grows as the stride grows, so a binary
+        search finds it; a stride equal to the longest axis keeps one element
+        per axis, which is the floor. A stride guessed from the reduction
+        factor alone missed whenever the axes could not all shrink by it --
+        ``(2, 1000000, 1, 1)`` kept 166 667 values against 61 680 allowed,
+        because the size-2 axis cannot give up a factor of six."""
+        if not sizes:
+            return 1
+        low, high = 1, max(1, max(sizes))
+        if fits(low):
+            return low
+        if not fits(high):
+            return high
+        while high - low > 1:
+            middle = (low + high) // 2
+            if fits(middle):
+                high = middle
+            else:
+                low = middle
+        return high
+
     spatial_total = int(np.prod(spatial_shape))
-    spatial_stride = _group_stride(spatial_shape, (leading_kept * spatial_total) / max_samples)
-
-    def count(spatial_stride):
-        return leading_kept * int(np.prod([_kept(size, spatial_stride) for size in spatial_shape]))
-
-    while count(spatial_stride) > max_samples and spatial_stride < max(spatial_shape):
-        spatial_stride += 1
+    # Leading axes first, as far as they alone can go: whole planes are kept
+    # for as long as that meets the allowance.
+    leading_stride = smallest_stride(
+        leading_shape, lambda s: kept(leading_shape, s) * spatial_total <= max_samples)
+    leading_kept = kept(leading_shape, leading_stride)
+    spatial_stride = smallest_stride(
+        spatial_shape, lambda s: leading_kept * kept(spatial_shape, s) <= max_samples)
     key = tuple(slice(0, size, leading_stride) for size in leading_shape)
     key += tuple(slice(0, size, spatial_stride) for size in spatial_shape)
     return key
