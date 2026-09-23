@@ -201,9 +201,11 @@ def test_a_typed_text_edit_counts(qapp):
     assert fw.is_touched() and fw.get_value() == "COM4"
 
 
-# ── a numeric field is a line edit, never a spin box ──────────────────────
-# A spin box is a C++ int that clamps, rounds and cannot hold a string; the
-# line edit shows whatever the file held and validates only what is typed.
+# ── a numeric field is a plain line edit: no spin box, no validator ───────
+# A spin box is a C++ int that clamps, rounds and cannot hold a string. A
+# keystroke validator is no better: it drops what it refuses, so "8000.5"
+# typed into an integer-kind box became 80005 (review of PR #35, BSC203's
+# travelRangeUm). What is typed stays as typed.
 @pytest.mark.parametrize("tp, value", [("int", "two"), ("int", 5_000_000_000), ("int", 2.5),
                                        ("float", "fast"), ("int", True)])
 def test_a_value_no_spin_box_could_hold_is_shown_as_it_is_and_survives(qapp, tp, value):
@@ -223,13 +225,37 @@ def test_a_string_under_a_numeric_key_is_edited_as_free_text(qapp):
     assert fw.get_value() == 3 and isinstance(fw.get_value(), int)
 
 
-def test_the_validator_refuses_letters_but_not_a_long_number(qapp):
-    fw = editor.FieldWidget(_field("channel", "int"), 3)
-    assert fw._w.validator() is not None
-    _type(fw, "12abc34")
-    assert fw._w.text() == "1234"
+@pytest.mark.parametrize("tp", ["int", "float"])
+def test_no_keystroke_is_ever_dropped(qapp, tp):
+    """What was typed is what is read back -- a number when it is one."""
+    fw = editor.FieldWidget(_field("channel", tp), 3)
+    assert fw._w.validator() is None
+    for typed in ("12abc34", "8000,5", "1_000", "nan", "inf", "0x10", "1e400"):
+        _type(fw, typed)
+        assert fw._w.text() == typed
+        assert fw.get_value() == typed and isinstance(fw.get_value(), str), typed
     _type(fw, "-6000000000")
     assert fw.get_value() == -6_000_000_000
+
+
+def test_an_integer_kind_box_takes_a_fraction(qapp):
+    """The kind is how the text is read back, not what may be typed."""
+    fw = editor.FieldWidget(_field("travelRangeUm", "int"), 8000)
+    _type(fw, "8000.5")
+    assert fw._w.text() == "8000.5"
+    assert fw.get_value() == 8000.5 and isinstance(fw.get_value(), float)
+
+
+def test_an_existing_fraction_under_an_integer_kind_stays_editable(qapp):
+    from PyQt5.QtCore import Qt
+    fw = editor.FieldWidget(_field("travelRangeUm", "int"), 8000.5)
+    fw._w.setCursorPosition(len(fw._w.text()))
+    QTest.keyClicks(fw._w, "5")
+    assert fw._w.text() == "8000.55" and fw.get_value() == 8000.55
+    QTest.keyClick(fw._w, Qt.Key_Backspace)
+    QTest.keyClick(fw._w, Qt.Key_Backspace)
+    QTest.keyClick(fw._w, Qt.Key_Backspace)
+    assert fw.get_value() == 8000 and isinstance(fw.get_value(), int)
 
 
 def test_a_float_field_takes_a_point_and_scientific_notation(qapp):
@@ -248,9 +274,9 @@ def test_clearing_a_numeric_field_writes_null(qapp):
     assert fw.is_touched() and fw.get_value() is None
 
 
-def test_a_null_number_shows_an_empty_validated_box(qapp):
+def test_a_null_number_shows_an_empty_box(qapp):
     fw = editor.FieldWidget(_field("k", "int"), None)
-    assert fw._w.text() == "" and fw._w.validator() is not None
+    assert fw._w.text() == "" and fw._w.validator() is None
     assert fw.get_value() is None
     _type(fw, "7")
     assert fw.get_value() == 7

@@ -523,3 +523,36 @@ def _schema_codes(report):
 def test_generated_schemas_are_what_the_editor_reads():
     """The editor's catalog and the validator read the same file for a manager."""
     assert editor._MANAGER_CATALOG.get("APDManager").properties_schema == resources.generated_schema_for("APDManager")
+
+
+# ── review of PR #35: a widget preference is not a constraint ────────────
+class TestNumericEditsAreKeptAsTyped:
+    """BSC203's travelRangeUm is integer-*kind* (its default is 8000) but the
+    manager accepts a fraction; the keystroke validator turned a typed
+    "8000.5" into 80005 and Apply saved it."""
+
+    DEVICE = {"managerName": "BSC203StageManager", "axes": ["X"],
+              "managerProperties": {"port": "COM9", "travelRangeUm": 8000}}
+
+    def test_a_fraction_typed_into_an_integer_kind_field_is_saved(self, property_editor):
+        form = editor._schema_for_manager("BSC203StageManager")
+        assert {f["key"]: f["type"] for f in form["props"]}["travelRangeUm"] == "int"
+        property_editor.load_device("positioners", "stage", copy.deepcopy(self.DEVICE))
+        _type(property_editor._field_widgets[("props", "travelRangeUm")], "8000.5")
+        applied = _apply(property_editor)
+        assert applied["managerProperties"]["travelRangeUm"] == 8000.5
+        assert property_editor._val_lbl.text() == ""
+
+    def test_text_that_is_not_a_number_is_saved_as_typed_and_named(self, property_editor):
+        property_editor.load_device("positioners", "stage", copy.deepcopy(self.DEVICE))
+        _type(property_editor._field_widgets[("props", "travelRangeUm")], "8000,5")
+        applied = _apply(property_editor)
+        assert applied["managerProperties"]["travelRangeUm"] == "8000,5"
+        assert "'8000,5' is not a number" in property_editor._val_lbl.text()
+
+    def test_an_untouched_string_under_a_numeric_key_is_not_reported(self, property_editor):
+        """Not an edit: validation's to report, not Apply's."""
+        device = copy.deepcopy(self.DEVICE)
+        device["managerProperties"]["travelRangeUm"] = "wide"
+        assert_json_identical(_round_trip(property_editor, "positioners", "stage", device), device)
+        assert property_editor._val_lbl.text() == ""
