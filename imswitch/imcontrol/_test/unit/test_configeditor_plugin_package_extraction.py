@@ -231,3 +231,26 @@ def test_the_package_locator_never_imports(tmp_path, monkeypatch):
     assert "noisy_vendor" not in sys.modules and "noisy_vendor.plugin" not in sys.modules
     assert tool.find_package_spec("noisy_vendor.missing") is None
     assert tool.find_package_spec("not a package") is None
+
+
+def test_a_contribution_implemented_outside_the_package_is_unresolved_not_matched_by_name(tmp_path):
+    """Review of PR #37: ``external_driver.camera:CameraManager`` got the
+    plugin's own ``vendor_plugin.local:CameraManager`` schema."""
+    root = tmp_path / "shadow_plugin"
+    root.mkdir()
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    (root / "local.py").write_text(textwrap.dedent(SAME_NAME.format(mod="local")), encoding="utf-8")
+    (root / "imswitch.json").write_text(json.dumps(_manifest("shadow", [
+        {"id": "shadow.local", "kind": "detector", "display_name": "local",
+         "python_name": "shadow_plugin.local:CameraManager"},
+        {"id": "shadow.external", "kind": "detector", "display_name": "external",
+         "python_name": "external_driver.camera:CameraManager"},
+    ])), encoding="utf-8")
+    result = _run("--package", "shadow_plugin", "--write", cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "no class found in the tree (no schema written): shadow.external" in result.stdout
+    schemas = root / "schemas"
+    assert not (schemas / "managers" / "shadow.external.json").exists()
+    assert json.loads((schemas / "managers" / "shadow.local.json").read_text(encoding="utf-8"))["required"] == ["serial_local"]
+    assert json.loads((schemas / "index.json").read_text(encoding="utf-8"))["unresolved"] == ["shadow.external"]
+    assert _run("--package", "shadow_plugin", "--check", cwd=tmp_path).returncode == 0

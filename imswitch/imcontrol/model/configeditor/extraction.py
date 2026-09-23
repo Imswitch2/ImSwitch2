@@ -1271,17 +1271,6 @@ class _TreeNames:
                 return found if verdict == self.FOUND else None
         return None
 
-    def find_module(self, module: str) -> Optional[str]:
-        """``module`` itself, or the one tree module it ends with (a tree rooted below its package)."""
-        if module in self.modules:
-            return module
-        matches = [m for m in self.modules if m and module.endswith("." + m)]
-        if not matches:
-            return None
-        longest = max(len(m) for m in matches)
-        best = [m for m in matches if len(m) == longest]
-        return best[0] if len(best) == 1 else None
-
 
 @dataclass
 class TreeExtraction:
@@ -1374,21 +1363,22 @@ def resolve_class_name(
     :func:`legacy_python_name` -- the answer is exact, as the import is: the
     attribute of that module, defined there or re-exported
     (``ThorlabsMFFManager.py`` is ``from .ThorlabsMFF import
-    ThorlabsMFFManager``); a module without that attribute is no manager.
-    ``PyCoboltManager.py`` defines a vendor driver and nothing of that name:
-    it stays unresolved, on purpose. Without one, the class of that name when
-    only one module defines it, else the one module of that name.
+    ThorlabsMFFManager``). A module this tree does not have, or one without
+    that attribute, leaves the manager unresolved: an explicit identity is
+    never matched by name to some other class that happens to share it
+    (``external_driver.camera:CameraManager`` is not the plugin's own
+    ``CameraManager``). ``PyCoboltManager.py`` defines a vendor driver and
+    nothing of that name: it stays unresolved, on purpose. Without a
+    ``python_name``, the class of that name when only one module defines it,
+    else the one module of that name.
     """
     names = tree.names()
     if python_name and ":" in python_name:
         module, _, attr = python_name.partition(":")
-        found_module = names.find_module(module)
-        if found_module is not None:
-            verdict, found = names.lookup(found_module, attr)
-            return found if verdict == names.FOUND else None
-        unique = names.unique(attr)
-        if unique is not None:
-            return unique
+        if module not in tree.modules:
+            return None
+        verdict, found = names.lookup(module, attr)
+        return found if verdict == names.FOUND else None
     unique = names.unique(name)
     if unique is not None:
         return unique

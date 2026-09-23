@@ -723,10 +723,12 @@ class TestNameToClassResolution:
 
     def test_python_name_from_the_registry_wins(self, tmp_path):
         tree = self._tree(tmp_path, {"ThorlabsMFF_mock.py": "class MockThorlabsMFFManager:\n    pass\n"})
-        # The tree is a plain directory, so its module is "ThorlabsMFF_mock";
-        # the python_name's module ends with it.
+        # A plain directory: its module is "ThorlabsMFF_mock", and a
+        # python_name must name exactly that.
         assert ex.resolve_class_name("ThorlabsMFFMockManager", tree,
-                                     "x.ThorlabsMFF_mock:MockThorlabsMFFManager") == "ThorlabsMFF_mock:MockThorlabsMFFManager"
+                                     "ThorlabsMFF_mock:MockThorlabsMFFManager") == "ThorlabsMFF_mock:MockThorlabsMFFManager"
+        assert ex.resolve_class_name("ThorlabsMFFMockManager", tree,
+                                     "x.ThorlabsMFF_mock:MockThorlabsMFFManager") is None, "a module the tree does not have"
 
     def test_a_reexporting_module_resolves(self, tmp_path):
         tree = self._tree(tmp_path, {
@@ -734,7 +736,7 @@ class TestNameToClassResolution:
             "ThorlabsMFFManager.py": "from .ThorlabsMFF import ThorlabsMFFManager\n",
         })
         assert ex.resolve_class_name("ThorlabsMFFManager", tree) == "ThorlabsMFF:ThorlabsMFFManager"
-        assert ex.resolve_class_name("ThorlabsMFFManager", tree, "p.ThorlabsMFFManager:ThorlabsMFFManager") \
+        assert ex.resolve_class_name("ThorlabsMFFManager", tree, "ThorlabsMFFManager:ThorlabsMFFManager") \
             == "ThorlabsMFF:ThorlabsMFFManager", "the attribute a python_name names may be a re-export"
 
     def test_a_module_with_one_manager_class_resolves(self, tmp_path):
@@ -746,7 +748,9 @@ class TestNameToClassResolution:
     def test_a_python_name_is_exact_like_the_import_it_describes(self, tmp_path):
         """A module without that attribute is no manager, whatever else it defines."""
         tree = self._tree(tmp_path, {"YManager.py": "class RealYManager:\n    pass\n"})
+        assert ex.resolve_class_name("YManager", tree, "YManager:YManager") is None
         assert ex.resolve_class_name("YManager", tree, "pkg.YManager:YManager") is None
+        assert ex.resolve_class_name("YManager", tree, "YManager:RealYManager") == "YManager:RealYManager"
 
     def test_a_vendor_driver_module_stays_unresolved(self, tmp_path):
         tree = self._tree(tmp_path, {"PyCoboltManager.py": "class CoboltLaser:\n    pass\nclass Cobolt06(CoboltLaser):\n    pass\n"})
@@ -1170,3 +1174,35 @@ class TestClassesAreModuleQualified:
         assert tree.package == "imswitch.imcontrol.model.managers"
         for contribution in build_default_registry(discover=False).list_contributions():
             assert contribution.python_name in tree.classes, contribution.python_name
+
+
+class TestExplicitIdentitiesAreNeverGuessed:
+    """Review of PR #37: a python_name naming a module outside the package
+    resolved to the package's own class of the same short name --
+    ``external_driver.camera:CameraManager`` got the schema of
+    ``vendor_plugin.local:CameraManager``, and ``--check`` agreed."""
+
+    def _tree(self, tmp_path):
+        root = tmp_path / "vendor_plugin"
+        (root / "sub").mkdir(parents=True)
+        (root / "__init__.py").write_text("", encoding="utf-8")
+        (root / "sub" / "__init__.py").write_text("", encoding="utf-8")
+        source = "class CameraManager:\n    def __init__(self, detectorInfo, name):\n        pass\n"
+        (root / "local.py").write_text(source, encoding="utf-8")
+        (root / "camera.py").write_text(source, encoding="utf-8")
+        return ex.extract_tree_indexed(root)
+
+    @pytest.mark.parametrize("python_name", [
+        "external_driver.camera:CameraManager",       # another package entirely
+        "vendor_plugin.missing:CameraManager",        # a module the package does not have
+        "other.vendor_plugin.camera:CameraManager",   # ends like one of the package's modules
+        "vendor_plugin.local:OtherManager",           # the module, without that attribute
+        "vendor_plugin.sub:CameraManager",            # a subpackage that neither defines nor imports it
+    ])
+    def test_an_identity_the_tree_cannot_resolve_stays_unresolved(self, tmp_path, python_name):
+        assert ex.resolve_class_name("v.cam", self._tree(tmp_path), python_name) is None
+
+    def test_the_identities_it_can_resolve_do(self, tmp_path):
+        tree = self._tree(tmp_path)
+        assert ex.resolve_class_name("v.cam", tree, "vendor_plugin.local:CameraManager") == "vendor_plugin.local:CameraManager"
+        assert ex.resolve_class_name("v.cam", tree, "vendor_plugin.camera:CameraManager") == "vendor_plugin.camera:CameraManager"
