@@ -1,0 +1,10 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "PIStageManager",
+    "managerProperties": {
+      "device": "example",
+      "usb_description": "example"
+    }
+  }
+}

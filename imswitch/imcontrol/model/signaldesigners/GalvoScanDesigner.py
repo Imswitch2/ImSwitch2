@@ -8,6 +8,38 @@ from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
 
+def is_smooth_scan_axis(name, props) -> bool:
+    """Whether a scanning device is swept smoothly (the galvo-like profile)
+    or stepped (held at each position for the dwell time).
+
+    ``managerProperties['smoothScan']`` decides when present -- a piezo or
+    stage on the fast axis sets it false. Absent, the historical name
+    heuristic stands: devices with 'mock' in the name are stepped virtual
+    axes, everything else is assumed a sweepable galvo.
+    """
+    smooth = (props or {}).get('smoothScan')
+    if smooth is not None:
+        return bool(smooth)
+    return 'mock' not in str(name).lower()
+
+
+def scan_axes_missing_limits(positioners) -> list:
+    """Names of scanning positioners this designer refuses to drive.
+
+    A smoothly swept axis needs ``vel_max``/``acc_max`` for the smooth-scan
+    spline; a stepped one never enters the spline and is exempt
+    (:func:`is_smooth_scan_axis`). This is the rule
+    ``schemas/roles/galvo_scan_axis.json`` states for the setup validator; a
+    test holds the two to the same answer.
+    """
+    return [
+        name for name, info in positioners.items()
+        if info.forScanning
+        and is_smooth_scan_axis(name, info.managerProperties)
+        and ('vel_max' not in info.managerProperties or 'acc_max' not in info.managerProperties)
+    ]
+
+
 class GalvoScanDesigner(ScanDesigner):
     """ Scan designer for scan systems with galvanometric mirrors.
 
@@ -100,14 +132,8 @@ class GalvoScanDesigner(ScanDesigner):
         # missing limit and then produced degenerate spline knots + an opaque
         # BPoly crash mid build. Require them explicitly so a misconfigured
         # setup fails early with an actionable message. Stepped axes are
-        # exempt -- they never enter the spline: devices with
-        # managerProperties['smoothScan'] false, or mock/alignment axes by the
-        # historical name heuristic (see _device_smooth_scan).
-        missing = [
-            name for name, props in zip(positionerNames, positionersProps)
-            if self._device_smooth_scan(name, props)
-            and ('vel_max' not in props or 'acc_max' not in props)
-        ]
+        # exempt -- they never enter the spline (see is_smooth_scan_axis).
+        missing = scan_axes_missing_limits(setupInfo.positioners)
         if missing:
             raise ValueError(
                 "GalvoScanDesigner requires 'vel_max' (µm/µs) and 'acc_max' "
@@ -309,10 +335,7 @@ class GalvoScanDesigner(ScanDesigner):
         historical name heuristic: devices with 'mock' in the name are
         stepped virtual axes, everything else is assumed a sweepable galvo.
         """
-        smooth = props.get('smoothScan')
-        if smooth is not None:
-            return bool(smooth)
-        return 'mock' not in name.lower()
+        return is_smooth_scan_axis(name, props)
 
     def __calc_settling_time(self, axis_length, axis_centerpos, vel_max, acc_max):
         """ Calculate settling time based on all axis parameters. """

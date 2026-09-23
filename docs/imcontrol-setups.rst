@@ -21,13 +21,33 @@ prompted to select a setup file.  To switch later, use
 
 .. tip::
 
-   Don't want to hand-edit JSON?  Use the bundled visual setup editor:
+   Don't want to hand-edit JSON?  Use the bundled visual setup editor.
+   It loads built-in templates for every supported manager.
+
+   From a running ImSwitch, open it with
+   **Tools → Edit hardware configuration…**.  It opens on the setup file
+   this session is running and does not block the rest of the GUI, so the
+   microscope stays usable while you edit.
+
+   Without starting the microscope:
 
    .. code-block:: bash
 
       python utility_scripts/imswitch_config_editor.py
 
-   It loads built-in templates for every supported manager.
+.. note::
+
+   The hardware configuration is read once, when ImSwitch starts; there is
+   no way to apply a changed setup file to a running session.  When you
+   close the editor after saving changes to the setup this session is
+   running — or after pressing **Set as Active Config** — ImSwitch offers
+   to restart.  Accepting shuts the session down normally (widget states
+   saved, hardware finalized) and then comes back up on the new
+   configuration; it is not a forced relaunch that leaves devices as they
+   stood.
+
+   Editing some *other* setup file changes nothing about the running
+   session, so nothing is asked.
 
 
 How configurations are defined

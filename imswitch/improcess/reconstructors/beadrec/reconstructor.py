@@ -268,6 +268,15 @@ class BeadRecReconstructor(Reconstructor):
         requires_calibrated_loops=frozenset({"scan_x", "scan_y"}),
     )
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'scan_x': 0,
+        'scan_y': 0,
+        'roi': None,
+        'step_x': 1.0,
+        'step_y': 1.0,
+        'fit_model': 'none'}
+
     def make_param_widget(self, parent):
         return _BeadRecParamWidget(parent)
 

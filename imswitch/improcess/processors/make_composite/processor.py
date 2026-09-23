@@ -32,6 +32,10 @@ class MakeCompositeProcessor(Processor):
     # on one measures the same features on the other.
     preserves_grid = True
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'axis': 'Auto'}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return self._has_channel_axis

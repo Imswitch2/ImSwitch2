@@ -1,0 +1,14 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "KinesisStageManager",
+    "managerProperties": {
+      "driverUnitsPerPositionUnit": 1.5,
+      "homeOnInit": true,
+      "isRackSystem": true,
+      "scale": "example",
+      "snr": "example",
+      "unitsPerUm": 1.5
+    }
+  }
+}

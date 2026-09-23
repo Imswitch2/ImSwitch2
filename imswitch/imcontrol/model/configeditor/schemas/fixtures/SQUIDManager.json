@@ -1,0 +1,9 @@
+{
+  "category": "rs232devices",
+  "device": {
+    "managerName": "SQUIDManager",
+    "managerProperties": {
+      "serialport": "example"
+    }
+  }
+}

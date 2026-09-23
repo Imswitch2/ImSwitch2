@@ -167,6 +167,80 @@ def metadata_tree_from_container(
     )
 
 
+def metadata_tree_from_result(result: Any, *, limits: MetadataLimits = DEFAULT_LIMITS) -> MetadataNode:
+    """Build a metadata tree from an in-memory ImProcess result.
+
+    A result derived in the session (a duplicate, a crop, a processor's
+    output) has no file of its own yet; what it *has* is its identity, its
+    calibration, its ``metadata`` dict and its provenance graph. This is
+    that, laid out like a file's tree so the panel needs no second widget:
+    a *Result* group, the *Metadata* attributes, a *Provenance* group with
+    the linear history and the full graph, and the source file's info when
+    the graph names one.
+    """
+    from imswitch.improcess.model.footprint import HISTORY_KEY
+    from imswitch.improcess.model.provenance import PROVENANCE_KEY, derive_history, graph_of
+
+    context = _WalkContext(limits)
+    name = str(getattr(result, "name", "") or type(result).__name__)
+    children: list[MetadataNode] = []
+
+    data = getattr(result, "data", None)
+    identity: dict[str, Any] = {
+        "kind": str(getattr(result, "kind", "image") or "image"),
+        "type": type(result).__name__,
+        "shape": list(getattr(data, "shape", ()) or ()),
+        "dtype": str(getattr(data, "dtype", "")),
+        "axis_labels": list(getattr(result, "axis_labels", []) or []),
+        "axis_scales": [float(v) for v in (getattr(result, "axis_scales", []) or [])],
+        "scale_unit": str(getattr(result, "scale_unit", "") or ""),
+    }
+    for attribute in ("result_uid", "dataset_uid", "coordinate_space_uid"):
+        value = getattr(result, attribute, None)
+        if value:
+            identity[attribute] = str(value)
+    lineage = getattr(result, "lineage", ()) or ()
+    if lineage:
+        identity["lineage"] = [str(item) for item in lineage]
+    children.append(MetadataNode(
+        name="Result", kind=KIND_GROUP, path="/result",
+        children=tuple(_attribute_nodes(identity, "/result", context, 1)),
+    ))
+
+    metadata = getattr(result, "metadata", None)
+    if isinstance(metadata, dict):
+        plain = {k: v for k, v in metadata.items() if k not in (HISTORY_KEY, PROVENANCE_KEY)}
+        if plain:
+            children.append(MetadataNode(
+                name="Metadata", kind=KIND_GROUP, path="/metadata",
+                children=tuple(_attribute_nodes(plain, "/metadata", context, 1)),
+            ))
+
+    graph = graph_of(result)
+    if graph:
+        history = derive_history(graph)
+        provenance: dict[str, Any] = {
+            "steps": [
+                f"{step.get('operation', step.get('op', '?'))}: {step.get('plugin_id', '')}"
+                for step in history
+            ],
+            "history": history,
+            "graph": graph,
+        }
+        children.append(MetadataNode(
+            name="Provenance", kind=KIND_GROUP, path="/provenance",
+            children=tuple(_attribute_nodes(provenance, "/provenance", context, 1)),
+        ))
+        for node in graph.get("nodes", {}).values():
+            source = node.get("source") if isinstance(node, dict) else None
+            path = (source or {}).get("path") if isinstance(source, dict) else None
+            if path and Path(str(path)).exists():
+                children.append(_file_info_node(Path(str(path)), None))
+                break
+
+    return MetadataNode(name=name, kind=KIND_ROOT, path="", children=tuple(children))
+
+
 def metadata_tree_to_dict(
     node: MetadataNode,
     limits: MetadataLimits = DEFAULT_LIMITS,
@@ -977,6 +1051,7 @@ __all__ = [
     "MetadataNode",
     "format_metadata_value",
     "metadata_tree_from_container",
+    "metadata_tree_from_result",
     "metadata_tree_rows",
     "metadata_tree_to_dict",
     "read_metadata_tree",

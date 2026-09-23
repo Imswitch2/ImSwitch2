@@ -36,6 +36,10 @@ class TransformProcessor(Processor):
     id = "transform"
     category = "Transform"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'operation': 'rotate-90-cw'}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2

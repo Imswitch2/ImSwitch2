@@ -107,11 +107,13 @@ def test_curve_result_plot_payload_and_save(plugin, tmp_path):
     assert series.kind == "line"
     assert series.x.shape == series.y.shape == (20,)
 
-    path = tmp_path / "fatigue.txt"
-    out.save(path, fmt="txt")
-    loaded = np.loadtxt(path)
+    path = tmp_path / "fatigue.csv"
+    receipt = out.save(path, fmt="csv")
+    loaded = np.loadtxt(path, delimiter=",")
     assert loaded.shape == (20, 3)
     assert np.allclose(loaded, out.data)
+    assert receipt.primary == path and len(receipt.files) == 2      # CSV + provenance companion
+    assert receipt.files[1].name == "fatigue.provenance.json" and receipt.files[1].exists()
 
 
 def _off_stack(n_cycles=6, window=50, tau=15.0, peak=1000.0, bkg=10.0,

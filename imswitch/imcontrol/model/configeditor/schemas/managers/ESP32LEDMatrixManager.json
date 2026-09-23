@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "n_leds": {
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:optional(get)"
+      ]
+    },
+    "rs232device": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:ref",
+        "code:required"
+      ],
+      "x-imswitch-widget": "ref"
+    }
+  },
+  "required": [
+    "rs232device"
+  ],
+  "title": "ESP32LEDMatrixManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ESP32LEDMatrixManager",
+    "LaserManager"
+  ]
+}

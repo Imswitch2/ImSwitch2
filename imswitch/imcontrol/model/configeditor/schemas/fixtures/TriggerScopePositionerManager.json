@@ -1,0 +1,11 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "TriggerScopePositionerManager",
+    "managerProperties": {
+      "conversionFactor": "example",
+      "maxVolt": "example",
+      "minVolt": "example"
+    }
+  }
+}

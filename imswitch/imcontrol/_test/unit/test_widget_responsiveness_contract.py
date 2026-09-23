@@ -9,6 +9,10 @@ SCAN_ADVANCED_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'Sca
 SCAN_ADVANCED_CONTROLLER_PATH = (
     ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'ScanControllerAdvanced.py'
 )
+BASE_WIDGETS_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'basewidgets.py'
+MAIN_CONTROLLER_PATH = (
+    ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'ImConMainController.py'
+)
 LASER_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'LaserWidget.py'
 LASER_CONTROLLER_PATH = (
     ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'LaserController.py'
@@ -27,6 +31,78 @@ def test_main_view_keeps_direct_dock_widget_insertion():
     assert 'self._addScrollableWidgetToDock(self.docks[widgetKey], self.widgets[widgetKey])' not in source
     assert 'self.docks[widgetKey].addWidget(self.widgets[widgetKey])' in source
     assert "self.docks['Image'].addWidget(self.widgets['Image'])" in source
+
+
+def test_panels_are_wrapped_in_their_own_scroll_area_by_the_factory():
+    """Every docked panel shrinks, and does so without ImConMainView's help.
+
+    Wrapping the dock's contents from ImConMainView was tried and rejected
+    (see test_main_view_keeps_direct_dock_widget_insertion); the wrapper
+    belongs inside the panel, where one place -- the factory -- can apply it
+    to all of them and a panel can still opt out.
+    """
+    source = BASE_WIDGETS_PATH.read_text()
+
+    assert 'scrollablePanel = True' in source
+    assert 'def makeScrollable(self, horizontal=True):' in source
+    assert 'if widget.scrollablePanel and QtWidgets.QWidget.layout(widget) is not None:' in source
+    assert 'widget.makeScrollable()' in source
+    assert 'scrollArea.setWidgetResizable(True)' in source
+    assert 'scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)' in source
+    assert 'self.setMinimumSize(0, 0)' in source
+    # self.layout is shadowed by a plain attribute in SettingsWidget and
+    # LaserWidget, so the method has to be reached explicitly.
+    assert 'innerLayout = QtWidgets.QWidget.layout(self)' in source
+
+
+def test_dock_space_is_shared_out_by_panel_height():
+    """Docks are sized from their content, not from equal stretch factors.
+
+    pyqtgraph hands every dock the same slice unless the stretch factors say
+    otherwise, and recomputes that share from scratch whenever a dock is
+    dragged. What used to hide it was panels refusing to shrink -- which is
+    exactly what made the window taller than the screen.
+    """
+    view_source = MAIN_VIEW_PATH.read_text()
+    controller_source = MAIN_CONTROLLER_PATH.read_text()
+
+    assert 'def applyContentAwareDockSizing(self):' in view_source
+    assert 'def scheduleInitialDockLayout(self):' in view_source
+    assert 'def panelContentSizeHint' in BASE_WIDGETS_PATH.read_text()
+    # No hard-coded per-dock stretch left over.
+    assert "self.docks['Settings'].setStretch(1, 5)" not in view_source
+    assert 'rightDocks[-1].setStretch(1, 5)' not in view_source
+    # Both passes are wired up: one once the panels are populated, one once
+    # the window is on screen and has its real size.
+    assert 'self.__mainView.applyContentAwareDockSizing()' in controller_source
+    assert 'self.__mainView.scheduleInitialDockLayout()' in controller_source
+    # A restored layout is the user's own and wins over content-derived sizes.
+    assert 'self._layoutRestored = True' in view_source
+    assert 'if self._layoutRestored:' in view_source
+
+
+def test_there_is_a_way_back_from_a_shuffled_layout():
+    """Dragging one dock resizes every other one; users need an undo."""
+    view_source = MAIN_VIEW_PATH.read_text()
+
+    assert 'def resetDockLayout(self):' in view_source
+    assert 'self._defaultDockState = self.dockArea.saveState()' in view_source
+    assert "QtWidgets.QAction('Reset panel layout', self)" in view_source
+    assert 'self.resetLayoutAction.triggered.connect(self.resetDockLayout)' in view_source
+
+
+def test_window_minimum_never_exceeds_the_screen():
+    """The window must always be able to fit the space it is given.
+
+    This view is a page of MultiModuleWindow's tab widget, so its minimum
+    becomes the application window's minimum -- and a window that cannot be
+    made as small as the screen opens with its bottom edge below it.
+    """
+    view_source = MAIN_VIEW_PATH.read_text()
+
+    assert 'def minimumSizeHint(self):' in view_source
+    assert 'availableGeometry()' in view_source
+    assert '_MAX_MINIMUM_SCREEN_FRACTION' in view_source
 
 
 def test_dock_widgets_do_not_pin_their_own_minimum_height():

@@ -28,6 +28,10 @@ class DriftCorrectProcessor(Processor):
     category = "Restoration"
     kinds = ("image", "composite")
     
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'reference_frame': 0, 'mode': 'reference', 'upsample_factor': 10}
+
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
     

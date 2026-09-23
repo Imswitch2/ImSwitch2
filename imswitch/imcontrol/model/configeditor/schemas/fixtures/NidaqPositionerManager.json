@@ -1,0 +1,11 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "NidaqPositionerManager",
+    "managerProperties": {
+      "conversionFactor": 1,
+      "maxVolt": 1,
+      "minVolt": 1
+    }
+  }
+}

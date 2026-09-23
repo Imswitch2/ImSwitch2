@@ -1,4 +1,5 @@
 import dataclasses
+from pathlib import Path
 from typing import Any, Dict
 
 import h5py
@@ -28,6 +29,20 @@ from .basecontrollers import ImConWidgetControllerFactory
 _SERVER_THREAD_STOP_TIMEOUT_MS = 5000
 
 
+def _activeSetupPath(options):
+    """ Where this session's setup file lives, resolved, or None.
+
+    Resolved because it is compared against paths the config editor wrote, and
+    the same file can be spelled several ways. None rather than raising: this
+    is bookkeeping for a menu item, and nothing about it is worth stopping
+    imcontrol from starting over.
+    """
+    try:
+        return str(Path(configfiletools.getSetupFilePath(options.setupFileName)).resolve())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class ImConMainController(MainController):
     def __init__(self, options, setupInfo, mainView, moduleCommChannel):
         self.__logger = initLogger(self)
@@ -47,7 +62,17 @@ class ImConMainController(MainController):
         self.__mainView.sigLoadWidgetState.connect(self.loadWidgetState)
         self.__mainView.sigOpenShortcutEditor.connect(self.openShortcutEditor)
         self.__mainView.sigOpenSessionNotes.connect(self.openSessionNotes)
+        self.__mainView.sigOpenConfigEditor.connect(self.openConfigEditor)
         self.__mainView.sessionNotesDialog.sigNotesChanged.connect(self.setSessionNote)
+
+        # The Config Studio, while it is open. One window at a time: a second
+        # copy of the same file in a second editor is how edits get lost.
+        self.__configEditor = None
+        # The setup file this session is running on, resolved once here. What
+        # the options file says can change underneath us -- the editor itself
+        # can change it -- but this process keeps running what it loaded at
+        # startup, and that is what the restart prompt has to reason about.
+        self.__activeSetupPath = _activeSetupPath(options)
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel(self, self.__setupInfo)
@@ -214,6 +239,12 @@ class ImConMainController(MainController):
                 self.__mainView
             )
 
+        # The panels only got their rows once their controllers ran, so the
+        # dock proportions the view guessed while they were still empty are
+        # re-derived here.  Before the saved layout is restored: a saved
+        # layout wins over content-derived sizes.
+        self.__mainView.applyContentAwareDockSizing()
+
         self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
         getWidgetStatePersistence().register('GuiLayout', self.__guiLayoutStateAdapter)
 
@@ -229,6 +260,10 @@ class ImConMainController(MainController):
                 )
         except Exception as e:
             self.__logger.warning(f'Failed to auto-restore widget states: {e}')
+
+        # Everything is built and any saved layout has been applied: settle the
+        # dock proportions once the window is actually on screen.
+        self.__mainView.scheduleInitialDockLayout()
 
         if setupInfo.pyroServerInfo.active:
             self._serverWorker = ImSwitchServer(self.__api, setupInfo)
@@ -330,7 +365,7 @@ class ImConMainController(MainController):
 
         options = dataclasses.replace(options, setupFileName=setupFileName)
         configfiletools.saveOptions(options)
-        ostools.restartSoftware()
+        self._restartAfterShutdown()
 
     def saveWidgetState(self):
         """Save widget states to a JSON file selected by the user."""
@@ -449,6 +484,89 @@ class ImConMainController(MainController):
         dialog = self.__mainView.sessionNotesDialog
         dialog.setNotes(self.__commChannel.getSessionNote())
         self.__mainView.showSessionNotesDialog()
+
+    def openConfigEditor(self):
+        """ Open the Config Studio on this microscope's setup files.
+
+        Not modal: editing a setup file changes nothing about the running
+        microscope, so there is no reason to lock the operator out of it while
+        they work. Reused rather than reopened, so that two windows can never
+        hold different edits of the same file.
+        """
+        if self.__configEditor is not None:
+            self.__configEditor.show()
+            self.__configEditor.raise_()
+            self.__configEditor.activateWindow()
+            return
+
+        try:
+            from imswitch.imcontrol.view.configeditor import MainWindow as ConfigEditor
+            editor = ConfigEditor(
+                start_folder=configfiletools.getSetupFilesDir(),
+                parent=self.__mainView,
+            )
+        except Exception as e:
+            self.__logger.error(f'Failed to open the config editor: {e}', exc_info=True)
+            QtWidgets.QMessageBox.critical(
+                self.__mainView,
+                'Could not open the config editor',
+                f'The hardware configuration editor failed to start:\n{e}',
+            )
+            return
+
+        editor.sig_closed.connect(self._onConfigEditorClosed)
+        self.__configEditor = editor
+        editor.show()
+
+    def _onConfigEditorClosed(self):
+        """ Offer a restart if the editor changed what this session is running.
+
+        Only if: a setup file ImSwitch is not using can be edited all day
+        without any of it mattering, and a prompt that appears every time the
+        editor closes is one the operator learns to dismiss unread.
+        """
+        editor = self.__configEditor
+        if editor is None:
+            return
+        self.__configEditor = None
+
+        needsRestart = (
+            editor.active_config_changed
+            or (self.__activeSetupPath is not None
+                and self.__activeSetupPath in editor.saved_files())
+        )
+        editor.deleteLater()
+
+        if not needsRestart:
+            return
+
+        # Off the editor's own closeEvent before touching the main window: the
+        # answer may be to close the application, and doing that from inside a
+        # widget that is still closing is asking for trouble.
+        QtCore.QTimer.singleShot(0, self._promptRestartAfterConfigEdit)
+
+    def _promptRestartAfterConfigEdit(self):
+        proceed = guitools.askYesNoQuestion(
+            self.__mainView,
+            'Restart ImSwitch?',
+            'ImSwitch reads the hardware configuration once, at startup, so the'
+            ' changes you just saved are not in effect yet.\n\n'
+            'Restart ImSwitch now?'
+        )
+        if not proceed:
+            return
+        self._restartAfterShutdown()
+
+    def _restartAfterShutdown(self):
+        """ Close the application, then come back up.
+
+        Deliberately not ``ostools.restartSoftware()``: that replaces the
+        process there and then, so detectors, stages and lasers are never
+        finalized and the new process inherits whatever they were doing. Asking
+        for the restart and closing the window runs the ordinary shutdown
+        first, and ``launchApp`` re-execs once it is done.
+        """
+        ostools.restartAfterShutdown(self.__mainView.window().close)
 
     def setSessionNote(self, note: str) -> None:
         """Publish the operator's free-text note for this session.

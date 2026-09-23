@@ -31,6 +31,24 @@ the generic ``DeviceInfo`` with laser-specific fields:
 Which of these a manager actually consumes depends on the manager —
 each section below lists its "LaserInfo fields used".
 
+Power calibration file
+----------------------
+
+Every laser manager accepts ``calibCsvPath`` in its ``managerProperties``
+(the base class reads it through ``hasProperty``).  When the key is
+present the laser widget becomes a 0–100 % setpoint instead of the raw
+``valueRangeMin``–``valueRangeMax`` range: ``LaserController`` asks
+``usesCalibrationLookup()``, which is true whenever the key is set.
+``AAAOTFLaserManager`` and ``NidaqLaserManager`` read the file itself — a
+two-column CSV of ``raw, measured`` power — and map the percentage onto
+the raw range through it.  A manager that does not read the file still
+switches its widget to percent when the key is set, so only set it for a
+manager that implements the lookup.
+
+.. code-block:: json
+
+    "managerProperties": { "calibCsvPath": "C:/calib/561_aotf.csv" }
+
 .. code-block:: json
 
     "lasers": {
@@ -266,6 +284,12 @@ mock fallback.
        with ``MockCobolt06`` instead of aborting ImSwitch startup. Set it to
        ``false`` for a hardware-required setup where a missing laser must be
        reported as an error.
+   * - ``simulation``
+     - bool
+     - Defaults to ``false``. When ``true`` the real serial transport is never
+       opened and ``MockCobolt06`` is used from the start, whether or not the
+       port exists -- for a deliberately simulated laser, as opposed to the
+       ``useMockOnFailure`` fallback.
    * - ``emissionControl``
      - str
      - ``"master"`` uses ``l0``/``l1`` and is the default fail-safe off path.
@@ -346,7 +370,18 @@ Identical to ``Cobolt0601LaserManager`` (see above) — just substitute
 
 **managerProperties**
 
-Inherited verbatim from ``Cobolt0601LaserManager`` (``digitalPorts``).
+Inherited verbatim from ``Cobolt0601LaserManager``:
+
+.. list-table::
+   :widths: 25 15 60
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``digitalPorts``
+     - list[str]
+     - COM ports to connect to; only the first is used.  **Required**.
 
 **LaserInfo fields used**
 

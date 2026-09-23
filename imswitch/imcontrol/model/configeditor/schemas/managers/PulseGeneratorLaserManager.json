@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    }
+  },
+  "title": "PulseGeneratorLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PulseGeneratorLaserManager",
+    "LaserManager"
+  ]
+}

@@ -131,11 +131,17 @@ def test_non_image_results_are_never_offered_to_image_processors():
     calculator, and localization results match only the SMLM table/render
     processors."""
     results = _representative_results()
+    # The one processor that consumes tables on purpose: the explicit
+    # promotion of a points table to localizations (never automatic).
+    table_processor_ids = {"table-to-localizations"}
     for processor in _all_processors():
-        for kind_name in ("table", "curve", "rgb"):
+        for kind_name in ("curve", "rgb"):
             assert not processor.accepts(results[kind_name]), (
                 f"{processor.id} must not accept {kind_name} results"
             )
+        assert processor.accepts(results["table"]) == (
+            processor.id in table_processor_ids
+        ), f"{processor.id} on tables"
         accepts_labels = processor.accepts(results["labels"])
         assert accepts_labels == (
             processor.id in LABELS_PROCESSOR_IDS

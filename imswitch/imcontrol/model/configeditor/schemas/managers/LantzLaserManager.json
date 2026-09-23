@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "digitalPorts": {
+      "description": "One or more COM ports.  Accepted forms are normalised by",
+      "x-imswitch-kind": "array",
+      "x-imswitch-source": [
+        "code:required",
+        "docs:array"
+      ]
+    }
+  },
+  "required": [
+    "digitalPorts"
+  ],
+  "title": "LantzLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "LantzLaserManager",
+    "LaserManager"
+  ]
+}

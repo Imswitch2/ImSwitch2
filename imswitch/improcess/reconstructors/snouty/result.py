@@ -72,28 +72,33 @@ class SnoutyResult(ProcessingResult):
         
         self.params = params
     
-    def save(self, path: Path, fmt: str = "tiff") -> None:
+
+    supported_formats = ("tiff", "hdf5")
+
+    def write_files(self, plan, document) -> None:
         """
-        Save SNOUTY deskew result.
-        
-        Args:
-            path: Output file path
-            fmt: Format string ("tiff" or "hdf5")
-        
-        TIFF format:
-            - ImageJ-compatible with axes "ZYX" (3D) or "TZYX" (4D)
-        
-        HDF5 format:
-            - 3D: Single dataset named "volume"
-            - 4D: One dataset per timepoint named "t000", "t001", ...
+        Write the SNOUTY deskew result.
+
+        TIFF: OME-TIFF through the shared writer, axes "ZYX" (3D) or "TZYX" (4D).
+        HDF5: 3D as a single ``volume`` dataset; 4D as one dataset per
+        timepoint (``t000``, ``t001``, ...).
         """
-        if fmt == "tiff":
-            self._save_tiff(path)
-        elif fmt == "hdf5":
-            self._save_hdf5(path)
+        if plan.fmt == "tiff":
+            from imswitch.improcess.model.footprint import json_safe
+            from imswitch.improcess.model.result_io import save_image_result
+
+            save_image_result(
+                self, plan.primary, "tiff",
+                extra={"snouty_params": json_safe(dict(self.params))}, document=document,
+            )
+        elif plan.fmt == "hdf5":
+            self._save_hdf5(plan.primary)
+            from imswitch.improcess.model.save_protocol import embed_hdf5_path
+
+            embed_hdf5_path(plan.primary, document)
         else:
-            raise ValueError(f"SNOUTY result supports 'tiff' or 'hdf5', got '{fmt}'")
-    
+            raise ValueError(f"SNOUTY result supports 'tiff' or 'hdf5', got '{plan.fmt}'")
+
     def _save_tiff(self, path: Path) -> None:
         """Save as ImageJ-compatible TIFF."""
         if self.data.ndim == 3:

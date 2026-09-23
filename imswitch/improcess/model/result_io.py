@@ -34,6 +34,14 @@ from imswitch.imcommon.model.ome_metadata import (
     build_ome_xml,
 )
 from imswitch.improcess.model.footprint import HISTORY_KEY, history_of
+from imswitch.improcess.model.provenance import PROVENANCE_KEY
+from imswitch.improcess.model.save_protocol import (
+    SavePlan,
+    description_payload,
+    document_for,
+    embed_hdf5,
+    embed_zarr,
+)
 
 #: Suffix -> canonical format name. The canonical names are what `save(fmt=)`
 #: takes, and what the file dialog's filters resolve to.
@@ -81,11 +89,27 @@ def format_for_path(path, default: str = "tiff") -> str:
 
 
 def ome_meta_for_result(result, *, name: str = "") -> OmeImageMeta:
-    """Describe ``result``'s axes and calibration in OME terms."""
-    data = np.asarray(getattr(result, "data", None))
-    labels = [str(label) for label in getattr(result, "axis_labels", []) or []]
-    scales = [float(value) for value in getattr(result, "axis_scales", []) or []]
-    unit = str(getattr(result, "scale_unit", "px") or "px")
+    """Describe ``result``'s axes and calibration in OME terms (via its view)."""
+    view = result.serialization_view() if hasattr(result, "serialization_view") else None
+    if view is None:
+        from imswitch.improcess.model.result import SerializationView
+
+        data = getattr(result, "data", None)
+        view = SerializationView(
+            data=data,
+            axis_labels=[str(l) for l in getattr(result, "axis_labels", []) or []],
+            axis_scales=[float(v) for v in getattr(result, "axis_scales", []) or []],
+            scale_unit=str(getattr(result, "scale_unit", "px") or "px"),
+        )
+    return ome_meta_for_view(view, name=name or str(getattr(result, "name", "") or "result"))
+
+
+def ome_meta_for_view(view, *, name: str = "result") -> OmeImageMeta:
+    """Describe a :class:`~.result.SerializationView` in OME terms."""
+    data = np.asarray(view.data)
+    labels = [str(label) for label in view.axis_labels or []]
+    scales = [float(value) for value in view.axis_scales or []]
+    unit = str(view.scale_unit or "px")
 
     # An axis with no label still needs one, or the axis count disagrees with
     # the data and OmeImageMeta refuses the pair outright.
@@ -123,11 +147,13 @@ def ome_meta_for_result(result, *, name: str = "") -> OmeImageMeta:
                 ome_unit if kind == "space" else (None if kind == "channel" else "s"),
             )
         )
+    channels = [{"name": str(n)} for n in (view.channel_names or [])]
     return OmeImageMeta(
-        name=name or str(getattr(result, "name", "") or "result"),
+        name=name,
         axes=axes,
         scale=scales[: len(axes)],
         dtype=data.dtype if data.size else None,
+        channels=channels,
     )
 
 
@@ -143,13 +169,20 @@ def result_annotations(result, extra: dict | None = None) -> dict[str, Any]:
     annotations: dict[str, Any] = {}
     metadata = getattr(result, "metadata", None)
     if isinstance(metadata, dict):
-        annotations.update({k: v for k, v in metadata.items() if k != HISTORY_KEY})
+        # The provenance graph is written by its own path (Phase 2 of the
+        # workflows plan), not flattened through json_safe, which would
+        # truncate its nested nodes into summaries.
+        annotations.update(
+            {k: v for k, v in metadata.items() if k not in (HISTORY_KEY, PROVENANCE_KEY)}
+        )
     if extra:
         annotations.update({str(k): v for k, v in extra.items()})
     for attribute in ("result_uid", "dataset_uid", "coordinate_space_uid", "kind"):
         value = getattr(result, attribute, None)
         if value:
-            annotations[attribute] = str(value)
+            # A type-specific key (a document tag in ``extra``, say) wins over
+            # the generic identity attribute of the same name.
+            annotations.setdefault(attribute, str(value))
     lineage = getattr(result, "lineage", ()) or ()
     if lineage:
         annotations["lineage"] = [str(item) for item in lineage]
@@ -159,7 +192,7 @@ def result_annotations(result, extra: dict | None = None) -> dict[str, Any]:
     return annotations
 
 
-def _json_attributes(result, extra: dict | None = None) -> dict[str, str]:
+def _json_attributes(result, extra: dict | None = None, document=None) -> dict[str, str]:
     """Annotations flattened to strings, for containers that only take scalars.
 
     Everything is JSON so a reader gets structure back rather than having to
@@ -169,6 +202,8 @@ def _json_attributes(result, extra: dict | None = None) -> dict[str, str]:
     from imswitch.improcess.model.footprint import json_safe
 
     out = {HISTORY_KEY: json.dumps(history_of(result), ensure_ascii=False)}
+    if document is not None:
+        out[PROVENANCE_KEY] = document.to_json()
     for key, value in result_annotations(result, extra).items():
         if isinstance(value, str):
             out[str(key)] = value
@@ -184,23 +219,26 @@ def _json_attributes(result, extra: dict | None = None) -> dict[str, str]:
 # writers
 # --------------------------------------------------------------------------
 
-def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None) -> None:
+def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None, document=None) -> None:
     import tifffile
 
     metadata = meta.tiff_metadata(data.shape)
-    # The footprint travels as an OME structured annotation, which is where
-    # OME puts "how was this made" and what a compliant reader will show.
+    # The provenance travels in the OME Description, which is where OME puts
+    # "how was this made" and what a compliant reader will show.
     from imswitch.improcess.model.footprint import json_safe
 
     description = {
         key: json_safe(value)
         for key, value in result_annotations(result, extra).items()
     }
-    history = history_of(result)
-    if history:
-        description[HISTORY_KEY] = history
+    if document is not None:
+        description = description_payload(document, description)
+    else:
+        history = history_of(result)
+        if history:
+            description[HISTORY_KEY] = history
     if description:
-        metadata["Description"] = json.dumps(description, ensure_ascii=False)
+        metadata["Description"] = json.dumps(description, ensure_ascii=False, default=str)
 
     # Say what the samples are instead of letting tifffile infer it. Left to
     # guess, a trailing axis of size 3 or 4 is read as RGB(A) -- so a crop four
@@ -208,6 +246,11 @@ def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
     # stored shape then disagrees with the declared axes and the write fails
     # outright. Only a result that really is RGB says so.
     photometric = "rgb" if _is_rgb(result) else "minisblack"
+    if np.ndim(data) < 2:
+        raise ValueError(
+            f"cannot write {getattr(result, 'name', 'result')!r} as TIFF: a TIFF page needs "
+            f"two axes, this result has {np.ndim(data)} (shape {tuple(np.shape(data))})"
+        )
     try:
         tifffile.imwrite(
             str(path), data, ome=True, metadata=metadata, photometric=photometric
@@ -221,7 +264,7 @@ def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
         metadata.pop("Description", None)
         tifffile.imwrite(
             str(path), data,
-            description=json.dumps(description, ensure_ascii=False) or None,
+            description=json.dumps(description, ensure_ascii=False, default=str) or None,
             metadata=metadata, photometric=photometric,
         )
 
@@ -235,7 +278,7 @@ def _is_rgb(result) -> bool:
         return False
 
 
-def _save_hdf5(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None) -> None:
+def _save_hdf5(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None, document=None) -> None:
     import h5py
 
     with h5py.File(str(path), "w") as handle:
@@ -254,9 +297,13 @@ def _save_hdf5(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
             pass
         for key, value in _json_attributes(result, extra).items():
             handle.attrs[key] = value
+        if document is not None:
+            embed_hdf5(handle, document)
+        if meta.channels:
+            handle.attrs["channel_names"] = json.dumps([c.get("name") for c in meta.channels])
 
 
-def _save_zarr(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None) -> None:
+def _save_zarr(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None, document=None) -> None:
     import zarr
 
     root = zarr.open_group(str(path), mode="w")
@@ -274,19 +321,28 @@ def _save_zarr(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
         pass
     attributes.update(_json_attributes(result, extra))
     root.attrs.update(attributes)
+    if document is not None:
+        embed_zarr(root, document)
 
 
 _WRITERS = {"tiff": _save_tiff, "hdf5": _save_hdf5, "zarr": _save_zarr}
 
 
-def save_image_result(result, path, fmt: str | None = None, extra: dict | None = None) -> str:
+def save_image_result(result, path, fmt: str | None = None, extra: dict | None = None,
+                      document=None) -> str:
     """Write ``result`` to ``path``; returns the format actually used.
 
     The single writer for anything with a ``data`` array. A result type with
     genuinely different content -- a localization table, a curve, a per-
-    timepoint HDF5 layout -- keeps its own ``save``, but an image is an image.
+    timepoint HDF5 layout -- keeps its own writer, but an image is an image.
     ``extra`` is whatever that result type knows and the generic path does not
     (a projection's axis, a denoiser's model), recorded alongside the rest.
+
+    What is written is the result's :meth:`~.result.ProcessingResult.serialization_view`,
+    so a type whose on-disk layout differs from its in-memory one keeps it.
+    ``document`` is the provenance document the save protocol built for this
+    file; called directly (outside the protocol) one is built for a
+    single-file plan, so the file still carries its graph.
     """
     path = Path(path)
     fmt = str(fmt or format_for_path(path)).lower()
@@ -297,11 +353,20 @@ def save_image_result(result, path, fmt: str | None = None, extra: dict | None =
             f"Cannot write {fmt!r}; supported formats are "
             f"{', '.join(sorted(_WRITERS))}"
         )
-    data = np.asarray(getattr(result, "data", None))
+    view = result.serialization_view() if hasattr(result, "serialization_view") else None
+    data = np.asarray(view.data if view is not None else getattr(result, "data", None))
     if data.ndim == 0:
         raise UnsupportedResultFormat("Result has no image data to write")
+    if view is not None and view.extra:
+        extra = {**(view.extra or {}), **(extra or {})}
+    if document is None:
+        document = document_for(result, SavePlan(path, fmt))
     path.parent.mkdir(parents=True, exist_ok=True)
-    writer(result, path, data, ome_meta_for_result(result), extra)
+    if view is not None:
+        meta = ome_meta_for_view(view, name=str(getattr(result, "name", "") or "result"))
+    else:
+        meta = ome_meta_for_result(result)
+    writer(result, path, data, meta, extra, document)
     return fmt
 
 
@@ -312,6 +377,7 @@ __all__ = [
     "file_dialog_filter",
     "format_for_path",
     "ome_meta_for_result",
+    "ome_meta_for_view",
     "result_annotations",
     "save_image_result",
 ]

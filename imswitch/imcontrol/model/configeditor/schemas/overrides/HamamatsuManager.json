@@ -1,0 +1,8 @@
+{
+  "properties": {
+    "cameraListIndex": {
+      "description": "Index of the camera in the DCAM-enumerated list (0-based), or any string to force the mock fallback. Shipped setups use both; nothing narrower is accepted.",
+      "type": ["integer", "string"]
+    }
+  }
+}

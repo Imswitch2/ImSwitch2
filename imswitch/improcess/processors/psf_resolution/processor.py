@@ -19,6 +19,10 @@ class PSFResolutionProcessor(Processor):
     id = "psf-resolution"
     category = "Measurement"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'pixel_size': 1.0, 'unit': 'px'}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         """Require at least a 2-D image; a single (Y, X) plane is fitted, with

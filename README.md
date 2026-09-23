@@ -193,7 +193,9 @@ Documents\ImSwitchConfig\          (Windows)
       └── my_microscope.json       # hardware definition
 ```
 
-A GUI editor is included for building setup files without writing JSON by hand:
+A GUI editor is included for building setup files without writing JSON by hand.
+Open it from a running ImSwitch under **Tools > Edit hardware configuration...**,
+or standalone without starting the microscope:
 
 ```bash
 python utility_scripts/imswitch_config_editor.py

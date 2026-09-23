@@ -63,14 +63,28 @@ class FRCResult(ProcessingResult):
             }
         ]
 
-    def save(self, path: Path, fmt: str = "hdf5") -> None:
+
+    supported_formats = ("hdf5", "csv")
+
+    def plan_save(self, path: Path, fmt: str):
+        from imswitch.improcess.model.save_protocol import SavePlan, companion_json_path
+
         path = Path(path)
-        if fmt in ("hdf5", "h5", "hdf"):
-            self._save_hdf5(path)
-        elif fmt in ("csv", "txt"):
-            self._save_text(path)
+        if fmt == "csv":
+            return SavePlan(path, fmt, (companion_json_path(path),))
+        return SavePlan(path, fmt)
+
+    def write_files(self, plan, document) -> None:
+        from imswitch.improcess.model.save_protocol import embed_hdf5_path, write_companion_json
+
+        if plan.fmt == "hdf5":
+            self._save_hdf5(plan.primary)
+            embed_hdf5_path(plan.primary, document)
+        elif plan.fmt == "csv":
+            self._save_text(plan.primary)
+            write_companion_json(plan.primary, document)
         else:
-            raise ValueError(f"FRC result supports HDF5 or CSV/TXT, got {fmt!r}")
+            raise ValueError(f"{type(self).__name__} supports HDF5 or CSV/TXT, got {plan.fmt!r}")
 
     def plot_payloads(self) -> list[PlotPayload]:
         series = [
