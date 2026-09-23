@@ -46,6 +46,11 @@ class LiveReconstructionController(QtCore.QObject):
         self._running = False
         self._finishing = False
 
+    @property
+    def is_running(self) -> bool:
+        """Whether a live reconstruction is in progress."""
+        return bool(self._running)
+
     def start(self, reconstructor, source, params: dict | None = None,
               source_arg=None) -> bool:
         """

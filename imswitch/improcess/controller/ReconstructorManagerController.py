@@ -36,6 +36,63 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._install_reconstructor_params(self._main._activeReconstructor)
         self._publishReconstructorChoices()
 
+    def isReconstructionRunning(self) -> bool:
+        """Whether a worker-thread reconstruction job is in flight."""
+        return self._reconstructionThread is not None
+
+    def pluginsReloaded(self):
+        """Re-sync the active reconstructor and the picker after drop-in
+        reconstructors were re-registered.
+
+        Three cases. The active one is untouched (a built-in, or a plugin
+        whose file did not change): only the picker is refreshed. The same id
+        is now a fresh instance (an edited plugin): it is swapped in and its
+        parameter widget rebuilt, so the edit is live at once. The active one
+        is gone (its file was removed): the first registered reconstructor
+        takes over, as at startup.
+        """
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        registry = get_registry()
+        active = self._main._activeReconstructor
+        fresh = (
+            registry.get_reconstructor(active.id, raise_on_missing=False)
+            if active is not None
+            else None
+        )
+        if active is not None and fresh is active:
+            pass
+        elif fresh is not None:
+            self._logger.info(
+                f"Reconstructor {fresh.id!r} was reloaded; using its new code"
+            )
+            self._main._activeReconstructor = fresh
+            self._install_reconstructor_params(fresh)
+        else:
+            if active is not None:
+                self._logger.info(
+                    f"Active reconstructor {active.id!r} is no longer available; "
+                    "selecting another"
+                )
+            self._main._activeReconstructor = self._select_reconstructor()
+            if self._main._activeReconstructor is not None:
+                self._install_reconstructor_params(self._main._activeReconstructor)
+        self._publishReconstructorChoices()
+
+    def reconstructorLoaded(self, plugin_id: str) -> bool:
+        """A reconstructor was registered at runtime: offer it in the picker
+        and make it active.
+
+        Returns whether it became the active one. It does not when it cannot
+        take the current source and the user's selection cannot be reopened
+        for it; the picker then does not offer it until a file it accepts is
+        open, and the caller says so.
+        """
+        self._publishReconstructorChoices()
+        self._on_user_changed_reconstructor(plugin_id)
+        active = self._main._activeReconstructor
+        return active is not None and active.id == plugin_id
+
     def _select_reconstructor(self):
         from imswitch.improcess.reconstructors.registry import get_registry
 

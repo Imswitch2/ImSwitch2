@@ -56,6 +56,16 @@ class LiveModeController(ImProcessWidgetController):
         self._extension = "zarr"
         self._widget.sigLiveChanged.connect(self._onLiveToggled)
 
+    def isLiveReconstructionRunning(self) -> bool:
+        """Whether the live reconstruction controller is mid-stack.
+
+        Asked before drop-in reconstructors are reloaded: a live session holds
+        the reconstructor it started with, and must not be pulled onto a new
+        version half way through a stack.
+        """
+        live = getattr(self, '_liveController', None)
+        return bool(getattr(live, 'is_running', False))
+
     def _onLiveToggled(self, enabled: bool) -> None:
         """Handle live reconstruction toggle."""
         if enabled:

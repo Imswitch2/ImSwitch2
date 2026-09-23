@@ -289,11 +289,11 @@ wrong arity, unknown parameters, unknown formats); it is what the CLI's
 Drop-in plugins in workflows
 ============================
 
-A processor from the user plugins folder (see :doc:`improcess`, "Drop-in
-analysis plugins") is a plugin like any other: ``bootstrap_registry()``
-discovers it, its id goes in a ``Process`` step, and its version in the
-provenance is a digest of its file — **provided it declares its parameter
-contract**. A plugin that does not override ``default_params()`` (even to
+A processor or reconstructor from the user plugins folder (see
+:doc:`improcess`, "Drop-in analysis plugins") is a plugin like any other:
+``bootstrap_registry()`` discovers it, its id goes in a ``Process`` or
+``Reconstruct`` step, and its version in the provenance is a digest of its
+file — **provided it declares its parameter contract**. A plugin that does not override ``default_params()`` (even to
 return ``{}``) has declared nothing about what its widget hands ``apply``;
 it is GUI-only. ``validate`` refuses a ``Process`` or ``Reconstruct`` step
 that names it, ``list`` prints it with a ``GUI-ONLY`` marker and the
