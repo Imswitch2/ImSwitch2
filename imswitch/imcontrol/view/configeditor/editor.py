@@ -1899,6 +1899,18 @@ class PropertyEditor(QWidget):
         # Numeric fields the operator filled with something that is not a
         # number: saved as typed, and said so below.
         not_numbers: list[tuple[str, str]] = []
+        props_on_load = self._device.get("managerProperties") or {}
+        nested_meta = schema.get("nested_meta", {})
+
+        def container_exists(nest_key: str) -> bool:
+            """The dict is in the file, or will be because the code requires it.
+
+            Something under that key that is not a dict (``null``) is kept as
+            it was rather than filled in untouched.
+            """
+            if nest_key in props_on_load:
+                return isinstance(props_on_load[nest_key], dict)
+            return bool(nested_meta.get(nest_key, {}).get("schema_req"))
 
         for (section, key), fw in self._field_widgets.items():
             if section in ("raw", "raw_prop"):
@@ -1924,8 +1936,12 @@ class PropertyEditor(QWidget):
             # manager's code requires it or the operator edited it; a form
             # may show a default without saving one unasked. A template's
             # own "req" is a hint for the label and the warning below, not
-            # proof: the file loaded without the key.
-            if not (field.get("schema_req") or (section, key) in self._present_keys or fw.is_touched()):
+            # proof: the file loaded without the key. A sub-key a dict's
+            # schema requires is required only where the dict exists.
+            required_here = bool(field.get("schema_req"))
+            if section.startswith("nested:"):
+                required_here = required_here and container_exists(section.split(":", 1)[1])
+            if not (required_here or (section, key) in self._present_keys or fw.is_touched()):
                 continue
             if section == "props":
                 key = self._alias_spelling.get((section, key), key)
@@ -1944,7 +1960,6 @@ class PropertyEditor(QWidget):
                 nest_key = section.split(":", 1)[1]
                 nested_keys[nest_key][key] = val
 
-        props_on_load = self._device.get("managerProperties") or {}
         for nest_key, nest_vals in nested_keys.items():
             original = props_on_load.get(nest_key, _MISSING)
             if nest_vals:
@@ -1953,6 +1968,12 @@ class PropertyEditor(QWidget):
                 # The container was there with nothing the form knows inside
                 # (empty, or not a dict at all): keep it exactly as it was.
                 props[nest_key] = copy.deepcopy(original)
+            elif container_exists(nest_key):
+                # The manager reads this dict unguarded -- a file without it
+                # does not start. Its fields show defaults but stay unwritten,
+                # like any optional field the file lacks; the dict is written
+                # with only what its own schema requires, which here is nothing.
+                props[nest_key] = {}
 
         # A device the file wrote without a managerProperties key, and into
         # which nothing was written now, stays without one.

@@ -70,7 +70,7 @@ class FieldSpec:
     group: str  # UI group/tab, e.g. "Basic"
     tooltip: str
     options: tuple  # enum values, or the device categories for a ``ref``
-    location: str  # "top" | "prop" | "nested"
+    location: str  # "top" | "prop" | "nested" | "container" (a dict the template lays out)
     nested_key: Optional[str]  # set when location == "nested"
     aliases: tuple = ()  # other spellings the manager reads for this key
     nullable: bool = False  # the manager treats None as "unset"
@@ -102,9 +102,15 @@ def normalized_fields(
     - A property only the schema describes is appended to the ``Properties``
       group. Alias spellings (``x-imswitch-alias-of``) are not fields: the
       canonical property carries them.
+    - A dict the template lays out field by field (``nested``) is still the
+      schema's property: its children take their types and requiredness
+      from its sub-schema, sub-keys the template does not list are added to
+      it, and the dict itself becomes a ``container`` spec carrying the
+      requiredness the code gives it.
     """
     fields: list[FieldSpec] = []
     seen_props: set[str] = set()
+    nested_templates = (template or {}).get("nested", {}) or {}
 
     if template:
         for f in template.get("top", []):
@@ -141,6 +147,8 @@ def normalized_fields(
                 index = index_of.get(("prop", prop_key))
                 if index is not None:
                     fields[index] = _refine(fields[index], prop_schema, required=required)
+                elif prop_key in nested_templates:
+                    fields = _refine_container(fields, prop_key, prop_schema, required=required)
                 continue
             fields.append(_schema_field_to_spec(prop_key, prop_schema, required=required))
 
@@ -220,6 +228,51 @@ def _refine(field: FieldSpec, prop: dict, *, required: bool, proven: bool = True
         ref_category=prop.get("x-imswitch-ref-category") or "",
         required_by_schema=required and proven,
     )
+
+
+def _refine_container(fields: list[FieldSpec], key: str, prop: dict, *, required: bool) -> list[FieldSpec]:
+    """A template-laid-out dict and the schema's description of it.
+
+    Each child the template lists is refined by the matching sub-property;
+    a sub-property the template does not list is added to the dict's own
+    group; and a ``container`` spec records the dict's requiredness, which
+    the template has no place for.
+    """
+    sub_props = prop.get("properties") or {}
+    sub_required = set(prop.get("required") or [])
+    fields = list(fields)
+    listed: set[str] = set()
+    group = "Properties"
+    for index, field in enumerate(fields):
+        if field.location != "nested" or field.nested_key != key:
+            continue
+        listed.add(field.key)
+        group = field.group
+        sub = sub_props.get(field.key)
+        if isinstance(sub, dict):
+            fields[index] = _refine(field, sub, required=field.key in sub_required)
+        elif field.key in sub_required:
+            fields[index] = replace(field, required=True, required_by_schema=True)
+    for sub_key, sub in sub_props.items():
+        if sub_key in listed or not isinstance(sub, dict) or "x-imswitch-alias-of" in sub:
+            continue
+        spec = _schema_field_to_spec(sub_key, sub, required=sub_key in sub_required)
+        fields.append(replace(spec, location="nested", nested_key=key, group=group))
+    fields.append(FieldSpec(
+        key=key,
+        label=_make_label(key),
+        type="json",
+        default={},
+        required=required,
+        group="",
+        tooltip=prop.get("description", "") or "",
+        options=(),
+        location="container",
+        nested_key=None,
+        nullable=bool(prop.get("x-imswitch-nullable")),
+        required_by_schema=required,
+    ))
+    return fields
 
 
 def _kind_field_to_spec(key: str, prop: dict, *, required: bool) -> FieldSpec:
@@ -424,8 +477,11 @@ def materialize_device_schema(
     nullability and requiredness are written into the template's field so
     the form sees the schema; schema-only properties are added to a
     ``Properties`` group. Top-level keys come from ``kind_schema`` (the
-    ``SetupInfo`` dataclass) the same way, into a ``Device`` group. The
-    inputs are never mutated: they are cached globally by the editor.
+    ``SetupInfo`` dataclass) the same way, into a ``Device`` group. A dict
+    the template lays out keeps its layout, its children are typed by the
+    dict's sub-schema, and ``nested_meta[key]["schema_req"]`` says the code
+    reads the dict itself unguarded. The inputs are never mutated: they are
+    cached globally by the editor.
     """
     result = copy.deepcopy(template) if template else {}
     result.setdefault("top", [])
@@ -481,6 +537,28 @@ def materialize_device_schema(
         _annotate(new_field, field)
         result["props"].append(new_field)
         template_props[field.key] = new_field
+    for field in fields:
+        if field.location == "container":
+            meta = result.setdefault("nested_meta", {}).setdefault(field.key, {})
+            meta["schema_req"] = field.required_by_schema
+            continue
+        if field.location != "nested":
+            continue
+        children = result["nested"].setdefault(field.nested_key, [])
+        existing = next((child for child in children if child.get("key") == field.key), None)
+        if existing is None:
+            existing = {
+                "key": field.key,
+                "label": field.label,
+                "default": field.default,
+                "grp": field.group,
+                "tip": field.tooltip,
+            }
+            children.append(existing)
+        existing["type"] = field.type
+        existing["req"] = field.required
+        existing["opts"] = list(field.options)
+        _annotate(existing, field)
     for field in result["props"]:
         field.setdefault("type", "text")
     for nest_fields in result["nested"].values():

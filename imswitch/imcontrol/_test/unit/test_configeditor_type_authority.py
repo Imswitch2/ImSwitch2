@@ -556,3 +556,108 @@ class TestNumericEditsAreKeptAsTyped:
         device["managerProperties"]["travelRangeUm"] = "wide"
         assert_json_identical(_round_trip(property_editor, "positioners", "stage", device), device)
         assert property_editor._val_lbl.text() == ""
+
+
+# ── review of PR #35: a dict the template lays out is still the schema's ──
+NESTED_TEMPLATE = {
+    "top": [],
+    "props": [{"key": "port", "label": "Port", "default": "COM1", "req": True, "grp": "Basic", "tip": "", "opts": []}],
+    "nested": {"table": [
+        {"key": "speed", "label": "Speed", "type": "text", "default": "1", "req": False, "grp": "Table", "tip": "", "opts": []},
+        {"key": "mode", "label": "Mode", "type": "select", "default": "a", "req": False, "grp": "Table", "tip": "", "opts": ["a", "b"]},
+    ]},
+}
+
+
+def _nested_schema(*, container_required: bool) -> dict:
+    return {
+        "type": "object",
+        "required": ["port"] + (["table"] if container_required else []),
+        "properties": {
+            "port": {"x-imswitch-kind": "string"},
+            "table": {
+                "type": "object", "x-imswitch-kind": "object",
+                "required": ["count"],
+                "properties": {
+                    "speed": {"x-imswitch-kind": "integer", "x-imswitch-source": ["code:int()"]},
+                    "mode": {"x-imswitch-kind": "string"},
+                    "count": {"x-imswitch-kind": "integer", "x-imswitch-source": ["code:required"]},
+                },
+            },
+        },
+    }
+
+
+class TestTemplateNestedContainers:
+    """The template lays a dict out field by field; the schema still types it.
+
+    Loading Hamamatsu without its required ``hamamatsu`` dict and pressing
+    Apply left the dict absent, with no warning: normalisation skipped the
+    schema of any dict the template laid out, so neither the dict's
+    requiredness nor its children's types reached the form.
+    """
+
+    def test_children_are_typed_and_the_container_carries_its_requiredness(self):
+        fields = normalized_fields(template=NESTED_TEMPLATE, json_schema=_nested_schema(container_required=True))
+        by_key = {(f.location, f.nested_key, f.key): f for f in fields}
+        assert by_key[("nested", "table", "speed")].type == "int", "the sub-schema's kind wins over plain text"
+        assert by_key[("nested", "table", "mode")].type == "select", "a select stays a refinement"
+        count = by_key[("nested", "table", "count")]
+        assert count.type == "int" and count.required and count.required_by_schema and count.group == "Table"
+        container = by_key[("container", None, "table")]
+        assert container.required_by_schema is True
+        form = materialize_device_schema(template=NESTED_TEMPLATE, json_schema=_nested_schema(container_required=True))
+        assert form["nested_meta"] == {"table": {"schema_req": True}}
+        children = {f["key"]: f for f in form["nested"]["table"]}
+        assert children["count"]["schema_req"] is True and children["speed"]["type"] == "int"
+        assert "schema_req" not in children["speed"]
+        optional = materialize_device_schema(template=NESTED_TEMPLATE, json_schema=_nested_schema(container_required=False))
+        assert optional["nested_meta"] == {"table": {"schema_req": False}}
+
+    @pytest.fixture
+    def with_schema(self, monkeypatch):
+        def install(container_required: bool):
+            form = materialize_device_schema(template=NESTED_TEMPLATE,
+                                             json_schema=_nested_schema(container_required=container_required))
+            monkeypatch.setattr(editor, "_schema_for_manager", lambda _name: copy.deepcopy(form))
+        return install
+
+    def test_a_required_container_the_file_lacks_is_written_with_only_what_it_requires(self, property_editor, with_schema):
+        with_schema(True)
+        applied = _round_trip(property_editor, "detectors", "d", {"managerName": "X", "managerProperties": {"port": "COM3"}})
+        assert applied["managerProperties"] == {"port": "COM3", "table": {"count": 0}}
+
+    def test_an_optional_container_the_file_lacks_stays_absent(self, property_editor, with_schema):
+        with_schema(False)
+        device = {"managerName": "X", "managerProperties": {"port": "COM3"}}
+        assert_json_identical(_round_trip(property_editor, "detectors", "d", device), device)
+
+    def test_a_required_sub_key_is_written_into_a_dict_the_file_has(self, property_editor, with_schema):
+        with_schema(False)
+        applied = _round_trip(property_editor, "detectors", "d",
+                              {"managerName": "X", "managerProperties": {"port": "COM3", "table": {"speed": 5}}})
+        assert applied["managerProperties"]["table"] == {"speed": 5, "count": 0}
+
+    def test_something_that_is_not_a_dict_is_kept_as_it_was(self, property_editor, with_schema):
+        with_schema(True)
+        device = {"managerName": "X", "managerProperties": {"port": "COM3", "table": None}}
+        assert_json_identical(_round_trip(property_editor, "detectors", "d", device), device)
+
+    def test_editing_a_child_of_an_absent_optional_container_writes_only_that_child(self, property_editor, with_schema):
+        with_schema(False)
+        property_editor.load_device("detectors", "d", {"managerName": "X", "managerProperties": {"port": "COM3"}})
+        _type(property_editor._field_widgets[("nested:table", "speed")], "7")
+        assert _apply(property_editor)["managerProperties"]["table"] == {"speed": 7}
+
+    def test_a_new_device_seeds_the_required_sub_key_the_template_does_not_list(self):
+        device = build_default_device("X", template=NESTED_TEMPLATE, json_schema=_nested_schema(container_required=True))
+        assert device["managerProperties"]["table"] == {"speed": 1, "mode": "a", "count": 0}
+
+    def test_the_real_hamamatsu_without_its_dict(self, property_editor):
+        """The reviewer's case: the dict is written, empty -- the manager iterates it."""
+        applied = _round_trip(property_editor, "detectors", "cam",
+                              {"managerName": "HamamatsuManager", "managerProperties": {"cameraListIndex": 0}})
+        assert applied["managerProperties"] == {"cameraListIndex": 0, "hamamatsu": {}}
+        applied = _round_trip(property_editor, "detectors", "cam",
+                              {"managerName": "TISManager", "managerProperties": {"cameraListIndex": 0}})
+        assert applied["managerProperties"] == {"cameraListIndex": 0, "tis": {}}
