@@ -76,7 +76,6 @@ this is typical when working with point detectors as in confocal or
 STED imaging.
 
 .. image:: ./images/auto/RecordingWidget.png
-   :width: 600px
    :align: center
 
 The output folder is not remembered between sessions.  With
@@ -238,7 +237,6 @@ digital lines connected to each instrument; the ``ScanDesigner`` and
 designers can be plugged in by subclassing those abstract bases.
 
 .. image:: ./images/auto/ScanWidgetBase.png
-   :width: 600px
    :align: center
 
 Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
