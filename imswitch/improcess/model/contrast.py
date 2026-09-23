@@ -16,11 +16,12 @@ from imswitch.imcommon.model import memory_limits
 # determine the cost: a 16-frame 2048x2048 uint16 stack, exactly at it, paid
 # a ~1 GiB transient for two numbers on the contrast slider.
 #
-# The literal is the default; ``memory.processingWorkingSetMB`` in
-# ``imcontrol_options.json`` overrides it per machine, and the sample size
-# follows it (see ``_sample_working_set_bytes`` / ``_max_samples``): lowering
-# the allowance must lower what gets read, or the setting means nothing here.
-_SAMPLE_WORKING_SET_BYTES = 256 * 1024 * 1024
+# The literal is the default -- 1 GiB, the same as ``MemoryOptions`` -- and
+# ``memory.processingWorkingSetMB`` in ``imcontrol_options.json`` overrides it
+# per machine; the sample size follows it (see ``_sample_working_set_bytes`` /
+# ``_max_samples``): lowering the allowance must lower what gets read, or the
+# setting means nothing here.
+_SAMPLE_WORKING_SET_BYTES = 1024 * 1024 * 1024
 _WORKING_SET_BYTES_PER_ELEMENT = 8 + 1 + 8
 _MAX_SAMPLE_VALUES = 2_000_000
 

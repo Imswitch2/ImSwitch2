@@ -69,7 +69,7 @@ writerQueueMB          = 512   # backlog the writer may hold before the
 perDetectorQueueMB     = 256   # backlog any one (detector, consumer) queue may
                                # hold before that consumer's stream is declared
                                # incomplete
-processingWorkingSetMB = 256   # working set ImProcess may spend on automatic
+processingWorkingSetMB = 1024  # working set ImProcess may spend on automatic
                                # work: contrast sampling, the mean preview
 ```
 
@@ -77,7 +77,7 @@ processingWorkingSetMB = 256   # working set ImProcess may spend on automatic
 |---|---|---|
 | `writerQueueMB` | `WRITER_QUEUE_MAX_BYTES` | 512 MiB |
 | `perDetectorQueueMB` | `MAX_QUEUED_CONSUMER_BYTES` | 256 MiB, per queue |
-| `processingWorkingSetMB` | `_SAMPLE_WORKING_SET_BYTES`, and bounds `getMeanData` | 256 MiB; preview unbounded |
+| `processingWorkingSetMB` | `_SAMPLE_WORKING_SET_BYTES`, and bounds `getMeanData` | 256 MiB, preview unbounded; now 1 GiB (see *Decisions*) |
 
 The defaults are fixed literals, not fractions of physical RAM: every machine
 starts from the same numbers, a bug report quotes values that mean the same
@@ -283,7 +283,7 @@ A field on `Options` (`imswitch/imcontrol/model/Options.py`), stored in
 class MemoryOptions:
     writerQueueMB: int = 512
     perDetectorQueueMB: int = 256
-    processingWorkingSetMB: int = 256
+    processingWorkingSetMB: int = 1024
 ```
 
 **Not the setup file.** It describes the microscope and travels between
@@ -293,8 +293,14 @@ ImProcess reads it through `load_processing_config`, which already calls
 `configfiletools.loadOptions()` through the single allowlisted
 improcess → imcontrol edge.
 
-**UI.** There is no preferences dialog today. Ship the settings and let the
-file be hand-edited; a dialog that edits three integers can follow.
+**UI.** ImControl's **Tools → Memory limits…** (`MemoryLimitsDialog`) shows
+the three values in force, says what each bounds, saves them to the options
+file and adopts them at once through `memory_limits.configure`. Saving is
+refused while a recording runs, since every queue check reads the limit in
+force and a smaller queue would fail the recording in progress. A value in
+the file that cannot be honoured is shown as the default in force and
+replaced on save. It lives in ImControl only: ImProcess must not import
+ImControl, and the file is ImControl's.
 
 ## Deferred, and what would justify each
 
@@ -412,6 +418,13 @@ before Phase B changes anything else about the queues.
   round 3; what survives of the decision is its reason — the same default on
   every machine — applied to the three literals. Restated as
   512 / 256 / 256 MiB and accepted in round 4.
+- **The ImProcess working set defaults to 1 GiB** (2026-09-23). 256 MiB was
+  too small for a typical workstation, and nothing ties it to the
+  acquisition queues: it bounds a transient computation, not a backlog. The
+  code's fallback literals move with it, and a test holds the options
+  defaults and the literals to the same numbers.
+- **The limits are set from ImSwitch** (2026-09-23): Tools → Memory limits…
+  in ImControl, applied when saved, refused during a recording.
 
 ## Review round 1 (2026-09-21)
 

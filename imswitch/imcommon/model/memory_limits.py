@@ -107,6 +107,11 @@ def reset() -> None:
         _configured.clear()
 
 
+def wholeMib(raw: Any) -> Optional[int]:
+    """``raw`` as a positive, finite whole number of MiB, or None."""
+    return _wholeMib(raw)
+
+
 def _wholeMib(raw: Any) -> Optional[int]:
     if isinstance(raw, bool):
         return None
@@ -155,5 +160,5 @@ def frameBudgetNote(frameBytes: int, budgetBytes: int) -> str:
 __all__ = [
     'MIB', 'OPTIONS_FILE', 'SETTING_FIELDS',
     'configure', 'configuredBytes', 'describeBytes', 'effectiveBytes',
-    'frameBudgetNote', 'reset', 'settingRef',
+    'frameBudgetNote', 'reset', 'settingRef', 'wholeMib',
 ]

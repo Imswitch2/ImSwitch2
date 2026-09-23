@@ -40,9 +40,10 @@ MEAN_PREVIEW_MAX_PLANES = 256
 
 #: Working set automatic work may spend: the mean preview computed on load, and
 #: the notice before a dataset larger than this is materialised. The literal
-#: is the default; ``memory.processingWorkingSetMB`` in
-#: ``imcontrol_options.json`` overrides it per machine.
-_PROCESSING_WORKING_SET_BYTES = 256 * 1024 * 1024
+#: is the default -- 1 GiB, the same as ``MemoryOptions`` -- and
+#: ``memory.processingWorkingSetMB`` in ``imcontrol_options.json`` overrides it
+#: per machine.
+_PROCESSING_WORKING_SET_BYTES = 1024 * 1024 * 1024
 #: What ``getMeanData`` allocates per pixel of one plane besides the input
 #: plane it holds: a float64 accumulator (divided in place) and the float32
 #: result. The input plane's own bytes are added per its dtype.

@@ -62,11 +62,30 @@ def test_an_options_file_without_the_group_gets_todays_defaults():
     options = Options.from_json('{"setupFileName": "x.json"}', infer_missing=True)
 
     assert (options.memory.writerQueueMB, options.memory.perDetectorQueueMB,
-            options.memory.processingWorkingSetMB) == (512, 256, 256)
+            options.memory.processingWorkingSetMB) == (512, 256, 1024)
     memory_limits.configure(options.memory, logger=_Log())
     assert memory_limits.effectiveBytes('writerQueueBytes', 1) == 512 * MIB
     assert memory_limits.effectiveBytes('perDetectorQueueBytes', 1) == 256 * MIB
-    assert memory_limits.effectiveBytes('processingWorkingSetBytes', 1) == 256 * MIB
+    assert memory_limits.effectiveBytes('processingWorkingSetBytes', 1) == 1024 * MIB
+
+
+def test_the_options_defaults_and_the_code_literals_are_the_same_numbers():
+    """An unconfigured process (a script, a test) and a configured one with
+    an options file that predates the group must behave alike."""
+    import importlib
+
+    from imswitch.imcontrol.model.Options import MemoryOptions
+
+    defaults = MemoryOptions()
+    contrast = importlib.import_module('imswitch.improcess.model.contrast')
+    data_obj = importlib.import_module('imswitch.improcess.model.DataObj')
+    writer = importlib.import_module('imswitch.imcontrol.model.managers.RecordingManager')
+    detector = importlib.import_module('imswitch.imcontrol.model.managers.detectors.DetectorManager')
+
+    assert defaults.processingWorkingSetMB * MIB == contrast._SAMPLE_WORKING_SET_BYTES
+    assert defaults.processingWorkingSetMB * MIB == data_obj._PROCESSING_WORKING_SET_BYTES
+    assert defaults.writerQueueMB * MIB == writer.WRITER_QUEUE_MAX_BYTES
+    assert defaults.perDetectorQueueMB * MIB == detector.MAX_QUEUED_CONSUMER_BYTES
 
 
 def test_the_group_round_trips_through_the_options_file():

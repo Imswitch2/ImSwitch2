@@ -1162,15 +1162,16 @@ property of the computer, so it lives in the per-machine options file
 ``imcontrol_options.json`` (under the user config directory) rather than in
 the setup file, which travels between machines. The ``memory`` group holds
 three limits in MiB, each named for the one thing it bounds; the values
-shown are the defaults, which are what the code did before they were
-settable::
+shown are the defaults. Edit them in ImControl under **Tools → Memory
+limits…**, which saves this file and applies the new limits at once, or edit
+the file by hand and restart::
 
     {
         "setupFileName": "example_sted.json",
         "memory": {
             "writerQueueMB": 512,
             "perDetectorQueueMB": 256,
-            "processingWorkingSetMB": 256
+            "processingWorkingSetMB": 1024
         }
     }
 
@@ -1197,7 +1198,8 @@ settable::
 ``processingWorkingSetMB``
     The working set ImProcess may spend on work nobody asked for: contrast
     sampling (the sample size follows it) and the mean preview computed when
-    data is loaded. Above it, the current-data panel shows the first plane
+    data is loaded. It defaults to 1 GiB, a transient working set sized for
+    a typical workstation; lower it on a small machine. Above it, the current-data panel shows the first plane
     instead of the mean and says so; *Show mean* still computes the mean on
     request. Opening a dataset whose decoded size exceeds it is announced in
     the status bar before decoding starts, naming the size and whether
@@ -1206,9 +1208,11 @@ settable::
 None of these is a process limit and ImSwitch claims none: camera drivers
 allocate their own buffers, datasets and results are as large as the data.
 A value that is not a positive whole number is reported at startup and the
-default stands. Every message that quotes a limit names the setting that
-moves it, so the line in the log is the line to act on. There is no dialog
-for these yet; edit the file and restart.
+default stands; the dialog shows such a value as the default in force and
+replaces it when saved. Every message that quotes a limit names the setting
+that moves it, so the line in the log is the line to act on. Saving is
+refused while a recording runs: every queue check reads the limit in force,
+so a smaller queue would fail the recording in progress.
 
 Config schema
 =============

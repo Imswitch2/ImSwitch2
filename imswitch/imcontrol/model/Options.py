@@ -41,8 +41,10 @@ class MemoryOptions:
     #: consumer's stream is declared incomplete. MiB, a positive whole number.
     perDetectorQueueMB: Any = 256
     #: Working set ImProcess may spend on automatic work: contrast sampling and
-    #: the mean preview computed on load. MiB, a positive whole number.
-    processingWorkingSetMB: Any = 256
+    #: the mean preview computed on load. MiB, a positive whole number. Sized
+    #: for a typical workstation, not tied to the acquisition queues: it bounds
+    #: a transient computation, not a backlog.
+    processingWorkingSetMB: Any = 1024
 
 
 @dataclass_json(undefined=Undefined.INCLUDE)
