@@ -757,7 +757,9 @@ class _ClassScanner:
                         self.result.unresolved.append(UnresolvedRead(
                             ast.unparse(node), node.lineno, f"sub-key of {parent_key!r} is not a literal"))
                         continue
-                    read = _make_read(node, parent_key, access, resolved[1], self.parents)
+                    guard = (self._nested_guard_status(node, resolved[0], parent_key, function)
+                             if access == "subscript" else (False, None, False))
+                    read = _make_read(node, parent_key, access, resolved[1], self.parents, guard)
                     self._record(PropertyRead(**{**read.__dict__, "subkey": resolved[0]}))
                     continue
                 verdict, receiver_text = self._classify(receiver, function)
@@ -953,6 +955,28 @@ class _ClassScanner:
                         unresolved.expr, unresolved.lineno, f"in {node.func.id}(): {unresolved.reason}"))
 
     # -- guards ---------------------------------------------------------------
+
+    def _nested_guard_status(self, node: ast.AST, subkey: str, parent_key: str,
+                             function) -> tuple[bool, Optional[str], bool]:
+        """The same guard walk for ``defaults["gain"]``, "own" meaning this nested dict.
+
+        ``defaults = props.get("defaults", {})`` then ``try: defaults["gain"]
+        except KeyError`` reads ``gain`` optionally: ``{"defaults": {}}`` is a
+        configuration the manager accepts. Without this the sub-key came out
+        required and the schema rejected it. A check on the outer dict, or
+        on another nested dict, guards nothing here.
+        """
+        def is_this_dict(receiver: ast.AST) -> bool:
+            return self._nested_alias(_unwrap_props_expr(receiver), function) == parent_key
+
+        def resolve_key(key_node: ast.AST):
+            return self.context.resolve_key(key_node, self.class_constants)
+
+        return _guard_status(
+            node, subkey, self.parents,
+            guards_key=lambda test, k: _test_guards_key(test, k, resolve_key, is_this_dict),
+            mentions_props=lambda test: _test_mentions(test, is_this_dict),
+        )
 
     def _guard_status(self, node: ast.AST, key: str, function) -> tuple[bool, Optional[str], bool]:
         """Whether a missing ``key`` can raise at this subscript (see :func:`_guard_status`)."""

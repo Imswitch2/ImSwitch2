@@ -964,3 +964,80 @@ class TestGuardsInsideHelpers:
         """No core helper reads under a guard today; this is the synthetic case only."""
         # The drift test (test_configeditor_schemas_match_source) pins that:
         # the checked-in schemas regenerate byte-identically after this fix.
+
+
+class TestGuardsInsideNestedDicts:
+    """A sub-key read through ``defaults = props.get("defaults", {})`` keeps its guards.
+
+    Review of PR #35: ``try: defaults["gain"] except KeyError`` came out as a
+    required sub-key, so the schema rejected ``{"defaults": {}}`` -- a
+    configuration the manager accepts and falls back on.
+    """
+
+    @staticmethod
+    def _defaults(body: str) -> ex.PropertySpec:
+        manager = _manager('''
+            class M:
+                def __init__(self, detectorInfo, name):
+                    props = detectorInfo.managerProperties
+                    defaults = props.get("defaults", {})
+                    other = props.get("other", {})
+        '''.rstrip(" ") + textwrap.indent(textwrap.dedent(body), " " * 20))
+        return manager.properties["defaults"]
+
+    def test_a_try_except_keyerror_makes_the_sub_key_optional(self):
+        spec = self._defaults('''
+            try:
+                self.gain = defaults["gain"]
+            except KeyError:
+                self.gain = 1
+        ''')
+        gain = spec.sub_properties["gain"]
+        assert gain.required == ex.OPTIONAL
+        assert gain.reads[0].guard == "try/except KeyError"
+
+    def test_an_in_check_on_the_same_dict_makes_it_optional(self):
+        spec = self._defaults('''
+            if "gain" in defaults:
+                self.gain = defaults["gain"]
+        ''')
+        assert spec.sub_properties["gain"].required == ex.OPTIONAL
+        assert spec.sub_properties["gain"].reads[0].guard == "in-guard"
+
+    def test_an_unmodelled_condition_on_the_dict_is_uncertain(self):
+        spec = self._defaults('''
+            if defaults.get("mode") == "fast":
+                self.gain = defaults["gain"]
+        ''')
+        assert spec.sub_properties["gain"].required == ex.UNCERTAIN
+
+    def test_a_bare_sub_key_read_stays_required(self):
+        assert self._defaults('self.gain = defaults["gain"]\n').sub_properties["gain"].required == ex.REQUIRED
+
+    def test_a_check_on_another_dict_guards_nothing(self):
+        spec = self._defaults('''
+            if "gain" in other:
+                self.gain = defaults["gain"]
+            if "gain" in props:
+                self.gain2 = defaults["gain"]
+        ''')
+        assert spec.sub_properties["gain"].required == ex.REQUIRED
+
+    def test_the_schema_accepts_an_empty_dict_the_manager_accepts(self):
+        jsonschema = pytest.importorskip("jsonschema")
+        from imswitch.imcontrol.model.configeditor import schemagen as sg
+        manager = _manager('''
+            class M:
+                def __init__(self, detectorInfo, name):
+                    defaults = detectorInfo.managerProperties.get("defaults", {})
+                    try:
+                        self.gain = defaults["gain"]
+                    except KeyError:
+                        self.gain = 1
+                    self.mode = defaults["mode"]
+        ''')
+        schema = sg.build_schema(manager)
+        assert schema["properties"]["defaults"]["required"] == ["mode"]
+        validator = jsonschema.Draft202012Validator(schema)
+        assert validator.is_valid({"defaults": {"mode": "x"}})
+        assert not validator.is_valid({"defaults": {}}), "mode is still read unguarded"
