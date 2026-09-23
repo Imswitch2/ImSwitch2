@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "dll": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "dll_base_directory": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "mockermode": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "HamamatsuSLMusbManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "HamamatsuSLMusbManager"
+  ]
+}

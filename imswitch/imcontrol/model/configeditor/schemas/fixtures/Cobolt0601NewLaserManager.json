@@ -1,0 +1,17 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "Cobolt0601NewLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "digitalPorts": [],
+      "emissionControl": "example",
+      "modulationPowerMw": 1.5,
+      "protocolProfile": "example",
+      "scpiPowerUnit": "example",
+      "simulation": true,
+      "startupControl": "example",
+      "useMockOnFailure": true
+    }
+  }
+}

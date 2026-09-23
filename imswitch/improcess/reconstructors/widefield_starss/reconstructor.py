@@ -61,6 +61,34 @@ class WidefieldStarssReconstructor(Reconstructor):
     file_extensions = ["tiff", "tif"]
     description = "Polarization demux, anisotropy maps, and per-region WFS metrics"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'current_role': 'Auto',
+        'counterpart_path': None,
+        'h_suffix': '_h',
+        'v_suffix': '_v',
+        'convention': 'alternating',
+        'start_frame': 0,
+        'n_dark': 0,
+        'n_off': 0,
+        'sum_stacks': False,
+        'split_detection': False,
+        'split_y': None,
+        'anisotropy_mode': 'stokes',
+        'segmentation_mode': 'none',
+        'smooth_sigma': 2.0,
+        'intensity_threshold': None,
+        'segmentation_sigma': 2.0,
+        'min_size': 200,
+        'hole_size': 200,
+        'threshold_scale': 1.0,
+        'psf_sigma': 2.0,
+        'psf_min_distance': 5,
+        'psf_threshold_rel': 0.1,
+        'psf_radius': 3,
+        'batch_input_folder': None,
+        'batch_output_folder': None}
+
     def __init__(self):
         self._logger = initLogger("WidefieldStarssReconstructor")
 

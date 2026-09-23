@@ -28,6 +28,86 @@ scrolling rather than being clipped by minimum-size constraints.
   and Console (200 / 180 each), which took the example STED profile's window
   minimum from 999x649 to 1105x383. A source-level contract test keeps them
   out.
+- **Every docked panel scrolls its own contents, applied once in
+  `WidgetFactory.createWidget()`.** Removing the explicit minimum heights (the
+  bullet above) was not enough: a panel's minimum is whatever its *layout*
+  needs, so a form of thirty rows still added thirty rows' worth of height to
+  the window minimum. `Widget.makeScrollable()` moves a panel's layout into an
+  internal `QScrollArea`; `Widget.scrollablePanel = False` opts out (Console,
+  which scrolls itself and wants all the room it is given). This is the
+  per-panel form of the dock-level wrapper that was rejected above, and it
+  only works paired with the next bullet.
+
+  The wrapper has to be transparent to `sizeHint()`, not only to minimums.
+  Qt's hint for a resizable `QScrollArea` does not follow its contents
+  (measured: 42 px while the content asked for 150), and three panels -- Flip
+  Mirrors, Stand and Setup Modes -- cap themselves at their own preferred
+  height with `QSizePolicy.Maximum`, so they opened a few dozen pixels tall
+  with their contents scrolling inside that however tall their dock was.
+  `_PanelScrollArea` reports the content's hint, *and* invalidates it on the
+  content's `LayoutRequest`: panels are wrapped while still empty and filled
+  in by their controllers afterwards, so the layout above otherwise keeps the
+  hint the panel had with nothing in it. Both halves are needed -- each was
+  checked by removing the other.
+- **Dock sizes come from panel content, not from uniform stretch factors.**
+  Every dock was created with `size=(1, 1)`, so pyqtgraph gave a one-row panel
+  exactly as much height as a thirty-row one and recomputed that share from
+  scratch on every dock drag -- which is why moving one panel rearranged all
+  the others. What hid it was panels refusing to shrink, so the layout was
+  really being decided by minimums. `ImConMainView.applyContentAwareDockSizing()`
+  sets each dock's stretch from `Widget.panelContentSizeHint()`, bounded at
+  both ends, and the viewer's width share is expressed against the widest
+  panel column instead of a bare number. It runs three times: while the view
+  is built, once the controllers have populated the panels, and once more when
+  the window is first shown (panels such as the detector parameter trees only
+  report their real size after that). A restored saved layout wins over all
+  three.
+- **No window may insist on more than 80% of the screen.** `ImConMainView` and
+  `ImProcessMainView` are pages of MultiModuleWindow's tab widget, so either
+  one's minimum becomes the application window's; a window that cannot be made
+  as small as the screen opens with its bottom edge below it, which is what
+  the maximize / restore cycle worked around. Both clamp
+  `minimumSizeHint()` against `availableGeometry()`. `ImConMainView` also
+  clears the explicit minimum Qt writes onto it while it is briefly a
+  top-level window during construction -- that minimum outlives the
+  reparenting into the tab widget and is never recomputed there.
+- **MultiModuleWindow sizes its frame, not its client area, to the screen.**
+  `move()` places the frame while `resize()` sizes the client area, so the
+  title bar hung below the available area; the frame margins are measured
+  after `show()` and subtracted.
+- **Rearranging one column no longer resizes the others.** A column's stretch
+  is the sum of its docks', so *any* dock move changes it -- and pyqtgraph
+  answers a descendant's stretch change by running `updateStretch()` on every
+  container up to the top, each of which re-divides its own splitter from the
+  stretch factors alone. Moving a dock in the right-hand column therefore
+  threw away every width the user had dragged, including the left column's.
+  `_LayoutPreservingDockArea` (in `ImConMainView`) hands out container
+  subclasses whose `childStretchChanged` still carries the new stretch value
+  upward but suppresses the resize; containers whose own children changed
+  reach `updateStretch()` through `insert()` / `childEvent_()` instead and
+  still lay themselves out, because room has to be made for a dock that just
+  arrived. Measured against stock pyqtgraph, columns went from
+  `[357, 337, 198]` to `[297, 298, 297]` on a move in the right column; they
+  now stay put.
+- **...and the same when rearranging *restructures* the containers.**
+  Suppressing the stretch-change resize does not cover every path: tabbing a
+  two-dock column's docks together leaves that column holding a single tab
+  container, so pyqtgraph dissolves the column and puts the tab container in
+  its place -- a genuine child change for the splitter that holds the
+  columns, which re-divided the window width again. `addDock()` (which
+  `moveDock()` and every drag-and-drop go through) now snapshots every
+  splitter's sizes and puts them back afterwards for any container that ended
+  up with the same number of children it started with: no pane was gained or
+  lost there, whatever happened inside it. A container that really did gain or
+  lose one -- a column split off, or emptied -- is laid out by pyqtgraph as
+  before, because the space has to come from somewhere. The area a dock
+  *leaves* gets the same protection, because whoever gains the dock is the one
+  running: floating a dock out runs `addDock` on the new window's area, not on
+  the one losing it. `addTempArea()` is overridden too, since pyqtgraph
+  hard-codes a stock `DockArea` for floating windows.
+- **Tools > Reset panel layout** puts the docks back where the setup file puts
+  them, at content-derived sizes -- the way back from a layout that a drag
+  rearranged.
 - Recording keeps Snap/REC controls visible while its settings grid scrolls
   internally.
 - Positioner keeps its existing controls and signals but places the per-axis
@@ -60,9 +140,13 @@ scrolling rather than being clipped by minimum-size constraints.
     fixed/minimum sizes in dialogs, small numeric inputs, SLM controls, graph
     heights, and the BeadRec list panel. These should be reviewed case by case
     rather than removed globally.
-  - Napari/Image dock minimum-height behavior still needs a safer fix. Do not
-    override the Image widget's top-level `minimumSizeHint()` globally, because
-    that can collapse the pyqtgraph dock layout during startup.
+  - Napari/Image dock minimum: `ImageWidget.minimumSizeHint()` now *caps* the
+    embedded viewer's minimum at `minimumViewerSize` (240x180) rather than
+    dropping it to zero. Reporting no minimum at all was tried before and
+    collapsed the dock layout during startup; a cap keeps the viewer weighing
+    something while still letting the window fit any screen. Note that
+    `nw.setMinimumSize(0, 0)` alone never did this -- it only clears an
+    *explicit* minimum, and Qt falls back to `minimumSizeHint()`.
 
 - **Advanced Scan**
   - Make phase delay and D3 step delay validated numeric controls with explicit

@@ -37,6 +37,11 @@ from .guitools import BetterPushButton
 from .icons import improcessIcon
 
 
+# The largest fraction of the screen this window may insist on. Anything above
+# 1.0 puts the bottom edge off-screen with no way back.
+_MAX_MINIMUM_SCREEN_FRACTION = 0.8
+
+
 class ImProcessMainView(QtWidgets.QMainWindow):
     sigSaveReconstruction = QtCore.Signal()
     sigSaveReconstructionAll = QtCore.Signal()
@@ -66,6 +71,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigLoadProcessorRequested = QtCore.Signal(str)
     # Emitted when the user asks to re-scan the drop-in analysis plugins folder.
     sigReloadPluginsRequested = QtCore.Signal()
+    # Workflows: export the current result's provenance as a workflow file,
+    # or run a workflow file and publish its results.
+    sigExportWorkflowRequested = QtCore.Signal()
+    sigRunWorkflowRequested = QtCore.Signal()
+    # Batch forms of the same: the workflow's reconstruction step is bound
+    # to each selected result, or its source to each chosen file.
+    sigRunWorkflowOnResultsRequested = QtCore.Signal()
+    sigRunWorkflowOverFilesRequested = QtCore.Signal()
 
     sigImageAutoContrastRequested = QtCore.Signal()
     sigImageResetContrastRequested = QtCore.Signal()
@@ -204,6 +217,43 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         setSaveFolder = QtWidgets.QAction('Set default save folder…', self)
         setSaveFolder.triggered.connect(self.sigSetSaveFolder)
         file.addAction(setSaveFolder)
+
+        file.addSeparator()
+        exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
+        exportWorkflowAction.setToolTip(
+            'Write the steps that made the current result as a workflow file '
+            '(YAML) that can be run again headlessly or on other data'
+        )
+        exportWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigExportWorkflowRequested.emit()
+        )
+        file.addAction(exportWorkflowAction)
+        runWorkflowAction = QtWidgets.QAction('Run workflow…', self)
+        runWorkflowAction.setToolTip(
+            'Run a workflow file; its results are added to the reconstruction list'
+        )
+        runWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowRequested.emit()
+        )
+        file.addAction(runWorkflowAction)
+        runOnResultsAction = QtWidgets.QAction('Run workflow on selected results…', self)
+        runOnResultsAction.setToolTip(
+            'Apply the processing steps of a workflow file to every selected result: '
+            'its reconstruction step is replaced by each result in turn'
+        )
+        runOnResultsAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowOnResultsRequested.emit()
+        )
+        file.addAction(runOnResultsAction)
+        runOverFilesAction = QtWidgets.QAction('Run workflow over files…', self)
+        runOverFilesAction.setToolTip(
+            'Run a workflow file once per chosen recording; every result is added '
+            'to the reconstruction list'
+        )
+        runOverFilesAction.triggered.connect(
+            lambda _checked=False: self.sigRunWorkflowOverFilesRequested.emit()
+        )
+        file.addAction(runOverFilesAction)
 
         # Toolbars split along the result-unification invariant: Image holds
         # display-only actions (never publish a result), Image operations
@@ -732,6 +782,17 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._pluginsToolbar.addSeparator()
         self._pluginsToolbar.addAction(store_action)
         self._pluginsToolbar.addAction(reload_action)
+
+        # Installed napari plugins as one-way endpoints for results. The menu
+        # is populated by NapariEndpointController when it opens, so that
+        # what it offers reflects the current result and the installed set.
+        self._pluginsMenu.addSeparator()
+        self._napariPluginsMenu = self._pluginsMenu.addMenu('napari plugins')
+        self._napariPluginsMenu.setToolTipsVisible(True)
+
+    def napariPluginsMenu(self) -> QtWidgets.QMenu:
+        """The submenu the napari endpoint controller fills in."""
+        return self._napariPluginsMenu
 
     def _openUserPluginsFolder(self) -> None:
         """Open the drop-in plugins directory in the system file browser."""
@@ -1826,6 +1887,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self.sigClosing.emit()
         event.accept()
+
+    def minimumSizeHint(self):
+        """ Never demand more room than the screen has.
+
+        This view is a page of MultiModuleWindow's tab widget, so its minimum
+        is the application window's minimum too -- one module insisting on
+        more height than the screen has opens *every* tab with its bottom edge
+        below the screen, with no way to resize it back.
+        """
+        hint = super().minimumSizeHint()
+        screen = self.screen() if hasattr(self, 'screen') else None
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            hint.setWidth(min(hint.width(),
+                              int(available.width() * _MAX_MINIMUM_SCREEN_FRACTION)))
+            hint.setHeight(min(hint.height(),
+                               int(available.height() * _MAX_MINIMUM_SCREEN_FRACTION)))
+        return hint
 
     def showEvent(self, event):
         super().showEvent(event)

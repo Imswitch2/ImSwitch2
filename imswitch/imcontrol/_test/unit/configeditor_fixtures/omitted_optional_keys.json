@@ -1,0 +1,20 @@
+{
+  "why": "Required keys only. AAAOTF's calibCsvPath, ttlToggling, protocolProfile and frequencyMHz are all optional and absent; presence of ttlToggling changes behaviour, so Apply must not add any of them.",
+  "setup": {
+    "lasers": {
+      "aotf": {
+        "analogChannel": null, "digitalLine": null,
+        "managerName": "AAAOTFLaserManager",
+        "managerProperties": {"rs232device": "aaaotf", "channel": 1},
+        "wavelength": 561, "valueRangeMin": 0, "valueRangeMax": 1023, "valueRangeStep": 1
+      }
+    },
+    "detectors": {
+      "cam": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "ThorCamTSIManager",
+        "managerProperties": {}
+      }
+    }
+  }
+}

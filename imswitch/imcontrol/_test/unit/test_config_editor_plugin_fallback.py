@@ -1,28 +1,21 @@
 """The Config Studio's offline plugin lists must mirror the real registries.
 
-The Studio is a standalone PyQt5 script that may run without the rest of
-ImSwitch installed, so it carries a built-in copy of the ImProcess plugin
-lists. That copy had drifted three reconstructors and nineteen processors
-behind, and because the import failure is caught, the operator was shown a
-short list with no indication anything was missing.
+The Studio can run against an ImProcess that is not importable -- a partial
+install, or a plugin whose own imports fail -- so it carries a built-in copy of
+the ImProcess plugin lists. That copy had drifted three reconstructors and
+nineteen processors behind, and because the import failure is caught, the
+operator was shown a short list with no indication anything was missing.
 """
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("PyQt5")
 
-_SCRIPT_PATH = (
-    Path(__file__).resolve().parents[4]
-    / "utility_scripts" / "imswitch_config_editor.py"
-)
-spec = importlib.util.spec_from_file_location("imswitch_config_editor", _SCRIPT_PATH)
-editor = importlib.util.module_from_spec(spec)
-sys.modules["imswitch_config_editor"] = editor
-spec.loader.exec_module(editor)
+from imswitch.imcontrol.view.configeditor import editor
+
+_EDITOR_DIR = Path(editor.__file__).resolve().parent
 
 
 def test_reconstructor_fallback_matches_the_registry():
@@ -89,7 +82,7 @@ def test_processing_template_uses_the_placeholder():
     import json
 
     template = (
-        _SCRIPT_PATH.parent / "builtin_templates" / "sections" / "processing.json"
+        _EDITOR_DIR / "builtin_templates" / "sections" / "processing.json"
     )
     fields = json.loads(template.read_text(encoding="utf-8")).get("fields", [])
     byKey = {field.get("key"): field for field in fields}

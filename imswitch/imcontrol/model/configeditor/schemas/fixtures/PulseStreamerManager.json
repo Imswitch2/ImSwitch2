@@ -1,0 +1,7 @@
+{
+  "category": "pulsegen",
+  "device": {
+    "managerName": "PulseStreamerManager",
+    "managerProperties": {}
+  }
+}

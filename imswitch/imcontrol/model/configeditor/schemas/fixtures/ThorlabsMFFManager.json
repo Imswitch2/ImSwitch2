@@ -1,0 +1,12 @@
+{
+  "category": "flipMirrors",
+  "device": {
+    "managerName": "ThorlabsMFFManager",
+    "managerProperties": {
+      "initial_state": null,
+      "invert": true,
+      "serial_number": null,
+      "state_names": null
+    }
+  }
+}

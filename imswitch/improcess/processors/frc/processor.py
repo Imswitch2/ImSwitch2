@@ -26,6 +26,17 @@ class FRCProcessor(Processor):
     min_inputs = 1
     max_inputs = 2
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'mode': 'single-image',
+        'compare_axis': 'Auto',
+        'index_a': 0,
+        'index_b': 1,
+        'single_image_split': 'checkerboard',
+        'window': 'hann',
+        'pixel_size': 1.0,
+        'resolution_unit': 'px'}
+
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
 

@@ -15,7 +15,8 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[4]
 _CONFIG_MODULE = _REPO / "imswitch" / "improcess" / "model" / "processing_config.py"
-_SECTION = _REPO / "utility_scripts" / "builtin_templates" / "sections" / "processing.json"
+_SECTION = (_REPO / "imswitch" / "imcontrol" / "view" / "configeditor"
+            / "builtin_templates" / "sections" / "processing.json")
 
 #: Keys the editor offers that are not simple flags — plugin id lists, which
 #: are read through their own helper rather than ``processing_config.get``.
@@ -37,7 +38,7 @@ def test_every_processing_flag_is_editable():
     assert not missing, (
         f"processing flags read by ImProcess but absent from the config "
         f"editor's ImProcess section: {missing}. Add them to "
-        f"utility_scripts/builtin_templates/sections/processing.json so they "
+        f"{_SECTION.relative_to(_REPO)} so they "
         f"can be set without hand-editing the setup JSON."
     )
 

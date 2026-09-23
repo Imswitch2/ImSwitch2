@@ -1,0 +1,13 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "JenaPiezoZManager",
+    "managerProperties": {
+      "posRangeUm": [],
+      "rs232device": "example",
+      "settleTimeoutS": 1.5,
+      "settleToleranceUm": 1.5,
+      "waitForSettle": true
+    }
+  }
+}

@@ -26,12 +26,10 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import tifffile as tiff
 from qtpy import QtWidgets
 
 from imswitch.imcommon.algorithms.tile_mosaic import (
@@ -76,26 +74,20 @@ class TilingMosaicResult(ProcessingResult):
         self.provenance = provenance
         self.output_origin_yx = tuple(output_origin_yx)
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        if fmt != "tiff":
+
+    supported_formats = ("tiff",)
+
+    def write_files(self, plan, document) -> None:
+        if plan.fmt != "tiff":
             raise ValueError(
-                f'TilingMosaicResult only supports fmt="tiff", got "{fmt}"'
+                f'TilingMosaicResult only supports fmt="tiff", got "{plan.fmt}"'
             )
-        data = np.asarray(self.data)
-        metadata = {"axes": "".join(self.axis_labels)}
-        if self.provenance is not None:
-            metadata["Description"] = json.dumps(
-                self.provenance_summary(), sort_keys=True
-            )
-        scales = self.axis_scales or []
-        by_label = dict(zip(self.axis_labels, scales))
-        for label, key in (("X", "PhysicalSizeX"), ("Y", "PhysicalSizeY"),
-                           ("Z", "PhysicalSizeZ")):
-            if label in by_label:
-                metadata[key] = float(by_label[label])
-                metadata[f"{key}Unit"] = "µm"
-        tiff.imwrite(str(path), data, ome=True, metadata=metadata)
+        from imswitch.improcess.model.result_io import save_image_result
+
+        # The mosaic's own provenance summary keeps its top-level keys in the
+        # OME Description, as every mosaic written so far has had.
+        extra = dict(self.provenance_summary() or {})
+        save_image_result(self, plan.primary, "tiff", extra=extra, document=document)
 
     def provenance_summary(self) -> dict | None:
         """Return a serializable record suitable for save metadata and UI."""
@@ -397,6 +389,19 @@ class TilingReconstructor(Reconstructor):
     default_save_subdir = "mosaic"
     accepted_source_kinds = ("image", "tiling-manifest")
     execution_policy = "worker"
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'refine': True,
+        'blend': True,
+        'shading_correction': False,
+        'max_shift_px': None,
+        'project': False,
+        'stage_positions': True,
+        'detector': None,
+        'alignment_diagnostic': False,
+        'channel': None,
+        'project_z': False}
 
     def __init__(self):
         super().__init__()

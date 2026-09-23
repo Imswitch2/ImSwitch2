@@ -15,6 +15,16 @@ def getSetupList():
     return [Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json'))]
 
 
+def getSetupFilesDir():
+    """ The directory this installation keeps its hardware setup files in. """
+    return _setupFilesDir
+
+
+def getSetupFilePath(setupFileName):
+    """ Where a setup file of this name lives, whether or not it exists yet. """
+    return os.path.join(_setupFilesDir, setupFileName)
+
+
 def loadSetupInfo(options, setupInfoType):
     with open(os.path.join(_setupFilesDir, options.setupFileName)) as setupFile:
         return setupInfoType.from_json(setupFile.read(), infer_missing=True)

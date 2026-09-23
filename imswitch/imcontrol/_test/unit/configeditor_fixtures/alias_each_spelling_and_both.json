@@ -1,0 +1,22 @@
+{
+  "why": "APD reads props.get('mockPhotonCountMean', props.get('mock_photon_count_mean')): a file may use either spelling, or both (the second is ignored, and validation warns). The editor writes back the spelling it found and never adds the other.",
+  "setup": {
+    "detectors": {
+      "camel": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "APDManager",
+        "managerProperties": {"ctrInputLine": "Dev1/ctr0", "terminal": "PFI0", "mockPhotonCountMean": 400.0}
+      },
+      "snake": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "APDManager",
+        "managerProperties": {"ctrInputLine": "Dev1/ctr1", "terminal": "PFI1", "mock_photon_count_mean": 400}
+      },
+      "both": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "APDManager",
+        "managerProperties": {"ctrInputLine": "Dev1/ctr2", "terminal": "PFI2", "mockPhotonCountMean": 400.0, "mock_photon_count_mean": 800.0, "mock_random_seed": 7}
+      }
+    }
+  }
+}

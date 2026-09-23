@@ -74,7 +74,7 @@ def fit_psf(
     """Fit a non-rotated 2D Gaussian to a 2D image or ROI."""
     # float64 once here; fit_psf_batch converts before its loop so a
     # many-bead batch does not recast the whole image per bead.
-    arr = np.asarray(image, dtype=np.float64, copy=False)
+    arr = np.asarray(image, dtype=np.float64)
     if arr.ndim != 2:
         raise ValueError(f"PSF fitting expects a 2D image, got shape {arr.shape}")
     bounds, yy, xx, values = _extract_fit_points(arr, roi)
@@ -141,7 +141,7 @@ def fit_psf_batch(
     """Fit one PSF per ROI, or the full image when no ROIs are given."""
     targets = rois or [None]
     # Converted once for the whole batch rather than once per ROI.
-    image = np.asarray(image, dtype=np.float64, copy=False)
+    image = np.asarray(image, dtype=np.float64)
     fits = [
         fit_psf(
             image,

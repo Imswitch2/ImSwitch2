@@ -18,24 +18,30 @@ def test_the_contrast_gate_counts_bytes_not_elements():
     assert contrast._should_sample(np.zeros(limit + 1, dtype=np.uint8))
 
 
-def test_a_processor_without_an_id_cannot_be_defined():
+def test_a_processor_without_an_id_cannot_be_made():
     from imswitch.improcess.processors.base import Processor
 
-    with pytest.raises(TypeError, match="must set a stable `id`"):
-        class Nameless(Processor):
-            name = "Nameless"
+    class Nameless(Processor):
+        name = "Nameless"
 
-            def apply(self, result, params):
-                return result
+        @property
+        def applies_to(self):
+            return lambda result: True
 
-    class Named(Processor):
-        name = "Named"
-        id = "named"
+        def make_param_widget(self, parent):
+            return None
 
         def apply(self, result, params):
             return result
 
-    assert Named.id == "named"
+    with pytest.raises(TypeError, match="must set a stable `id`"):
+        Nameless()
+
+    class Named(Nameless):                  # a shared base may itself be nameless
+        name = "Named"
+        id = "named"
+
+    assert Named().id == "named"
 
 
 def test_the_live_stall_watchdog_is_opt_in_per_continuous_source():

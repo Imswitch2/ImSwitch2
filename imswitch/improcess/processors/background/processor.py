@@ -38,6 +38,17 @@ class SubtractBackgroundProcessor(Processor):
     accepts_roi = True
     roi_modes = ('mask', 'crop')
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'radius': 50.0, 'output_background': False}
+
+    def output_spec(self, params: dict | None = None, input_specs=None):
+        from imswitch.improcess.processors.base import OutputSpec
+
+        if (params or {}).get("output_background", False):
+            return OutputSpec(ports=("signal", "background"))
+        return OutputSpec(ports=("out",))
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2
@@ -91,7 +102,8 @@ class SubtractBackgroundProcessor(Processor):
         if not params.get("output_background", False):
             return output
         return ProcessorOutput(
-            [output, _result(f"{result.name} (background r={radius:g})", background)]
+            [output, _result(f"{result.name} (background r={radius:g})", background)],
+            keys=("signal", "background"),
         )
 
 

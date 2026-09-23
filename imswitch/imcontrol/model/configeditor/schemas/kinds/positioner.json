@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a positioner entry in a setup file, as imswitch.imcontrol.model.SetupInfo.PositionerInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "analogChannel": {
+      "default": null,
+      "description": "Channel for analog communication. ``null`` if the device is digital or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/ao{analogChannel}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.analogChannel: Optional[Union[str, int]]"
+      ]
+    },
+    "axes": {
+      "description": "A list of axes (names) that the positioner controls.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "x-imswitch-kind": "array",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.axes: List[str]"
+      ],
+      "x-imswitch-widget": "text"
+    },
+    "digitalLine": {
+      "default": null,
+      "description": "Line for digital communication. ``null`` if the device is analog or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/port0/line{digitalLine}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.digitalLine: Optional[Union[str, int]]"
+      ]
+    },
+    "forPositioning": {
+      "default": false,
+      "description": "Whether the positioner is used for manual positioning.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.forPositioning: bool"
+      ]
+    },
+    "forScanning": {
+      "default": false,
+      "description": "Whether the positioner is used for scanning.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.forScanning: bool"
+      ]
+    },
+    "isPositiveDirection": {
+      "default": true,
+      "description": "Whether the direction of the positioner is positive.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.isPositiveDirection: bool"
+      ]
+    },
+    "joystick": {
+      "default": false,
+      "description": "Whether the positioner is connected to a joystick.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.joystick: bool"
+      ]
+    },
+    "liveUpdate": {
+      "default": false,
+      "description": "Whether the positioner position should be updated live.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.liveUpdate: bool"
+      ]
+    },
+    "managerName": {
+      "description": "Manager class name.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "default": {},
+      "description": "Properties to be read by the manager. Empty when omitted.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerProperties: Dict[str, Any]"
+      ]
+    },
+    "physicalActuator": {
+      "default": null,
+      "description": "Identity of the physical device this positioner drives.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.physicalActuator: Optional[str]"
+      ]
+    },
+    "resetOnClose": {
+      "default": true,
+      "description": "Whether the positioner should be reset to 0-position upon closing ImSwitch.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.resetOnClose: bool"
+      ]
+    },
+    "shortcutModifier": {
+      "default": null,
+      "description": "Keyboard-shortcut group used to jog this positioner from the Positioner widget. ``\"ctrl\"`` binds the Ctrl+Arrow set; ``\"ctrl-shift\"`` binds the Ctrl+Shift+Arrow set; ``null`` (default) keeps the legacy behaviour where the first positioner declaring a given axis claims the Ctrl+Arrow set.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.shortcutModifier: Optional[str]"
+      ]
+    }
+  },
+  "required": [
+    "axes",
+    "managerName"
+  ],
+  "title": "positioner device entry (PositionerInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PositionerInfo",
+    "DeviceInfo"
+  ],
+  "x-imswitch-info-class": "PositionerInfo"
+}

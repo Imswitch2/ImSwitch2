@@ -362,6 +362,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
+        # The widget exists now, on the GUI thread: the one safe place to
+        # compare it with the plugin's headless declaration. A mismatch is
+        # remembered on the class, so this reconstructor's results record
+        # why they cannot be replayed.
+        from imswitch.improcess.model.plugin_contract import warn_contract_problems
+
+        warn_contract_problems(self._logger, reconstructor, widget)
         if getattr(self._main, '_currentDataObj', None) is not None:
             self._inspect_current_source()
         # NOTE: Special-case by ID retained because widefield-starss batch signals
@@ -440,6 +447,11 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
             return
 
+        from imswitch.improcess.reconstructors.run import (
+            run_consolidation,
+            run_reconstruction,
+        )
+
         collected = []
         for dataObj in dataObjs:
             params = self._params_for_data_obj(reconstructor)
@@ -453,7 +465,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._logger.info(
                 f"Running {reconstructor.id} reconstruction for {dataObj.name}"
             )
-            result = reconstructor.process(dataObj, params)
+            result = run_reconstruction(reconstructor, dataObj, params).result
             if consolidate:
                 collected.append(result)
             else:
@@ -462,7 +474,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
         if not consolidate or not collected:
             return
         try:
-            merged = reconstructor.consolidate(collected)
+            merged = run_consolidation(reconstructor, collected)
         except Exception:
             # Keep the per-file work: publish the individual results so a
             # failed merge (e.g. mismatched scan geometry) loses nothing.
