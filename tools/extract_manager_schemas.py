@@ -200,11 +200,46 @@ def generation_inputs(args: argparse.Namespace):
     )
 
 
-def package_root(package: str) -> Path:
-    """The directory of an installed package, found without importing it."""
-    import importlib.util
+def find_package_spec(package: str):
+    """The spec of an installed package, located without running any of its code.
 
-    spec = importlib.util.find_spec(package)
+    ``importlib.util.find_spec("a.b")`` imports ``a`` -- executes
+    ``a/__init__.py`` -- to learn where ``a.b`` lives, and a hardware
+    plugin's ``__init__`` may import a vendor SDK. So each level is located
+    by asking the import system's finders directly, handing a subpackage its
+    parent's search locations instead of importing the parent. Finding a
+    spec never executes a module; the finders are the ones an import would
+    consult (editable installs included). None if there is no such package.
+    """
+    parts = package.split(".")
+    if not all(part.isidentifier() for part in parts):
+        return None
+    spec = None
+    locations = None
+    for depth in range(1, len(parts) + 1):
+        fullname = ".".join(parts[:depth])
+        spec = None
+        for finder in sys.meta_path:
+            find_spec = getattr(finder, "find_spec", None)
+            if find_spec is None:
+                continue
+            try:
+                spec = find_spec(fullname, locations)
+            except (ImportError, ValueError):
+                spec = None
+            if spec is not None:
+                break
+        if spec is None:
+            return None
+        locations = spec.submodule_search_locations
+        if locations is None and depth < len(parts):
+            return None  # a module on the way down, not a package
+    return spec
+
+
+def package_root(package: str) -> Path:
+    """The directory of an installed package, found without importing it or its parents."""
+    spec = find_package_spec(package)
     if spec is None or not spec.submodule_search_locations:
         raise SystemExit(f"package {package!r} is not installed or is not a package")
     return Path(next(iter(spec.submodule_search_locations)))
