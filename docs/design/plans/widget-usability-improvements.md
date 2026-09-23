@@ -37,6 +37,18 @@ scrolling rather than being clipped by minimum-size constraints.
   which scrolls itself and wants all the room it is given). This is the
   per-panel form of the dock-level wrapper that was rejected above, and it
   only works paired with the next bullet.
+
+  The wrapper has to be transparent to `sizeHint()`, not only to minimums.
+  Qt's hint for a resizable `QScrollArea` does not follow its contents
+  (measured: 42 px while the content asked for 150), and three panels -- Flip
+  Mirrors, Stand and Setup Modes -- cap themselves at their own preferred
+  height with `QSizePolicy.Maximum`, so they opened a few dozen pixels tall
+  with their contents scrolling inside that however tall their dock was.
+  `_PanelScrollArea` reports the content's hint, *and* invalidates it on the
+  content's `LayoutRequest`: panels are wrapped while still empty and filled
+  in by their controllers afterwards, so the layout above otherwise keeps the
+  hint the panel had with nothing in it. Both halves are needed -- each was
+  checked by removing the other.
 - **Dock sizes come from panel content, not from uniform stretch factors.**
   Every dock was created with `size=(1, 1)`, so pyqtgraph gave a one-row panel
   exactly as much height as a thirty-row one and recomputed that share from

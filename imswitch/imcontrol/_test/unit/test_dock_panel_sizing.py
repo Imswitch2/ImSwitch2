@@ -31,8 +31,8 @@ from imswitch.imcontrol.view.widgets.basewidgets import (
 # shadows the lazily exported class of the same name for everyone who imports
 # it afterwards (test_flip_mirrors asserts on exactly that).
 from imswitch.imcontrol.view.widgets import (
-    ConsoleWidget, FlipMirrorWidget, TriggerScopeScanWidget, ViewWidget,
-    ViewerToolsWidget,
+    ConsoleWidget, FlipMirrorWidget, LeicaStandWidget, SetupModesWidget,
+    TriggerScopeScanWidget, ViewWidget, ViewerToolsWidget,
 )
 
 
@@ -72,6 +72,79 @@ def test_shrinking_a_panel_does_not_shrink_what_it_asks_to_open_with(
     # The wrapper's own margins are the only difference allowed.
     assert abs(wrapped.panelContentSizeHint().height()
                - bare.sizeHint().height()) <= 8
+
+
+def _inTallContainer(widget, qtbot, height=700):
+    """Returns the host -- pytest-qt only weak-refs it, so callers must hold it."""
+    host = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(widget)
+    host.setLayout(layout)
+    qtbot.addWidget(host)
+    host.resize(400, height)
+    host.show()
+    qtbot.waitExposed(host)
+    qtbot.wait(10)
+    return host
+
+
+def test_a_panel_filled_in_after_wrapping_asks_for_its_real_height(factory, qtbot):
+    """Controllers add a panel's rows long after WidgetFactory wraps it.
+
+    The wrapper has to stay transparent to sizeHint(), or the layout above
+    keeps the hint the panel had while it was still empty -- and a panel that
+    caps itself at its own preferred height (QSizePolicy.Maximum, which Flip
+    Mirrors, Stand and Setup Modes all use) is then stuck a few dozen pixels
+    tall however much room its dock has, with its contents scrolling inside
+    that.
+    """
+    widget = factory.createWidget(FlipMirrorWidget)
+    host = _inTallContainer(widget, qtbot)
+    emptyHint = widget.sizeHint().height()
+
+    for name in ('Illumination', 'DetectionTilt', 'DetectionPath'):
+        widget.addFlipMirror(name, {0: 'Out', 1: 'In'})
+    qtbot.wait(10)
+
+    assert widget.sizeHint().height() > emptyHint
+    assert widget.height() == widget.panelContentSizeHint().height()
+    assert host.height() > widget.height(), 'the container had room to spare'
+
+
+@pytest.mark.parametrize(
+    'widgetClass', [FlipMirrorWidget, LeicaStandWidget, SetupModesWidget],
+    ids=lambda c: c.__name__,
+)
+def test_panels_that_cap_themselves_still_grow_to_their_contents(
+    widgetClass, factory, qtbot
+):
+    """QSizePolicy.Maximum means 'no taller than my contents', not 'tiny'.
+
+    These three are the panels that cap themselves that way. The two that
+    build their whole UI in __init__ were never broken -- their contents were
+    complete before the wrapper went on -- so this is a guard on all three
+    rather than a reproduction; the reproduction is the test above, on the
+    panel whose rows arrive from its controller.
+    """
+    widget = factory.createWidget(widgetClass)
+    assert widget.sizePolicy().verticalPolicy() == QtWidgets.QSizePolicy.Maximum, \
+        'this test only says anything while the panel caps itself'
+    host = _inTallContainer(widget, qtbot)
+
+    assert host.height() > widget.panelContentSizeHint().height(), 'room to spare'
+    assert widget.height() >= widget.panelContentSizeHint().height()
+
+
+def test_capped_panels_can_still_shrink(factory, qtbot):
+    """...and the whole point of the wrapper survives: they still give way."""
+    widget = factory.createWidget(FlipMirrorWidget)
+    for name in ('Illumination', 'DetectionTilt', 'DetectionPath'):
+        widget.addFlipMirror(name, {0: 'Out', 1: 'In'})
+    host = _inTallContainer(widget, qtbot, height=60)
+
+    assert widget.minimumSizeHint().height() <= PANEL_MINIMUM_HEIGHT
+    assert widget.height() <= host.height()
 
 
 def test_panels_that_scroll_themselves_are_left_alone(factory, qtbot):

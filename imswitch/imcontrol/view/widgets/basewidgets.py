@@ -29,6 +29,41 @@ class _PanelScrollArea(QtWidgets.QScrollArea):
         hint.setHeight(min(hint.height(), PANEL_MINIMUM_HEIGHT))
         return hint
 
+    def sizeHint(self):
+        """ Ask for as much room as the panel inside would have asked for.
+
+        Qt's own hint for a resizable scroll area is a constant that has
+        nothing to do with its contents, which makes the wrapper anything but
+        transparent: a panel that caps itself at its own preferred height with
+        ``QSizePolicy.Maximum`` -- Flip Mirrors, Stand and Setup Modes all do
+        -- ends up capped at that constant instead, a few dozen pixels, no
+        matter how much room its dock has.
+        """
+        content = self.widget()
+        if content is None:
+            return super().sizeHint()
+
+        hint = content.sizeHint()
+        frame = 2 * self.frameWidth()
+        width = hint.width() + frame
+        if self.verticalScrollBarPolicy() != QtCore.Qt.ScrollBarAlwaysOff:
+            # Room for the scrollbar that shows up as soon as it is needed,
+            # so its arrival does not clip the content sideways as well.
+            width += self.verticalScrollBar().sizeHint().width()
+        return QtCore.QSize(width, hint.height() + frame)
+
+    def eventFilter(self, source, event):
+        """ Keep the layout above from caching a hint from before the panel filled up.
+
+        A panel is wrapped while it is still empty -- its controller adds the
+        rows afterwards -- and ``sizeHint()`` above is only consulted again if
+        something invalidates it.  Without this the panel keeps asking for the
+        height it wanted with nothing in it.
+        """
+        if source is self.widget() and event.type() == QtCore.QEvent.LayoutRequest:
+            self.updateGeometry()
+        return super().eventFilter(source, event)
+
 
 class WidgetFactory:
     """ Factory class for creating widgets. """
@@ -129,6 +164,9 @@ class Widget(QtWidgets.QWidget, metaclass=_QObjectABCMeta):
         scrollArea.setWidgetResizable(True)
         scrollArea.setWidget(content)
         scrollArea.setMinimumSize(0, 0)
+        # setWidget() installs this already; repeating it is idempotent and
+        # says out loud that _PanelScrollArea.eventFilter needs it.
+        content.installEventFilter(scrollArea)
 
         outerLayout = QtWidgets.QVBoxLayout()
         outerLayout.setContentsMargins(0, 0, 0, 0)
