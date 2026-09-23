@@ -6,9 +6,18 @@ measured; revision 6 records Phase 1; revision 7 folds in the review of
 Phase 0; revision 8 records Phase 2; revision 9 folds in the review of
 Phases 1–2; revision 10 records Phase 3; revision 11 records Phase 4;
 revision 12 records Phase 5; revision 13 records Phase 6; revision 14 folds
-in the review of the merged implementation). Status: **all six phases merged
-to `main` (857261f2, through PR #34, which carried #35); the review's five
-fixes on `fix/config-editor-schema-review`.**
+in the review of the merged implementation; revision 15 the review of those
+fixes). Status: **all six phases merged to `main` (857261f2, through PR #34,
+which carried #35); the review fixes in PR #37.**
+
+## Changes in revision 15 (review of the revision-14 fixes)
+
+Two gaps in the fixes, both reproduced before they were fixed:
+
+| Finding | Fix |
+| --- | --- |
+| An explicit identity could still fall back to an unrelated class: a `python_name` whose module is outside the scanned package resolved to the package's own class of the same short name (`external_driver.camera:CameraManager` got `vendor_plugin.local:CameraManager`'s schema). | With a `python_name`, resolution is its import and nothing else; a module the tree does not have, or one without that attribute, leaves the manager unresolved (listed in the index and by `--write`). The module-suffix match goes too. Short names are matched only when no identity was given. |
+| An edit that creates an optional dict skipped its required children: editing `table.speed` saved `{"table": {"speed": 7}}` although `table`'s schema requires `count`; the next untouched Apply added it. | Apply decides first which dicts will be written -- in the file, required by the code, or created by an edit -- and writes their required sub-keys in the same Apply. Required fields left empty in a written dict are warned about, as top-level ones are. |
 
 ## Changes in revision 14 (review of the implementation, after merge)
 

@@ -176,7 +176,10 @@ imported** -- neither it nor, for a dotted name such as
 ``device_managers`` entry of ``imswitch.json`` the tool finds the class
 ``python_name`` names in the package's own source -- by module as well as by
 name, so two ``CameraManager`` classes in two modules get two schemas, each
-inheriting from the base class its own module imports -- reads how it uses
+inheriting from the base class its own module imports; a contribution whose
+``python_name`` points outside the package (a class the plugin takes from
+its driver package) is reported as unresolved and gets no schema -- reads how
+it uses
 ``managerProperties`` (``props["key"]``, ``props.get("key", default)``,
 ``"key" in props``, guards such as ``try/except KeyError``, helper methods
 handed the dict, camelCase/snake_case alias pairs) and writes, into the
