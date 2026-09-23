@@ -1,6 +1,12 @@
-************************
-Graphical User Interface
-************************
+*******
+Widgets
+*******
+
+This page walks through the ImControl widgets, grouped by what they are
+for rather than by where they sit in the window.  For what the module is
+and what else it can do, see :doc:`imcontrol`; for the shortcuts and
+state-saving that apply across every module, see
+:doc:`working-in-imswitch2`.
 
 .. note::
 
@@ -9,12 +15,6 @@ Graphical User Interface
    image is captured headlessly from the live ImSwitch2 widget code,
    so this page stays in sync with the actual UI.  See
    :doc:`how-to/auto-screenshots`.
-
-
-This page walks through the ImControl window panel by panel.  For what
-the module is and what else it can do, see :doc:`imcontrol`; for the
-shortcuts and state-saving that apply across every module, see
-:doc:`working-in-imswitch2`.
 
 
 Detector Settings
