@@ -20,7 +20,8 @@ from pyqtgraph.dockarea import Dock
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcontrol.view.ImConMainView import (
-    ImConMainView, _MAX_DOCK_STRETCH, _MIN_DOCK_STRETCH, _dockTitleHeight,
+    ImConMainView, _LayoutPreservingDockArea, _MAX_DOCK_STRETCH,
+    _MIN_DOCK_STRETCH, _dockTitleHeight,
 )
 from imswitch.imcontrol.view.widgets.basewidgets import (
     PANEL_MINIMUM_HEIGHT, Widget, WidgetFactory,
@@ -166,3 +167,75 @@ def test_image_dock_outweighs_the_panel_columns(qtbot):
 def test_every_docked_panel_class_is_a_scrollable_widget():
     """A new panel must not be able to opt out of shrinking by accident."""
     assert Widget.scrollablePanel is True
+
+
+# ----------------------------------------------------------------------
+# Rearranging one part of the layout must leave the rest of it alone
+# ----------------------------------------------------------------------
+
+def _threeColumnArea(qtbot):
+    """Two panel columns either side of a wide middle dock, as ImControl has."""
+    area = _LayoutPreservingDockArea()
+    qtbot.addWidget(area)
+    docks = {name: Dock(name, size=(1, 1)) for name in
+             ('Left', 'Middle', 'RightTop', 'RightBottom')}
+    for dock in docks.values():
+        dock.addWidget(QtWidgets.QWidget())
+    area.addDock(docks['Left'], 'left')
+    area.addDock(docks['Middle'], 'right', docks['Left'])
+    area.addDock(docks['RightTop'], 'right', docks['Middle'])
+    area.addDock(docks['RightBottom'], 'bottom', docks['RightTop'])
+    area.resize(900, 600)
+    area.show()
+    qtbot.waitExposed(area)
+    return area, docks
+
+
+def test_rearranging_one_column_leaves_the_others_where_they_were(qtbot):
+    """The reported bug: moving a dock on the right shrank the panel on the left.
+
+    A column's stretch is the sum of its docks', so any dock move changes it,
+    and pyqtgraph answers a descendant's stretch change by re-dividing every
+    splitter on the way up from the stretch factors alone -- discarding every
+    width the user had dragged, anywhere in the window.
+    """
+    area, docks = _threeColumnArea(qtbot)
+    top = area.topContainer
+
+    # What the user does first: drag the splitter to widen the left column.
+    widened = [360, 340, 200]
+    top.setSizes(widened)
+    qtbot.wait(10)
+    before = top.sizes()
+    assert before[0] > 300, 'setup: the left column should now be the wide one'
+
+    # ...and then rearranges something on the far side of the window.
+    area.moveDock(docks['RightBottom'], 'top', docks['RightTop'])
+    qtbot.wait(10)
+
+    assert top.sizes() == before
+
+
+def test_a_container_that_gains_a_dock_still_makes_room_for_it(qtbot):
+    """The suppression must not stop the moved-into column laying itself out."""
+    area, docks = _threeColumnArea(qtbot)
+
+    rightColumn = docks['RightTop'].container()
+    area.moveDock(docks['Left'], 'bottom', docks['RightBottom'])
+    qtbot.wait(10)
+
+    assert docks['Left'].container() is rightColumn
+    assert docks['Left'].height() > 0
+
+
+def test_stretch_values_still_travel_up_past_a_suppressed_resize(qtbot):
+    """Only the resize is suppressed; the containers above still need the value."""
+    area, docks = _threeColumnArea(qtbot)
+    top = area.topContainer
+    rightColumn = docks['RightTop'].container()
+
+    docks['RightTop'].setStretch(rightColumn.stretch()[0] + 500, 400)
+    qtbot.wait(10)
+
+    assert rightColumn.stretch()[0] >= 500
+    assert top.stretch()[0] >= rightColumn.stretch()[0]

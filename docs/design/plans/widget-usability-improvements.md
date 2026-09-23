@@ -63,6 +63,20 @@ scrolling rather than being clipped by minimum-size constraints.
   `move()` places the frame while `resize()` sizes the client area, so the
   title bar hung below the available area; the frame margins are measured
   after `show()` and subtracted.
+- **Rearranging one column no longer resizes the others.** A column's stretch
+  is the sum of its docks', so *any* dock move changes it -- and pyqtgraph
+  answers a descendant's stretch change by running `updateStretch()` on every
+  container up to the top, each of which re-divides its own splitter from the
+  stretch factors alone. Moving a dock in the right-hand column therefore
+  threw away every width the user had dragged, including the left column's.
+  `_LayoutPreservingDockArea` (in `ImConMainView`) hands out container
+  subclasses whose `childStretchChanged` still carries the new stretch value
+  upward but suppresses the resize; containers whose own children changed
+  reach `updateStretch()` through `insert()` / `childEvent_()` instead and
+  still lay themselves out, because room has to be made for a dock that just
+  arrived. Measured against stock pyqtgraph, columns went from
+  `[357, 337, 198]` to `[297, 298, 297]` on a move in the right column; they
+  now stay put.
 - **Tools > Reset panel layout** puts the docks back where the setup file puts
   them, at content-derived sizes -- the way back from a layout that a drag
   rearranged.

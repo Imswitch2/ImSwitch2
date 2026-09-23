@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from pyqtgraph.dockarea import Dock, DockArea
+from pyqtgraph.dockarea.Container import HContainer, VContainer
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
@@ -9,6 +10,58 @@ from imswitch.imcommon.view import PickDatasetsDialog
 from . import widgets
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
+
+
+class _ResizeOnlyWhatMoved:
+    """ Mixin: a descendant's stretch change must not re-divide our own panes.
+
+    pyqtgraph turns stretch factors into splitter sizes in
+    ``Container.updateStretch()``, and every container between the dock and
+    the top runs it whenever a *descendant's* stretch changes -- which any
+    dock move does, because a column's stretch is the sum of its docks'.  So
+    dragging a dock inside the right-hand column re-divided the whole window
+    width from stretch factors alone and threw away every splitter the user
+    had dragged, including ones nowhere near the dock they moved.
+
+    The stretch value still has to travel upward (the containers above need it
+    for the next real layout), so this suppresses only the resize.  Containers
+    whose own children changed reach ``updateStretch()`` through
+    ``insert()`` / ``childEvent_()`` instead, and still lay themselves out --
+    room has to be made for a dock that just arrived.
+    """
+
+    _suppressResize = False
+
+    def childStretchChanged(self):
+        self._suppressResize = True
+        try:
+            self.updateStretch()
+        finally:
+            self._suppressResize = False
+
+    def setSizes(self, sizes):
+        if self._suppressResize:
+            return
+        super().setSizes(sizes)
+
+
+class _StableVContainer(_ResizeOnlyWhatMoved, VContainer):
+    pass
+
+
+class _StableHContainer(_ResizeOnlyWhatMoved, HContainer):
+    pass
+
+
+class _LayoutPreservingDockArea(DockArea):
+    """ A DockArea that only re-lays-out the part of the layout you changed. """
+
+    def makeContainer(self, typ):
+        if typ == 'vertical':
+            return _StableVContainer(self)
+        if typ == 'horizontal':
+            return _StableHContainer(self)
+        return super().makeContainer(typ)
 
 
 class ImConMainView(QtWidgets.QMainWindow):
@@ -138,7 +191,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         otherDockKeys = ['Image']
         allDockKeys = list(rightDockInfos.keys()) + list(leftDockInfos.keys()) + otherDockKeys
 
-        self.dockArea = DockArea()
+        self.dockArea = _LayoutPreservingDockArea()
         enabledDockKeys = self.viewSetupInfo.availableWidgets
         if enabledDockKeys is False:
             enabledDockKeys = []
