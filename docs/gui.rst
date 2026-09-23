@@ -8,6 +8,35 @@ and what else it can do, see :doc:`imcontrol`; for the shortcuts and
 state-saving that apply across every module, see
 :doc:`working-in-imswitch2`.
 
+.. admonition:: Documentation TODO — this page
+   :class: danger
+
+   Outstanding work on the Widgets page, recorded 2026-09-23.
+
+   * **Coverage.**  13 of the 42 captured widgets appear here.  The likely
+     candidates for adding are the scan variants (``ScanWidgetPointScan``,
+     ``ScanWidgetMoNaLISA``, ``ScanWidgetAdvanced``), ``ViewerToolsWidget``,
+     ``LineProfileWidget``, ``AutofocusWidget``, ``RotatorWidget``,
+     ``FLIMHistWidget`` and ``SetupModesWidget``.  The ``TriggerScope*`` and
+     device-specific captures probably belong with their hardware pages
+     instead, not here.
+   * **Unpopulated captures.**  A widget whose contents are added by its
+     controller renders as an empty frame when captured standalone.  The View
+     widget already uses the populated ``mock-View.png`` for this reason; the
+     same swap may suit others, and the mock-setup pass produces one image per
+     dock to choose from.
+   * **Five widgets cannot be captured at all.**  ``CoordTransformWidget``,
+     ``EtMonalisaWidget`` and ``EtSTEDWidget`` fail with OpenGL errors — they
+     need a real GL context, as ImProcess does — and ``MotCorrWidget`` needs a
+     constructor stub in ``WIDGET_STUBS``.
+   * **SLMWidget has a latent import bug.**  It calls ``pg.dockarea.DockArea()``
+     while importing only ``pyqtgraph``, which resolves in the running
+     application solely because ``ImConMainView`` imports that submodule first.
+     The screenshot tool works around it; the widget should import it itself.
+   * **Image resolution.**  Captures are taken at 1x device pixel ratio, so a
+     small widget yields a small image.  Capturing at 2x and displaying at
+     native size would keep them sharp at any zoom.
+
 .. note::
 
    The screenshots on this page live under ``docs/images/auto/`` and
@@ -361,32 +390,3 @@ one scan step per pixel.
 .. image:: ./images/auto/BeadRecWidget.png
    :width: 600px
    :align: center
-
-.. admonition:: Documentation TODO — this page
-   :class: danger
-
-   Outstanding work on the Widgets page, recorded 2026-09-23.
-
-   * **Coverage.**  13 of the 42 captured widgets appear here.  The likely
-     candidates for adding are the scan variants (``ScanWidgetPointScan``,
-     ``ScanWidgetMoNaLISA``, ``ScanWidgetAdvanced``), ``ViewerToolsWidget``,
-     ``LineProfileWidget``, ``AutofocusWidget``, ``RotatorWidget``,
-     ``FLIMHistWidget`` and ``SetupModesWidget``.  The ``TriggerScope*`` and
-     device-specific captures probably belong with their hardware pages
-     instead, not here.
-   * **Unpopulated captures.**  A widget whose contents are added by its
-     controller renders as an empty frame when captured standalone.  The View
-     widget already uses the populated ``mock-View.png`` for this reason; the
-     same swap may suit others, and the mock-setup pass produces one image per
-     dock to choose from.
-   * **Five widgets cannot be captured at all.**  ``CoordTransformWidget``,
-     ``EtMonalisaWidget`` and ``EtSTEDWidget`` fail with OpenGL errors — they
-     need a real GL context, as ImProcess does — and ``MotCorrWidget`` needs a
-     constructor stub in ``WIDGET_STUBS``.
-   * **SLMWidget has a latent import bug.**  It calls ``pg.dockarea.DockArea()``
-     while importing only ``pyqtgraph``, which resolves in the running
-     application solely because ``ImConMainView`` imports that submodule first.
-     The screenshot tool works around it; the widget should import it itself.
-   * **Image resolution.**  Captures are taken at 1x device pixel ratio, so a
-     small widget yields a small image.  Capturing at 2x and displaying at
-     native size would keep them sharp at any zoom.
