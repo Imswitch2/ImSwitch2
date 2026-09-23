@@ -9,8 +9,8 @@
     {"key": "parity",           "label": "Parity",           "type": "select", "default": "none",  "req": false, "grp": "Advanced", "tip": "",                           "opts": ["none","even","odd"]},
     {"key": "stopbits",         "label": "Stop Bits",        "type": "select", "default": 1,     "req": false, "grp": "Advanced", "tip": "",                           "opts": [1, 2]},
     {"key": "encoding",         "label": "Encoding",         "type": "text",   "default": "ascii", "req": false, "grp": "Advanced", "tip": "",                           "opts": []},
-    {"key": "recv_termination", "label": "Recv Termination", "type": "select", "default": "\\n",   "req": false, "grp": "Advanced", "tip": "",                           "opts": ["\\n","\\r","\\r\\n"]},
-    {"key": "send_termination", "label": "Send Termination", "type": "select", "default": "\\n",   "req": false, "grp": "Advanced", "tip": "",                           "opts": ["\\n","\\r","\\r\\n"]},
+    {"key": "recv_termination", "label": "Recv Termination", "type": "select", "default": "\n",    "req": false, "grp": "Advanced", "tip": "Line ending the device sends: \\r = CR, \\n = LF, \\r\\n = CR+LF", "opts": ["\n","\r","\r\n"]},
+    {"key": "send_termination", "label": "Send Termination", "type": "select", "default": "\n",    "req": false, "grp": "Advanced", "tip": "Line ending the device expects: \\r = CR, \\n = LF, \\r\\n = CR+LF", "opts": ["\n","\r","\r\n"]},
     {"key": "rtscts",           "label": "RTS/CTS",          "type": "text",   "default": "false", "req": false, "grp": "Advanced", "tip": "",                           "opts": []},
     {"key": "dsrdtr",           "label": "DSR/DTR",          "type": "text",   "default": "false", "req": false, "grp": "Advanced", "tip": "",                           "opts": []},
     {"key": "xonxoff",          "label": "XON/XOFF",         "type": "text",   "default": "false", "req": false, "grp": "Advanced", "tip": "",                           "opts": []}

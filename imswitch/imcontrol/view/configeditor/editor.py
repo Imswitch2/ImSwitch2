@@ -1253,6 +1253,26 @@ def _field_default(field_def: dict):
     return default
 
 
+_OPTION_ESCAPES = {"\\": "\\\\", "\r": "\\r", "\n": "\\n", "\t": "\\t"}
+
+
+def _option_label(option) -> str:
+    """How a select option reads in its combo box.
+
+    A line ending is an option like any other, but a carriage return shown
+    as itself is an invisible item. Control characters are written as their
+    escapes, and so is a backslash: the two characters ``\\r`` an older
+    editor saved must read differently from the carriage return it meant.
+    """
+    text = str(option)
+    if not any(ch in _OPTION_ESCAPES or ord(ch) < 32 for ch in text):
+        return text
+    return "".join(
+        _OPTION_ESCAPES.get(ch, f"\\x{ord(ch):02x}" if ord(ch) < 32 else ch)
+        for ch in text
+    )
+
+
 # =============================================================================
 # FieldWidget – single editable field row
 # =============================================================================
@@ -1310,7 +1330,7 @@ class FieldWidget(QWidget):
             if _coercion_module is not None:
                 options = _coercion_module.options_like(options, value)
             for option in options:
-                self._w.addItem(str(option), option)
+                self._w.addItem(_option_label(option), option)
             # Configs can outlive their template/plugin version.  Keeping the
             # saved value selectable prevents an open-and-save cycle from
             # silently changing it to the first currently known option.
@@ -1318,9 +1338,9 @@ class FieldWidget(QWidget):
             if idx < 0 and value is not None:
                 # A ``"9600"`` saved by an older editor should still land on
                 # the 9600 entry rather than gaining a second, identical one.
-                idx = self._w.findText(str(value))
+                idx = self._w.findText(_option_label(value))
             if idx < 0 and value is not None:
-                self._w.addItem(str(value), value)
+                self._w.addItem(_option_label(value), value)
                 idx = self._w.findData(value)
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
