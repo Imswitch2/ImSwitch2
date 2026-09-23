@@ -263,7 +263,7 @@ Optional map overriding keyboard-shortcut bindings by **action ID**. Every
 shortcut-able action has a stable ID (e.g. ``recording.toggleRecord``,
 ``view.toggleLiveView``, ``settings.nextDetector``, ``app.saveWidgetStates``,
 ``positioner.<name>.<axis>.plus``). Without this section, code defaults apply
-(see :doc:`gui`).
+(see :doc:`working-in-imswitch2`).
 
 Each entry maps an action ID to:
 

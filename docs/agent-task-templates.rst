@@ -14,11 +14,11 @@ deploy without human review.
 
 Agents must follow ``AGENTS.md``. In particular:
 
-* no direct hardware execution,
-* no hardware timing changes unless explicitly requested,
-* no API-breaking changes without maintainer approval,
-* tests or documentation checks are required,
-* red-zone files require explicit risk notes.
+1. No direct hardware execution
+2. No hardware timing changes unless explicitly requested
+3. No API-breaking changes without maintainer approval
+4. Tests or documentation checks are required
+5. Red-zone files require explicit risk notes
 
 Standard Prompt Format
 ----------------------
@@ -212,11 +212,11 @@ Review Checklist for Returned Agent Work
 
 Before accepting an agent commit:
 
-* inspect ``git show --stat`` and ``git show`` for scope creep,
-* verify no unrelated files were changed,
-* check red-zone files and risk notes,
-* run focused tests,
-* run the no-hardware suite when shared behavior changed,
-* confirm docs links resolve and examples use current APIs,
-* decide whether to keep, amend, or revert the agent commit before stacking new
-  work on top.
+1. Inspect ``git show --stat`` and ``git show`` for scope creep
+2. Verify no unrelated files were changed
+3. Check red-zone files and risk notes
+4. Run focused tests
+5. Run the no-hardware suite when shared behavior changed
+6. Confirm docs links resolve and examples use current APIs
+7. Decide whether to keep, amend, or revert the agent commit before stacking
+   new work on top

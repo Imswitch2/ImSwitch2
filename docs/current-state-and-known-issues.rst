@@ -121,10 +121,10 @@ BeadRec follow-up work
 The BeadRec core architecture pass is implemented, but follow-up UX and testing
 work remains:
 
-* replace the legacy run checkbox with clearer Start/Stop controls,
-* add richer typed worker error reporting,
-* consider optional ROI/default persistence,
-* add fake-controller tests for scan lifecycle and detector chunks.
+1. Replace the legacy run checkbox with clearer Start/Stop controls
+2. Add richer typed worker error reporting
+3. Consider optional ROI/default persistence
+4. Add fake-controller tests for scan lifecycle and detector chunks
 
 Event-triggered workflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -172,8 +172,8 @@ Rules for New Work
 
 Before starting a task:
 
-* check ``AGENTS.md`` for red-zone boundaries,
-* prefer no-hardware tests first,
-* keep changes narrowly scoped,
-* do not remove compatibility signals or public APIs without review,
-* document risks in PR descriptions for any hardware-adjacent change.
+1. Check ``AGENTS.md`` for red-zone boundaries
+2. Prefer no-hardware tests first
+3. Keep changes narrowly scoped
+4. Do not remove compatibility signals or public APIs without review
+5. Document risks in PR descriptions for any hardware-adjacent change

@@ -10,6 +10,20 @@ Imswitch2 can produce — MoNaLISA, STED, FLIM, confocal, widefield,
 WidefieldSTARSS, SNOUTY lightsheet — can be opened, viewed and
 post-processed with the same shell.
 
+.. image:: ./images/auto/improcess-main-window.png
+   :alt: The ImProcess module of ImSwitch2
+   :align: center
+
+The ImProcess window: the reconstructor's parameters and the raw-data
+pane on the left, the napari viewer holding the produced results in the
+middle, and the results list on the right.
+
+.. toctree::
+    :hidden:
+
+    improcess-workflows
+    improcess-napari-plugins
+
 Why the rename
 ==============
 
@@ -1697,5 +1711,5 @@ See also
   plugins (dock widgets and readers), and taking layers back
 * :doc:`improcess-workflows` — reconstructing and processing without the
   GUI: batch workflows, ports, saves, binding, replay
-* :doc:`gui` — main GUI overview (Imcontrol)
+* :doc:`imcontrol` — the ImControl module (hardware control)
 * :doc:`modules` — list of Imswitch2 modules

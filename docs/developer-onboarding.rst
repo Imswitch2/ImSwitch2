@@ -19,8 +19,8 @@ Quick Start
 
    .. code-block:: bash
 
-      git clone https://github.com/Imswitch2/Imswitch2.git
-      cd Imswitch2
+      git clone https://github.com/Imswitch2/ImSwitch2.git
+      cd ImSwitch2
       pip install -e .
       pip install -r requirements-dev.txt
 
@@ -53,8 +53,11 @@ Understanding the Codebase
 
 Before making changes, familiarize yourself with the architecture:
 
-* **Architecture overview:** ``docs/design/ARCHITECTURE.md``
-  
+* **Architecture overview:** start with :ref:`architecture-at-a-glance` on
+  the home page, which maps ImControl, ImProcess, ImScripting, ImCommon and
+  PluginAPI onto the model-view-presenter layers.  Then read
+  ``docs/design/ARCHITECTURE.md`` for the full dependency detail:
+
   * Manager inventory (hardware abstraction layer)
   * Controller→Manager matrix (which controllers use which hardware)
   * Startup flow (initialization sequence)
@@ -387,8 +390,8 @@ Getting Help
 
 * **Check existing issues:**
 
-  * `GitHub Issues <https://github.com/Imswitch2/Imswitch2/issues>`_
-  * `GitHub Discussions <https://github.com/Imswitch2/Imswitch2/discussions>`_
+  * `GitHub Issues <https://github.com/Imswitch2/ImSwitch2/issues>`_
+  * `GitHub Discussions <https://github.com/Imswitch2/ImSwitch2/discussions>`_
 
 * **Open a discussion** before starting large changes:
 
@@ -412,7 +415,7 @@ Resources
 
 **External:**
 
-* `ImSwitch2 GitHub <https://github.com/Imswitch2/Imswitch2>`_
+* `ImSwitch2 GitHub <https://github.com/Imswitch2/ImSwitch2>`_
 * `Python Community Guidelines <https://www.python.org/psf/conduct/>`_
 * `Conventional Commits <https://www.conventionalcommits.org/>`_
 

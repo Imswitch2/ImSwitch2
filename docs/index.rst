@@ -28,6 +28,8 @@ the user perspective (GUI description and use cases) as well as for
 developers (scripting and API modules, and hardware control and JSON
 config files).
 
+.. _architecture-at-a-glance:
+
 Architecture at a glance
 ========================
 
@@ -77,13 +79,12 @@ The parts
     clients call.
 
 **ImProcess** — ``imswitch.improcess``
-    Image processing and reconstruction, and the module most useful on
-    its own: ``python -m imswitch.improcess`` starts it standalone for
-    offline work.  Its model layer is a registry of two plugin
-    contracts — a *Reconstructor* turns raw data into a result, and
-    *Processors* are stackable steps that turn results into further
-    results.  Its live pipeline can read a recording while ImControl is
-    still writing it.
+    Image processing and reconstruction.  ``python -m imswitch.improcess``
+    starts it standalone for offline work.  Its model layer is a registry
+    of two plugin contracts — a *Reconstructor* turns raw data into a
+    result, and *Processors* are stackable steps that turn results into
+    further results.  Its live pipeline can read a recording while
+    ImControl is still writing it.
 
 **ImScripting** — ``imswitch.imscripting``
     The editor and console for automating the microscope.  Its model
@@ -119,8 +120,9 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
 
 .. toctree::
     :hidden:
-    :caption: Software info
+    :caption: General information
 
+    Home <self>
     installation
     developer-onboarding
     agent-task-templates
@@ -132,17 +134,10 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     :hidden:
     :caption: Usage
 
-    gui
-    advanced-scanning
+    working-in-imswitch2
+    imcontrol
     improcess
-    improcess-napari-plugins
-    improcess-workflows
-    tiling
-    zstack-workflow
-    use-cases
     scripting
-    scripting-wfs-workflows
-    scripting-time-resolved-workflows
 
 .. toctree::
     :hidden:

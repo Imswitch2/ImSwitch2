@@ -2,9 +2,9 @@
 Installation
 ************
 
-Imswitch2 is a Python application.  There is no Windows ``.exe`` bundle —
+ImSwitch2 is a Python application.  There is no Windows ``.exe`` bundle —
 the original ImSwitch project shipped one, but it is **no longer
-maintained** in Imswitch2.  Install from source or PyPI instead.
+maintained** in ImSwitch2.  Install from source or PyPI instead.
 
 Requirements
 ============
@@ -21,13 +21,13 @@ Option A: Install from PyPI
 
 .. code-block:: bash
 
-   pip install imswitch
+   pip install imswitch2
 
 Then launch:
 
 .. code-block:: bash
 
-   imswitch
+   imswitch2
 
 .. note::
 
@@ -40,8 +40,8 @@ Option B: Install from source (recommended for developers)
 
 .. code-block:: bash
 
-   git clone https://github.com/Imswitch2/Imswitch2.git
-   cd Imswitch2
+   git clone https://github.com/Imswitch2/ImSwitch2.git
+   cd ImSwitch2
    pip install -e .
 
    # Optional extras
@@ -58,7 +58,7 @@ Launch:
 
    python -m imswitch
 
-On first launch Imswitch2 creates ``~/ImSwitchConfig/`` (or
+On first launch ImSwitch2 creates ``~/ImSwitchConfig/`` (or
 ``%USERPROFILE%\Documents\ImSwitchConfig\`` on Windows) and opens a
 setup-picker dialog.  Pick ``example_no_hardware.json`` to explore the
 UI without any device connected.
@@ -71,7 +71,7 @@ Some device managers depend on vendor-supplied Python packages that are
 **not on PyPI**.  They are not declared as project dependencies — if a
 manager needs one, install it manually following the vendor's procedure.
 When the SDK is missing, the manager logs a warning and falls back to a
-mock device, so ImSwitch will still start.
+mock device, so ImSwitch2 will still start.
 
 The pattern below is illustrative; the same approach applies to other
 vendor SDKs (Hamamatsu DCAM, Andor SDK3, Basler pylon, etc.).
@@ -91,12 +91,12 @@ and install it.  Inside the install folder, find
 **2. Install the Python package.**  Recent SDK releases ship as a source
 tree (no ``.whl``).  From a writable copy of the Python Toolkit folder:
 
-.. code-block:: bash
+.. code-block:: text
 
    cd C:\dev\thorlabs_tsi_sdk_src    # your writable copy
    pip install .
 
-Verify the import works in your ImSwitch env:
+Verify the import works in your ImSwitch2 env:
 
 .. code-block:: bash
 
@@ -122,7 +122,7 @@ a folder of your choice, then point the manager at it via the detector's
    }
 
 Use an absolute path with forward slashes — relative paths are resolved
-against ImSwitch's current working directory at launch time, which is
+against ImSwitch2's current working directory at launch time, which is
 easy to get wrong.
 
 **4. Test without hardware.**  Set ``cameraSerial`` to any string starting
