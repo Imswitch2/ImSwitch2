@@ -8,6 +8,7 @@ from ast import literal_eval
 
 from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step
+from ._acquisition_layout_source import build_controller_point_scan_layouts
 from imswitch.imcommon.view.guitools import colorutils
 from PyQt5.QtCore import QTimer
 import copy
@@ -73,6 +74,10 @@ class ScanControllerMoNaLISA(SuperScanController):
 
     def getScanStepSizes(self):
         return self._analogParameterDict['axis_step_size']
+
+    def getAcquisitionLayouts(self, detectorNames):
+        """Return the detector-local event layout authored by this scan."""
+        return build_controller_point_scan_layouts(self, detectorNames)
 
     def setParameters(self):
         self.settingParameters = True

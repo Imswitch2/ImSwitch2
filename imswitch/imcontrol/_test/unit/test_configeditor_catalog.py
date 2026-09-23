@@ -42,7 +42,7 @@ class TestConfigEditorCatalog:
         expected_builtins = {
             "AVManager": {
                 "category": "detectors",
-                "display": "Generic video detector (OpenCV)",
+                "display": "Synthetic camera (mock frames; no video driver is bundled)",
             },
             "HamamatsuManager": {
                 "category": "detectors",

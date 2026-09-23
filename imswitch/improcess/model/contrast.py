@@ -6,9 +6,15 @@ from typing import Any
 
 import numpy as np
 
-# Above this many elements, a plain in-memory ndarray is downsampled before
-# computing percentiles/histograms so display-only operations stay cheap.
-_SAMPLE_ELEMENT_THRESHOLD = 64 * 1024 * 1024
+# A plain in-memory ndarray is downsampled before computing percentiles or
+# histograms once the working set the exact path allocates -- a float64 copy,
+# a finite mask and the compacted result, _WORKING_SET_BYTES_PER_ELEMENT per
+# element -- exceeds this budget. The threshold used to count ELEMENTS
+# (64 Mi), which is dtype-blind and measures the one quantity that does not
+# determine the cost: a 16-frame 2048x2048 uint16 stack, exactly at it, paid
+# a ~1 GiB transient for two numbers on the contrast slider.
+_SAMPLE_WORKING_SET_BYTES = 256 * 1024 * 1024
+_WORKING_SET_BYTES_PER_ELEMENT = 8 + 1 + 8
 _MAX_SAMPLE_VALUES = 2_000_000
 
 
@@ -28,7 +34,7 @@ def _should_sample(data: Any) -> bool:
     materialized in full via ``np.asarray``/``__array__``.
     """
     if isinstance(data, np.ndarray):
-        return data.size > _SAMPLE_ELEMENT_THRESHOLD
+        return data.size * _WORKING_SET_BYTES_PER_ELEMENT > _SAMPLE_WORKING_SET_BYTES
     return True
 
 

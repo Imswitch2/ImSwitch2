@@ -443,6 +443,21 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         parameterGrid.addWidget(self._activeReconstructorCombo, 0, 0)
         parameterGrid.addWidget(self.parTree, 1, 0)
+        # What the source inspection found, for every reconstructor rather than
+        # only the ones whose own widget happens to implement a hook for it.
+        # A recording that stopped at four of six scan positions used to open
+        # looking like an ordinary four-frame stack, because the inspection
+        # that knew better had nowhere to go.
+        self.sourceInspectionLabel = QtWidgets.QLabel()
+        self.sourceInspectionLabel.setWordWrap(True)
+        self.sourceInspectionLabel.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse
+        )
+        self.sourceInspectionLabel.setStyleSheet(
+            'QLabel { color: #d08b28; padding: 4px; }'
+        )
+        self.sourceInspectionLabel.hide()
+        parameterGrid.addWidget(self.sourceInspectionLabel, 2, 0)
         self.parameterGrid = parameterGrid
 
         # Single DockArea backs the central widget so every panel is a
@@ -1728,6 +1743,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def addNewData(self, reconObj, name):
         self.reconstructionWidget.addNewData(reconObj, name)
+
+    def setSourceInspection(self, summary: str, severity: str = 'warning') -> None:
+        """Show, in the Parameters dock, what is unusual about the loaded data.
+
+        Shared by every reconstructor: the alternative was a per-plugin hook
+        that exactly one plugin implemented, so for the default view the whole
+        inspection -- an incomplete scan included -- was assembled and then
+        discarded.
+        """
+        label = getattr(self, 'sourceInspectionLabel', None)
+        if label is None:
+            return
+        if not summary:
+            label.clear()
+            label.hide()
+            return
+        colour = '#c0392b' if severity == 'error' else '#d08b28'
+        label.setStyleSheet(f'QLabel {{ color: {colour}; padding: 4px; }}')
+        label.setText(summary)
+        label.show()
 
     def setParameterWidget(self, widget):
         """Replace the legacy parameter tree with the active reconstructor UI."""

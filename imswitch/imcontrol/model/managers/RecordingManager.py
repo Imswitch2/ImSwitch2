@@ -1,5 +1,6 @@
 import enum
 import json
+import math
 import os
 import shutil
 import time
@@ -7,19 +8,35 @@ import threading
 import queue
 from datetime import datetime, timezone
 from io import BytesIO
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from dataclasses import replace as dataclass_replace
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import h5py
 import sip
 import zarr
 import numpy as np
+from imswitch.imcommon.model.acquisition_metadata import VALID_COMPLETION_OUTCOMES
 import tifffile as tiff
 from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Worker
 from imswitch.imcommon.model import (
-    initLogger, JSON_ATTR_PREFIX, NOTES_ATTR_CATEGORY,
+    ACQUISITION_LAYOUT_SCHEMA,
+    AcquisitionLayout,
+    AcquisitionLayoutError,
+    JSON_ATTR_PREFIX,
+    LayoutIssue,
+    NOTES_ATTR_CATEGORY,
+    decode_acquisition_layout,
+    encode_acquisition_layout,
+    initLogger,
+    validate_acquisition_layout,
+)
+from imswitch.imcommon.model.acquisition_layout import (
+    PAYLOAD_ASSEMBLED_IMAGE,
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    scan_position_count,
 )
 import abc
 import logging
@@ -42,29 +59,119 @@ install_zarr_create_array_compat()
 # Recording loop constants
 FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
 DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive within this period
+#: A detector is declared stalled after this many of *its own* declared frame
+#: intervals without a frame, never sooner than DEFAULT_STALL_TIMEOUT. The flat
+#: ten seconds alone was a proxy for "this detector has died" sized for a
+#: camera that frames at least every few seconds; a 30 s luminescence exposure
+#: -- routine, and within what the Orca-Quest and Zelux will do -- was killed
+#: at frame zero as stalled, with a message about scan TTL wiring in a mode
+#: that has no scan, and its file deleted. The manager already reads each
+#: detector's exposure or frame interval for the OME metadata; the watchdog
+#: now reads the same number.
+STALL_FRAME_INTERVALS = 3.0
 _RECORDING_CHUNK_CONSUMER = 'RecordingManager'  # readChunk consumer key (see DetectorManager.readChunk)
-RECORDING_ARM_TIMEOUT = 5.0  # seconds; max wait for detectors to arm before starting a scan
 RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
 
 # Off-thread writer constants
-WRITER_QUEUE_MAXSIZE = 64  # Bounded queue size for backpressure (blocks acquisition when full)
-# Finishing a recording drains whatever the writer queue holds: up to
-# WRITER_QUEUE_MAXSIZE chunks of full-size camera frames, which can be many
-# gigabytes and take minutes on a slow disk. The drain is therefore bounded
-# by *progress*, not by a fixed deadline: the writer is only given up on
-# after this long without writing anything (stall), or after
-# WRITER_FINALIZE_TIMEOUT_S inside the storer's single finalize call, which
-# cannot report progress. Aborting (which discards data) keeps a fixed bound.
+#: How much unwritten frame data may sit between the acquisition loop and the
+#: storer before the acquisition loop is made to wait. This is the buffer that
+#: absorbs a disk or compression hiccup, so it is stated in bytes: it used to
+#: be 64 *queue items*, and an item holds whatever one poll returned. At the
+#: 0.1 ms poll interval below that is about one frame, so the buffer was 64
+#: frames -- 7 ms on a fast camera, not the seconds the number suggests, and
+#: less than the detector-side budget downstream of it. A recording could not
+#: use its own buffer.
+WRITER_QUEUE_MAX_BYTES = 512 * 1024 * 1024
+
+# Finishing a recording drains whatever the writer queue holds -- up to
+# WRITER_QUEUE_MAX_BYTES of full-size camera frames, minutes of writing on a
+# slow disk -- so the drain is bounded by *progress*, not by a deadline: a
+# fixed one asserts a disk throughput nobody declared (512 MiB in 30 s is
+# 17 MiB/s), and missing it was not a warning -- the caller raised, cleanup
+# aborted, and the abort DELETED a recording whose frames had all been
+# captured. The writer is given up on only after this long without writing
+# anything (stall), or after WRITER_FINALIZE_TIMEOUT_S inside the storer's
+# single finalize call, which reports no progress of its own: queued bytes
+# have reached zero by then, so a bytes-only progress signal would call a
+# long compression flush a stall. Aborting discards the output anyway, so it
+# keeps a fixed bound.
 WRITER_STALL_TIMEOUT_S = 30.0
 WRITER_FINALIZE_TIMEOUT_S = 300.0
 WRITER_ABORT_TIMEOUT_S = 30.0
+
+
+def _framesNBytes(frames) -> int:
+    """Bytes one enqueued chunk of frames occupies."""
+    nbytes = getattr(frames, 'nbytes', None)
+    if nbytes is not None:
+        return int(nbytes)
+    try:
+        return int(sum(getattr(frame, 'nbytes', 0) for frame in frames))
+    except TypeError:
+        return 0
 WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
+#: How large one on-disk chunk of a streaming HDF5/Zarr dataset should be. A
+#: chunk is what a reader must decompress to reach any frame in it, so its
+#: *size* is the number that matters; the depth used to be the write batch,
+#: 32 frames, which is 100 kB for a small ROI, 256 MiB for a 2048x2048 camera
+#: (larger than any default chunk cache, so every frame read on the slider
+#: re-inflated the whole chunk, a ~30x read amplification), and 32 whole
+#: assembled volumes for a point detector -- which the old HDF5 file format
+#: refuses outright once a chunk reaches 4 GiB, at 128 MiB per volume. Sized
+#: from the frame, a small ROI gets a full write batch, a big camera one or
+#: two frames, and a point detector's volume exactly one, without any detector
+#: declaring anything. The write batch keeps its own meaning: how much the
+#: writer accumulates before flushing, which need not match the layout on
+#: disk. 4 MiB fits the 8 MiB chunk cache h5py opens files with on HDF5 2.x
+#: and sits in the single-digit-MiB range NGFF recommends.
+TARGET_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _chunkFrames(dtype, frameShape) -> int:
+    """Frames per on-disk chunk for frames of ``frameShape`` and ``dtype``."""
+    frameBytes = int(np.dtype(dtype).itemsize) * int(np.prod(frameShape, dtype=np.int64))
+    if frameBytes <= 0:
+        return 1
+    return int(max(1, min(WRITE_BATCH_FRAMES, TARGET_CHUNK_BYTES // frameBytes)))
+
+
+#: The longest a captured frame may sit in the writer's batch before it is
+#: written. A batch used to flush on frame count alone, so how stale the file
+#: on disk could be was 32 divided by the frame rate: 3 ms on a fast camera and
+#: 32 s at one frame per second -- and a recording shorter than the batch had
+#: no dataset on disk at all until it finalized. A live reader following the
+#: file saw nothing for the whole of a slow acquisition. Count still decides
+#: how *large* a write is; time decides how *late* it may be.
+WRITE_FLUSH_MAX_LATENCY_S = 0.5
 WRITER_OPEN_TIMEOUT_S = 30.0
+#: How long the detectors may take to arm once the writer has opened the file.
+DETECTOR_ARM_TIMEOUT_S = 5.0
+#: How long a scan controller waits for the recording to report armed before
+#: it starts the scan. The worker opens the file first (the writer has
+#: WRITER_OPEN_TIMEOUT_S for that) and arms the detectors second, so this
+#: outer wait contains both and must exceed their sum. It used to be a flat
+#: 5 s: a file open that took longer -- a network share, a folder with a few
+#: hundred recordings to number past -- was reported as "detectors did not
+#: report armed", the writer's own deadline could never be reached, and the
+#: abort that followed still blocked until the open it had given up on
+#: returned.
+RECORDING_ARM_TIMEOUT = WRITER_OPEN_TIMEOUT_S + DETECTOR_ARM_TIMEOUT_S
+#: How long the acquisition loop may sit blocked on a full writer queue before
+#: it says so. Well under any detector's chunk-queue budget, so the stall is
+#: reported before the overflow it causes rather than after it.
+PRODUCER_STALL_WARN_S = 1.0
 # SWMR requires HDF5 1.10+ object formats, but libver='latest' maps to
 # ('v200', 'v200') with HDF5 2.x. Pin the writer to the oldest SWMR-capable
 # format so Fiji/HDFView builds that do not understand HDF5 2.0 can still open
 # completed recordings.
 HDF5_STREAM_LIBVER = ('v110', 'v110')
+#: Width of the fixed-length completion-outcome attribute a streaming HDF5
+#: dataset is created with. It was a literal S13 -- the length of the longer
+#: of the two outcomes that existed -- so a third, longer outcome would have
+#: been cut to thirteen characters on modify without an error, and
+#: 'stopped_early_on_stall' would have become a valid, wrong 'stopped_early'.
+#: The width now follows the vocabulary it stores.
+COMPLETION_OUTCOME_ATTR_DTYPE = f"S{max(len(value) for value in VALID_COMPLETION_OUTCOMES)}"
 
 def annotationsFromAttrs(detectorAttrs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Pull the OME annotations out of one detector's flat attribute dict.
@@ -144,6 +251,133 @@ class Storer(abc.ABC):
         # None for legacy/fallback paths; storers that understand it (TiffStorer)
         # use it to write standard OME metadata.
         self.omeMeta: Dict[str, Any] = {}
+
+    @staticmethod
+    def _layout_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            key: value
+            for key, value in (attrs or {}).items()
+            if isinstance(key, str) and key.startswith("AcquisitionLayout:")
+        }
+
+    @staticmethod
+    def _ome_annotation_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
+        recording_keys = {
+            "recording:completion_outcome",
+            "recording:planned_frames",
+            "recording:actual_frames",
+            "recording:planned_partitions",
+            "recording:actual_partitions",
+            # Without this an OME-TIFF was the one format that could not tell
+            # a reader its camera had produced frames the scan did not account
+            # for -- the single fact this field exists to carry.
+            "recording:discarded_frames",
+        }
+        return {
+            key: value
+            for key, value in (attrs or {}).items()
+            if (
+                isinstance(key, str)
+                and (key.startswith("AcquisitionLayout:") or key in recording_keys)
+            )
+        }
+
+    def _set_ome_annotations(self, detectorName: str, attrs: Dict[str, Any]) -> None:
+        meta = (getattr(self, "omeMeta", None) or {}).get(detectorName)
+        if meta is not None:
+            meta.annotations.update(self._ome_annotation_attrs(attrs))
+
+    def _collapse_layout_frame_axis(self, detectorName: str) -> None:
+        """Drop the leading ``frame`` axis from the layout this file embeds.
+
+        A single-frame OME-TIFF stores the plane itself rather than a
+        one-element stack, so the container has one axis fewer than the layout
+        declares. The layout is then rejected outright -- an explicit layout
+        that disagrees with the container is never fallen back from, by design,
+        so a scan-driven detector's recording became unreadable rather than
+        merely unannotated. The frame axis is the one the storer dropped, so
+        the recorded layout drops it too and goes on describing what is
+        actually there.
+        """
+        meta = (getattr(self, "omeMeta", None) or {}).get(detectorName)
+        if meta is None:
+            return
+        encoded = meta.annotations.get("AcquisitionLayout:json")
+        if not encoded:
+            return
+        try:
+            layout = decode_acquisition_layout(encoded)
+            if not layout.storage_axes or layout.storage_axes[0] != "frame":
+                return
+            collapsed = replace(layout, storage_axes=layout.storage_axes[1:])
+            meta.annotations["AcquisitionLayout:json"] = (
+                encode_acquisition_layout(collapsed)
+            )
+        except Exception as error:
+            logger.warning(
+                f"Could not adapt the acquisition layout of {detectorName!r} "
+                f"to the collapsed single-frame TIFF axis; the file will carry "
+                f"a layout that does not match its rank: {error}"
+            )
+
+    def _snapshot_attrs(
+        self,
+        detectorName: str,
+        attrs: Dict[str, Any] | None,
+        image: Any,
+    ) -> Dict[str, Any]:
+        completed = dict(attrs or {})
+        array = np.asarray(image)
+        actual_frames = 1 if array.ndim <= 2 else int(array.shape[0])
+        completed.setdefault("recording:planned_frames", actual_frames)
+        completed["recording:actual_frames"] = actual_frames
+        completed.setdefault("recording:planned_partitions", 1)
+        completed["recording:actual_partitions"] = 1
+        completed["recording:completion_outcome"] = "complete"
+        self._set_ome_annotations(detectorName, completed)
+        return completed
+
+    def noteDiscardedFrames(self, discarded: Dict[str, int]) -> None:
+        """Frames the producer received beyond the plan and did not write.
+
+        Recorded per detector as ``recording:discarded_frames`` at finalize,
+        so a file whose camera ran free or was pulsed more often than the
+        scan declared does not look like a clean scan to a reader.
+        """
+        self._discardedFrames = {
+            str(k): int(v) for k, v in (discarded or {}).items() if int(v) > 0
+        }
+
+    def _finalize_recording_attrs(
+        self,
+        currentFrames: Dict[str, int],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Add final counts/outcomes without changing writer-liveness markers."""
+        finalized: Dict[str, Dict[str, Any]] = {}
+        source = getattr(self, "_attrs", {}) or {}
+        discarded = getattr(self, "_discardedFrames", {}) or {}
+        detector_names = set(source) | set(currentFrames)
+        for detectorName in detector_names:
+            attrs = dict(source.get(detectorName, {}) or {})
+            actual_frames = int(max(0, currentFrames.get(detectorName, 0)))
+            attrs["recording:discarded_frames"] = int(discarded.get(detectorName, 0))
+            planned_frames = attrs.get("recording:planned_frames")
+            try:
+                planned_frames = int(planned_frames) if planned_frames is not None else None
+            except (TypeError, ValueError):
+                planned_frames = None
+            attrs["recording:actual_frames"] = actual_frames
+            attrs.setdefault("recording:planned_partitions", 1)
+            attrs["recording:actual_partitions"] = 1
+            attrs["recording:completion_outcome"] = (
+                "stopped_early"
+                if planned_frames is not None and actual_frames < planned_frames
+                else "complete"
+            )
+            finalized[detectorName] = attrs
+            self._set_ome_annotations(detectorName, attrs)
+        self._attrs = finalized
+        return finalized
 
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Store snapshot images with metadata.
@@ -429,7 +663,12 @@ class ZarrStorer(Storer):
                                  for name in self._dimension_names(detectorName, dataset.ndim)]
         dataset.attrs['writing'] = writing
 
-        grouped = self._group_metadata_by_category(attrs)
+        for key, value in self._layout_attrs(attrs).items():
+            dataset.attrs[key] = self._zarr_attr_value(value)
+
+        grouped = self._group_metadata_by_category(
+            {key: value for key, value in attrs.items() if key not in self._layout_attrs(attrs)}
+        )
         if grouped:
             meta_group = det_group.create_group('metadata')
             for category, cat_attrs in grouped.items():
@@ -455,14 +694,12 @@ class ZarrStorer(Storer):
         if 'data' in det_group:
             raise ValueError(f'Zarr data array already exists for detector {detectorName}')
 
-        # Use multi-frame chunks for better compression ratio and fewer I/O ops
-        chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
         dataset = self._create_array(
             det_group,
             'data',
             shape=(0, *spatialShape),
             dtype=dtype,
-            chunks=(chunk_frames, *spatialShape),
+            chunks=(_chunkFrames(dtype, spatialShape), *spatialShape),
             dimension_names=self._dimension_names(
                 detectorName, 1 + len(spatialShape)
             ),
@@ -480,6 +717,9 @@ class ZarrStorer(Storer):
         # honours it never reads uninitialised chunks.
         dataset.attrs['recording:frames_committed'] = 0
 
+        for key, value in self._layout_attrs(attrs).items():
+            dataset.attrs[key] = self._zarr_attr_value(value)
+
         recording_attrs, other_attrs = self._split_recording_attrs(attrs)
         recording_attrs['detector_name'] = detectorName
         recording_attrs['dataset_path'] = (
@@ -492,7 +732,13 @@ class ZarrStorer(Storer):
             except Exception as e:
                 logger.debug(f'Could not save Zarr recording metadata {key}={value}: {e}')
 
-        grouped = self._group_metadata_by_category(other_attrs)
+        grouped = self._group_metadata_by_category(
+            {
+                key: value
+                for key, value in other_attrs.items()
+                if key not in self._layout_attrs(other_attrs)
+            }
+        )
         if grouped:
             meta_group = det_group.create_group('metadata')
             for category, cat_attrs in grouped.items():
@@ -529,7 +775,7 @@ class ZarrStorer(Storer):
             root.attrs['rec_mode'] = 'snap'
 
             for channel, image in images.items():
-                channel_attrs = attrs.get(channel, {})
+                channel_attrs = self._snapshot_attrs(channel, attrs.get(channel, {}), image)
                 self._createDetectorGroup(
                     root,
                     channel,
@@ -646,6 +892,7 @@ class ZarrStorer(Storer):
     def finalizeStream(self, currentFrames: Dict[str, int], filePaths: Dict[str, str],
                        recordingManager, saveMode: 'SaveMode') -> None:
         """Close Zarr stores and emit memory-recording signals when applicable."""
+        finalized_attrs = self._finalize_recording_attrs(currentFrames)
         for detectorName, dataset in self._datasets.items():
             dataset.attrs['writing'] = False
             if currentFrames[detectorName] < 1:
@@ -653,6 +900,43 @@ class ZarrStorer(Storer):
             dataset.attrs['recording:frames_committed'] = int(
                 max(0, currentFrames.get(detectorName, 0))
             )
+            for key, value in finalized_attrs.get(detectorName, {}).items():
+                if isinstance(key, str) and key.startswith("recording:"):
+                    dataset.attrs[key] = self._zarr_attr_value(value)
+
+        # A detector that delivered nothing has no array -- creation is lazy --
+        # so the store it leaves behind said nothing at all about which
+        # detector it was for or that a recording had been interrupted.
+        for detectorName, dest in self._fileDests.items():
+            if self._datasets.get(detectorName) is not None:
+                continue
+            if int(currentFrames.get(detectorName, 0)) > 0:
+                continue
+            root = self._roots.get(dest)
+            if root is None:
+                continue
+            attrs = finalized_attrs.get(detectorName, {}) or {}
+            try:
+                root.attrs['recording:detector_name'] = str(detectorName)
+                for key in (
+                    'recording:planned_frames',
+                    'recording:lapse_index',
+                    'recording:num_timepoints',
+                ):
+                    if key in attrs:
+                        root.attrs[key] = self._zarr_attr_value(attrs[key])
+                root.attrs['recording:completion_outcome'] = 'stopped_early'
+                root.attrs['recording:actual_frames'] = 0
+            except Exception as error:
+                logger.warning(
+                    f'Zarr finalize: could not describe the empty recording '
+                    f'for {detectorName!r}: {error}'
+                )
+            else:
+                logger.info(
+                    f'Recording for {detectorName!r} finalized with no frames; '
+                    f'the store holds no image and is marked stopped_early.'
+                )
 
         if saveMode == SaveMode.DiskAndRAM:
             for detectorName in self._datasets:
@@ -735,7 +1019,21 @@ class HDF5Storer(Storer):
         instead of losing it.
         """
         try:
-            target.attrs[key] = value
+            if key in target.attrs:
+                attr_id = target.attrs.get_id(key)
+                if attr_id.dtype.kind == "S" and isinstance(value, str):
+                    value = value.encode("utf-8")
+                if (attr_id.dtype.kind == "S" and isinstance(value, bytes)
+                        and len(value) > attr_id.dtype.itemsize):
+                    # modify() cuts a value to the attribute's fixed width
+                    # without a word; recreate the attribute at the width the
+                    # value needs instead.
+                    del target.attrs[key]
+                    target.attrs[key] = value
+                else:
+                    target.attrs.modify(key, value)
+            else:
+                target.attrs[key] = value
             return
         except Exception:
             pass
@@ -780,8 +1078,6 @@ class HDF5Storer(Storer):
         if maxshape is not None:
             # Extendable dataset for streaming (start with 0 frames)
             shape = maxshape[1:]
-            # Use multi-frame chunks for better compression ratio and fewer I/O ops
-            chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
             dataset = det_group.create_dataset(
                 'data',
                 shape=(0, *shape),
@@ -789,7 +1085,7 @@ class HDF5Storer(Storer):
                 dtype=dtype,
                 compression=self.compression,
                 shuffle=True if self.compression else False,
-                chunks=(chunk_frames, *shape)  # Multi-frame chunks for batched writes
+                chunks=(_chunkFrames(dtype, shape), *shape),
             )
         else:
             # Fixed dataset from data (snapshot)
@@ -813,9 +1109,23 @@ class HDF5Storer(Storer):
         # Dataset-level metadata
         dataset.attrs['detector_name'] = detectorName
         dataset.attrs['element_size_um'] = self._elementSizeUm(detectorName, dataset.ndim)
+        if data is not None:
+            dataset.attrs["writing"] = False
+
+        layout_attrs = self._layout_attrs(attrs)
+        for key, value in layout_attrs.items():
+            self._set_hdf5_attr(dataset, key, value, "acquisition-layout")
 
         recording_attrs, other_attrs = self._split_recording_attrs(attrs)
         if maxshape is not None or recording_attrs:
+            if maxshape is not None:
+                # These final fields must exist before SWMR is enabled. A live
+                # reader may keep the file open during post-close finalization;
+                # modifying existing attrs is safe, while creating new attrs
+                # can block in HDF5. Blank outcome is normalized as absent.
+                recording_attrs.setdefault("planned_partitions", 1)
+                recording_attrs.setdefault("actual_frames", 0)
+                recording_attrs.setdefault("actual_partitions", 0)
             recording_attrs['detector_name'] = detectorName
             recording_attrs['dataset_path'] = (
                 f'/{groupPath}/{detectorName}/data' if groupPath else f'/{detectorName}/data'
@@ -823,9 +1133,17 @@ class HDF5Storer(Storer):
             recording_attrs.setdefault('source_format', 'HDF5')
             for key, value in recording_attrs.items():
                 self._set_hdf5_attr(dataset, f'recording:{key}', value, 'recording')
+            if maxshape is not None and "recording:completion_outcome" not in dataset.attrs:
+                dataset.attrs.create(
+                    "recording:completion_outcome",
+                    np.bytes_(""),
+                    dtype=COMPLETION_OUTCOME_ATTR_DTYPE,
+                )
 
         # Group attrs by category and create metadata subgroups
-        grouped = self._group_metadata_by_category(other_attrs)
+        grouped = self._group_metadata_by_category(
+            {key: value for key, value in other_attrs.items() if key not in layout_attrs}
+        )
 
         if grouped:
             meta_group = det_group.create_group('metadata')
@@ -925,7 +1243,7 @@ class HDF5Storer(Storer):
                     file.attrs['rec_mode'] = 'snap'
 
                     # Create structured detector group using shared helper
-                    channel_attrs = attrs.get(channel, {})
+                    channel_attrs = self._snapshot_attrs(channel, attrs.get(channel, {}), image)
                     self._createDetectorGroup(
                         file, channel, image.dtype, channel_attrs,
                         data=image
@@ -953,6 +1271,13 @@ class HDF5Storer(Storer):
         self._singleMultiDetectorFile = singleMultiDetectorFile
         self._singleLapseFile = singleLapseFile
         self._groupPaths = {}  # Track group paths for lapse files
+        # Files that were already on disk when this session opened. A lapse
+        # appends into one, and the timepoints already in it are complete
+        # recordings that an abort of a *later* timepoint must not destroy.
+        self._preexistingFiles = {
+            dest for dest in fileDests.values()
+            if isinstance(dest, str) and os.path.exists(dest)
+        }
         self._saveMode = saveMode
         self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
         self._swmr_enabled = set()  # Track files for which SWMR mode was enabled
@@ -1088,6 +1413,7 @@ class HDF5Storer(Storer):
     
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close HDF5 files and emit signals."""
+        finalized_attrs = self._finalize_recording_attrs(currentFrames)
         pending_memory_signals = []
         pending_disk_memory_signals = []
 
@@ -1122,6 +1448,9 @@ class HDF5Storer(Storer):
             # For RAM mode, we can directly modify attributes now (no SWMR).
             if saveMode == SaveMode.RAM and dataset is not None:
                 dataset.attrs['writing'] = False
+                for key, value in finalized_attrs.get(detectorName, {}).items():
+                    if isinstance(key, str) and key.startswith("recording:"):
+                        self._set_hdf5_attr(dataset, key, value, "recording")
                 if currentFrames.get(detectorName, 0) >= 1:
                     self._embed_ome_xml(dataset.parent, detectorName, dataset.shape)
             
@@ -1138,6 +1467,14 @@ class HDF5Storer(Storer):
                     )
                 else:  # DiskAndRAM
                     pending_disk_memory_signals.append((name, filePath, True))
+
+        # A detector that never delivered a frame has no dataset -- creation is
+        # lazy -- so nothing above ran for it and the file it left behind said
+        # nothing at all: not which detector, not that a recording had been
+        # stopped, not how much of the plan was missing. Stamp the file itself,
+        # so a stub is recognisable as an interrupted recording rather than as
+        # a corrupt file.
+        self._stamp_empty_files(currentFrames, finalized_attrs)
 
         # Only close/flush each unique file once (handles singleMultiDetectorFile mode).
         processed_files = set()
@@ -1177,6 +1514,11 @@ class HDF5Storer(Storer):
                         for detectorName, dataset_path in entries:
                             if dataset_path in f:
                                 f[dataset_path].attrs['writing'] = False
+                                for key, value in finalized_attrs.get(detectorName, {}).items():
+                                    if isinstance(key, str) and key.startswith("recording:"):
+                                        self._set_hdf5_attr(
+                                            f[dataset_path], key, value, "recording"
+                                        )
                                 if currentFrames.get(detectorName, 0) >= 1:
                                     self._embed_ome_xml(
                                         f[dataset_path].parent, detectorName, f[dataset_path].shape)
@@ -1197,16 +1539,72 @@ class HDF5Storer(Storer):
             # is then a normal, completed HDF5 file for external viewers too.
             for name, filePath, savedToDisk in pending_disk_memory_signals:
                 try:
-                    readFile = h5py.File(filePath, 'r', libver=HDF5_STREAM_LIBVER)
-                except OSError as e:
+                    if self._singleLapseFile:
+                        # Every later timepoint of this lapse reopens this very
+                        # path for append, and HDF5 refuses that while any read
+                        # handle is open. The consumer keeps the handle for the
+                        # life of the recording, so a read handle here made the
+                        # next timepoint fail to open -- and the abort that
+                        # followed removed the file, taking the timepoints
+                        # already recorded with it. Hand over a detached copy,
+                        # which is what the RAM mode gives consumers anyway.
+                        with open(filePath, 'rb') as sourceFile:
+                            readFile = h5py.File(BytesIO(sourceFile.read()), 'r')
+                    else:
+                        readFile = h5py.File(
+                            filePath, 'r', libver=HDF5_STREAM_LIBVER
+                        )
+                except (OSError, MemoryError) as e:
                     logger.warning(f'HDF5 finalize: could not reopen {filePath} for memory hand-off: {e}')
                     continue
                 recordingManager.sigMemoryRecordingAvailable.emit(
                     name, readFile, filePath, savedToDisk
                 )
 
+    def _stamp_empty_files(self, currentFrames, finalized_attrs) -> None:
+        """Describe a file whose detectors delivered nothing."""
+        stamped = set()
+        for detectorName, file in self._files.items():
+            if self._datasets.get(detectorName) is not None:
+                continue
+            if int(currentFrames.get(detectorName, 0)) > 0:
+                continue
+            if id(file) in stamped:
+                continue
+            stamped.add(id(file))
+            attrs = finalized_attrs.get(detectorName, {}) or {}
+            try:
+                file.attrs['recording:detector_name'] = str(detectorName)
+                for key in (
+                    'recording:completion_outcome',
+                    'recording:actual_frames',
+                    'recording:planned_frames',
+                    'recording:lapse_index',
+                    'recording:num_timepoints',
+                ):
+                    if key in attrs:
+                        self._set_hdf5_attr(file, key, attrs[key], 'recording')
+                file.attrs['recording:completion_outcome'] = 'stopped_early'
+                file.attrs['recording:actual_frames'] = 0
+            except Exception as error:
+                logger.warning(
+                    f'HDF5 finalize: could not describe the empty recording '
+                    f'for {detectorName!r}: {error}'
+                )
+            else:
+                logger.info(
+                    f'Recording for {detectorName!r} finalized with no frames; '
+                    f'the file holds no image and is marked stopped_early.'
+                )
+
     def abortStream(self, filePaths, fileDests, saveMode):
-        """Close HDF5 files and remove the partial on-disk file(s)."""
+        """Close HDF5 files and remove this session's partial output.
+
+        A single-lapse file is shared with the timepoints already recorded into
+        it, which are complete and are not this session's to discard. Aborting
+        one timepoint of a lapse therefore leaves the file alone; only a file
+        this session created is removed.
+        """
         processed = set()
         for file in getattr(self, '_files', {}).values():
             if id(file) in processed:
@@ -1217,7 +1615,14 @@ class HDF5Storer(Storer):
             except Exception as e:
                 logger.warning(f'HDF5 abort: failed to close file: {e}')
         if saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+            preexisting = getattr(self, '_preexistingFiles', set())
             for path in set(filePaths.values()):
+                if path in preexisting:
+                    logger.info(
+                        f'HDF5 abort: keeping {path}; it holds timepoints '
+                        f'recorded before this one.'
+                    )
+                    continue
                 try:
                     if os.path.exists(path):
                         os.remove(path)
@@ -1263,19 +1668,59 @@ class TiffStorer(Storer):
             detectorName, mode, n_frames or 1,
             pixel_size_yx_um=(py, px), dtype=det.dtype)
 
+    @staticmethod
+    def _with_attr_annotations(meta, detector_attrs):
+        """Copy of ``meta`` with the detector's shared attrs merged into its
+        OME annotations (never mutates -- ``self.omeMeta`` is shared across
+        storers). HDF5/Zarr serialize the shared attributes natively; TIFF's
+        equivalent is the MapAnnotation ``build_ome_xml`` emits, so without
+        this the scan-axis provenance would be absent from OME-TIFF.
+
+        The meta's own annotations win over the raw attrs: they hold the
+        curated recording keys and a layout already adapted to what the file
+        stores (a single-frame TIFF drops the frame axis), while the raw
+        attrs still describe the plan.
+        """
+        annotations = getattr(meta, 'annotations', None)
+        if not detector_attrs or annotations is None:
+            return meta
+        return dataclass_replace(
+            meta, annotations={**detector_attrs, **annotations})
+
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Save snapshot as a native OME-TIFF (one shot, shape known)."""
+        attrs = attrs or {}
         storedShapes = {}
         for channel, image in images.items():
             image = np.asarray(image)
+            self._snapshot_attrs(channel, attrs.get(channel, {}), image)
             # OME-TIFF stores the array as handed over.
             storedShapes[channel] = image.shape
             with AsTemporaryFile(f'{self.filepath}_{channel}.ome.tiff') as path:
                 meta = self._meta_for(channel, image=image)
                 tiff.imwrite(path, image, ome=True, bigtiff=True,
                              metadata=meta.tiff_metadata(image.shape))
+                # tifffile's metadata mapping has no slot for arbitrary
+                # key/values; rewrite the description with our own OME-XML
+                # (same axes/sizes) carrying the layout annotations and the
+                # shared attrs as a MapAnnotation. A metadata failure must
+                # not cost the already-written image -- the native OME
+                # description then stands.
+                try:
+                    stored_meta = self._with_attr_annotations(
+                        meta, (attrs or {}).get(channel))
+                    tiff.tiffcomment(
+                        path, _ome.build_ome_xml(
+                            stored_meta.padded_to(image.ndim), image.shape))
+                except Exception:
+                    logger.error(
+                        f'Could not embed the OME-XML of the OME-TIFF snapshot '
+                        f'for "{channel}"; the image is saved with tifffile\'s '
+                        f'native description only.',
+                        exc_info=True,
+                    )
                 logger.info(f"Saved OME-TIFF snapshot to {path}")
-    
+
         return storedShapes
 
     def openStream(self, fileDests, detectorNames, shapes, attrs, *,
@@ -1285,6 +1730,10 @@ class TiffStorer(Storer):
         self._paths = {}
         self._spatial = {}            # detectorName -> per-frame shape
         self._dtypeWarned = set()
+        # Kept for finalize: the OME-XML embedded there carries these shared
+        # attributes as a MapAnnotation (TIFF's counterpart of the HDF5/Zarr
+        # attribute serialization), completed with the recording's outcome.
+        self._attrs = attrs
         for detectorName in detectorNames:
             path = fileDests[detectorName]
             self._paths[detectorName] = path
@@ -1322,6 +1771,7 @@ class TiffStorer(Storer):
 
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close writers, then embed OME-XML now that the frame count is known."""
+        self._finalize_recording_attrs(currentFrames)
         errors = []
         for detectorName, tw in getattr(self, '_writers', {}).items():
             try:
@@ -1343,11 +1793,15 @@ class TiffStorer(Storer):
                 frame_shape = self._spatial[detectorName]
                 meta = self._meta_for(detectorName, n_frames=n)
                 if n == 1 and len(meta.axes) == len(frame_shape):
+                    self._collapse_layout_frame_axis(detectorName)
                     stored_meta = meta
                     shape = frame_shape
                 else:
                     shape = (n, *frame_shape)
                     stored_meta = meta.padded_to(len(shape))
+                stored_meta = self._with_attr_annotations(
+                    stored_meta,
+                    (getattr(self, '_attrs', None) or {}).get(detectorName))
                 tiff.tiffcomment(path, _ome.build_ome_xml(stored_meta, shape))
             except Exception as e:
                 errors.append((
@@ -1519,6 +1973,9 @@ class RecordingManager(SignalInterface):
         self.__logger = initLogger(self)
         self.__storerMap = storerMap or DEFAULT_STORER_MAP
         self._memRecordings = {}  # { filePath: bytesIO }
+        # Where the current single-file lapse is writing, resolved once at its
+        # first timepoint: { requested base path: path actually opened }.
+        self._lapseFilePaths = {}
         self.__detectorsManager = detectorsManager
         self.__record = False
         self.__abort = False
@@ -1679,12 +2136,225 @@ class RecordingManager(SignalInterface):
             self.__detectorsManager[detectorName]
         return normalized
 
+    @staticmethod
+    def __layoutFrameCount(layout):
+        if layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
+            return None
+        if layout.recorded_event_spans is not None:
+            return sum(
+                span.count * span.repeats
+                for span in layout.recorded_event_spans
+            )
+        return math.prod(loop.count for loop in layout.event_loops)
+
+    def __normalizeAcquisitionLayouts(
+        self,
+        acquisitionLayouts,
+        detectorNames,
+        recMode,
+        recFrames,
+        numCamTTL,
+        attrs=None,
+    ):
+        """Canonicalize and cross-check layouts before opening any writer."""
+        if acquisitionLayouts is None:
+            return {}
+        try:
+            supplied = dict(acquisitionLayouts)
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                'acquisitionLayouts must be a detector-to-layout mapping'
+            ) from error
+
+        unknown = set(supplied) - set(detectorNames)
+        if unknown:
+            raise ValueError(
+                'Acquisition layouts were supplied for unselected detectors: '
+                f'{sorted(unknown)}'
+            )
+
+        normalized = {}
+        for detectorName, rawLayout in supplied.items():
+            if isinstance(rawLayout, AcquisitionLayout):
+                layout = rawLayout
+            elif isinstance(rawLayout, (str, bytes, bytearray)):
+                layout = decode_acquisition_layout(rawLayout)
+            else:
+                raise TypeError(
+                    f'Acquisition layout for {detectorName!r} must be an '
+                    'AcquisitionLayout or encoded JSON'
+                )
+
+            issues = list(validate_acquisition_layout(layout))
+            if layout.detector != detectorName:
+                issues.append(
+                    LayoutIssue(
+                        'error',
+                        'DETECTOR_MISMATCH',
+                        f'Layout detector {layout.detector!r} does not match '
+                        f'mapping key {detectorName!r}',
+                        'detector',
+                    )
+                )
+
+            if recMode in (RecMode.ScanOnce, RecMode.ScanLapse):
+                detector = self.__detectorsManager[detectorName]
+                scanDriven = bool(getattr(detector, 'isScanDriven', False))
+                expectedKind = (
+                    PAYLOAD_ASSEMBLED_IMAGE
+                    if scanDriven else PAYLOAD_DETECTOR_FRAME_STREAM
+                )
+                if layout.payload_kind != expectedKind:
+                    issues.append(
+                        LayoutIssue(
+                            'error',
+                            'DETECTOR_PAYLOAD_MISMATCH',
+                            f'Detector {detectorName!r} requires '
+                            f'{expectedKind!r}, got {layout.payload_kind!r}',
+                            'payload_kind',
+                        )
+                    )
+
+                producerPositions = scan_position_count(layout)
+                if producerPositions is None:
+                    # Loop kinds are an open vocabulary. A layout using a kind
+                    # this version cannot classify must not be rejected before
+                    # a writer opens merely because the unknown loop was
+                    # assumed to advance the scan.
+                    self.__logger.info(
+                        f'Skipping the scan-position cross-check for '
+                        f'{detectorName!r}: its layout uses a loop kind this '
+                        f'version cannot classify as positional.'
+                    )
+                elif recFrames is not None and producerPositions != int(recFrames):
+                    issues.append(
+                        LayoutIssue(
+                            'error',
+                            'SCAN_POSITION_COUNT_MISMATCH',
+                            f'Layout describes {producerPositions} scan '
+                            f'positions but recFrames is {recFrames}',
+                            'event_loops',
+                        )
+                    )
+
+                plannedFrames = self.__layoutFrameCount(layout)
+                if plannedFrames is not None:
+                    if plannedFrames <= 0:
+                        issues.append(
+                            LayoutIssue(
+                                'error',
+                                'EMPTY_FRAME_SELECTION',
+                                'A selected detector must record at least one frame',
+                                'recorded_event_spans',
+                            )
+                        )
+                    elif (
+                        producerPositions is not None
+                        and producerPositions > 0
+                        and plannedFrames % producerPositions == 0
+                    ):
+                        layoutPulses = plannedFrames // producerPositions
+                        declared = (numCamTTL or {}).get(detectorName)
+                        if declared is None and not scanDriven:
+                            # The producer and this gate both used to default
+                            # an undeclared detector to one pulse per position,
+                            # so the check below compared a default with
+                            # itself and a free-running camera was recorded as
+                            # a certain, complete scan.
+                            issues.append(
+                                LayoutIssue(
+                                    'error',
+                                    'DETECTOR_PULSES_UNDECLARED',
+                                    f'The scan declares no TTL pulse per '
+                                    f'position for detector {detectorName!r} '
+                                    f'(getNumCamTTL has no entry), so its '
+                                    f'frames cannot be tied to scan '
+                                    f'positions. Gate it in the scan, '
+                                    f'deselect it, or record it in a '
+                                    f'non-scan mode.',
+                                    'recorded_event_spans',
+                                )
+                            )
+                        elif declared is not None and layoutPulses != int(declared):
+                            issues.append(
+                                LayoutIssue(
+                                    'error',
+                                    'DETECTOR_PULSE_COUNT_MISMATCH',
+                                    f'Layout selects {layoutPulses} detector '
+                                    f'frame(s) per scan position but numCamTTL '
+                                    f'is {int(declared)}',
+                                    'recorded_event_spans',
+                                )
+                            )
+                    elif producerPositions is not None and producerPositions > 0:
+                        # A per-expanded-line mask can select a frame count
+                        # that is not a multiple of the position count; that
+                        # is legitimate, but the pulse cross-check cannot run
+                        # on it and used to say nothing at all.
+                        self.__logger.warning(
+                            f'Skipping the pulses-per-position cross-check for '
+                            f'{detectorName!r}: the layout selects '
+                            f'{plannedFrames} frame(s) over {producerPositions} '
+                            f'scan position(s), which is not a whole number of '
+                            f'pulses per position (numCamTTL says '
+                            f'{(numCamTTL or {}).get(detectorName)!r}).'
+                        )
+
+            self.__reportLayoutDisagreements(
+                detectorName, layout, (attrs or {}).get(detectorName)
+            )
+
+            errors = tuple(
+                issue for issue in issues if issue.severity == 'error'
+            )
+            if errors:
+                raise AcquisitionLayoutError(
+                    f'Invalid acquisition layout for {detectorName!r}',
+                    errors,
+                )
+            # Encoding here enforces the common inline-size budget before
+            # __prepareRecordingThread can create a writer or destination.
+            encode_acquisition_layout(layout)
+            normalized[detectorName] = layout
+        return normalized
+
+    def __reportLayoutDisagreements(self, detectorName, layout, detectorAttrs):
+        """Log where the layout and the legacy attributes describe differently.
+
+        Both are still written, so this is the window in which a producer bug
+        is cheap to find: if the layout disagrees with the attributes recorded
+        beside it, one of them is wrong, and today a reader can pick either.
+        Nothing is failed on a disagreement -- the legacy attributes are on
+        their way out and are not worth blocking a measurement over.
+        """
+        if not isinstance(detectorAttrs, dict):
+            return
+        loops = {loop.kind: loop for loop in layout.event_loops}
+        expected = {
+            'ScanTTL:Nx': getattr(loops.get('scan_x'), 'count', None),
+            'ScanTTL:Ny': getattr(loops.get('scan_y'), 'count', None),
+            'ScanTTL:n_linesteps': getattr(loops.get('condition'), 'count', None),
+        }
+        for key, derived in expected.items():
+            if derived is None or key not in detectorAttrs:
+                continue
+            try:
+                recorded = int(detectorAttrs[key])
+            except (TypeError, ValueError):
+                continue
+            if recorded != derived:
+                self.__logger.warning(
+                    f'Acquisition layout for {detectorName!r} implies '
+                    f'{key}={derived}, but the recording writes {recorded}. '
+                    f'One of the two descriptions of this scan is wrong.'
+                )
+
     def startRecording(self, detectorNames, recMode, savename, saveMode, attrs,
                        saveFormat=SaveFormat.HDF5, singleMultiDetectorFile=False, singleLapseFile=False,
                        recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None,
                        recLapseTotal=1, recLapseIndex=0, scanDims=None,
                        scanStepSizes=None, recLapseIntervalS=None,
-                       recLapseScheduledTime=None):
+                       recLapseScheduledTime=None, acquisitionLayouts=None):
         """ Starts a recording with the specified detectors, recording mode,
         file name prefix and attributes to save to the recording per detector.
         In SpecFrames mode, recFrames (the number of frames) must be specified,
@@ -1699,6 +2369,9 @@ class RecordingManager(SignalInterface):
             recLapseIndex: 0-based index of this stack within the lapse (default 0).
             recLapseIntervalS: Requested camera-lapse interval in seconds.
             recLapseScheduledTime: ISO-8601 planned start for this timepoint.
+            acquisitionLayouts: Optional synthetic or producer-authored
+                ``{detector: AcquisitionLayout}`` mapping. Layouts are
+                canonicalized and cross-checked before a writer is opened.
         """
 
         self.__logger.info('Starting recording')
@@ -1711,6 +2384,14 @@ class RecordingManager(SignalInterface):
             )
 
         detectorNames = self.__normalizeDetectorNames(detectorNames)
+        acquisitionLayouts = self.__normalizeAcquisitionLayouts(
+            acquisitionLayouts,
+            detectorNames,
+            recMode,
+            recFrames,
+            numCamTTL,
+            attrs,
+        )
         self.__prepareRecordingThread()
         self.__recordingWorker.detectorNames = detectorNames
         self.__recordingWorker.recMode = recMode
@@ -1729,6 +2410,7 @@ class RecordingManager(SignalInterface):
         self.__recordingWorker.scanStepSizes = scanStepSizes
         self.__recordingWorker.recLapseIntervalS = recLapseIntervalS
         self.__recordingWorker.recLapseScheduledTime = recLapseScheduledTime
+        self.__recordingWorker.acquisitionLayouts = acquisitionLayouts
         self.__recordingWorker.stallTimeout = stallTimeout if stallTimeout is not None else DEFAULT_STALL_TIMEOUT
 
         self.__activeDetectorNames = detectorNames
@@ -2206,7 +2888,16 @@ class RecordingManager(SignalInterface):
             return value / 1_000_000.0
         return None
 
-    def _detectorFrameIntervalSeconds(self, det) -> float:
+    def _declaredFrameIntervalSeconds(self, det) -> Optional[float]:
+        """The frame interval a detector itself declares, or ``None``.
+
+        No fallback here on purpose. The OME metadata below substitutes one
+        second when nothing is declared, which is a harmless placeholder in a
+        file's time axis and a wrong basis for anything that acts on it: a
+        watchdog that took that placeholder as "this camera frames every
+        second" would have given every undeclared detector a three-second
+        allowance it never earned.
+        """
         params = getattr(det, 'parameters', {}) or {}
         for key in ('Internal frame interval', 'Frame interval', 'Real exposure time',
                     'Set exposure time', 'Exposure', 'exposure'):
@@ -2221,7 +2912,11 @@ class RecordingManager(SignalInterface):
                     return value
         except Exception:
             pass
-        return 1.0
+        return None
+
+    def _detectorFrameIntervalSeconds(self, det) -> float:
+        declared = self._declaredFrameIntervalSeconds(det)
+        return declared if declared is not None else 1.0
 
     @staticmethod
     def _scanStep(scanStepSizes, axis) -> float:
@@ -2270,6 +2965,21 @@ class RecordingManager(SignalInterface):
             dtype=det.dtype, annotations=annotations or {},
             stage_position_um=stagePositionUm)
 
+    @staticmethod
+    def _splitRecordingSuffix(path):
+        """Split a recording path into its name and its full suffix.
+
+        ``os.path.splitext`` splits on the last dot only, so an OME-TIFF's
+        two-part suffix came apart in the middle and a de-duplicated file was
+        named ``rec_Camera.ome_1.tiff``: it neither sorts beside its siblings
+        nor matches the ``*.ome.tiff`` glob anyone would write.
+        """
+        lowered = path.lower()
+        for suffix in ('.ome.tiff', '.ome.tif'):
+            if lowered.endswith(suffix):
+                return path[:-len(suffix)], path[-len(suffix):]
+        return os.path.splitext(path)
+
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path
         numExisting = 0
@@ -2283,7 +2993,7 @@ class RecordingManager(SignalInterface):
 
         while existsFunc(newPath):
             numExisting += 1
-            pathWithoutExt, pathExt = os.path.splitext(path)
+            pathWithoutExt, pathExt = self._splitRecordingSuffix(path)
             newPath = f'{pathWithoutExt}_{numExisting}{pathExt}'
         return newPath
 
@@ -2346,14 +3056,26 @@ class WriterThread(threading.Thread):
         self._scanDrivenDetectors = dict(scanDrivenDetectors or {})
         
         # Bounded queue for backpressure (put() blocks when full)
-        self._queue = queue.Queue(maxsize=WRITER_QUEUE_MAXSIZE)
+        # Unbounded as a container; the real bound is WRITER_QUEUE_MAX_BYTES,
+        # applied by enqueue_frames against _queuedBytes below. Bounding the
+        # item count would be bounding the wrong thing -- an item is one poll's
+        # worth of frames, which is one frame on a fast camera and hundreds on
+        # a slow one.
+        self._queue = queue.Queue()
+        self._queuedBytesLock = threading.Lock()
+        self._queuedBytes = 0
         
         # Per-detector batching buffers
         self._batches = {detectorName: [] for detectorName in detectorNames}
         self._batch_frame_counts = {detectorName: 0 for detectorName in detectorNames}
+        # When each detector's current batch received its first frame, so a
+        # batch that fills slowly is written on time rather than on count.
+        self._batch_started = {detectorName: None for detectorName in detectorNames}
         
         # Track total frames written per detector
         self._currentFrames = {detectorName: 0 for detectorName in detectorNames}
+        # Frames the producer discarded beyond the plan, reported at finalize.
+        self._discardedFrames: Dict[str, int] = {}
         
         # Handshake for openStream completion (success or exception)
         self._opened_event = threading.Event()
@@ -2503,9 +3225,24 @@ class WriterThread(threading.Thread):
         # Main write loop: process frames until sentinel
         try:
             while True:
-                item = self._queue.get()
+                try:
+                    item = self._queue.get(timeout=WRITE_FLUSH_MAX_LATENCY_S)
+                except queue.Empty:
+                    # Nothing new arrived, but what has already arrived may be
+                    # overdue on disk.
+                    self._flush_stale_batches()
+                    continue
                 self._progress += 1
-                
+                if isinstance(item, tuple) and len(item) == 3:
+                    # Release the producer's reservation as soon as the chunk
+                    # leaves the queue: from here the frames are this thread's
+                    # to batch and write.
+                    with self._queuedBytesLock:
+                        self._queuedBytes = max(
+                            0, self._queuedBytes - int(item[2])
+                        )
+                    item = (item[0], item[1])
+
                 if item is None:
                     # Sentinel. On abort, discard partial output; otherwise flush
                     # remaining batches and finalize normally.
@@ -2537,6 +3274,9 @@ class WriterThread(threading.Thread):
                                 self._saveMode,
                             )
                         else:
+                            noteDiscarded = getattr(self._storer, 'noteDiscardedFrames', None)
+                            if callable(noteDiscarded):
+                                noteDiscarded(dict(self._discardedFrames))
                             self._phase = 'finalizing'
                             self._storer.finalizeStream(
                                 self._currentFrames,
@@ -2567,12 +3307,17 @@ class WriterThread(threading.Thread):
                 detectorName, frames = item
                 
                 # Append to batch
+                if not self._batches[detectorName]:
+                    self._batch_started[detectorName] = time.monotonic()
                 self._batches[detectorName].append(frames)
                 self._batch_frame_counts[detectorName] += len(frames)
                 
                 # Flush batch if threshold reached
                 if self._batch_frame_counts[detectorName] >= WRITE_BATCH_FRAMES:
                     self._flush_batch(detectorName)
+                # And any batch, this detector's or another's, that has been
+                # waiting longer than a reader should have to.
+                self._flush_stale_batches()
         
         except Exception as e:
             # Record the failure and exit. Do NOT re-raise into the thread void:
@@ -2604,6 +3349,19 @@ class WriterThread(threading.Thread):
         # Clear batch
         self._batches[detectorName] = []
         self._batch_frame_counts[detectorName] = 0
+        self._batch_started[detectorName] = None
+
+    def _flush_stale_batches(self):
+        """Write any batch that has been accumulating for too long."""
+        if self._abort_event.is_set():
+            return
+        now = time.monotonic()
+        for detectorName in self._detectorNames:
+            started = self._batch_started.get(detectorName)
+            if started is None or not self._batches[detectorName]:
+                continue
+            if now - started >= WRITE_FLUSH_MAX_LATENCY_S:
+                self._flush_batch(detectorName)
     
     def _flush_all_batches(self):
         """Flush all remaining per-detector batches."""
@@ -2631,7 +3389,16 @@ class WriterThread(threading.Thread):
         Blocks while the queue is full (intended backpressure), but NEVER
         forever: if the writer thread has died, raises so the failure surfaces
         on the acquisition thread instead of deadlocking the producer.
+
+        A long block here is invisible in a log otherwise: the acquisition loop
+        simply stops draining, and what gets reported is the *consequence* --
+        a detector's chunk consumer overflowing, filled meanwhile by the
+        live-view poller. Say that the producer stalled, and for how long, so
+        the writer is a candidate rather than a deduction.
         """
+        payloadBytes = _framesNBytes(frames)
+        blockedSince = None
+        stallReported = False
         while True:
             self._raise_if_failed()
             if not self.is_alive():
@@ -2639,8 +3406,19 @@ class WriterThread(threading.Thread):
                     'RecordingWriterThread is not running; frames cannot be '
                     'enqueued'
                 )
-            try:
-                self._queue.put((detectorName, frames), timeout=0.1)
+            with self._queuedBytesLock:
+                # An empty queue always admits, however large the payload:
+                # otherwise a single chunk bigger than the whole budget -- one
+                # assembled volume, say -- would wait for room that can never
+                # appear.
+                admitted = (
+                    self._queuedBytes == 0
+                    or self._queuedBytes + payloadBytes <= WRITER_QUEUE_MAX_BYTES
+                )
+                if admitted:
+                    self._queuedBytes += payloadBytes
+            if admitted:
+                self._queue.put((detectorName, frames, payloadBytes))
                 # Cover the race where the writer failed while this put was
                 # completing. finish() performs the same check for a failure
                 # that occurs after the producer's final enqueue.
@@ -2650,8 +3428,14 @@ class WriterThread(threading.Thread):
                         'RecordingWriterThread stopped while frames were being '
                         'enqueued'
                     )
+                if stallReported:
+                    logger.warning(
+                        f'Recording producer resumed for "{detectorName}" '
+                        f'after {time.time() - blockedSince:.1f}s blocked on '
+                        f'the writer queue.'
+                    )
                 return
-            except queue.Full:
+            else:
                 self._raise_if_failed()
                 if not self.is_alive():
                     raise RuntimeError(
@@ -2659,8 +3443,25 @@ class WriterThread(threading.Thread):
                         'enqueued; recording aborted'
                     ) from self._write_exception
                 # Writer still alive and draining - keep applying backpressure.
+                time.sleep(0.01)
+                if blockedSince is None:
+                    blockedSince = time.time()
+                elif (not stallReported
+                        and time.time() - blockedSince >= PRODUCER_STALL_WARN_S):
+                    stallReported = True
+                    logger.warning(
+                        f'Recording producer has been blocked for '
+                        f'{PRODUCER_STALL_WARN_S:g}s enqueuing frames for '
+                        f'"{detectorName}": the writer is not draining fast '
+                        f'enough. Frames arriving meanwhile are held in the '
+                        f'detector\'s chunk queue, which is bounded.'
+                    )
                 continue
     
+    def noteDiscardedFrames(self, discarded: Dict[str, int]) -> None:
+        """Record how many frames the producer dropped beyond the plan."""
+        self._discardedFrames = {k: int(v) for k, v in (discarded or {}).items() if int(v) > 0}
+
     def finish(self):
         """Signal end of recording and wait for writer thread to complete.
         
@@ -2692,27 +3493,10 @@ class WriterThread(threading.Thread):
                         and self._write_exception is None
                     )
                 else:
-                    while True:
-                        try:
-                            self._queue.put(None, timeout=0.1)
-                            break
-                        except queue.Full:
-                            if not self.is_alive():
-                                stopped_unexpectedly = (
-                                    self._open_exception is None
-                                    and self._write_exception is None
-                                )
-                                break
-                            if abort:
-                                # Discard a queued item to make room for the
-                                # sentinel; abort mode deliberately does not
-                                # preserve partial output.
-                                try:
-                                    self._queue.get_nowait()
-                                except queue.Empty:
-                                    pass
-                            # finish() keeps waiting for the writer to drain so
-                            # all queued frames are finalized.
+                    # The queue is unbounded as a container -- the bound is the
+                    # producer's byte budget -- so the sentinel always fits and
+                    # never has to displace queued frames to get in.
+                    self._queue.put(None)
 
         # join() itself rejects a thread that was never started. Surface that
         # as a lifecycle error rather than silently claiming success.
@@ -2772,15 +3556,18 @@ class WriterThread(threading.Thread):
                 raise TimeoutError(
                     f'RecordingWriterThread made no progress for {limit:g} s '
                     f'while {phase} ({self._queue.qsize()} queued chunks, '
-                    f'{self.pendingFrames()} frames pending)'
+                    f'{self.pendingFrames()} frames pending, '
+                    f'{self._queuedBytes / (1024 * 1024):.0f} MiB in flight)'
                 )
             if not loggedSlow and now - startedAt >= 5.0:
                 loggedSlow = True
                 logger.info(
                     'Recording writer is still draining: '
                     f'{self._queue.qsize()} queued chunks, '
-                    f'{self.pendingFrames()} frames pending; waiting for it '
-                    'to finish rather than discarding the recording.'
+                    f'{self.pendingFrames()} frames pending, '
+                    f'{self._queuedBytes / (1024 * 1024):.0f} MiB in flight; '
+                    'waiting for it to finish rather than discarding the '
+                    'recording.'
                 )
 
 
@@ -2910,11 +3697,28 @@ class RecordingWorker(Worker):
             else:
                 baseFilePath = f'{self.savename}_{detectorName}.{extension}'
             
+            # A lapse resolves its destination ONCE, at its first timepoint,
+            # and every later timepoint reuses what that resolved to. The
+            # exemption from de-duplication exists so timepoints 1..N-1 can
+            # append to the file timepoint 0 created; expressed as "this path
+            # may always be overwritten", it also swallowed the first timepoint
+            # of the NEXT run, which then appended into the previous run's file
+            # with group numbering that continued from it while every recorded
+            # time-partition index restarted at 0.
+            pinned = self.__recordingManager._lapseFilePaths
+            isLaterLapseItem = singleLapseFile and int(
+                getattr(self, 'recLapseIndex', 0) or 0
+            ) > 0
+            if isLaterLapseItem and baseFilePath in pinned:
+                filePaths[detectorName] = pinned[baseFilePath]
+                continue
             filePaths[detectorName] = self.__recordingManager.getSaveFilePath(
                 baseFilePath,
-                allowOverwriteDisk=singleLapseFile and self.saveMode != SaveMode.RAM,
-                allowOverwriteMem=singleLapseFile and self.saveMode == SaveMode.RAM
+                allowOverwriteDisk=isLaterLapseItem and self.saveMode != SaveMode.RAM,
+                allowOverwriteMem=isLaterLapseItem and self.saveMode == SaveMode.RAM
             )
+            if singleLapseFile:
+                pinned[baseFilePath] = filePaths[detectorName]
         
         # Determine file destinations (path or BytesIO)
         for detectorName in self.detectorNames:
@@ -2994,9 +3798,27 @@ class RecordingWorker(Worker):
             if expected_frames is not None and detectorName in expected_frames:
                 frame_count = int(expected_frames[detectorName])
                 new_attrs['recording:expected_frames'] = frame_count
+                new_attrs["recording:planned_frames"] = frame_count
                 # No generic multi-stack boundary exists yet. For single-stack
                 # recording modes, the expected frame count is the stack size.
                 new_attrs['recording:frames_per_stack'] = frame_count
+            new_attrs.setdefault("recording:planned_partitions", 1)
+
+            layout_value = getattr(self, "acquisitionLayouts", {}).get(detectorName)
+            if layout_value is not None:
+                if isinstance(layout_value, AcquisitionLayout):
+                    encoded_layout = encode_acquisition_layout(layout_value)
+                elif isinstance(layout_value, (str, bytes, bytearray)):
+                    encoded_layout = encode_acquisition_layout(
+                        decode_acquisition_layout(layout_value)
+                    )
+                else:
+                    raise TypeError(
+                        f"Acquisition layout for {detectorName!r} must be an "
+                        "AcquisitionLayout or encoded JSON"
+                    )
+                new_attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+                new_attrs["AcquisitionLayout:json"] = encoded_layout
             
             # Add lapse metadata
             new_attrs['recording:num_timepoints'] = int(self.recLapseTotal or 1)
@@ -3046,10 +3868,50 @@ class RecordingWorker(Worker):
         answer stays 1 there too; the per-timepoint loop supplies the
         repetition.
         """
+        layout = (self.__dict__.get('acquisitionLayouts') or {}).get(
+            detectorName
+        )
+        if layout is not None:
+            if layout.payload_kind == PAYLOAD_ASSEMBLED_IMAGE:
+                return 1
+            if layout.payload_kind == PAYLOAD_DETECTOR_FRAME_STREAM:
+                if layout.recorded_event_spans is not None:
+                    return sum(
+                        span.count * span.repeats
+                        for span in layout.recorded_event_spans
+                    )
+                return math.prod(loop.count for loop in layout.event_loops)
         if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse) and \
                 self._isScanDrivenDetector(detectorName):
             return 1
+        if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse):
+            declared = numCamTTL.get(detectorName)
+            if declared is None:
+                raise ValueError(
+                    f'The scan declares no TTL pulse per position for detector '
+                    f'{detectorName!r}, so the number of frames to record '
+                    f'cannot be derived. Gate it in the scan, deselect it, or '
+                    f'record it in a non-scan mode.'
+                )
+            return recFrames * int(declared)
         return recFrames * numCamTTL.get(detectorName, 1)
+
+    def _stallAllowanceFor(self, detectorName) -> float:
+        """How long this detector may go without a frame before it is stalled.
+
+        The larger of the flat floor and a few of the detector's own declared
+        frame intervals, read from the same parameters the OME metadata uses.
+        A detector that declares nothing keeps the floor exactly as before.
+        """
+        floor = float(self.stallTimeout)
+        try:
+            det = self.__recordingManager.detectorsManager[detectorName]
+            interval = self.__recordingManager._declaredFrameIntervalSeconds(det)
+        except Exception:
+            return floor
+        if interval is None or interval <= 0:
+            return floor
+        return max(floor, STALL_FRAME_INTERVALS * float(interval))
 
     def _stallReferenceTimeFor(self, detectorName, lastFrameTime):
         """Return when no-frame timing may begin, or ``None`` while scanning."""
@@ -3089,7 +3951,15 @@ class RecordingWorker(Worker):
         
         # Frame counters and stall watchdog timestamps
         currentFrame = {detectorName: 0 for detectorName in self.detectorNames}
+        # Frames delivered beyond the plan, per detector (see the clip below).
+        discardedFrames: Dict[str, int] = {}
+        discardWarned: set = set()
+        self.discardedFrames = discardedFrames
         lastFrameTime = {detectorName: time.time() for detectorName in self.detectorNames}
+        stallAllowance = {
+            detectorName: self._stallAllowanceFor(detectorName)
+            for detectorName in self.detectorNames
+        }
         
         # Prepare shapes for storer
         for detectorName in shapes:
@@ -3277,6 +4147,28 @@ class RecordingWorker(Worker):
                         ]:
                             remaining = nFramesPerDetector[detectorName] - currentFrame[detectorName]
                             if n > remaining:
+                                # Frames beyond the plan are not written; say
+                                # so, and record it, rather than finalising a
+                                # file that looks exactly like a clean scan. A
+                                # surplus means the detector produced frames
+                                # the scan did not account for -- free-running,
+                                # or pulsed more often than declared.
+                                surplus = n - remaining
+                                discardedFrames[detectorName] = (
+                                    discardedFrames.get(detectorName, 0) + surplus
+                                )
+                                if detectorName not in discardWarned:
+                                    discardWarned.add(detectorName)
+                                    self.__logger.warning(
+                                        f'Detector {detectorName!r} delivered '
+                                        f'{surplus} frame(s) beyond the '
+                                        f'{nFramesPerDetector[detectorName]} '
+                                        f'planned for this recording; they are '
+                                        f'not written. The recording is not the '
+                                        f'clean scan its metadata describes -- '
+                                        f'check numCamTTL and the camera '
+                                        f'trigger mode.'
+                                    )
                                 newFrames = newFrames[:remaining]
                                 n = remaining
                         
@@ -3323,29 +4215,49 @@ class RecordingWorker(Worker):
                             continue
 
                         elapsed = now - referenceTime
-                        if elapsed > self.stallTimeout:
+                        allowed = stallAllowance[detectorName]
+                        if elapsed > allowed:
                             if self._isScanDrivenDetector(detectorName):
                                 message = (
                                     f"Detector '{detectorName}' stalled: no "
                                     f"assembled frame received for "
                                     f"{elapsed:.1f}s after scan completion "
-                                    f"(timeout: {self.stallTimeout}s). "
+                                    f"(timeout: {allowed:g}s). "
                                     f"Current: {currentFrame[detectorName]} "
                                     f"frames, expected: "
                                     f"{nFramesPerDetector[detectorName]} "
                                     f"frames. Check the detector input, scan "
                                     f"trigger, and sample-clock configuration."
                                 )
-                            else:
+                            elif self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse):
                                 message = (
                                     f"Detector '{detectorName}' stalled: no "
                                     f"frames received for {elapsed:.1f}s "
-                                    f"(timeout: {self.stallTimeout}s). "
+                                    f"(timeout: {allowed:g}s). "
                                     f"Current: {currentFrame[detectorName]} "
                                     f"frames, expected: "
                                     f"{nFramesPerDetector[detectorName]} "
                                     f"frames. Check camera triggering and "
                                     f"numCamTTL configuration."
+                                )
+                            else:
+                                # No scan is involved, so scan wiring is not
+                                # the place to look; the detector's own
+                                # declared cadence is what the deadline came
+                                # from, so say so.
+                                message = (
+                                    f"Detector '{detectorName}' stalled: no "
+                                    f"frames received for {elapsed:.1f}s, "
+                                    f"longer than its allowance of "
+                                    f"{allowed:g}s (the larger of "
+                                    f"{self.stallTimeout:g}s and "
+                                    f"{STALL_FRAME_INTERVALS:g} x its declared "
+                                    f"frame interval). Current: "
+                                    f"{currentFrame[detectorName]} frames, "
+                                    f"expected: "
+                                    f"{nFramesPerDetector[detectorName]}. "
+                                    f"Check the detector's exposure and that it "
+                                    f"is acquiring."
                                 )
                             self.__logger.error(message)
                             self.__recordingManager.sigRecordingStalled.emit(detectorName)
@@ -3400,6 +4312,7 @@ class RecordingWorker(Worker):
                 if aborting:
                     writerThread.abort()
                 else:
+                    writerThread.noteDiscardedFrames(discardedFrames)
                     writerThread.finish()
             except Exception as error:
                 cleanupErrors.append(error)

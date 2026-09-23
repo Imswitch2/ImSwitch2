@@ -161,11 +161,56 @@ class ReconstructorManagerController(ImProcessWidgetController):
             setter = getattr(widget, 'set_source_inspection', None)
             if callable(setter):
                 setter(inspection)
+            # Shown for every reconstructor, not only the one plugin whose own
+            # widget implements the hook above. Without this the inspection
+            # that knows a scan stopped at four of six positions was assembled
+            # and thrown away, and the recording opened looking ordinary.
+            self._showSourceInspection(inspection)
+            self._logSourceInspection(data_obj, reconstructor, inspection)
         except Exception as exc:
             self._logger.warning(
                 f"Could not inspect {getattr(data_obj, 'name', 'source')} "
                 f"for {reconstructor.id}: {exc}"
             )
+
+    def _showSourceInspection(self, inspection) -> None:
+        """Put the inspection's warnings in the Parameters dock."""
+        show = getattr(self._widget, 'setSourceInspection', None)
+        if not callable(show):
+            return
+        lines = []
+        severity = 'warning'
+        if inspection is not None:
+            issues = getattr(inspection, 'issues', ()) or ()
+            for issue in issues:
+                lines.append(str(issue.message))
+                if getattr(issue, 'severity', 'warning') == 'error':
+                    severity = 'error'
+            if not issues:
+                # ``warning`` is derived from the issues when there are any, so
+                # it is only its own message when there are none.
+                warning = getattr(inspection, 'warning', None)
+                if warning:
+                    lines.append(str(warning))
+        try:
+            show("\n".join(lines), severity)
+        except Exception as exc:
+            self._logger.debug(f"Could not display the source inspection: {exc}")
+
+    def _logSourceInspection(self, data_obj, reconstructor, inspection) -> None:
+        """Report what the source inspection found, when nothing displays it."""
+        if inspection is None:
+            return
+        name = getattr(data_obj, 'name', 'source')
+        warning = getattr(inspection, 'warning', None)
+        if warning:
+            self._logger.warning(f"{name}: {warning}")
+        for issue in getattr(inspection, 'issues', ()) or ():
+            message = f"{name}: [{issue.code}] {issue.message}"
+            if getattr(issue, 'severity', 'warning') == 'error':
+                self._logger.error(message)
+            else:
+                self._logger.warning(message)
 
     def _on_user_changed_reconstructor(self, plugin_id: str):
         """Slot for view-side picker: swap the active reconstructor and
@@ -410,6 +455,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
         collected = []
         for dataObj in dataObjs:
             params = self._params_for_data_obj(reconstructor)
+            validator = getattr(reconstructor, "validate_source", None)
+            if callable(validator):
+                try:
+                    validator(dataObj)
+                except Exception as exc:
+                    self._logger.error(f"Reconstruction preflight failed: {exc}")
+                    return
             self._logger.info(
                 f"Running {reconstructor.id} reconstruction for {dataObj.name}"
             )
@@ -469,6 +521,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
         for data_obj in data_objs:
             params = self._params_for_data_obj(reconstructor)
             try:
+                validator = getattr(reconstructor, "validate_source", None)
+                if callable(validator):
+                    validator(data_obj)
                 estimate = reconstructor.estimate_resources(data_obj, params)
             except Exception as exc:
                 self._logger.error(f"Reconstruction preflight failed: {exc}")

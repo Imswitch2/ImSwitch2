@@ -145,7 +145,10 @@ def test_batch_fallback_view_only_reconstructor():
     assert len(results) == 1
     result = results[0]
     assert result.name == "test-source"
-    assert result.axis_labels == ["C", "Y", "X"]
+    # This source declares no axes, so only the trailing two are known to be
+    # the detector plane. Labelling the leading axis "C" claimed channel data
+    # on no evidence; an unexplained frame axis is a Frame axis.
+    assert result.axis_labels == ["Frame", "Y", "X"]
     assert np.array_equal(result.data, stack)
 
 

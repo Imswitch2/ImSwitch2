@@ -462,3 +462,47 @@ def test_view_only_uses_data_obj_axis_metadata(tmp_path) -> None:
     assert result.axis_scales == [1.0, 0.108, 0.108]
     assert result.scale_unit == "um"
     assert not data_obj.dataLoaded
+
+
+def test_view_only_labels_an_unexplained_frame_axis_frame(tmp_path):
+    """A plain 3D stack is Frame x Y x X, not channel data.
+
+    The rank-based default called the leading axis "C" for every unlabelled
+    three-dimensional file, which is a claim about the acquisition that
+    nothing in the file supports.
+    """
+    path = tmp_path / "unlabelled.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=np.zeros((7, 4, 5), dtype=np.uint16))
+    data_obj = DataObj("unlabelled.h5", "CAM", path=str(path))
+
+    result = ViewOnlyReconstructor().process(data_obj, {})
+
+    assert result.axis_labels == ["Frame", "Y", "X"]
+
+
+def test_view_only_keeps_axes_the_source_actually_declared(tmp_path):
+    """An explicit container axis order is evidence and must survive."""
+    path = tmp_path / "declared.h5"
+    with h5py.File(path, "w") as file:
+        dataset = file.create_dataset("CAM", data=np.zeros((3, 2, 4, 5), dtype=np.uint16))
+        dataset.attrs["axes"] = "TZYX"
+    data_obj = DataObj("declared.h5", "CAM", path=str(path))
+
+    result = ViewOnlyReconstructor().process(data_obj, {})
+
+    assert result.axis_labels == ["T", "Z", "Y", "X"]
+
+
+def test_view_only_reports_how_the_acquisition_was_interpreted(tmp_path):
+    """View-only is often the first place an unfamiliar file is opened."""
+    path = tmp_path / "unlabelled-inspect.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=np.zeros((7, 4, 5), dtype=np.uint16))
+    data_obj = DataObj("unlabelled-inspect.h5", "CAM", path=str(path))
+
+    inspection = ViewOnlyReconstructor().inspect_source(data_obj)
+
+    assert inspection is not None
+    assert inspection.metadata["acquisition_layout_confidence"] == "low"
+    assert inspection.warning  # the guess is stated, not buried in a log

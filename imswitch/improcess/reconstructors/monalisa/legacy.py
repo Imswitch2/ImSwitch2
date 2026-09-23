@@ -102,16 +102,12 @@ class LegacyMonalisaReconstructor(Reconstructor):
 
     def prepare_params(self, data_obj, params: dict | None) -> dict:
         """Fill ``scan_params`` from the acquisition attributes when absent."""
-        from .scan_params import apply_scan_attrs
+        from .scan_params import scan_params_for_source
 
         params = dict(params or {})
         if params.get("scan_params") is None:
-            try:
-                frames = int(data_obj.numFrames)
-            except Exception:
-                frames = None
-            params["scan_params"] = apply_scan_attrs(
-                default_scan_params(), getattr(data_obj, "attrs", None) or {}, DEFAULT_LABELS, frames
+            params["scan_params"] = scan_params_for_source(
+                default_scan_params(), data_obj, DEFAULT_LABELS
             )
         if params.get("axis_label_map") is None:
             params["axis_label_map"] = default_axis_label_map()

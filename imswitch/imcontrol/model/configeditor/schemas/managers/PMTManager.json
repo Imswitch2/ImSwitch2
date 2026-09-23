@@ -2,6 +2,34 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
   "properties": {
+    "aiVoltageMax": {
+      "description": "Upper end of the analog-input range, in volts. A signal above it is clipped flat by the card with no error.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "aiVoltageMin": {
+      "description": "Lower end of the analog-input range handed to the driver, in volts. Declare the preamp's real swing: a small signal on a wide range wastes ADC resolution. The card coerces the pair up to the nearest range it has.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
     "analogInputLine": {
       "description": "NI-DAQ analog input line the PMT is wired to.  If an int ``N`` is given it is expanded to ``\"<deviceName>/ai<N>\"``; otherwise the string is used verbatim.",
       "x-imswitch-kind": [

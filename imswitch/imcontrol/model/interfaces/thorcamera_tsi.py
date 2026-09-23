@@ -9,6 +9,13 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+#: Frames the SDK ring buffer holds between the camera and the drain. What the
+#: depth buys is tolerance to latency spikes -- a GC pause, an HDF5 resize, a
+#: writer-backpressure block -- of up to depth/framerate seconds; a depth of
+#: one drops a frame on every such spike.
+DEFAULT_FRAME_BUFFER_DEPTH = 4
+
+
 class ThorTSICamera:
     """Wrapper around Thorlabs TLCameraSDK.
     
@@ -164,7 +171,13 @@ class ThorTSICamera:
             raise ValueError(f"Invalid mode '{mode}'. Use: {list(mode_map.keys())}")
 
         was_armed = bool(getattr(self._camera, 'is_armed', False))
-        buffer_size = int(getattr(self._camera, 'frames_per_trigger_zero_for_unlimited', 2)) or 2
+        # The depth this wrapper armed with. It used to be read back from
+        # frames_per_trigger_zero_for_unlimited, a different quantity that
+        # happens to be a small integer too: __init__ sets it to 1, so the
+        # first Operation Mode change -- including the one every startup makes
+        # while restoring the saved detector state -- shrank the SDK ring from
+        # four frames to one for the rest of the session.
+        buffer_size = getattr(self, '_armed_buffer_size', None) or DEFAULT_FRAME_BUFFER_DEPTH
         if was_armed:
             self._camera.disarm()
 
@@ -192,7 +205,7 @@ class ThorTSICamera:
         self._camera.trigger_polarity = polarity_map[polarity]
         logger.debug(f"Set trigger polarity: {polarity}")
     
-    def arm(self, buffer_size=2):
+    def arm(self, buffer_size=DEFAULT_FRAME_BUFFER_DEPTH):
         """Arm the camera for acquisition.
         
         Args:
@@ -200,6 +213,7 @@ class ThorTSICamera:
         """
         if not self._camera.is_armed:
             self._camera.arm(buffer_size)
+            self._armed_buffer_size = int(buffer_size)
             logger.debug(f"Armed camera with buffer size {buffer_size}")
     
     def disarm(self):
@@ -344,6 +358,7 @@ class MockThorTSICamera:
     
     def arm(self, buffer_size=2):
         self._armed = True
+        self.armed_buffer_size = int(buffer_size)
         logger.debug(f"Mock: Armed with buffer size {buffer_size}")
     
     def disarm(self):

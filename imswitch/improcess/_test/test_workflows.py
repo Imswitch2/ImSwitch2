@@ -39,9 +39,15 @@ def _h5(path, shape=(3, 8, 8), name="data", *, extra=None):
     with h5py.File(str(path), "w") as handle:
         dataset = handle.create_dataset(name, data=np.random.default_rng(0).random(shape).astype(np.float32))
         dataset.attrs["element_size_um"] = [1.0, 0.1, 0.1]
+        # The axes are declared, not left to be guessed from the rank: a
+        # file that says nothing reads as Frame/Y/X, never as channels.
+        if len(shape) == 3:
+            dataset.attrs["axes"] = "CYX"
         for key, value in (extra or {}).items():
             other = handle.create_dataset(key, data=np.zeros(shape, np.float32))
             other.attrs["element_size_um"] = [1.0, 0.1, 0.1]
+            if len(shape) == 3:
+                other.attrs["axes"] = "CYX"
     return path
 
 

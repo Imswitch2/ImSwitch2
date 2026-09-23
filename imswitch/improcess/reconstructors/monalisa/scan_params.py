@@ -154,7 +154,38 @@ def apply_scan_attrs(scan_params: dict, attrs, labels: AxisLabels = DEFAULT_LABE
     return result
 
 
-__all__ = ["DEFAULT_LABELS", "AxisLabels", "apply_scan_attrs", "default_scan_params", "positive_int_attr"]
+def scan_params_for_source(scan_params: dict, data_obj,
+                           labels: AxisLabels = DEFAULT_LABELS) -> dict:
+    """A copy of ``scan_params`` filled for ``data_obj``: layout first, attributes second.
+
+    The resolved acquisition layout already knows the real counts, pitches and
+    directions (``scan_params_from_layout``); the ``ScanStage:*``/``ScanTTL:*``
+    attributes are re-parsed only when it cannot answer. One function for the
+    GUI dialog and the headless runs, so the two cannot disagree about a file.
+    """
+    from .scan_geometry import scan_params_from_layout
+
+    try:
+        resolved = getattr(data_obj, "acquisition_layout", None)
+        values = scan_params_from_layout(resolved, {
+            "r_l_text": labels.r_l, "u_d_text": labels.u_d, "b_f_text": labels.b_f,
+            "timepoints_text": labels.timepoints, "p_text": labels.p, "n_text": labels.n,
+        })
+    except Exception:
+        # Pre-filling scan parameters must never stop a file from opening.
+        values = None
+    if values is not None:
+        result = copy.deepcopy(scan_params)
+        result.update(values)
+        return result
+    try:
+        frames = int(data_obj.numFrames)
+    except Exception:
+        frames = None
+    return apply_scan_attrs(scan_params, getattr(data_obj, "attrs", None) or {}, labels, frames)
+
+
+__all__ = ["DEFAULT_LABELS", "AxisLabels", "apply_scan_attrs", "default_scan_params", "scan_params_for_source", "positive_int_attr"]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

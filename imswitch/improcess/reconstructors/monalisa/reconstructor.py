@@ -7,7 +7,15 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.acquisition_layout import UnconsumedLoopError
+from imswitch.improcess.model.acquisition_layout_resolver import (
+    ResolvedAcquisitionLayout,
+)
 from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
+from .coeffs_to_image import (
+    linestep_conditions_interleave_per_line,
+    placement_from_layout,
+)
 from .live_session import MonalisaLiveSession
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
@@ -138,17 +146,12 @@ class MonalisaReconstructor(StreamingReconstructor):
         opened and hands it to ``process`` inside ``params``; a headless run
         does the same here, through the same pure function.
         """
-        from .scan_params import DEFAULT_LABELS, apply_scan_attrs, default_scan_params
+        from .scan_params import DEFAULT_LABELS, default_scan_params, scan_params_for_source
 
         params = dict(params or {})
         if params.get('scan_params') is None:
-            try:
-                frames = int(data_obj.numFrames)
-            except Exception:
-                frames = None
-            params['scan_params'] = apply_scan_attrs(
-                default_scan_params(DEFAULT_LABELS), getattr(data_obj, 'attrs', None) or {},
-                DEFAULT_LABELS, frames,
+            params['scan_params'] = scan_params_for_source(
+                default_scan_params(DEFAULT_LABELS), data_obj, DEFAULT_LABELS,
             )
         return params
 
@@ -212,7 +215,12 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
             return self._process_fast_gauss_offline(
-                data_obj.name, data, params, scan_params, data_attrs
+                data_obj.name,
+                data,
+                params,
+                scan_params,
+                data_attrs,
+                resolved=getattr(data_obj, 'acquisition_layout', None),
             )
         
         # Bleaching correction
@@ -259,7 +267,15 @@ class MonalisaReconstructor(StreamingReconstructor):
         # minimizing the total variation of the signal-base reconstruction.
         # Mirrors Mini_Recon's get_orientation; user can disable via the
         # 'Auto-detect scan orientation' checkbox to keep the dialog values.
-        if params.get('auto_scan_orientation', True):
+        placement = self._placement_for(data_obj, coeffs.shape[1])
+        if placement is not None:
+            self._logger.info(
+                f'Using the recorded acquisition layout: '
+                f'{placement.rows}x{placement.cols} scan positions, '
+                f'{placement.n_conditions} condition(s), {placement.n_time} timepoint(s).'
+            )
+        elif params.get('auto_scan_orientation', True):
+            # Only guess the orientation when the recording cannot state it.
             try:
                 best_params, best_label, best_score = auto_detect_scan_orientation(
                     coeffs[0], scan_params, self._axis_labels,
@@ -291,10 +307,48 @@ class MonalisaReconstructor(StreamingReconstructor):
             coeffs=coeffs_5d,
             scan_params=scan_params,
             axis_label_map=self._axis_labels,
+            placement=placement,
         )
 
         self._logger.info(f'Reconstruction complete: shape {result.data.shape}')
         return result
+
+    def _placement_for(self, data_obj, frames: int):
+        """Recorded output coordinates for this source, or ``None``.
+
+        The scan-parameter dialog is consulted only when the recording cannot
+        describe itself. A layout that disagrees with the stored frames is an
+        error, not a reason to fall back to arithmetic over the frame count --
+        that arithmetic is what read an 18x18 two-line-step scan as two
+        contiguous 324-frame time blocks.
+        """
+        resolved = getattr(data_obj, 'acquisition_layout', None)
+        if not isinstance(resolved, ResolvedAcquisitionLayout):
+            return None
+        if not resolved.is_usable:
+            self._logger.info(
+                'Acquisition layout is low-confidence; using the scan dialog.'
+            )
+            return None
+        try:
+            placement = placement_from_layout(resolved.layout)
+        except UnconsumedLoopError as error:
+            if resolved.is_authoritative:
+                raise ValueError(str(error)) from error
+            self._logger.info(
+                'Acquisition layout is inferred and has a loop MoNaLISA cannot '
+                f'place; using the scan dialog. {error}'
+            )
+            return None
+        if placement is None:
+            return None
+        if len(placement.slots) != frames:
+            raise ValueError(
+                f'The acquisition layout records {len(placement.slots)} frames '
+                f'but signal extraction produced {frames}. Frames are never '
+                f'dropped or padded to fit a scan shape.'
+            )
+        return placement
 
     def consolidate(
         self, results: list[MonalisaProcessingResult]
@@ -367,6 +421,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         params: dict,
         scan_params: dict,
         data_attrs: dict | None = None,
+        resolved=None,
     ) -> MonalisaProcessingResult:
         """
         Run the live fast-Gauss MoNaLISA path on a complete offline stack.
@@ -375,31 +430,53 @@ class MonalisaReconstructor(StreamingReconstructor):
         process multiple timepoints, but not Z stacks or scan orders where X/Y
         are not the two scan axes.
         """
-        geometry = self._fast_gauss_geometry_from_scan_params(scan_params)
-        frames_per_stack = geometry['frames_per_stack']
-        expected_frames = frames_per_stack * geometry['num_timepoints']
-        if data.shape[0] != expected_frames:
-            metadata_geometry = self._fast_gauss_geometry_from_attrs(
-                data_attrs or {}, data.shape[0]
-            )
-            if metadata_geometry is None:
-                raise ValueError(
-                    'Fast Gauss MoNaLISA expected '
-                    f'{expected_frames} frames ({frames_per_stack} per timepoint x '
-                    f'{geometry["num_timepoints"]} timepoints), got {data.shape[0]}'
-                )
-            geometry = metadata_geometry
+        # The recording outranks the dialog and the shape arithmetic: it either
+        # supplies the geometry or says the fast path cannot represent it.
+        recorded_geometry = self._fast_gauss_geometry_from_layout(
+            resolved, data_attrs or {}, data.shape[0]
+        )
+        if recorded_geometry is not None:
+            geometry = recorded_geometry
             frames_per_stack = geometry['frames_per_stack']
+        else:
+            geometry = self._fast_gauss_geometry_from_scan_params(scan_params)
+            frames_per_stack = geometry['frames_per_stack']
+            expected_frames = frames_per_stack * geometry['num_timepoints']
+            if data.shape[0] != expected_frames:
+                metadata_geometry = self._fast_gauss_geometry_from_attrs(
+                    data_attrs or {}, data.shape[0]
+                )
+                if metadata_geometry is None:
+                    raise ValueError(
+                        'Fast Gauss MoNaLISA expected '
+                        f'{expected_frames} frames ({frames_per_stack} per timepoint x '
+                        f'{geometry["num_timepoints"]} timepoints), got {data.shape[0]}'
+                    )
+                geometry = metadata_geometry
+                frames_per_stack = geometry['frames_per_stack']
 
         session = self.make_session()
         try:
             first_stack = data[:frames_per_stack]
             session_params = self._fast_gauss_session_params(params)
+            stack_info = None
+            if recorded_geometry is not None:
+                # Same resolved contract the live path consumes, so the session
+                # sizes itself from the layout and cross-checks its detected
+                # orientation against it.
+                from imswitch.improcess.reconstructors.base import StackInfo
+
+                stack_info = StackInfo(
+                    frame_shape=tuple(int(v) for v in data.shape[-2:]),
+                    dtype=np.dtype(data.dtype),
+                    acquisition_layout=resolved,
+                )
             init_obj = StreamInit(
                 name=name,
                 dataset_name='offline',
                 data=first_stack,
                 attrs=geometry['attrs'],
+                stack_info=stack_info,
             )
             session.begin(init_obj, session_params)
 
@@ -422,10 +499,16 @@ class MonalisaReconstructor(StreamingReconstructor):
                 float(np.percentile(finite_data, 99.9)),
             )
 
+        # The image was assembled with the orientation the session detected;
+        # say so instead of carrying the geometry's '+' placeholders.
+        result_scan_params = dict(geometry.get('scan_params', scan_params))
+        if getattr(session, 'scan_params', None):
+            result_scan_params['directions'] = list(session.scan_params['directions'])
+            result_scan_params['unidirectional'] = session.scan_params['unidirectional']
         result = MonalisaProcessingResult(
             name=name,
             data=live_result.data,
-            scan_params=geometry.get('scan_params', scan_params),
+            scan_params=result_scan_params,
             display_levels=display_levels,
             output_pixel_size_nm=out_px,
             axis_label_map=self._axis_labels,
@@ -538,6 +621,82 @@ class MonalisaReconstructor(StreamingReconstructor):
             'scan_params': normalized_scan_params,
         }
 
+    def _fast_gauss_geometry_from_layout(
+        self, resolved, attrs: dict, num_frames: int
+    ) -> dict | None:
+        """Derive fast-Gauss geometry from the recorded layout, or ``None``.
+
+        The fast path assembles one contiguous stack per timepoint. Line-step
+        conditions are part of that stack when they are interleaved per line
+        -- ``[line 0 / A][line 0 / B][line 1 / A]...`` -- which is the order
+        the Advanced producer and its legacy adapter record; the session
+        de-interleaves by ``n_linesteps``. Anything else the recording says
+        the path cannot honour -- conditions laid out any other way,
+        serpentine traversal, a gated detector, a Z loop -- is rejected here.
+        Reassembling those as if they were timepoints is what turned an 18x18
+        two-condition scan into two 324-frame time blocks.
+
+        A layout with conditions used to be declined outright, which sent
+        every legacy line-step file to the attribute ladder; the ladder then
+        sized stacks as ``nx * ny`` and reproduced exactly that bug.
+        """
+        if not isinstance(resolved, ResolvedAcquisitionLayout):
+            return None
+        if not resolved.is_usable:
+            return None
+        layout = resolved.layout
+        try:
+            placement = placement_from_layout(layout)
+        except UnconsumedLoopError as error:
+            # A loop this path cannot place: refuse a declared layout, decline
+            # an inferred one so the older ladder still gets its chance.
+            if resolved.is_authoritative:
+                raise ValueError(str(error)) from error
+            return None
+        if placement is None:
+            return None
+
+        unsupported = []
+        if (
+            placement.n_conditions > 1
+            and not linestep_conditions_interleave_per_line(layout)
+        ):
+            unsupported.append(
+                f'{placement.n_conditions} line-step conditions that are not '
+                f'interleaved per line'
+            )
+        if placement.slices > 1:
+            unsupported.append(f'{placement.slices} Z slices')
+        if any(rule.order != 'forward' for rule in layout.traversal):
+            unsupported.append('a reversed or serpentine fast axis')
+        if layout.recorded_event_spans is not None:
+            unsupported.append('a detector gated to part of the scan')
+        if unsupported:
+            if not resolved.is_authoritative:
+                # An inferred shape this path cannot represent is declined, so
+                # the older metadata ladder still gets its chance; only a
+                # declared one refuses the reconstruction outright.
+                return None
+            raise ValueError(
+                'Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and '
+                'cannot represent ' + ', '.join(unsupported) + '. Use the '
+                'MoNaLISA reconstruction method, which places every frame by '
+                'its recorded coordinate.'
+            )
+
+        if len(placement.slots) != num_frames:
+            raise ValueError(
+                f'The acquisition layout records {len(placement.slots)} frames '
+                f'but this source has {num_frames}.'
+            )
+        return self._fast_gauss_geometry_from_counts(
+            attrs,
+            placement.cols,
+            placement.rows,
+            num_frames,
+            num_linesteps=placement.n_conditions,
+        )
+
     def _fast_gauss_geometry_from_attrs(
         self, attrs: dict, num_frames: int
     ) -> dict | None:
@@ -609,13 +768,18 @@ class MonalisaReconstructor(StreamingReconstructor):
         nx_s: int,
         ny_s: int,
         num_frames: int,
+        num_linesteps: int | None = None,
     ) -> dict | None:
-        num_linesteps = (
-            MonalisaLiveSession._coerce_positive_int(
-                attrs.get('ScanTTL:n_linesteps')
+        # The layout's condition count outranks the ScanTTL attribute it may
+        # have been derived from; the attribute is only for sources with no
+        # usable layout.
+        if num_linesteps is None:
+            num_linesteps = (
+                MonalisaLiveSession._coerce_positive_int(
+                    attrs.get('ScanTTL:n_linesteps')
+                )
+                or 1
             )
-            or 1
-        )
         frames_per_stack = nx_s * ny_s * num_linesteps
         if frames_per_stack <= 0 or num_frames % frames_per_stack != 0:
             return None

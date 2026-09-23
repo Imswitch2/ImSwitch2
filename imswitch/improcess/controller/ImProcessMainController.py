@@ -30,6 +30,11 @@ class ImProcessMainController(MainController):
         self.__moduleCommChannel = moduleCommChannel
         self.__logger = initLogger(self, tryInheritParent=False)
         self.__processingConfig = processingConfig
+        # Set before anything that can fail: closeEvent runs on a controller
+        # whose construction raised, and an AttributeError here hid the real
+        # startup error behind a second one.
+        self.__guiLayoutStateAdapter = None
+        self.__roiManagerStateAdapter = None
 
         # Connect view signals
         self.__mainView.sigClosing.connect(self.closeEvent)
@@ -119,10 +124,7 @@ class ImProcessMainController(MainController):
         # Register the view's dock layout with the shared widget-state
         # persistence service so it is auto-restored at startup and auto-saved
         # at shutdown. Failures here must never block ImProcess from coming up.
-        self.__guiLayoutStateAdapter = None
-        # Assigned before the try so `_wire_runtime_result_processor` can look
-        # for it whether or not persistence is available at all.
-        self.__roiManagerStateAdapter = None
+        # (Both adapters were initialised to None at the top of __init__.)
         try:
             from imswitch.imcommon.model import getWidgetStatePersistence
 

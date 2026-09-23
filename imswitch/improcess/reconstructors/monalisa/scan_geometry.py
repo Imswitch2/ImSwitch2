@@ -319,3 +319,130 @@ def get_orientation(
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def scan_params_from_layout(resolved, axis_labels: dict) -> dict | None:
+    """MoNaLISA scan-dialog values from a resolved acquisition layout.
+
+    The dialog used to be pre-filled by re-parsing ``ScanStage:*`` attributes,
+    and its position counts came from ``sqrt(numFrames)`` -- the same square
+    guess that turned a 648-frame 18x18x2 line-step scan into 25x25 in
+    BeadRec. The resolver already knows the real counts, pitches and
+    directions, so they come from there.
+
+    ``axis_labels`` maps semantic names to the widget's dimension strings
+    (``r_l_text``/``u_d_text``/``b_f_text``/``timepoints_text``/``p_text``/
+    ``n_text``). Returns ``None`` when the layout describes no scan axis.
+    """
+    layout = getattr(resolved, "layout", None)
+    if layout is None or not getattr(resolved, "is_usable", False):
+        return None
+
+    from imswitch.imcommon.model.acquisition_layout import (
+        UnconsumedLoopError,
+        select_loops,
+    )
+
+    kind_to_label = {
+        "scan_x": axis_labels["r_l_text"],
+        "scan_y": axis_labels["u_d_text"],
+        "scan_z": axis_labels["b_f_text"],
+        "time": axis_labels["timepoints_text"],
+    }
+    # The dialog has slots for three scan axes, timepoints and (via
+    # n_linesteps) line-step conditions. A layout with any other loop cannot
+    # be expressed by it, and a pre-fill that silently ignores a loop
+    # reproduces a different scan, so it is declined instead.
+    try:
+        selected = select_loops(
+            layout,
+            consumer="MoNaLISA scan dialog",
+            roles={
+                "fast": "scan_x",
+                "slow": "scan_y",
+                "depth": "scan_z",
+                "time": "time",
+                "condition": "condition",
+            },
+        )
+    except UnconsumedLoopError:
+        return None
+    placed = [
+        selected[role] for role in ("fast", "slow", "depth", "time")
+        if selected[role] is not None
+    ]
+    # event_loops run outermost to innermost; the dialog lists the fast axis
+    # first, which is the same order reversed.
+    loops = [loop for loop in reversed(layout.event_loops) if loop in placed]
+    if not any(loop.kind.startswith("scan_") for loop in loops):
+        return None
+
+    dimensions: list[str] = []
+    directions: list[str] = []
+    steps: list[str] = []
+    step_sizes: list[str] = []
+    for loop in loops:
+        dimensions.append(kind_to_label[loop.kind])
+        directions.append(
+            axis_labels["n_text"] if loop.direction == -1 else axis_labels["p_text"]
+        )
+        steps.append(str(int(loop.count)))
+        # The dialog holds nanometres; layout pitches are micrometres.
+        step_sizes.append(str(float(loop.step) * 1000.0) if loop.step else "1")
+
+    # Pad to the dialog's fixed four slots, timepoints last.
+    for label in (
+        axis_labels["r_l_text"],
+        axis_labels["u_d_text"],
+        axis_labels["b_f_text"],
+        axis_labels["timepoints_text"],
+    ):
+        if label not in dimensions:
+            dimensions.append(label)
+            directions.append(axis_labels["p_text"])
+            steps.append("1")
+            step_sizes.append("1")
+
+    # The dialog has no condition axis. Line-step conditions ride on the
+    # timepoints slot -- ``T = timepoints x conditions`` -- exactly as
+    # ``coeffs_to_image`` reads it back, and ``n_linesteps`` says how to
+    # de-interleave them. Leaving the condition loop out entirely made the
+    # dialog claim one timepoint for a 648-frame 18x18x2 scan. The dialog's
+    # arithmetic only knows conditions interleaved per line, so any other
+    # placement of the condition loop is declined rather than pre-filled with
+    # values that cannot reproduce the layout.
+    from .coeffs_to_image import linestep_conditions_interleave_per_line
+
+    condition = next(
+        (loop for loop in layout.event_loops if loop.kind == "condition"), None
+    )
+    if condition is not None and not linestep_conditions_interleave_per_line(layout):
+        return None
+    n_linesteps = int(condition.count) if condition is not None else 1
+    time_index = dimensions.index(axis_labels["timepoints_text"])
+    steps[time_index] = str(int(steps[time_index]) * n_linesteps)
+
+    # ``unidirectional`` is the dialog's word for "not a snake scan". The only
+    # bidirectional order the dialog can express is a serpentine fast axis
+    # whose parity is the (row, condition) pair coeffs_to_image assumes.
+    fast_id = next(loop.id for loop in layout.event_loops if loop.kind == "scan_x")
+    allowed_parity = {
+        loop.id for loop in layout.event_loops if loop.kind in ("scan_y", "condition")
+    }
+    unidirectional = True
+    for rule in layout.traversal:
+        if rule.order == "serpentine" and rule.loop_id == fast_id:
+            if not set(rule.parity_loops) <= allowed_parity:
+                return None
+            unidirectional = False
+        elif rule.order != "forward":
+            # A retrace, or a serpentine on any other loop, is not a dialog scan.
+            return None
+    return {
+        "dimensions": dimensions[:4],
+        "directions": directions[:3],
+        "steps": steps[:4],
+        "step_sizes": step_sizes[:4],
+        "n_linesteps": n_linesteps,
+        "unidirectional": unidirectional,
+    }

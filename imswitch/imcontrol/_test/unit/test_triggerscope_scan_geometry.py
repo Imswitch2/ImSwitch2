@@ -83,12 +83,15 @@ def test_frame_count_is_the_product_of_the_firmware_counters():
 
 
 @pytest.mark.parametrize('value', [0, -4, None, '', 'not-a-number'])
-def test_an_unusable_counter_counts_as_one_step(value):
-    """A missing or nonsensical counter must not collapse the whole
-    expectation to zero, which would arm a recording for no frames at all."""
+def test_an_unusable_counter_is_refused_not_read_as_one_step(value):
+    """A nonsensical counter used to count as one step -- here AND in the
+    layout builder, from two copies of the same list -- so a recording armed
+    for a fraction of the scan with a 'recorded', 'certain' layout to match.
+    Nothing is defaulted now; the counter is named in the refusal."""
     controller = _controller(cycleSteps=value)
 
-    assert controller.getNumScanPositions() == 10
+    with pytest.raises(ValueError, match="'cycleSteps'"):
+        controller.getNumScanPositions()
 
 
 def test_counters_restored_as_text_still_multiply():
@@ -97,10 +100,11 @@ def test_counters_restored_as_text_still_multiply():
     assert controller.getNumScanPositions() == 30
 
 
-def test_a_missing_counter_key_is_a_single_step():
+def test_a_missing_counter_key_is_refused():
     controller = _Controller({'roSteps': 7}, {})
 
-    assert controller.getNumScanPositions() == 7
+    with pytest.raises(ValueError, match="'timeLapsePoints' is missing"):
+        controller.getNumScanPositions()
 
 
 # --------------------------------------------------------------------------- #
@@ -112,9 +116,11 @@ def test_camera_ttl_reports_one_pulse_for_the_configured_camera():
 
 
 def test_camera_ttl_is_empty_without_a_camera_role():
-    """pLS-RESOLFT and galvo-detection configure no CameraTTL device. An empty
-    map means "nothing overrides the default", which the RecordingManager
-    reads as one pulse per position."""
+    """A mode whose widget declares no CameraTTL device yields an empty map,
+    which means "this scan gates no detector": a scan-mode recording of a
+    camera from it is refused at arm (DETECTOR_PULSES_UNDECLARED) rather than
+    defaulted to one pulse per position. Every TriggerScope RESOLFT mode now
+    has a 'Camera used for detection' combo for exactly this reason."""
     controller = _Controller(
         {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
         {},
@@ -132,6 +138,55 @@ def test_camera_ttl_ignores_a_ttl_line_that_is_not_a_detector():
     )
 
     assert controller.getNumCamTTL() == {}
+
+
+def test_an_undeclared_camera_is_refused_by_naming_the_control_that_fixes_it():
+    """The generic refusal sends the operator to the wrong place.
+
+    It says to gate the detector in the scan's TTL cycle, which in these modes
+    is not something the software can do: the firmware owns the camera line.
+    The only action available is declaring which detector is wired to it, so
+    the message has to name that control -- at the rig, in the middle of a
+    session, is the worst possible time to go looking for a TTL setting that
+    does not exist.
+    """
+    controller = _Controller(
+        {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
+        {},
+        detectors=('Camera',),
+    )
+
+    with pytest.raises(ValueError) as error:
+        controller.getAcquisitionLayouts(('Camera',))
+
+    message = str(error.value)
+    assert 'Camera used for detection' in message
+    assert 'no camera is selected' in message
+    # The original refusal is kept: it names the detector and the rule.
+    assert "'Camera'" in message
+
+
+def test_a_camera_role_pointing_at_a_non_detector_says_which_name_was_wrong():
+    controller = _Controller(
+        {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
+        {'CameraTTL': 'SomeTTLLine'},
+        detectors=('Camera',),
+    )
+
+    with pytest.raises(ValueError) as error:
+        controller.getAcquisitionLayouts(('Camera',))
+
+    assert "'SomeTTLLine' is not a detector in this setup" in str(error.value)
+
+
+def test_a_declared_camera_still_builds_its_layout():
+    """The mode-specific message must not swallow a genuine builder failure."""
+    layouts = _controller().getAcquisitionLayouts(('Camera',))
+
+    assert set(layouts) == {'Camera'}
+    assert [loop.kind for loop in layouts['Camera'].event_loops] == [
+        'time', 'cycle', 'plane'
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -333,3 +388,137 @@ def test_capable_source_names_are_offered_for_the_chooser():
     assert CommunicationChannel.getRecordingScanSourceNames(channel) == [
         'TriggerScopeRaster', 'TriggerScopeScan'
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Every RESOLFT-family panel can declare its camera                            #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize('widget_module, widget_class', [
+    ('TriggerScopePLSRWidget', 'TriggerScopePLSRWidget'),
+    ('TriggerScopeGalvoDetectionWidget', 'TriggerScopeGalvoDetectionWidget'),
+    ('TriggerScopePLSRMulticolorWidget', 'TriggerScopePLSRMulticolorWidget'),
+])
+def test_every_resolft_panel_declares_its_camera(qtbot, widget_module, widget_class):
+    """The firmware gates the camera on a fixed line in these modes; the
+    software must still say WHICH detector is on it, or a scan recording cannot
+    tie frames to positions and is refused at arm. The multicolor panel always
+    had the combo; the basic pLS-RESOLFT and galvo-detection panels gained it."""
+    import importlib
+
+    module = importlib.import_module(
+        f'imswitch.imcontrol.view.widgets.{widget_module}'
+    )
+    widget = getattr(module, widget_class)(None)
+    qtbot.addWidget(widget)
+
+    widget.CameraTTLEdit.addItems(['OrcaStraight', 'WidefieldCamera'])
+    widget.setCameraTTL('OrcaStraight')
+    assert widget.getCameraTTL() == 'OrcaStraight'
+
+    controller = _Controller(
+        {'roSteps': 2, 'cycleSteps': 2, 'timeLapsePoints': 1},
+        {'CameraTTL': widget.getCameraTTL()},
+        detectors=('OrcaStraight', 'WidefieldCamera'),
+    )
+    assert controller.getNumCamTTL() == {'OrcaStraight': 1}
+
+
+# --------------------------------------------------------------------------- #
+# Declaring the camera on a rig whose camera has no software TTL line          #
+# --------------------------------------------------------------------------- #
+
+def test_the_camera_selector_offers_a_detector_with_no_digital_line():
+    """Snouty's camera is wired to the TriggerScope, not driven by ImSwitch.
+
+    The firmware owns the camera line in these modes, so the setup file has no
+    reason to give the detector a ``digitalLine`` -- and the shipped Snouty
+    configuration does not. Filling the selector from the software's TTL
+    devices therefore left it empty on exactly the rig that needs it, and every
+    scan-mode camera recording was refused at arm with no way to fix it in the
+    UI. The role names which detector receives the firmware's pulse; that is a
+    question about detectors.
+    """
+    import ast
+    from pathlib import Path
+
+    # The multicolor panel is deliberately excluded: it programs the camera's
+    # line into the firmware, so there it must be a device that has one.
+    for filename in (
+        'TriggerScopePLSRController.py',
+        'TriggerScopeGalvoDetectionController.py',
+    ):
+        source = (CONTROLLER_DIR / filename).read_text()
+        tree = ast.parse(source)
+        populated = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'addItems'
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == 'CameraTTLEdit'
+        ]
+        assert populated, f'{filename} does not populate the camera selector'
+        for call in populated:
+            rendered = ast.dump(call)
+            assert 'detectors' in rendered, (
+                f'{filename} fills the camera selector from something other '
+                f'than the setup\'s detectors'
+            )
+            assert 'TTLDevices' not in rendered, (
+                f'{filename} still requires a software TTL line to name the '
+                f'camera; Snouty\'s has none'
+            )
+
+
+def test_the_multicolor_panel_only_offers_a_camera_the_firmware_can_be_told_about():
+    """That mode programs ``CameraTTLChan``, so the line has to exist.
+
+    Widening the selector to every detector was right for the panels that only
+    *declare* which detector receives the pulse. The multicolor mode also
+    *sets* the line, through ``deviceInfo`` -- built solely from devices whose
+    setup entry names a ``Triggerscope/TTL<n>`` -- so offering a camera
+    without one moved the failure from arm time to five parameters into the
+    scan, as a bare ``KeyError``.
+    """
+    import ast
+
+    source = (CONTROLLER_DIR / 'TriggerScopePLSRMulticolorController.py').read_text()
+    calls = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'addItems'
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == 'CameraTTLEdit'
+    ]
+
+    assert calls, 'the multicolor panel does not populate its camera selector'
+    for call in calls:
+        rendered = ast.dump(call)
+        assert 'TTLDevices' in rendered, (
+            'the multicolor panel offers cameras the firmware cannot be told '
+            'about; its scan sets CameraTTLChan from the TriggerScope registry'
+        )
+
+
+def test_a_device_without_a_triggerscope_line_is_named_not_a_key_error():
+    from types import SimpleNamespace
+
+    from imswitch.imcontrol.model.managers.ScanManagerTriggerScope import (
+        ScanManagerTriggerScope,
+    )
+
+    manager = ScanManagerTriggerScope.__new__(ScanManagerTriggerScope)
+    manager._ts = SimpleNamespace(deviceInfo={'OrcaStraight': {'TTLLine': '3'}})
+
+    assert manager._lineTTL('OrcaStraight', 'camera') == '3'
+
+    with pytest.raises(ValueError) as error:
+        manager._lineTTL('WidefieldCamera', 'camera')
+
+    message = str(error.value)
+    assert 'WidefieldCamera' in message
+    assert 'Triggerscope/TTL' in message
+    assert 'camera' in message
+

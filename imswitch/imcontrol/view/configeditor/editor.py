@@ -1280,6 +1280,19 @@ class FieldWidget(QWidget):
         if tp == "bool":
             self._w = QCheckBox()
             self._w.setChecked(bool(value) if value is not None else False)
+        elif tp == "bool_auto":
+            # Tri-state boolean: "Automatic" means the key stays ABSENT from
+            # the saved config so the consumer's fallback applies (e.g.
+            # smoothScan's device-name heuristic). Apply omits the key for
+            # Automatic instead of writing a default.
+            self._w = QComboBox()
+            self._w.addItem("Automatic (not set)", None)
+            self._w.addItem("On", True)
+            self._w.addItem("Off", False)
+            if value is None or value == "null":
+                self._w.setCurrentIndex(0)
+            else:
+                self._w.setCurrentIndex(1 if bool(value) else 2)
         elif tp in ("int", "float"):
             # A validated line edit, not a spin box: a spin box is a C++ int
             # that clamps, rounds to its decimals and cannot hold a string a
@@ -1416,6 +1429,8 @@ class FieldWidget(QWidget):
         tp = self._def["type"]
         if tp == "bool":
             return self._w.isChecked()
+        if tp == "bool_auto":
+            return self._w.currentData()  # None (Automatic) / True / False
         if tp in ("int", "float"):
             return _parse_number(self._w.text())
         if tp == "select":
@@ -1922,6 +1937,10 @@ class PropertyEditor(QWidget):
             # own "req" is a hint for the label and the warning below, not
             # proof: the file loaded without the key.
             if not (field.get("schema_req") or (section, key) in self._present_keys or fw.is_touched()):
+                continue
+            if fw._def.get("type") == "bool_auto" and val is None:
+                # "Automatic": keep the key absent so the consumer's own
+                # fallback applies (never write a default for it).
                 continue
             if section == "props":
                 key = self._alias_spelling.get((section, key), key)

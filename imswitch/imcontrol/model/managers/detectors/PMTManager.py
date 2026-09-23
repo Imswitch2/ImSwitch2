@@ -42,6 +42,25 @@ def _joinScanThreadBounded(thread, timeoutMs, detectorName):
         )
 
 
+def _timerClockTerminalOf(nidaqManager):
+    """The timer counter's output terminal, or None when none is configured.
+
+    Tolerant of test doubles: anything that is not a terminal name is None,
+    which only matters on hardware, where requireTimerClock() refuses it.
+    """
+    accessor = getattr(nidaqManager, 'getTimerClockTerminal', None)
+    terminal = accessor() if callable(accessor) else None
+    return terminal if isinstance(terminal, str) else None
+
+
+def _timerRateOf(nidaqManager):
+    """The timer counter's pulse rate in hertz; 1 MHz when it cannot say."""
+    try:
+        return float(getattr(nidaqManager, 'timerRateHz'))
+    except (AttributeError, TypeError, ValueError):
+        return 1e6
+
+
 class PMTManager(DetectorManager):
     """PMT analog-input manager with linestep-aware buffering + frame-boundary UI updates."""
 
@@ -58,10 +77,20 @@ class PMTManager(DetectorManager):
         # Pixel sizes stored low-dim to high-dim (ImSwitch convention used elsewhere)
         self.__pixel_sizes = [1, 1]
 
-        self._detection_samplerate = float(1e6)
-        self._nidaq_clock_source = r"ctr2InternalOutput"
+        # The sample clock is the NI-DAQ timer counter's pulse train: its rate
+        # and terminal come from the manager that generates it, not from a
+        # literal here (which named counter 2 whatever the setup file chose).
+        self._detection_samplerate = _timerRateOf(nidaqManager)
+        self._nidaq_clock_source = _timerClockTerminalOf(nidaqManager)
 
         manager_props = detectorInfo.managerProperties
+        # Analog-input range handed to the driver. It used to be dropped on the
+        # way, so every PMT ran at nidaqmx's +-5 V; these defaults state that
+        # range, and a preamp swinging further declares its own.
+        self._aiVoltageRange = (
+            float(manager_props.get("aiVoltageMin", -5.0)),
+            float(manager_props.get("aiVoltageMax", 5.0)),
+        )
         self._channel = manager_props.get("analogInputLine", None)
         device_name = manager_props.get("deviceName", "Dev1")
         if isinstance(self._channel, int):
@@ -184,6 +213,16 @@ class PMTManager(DetectorManager):
                 logger.warning(f'Failed to clean up scan thread: {e}')
         if hasattr(super(), "__del__"):
             super().__del__()
+
+    def requireTimerClock(self):
+        """The sample-clock terminal, or a clear refusal when none exists."""
+        if self._nidaq_clock_source is None:
+            raise RuntimeError(
+                f'{self._name} takes its sample clock from the NI-DAQ timer '
+                f'counter, but nidaq.timerCounterChannel is not set in the setup '
+                f'file. Set it to a counter no detector uses, e.g. "Dev1/ctr2".'
+            )
+        return self._nidaq_clock_source
 
     @property
     def isScanDriven(self):
@@ -644,6 +683,10 @@ class PMTManager(DetectorManager):
         Raw buffer is allocated as reversed + leading 1.
         """
         img_dims = tuple(int(x) for x in img_dims)
+        # Defensive: logical dims are always at least (Nx, Ny) -- a bare (N,)
+        # (1-axis scan reaching here unnormalized) becomes one line (N, 1).
+        if len(img_dims) < 2:
+            img_dims = img_dims + (1,) * (2 - len(img_dims))
 
         img_dims_extra = tuple(reversed(img_dims))
 
@@ -690,7 +733,11 @@ class PMTManager(DetectorManager):
             s = None
 
         # ---- S == 1: could be 2D (1, Ny, Nx) OR 3D (1, Nz, Ny, Nx) (or higher) ----
-        if np.squeeze(self._image).ndim == 2:
+        # <= 2, not == 2: a single-line scan's (1, N) buffer squeezes to rank
+        # 1, and with the old == 2 dispatch NEITHER branch ran -- every pixel
+        # of a 1-axis scan was silently dropped. The [..., y, :n] write below
+        # handles the (1, N) buffer as-is (y == 0).
+        if np.squeeze(self._image).ndim <= 2:
             # (1, Ny, Nx)
             Ny = self._image.shape[-2]
             if y >= Ny:
@@ -790,6 +837,10 @@ class PMTManager(DetectorManager):
 
         while im.ndim > self._image_display.ndim:
             im = np.squeeze(im[0])
+        # a single-line scan squeezes to rank 1; the display contract is a
+        # 2-D (1, N) image
+        if im.ndim < 2:
+            im = im.reshape(1, -1)
 
         self._image_display = im
         # Set the boundary flag before the shared broker drains getChunk().
@@ -926,6 +977,13 @@ class ScanWorker(Worker):
         # img_dims contains physical scan axes only (no linestep); n_linesteps is separate.
         scan_dims = list(scanInfoDict["img_dims"])
         scan_axes = list(scanInfoDict.get("img_axes_phys", ["x", "y", "z"][:len(scan_dims)]))
+        # Singleton-line normalization: a 1-axis scan is ONE line of N
+        # pixels. Pad the logical dims to (N, 1) with a size-1 'y' so the
+        # line-based assembly keeps its 2-D contract: loop dims [N, 1], raw
+        # buffer (1, N), display (1, N), chunks (frames, 1, N).
+        if len(scan_dims) == 1:
+            scan_dims.append(1)
+            scan_axes.append("y")
         self._linestep = max(1, int(scanInfoDict.get("n_linesteps", 1)))
 
         # identify Y axis (default to 1)
@@ -967,7 +1025,11 @@ class ScanWorker(Worker):
         self._throw_settling = round(scanInfoDict["scan_throw_settling"] * self._frac_scan_det_rate)
         self._throw_startacc = round(scanInfoDict["scan_throw_startacc"] * self._frac_scan_det_rate)
 
-        self._phase_delay = int(scanInfoDict["phase_delay"])
+        # Galvo response lag in microseconds, as detection samples (see APD).
+        self._phase_delay = int(round(
+            float(scanInfoDict["phase_delay"] or 0)
+            * self._manager._detection_samplerate / 1e6
+        ))
         self._smooth_axes = scanInfoDict["smooth_axes"]
 
         pad_initpos = self._scan_pads_initpos[0] if len(self._scan_pads_initpos) > 0 else 0
@@ -979,16 +1041,21 @@ class ScanWorker(Worker):
             self._inputTaskGeneration = (
                 self._manager._nidaqManager.startInputTask(
                     self._name, "ai", self._channel, "finite",
-                    self._manager._nidaq_clock_source,
+                    self._manager.requireTimerClock(),
                     self._manager._detection_samplerate,
-                    None, None,
+                    *self._manager._aiVoltageRange,
                     self._samples_total, True, "ao/StartTrigger",
                 )
             )
 
         # allocate buffers
         self._manager.initiateImage(self._output_image_dims)
-        self._manager.setPixelSize(scanInfoDict["pixel_sizes"])
+        # A 1-axis scan reports one pixel size; pad the unscanned singleton
+        # 'y' with the fast step so the display scale stays two-dimensional.
+        pixel_sizes = list(scanInfoDict["pixel_sizes"])
+        if len(pixel_sizes) == 1:
+            pixel_sizes.append(pixel_sizes[0])
+        self._manager.setPixelSize(pixel_sizes)
 
     def throwdata(self, datalen):
         if datalen > 0:

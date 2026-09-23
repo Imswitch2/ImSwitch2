@@ -71,7 +71,7 @@ def test_beta_designer_uses_round_and_matches_display():
         "axis_startpos": [[0], [0], [0]],
         "axis_centerpos": [0, 0, 0],
         "return_time": 0.001,
-        "sequence_time": 0.002,
+        "sequence_time": 0.002, "move_time": 0, "settle_time": 0,
         "n_linesteps": 1,
     }
     _signals, positions, scan_info = BetaScanDesigner().make_signal(
@@ -134,7 +134,7 @@ def _beta_fast_axis_spacing(length, step, seq_time=0.01, sample_rate=10000):
         "axis_startpos": [[0], [0], [0]],
         "axis_centerpos": [0, 0, 0],
         "return_time": 0.001,
-        "sequence_time": seq_time,
+        "sequence_time": seq_time, "move_time": 0, "settle_time": 0,
         "n_linesteps": 1,
     }
     signals, positions, _info = BetaScanDesigner().make_signal(params, _beta_setup(sample_rate))
@@ -164,7 +164,7 @@ def _beta_x_range(center, *, length=10, step=2, conv=1.0):
         "axis_length": [length, 1, 0], "axis_step_size": [step, 1, 1],
         "axis_startpos": [[center], [center], [center]],
         "axis_centerpos": [center, center, center],
-        "return_time": 0.001, "sequence_time": 0.002, "n_linesteps": 1,
+        "return_time": 0.001, "sequence_time": 0.002, "move_time": 0, "settle_time": 0, "n_linesteps": 1,
     }
     sig, positions, _info = BetaScanDesigner().make_signal(params, _beta_setup(conv=conv))
     x = np.asarray(sig["X"], dtype=float)
@@ -220,7 +220,7 @@ def _beta_z_first_params(z_center, middle_center=0.0):
         "axis_step_size": [0.5, 0.1, 0.1],
         "axis_startpos": [[z_center], [middle_center], [0]],
         "axis_centerpos": [z_center, middle_center, 0.0],
-        "return_time": 0.001, "sequence_time": 0.002, "n_linesteps": 1,
+        "return_time": 0.001, "sequence_time": 0.002, "move_time": 0, "settle_time": 0, "n_linesteps": 1,
     }
 
 
@@ -276,7 +276,7 @@ def test_galvo_collapsed_d1_keeps_signals_on_their_devices():
         "axis_step_size": [1.0, 0.5, 2.0],    # B: 5 px,  C: 3 px
         "axis_centerpos": [0.0, 0.0, 0.0],
         "axis_startpos": [[0], [0], [0]],
-        "sequence_time": 2e-05,
+        "sequence_time": 2e-05, "move_time": 0, "settle_time": 0,
         "phase_delay": 100.0,
         "d3step_delay": 0.0,
     }

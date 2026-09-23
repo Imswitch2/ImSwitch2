@@ -125,16 +125,27 @@ class PluginRegistry:
         Returns:
             The best-match reconstructor
         """
-        # Heuristic 1: modality tag in attrs. DataObj.attrs is None for plain
-        # TIFFs and may be missing entirely on synthetic objects, so guard it.
-        attrs = getattr(data_obj, "attrs", None) or {}
+        # Heuristic 1: the modality the recording declared. The acquisition
+        # layout is the contract that carries it now; the bare "modality" attr
+        # remains for sources written before that. DataObj.attrs is None for
+        # plain TIFFs and may be missing on synthetic objects, so guard both.
         modality_tag = ""
         try:
-            modality_tag = str(attrs.get("modality", "")).lower()
-        except AttributeError:
-            # attrs is something we cannot .get() on (e.g. h5py AttributeManager
-            # in edge cases). Fall through to extension-based detection.
+            resolved = getattr(data_obj, "acquisition_layout", None)
+            recorded = getattr(getattr(resolved, "layout", None), "modality", None)
+            modality_tag = str(recorded or "").lower()
+        except Exception:
+            # A source that cannot resolve its layout still gets the older
+            # heuristics; picking a reconstructor must never be fatal.
             pass
+        if not modality_tag:
+            attrs = getattr(data_obj, "attrs", None) or {}
+            try:
+                modality_tag = str(attrs.get("modality", "")).lower()
+            except AttributeError:
+                # attrs is something we cannot .get() on (e.g. h5py
+                # AttributeManager in edge cases). Fall through to extensions.
+                pass
         if modality_tag and modality_tag in self._reconstructors:
             self.__logger.debug(f"Auto-selected reconstructor '{modality_tag}' from modality tag")
             return self._reconstructors[modality_tag]

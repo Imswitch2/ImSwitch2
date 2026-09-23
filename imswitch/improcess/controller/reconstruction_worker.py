@@ -75,6 +75,9 @@ class ReconstructionWorker(QtCore.QObject):
         try:
             self._token.check()
             for index, job in enumerate(self._jobs):
+                validator = getattr(self._reconstructor, "validate_source", None)
+                if callable(validator):
+                    validator(job.data_obj)
                 context = ReconstructionContext(
                     progress_callback=lambda update, i=index: self._forward_progress(
                         i, update

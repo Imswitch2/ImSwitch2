@@ -30,8 +30,8 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
         # --- Scan timing params ---
         self.seqTimePar = QtWidgets.QLineEdit("0.02")  # ms
-        self.phaseDelayPar = QtWidgets.QLineEdit("0")  # samples
-        self.d3StepDelayPar = QtWidgets.QLineEdit("0")  # samples
+        self.phaseDelayPar = QtWidgets.QLineEdit("0")  # µs (see ScanWidgetPointScan)
+        self.d3StepDelayPar = QtWidgets.QLineEdit("0")  # µs
 
 
         self.scanPar = {

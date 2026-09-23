@@ -12,7 +12,7 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin, check_firmware_scan_dac_ranges
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
@@ -59,6 +59,13 @@ class TriggerScopeGalvoDetectionController(
         self._widget.onLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.offLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.roLaserEdit.addItems(self.TTLDevices.keys())
+        # Every detector, not only the ones with a digitalLine. The firmware
+        # owns the camera line in these modes -- the software never drives it
+        # -- so this names which detector receives that pulse rather than
+        # commanding one, and requiring a software TTL line to say so left the
+        # box empty on exactly the rigs that need it: Snouty's camera is wired
+        # to the TriggerScope directly and declares no line to ImSwitch.
+        self._widget.CameraTTLEdit.addItems(self._setupInfo.detectors.keys())
         self._widget.roScanDeviceEdit.addItems(self.positioners.keys())
         self._widget.galvoScanDeviceEdit.addItems(self.positioners.keys())
         self._widget.cycleScanDeviceEdit.addItems(self.positioners.keys())
@@ -141,6 +148,8 @@ class TriggerScopeGalvoDetectionController(
             self._widget.setRoScanDevice(self._deviceParameterDict['roScanDevice'])
             self._widget.setGalvoScanDevice(self._deviceParameterDict['galvoScanDevice'])
             self._widget.setCycleScanDevice(self._deviceParameterDict['cycleScanDevice'])
+            # Older saved states and scan files predate the camera role.
+            self._widget.setCameraTTL(self._deviceParameterDict.get('CameraTTL', ''))
         finally:
             self.settingParameters = False
 
@@ -174,6 +183,9 @@ class TriggerScopeGalvoDetectionController(
         scanParameterDict['galvoFirstPositionV'] = self._scanParameterDict['galvoFirstPositionUm'] / galvoConvFactor
         scanParameterDict['galvoSecondPositionV'] = self._scanParameterDict['galvoSecondPositionUm'] / galvoConvFactor
         scanParameterDict['galvoThirdPositionV'] = self._scanParameterDict['galvoThirdPositionUm'] / galvoConvFactor
+        check_firmware_scan_dac_ranges(
+            self.positioners, deviceParameterDict, scanParameterDict, what='galvo-detection scan',
+        )
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
@@ -235,6 +247,7 @@ class TriggerScopeGalvoDetectionController(
         self._deviceParameterDict['onLaser'] = self._widget.getOnLaser()
         self._deviceParameterDict['offLaser'] = self._widget.getOffLaser()
         self._deviceParameterDict['roLaser'] = self._widget.getRoLaser()
+        self._deviceParameterDict['CameraTTL'] = self._widget.getCameraTTL()
         self._deviceParameterDict['roScanDevice'] = self._widget.getRoScanDevice()
         self._deviceParameterDict['galvoScanDevice'] = self._widget.getGalvoScanDevice()
         # Cycle scan reuses the RO device (widget selector is disabled and
@@ -355,10 +368,17 @@ class TriggerScopeGalvoDetectionController(
         offLaser = deviceParameterDict.get('offLaser')
         roLaser = deviceParameterDict.get('roLaser')
 
+        cameraTTL = deviceParameterDict.get('CameraTTL')
+
         missingTTLDevices = []
         for device in [onLaser, offLaser, roLaser]:
             if device and device not in self.TTLDevices:
                 missingTTLDevices.append(device)
+        # The camera is a detector the firmware pulses, not a line ImSwitch
+        # drives, so it is checked against the detectors rather than against
+        # the software's TTL devices.
+        if cameraTTL and cameraTTL not in self._setupInfo.detectors:
+            missingTTLDevices.append(cameraTTL)
 
         if missingTTLDevices:
             warnings.append(

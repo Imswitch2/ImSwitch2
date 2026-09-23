@@ -254,3 +254,20 @@ def test_a_null_number_shows_an_empty_validated_box(qapp):
     assert fw.get_value() is None
     _type(fw, "7")
     assert fw.get_value() == 7
+
+
+# ── the three-state boolean: Automatic keeps the key absent ────────────────
+
+@pytest.mark.parametrize("value, index", [(None, 0), (True, 1), (False, 2)])
+def test_bool_auto_shows_what_the_file_holds_and_returns_it_untouched(qapp, value, index):
+    fw = editor.FieldWidget(_field("smoothScan", "bool_auto"), value)
+    assert fw._w.currentIndex() == index
+    assert fw.get_value() is value
+
+
+def test_bool_auto_set_back_to_automatic_returns_none(qapp):
+    fw = editor.FieldWidget(_field("smoothScan", "bool_auto"), False)
+    fw._w.setCurrentIndex(0)
+    fw._w.activated.emit(0)                      # what a user's choice emits
+    assert fw.is_touched()
+    assert fw.get_value() is None                # the apply loop omits the key

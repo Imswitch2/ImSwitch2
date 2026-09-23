@@ -121,6 +121,12 @@ class ScanManagerBase(SuperScanManager):
         self._checkScanDefined()
 
         if not staticPositioner:
+            if not self._scanDesigner.checkSignalLength(scanParameters, self._setupInfo):
+                self._logger.error(
+                    'Signal too long: try scanning a smaller ROI, faster, or with a larger'
+                    ' pixel size.'
+                )
+                return
             scanSignalsDict, positions, scanInfoDict = self.getScanSignalsDict(scanParameters)
             if not self._scanDesigner.checkSignalComp(
                     scanParameters, self._setupInfo, scanInfoDict

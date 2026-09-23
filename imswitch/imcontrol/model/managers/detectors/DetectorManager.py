@@ -65,21 +65,39 @@ class DetectorListParameter(DetectorParameter):
 #: size of camera detectors. Used by ``DetectorManager.pixelSizeUm`` and by
 #: downstream modules such as tiling, scale bars and stitching.
 CAMERA_PIXEL_SIZE_PARAM = 'Camera pixel size'
+#: Companion parameter naming where the pixel size came from.
+CAMERA_PIXEL_SIZE_SOURCE_PARAM = 'Camera pixel size source'
+PIXEL_SIZE_SOURCE_SETUP = 'setup file'
+PIXEL_SIZE_SOURCE_DEFAULT = 'assumed default'
+PIXEL_SIZE_SOURCE_USER = 'user'
 
 #: Setup-file ``managerProperties`` key that seeds CAMERA_PIXEL_SIZE_PARAM.
 CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
 
 #: Maximum frames retained per readChunk consumer queue. Only relevant for a
 #: consumer that registered but stopped polling while another consumer keeps
-#: draining; bounds the memory leak in that case.
-MAX_QUEUED_CONSUMER_FRAMES = 1000
+#: draining; bounds the memory that consumer can retain.
+#:
+#: A *byte* budget rather than a frame count, because a frame count is not a
+#: bound on anything. The queue exists to cap memory, and how much memory a
+#: frame costs is a property of the detector and its ROI -- 3 kB for a 76x20
+#: crop, 8 MB for a full 2048x2048 sensor, tens of megabytes for a point
+#: detector's assembled volume. One number of *frames* is therefore three
+#: orders of magnitude wrong for somebody however it is chosen, and choosing
+#: it per detector means every new detector has to remember to declare which
+#: category it belongs to. Counting bytes needs no category and no memory:
+#: a fast camera with a small ROI gets tens of thousands of frames of slack, a
+#: full-sensor camera gets tens, and both are bounded by the same amount of
+#: RAM.
+#:
+#: This is per consumer, per detector. Several registered consumers on one
+#: detector can each hold this much.
+MAX_QUEUED_CONSUMER_BYTES = 256 * 1024 * 1024
 
-#: The same cap for a RAW consumer. A raw frame from a line-step 3-D scan is
-#: ``S x Nz`` planes where a display frame is one, so an identical frame count
-#: would mean a wildly different number of bytes. Kept small deliberately: a
-#: raw consumer receives one frame per completed scan, not one per boundary,
-#: so falling a thousand behind is not a backlog, it is a leak.
-MAX_QUEUED_RAW_FRAMES = 16
+#: Charged per queued frame on top of its pixels, so that a stream of tiny or
+#: empty frames is bounded by the same budget. A queued frame costs a list
+#: slot and an ndarray object, not only its buffer.
+QUEUED_FRAME_OVERHEAD_BYTES = 128
 
 
 class ChunkKind(enum.Enum):
@@ -224,6 +242,18 @@ class DetectorManager(SignalInterface):
                     f' "{CAMERA_PIXEL_SIZE_KEY}". Using the default'
                     f' {default} µm instead of the configured value.'
                 )
+            else:
+                # An omission is allowed, but it is not a calibration: the
+                # placeholder goes into every file's OME PhysicalSize, the
+                # scale bar and the napari layer scale looking exactly like a
+                # measured value. Say so once, here, and mark the provenance
+                # (see the 'Camera pixel size source' parameter).
+                logger.warning(
+                    f'Manager property "{CAMERA_PIXEL_SIZE_KEY}" is not declared;'
+                    f' assuming {default} µm/px. Recordings will carry this'
+                    f' placeholder as their pixel size until it is declared in'
+                    f' the setup file or set in the detector settings.'
+                )
             return DetectorNumberParameter(
                 group='Miscellaneous', value=float(default),
                 valueUnits='µm', editable=True,
@@ -316,6 +346,18 @@ class DetectorManager(SignalInterface):
                 getattr(detectorInfo, 'managerProperties', None)) is not None
         )
 
+        # Where the pixel size came from, recorded next to it so a file can
+        # tell a measured calibration from the assumed placeholder. Flips to
+        # 'user' when the value is edited at runtime.
+        if CAMERA_PIXEL_SIZE_PARAM in self.__parameters:
+            declared = CAMERA_PIXEL_SIZE_PARAM in self.__configOwnedParameters
+            self.__parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM] = DetectorListParameter(
+                group='Miscellaneous',
+                value=PIXEL_SIZE_SOURCE_SETUP if declared else PIXEL_SIZE_SOURCE_DEFAULT,
+                options=[PIXEL_SIZE_SOURCE_SETUP, PIXEL_SIZE_SOURCE_DEFAULT,
+                         PIXEL_SIZE_SOURCE_USER],
+                editable=False,
+            )
         self.setBinning(supportedBinnings[0])
 
     def updateLatestFrame(self, init):
@@ -336,6 +378,10 @@ class DetectorManager(SignalInterface):
         if name not in self.__parameters:
             raise AttributeError(f'Non-existent parameter "{name}" specified')
 
+        if (name == CAMERA_PIXEL_SIZE_PARAM
+                and CAMERA_PIXEL_SIZE_SOURCE_PARAM in self.__parameters
+                and value != self.__parameters[name].value):
+            self.__parameters[CAMERA_PIXEL_SIZE_SOURCE_PARAM].value = PIXEL_SIZE_SOURCE_USER
         self.__parameters[name].value = value
         return self.parameters
 
@@ -576,11 +622,13 @@ class DetectorManager(SignalInterface):
         The consumer is auto-registered on its first call. Call
         releaseChunkConsumer() when done, so frames stop being retained for
         a consumer that no longer polls. A consumer that is registered but
-        not polling has its queue capped at MAX_QUEUED_CONSUMER_FRAMES.
-        Crossing that cap marks the stream incomplete: the oldest retained
-        frames are discarded to bound memory, and the consumer's next read
-        raises :class:`ChunkConsumerOverflowError` instead of silently
-        returning a truncated recording.
+        not polling has its queue bounded by MAX_QUEUED_CONSUMER_BYTES, so
+        the number of frames it may fall behind by follows from how large
+        this detector's frames actually are. Crossing that budget marks the
+        stream incomplete: the oldest retained frames are discarded to bound
+        memory, and the consumer's next read raises
+        :class:`ChunkConsumerOverflowError` instead of silently returning a
+        truncated recording.
 
         Returns a list of frames; an empty list when no new frames are
         queued for this consumer.
@@ -592,13 +640,28 @@ class DetectorManager(SignalInterface):
                 kinds.setdefault(consumerKey, ChunkKind.DISPLAY)
             self._distributeChunkLocked(self.drainChunk())
             if consumerKey in self._chunkConsumersOverflowed:
+                # Quote the budget that actually tripped, and name the
+                # detector. This message used to hardcode one frame count
+                # whatever the consumer's kind, so a recording that fell 17
+                # frames behind reported 1000 -- which sent the one field
+                # diagnosis it ever had looking for a catastrophic backlog
+                # instead of a hiccup.
+                budget = MAX_QUEUED_CONSUMER_BYTES // (1024 * 1024)
+                # The logger prefixes the detector name; a propagated
+                # exception carries no such prefix, and the traceback alone
+                # does not say which detector lost the stream.
+                try:
+                    detector = f'{self.name}: '
+                except Exception:
+                    detector = ''
                 raise ChunkConsumerOverflowError(
-                    f'readChunk consumer "{consumerKey}" fell behind by more '
-                    f'than {MAX_QUEUED_CONSUMER_FRAMES} frames; its stream is '
-                    f'incomplete'
+                    f'{detector}readChunk consumer "{consumerKey}" fell far '
+                    f'enough behind to exceed its {budget} MiB queue budget; '
+                    f'its stream is incomplete'
                 )
             frames = list(queue)
             queue.clear()
+            self._chunkConsumerBytes()[consumerKey] = 0
             return frames
 
     def getLatestFrameShared(self, is_save=False) -> np.ndarray:
@@ -613,6 +676,19 @@ class DetectorManager(SignalInterface):
         """
         with self._chunkConsumersLock:
             if self._chunkConsumers:
+                # If somebody else has drained since this path last looked, the
+                # latch already holds a frame nobody here has seen, and draining
+                # again would only move more frames out of the driver's buffer
+                # and into every registered consumer's queue -- including a
+                # recorder that is blocked on its writer and cannot take them.
+                # That is how a 300 ms live-view tick came to hand a stalled
+                # recording thousands of frames at once. Reuse the latch
+                # instead; when nothing else is draining, the flag stays
+                # consumed and this path drains for itself, so the display
+                # keeps updating either way.
+                if not is_save and self._latchIsUnconsumed():
+                    self._markLatchConsumed()
+                    return self.__image
                 # _distributeChunkLocked latches both representations, so any
                 # drain refreshes them whichever participant performed it.
                 self._distributeChunkLocked(self.drainChunk())
@@ -640,6 +716,7 @@ class DetectorManager(SignalInterface):
                         return self.getLatestFrame(is_save=True)
                     except TypeError:
                         return self.getLatestFrame()
+                self._markLatchConsumed()
                 return self.__image
 
             try:
@@ -653,6 +730,41 @@ class DetectorManager(SignalInterface):
             else:
                 self.__image = frame
             return frame
+
+    def _latchIsUnconsumed(self) -> bool:
+        """Whether a drain by someone else has refreshed the display latch.
+
+        Read through ``__dict__`` for the same reason :meth:`_chunkKinds` does.
+        Defaults to consumed, so a manager that never latched behaves exactly
+        as it did before: it drains for itself.
+        """
+        if self.__dict__.get('_chunkLatchConsumed', True):
+            return False
+        image = self.__dict__.get('_DetectorManager__image')
+        return image is not None and getattr(image, 'size', 0) > 0
+
+    def _markLatchConsumed(self) -> None:
+        self.__dict__['_chunkLatchConsumed'] = True
+
+    @staticmethod
+    def _frameBytes(frame) -> int:
+        """What one queued frame costs, pixels plus its own object overhead."""
+        nbytes = getattr(frame, 'nbytes', None)
+        if nbytes is None:
+            try:
+                nbytes = np.asarray(frame).nbytes
+            except Exception:
+                nbytes = 0
+        return int(nbytes) + QUEUED_FRAME_OVERHEAD_BYTES
+
+    def _chunkConsumerBytes(self) -> dict:
+        """Queued bytes per consumer, created on first use.
+
+        Read through ``__dict__`` for the same reason :meth:`_chunkKinds` does:
+        a manager may mirror the broker's state without running this class's
+        ``__init__``.
+        """
+        return self.__dict__.setdefault('_chunkConsumerQueueBytes', {})
 
     def _distributeChunkLocked(self, payload) -> None:
         """Fan one drain out, per consumer's kind; caller holds the lock.
@@ -673,6 +785,8 @@ class DetectorManager(SignalInterface):
         display = payload.of(ChunkKind.DISPLAY)
         if display is not None and len(display) > 0:
             self.__image = np.asarray(display[-1])
+            # A frame nobody on the display path has taken yet.
+            self.__dict__['_chunkLatchConsumed'] = False
         raw = payload.of(ChunkKind.RAW)
         if raw is not None and len(raw) > 0:
             self._latestRawImage = np.asarray(raw[-1])
@@ -687,23 +801,89 @@ class DetectorManager(SignalInterface):
             if newFrames is None or len(newFrames) == 0:
                 continue
 
-            consumerQueue.extend(newFrames)
-            cap = (MAX_QUEUED_RAW_FRAMES if kind is ChunkKind.RAW
-                   else MAX_QUEUED_CONSUMER_FRAMES)
-            excess = len(consumerQueue) - cap
-            if excess <= 0:
+            queuedBytes = self._chunkConsumerBytes()
+            if key in self._chunkConsumersOverflowed:
+                # Its stream is already incomplete and its next read will say
+                # so, so nothing retained for it can ever be returned. Holding
+                # frames for it would only keep a queue-budget's worth of
+                # memory alive and make every later drain trim it again.
                 continue
-            del consumerQueue[:excess]
+
+            held = queuedBytes.get(key, 0)
+            arriving = sum(self._frameBytes(frame) for frame in newFrames)
+            total = held + arriving
+            if total <= MAX_QUEUED_CONSUMER_BYTES or not consumerQueue:
+                # Within budget -- or nothing was waiting, in which case one
+                # delivery is admitted however large. The budget bounds a
+                # *backlog*: frames a consumer has not read yet. A delivery
+                # that arrives to an empty queue is not a backlog, and for a
+                # scan-driven detector it is the whole assembled volume, one
+                # frame that can exceed the budget on its own. Refusing it
+                # bounded nothing and dropped the measurement (the budget
+                # replaced a frame count that admitted any single frame). The
+                # writer applies the same rule on its side
+                # (RecordingWriterThread.enqueue_frames). What the budget
+                # still bounds is everything *behind* such a delivery: the
+                # next one overflows until this one is read.
+                consumerQueue.extend(newFrames)
+                queuedBytes[key] = total
+                if total > MAX_QUEUED_CONSUMER_BYTES:
+                    self._warnOversizedDelivery(key, arriving, len(newFrames))
+                continue
+
+            # Over budget: this consumer has stopped keeping up, and from here
+            # its stream is incomplete however many frames are kept. Release
+            # them in one go rather than trimming from the front on this and
+            # every subsequent drain -- popping one frame at a time moved the
+            # whole remaining queue each time, tens of thousands of frames of
+            # it, while holding the lock every other consumer needs to read.
+            dropped = len(consumerQueue) + len(newFrames)
+            consumerQueue.clear()
+            queuedBytes[key] = 0
+
             self._chunkConsumersOverflowed.add(key)
             if key in self._chunkConsumersWarned:
                 continue
             self._chunkConsumersWarned.add(key)
+            perFrame = self._frameBytes(newFrames[-1])
+            mib = 1024 * 1024
             self.__logger.warning(
-                f'readChunk consumer "{key}" is registered but not polling; '
-                f'dropping its oldest frames (cap {cap}). The consumer will '
-                f'fail rather than accept an incomplete stream; call '
+                f'readChunk consumer "{key}" has not read what was held for '
+                f'it: {held / mib:.0f} MiB were waiting when a further '
+                f'{arriving / mib:.0f} MiB arrived, exceeding its '
+                f'{MAX_QUEUED_CONSUMER_BYTES // mib} MiB queue budget '
+                f'(about {max(1, MAX_QUEUED_CONSUMER_BYTES // max(1, perFrame))} '
+                f'frames at this detector\'s {perFrame} bytes each); dropped '
+                f'all {dropped} frame(s). Its stream is incomplete, so it will '
+                f'fail on its next read rather than accept a gap; call '
                 f'releaseChunkConsumer when done.'
             )
+
+    def _oversizedWarned(self) -> set:
+        """Consumers already told that one delivery outgrew the budget."""
+        return self.__dict__.setdefault('_chunkConsumersOversizedWarned', set())
+
+    def _warnOversizedDelivery(self, key, arriving, frameCount) -> None:
+        """Say once per consumer that a delivery was admitted over budget.
+
+        Not a fault -- the delivery was taken whole -- but the operator should
+        know that no further backlog fits behind it: a scan-lapse whose
+        volumes outgrow the budget has no slack at this queue, and only what
+        the writer queue holds stands between a slow disk and a lost volume.
+        """
+        warned = self._oversizedWarned()
+        if key in warned:
+            return
+        warned.add(key)
+        mib = 1024 * 1024
+        self.__logger.warning(
+            f'readChunk consumer "{key}" was handed one delivery of '
+            f'{arriving / mib:.0f} MiB ({frameCount} frame(s)) that alone '
+            f'exceeds its {MAX_QUEUED_CONSUMER_BYTES // mib} MiB queue '
+            f'budget (MAX_QUEUED_CONSUMER_BYTES). It was admitted, since '
+            f'nothing was waiting, but no further backlog fits behind it '
+            f'until it is read.'
+        )
 
     def releaseChunkConsumer(self, consumerKey: str) -> None:
         """ Unregisters a readChunk() consumer and drops any frames still
@@ -716,6 +896,8 @@ class DetectorManager(SignalInterface):
                 kinds.pop(consumerKey, None)
             self._chunkConsumersWarned.discard(consumerKey)
             self._chunkConsumersOverflowed.discard(consumerKey)
+            self._oversizedWarned().discard(consumerKey)
+            self._chunkConsumerBytes().pop(consumerKey, None)
 
     def startChunkConsumer(self, consumerKey: str,
                            kind: ChunkKind = ChunkKind.DISPLAY) -> None:
@@ -739,10 +921,13 @@ class DetectorManager(SignalInterface):
                 kinds.pop(consumerKey, None)
             self._chunkConsumersWarned.discard(consumerKey)
             self._chunkConsumersOverflowed.discard(consumerKey)
+            self._oversizedWarned().discard(consumerKey)
+            self._chunkConsumerBytes().pop(consumerKey, None)
 
             self._distributeChunkLocked(self.drainChunk())
 
             self._chunkConsumers[consumerKey] = []
+            self._chunkConsumerBytes()[consumerKey] = 0
             kinds = self._chunkKinds()
             if kinds is not None:
                 kinds[consumerKey] = kind

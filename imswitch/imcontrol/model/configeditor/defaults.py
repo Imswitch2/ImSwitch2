@@ -64,7 +64,19 @@ def build_default_device(
             else:
                 d[f["key"]] = _default_value(v, tp)
         for f in template.get("props", []):
-            d["managerProperties"][f["key"]] = _default_value(f.get("default", ""), field_type(f, "prop"))
+            tp = field_type(f, "prop")
+            if tp == "bool_auto":
+                # Tri-state boolean whose absent state is meaningful: the
+                # consumer applies its own fallback (e.g. smoothScan's device
+                # name heuristic). A null/absent default must stay ABSENT --
+                # materializing a value here would silently change behavior
+                # for devices that relied on the fallback.
+                v = f.get("default", "")
+                if v in (None, "", "null"):
+                    continue
+                d["managerProperties"][f["key"]] = bool(v)
+                continue
+            d["managerProperties"][f["key"]] = _default_value(f.get("default", ""), tp)
         for nest_key, nest_fields in template.get("nested", {}).items():
             sub = {}
             for f in nest_fields:

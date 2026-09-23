@@ -39,6 +39,8 @@ class ThorCamTSIManager(DetectorManager):
         dll_location = props.get('dllLocation', 'dlls/64_lib')
         defaults = props.get('defaults', {})
         self._flushFrameLimit = int(props.get('flushFrameLimit', 256))
+        from imswitch.imcontrol.model.interfaces.thorcamera_tsi import DEFAULT_FRAME_BUFFER_DEPTH
+        self._frameBufferDepth = int(props.get('frameBufferDepth', DEFAULT_FRAME_BUFFER_DEPTH))
         
         # Get default values
         default_exposure_us = defaults.get('exposure_us', 50000)
@@ -112,7 +114,7 @@ class ThorCamTSIManager(DetectorManager):
         self._applyDefaults()
         
         # Arm camera for continuous acquisition
-        self._camera.arm(buffer_size=4)
+        self._camera.arm(buffer_size=self._frameBufferDepth)
         self.__logger.info(f"Initialized {model}, serial: {self._camera.serial}")
     
     def _initCamera(self, serial, dll_location):
@@ -235,7 +237,7 @@ class ThorCamTSIManager(DetectorManager):
         self._camera.set_roi(x0, y0, x1, y1)
         
         if was_armed:
-            self._camera.arm(buffer_size=4)
+            self._camera.arm(buffer_size=self._frameBufferDepth)
         
         # Update shape
         self._shape = (x1 - x0 + 1, y1 - y0 + 1)
@@ -337,7 +339,7 @@ class ThorCamTSIManager(DetectorManager):
         camera continuously armed but must not silently no-op when it is disarmed.
         """
         if not self._camera.is_armed:
-            self._camera.arm(buffer_size=4)
+            self._camera.arm(buffer_size=self._frameBufferDepth)
     
     def stopAcquisition(self):
         """Stop acquisition (no-op, camera stays armed)."""

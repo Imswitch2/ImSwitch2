@@ -10,7 +10,11 @@ class ScanParamsController(ImProcessWidgetController):
         self._parDict = {
             'dimensions': [self._widget.u_d_text, self._widget.r_l_text, self._widget.b_f_text,
                            self._widget.timepoints_text],
-            'directions': [self._widget.p_text, self._widget.n_text],
+            # One direction per spatial axis, matching the dialog's three
+            # combos. This held two entries -- the second was never shown while
+            # every combo was filled from the first -- and reading the third
+            # raised at startup, which took the whole of ImProcess down.
+            'directions': [self._widget.p_text, self._widget.p_text, self._widget.p_text],
             'steps': ['35', '35', '1', '1'],
             'step_sizes': ['35', '35', '35', '1'],
             'n_linesteps': 1,

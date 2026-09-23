@@ -7,7 +7,7 @@ BUILTIN_DEVICE_MANAGERS: list[DeviceManagerContribution] = [
     DeviceManagerContribution(
         id="AVManager",
         kind="detector",
-        display_name="Generic video detector (OpenCV)",
+        display_name="Synthetic camera (mock frames; no video driver is bundled)",
         python_name="imswitch.imcontrol.model.managers.detectors.AVManager:AVManager",
         plugin_name="imswitch-core",
         manager_name_aliases=("builtin.av",),
