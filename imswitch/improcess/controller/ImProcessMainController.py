@@ -51,6 +51,11 @@ class ImProcessMainController(MainController):
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel()
 
+        # A widget controller that has something to say to the operator and
+        # no view of its own says it here; the main view owns the status bar.
+        if hasattr(self.__mainView, 'showStatusMessage'):
+            self.__commChannel.sigStatusMessage.connect(self.__mainView.showStatusMessage)
+
         # Bridge live results to imcontrol if enabled
         self.__commChannel.sigResultProduced.connect(self._onResultProduced)
         self.__commChannel.sigLiveResultUpdated.connect(self._onLiveResultUpdated)
