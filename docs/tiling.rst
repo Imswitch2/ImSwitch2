@@ -309,6 +309,23 @@ Individual tiles
     leading dimension as depth. Older manifests without these descriptors are
     still accepted using the legacy assumptions.
 
+    For a run that records a payload per tile, a payload's descriptors come
+    from its own recording: the writer names the axes from the recording's
+    acquisition layout wherever the layout gives every stored axis one OME
+    letter, and falls back to the frame-count guess only where it does not
+    (a camera frame stream over a raster, say). Snapshot tiles still use the
+    manifest's own guess from the Z step.
+
+Per-tile payload recordings
+    Each payload recorded for a tile identifies itself without the manifest:
+    its acquisition layout carries a ``tile`` partition (the tile's ordinal
+    and the run's tile count), and its shared attributes carry the same
+    ``Tiling:grid_x``/``grid_y``/``stage_x_um``/``stage_y_um`` a snapshot tile
+    carries. Such a run is the Recording widget's scan lapse with tiling
+    placing the stage, and the lapse's legacy ``recording:num_timepoints``
+    attribute still counts its items; the partition kind is what says they
+    are tiles, not timepoints.
+
 The stitched mosaic is written alongside them. All of it is written even for a
 stopped or partial run — whatever reached disk should still be a usable dataset
 rather than orphaned files.
