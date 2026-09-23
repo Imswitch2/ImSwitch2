@@ -766,11 +766,24 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
 # Theme helpers
 # =============================================================================
 def is_dark_mode() -> bool:
-    """Check if the application is in dark mode based on palette lightness."""
+    """Whether widgets in this application are drawn on a dark background.
+
+    The application palette is not enough: ImSwitch darkens itself with an
+    application style sheet (qdarkstyle) and leaves the palette light, so
+    inside ImSwitch the palette alone picked the light card colours -- white
+    cards with light text. A widget polished under the style sheet carries
+    the background it will really be drawn with, so that is asked as well.
+    """
     app = QApplication.instance()
     if app is None:
         return False
-    return app.palette().window().color().lightness() < 128
+    if app.palette().window().color().lightness() < 128:
+        return True
+    if not app.styleSheet():
+        return False
+    probe = QWidget()
+    probe.ensurePolished()
+    return probe.palette().window().color().lightness() < 128
 
 
 def get_themed_colors(is_dark: bool):
@@ -3676,6 +3689,7 @@ class MainWindow(QMainWindow):
         self._saved_files: set = set()
         self._active_config_changed = False
 
+        self._adopt_dark_theme()
         self._build_toolbar()
         self._build_ui()
         self._build_status_bar()
@@ -3685,6 +3699,26 @@ class MainWindow(QMainWindow):
 
         self._detect_options_file()
         self._open_active_config(start_folder)
+
+    def _adopt_dark_theme(self):
+        """Look the same inside a dark host as when run on its own.
+
+        Standalone, ``main()`` puts the editor's theme on the application.
+        Opened from ImSwitch, the application's style sheet is qdarkstyle, so
+        the editor puts its own theme on its window instead, where it wins
+        over the application's and reaches nothing else of ImSwitch. A light
+        host is left alone: the cards follow ``is_dark_mode()``.
+
+        ImSwitch's 10 px font stays. Any ``font-size`` rule overrides the
+        sizes the editor sets with ``setFont``, so no rule here could give
+        back the standalone sizes -- only replace one uniform size with
+        another.
+        """
+        app = QApplication.instance()
+        if app is None or app.styleSheet() == _DARK_STYLESHEET or not is_dark_mode():
+            return
+        self.setPalette(_dark_palette(self.palette()))
+        self.setStyleSheet(_HOSTED_OVERRIDES + _DARK_STYLESHEET)
 
     # ── Build UI ──────────────────────────────────────────────────────────
     def _build_toolbar(self):
@@ -4254,8 +4288,8 @@ class MainWindow(QMainWindow):
         event.accept()
         self.sig_closed.emit()
 
-def dark_theme(app, palette):
-    """Apply complete dark theme with palette and comprehensive QSS stylesheet."""
+def _dark_palette(palette):
+    """Return ``palette`` with the editor's dark colours set."""
     # Set dark palette colors
     palette.setColor(QPalette.Window, QColor("#2B2B2B"))
     palette.setColor(QPalette.Base, QColor("#1E1E1E"))
@@ -4274,9 +4308,11 @@ def dark_theme(app, palette):
     palette.setColor(QPalette.Disabled, QPalette.Text, QColor("#707070"))
     palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#707070"))
     palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#707070"))
+    return palette
 
-    # Comprehensive QSS stylesheet
-    stylesheet = """
+
+# Comprehensive QSS stylesheet
+_DARK_STYLESHEET = """
         QFrame {
             background-color: #2B2B2B;
             color: #E0E0E0;
@@ -4535,8 +4571,33 @@ def dark_theme(app, palette):
             margin: 3px 0;
         }
     """
-    app.setStyleSheet(stylesheet)
-    return palette
+
+
+# Put in front of _DARK_STYLESHEET when the editor themes its own window inside
+# ImSwitch. They undo the qdarkstyle rules the editor's sheet does not otherwise
+# override: a blue-black background on every plain widget, and boxed tool bar
+# buttons. They come first so that the editor's own type rules, of equal
+# specificity, still win.
+_HOSTED_OVERRIDES = """
+        QWidget {
+            background-color: #2B2B2B;
+            color: #E0E0E0;
+        }
+        QToolBar QToolButton {
+            background-color: transparent;
+            border: none;
+            padding: 3px 6px;
+        }
+        QToolBar QToolButton:hover {
+            background-color: #3C3F41;
+        }
+"""
+
+
+def dark_theme(app, palette):
+    """Apply complete dark theme with palette and comprehensive QSS stylesheet."""
+    app.setStyleSheet(_DARK_STYLESHEET)
+    return _dark_palette(palette)
 
 # =============================================================================
 # Entry point
