@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "conversionFactor": {
+      "description": "µm-per-volt scaling.  Voltage written =",
+      "x-imswitch-kind": [
+        "integer",
+        "number"
+      ],
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer",
+        "example:number"
+      ]
+    },
+    "maxVolt": {
+      "description": "Maximum allowed analog voltage.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer"
+      ]
+    },
+    "minVolt": {
+      "description": "Minimum allowed analog voltage.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer"
+      ]
+    }
+  },
+  "required": [
+    "conversionFactor",
+    "maxVolt",
+    "minVolt"
+  ],
+  "title": "NidaqPositionerManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "NidaqPositionerManager",
+    "PositionerManager"
+  ]
+}

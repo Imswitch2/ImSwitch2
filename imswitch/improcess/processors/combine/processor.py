@@ -38,6 +38,12 @@ class StackCombineProcessor(Processor):
     min_inputs = 2
     max_inputs = None
 
+    @classmethod
+    def default_params(cls) -> dict:
+        # Set by the Stack/Combine dialog in the GUI, by the step's params in
+        # a workflow. ``name`` empty means "derive one from the mode".
+        return {"mode": "stack", "join_axis": 0, "name": "", "axis_label": "Z"}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2
@@ -60,7 +66,7 @@ class StackCombineProcessor(Processor):
         layout.addStretch()
 
         def get_values():
-            return {}
+            return dict(self.default_params())
 
         widget.get_values = get_values
         return widget
@@ -69,17 +75,19 @@ class StackCombineProcessor(Processor):
         results = list(params.get("results", []) or [])
         if not results:
             results = [result, *list(params.get("additional_results", []) or [])]
-        mode = str(params.get("mode", "stack"))
+        mode = str(params.get("mode") or "stack")
+        if mode not in ("stack", "concatenate"):
+            raise ValueError(f"mode must be 'stack' or 'concatenate', got {mode!r}")
         name = params.get("name") or None
         if mode == "concatenate":
             return concatenate_results(
                 results,
-                join_axis=int(params.get("join_axis", 0)),
+                join_axis=int(params.get("join_axis") or 0),
                 name=name or "Concatenated",
             )
         return stack_results(
             results,
-            axis_label=str(params.get("axis_label", "Z")),
+            axis_label=str(params.get("axis_label") or "Z"),
             name=name or "Stacked",
         )
 

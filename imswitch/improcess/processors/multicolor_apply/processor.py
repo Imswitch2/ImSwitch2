@@ -25,6 +25,10 @@ class MulticolorApplyProcessor(Processor):
     id = "multicolor-apply"
     category = "Registration"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'alignment_path': ''}
+
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
 

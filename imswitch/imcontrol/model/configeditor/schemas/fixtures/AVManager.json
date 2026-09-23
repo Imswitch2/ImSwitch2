@@ -1,0 +1,11 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "AVManager",
+    "managerProperties": {
+      "avcam": {},
+      "cameraListIndex": "example",
+      "cameraPixelSizeUm": null
+    }
+  }
+}

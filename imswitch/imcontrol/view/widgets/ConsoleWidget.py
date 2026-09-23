@@ -5,6 +5,10 @@ from .basewidgets import Widget
 
 
 class ConsoleWidget(Widget):
+    # pyqtgraph's console already scrolls, and it is meant to fill the
+    # panel rather than sit at its preferred height inside a scroll area.
+    scrollablePanel = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # No minimum height of its own: docks stack vertically and a

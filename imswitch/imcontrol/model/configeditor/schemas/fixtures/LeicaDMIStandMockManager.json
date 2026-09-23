@@ -1,0 +1,7 @@
+{
+  "category": "stands",
+  "device": {
+    "managerName": "LeicaDMIStandMockManager",
+    "managerProperties": {}
+  }
+}

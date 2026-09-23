@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a flip_mirror entry in a setup file, as imswitch.imcontrol.model.SetupInfo.FlipMirrorInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "initial_state": {
+      "default": null,
+      "description": "Optional state to move to at startup. ``None`` keeps the current state.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:FlipMirrorInfo.initial_state: Optional[int]"
+      ]
+    },
+    "invert": {
+      "default": false,
+      "description": "Whether logical states 0 and 1 are swapped from hardware states.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:FlipMirrorInfo.invert: bool"
+      ]
+    },
+    "managerName": {
+      "description": "Flip mirror manager class name.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:FlipMirrorInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "default": {},
+      "description": "Optional manager-specific properties.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:FlipMirrorInfo.managerProperties: Dict[str, Any]"
+      ]
+    },
+    "serial_number": {
+      "default": null,
+      "description": "Serial number used by hardware managers to find the device.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:FlipMirrorInfo.serial_number: Optional[str]"
+      ]
+    },
+    "state_names": {
+      "default": {},
+      "description": "Optional display names for logical states 0 and 1.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:FlipMirrorInfo.state_names: Dict[str, str]"
+      ]
+    }
+  },
+  "required": [
+    "managerName"
+  ],
+  "title": "flip_mirror device entry (FlipMirrorInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "FlipMirrorInfo"
+  ],
+  "x-imswitch-info-class": "FlipMirrorInfo"
+}

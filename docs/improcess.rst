@@ -340,6 +340,7 @@ smlm-render             Processor      Render a localization table into a super-
 smlm-filter             Processor      Filter localizations by photons, lateral sigma and frame range
 smlm-drift              Processor      Segment cross-correlation drift correction with drift trace plots
 smlm-group              Processor      Link blinking repeats into photon-weighted merged localizations
+table-to-localizations  Processor      Promote a points table to localizations with an explicit column mapping
 ======================= ============== ====================================================
 
 Processor categories and compatibility
@@ -541,6 +542,15 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``LocalizationResult`` with blinking repeats within the link radius
        merged: photon-weighted mean position/sigmas, summed photons, first
        frame; optional dark-frame gap tolerance.
+   * - ``table-to-localizations``
+     - SMLM
+     - Any ``table`` result with named columns (a ``PointsTableResult``
+       imported from a napari Points layer, a CSV). The x/y (optionally
+       z, frame, photons, sigma) columns and their unit are given
+       explicitly; a missing column is an error, never a guess.
+     - ``LocalizationResult`` in nanometres, per-axis converted (``px``:
+       lateral pixel size and Z step; ``table``: the table's own per-axis
+       scale and unit). The only path from a points table to emitters.
 
 Remaining follow-ups
 --------------------
@@ -610,14 +620,15 @@ threshold curve and cutoff marker.  The same graph contract is intended for
 future processing units such as batch summaries, FLIM traces and line-profile
 tools.
 
-File metadata panel
-===================
+Metadata panel
+==============
 
-Set ``"metadataPanel": true`` in the ``processing`` block to show the file
+Set ``"metadataPanel": true`` in the ``processing`` block to show the
 metadata panel, or open it at any time from the **Tools** toolbar / menu
 (``panel.metadata``, unbound by default).  It shows the complete metadata
-hierarchy of a measurement file as a collapsible tree with *Name*, *Value* and
-*Type* columns.
+hierarchy of a measurement file — or of the result selected in the
+reconstruction list, provenance included — as a collapsible tree with
+*Name*, *Value* and *Type* columns.
 
 The reader is deliberately **layout-agnostic**: it walks whatever hierarchy the
 container actually has and reports every attribute it finds on the way down.
@@ -640,7 +651,12 @@ nested dicts and lists become subtrees, and string attributes that actually
 carry a JSON document or an XML document (OME-XML, for example) are parsed and
 expanded, with the raw string kept on the parent node.
 
-The panel follows the current data item, so loading a file shows its metadata.
+The panel follows the current data item, so loading a file shows its metadata,
+and it follows the selection in the reconstruction list: a result made in the
+session (a duplicate, a crop, a processor's output) shows its identity, its
+metadata and its provenance -- every step done to it so far, and the source
+file it came from -- in the same tree.  *Reload* rebuilds that view after
+further processing.
 *Open file...* reads the metadata of any supported file without loading its
 pixels, and *Reload* re-reads the current one — useful while a recording is
 still being written.  The filter box matches names, values and types, keeping
@@ -1448,32 +1464,123 @@ Writing a new plugin
 A minimal ``Reconstructor`` looks like this::
 
     from imswitch.improcess.reconstructors.base import Reconstructor
-    from imswitch.improcess.model.result import ProcessingResult, ViewMode
-
-    class MyResult(ProcessingResult):
-        def save(self, path, fmt="tiff"):
-            ...  # write self.data to path
+    from imswitch.improcess.model.array_result import ArrayProcessingResult
 
     class MyReconstructor(Reconstructor):
         name = "My modality"
         id = "my-modality"
         file_extensions = ["hdf5", "tiff"]
 
+        @classmethod
+        def default_params(cls):
+            return {"iterations": 10}   # what a fresh widget hands process()
+
         def make_param_widget(self, parent):
-            ...  # return a QWidget exposing get_values() -> dict
+            ...  # return a QWidget exposing get_values() -> dict (same keys/defaults)
 
         def make_metadata_dialog(self, parent):
             return None  # or a QDialog for acquisition metadata
 
-        def process(self, data_obj, params):
+        def process(self, data_obj, params, context=None):
             data_obj.checkAndLoadData()
             ...
-            return MyResult(name=data_obj.name, data=..., axis_labels=[...])
+            return ArrayProcessingResult(name=data_obj.name, data=..., axis_labels=[...])
 
-Register it by adding the class to ``_AVAILABLE_RECONSTRUCTOR_CLASSES`` in
-``imswitch/improcess/reconstructors/__init__.py``.  Processors use the
+Return one of the existing result classes (``ArrayProcessingResult``,
+``LabelsResult``, ``LocalizationResult``, …) unless the modality really
+needs its own on-disk layout; the existing classes come with saving,
+provenance embedding and napari conversion already done.  Register the
+reconstructor by adding the class to ``_AVAILABLE_RECONSTRUCTOR_CLASSES``
+in ``imswitch/improcess/reconstructors/__init__.py``.  Processors use the
 analogous ``_AVAILABLE_PROCESSOR_CLASSES`` map in
-``imswitch/improcess/processors/__init__.py``.
+``imswitch/improcess/processors/__init__.py``.  (Drop-in discovery, below,
+finds processors only; a reconstructor is always a built-in.)
+
+.. _improcess-headless-contract:
+
+What a plugin gets for free, and what it must declare
+-----------------------------------------------------
+
+Every plugin that goes through the shared run path — the GUI, a workflow, a
+batch, live streaming — gets without any hook of its own: a provenance graph
+on each result it produces, a version stamp (the ImSwitch version for
+built-ins, a digest of the file for drop-ins), the staged save protocol with
+the provenance carried in the file, napari endpoints for every layerable
+result kind, batch runs, the command line, and replay.  Those live in the
+run path and the result classes, not in the plugin.
+
+What the run path cannot invent is the plugin's **parameter contract**:
+
+``default_params()`` (required)
+    A class method returning exactly what a freshly opened parameter widget
+    hands ``apply``/``process``: the same keys, the same defaults.  It is the
+    root of everything headless — the keys a workflow may set, the values a
+    headless run starts from, and what the provenance records as the
+    effective parameters.  Declare it even when it returns ``{}``: a plugin
+    that only *inherits* the empty framework default has declared nothing
+    and is treated as **GUI-only** — workflow validation refuses it,
+    ``python -m imswitch.improcess.workflows list`` marks it, and the
+    provenance of results made with it in the GUI says the step cannot be
+    replayed and why.  Declaring it on an intermediate base class of your
+    own is fine; any override above the framework base counts.
+    A fallback ``apply`` reads (``params.get("tail", 500)``) *is* a
+    parameter: put it in the defaults (and return it from ``get_values``),
+    or the recorded parameters are not the effective ones.
+
+Widget agreement (checked)
+    When the GUI builds the widget it compares ``get_values()`` with
+    ``default_params()`` — identical key sets, identical non-volatile
+    values, and a lossless codec round trip.  A mismatch is logged as a
+    warning and remembered on the class: results made with the plugin from
+    then on are recorded non-replayable with the reason, and workflows
+    refuse it.  Built-ins and the shipped examples are pinned by a test; for
+    your own plugin's tests use the helper::
+
+        from imswitch.improcess.model.plugin_contract import check_plugin_contract
+
+        def test_contract(qapp):
+            assert check_plugin_contract(MyProcessor) == []
+
+    Machine-dependent widget defaults (a model path found at import time)
+    go in ``default_params_volatile`` so the value comparison skips them.
+
+``extra_param_keys`` (optional)
+    Keys a workflow may set beyond the defaults, for a setting no widget
+    default names (MoNaLISA's ``scan_params``).  It only *permits* a key; it
+    injects and records nothing.
+
+``output_spec()`` (optional)
+    One port ``out`` unless you say otherwise: named ports when ``apply``
+    returns a ``ProcessorOutput`` with ``keys``, a pattern when the ports
+    depend on the data.
+
+``params_version`` / ``migrate_params`` / ``encode_params`` / ``decode_params`` (optional)
+    Only when the parameter schema changes over time, or parameters carry
+    objects rather than JSON scalars.
+
+``prepare_params(data_obj, params)`` (reconstructors, optional)
+    Complete parameters from the file before a headless run, as the GUI does
+    behind the user's back.
+
+Beyond parameters, the checklist an author should walk through:
+
+* **Inputs**: ``min_inputs``/``max_inputs`` and ``check_inputs`` for a
+  processor that consumes several results (see the next section).
+* **ROIs are opt-in**: ``accepts_roi = True`` (and ``roi_modes``) lets the
+  region chooser restrict a run; ``preserves_grid = True`` says the output is
+  pixel-aligned with its input, which is what lets ROIs and imported napari
+  layers share its coordinate space.
+* **Custom result types**: never override ``save()`` — that is the protocol
+  itself, and overriding it skips staging, the provenance companion and the
+  receipt.  Set ``kind``, ``supported_formats``, and implement ``plan_save``
+  (name every file, companions included) and ``write_files`` (write them
+  into the staging paths given, embedding the document where the container
+  allows).  The photophysics example does this for a CSV curve with a
+  ``.provenance.json`` companion.  napari conversion is automatic only for
+  the known layerable kinds (``image``, ``composite``, ``rgb``, ``labels``,
+  ``localization``); a new kind needs its own adapter.
+* **Registration**: built-ins go in the class maps above; drop-ins are
+  discovered from the plugins folder (processors only).
 
 Two optional class attributes refine the UX without any extra method:
 
@@ -1565,6 +1672,10 @@ A plugin file defines an ordinary ``Processor`` subclass:
         category = "User"
         kinds = ("image",)           # result kinds this accepts
 
+        @classmethod
+        def default_params(cls):
+            return {}                # what a fresh widget hands apply(); see below
+
         @property
         def applies_to(self):
             return lambda result: getattr(result.data, "ndim", 0) >= 2
@@ -1577,7 +1688,7 @@ A plugin file defines an ordinary ``Processor`` subclass:
             return widget
 
         def apply(self, result, params):
-            data = result.data
+            data = np.asarray(result.data)       # may be a lazy view over the file
             return ArrayProcessingResult(
                 name=f"{result.name} (inverted)",
                 data=data.max() - data,
@@ -1587,9 +1698,11 @@ A plugin file defines an ordinary ``Processor`` subclass:
 The contract is the same as a built-in processor: a unique dotted ``id``,
 ``kinds`` (one or more of ``image``, ``labels``, ``table``, ``curve``,
 ``localization``, ``rgb``, ``composite``), an ``applies_to`` shape/axis gate,
-``make_param_widget`` returning a widget with ``get_values() -> dict``, and a
-pure ``apply(result, params)`` returning a new ``ProcessingResult``.  Built-in
-ids always win a collision, so a stray file cannot shadow a core processor.
+``make_param_widget`` returning a widget with ``get_values() -> dict``, a
+pure ``apply(result, params)`` returning a new ``ProcessingResult``, and
+``default_params()`` declaring the parameters (see
+:ref:`improcess-headless-contract`).  Built-in ids always win a collision,
+so a stray file cannot shadow a core processor.
 
 Processors that consume several results
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1638,5 +1751,9 @@ See also
 
 * ``docs/design/plans/imreconstruct-2-0.md`` — unified Milestone 12 design
   and per-layer audits
+* :doc:`improcess-napari-plugins` — sending results to installed napari
+  plugins (dock widgets and readers), and taking layers back
+* :doc:`improcess-workflows` — reconstructing and processing without the
+  GUI: batch workflows, ports, saves, binding, replay
 * :doc:`gui` — main GUI overview (Imcontrol)
 * :doc:`modules` — list of Imswitch2 modules

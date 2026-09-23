@@ -1,0 +1,9 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "SQUIDStageManager",
+    "managerProperties": {
+      "rs232device": "example"
+    }
+  }
+}

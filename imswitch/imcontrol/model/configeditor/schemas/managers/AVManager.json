@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "avcam": {
+      "description": "Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup; the mock accepts and ignores them.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:mapping-use",
+        "code:required",
+        "example:object"
+      ]
+    },
+    "cameraListIndex": {
+      "description": "Accepted for compatibility; ``\"mock\"`` states what every value does.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    },
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "avcam",
+    "cameraListIndex"
+  ],
+  "title": "AVManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "AVManager",
+    "DetectorManager"
+  ]
+}

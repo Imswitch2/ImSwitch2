@@ -196,6 +196,56 @@ class Reconstructor(ABC):
     acquisition_requirements: AcquisitionRequirements | None = None
     """Opt-in strict acquisition gate; ``None`` preserves legacy behaviour."""
 
+    #: Version of this reconstructor's parameter contract; see
+    #: :attr:`~imswitch.improcess.processors.base.Processor.params_version`.
+    params_version: int = 1
+    #: Keys of :meth:`default_params` whose widget default is machine-dependent.
+    default_params_volatile: tuple[str, ...] = ()
+
+    @classmethod
+    def default_params(cls) -> dict:
+        """The parameters a fresh widget would hand ``process``; pinned to the
+        widget by a test."""
+        return {}
+
+    #: Parameter keys accepted beyond :meth:`default_params` (MoNaLISA's
+    #: ``scan_params`` is filled from the file, not a widget). ``None`` means
+    #: "anything".
+    extra_param_keys: tuple[str, ...] | None = ()
+
+    @classmethod
+    def param_keys(cls) -> frozenset[str] | None:
+        """Every parameter key a workflow may set, or ``None`` for unchecked."""
+        if cls.extra_param_keys is None:
+            return None
+        return frozenset(cls.default_params()) | frozenset(cls.extra_param_keys)
+
+    def encode_params(self, params: dict | None) -> tuple[dict, list[str]]:
+        """``(encoded, reasons)``: params as lossless JSON, or why not."""
+        from imswitch.improcess.model.provenance import encode_params
+
+        return encode_params(params)
+
+    def decode_params(self, encoded: dict | None, context=None) -> dict:
+        """Inverse of :meth:`encode_params`."""
+        from imswitch.improcess.model.provenance import decode_strict
+
+        return dict(decode_strict(dict(encoded or {})))
+
+    def migrate_params(self, encoded: dict | None, from_version: int) -> dict:
+        """Bring params recorded under an older ``params_version`` up to date."""
+        return dict(encoded or {})
+
+    def prepare_params(self, data_obj, params: dict | None) -> dict:
+        """Complete ``params`` from the data before a headless run.
+
+        The GUI fills some parameters from the file behind the user's back
+        (MoNaLISA's scan geometry comes from the acquisition attributes). A
+        headless run has no controller to do that, so a reconstructor that
+        needs it does it here. The default returns the params unchanged.
+        """
+        return dict(params or {})
+
 
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:

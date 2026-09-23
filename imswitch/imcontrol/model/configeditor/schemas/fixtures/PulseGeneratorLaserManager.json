@@ -1,0 +1,9 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "PulseGeneratorLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example"
+    }
+  }
+}

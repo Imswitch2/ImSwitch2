@@ -11,7 +11,10 @@ MAIN_CONTROLLER_PATH = (
 def test_imcon_main_view_exposes_persistable_dock_layout_state():
     source = MAIN_VIEW_PATH.read_text()
 
-    assert 'self.dockArea = DockArea()' in source
+    # A DockArea subclass -- see _LayoutPreservingDockArea -- but still one
+    # whose saveState()/restoreState() is what gets persisted.
+    assert 'self.dockArea = _LayoutPreservingDockArea()' in source
+    assert 'class _LayoutPreservingDockArea(DockArea):' in source
     assert "return {\n            'dock_area': self.dockArea.saveState()," in source
     assert "dockAreaState = state.get('dock_area')" in source
     assert (

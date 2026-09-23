@@ -1,0 +1,18 @@
+# Two MoNaLISA recordings reconstructed separately and consolidated into one
+# result (the "Consolidate into a single reconstruction" multidata action).
+# A consolidation is its own step listing every reconstruction it merges, so
+# each keeps its own parameters and provenance.
+# Bind both sources from a manifest with one column per source id:
+#   left,right
+#   scan_0001.h5,scan_0002.h5
+#   python -m imswitch.improcess.workflows run consolidate_two_sources.yaml \
+#       --manifest pairs.csv --out results/
+name: consolidate-two
+schema: 1
+steps:
+  - {step: source, id: left}
+  - {step: source, id: right}
+  - {step: reconstruct, id: rl, reconstructor: monalisa, params: {device: CPU}, inputs: [left]}
+  - {step: reconstruct, id: rr, reconstructor: monalisa, params: {device: CPU}, inputs: [right]}
+  - {step: consolidate, id: both, reconstructor: monalisa, inputs: [rl, rr]}
+  - {step: save, id: out, input: both, fmt: tiff, path_template: "{out_dir}/{source_stem}_consolidated{ext}"}

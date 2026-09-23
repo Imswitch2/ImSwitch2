@@ -163,11 +163,25 @@ class MultiModuleWindow(QtWidgets.QMainWindow):
         # menu-bar area, making the window slightly taller than the available
         # space.  Using availableGeometry() + move/resize mirrors exactly what
         # the native macOS zoom button does and avoids the bottom-clipping.
-        screen = QtWidgets.QApplication.primaryScreen()
+        screen = self.screen() if hasattr(self, 'screen') else None
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
         if screen:
             avail = screen.availableGeometry()
             self.move(avail.topLeft())
             self.resize(avail.size())
+
+            # resize() sizes the client area while move() places the frame, so
+            # a title bar and any window border push the bottom edge that much
+            # past the available area.  Both are only knowable once the window
+            # has been shown.
+            frame = self.frameGeometry()
+            geometry = self.geometry()
+            extraWidth = max(frame.width() - geometry.width(), 0)
+            extraHeight = max(frame.height() - geometry.height(), 0)
+            if extraWidth or extraHeight:
+                self.resize(avail.width() - extraWidth, avail.height() - extraHeight)
+                self.move(avail.topLeft())
         else:
             self.showMaximized()
 

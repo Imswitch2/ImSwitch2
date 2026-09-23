@@ -30,6 +30,10 @@ class SmlmDriftProcessor(Processor):
     category = "Localization"
     kinds = ("localization",)
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'segments': 10, 'render_pixel_size_nm': 30.0}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: isinstance(result, LocalizationResult)

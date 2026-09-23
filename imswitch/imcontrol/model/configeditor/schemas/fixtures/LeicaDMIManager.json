@@ -1,0 +1,10 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "LeicaDMIManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "rs232device": "example"
+    }
+  }
+}

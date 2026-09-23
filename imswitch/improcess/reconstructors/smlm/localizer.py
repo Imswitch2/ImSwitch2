@@ -217,6 +217,16 @@ class SmlmLocalizer(StreamingReconstructor):
     description = "Single-molecule localization (net-gradient detect + fit)"
     default_save_subdir = "smlm"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'threshold': 500.0,
+        'sigma': 1.0,
+        'roi': 7,
+        'method': 'gausslq',
+        # None: the recording's own calibration answers (the widget's
+        # 'From the recording'); a number overrides it.
+        'pixel_size_nm': None}
+
     def __init__(self):
         self._logger = initLogger('SmlmLocalizer')
 

@@ -12,6 +12,7 @@ from imswitch.improcess.reconstructors.base import (
     ReconstructionCancelled,
     ReconstructionContext,
 )
+from imswitch.improcess.reconstructors.run import run_consolidation, run_reconstruction
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,9 @@ class ReconstructionWorkerOutcome:
     results: tuple[object, ...]
     merged: object | None = None
     consolidation_error: str | None = None
+    #: One ReconstructionRun per result, in order: the source description,
+    #: parameters and provenance node each result was made with.
+    runs: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ class ReconstructionWorker(QtCore.QObject):
     @QtCore.Slot()
     def run(self) -> None:
         results = []
+        runs = []
         try:
             self._token.check()
             for index, job in enumerate(self._jobs):
@@ -81,20 +86,19 @@ class ReconstructionWorker(QtCore.QObject):
                     memory_budget_bytes=job.memory_budget_bytes,
                     confirmed_over_budget=job.confirmed_over_budget,
                 )
-                result = self._reconstructor.process(
-                    job.data_obj,
-                    dict(job.params),
-                    context=context,
+                run = run_reconstruction(
+                    self._reconstructor, job.data_obj, dict(job.params), context=context
                 )
                 context.check_cancelled()
-                results.append(result)
+                results.append(run.result)
+                runs.append(run)
 
             merged = None
             consolidation_error = None
             if self._consolidate and results:
                 self._token.check()
                 try:
-                    merged = self._reconstructor.consolidate(results)
+                    merged = run_consolidation(self._reconstructor, results)
                 except Exception as exc:
                     consolidation_error = str(exc)
             self._token.check()
@@ -102,6 +106,7 @@ class ReconstructionWorker(QtCore.QObject):
                 results=tuple(results),
                 merged=merged,
                 consolidation_error=consolidation_error,
+                runs=tuple(runs),
             ))
         except ReconstructionCancelled as exc:
             self.cancelled.emit(str(exc) or "Reconstruction cancelled")
