@@ -256,6 +256,49 @@ def test_splitting_a_tab_group_leaves_the_other_columns_alone(qtbot):
     assert area.topContainer.sizes() == before
 
 
+def test_floating_a_dock_leaves_the_other_columns_alone(qtbot):
+    """Floating runs pyqtgraph's addDock on the *new* window's area.
+
+    So the area the dock leaves is never the one running, and removing the
+    second-to-last dock of a column dissolved that column and re-divided the
+    window width behind the user's back. pyqtgraph also hard-codes a stock
+    DockArea for the floating window, which would behave like upstream.
+    """
+    area, docks = _threeColumnArea(qtbot)
+    top = area.topContainer
+    top.setSizes([360, 340, 200])
+    qtbot.wait(10)
+    before = top.sizes()
+
+    area.floatDock(docks['RightBottom'])
+    qtbot.wait(10)
+
+    try:
+        assert [type(a).__name__ for a in area.tempAreas] == \
+            ['_LayoutPreservingDockArea']
+        assert area.topContainer.sizes() == before
+    finally:
+        for temp in list(area.tempAreas):
+            temp.win.close()
+
+
+def test_docking_a_floated_dock_back_leaves_the_other_columns_alone(qtbot):
+    """The return trip, which tears the temporary area down as it goes."""
+    area, docks = _threeColumnArea(qtbot)
+    area.floatDock(docks['RightBottom'])
+    qtbot.wait(10)
+    top = area.topContainer
+    top.setSizes([360, 340, 200])
+    qtbot.wait(10)
+    before = top.sizes()
+
+    area.moveDock(docks['RightBottom'], 'bottom', docks['RightTop'])
+    qtbot.wait(10)
+
+    assert docks['RightBottom'].area is area
+    assert area.topContainer.sizes() == before
+
+
 def test_a_new_column_is_still_given_room(qtbot):
     """Splitting a dock off into a column of its own must resize the rest.
 

@@ -88,7 +88,11 @@ scrolling rather than being clipped by minimum-size constraints.
   up with the same number of children it started with: no pane was gained or
   lost there, whatever happened inside it. A container that really did gain or
   lose one -- a column split off, or emptied -- is laid out by pyqtgraph as
-  before, because the space has to come from somewhere.
+  before, because the space has to come from somewhere. The area a dock
+  *leaves* gets the same protection, because whoever gains the dock is the one
+  running: floating a dock out runs `addDock` on the new window's area, not on
+  the one losing it. `addTempArea()` is overridden too, since pyqtgraph
+  hard-codes a stock `DockArea` for floating windows.
 - **Tools > Reset panel layout** puts the docks back where the setup file puts
   them, at content-derived sizes -- the way back from a layout that a drag
   rearranged.

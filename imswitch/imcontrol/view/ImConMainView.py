@@ -3,6 +3,7 @@ from typing import Any, Dict
 
 from pyqtgraph.dockarea import Dock, DockArea
 from pyqtgraph.dockarea.Container import HContainer, VContainer
+from pyqtgraph.dockarea.DockArea import TempAreaWindow
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
@@ -63,7 +64,25 @@ class _LayoutPreservingDockArea(DockArea):
             return _StableHContainer(self)
         return super().makeContainer(typ)
 
-    def addDock(self, *args, **kwargs):
+    def addTempArea(self):
+        """ Float docks into an area that preserves layout the same way.
+
+        pyqtgraph hard-codes ``DockArea`` here, so without this the window a
+        dock is floated into behaves like stock pyqtgraph -- and, more to the
+        point, the area the dock *left* is resized by that area's ``addDock``
+        rather than this class's.
+        """
+        if self.home is not None:
+            return self.home.addTempArea()
+
+        area = type(self)(temporary=True, home=self)
+        self.tempAreas.append(area)
+        window = TempAreaWindow(area)
+        area.win = window
+        window.show()
+        return area
+
+    def addDock(self, dock=None, position='bottom', relativeTo=None, **kwds):
         """ Add or move a dock without resizing the parts of the layout it left alone.
 
         Suppressing the stretch-change resize (see ``_ResizeOnlyWhatMoved``)
@@ -80,15 +99,32 @@ class _LayoutPreservingDockArea(DockArea):
         inside it, so it keeps the sizes it had.  One that did (a new column
         was split off, or the last dock left one) is laid out by pyqtgraph as
         before -- the space has to come from somewhere.
+
+        The area the dock is *leaving* gets the same protection.  Whoever
+        gains a dock is the one running, so floating a dock out (pyqtgraph
+        runs this on the new window's area) and dragging one back in are both
+        covered from here, rather than needing every method that can move a
+        dock to be wrapped.
         """
-        sizes = self._containerSizes()
+        areas = [self]
+        source = getattr(dock, 'area', None)
+        if source is not self and isinstance(source, _LayoutPreservingDockArea):
+            areas.append(source)
+        sizes = [(area, area._containerSizes()) for area in areas]
         try:
-            return super().addDock(*args, **kwargs)
+            return super().addDock(dock, position, relativeTo, **kwds)
         finally:
-            self._restoreContainerSizes(sizes)
+            for area, previous in sizes:
+                area._restoreContainerSizes(previous)
 
     def _containerSizes(self):
-        """ {container: sizes} for every splitter currently in the tree. """
+        """ {container: sizes} for every splitter currently in the tree.
+
+        A temporary area is torn down as its last dock leaves, so by the time
+        this runs again its containers can be deleted C++ objects; touching
+        one raises RuntimeError rather than AttributeError, which ``hasattr``
+        does not catch.
+        """
         sizes = {}
 
         def walk(container):
@@ -100,7 +136,10 @@ class _LayoutPreservingDockArea(DockArea):
                 for i in range(container.count()):
                     walk(container.widget(i))
 
-        walk(self.topContainer)
+        try:
+            walk(self.topContainer)
+        except RuntimeError:
+            return {}
         return sizes
 
     def _restoreContainerSizes(self, sizes):
