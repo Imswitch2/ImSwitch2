@@ -123,8 +123,7 @@ with good multi-channel rendering out of the box.  Multiple cameras
 and point detectors can run simultaneously; point-detector images are
 updated line-by-line during acquisition.
 
-.. image:: ./images/auto/ViewWidget.png
-   :width: 600px
+.. image:: ./images/auto/mock-View.png
    :align: center
 
 
@@ -225,7 +224,6 @@ provides step controls; the scripting module exposes the same
 functions for automated routines.
 
 .. image:: ./images/auto/PositionerWidget.png
-   :width: 600px
    :align: center
 
 
@@ -313,7 +311,6 @@ Alignment line
 Overlays a line at a given angle on the live image.
 
 .. image:: ./images/auto/AlignmentLineWidget.png
-   :width: 600px
    :align: center
 
 
@@ -344,7 +341,6 @@ Displays an array of points with a user-defined periodicity on top of
 the image.
 
 .. image:: ./images/auto/ULensesWidget.png
-   :width: 600px
    :align: center
 
 
