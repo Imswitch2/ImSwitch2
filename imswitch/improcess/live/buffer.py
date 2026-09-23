@@ -25,6 +25,14 @@ entirely on the barrier.
 import numpy as np
 
 
+class RawDataBuffer:
+    """Buffer used to store the retrieved raw-data from the LiveStreamWorker"""
+
+    def __init__(self):
+
+        ...
+
+
 class StackRing:
     """One stack's worth of single-frame slots, addressed by ring index."""
 

@@ -20,8 +20,9 @@ import os
 from qtpy import QtCore
 
 from imswitch.imcommon.model.logging import initLogger
-from imswitch.improcess.live import ZarrMultiFileLapseSource
+from imswitch.improcess.live.source_factory import make_live_source
 from imswitch.improcess.live.discovery import DirectoryWatcher, JobQueue
+from imswitch.improcess.live.source_type import probe_source_type
 from .basecontrollers import ImProcessWidgetController
 from .LiveReconstructionController import LiveReconstructionController
 
@@ -207,6 +208,10 @@ class LiveModeController(ImProcessWidgetController):
             self._directory_watcher = None
 
     # -------------------------------------------------------------- queueing
+
+    # TODO: update the name of this private-method, since we might discover
+    #   data that doesn't correspond to a time-lapse
+
     @QtCore.Slot(str)
     def _on_timelapse_found(self, folder: str) -> None:
         self._job_queue.add(folder)
@@ -222,20 +227,69 @@ class LiveModeController(ImProcessWidgetController):
         if reconstructor is None:
             return
 
-        job = self._job_queue.next_ready()
+        # Pick the first job this reconstructor can actually work on. Each
+        # candidate is probed for what its raw data *is*, and there are three
+        # outcomes, only one of which means "not for us":
+        #   * unreadable yet -- a store still being written, a file the
+        #     recorder still holds. Put back, because that is the normal
+        #     state of a recording that has only just started;
+        #   * readable but not something this plugin can reconstruct --
+        #     skipped with a warning naming the shape it turned out to be;
+        #   * startable -- taken.
+        # Iterative rather than re-entering: a root of many entries would
+        # otherwise recurse once per entry.
+        job = None
+        source_type = None
+        deferred = []
+        while True:
+            candidate = self._job_queue.next_ready()
+            if candidate is None:
+                break
+            candidate_type = probe_source_type(candidate.seed_path)
+            if candidate_type is None:
+                # Defer only what is still there: an entry since deleted
+                # would otherwise be re-queued and re-probed forever.
+                if os.path.exists(candidate.seed_path):
+                    deferred.append(candidate)
+                continue
+            # Read like every other plugin capability, so an out-of-tree
+            # reconstructor predating this one accepts whatever it is given
+            # rather than failing to start at all.
+            accepts = getattr(reconstructor, "accepts_raw_source", None)
+            if callable(accepts) and not accepts(candidate_type):
+                self._logger.warning(
+                    f"Skipping {candidate.seed_path}: {reconstructor.name} "
+                    f"cannot reconstruct a {candidate_type.format_id} "
+                    f"{candidate_type.layout} recording of "
+                    f"{candidate_type.frames_per_stack} frame(s) per timepoint"
+                )
+                continue
+            job, source_type = candidate, candidate_type
+            break
+
+        # Hand back the not-yet-readable ones whatever the outcome: dequeuing
+        # is how they were inspected, and dropping one loses its recording.
+        for entry in deferred:
+            self._job_queue.add(entry.job_path)
+
         if job is None:
             return
 
         self._currently_processing = True
-        self._logger.info(f"Processing timelapse {job.folder} (seed {job.seed_path})")
-
-        # The timelapse folder's name becomes the run's result name, and so the
-        # name of the viewer entry it creates -- one data object per job. After
-        # a reset the same folder runs again, so the name is made unique.
-        job_name, save_stem = self._next_run_names(
-            os.path.basename(os.path.normpath(job.folder))
+        self._logger.info(
+            f"Processing {job.job_path} (seed {job.seed_path}, "
+            f"{source_type.layout})"
         )
-        source = ZarrMultiFileLapseSource(job.seed_path, detector_name=None)
+
+        # The job's name becomes the run's result name, and so the name of the
+        # viewer entry it creates -- one data object per job. After a reset the
+        # same job runs again, so the name is made unique.
+        job_name, save_stem = self._next_run_names(
+            os.path.basename(os.path.normpath(job.job_path))
+        )
+        # Built from what the probe already established, so the store is not
+        # reopened to answer a question that has been answered.
+        source = make_live_source(job.seed_path, source_type, detector_name=None)
         params = self._get_reconstructor_params()
         try:
             self._current_job_name = job_name

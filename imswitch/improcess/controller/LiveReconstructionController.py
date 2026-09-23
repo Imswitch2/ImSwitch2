@@ -110,7 +110,7 @@ class LiveReconstructionController(QtCore.QObject):
 
         # TODO: Remove the batch path and make the streaming path the default
         #   The provided reconstructor must be a live reconstructor, since
-        #   this controller should ONLY handles live streaming
+        #   this controller should ONLY handle live streaming
 
         # supports_streaming lives on the reconstructor, so we can branch
         # without opening the source first — the streaming path opens lazily on

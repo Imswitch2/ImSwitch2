@@ -22,7 +22,7 @@ from qtpy import QtWidgets
 from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
 
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
-from imswitch.improcess.reconstructors.base import Reconstructor
+from imswitch.improcess.reconstructors.base import StreamingReconstructor
 from imswitch.improcess.model.result_io import save_image_result
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ class _NoParamsWidget(QtWidgets.QWidget):
         return {}
 
 
-class ViewOnlyReconstructor(Reconstructor):
+class ViewOnlyReconstructor(StreamingReconstructor):
     """
     Pass-through 'reconstructor' that loads the data and exposes it for viewing.
 
@@ -94,6 +94,17 @@ class ViewOnlyReconstructor(Reconstructor):
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return _NoParamsWidget(parent)
+
+    def make_session(self):
+        """Create a session that passes raw frames through to the viewer.
+
+        Imported here rather than at module scope because the session needs
+        :class:`ViewOnlyResult` from this module -- the same cycle, and the
+        same break, as ``SmlmLocalizer.make_session``.
+        """
+        from .live_session import ViewOnlyLiveSession
+
+        return ViewOnlyLiveSession()
 
     def make_metadata_dialog(self, parent: QtWidgets.QWidget) -> QtWidgets.QDialog | None:
         return None

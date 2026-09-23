@@ -50,8 +50,8 @@ _EXCLUDED_DIRS = (
 # Timepoint store suffix (only .zarr for now)
 _STORE_SUFFIX = (
     ".zarr",
-    # ".h5",
-    # ".hdf5",
+    ".h5",
+    ".hdf5",
 )
 
 
@@ -76,7 +76,7 @@ class DirectoryWatcher(QtCore.QObject):
         super().__init__(parent)
         self._root_path = root_path
         self._logger = initLogger(self, tryInheritParent=False)
-        self._seen_dirs: set[str] = set()
+        self._seen_entries: set[str] = set()
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(poll_interval_ms)
         self._timer.timeout.connect(self._tick)
@@ -101,7 +101,7 @@ class DirectoryWatcher(QtCore.QObject):
 
         Wired to the future hard-reset button.
         """
-        self._seen_dirs.clear()
+        self._seen_entries.clear()
 
     @property
     def running(self) -> bool:
@@ -120,23 +120,22 @@ class DirectoryWatcher(QtCore.QObject):
             # "with" closes the directory handle on block exit, guarding against
             # locking the root directory after the scan.
             with os.scandir(self._root_path) as root_dir:
-                current_dirs = set()
+                current_entries = set()
                 for entry in root_dir:
                     # TODO: remove?
                     if entry.name in _EXCLUDED_DIRS:
                         continue
                     try:
-                        if entry.is_dir():
-                            current_dirs.add(os.path.abspath(entry.path))
+                        current_entries.add(os.path.abspath(entry.path))
                     except OSError:
                         continue
         except OSError as e:
             self._logger.warning(f"Cannot scan {self._root_path}: {e}")
             return []
 
-        new_dirs_sorted = sorted(current_dirs - self._seen_dirs)
-        self._seen_dirs.update(new_dirs_sorted)
-        return new_dirs_sorted
+        new_entries_sorted = sorted(current_entries - self._seen_entries)
+        self._seen_entries.update(new_entries_sorted)
+        return new_entries_sorted
 
     @QtCore.Slot()
     def _tick(self) -> None:
@@ -151,11 +150,11 @@ class DiscoveredJob:
 
     Attributes:
         seed_path: Absolute path to the timepoint-0 store in the folder.
-        folder: Absolute path of the timelapse folder.
+        job_path: Absolute path of the job.
     """
 
     seed_path: str
-    folder: str
+    job_path: str
 
 
 def _seed_key(name: str) -> str:
@@ -209,19 +208,27 @@ class JobQueue:
         cannot be listed -- stays pending. Returns ``None`` if nothing resolves
         this call.
         """
-        for folder in list(self._pending_jobs):
+        for job in list(self._pending_jobs):
             try:
-                names = os.listdir(folder)
+                if os.path.isdir(job):
+                    names = os.listdir(job)
+                    stores = sorted(
+                        (n for n in names if n.lower().endswith(_STORE_SUFFIX)),
+                        key=_seed_key,
+                    )
+                else:
+                    stores = [job]
             except OSError:
                 continue
-            stores = sorted(
-                (n for n in names if n.lower().endswith(_STORE_SUFFIX)),
-                key=_seed_key,
-            )
+            # stores = sorted(
+            #     (n for n in names if n.lower().endswith(_STORE_SUFFIX)),
+            #     key=_seed_key,
+            # )
             if stores:
-                self._pending_jobs.remove(folder)
+                self._pending_jobs.remove(job)
                 return DiscoveredJob(
-                    seed_path=os.path.join(folder, stores[0]), folder=folder
+                    seed_path=os.path.join(job, stores[0]),
+                    job_path=job,
                 )
         return None
 

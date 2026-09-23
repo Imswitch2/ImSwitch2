@@ -40,6 +40,10 @@ class MonalisaReconstructor(StreamingReconstructor):
     name = "MoNaLISA"
     id = "monalisa"
     file_extensions = ["hdf5", "zarr"]
+    # One timepoint must be a whole nx*ny scan: the pattern reassignment has
+    # nothing to reassemble from a single frame. Independent of being a
+    # timelapse -- a camera lapse is many timepoints of one frame each.
+    requires_frame_stacks = True
     description = "Point-scanning SIM reconstruction with pattern-based signal extraction"
     supports_streaming = True
     supports_consolidation = True

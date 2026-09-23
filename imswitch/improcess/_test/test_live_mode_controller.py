@@ -13,6 +13,10 @@ from qtpy import QtCore
 
 from imswitch.improcess.controller.LiveModeController import LiveModeController
 from imswitch.improcess.live.discovery import JobQueue
+from imswitch.improcess.live.source_type import (
+    LAYOUT_MULTIFILE_LAPSE,
+    LAYOUT_SINGLE,
+)
 
 
 class _FakeLive(QtCore.QObject):
@@ -85,9 +89,25 @@ def _controller(reconstructor=None):
     return c
 
 
-def _store(folder, name="rec_scan0.zarr"):
-    os.makedirs(os.path.join(str(folder), name), exist_ok=True)
-    return os.path.join(str(folder), name)
+def _store(folder, name="rec_scan0.zarr", *, num_timepoints=3, frames=4):
+    """A real Zarr timepoint store.
+
+    An empty directory used to be enough. The controller now probes each
+    candidate for what its raw data *is* -- to pick a reader and to ask the
+    reconstructor whether it can use it -- so a fake store reads as "not
+    readable yet" and is deferred rather than started.
+    """
+    import zarr
+
+    path = os.path.join(str(folder), name)
+    group = zarr.open_group(path, mode="w")
+    array = group.create_array("Cam", shape=(frames, 8, 8), dtype="uint16")
+    array.attrs["writing"] = False
+    array.attrs["recording:detector_name"] = "Cam"
+    array.attrs["recording:frames_per_stack"] = frames
+    array.attrs["recording:num_timepoints"] = int(num_timepoints)
+    array.attrs["recording:single_lapse_file"] = False
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -174,6 +194,8 @@ def test_job_name_survives_a_trailing_separator(tmp_path):
 
 
 def test_seed_is_the_lowest_indexed_store_via_multifile_source(tmp_path):
+    """The seed is timepoint 0, and the folder classifies as a multi-file lapse
+    -- which is what selects the reader that follows the siblings."""
     folder = tmp_path / "lapseA"
     _store(folder, "rec_scan__02__CAM.zarr")
     seed = _store(folder, "rec_scan__00__CAM.zarr")
@@ -181,13 +203,66 @@ def test_seed_is_the_lowest_indexed_store_via_multifile_source(tmp_path):
 
     c = _controller()
     with patch(
-        "imswitch.improcess.controller.LiveModeController.ZarrMultiFileLapseSource"
-    ) as mock_source:
+        "imswitch.improcess.controller.LiveModeController.make_live_source"
+    ) as mock_factory:
         c._on_timelapse_found(str(folder))
 
-    mock_source.assert_called_once()
-    assert mock_source.call_args.args[0] == seed
+    mock_factory.assert_called_once()
+    assert mock_factory.call_args.args[0] == seed
+    assert mock_factory.call_args.args[1].layout == LAYOUT_MULTIFILE_LAPSE
     assert c._run_controller.start_calls == [seed]
+
+
+def _h5_dataset(folder, name="solo.h5", *, frames=6):
+    """A single-file HDF5 recording sitting directly in the watched root."""
+    import h5py
+    import numpy as np
+
+    os.makedirs(str(folder), exist_ok=True)
+    path = os.path.join(str(folder), name)
+    with h5py.File(path, "w", libver="latest") as handle:
+        dataset = handle.create_dataset(
+            "Cam", data=np.zeros((frames, 8, 8), "uint16")
+        )
+        dataset.attrs["recording:detector_name"] = "Cam"
+    return path
+
+
+def test_a_single_dataset_job_is_started_too(tmp_path):
+    """The watcher is no longer folders-only: a lone recording in the root is a
+    job, and it classifies as a single dataset rather than a lapse -- which is
+    what picks the single-store reader instead of the sibling-following one."""
+    seed = _h5_dataset(tmp_path)
+
+    c = _controller()
+    with patch(
+        "imswitch.improcess.controller.LiveModeController.make_live_source"
+    ) as mock_factory:
+        c._on_timelapse_found(seed)
+
+    mock_factory.assert_called_once()
+    assert mock_factory.call_args.args[1].layout == LAYOUT_SINGLE
+    assert c._run_controller.start_calls == [seed]
+
+
+def test_a_job_the_reconstructor_cannot_use_is_skipped(tmp_path):
+    """A camera recording -- one frame per timepoint -- has nothing for a
+    scanning reconstructor to reassemble, so it never starts."""
+    class _NeedsStacks:
+        name = "Scanning"
+
+        @staticmethod
+        def accepts_raw_source(source_type):
+            return source_type.has_frame_stacks
+
+    folder = tmp_path / "camera"
+    _store(folder, "rec_scan0.zarr", num_timepoints=5, frames=1)
+
+    c = _controller(reconstructor=_NeedsStacks())
+    c._on_timelapse_found(str(folder))
+
+    assert c._run_controller.start_calls == []
+    assert len(c._job_queue) == 0            # skipped, not left pending
 
 
 # --- reset --------------------------------------------------------------

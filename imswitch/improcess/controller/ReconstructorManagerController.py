@@ -167,6 +167,40 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 f"for {reconstructor.id}: {exc}"
             )
 
+    def _confirm_reconstructor_change(self) -> bool:
+        """Ask before a reconstructor change ends a running watch.
+
+        ``True`` means go ahead -- either nothing was running, or the user
+        accepted. On acceptance the watch is stopped here rather than left
+        to :meth:`setDirectoryWatcherAvailable`, which only stops one when
+        the panel is going away: switching between two *streaming* plugins
+        keeps the panel, and would otherwise keep the old run alive.
+
+        On refusal the picker is put back, so the combo keeps showing what
+        is actually active. ``setActiveReconstructorName`` blocks signals,
+        so reverting does not re-enter this handler.
+        """
+        widget = self._widget
+        try:
+            if widget.confirmDirectoryWatcherInterruption():
+                widget.stopDirectoryWatcher()
+                return True
+        except AttributeError:
+            # A view build without the directory-watcher panel has nothing
+            # to interrupt.
+            return True
+
+        active = getattr(self._main, '_activeReconstructor', None)
+        name = getattr(active, 'name', None)
+        if name:
+            try:
+                widget.setActiveReconstructorName(name)
+            except Exception:
+                self._logger.debug(
+                    'Could not restore the reconstructor picker', exc_info=True
+                )
+        return False
+
     def _on_user_changed_reconstructor(self, plugin_id: str):
         """Slot for view-side picker: swap the active reconstructor and
         re-install its parameter widget. If the new reconstructor is
@@ -174,6 +208,14 @@ class ReconstructorManagerController(ImProcessWidgetController):
         auto-route so the viewer reflects the change immediately."""
         if not plugin_id:
             return
+
+        # A watch in flight belongs to the reconstructor that started it, and
+        # the next job off the queue would use the new one -- one session
+        # producing results from two plugins. So the watch ends here, and the
+        # user is told before it does rather than after.
+        if not self._confirm_reconstructor_change():
+            return
+
         from imswitch.improcess.reconstructors.registry import get_registry
 
         for candidate in get_registry().reconstructors():
@@ -295,6 +337,21 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
         except Exception:
             pass
+
+        # The Directory watcher drives a live streaming run, so it is only
+        # meaningful for a reconstructor that can make a session. Declared
+        # capability, like is_pass_through above -- not another id check.
+        try:
+            self._widget.setDirectoryWatcherAvailable(
+                bool(getattr(reconstructor, 'supports_streaming', False))
+            )
+        except Exception:
+            # Logged, not swallowed silently: a failure here leaves the panel
+            # offering a run the plugin cannot perform, which looks like the
+            # feature simply not working.
+            self._logger.debug(
+                'Could not update Directory watcher availability', exc_info=True
+            )
 
         # NOTE: Special-case by ID retained because MoNaLISA uses a legacy parameter
         # tree that differs fundamentally from the standard plugin widget API.

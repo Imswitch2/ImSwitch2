@@ -61,6 +61,52 @@ class Reconstructor(ABC):
     processing.
     """
 
+    accepted_layouts: tuple[str, ...] | None = None
+    """On-disk layouts the live path may hand this plugin, or ``None``.
+
+    ``None`` means no restriction, which is the right default: most plugins
+    care about the *shape* of the data, not how it was filed. The values are
+    the ``LAYOUT_*`` constants in
+    :mod:`~imswitch.improcess.live.source_type` -- named here as plain
+    strings because that module reads sources, which read this one, and the
+    dependency may only run one way.
+
+    Consulted through :meth:`accepts_raw_source`; override that instead for
+    anything this pair cannot express.
+    """
+
+    requires_frame_stacks: bool = False
+    """Set ``True`` when a timepoint must be a *stack* of frames.
+
+    A scanning reconstructor reassembles ``nx * ny`` raw frames into one
+    image, so a recording contributing a single frame per timepoint gives it
+    nothing to work with. This is independent of being a timelapse: a camera
+    lapse is fifty timepoints of one frame each.
+    """
+
+    def accepts_raw_source(self, source_type) -> bool:
+        """Whether this plugin can reconstruct a recording of this shape.
+
+        Asked by the live path *before* a reader is built, so an unusable
+        recording is skipped rather than opened and then abandoned.
+
+        The default answers from :attr:`accepted_layouts` and
+        :attr:`requires_frame_stacks`, which covers the declarative cases.
+        Override for a constraint those cannot state -- but prefer declaring,
+        so the answer stays inspectable without calling anything.
+
+        Args:
+            source_type: The recording's ``RawSourceType``.
+        """
+        layouts = self.accepted_layouts
+        if layouts is not None and getattr(source_type, "layout", None) not in layouts:
+            return False
+        if self.requires_frame_stacks and not getattr(
+            source_type, "has_frame_stacks", False
+        ):
+            return False
+        return True
+
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         """
