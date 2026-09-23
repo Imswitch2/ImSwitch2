@@ -1901,13 +1901,25 @@ class PropertyEditor(QWidget):
         not_numbers: list[tuple[str, str]] = []
         props_on_load = self._device.get("managerProperties") or {}
         nested_meta = schema.get("nested_meta", {})
+        # Dicts an edit to one of their fields creates (or turns into a dict).
+        edited_containers = {
+            section.split(":", 1)[1]
+            for (section, _key), fw in self._field_widgets.items()
+            if section.startswith("nested:") and fw.is_touched()
+        }
 
         def container_exists(nest_key: str) -> bool:
-            """The dict is in the file, or will be because the code requires it.
+            """The dict will be in what Apply writes: the file has it, the code
+            requires it, or an edit creates it.
 
-            Something under that key that is not a dict (``null``) is kept as
-            it was rather than filled in untouched.
+            Decided before any field is written, so a sub-key the dict's
+            schema requires goes in with the edit that creates the dict --
+            not on the next Apply. Something under that key that is not a
+            dict (``null``) and that nobody edited is kept as it was rather
+            than filled in.
             """
+            if nest_key in edited_containers:
+                return True
             if nest_key in props_on_load:
                 return isinstance(props_on_load[nest_key], dict)
             return bool(nested_meta.get(nest_key, {}).get("schema_req"))
@@ -1987,6 +1999,17 @@ class PropertyEditor(QWidget):
                 v = new_device.get(f["key"]) if f in schema.get("top", []) else props.get(f["key"])
                 if v is None or v == "" or v == []:
                     warnings.append(f"⚠  Required: {f['label']}")
+        # The same for the fields of a dict the template lays out, where the
+        # dict is in what is written.
+        for nest_key, children in schema.get("nested", {}).items():
+            container = props.get(nest_key)
+            if not isinstance(container, dict):
+                continue
+            for f in children:
+                if f.get("req"):
+                    v = container.get(f["key"])
+                    if v is None or v == "" or v == []:
+                        warnings.append(f"⚠  Required: {f['label']} ({nest_key})")
         for label, text in not_numbers:
             warnings.append(f"⚠  {label}: {text!r} is not a number; saved as typed")
         self._val_lbl.setText("\n".join(warnings))
