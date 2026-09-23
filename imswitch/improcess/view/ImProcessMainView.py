@@ -37,6 +37,11 @@ from .guitools import BetterPushButton
 from .icons import improcessIcon
 
 
+# The largest fraction of the screen this window may insist on. Anything above
+# 1.0 puts the bottom edge off-screen with no way back.
+_MAX_MINIMUM_SCREEN_FRACTION = 0.8
+
+
 class ImProcessMainView(QtWidgets.QMainWindow):
     sigSaveReconstruction = QtCore.Signal()
     sigSaveReconstructionAll = QtCore.Signal()
@@ -1847,6 +1852,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self.sigClosing.emit()
         event.accept()
+
+    def minimumSizeHint(self):
+        """ Never demand more room than the screen has.
+
+        This view is a page of MultiModuleWindow's tab widget, so its minimum
+        is the application window's minimum too -- one module insisting on
+        more height than the screen has opens *every* tab with its bottom edge
+        below the screen, with no way to resize it back.
+        """
+        hint = super().minimumSizeHint()
+        screen = self.screen() if hasattr(self, 'screen') else None
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            hint.setWidth(min(hint.width(),
+                              int(available.width() * _MAX_MINIMUM_SCREEN_FRACTION)))
+            hint.setHeight(min(hint.height(),
+                               int(available.height() * _MAX_MINIMUM_SCREEN_FRACTION)))
+        return hint
 
     def showEvent(self, event):
         super().showEvent(event)
