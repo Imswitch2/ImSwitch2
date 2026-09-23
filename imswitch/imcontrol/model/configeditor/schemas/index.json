@@ -410,7 +410,7 @@
       "overridden": false,
       "properties": 7,
       "required": 0,
-      "source_sha256": "d306520b6fef1e1c146e8516fd6c29b628f15512993b06369919c2ef4e95ff9a"
+      "source_sha256": "baf04af45e35139652946bdff0de70497f6cf13ebabe04683232d34a97ccf9e6"
     },
     "MockPositionerManager": {
       "category": "positioners",
