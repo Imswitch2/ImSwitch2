@@ -312,6 +312,7 @@ snouty-projections      Reconstructor  Fast SNOUTY projection-preview stack
 smlm-localizer          Reconstructor  SMLM localization table from camera frame stacks
 beadrec                 Reconstructor  Raster bead reconstruction from a camera frame stream
 tiling-mosaic           Reconstructor  Offline assembly and refinement of saved tiling datasets
+time-lapse              Reconstructor  A saved camera or scan time lapse as one lazy T-stack
 drift-correct           Processor      FFT cross-correlation drift correction with drift trace plots
 projection              Processor      Generic max/mean/sum/median/std axis projections
 stack-subset            Processor      Crop/substack by labeled axis ranges
@@ -831,6 +832,84 @@ the metadata without discarding the reconstructed image.
 
 For saved tiling folders, use the separate ``tiling-mosaic`` reconstructor
 described in :doc:`tiling`.
+
+.. _improcess-time-lapse:
+
+Time lapses
+===========
+
+A camera time lapse or scan time lapse is recorded one item per timepoint:
+a file each (``<name>_time07_Camera.hdf5``, ``<name>_scan0007_APD.zarr``), or
+with *single file* storage a group each inside one HDF5 or Zarr file
+(``scan0/Camera``, ``scan1/Camera``, ...). The ``time-lapse`` reconstructor
+puts them back together as one ``(T, ...)`` stack. Add it to
+``processing.reconstructors`` in the setup file to make it pickable.
+
+With **Time lapse** active, open any one item of the lapse -- the first, the
+last, or any in between -- and the whole lapse becomes the current source. A
+single-file lapse opens without the dataset picker. *Reconstruct current*
+then returns the stack. It is lazy: a timepoint is read when the viewer shows
+it, so a 2000-point lapse appears at once instead of after loading every point,
+and the viewer holds only a few of its files open at a time.
+
+The lapse is found from what every item records, not from its file name
+alone: ``recording:lapse_index`` (which point it is),
+``recording:num_timepoints`` (how many were planned) and
+``recording:single_lapse_file``. A file that belongs to another lapse but
+happens to share the name pattern is left out, and the log says why. In a
+single file, the ``scanN`` group number is only the next free slot, so a file
+that received two lapses is split where the recorded index starts again.
+
+Only real time is stacked:
+
+* a scan lapse whose points were positioned by a workflow records them as
+  ``tile`` or ``position`` points, and is refused -- a tiling run belongs to
+  :doc:`tiling`;
+* an older tiling run, whose payloads were still labelled as time, is
+  recognised by the ``tiles.json`` beside it;
+* a single recording (``recording:num_timepoints`` of 1) is not a lapse.
+
+A file that is not a lapse opens as the image it is, with the reason in the
+Parameters dock.
+
+**Detector** chooses which detector's lapse to stack when several were
+recorded.
+
+**Time axis** chooses how T is spaced. *Planned interval* spaces it evenly at
+the ``recording:lapse_interval_s`` the lapse was set up with. *Actual start
+times* follows each point's recorded ``acquisition:start_time``; the viewer
+spaces planes by the typical step between them, and an export keeps every
+plane's own time. Both times are kept for every point in either case. A point
+that started more than 10% of the interval after its scheduled time is listed
+in the Results table with its delay. A scan lapse records no interval -- it
+waits a set delay after each scan finishes rather than keeping a schedule --
+so it always uses the actual times.
+
+**Incomplete points** decides what happens to a point that was stopped early
+(``recording:completion_outcome`` is ``stopped_early``), never finalized, or
+holds no frames. *Mark in place* keeps it: frames it never recorded are blank,
+and it is listed in the Results table. *Skip at the end* leaves incomplete
+points off the end of the stack. A point missing or incomplete in the middle
+of the lapse is always kept and marked, because every point sits at its
+recorded index: leaving one out would move every later point onto the wrong
+time. The stack ends at the last point recorded; points planned after a lapse
+was stopped are not in it.
+
+Points that disagree on shape or data type -- an ROI or binning changed
+part-way -- are refused with a message naming the point, rather than stacked.
+An incomplete point may be shorter along its frame axis and nothing else.
+
+**Save** streams the stack one timepoint at a time into OME-TIFF, HDF5 or
+OME-Zarr. OME-TIFF gets the T spacing as ``TimeIncrement`` and each plane's
+time as ``DeltaT``. HDF5 and Zarr add a ``t_seconds`` list, and every format
+records each point's state, planned and actual time in the result
+annotations.
+
+The discovery, the header pass and the lazy stack live in the data layer
+(:py:mod:`imswitch.improcess.model.lapse_source`), not in the reconstructor.
+A reconstructor that wants to process a lapse one point at a time --
+MoNaLISA or BeadRec per timepoint -- can accept the ``time-lapse`` source kind
+and read ``open_time_lapse(...).timepoint(t)`` without redoing any of it.
 
 MoNaLISA fast-Gauss mode
 ========================

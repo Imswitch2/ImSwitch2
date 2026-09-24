@@ -24,8 +24,32 @@ from imswitch.improcess.model.dataset_sources import (
     resolve_dataset_source,
     specs_for_reconstructor,
 )
+from imswitch.improcess.model.lapse_source import (
+    TIME_LAPSE_SOURCE_KIND,
+    NotATimeLapse,
+    discover_time_lapse,
+)
 from .MultiDataFrameController import MultiDataFrameController
 from .basecontrollers import ImProcessWidgetController
+
+
+def _accepts_time_lapse(reconstructor) -> bool:
+    return TIME_LAPSE_SOURCE_KIND in tuple(
+        getattr(reconstructor, 'accepted_source_kinds', ()) or ()
+    )
+
+
+def _route_as_current(controller, data_obj) -> str:
+    """Make a source that DataObj did not open itself the current one."""
+    main = controller._main
+    if main._currentDataObj is not None:
+        main._currentDataObj.checkAndUnloadData()
+    main._currentDataObj = data_obj
+    if data_obj.sourceReady:
+        controller._commChannel.sigCurrentDataChanged.emit(data_obj)
+        controller._widget.raiseCurrentDataDock()
+        return 'current'
+    return 'empty'
 
 
 class FileIOController(ImProcessWidgetController):
@@ -209,6 +233,10 @@ class FileIOController(ImProcessWidgetController):
             dataPath = str(source.path)
             if source.format_id == TILING_MANIFEST_SPEC.id:
                 return self._loadMetadataAsCurrent(source)
+            if _accepts_time_lapse(getattr(self._main, '_activeReconstructor', None)):
+                outcome = self._loadTimeLapseAsCurrent(source)
+                if outcome is not None:
+                    return outcome
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
             self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
@@ -348,14 +376,38 @@ class FileIOController(ImProcessWidgetController):
             )
             return 'empty'
 
-        if self._main._currentDataObj is not None:
-            self._main._currentDataObj.checkAndUnloadData()
-        self._main._currentDataObj = data_obj
-        if data_obj.sourceReady:
-            self._commChannel.sigCurrentDataChanged.emit(data_obj)
-            self._widget.raiseCurrentDataDock()
-            return 'current'
-        return 'empty'
+        return _route_as_current(self, data_obj)
+
+    def _loadTimeLapseAsCurrent(self, source):
+        """Open the whole lapse ``source`` belongs to, or return None.
+
+        Only asked while a reconstructor that takes lapses is active, as the
+        tiling manifest is only resolved for one that takes manifests. Opening
+        the lapse reads the picked item's attributes and lists its siblings;
+        no sibling is opened. A file that is not a lapse -- a single recording,
+        a tiling tile -- returns None and opens as the image it is, with the
+        reason logged, so choosing the reconstructor never makes a file
+        unopenable.
+        """
+        try:
+            index = discover_time_lapse(source.path)
+        except NotATimeLapse as exc:
+            self._logger.info(f"Opening as a single image: {exc}")
+            return None
+        except Exception as exc:
+            self._logger.warning(
+                f"Could not read {source.original_path} as a time lapse: {exc}"
+            )
+            return None
+        data_obj = DataObj.fromMetadataSource(
+            index.name,
+            index.anchor.path,
+            TIME_LAPSE_SOURCE_KIND,
+            index,
+            originalPath=source.original_path,
+        )
+        self._logger.info(index.describe())
+        return _route_as_current(self, data_obj)
 
     def _loadAsCurrent(self, name, datasetName, dataPath, *, virtual: bool = False):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.

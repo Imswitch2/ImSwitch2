@@ -109,7 +109,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
         data_obj = getattr(self._main, '_currentDataObj', None)
         selected = getattr(data_obj, 'sourceOriginalPath', None)
-        if not selected or selected == getattr(data_obj, 'dataPath', None):
+        if not selected:
             return None
         accepted = tuple(
             getattr(reconstructor, 'accepted_source_kinds', ('image',))
@@ -120,11 +120,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
         except Exception:
             return None
-        return (
-            selected
-            if source_kind_for(resolved.format_id) in accepted
-            else None
-        )
+        kind = source_kind_for(resolved.format_id)
+        if kind not in accepted:
+            return None
+        # Already loaded means the same path *as the same kind of source*. A
+        # time lapse is opened at the very file the user picked, so comparing
+        # paths alone would call that file "already loaded" for a reconstructor
+        # that wants it as an image, and strand the picker on the lapse.
+        if (
+            kind == getattr(data_obj, 'sourceKind', 'image')
+            and str(resolved.path) == str(getattr(data_obj, 'dataPath', None))
+        ):
+            return None
+        return selected
 
     def currentDataChanged(self, data_obj) -> None:
         """Select a compatible plugin and pass it a metadata-only inspection."""

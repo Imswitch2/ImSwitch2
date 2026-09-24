@@ -2,6 +2,7 @@ import numpy as np
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.contrast import auto_levels, finite_range
+from imswitch.improcess.model.lazy_array import display_array
 from imswitch.improcess.model.result import result_kind
 from .basecontrollers import ImProcessWidgetController
 
@@ -270,13 +271,13 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.clearImage()
             return
 
-        data = result.data
-        if not hasattr(data, "transpose"):
-            # A lazy view over a file (a workflow's view-only reconstruction,
-            # a duplicate of one): the viewer shows pixels, so this is where
-            # they are read -- the same moment the GUI's own loader reads a
-            # file it opens.
-            data = np.asarray(data)
+        # A lazy view over a file it does not own (a workflow's view-only
+        # reconstruction, a duplicate of one) is read here, the same moment the
+        # GUI's own loader reads a file it opens: the handle it borrows closes
+        # when another file is loaded. One that owns its files -- a time lapse
+        # -- reaches napari as a dask array instead, which transposes without
+        # reading and is read a plane at a time as the sliders move.
+        data = display_array(result.data)
         if getattr(data, "ndim", 0) < 2:
             # napari's image layer holds planes. A 1D result pushed into it
             # leaves the layer's transform and units disagreeing about the
@@ -363,17 +364,23 @@ class ReconstructionViewController(ImProcessWidgetController):
         two axes are on screen, and the transposed array supplies the sizes.
         Anything measuring the layer later reads it back off the layer itself.
         """
-        data = np.asarray(data)
+        # Sizes only: the array may be lazy, and reading it to learn its shape
+        # read the whole of it.
+        shape = tuple(
+            int(size) for size in (
+                data.shape if hasattr(data, "shape") else np.shape(data)
+            )
+        )
         labels = [str(label) for label in axis_labels]
-        scales = list(axis_scales or [1.0] * data.ndim)
+        scales = list(axis_scales or [1.0] * len(shape))
         axes = [
             {
                 "label": labels[axis] if axis < len(labels) else str(axis),
-                "size": int(data.shape[axis]),
+                "size": int(shape[axis]),
                 "scale": float(scales[axis]) if axis < len(scales) else 1.0,
                 "unit": scale_unit,
             }
-            for axis in range(data.ndim)
+            for axis in range(len(shape))
         ]
         return {
             "result_uid": getattr(result, "result_uid", None),

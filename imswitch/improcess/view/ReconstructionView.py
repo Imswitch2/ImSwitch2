@@ -6,6 +6,7 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view.guitools import naparitools
 from imswitch.improcess.model.contrast import safe_display_levels
+from imswitch.improcess.model.lazy_array import is_dask_array
 from . import guitools
 from .NapariStormDisplay import NapariStormDisplay
 
@@ -321,7 +322,10 @@ class ReconstructionView(QtWidgets.QFrame):
         else:
             self.imgLayer.name = 'Reconstruction'
         self.imgLayer.colormap = colormap
-        im = np.asarray(im)
+        if not is_dask_array(im):
+            # A dask array stays one: napari reads the plane on screen from it,
+            # where np.asarray would read every plane of a lazy result first.
+            im = np.asarray(im)
         if im.ndim < 2:
             # napari's image layer holds planes; a lower-rank array leaves its
             # transform and units disagreeing about the rank and every later
