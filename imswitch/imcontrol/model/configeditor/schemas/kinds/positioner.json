@@ -67,6 +67,15 @@
         "dataclass:PositionerInfo.forScanning: bool"
       ]
     },
+    "hide": {
+      "default": false,
+      "description": "Whether the positioner is hidden from the manual Positioner widget.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.hide: bool"
+      ]
+    },
     "isPositiveDirection": {
       "default": true,
       "description": "Whether the direction of the positioner is positive.",
@@ -87,7 +96,7 @@
     },
     "liveUpdate": {
       "default": false,
-      "description": "Whether the positioner position should be updated live.",
+      "description": "Whether live position updates are available for this positioner.",
       "type": "boolean",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [

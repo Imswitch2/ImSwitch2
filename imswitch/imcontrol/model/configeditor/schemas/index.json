@@ -1,23 +1,23 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 45,
-    "docs_agree": 133,
-    "docs_documented": 133,
-    "keys": 212,
-    "managers": 61,
-    "none_default_only": 28,
+    "constrained": 46,
+    "docs_agree": 136,
+    "docs_documented": 136,
+    "keys": 215,
+    "managers": 62,
+    "none_default_only": 29,
     "none_only": 18,
-    "optional": 150,
-    "reads_any": 56,
+    "optional": 153,
+    "reads_any": 57,
     "refs": 15,
     "required": 62,
-    "typed_by_code": 93,
-    "typed_with_docs": 154,
-    "typed_with_examples": 125,
+    "typed_by_code": 96,
+    "typed_with_docs": 157,
+    "typed_with_examples": 128,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 56,
+    "with_keys": 57,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -40,7 +40,7 @@
     },
     "positioner": {
       "class": "PositionerInfo",
-      "fields": 13,
+      "fields": 14,
       "required": 2
     },
     "rotator": {
@@ -74,7 +74,7 @@
       "overridden": true,
       "properties": 8,
       "required": 2,
-      "source_sha256": "10d7578c16ea5b28ecb3fc60e14201fde4de37f0bcca50b9582dda6551bb1f8b"
+      "source_sha256": "74393ab4252dd84140651f053f8b068833354789fa4fd4f16eba7feea5754216"
     },
     "APDManager": {
       "category": "detectors",
@@ -85,7 +85,7 @@
       "overridden": false,
       "properties": 9,
       "required": 2,
-      "source_sha256": "3e98abbc16cc8eb1b0350aaa09f484c522c964d71d2e69435285b1ad2f2ab18f"
+      "source_sha256": "9e8d7f40776b2f104af1306e9621ea97b768b29e1c95635bcfb89ee96937ca1b"
     },
     "AVManager": {
       "category": "detectors",
@@ -96,7 +96,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "ddb9a81d03e1d186c94e0fd73f85d62d60f209b19dfbe8b42d1b98637c8b8ae6"
+      "source_sha256": "d4715010627bd23f43805a5f179ed998ea80de9559187e06ebb40db5f861f30a"
     },
     "BSC203StageManager": {
       "category": "positioners",
@@ -107,7 +107,7 @@
       "overridden": false,
       "properties": 4,
       "required": 0,
-      "source_sha256": "9d732e0237540e6ee4f67a8ce52925f8e561441f7fdb0955732625884fd89357"
+      "source_sha256": "a8923812b1729a0b88838f08d3462a70420efdf7fa94f89cfa629d02f95ea81f"
     },
     "Cobolt0601LaserManager": {
       "category": "lasers",
@@ -119,7 +119,7 @@
       "overridden": false,
       "properties": 2,
       "required": 1,
-      "source_sha256": "31b9f79e6350f4b342c2e8ff7cdbde9216344c8f8b1deed942da7305ad120ad5"
+      "source_sha256": "fd53d733cefd8970b77cbfa38d292898d9916ad15dd5cec069feb52a9750ea73"
     },
     "Cobolt0601NewLaserManager": {
       "category": "lasers",
@@ -128,9 +128,9 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 9,
+      "properties": 10,
       "required": 1,
-      "source_sha256": "8713e974c760e5dd0d06b66b41bcce38bfb628c58042b2d0111b5c2b0e8d4ea8"
+      "source_sha256": "fd6269373d9bbd179c069be6a4fd47ed11b9308500a57dac94320668cc2347cd"
     },
     "CoboltLaserManager": {
       "category": "lasers",
@@ -143,7 +143,7 @@
       "overridden": false,
       "properties": 2,
       "required": 1,
-      "source_sha256": "4b864808e24163b1609c9bdf83638c4283611da4237e3f386b448e59beb3c0c4"
+      "source_sha256": "13b210f53a868031ab7b590b06344a4efe123889f3f4f8ff0fb0ec68513caad4"
     },
     "CoolLEDLaserManager": {
       "category": "lasers",
@@ -154,7 +154,7 @@
       "overridden": false,
       "properties": 3,
       "required": 0,
-      "source_sha256": "d0a64fdc74fe6fee367c299585649d6c01222a43d4062fe4b760cbfce16db043"
+      "source_sha256": "e151ecfeba2b8fd31786907d7b889ededcca4df71facb7d5fc54ca0c1417b50b"
     },
     "ESP32LEDLaserManager": {
       "category": "lasers",
@@ -165,7 +165,7 @@
       "overridden": false,
       "properties": 3,
       "required": 0,
-      "source_sha256": "43bad7d6c93e9afe57e2a0af02d26e219a32e09a1e3e51d062269fdb5212e598"
+      "source_sha256": "8188c2001c5bc191e0ee5c004487fcd819dfc56eea41a3b58fc534970145c81d"
     },
     "ESP32LEDMatrixManager": {
       "category": "lasers",
@@ -176,7 +176,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "61230c8c04e357ab2a023dcfd070154dae31f30285b244cf8acda04cc97f2e59"
+      "source_sha256": "2f94710062a2dbea4ee387be4ca84051c90997722c3ae0f903b7b39c753f7436"
     },
     "ESP32LightSheetManager": {
       "category": "lasers",
@@ -187,7 +187,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "d80278e5d13c8e7a0450f17349032430eafa50afc030f5cb2849f01a22c9270b"
+      "source_sha256": "3177fdef5b08d877509d13ec40c9bb005e3072555bb5efaa9801049107aba5fb"
     },
     "ESP32Manager": {
       "category": "rs232devices",
@@ -197,7 +197,7 @@
       "overridden": false,
       "properties": 3,
       "required": 0,
-      "source_sha256": "8d4aeeae641dc3c64cbf95d6461509592e621f0ec2a22772148e7934491ef5ea"
+      "source_sha256": "49027754ec719994346402a803c42c4206885ab1c797b00f5aa639e5612cbe31"
     },
     "ESP32StageManager": {
       "category": "positioners",
@@ -208,7 +208,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "1379a42b6309f57745b18e5e310183d5d5374950bec34e772feecd19b4663ce4"
+      "source_sha256": "a0a828a6cba5a65ebec17816eab7ff7fc2ab7b0897f2117226ff47dafb3a18e9"
     },
     "ElliptecManager": {
       "category": "rs232devices",
@@ -218,7 +218,7 @@
       "overridden": false,
       "properties": 2,
       "required": 2,
-      "source_sha256": "b4cec9422612b683791b2a2aecf3c71f5ae4ef18153729b06ab699712c004454"
+      "source_sha256": "e477bb80a8add21bed3ba29a096d94aa24d236f108a7bdf5585b55e68662aaeb"
     },
     "ElliptecRotatorManager": {
       "category": "rotators",
@@ -229,7 +229,7 @@
       "overridden": false,
       "properties": 4,
       "required": 2,
-      "source_sha256": "2faf533d3186ea1eb84425dd2b9c6c58a587e162eff5853690eaf0a774ffcbc9"
+      "source_sha256": "977b9e90e682b6f3f4f9ae6075fcb27d1c1156f3dca40cb2ef2a78140c383ef9"
     },
     "GRBLLaserManager": {
       "category": "lasers",
@@ -240,7 +240,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "63db9d09950a3ca5e29bf1c0d2d1570bc06c71f21e1ccf0e0e10ab50f9aae8bf"
+      "source_sha256": "8e8e0cf2633e0d2c5e87abe38da77ab74b3cc1c7b6d8c9932f1f10cc685c8331"
     },
     "GRBLManager": {
       "category": "rs232devices",
@@ -250,7 +250,7 @@
       "overridden": false,
       "properties": 2,
       "required": 1,
-      "source_sha256": "340191cf0642ca5b7712efe2ea322ff78ade369ad6c857991964c67442c8af3a"
+      "source_sha256": "7beb7d67352693aabf156998deed0c422d7ea65a573fb2a37fe6833ebbfdb6d9"
     },
     "GRBLStageManager": {
       "category": "positioners",
@@ -261,7 +261,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "ef2390b558f263ebf7e434502b347f23d4e59c292a32566a6844d007dc807983"
+      "source_sha256": "bb684627f864f8c831fbc42dcdc0f565f337ceac854839476fc1375f976fa871"
     },
     "HamamatsuManager": {
       "category": "detectors",
@@ -272,7 +272,7 @@
       "overridden": true,
       "properties": 3,
       "required": 2,
-      "source_sha256": "294bdd61b0edadf7a95a0a8287b35bcfa36282779263a35b266032f48b40f900"
+      "source_sha256": "fb7292ee3700e7d347af47b1fe9484f69b84afd2b089c50d5d8f8b65ed70601d"
     },
     "HamamatsuSLMdviManager": {
       "category": "slms",
@@ -282,7 +282,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "6631010ed9613a61fb161455080405864efd63165597a7134522c63a8a72afe1"
+      "source_sha256": "7e77452f46863b48597504e29578be323a1f80e88d4501a4d141f626a632d32d"
     },
     "HamamatsuSLMusbManager": {
       "category": "slms",
@@ -292,7 +292,7 @@
       "overridden": false,
       "properties": 3,
       "required": 0,
-      "source_sha256": "65147e869c2c135a60f6d0dee09fbb43f5137c9041ee51c77dfb05a00909d3ae"
+      "source_sha256": "611ffa75298c4d924ad7db80d0c0e169b038f9aa8c31ea61e20de141aec52132"
     },
     "JenaPiezoZManager": {
       "category": "positioners",
@@ -303,7 +303,7 @@
       "overridden": false,
       "properties": 5,
       "required": 1,
-      "source_sha256": "f5dcc6bf47fb496336eddfee389e8749cf555b14b8237399880c0170a0d5650d"
+      "source_sha256": "4bdb1cb9a4d81dc2df9c79d44b63d52a7a0b1b93d8117f0a9f0062775c3a0473"
     },
     "KDC101Manager": {
       "category": "rs232devices",
@@ -313,7 +313,7 @@
       "overridden": false,
       "properties": 4,
       "required": 4,
-      "source_sha256": "ececf0a36e5e0825a05ecf1549714f0752882a434565a12f7f38de1cd1786f28"
+      "source_sha256": "04840a80b196eb9a342e361768c1defc34df376e4358c0bf593357bba40bac44"
     },
     "KDC101PositionerManager": {
       "category": "positioners",
@@ -324,7 +324,7 @@
       "overridden": false,
       "properties": 6,
       "required": 4,
-      "source_sha256": "2081f4a5d6d7ab03da8178069a2072b533bedf10c2737c24f1218d96ee4d881f"
+      "source_sha256": "dd937a6816d58019fc20cc1cc4948658ed6913231104222e996fc18b3674c68b"
     },
     "KinesisRotatorManager": {
       "category": "rotators",
@@ -335,7 +335,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "8c07d96905812a9a00abfa7cd567b88d5264977ac78e79c4545625dd069579f8"
+      "source_sha256": "eb8d6861d78c5de46e96899f6bc5584a8acff38833cae729b2bc6484a6ab7c0f"
     },
     "KinesisStageManager": {
       "category": "positioners",
@@ -346,7 +346,7 @@
       "overridden": false,
       "properties": 6,
       "required": 1,
-      "source_sha256": "6a387f9d0fa1f6be6dadc361c4cc02b887c4371433ee2d97348f7ab4efb5cdfc"
+      "source_sha256": "9c87a256418985a8b68e7772f840207c53bfb5395215d8357be214bd1ed39408"
     },
     "LEDMatrixManager": {
       "category": "lasers",
@@ -356,7 +356,7 @@
       "overridden": false,
       "properties": 0,
       "required": 0,
-      "source_sha256": "34e4a90ee1859d93992d4e4a34a0985c6fddcb15699b23dd96fd05efe116086d"
+      "source_sha256": "593b22c81c5e597871fc3d7f4fd3656ce4160091ed44135e72ca6cf814a7680e"
     },
     "LantzLaserManager": {
       "category": "lasers",
@@ -367,18 +367,17 @@
       "overridden": false,
       "properties": 2,
       "required": 1,
-      "source_sha256": "061ec9a6e3a2a465962d666153931aab63cb396eb4859fd1397585ec59bc10a8"
+      "source_sha256": "e5be06eadb34da0beebcd02ba00412998138cc0a69a992e7115db18b8006f680"
     },
-    "LeicaDMIManager": {
-      "category": "positioners",
+    "LeicaDMIStandManager": {
+      "category": "stands",
       "classes": [
-        "LeicaDMIManager",
-        "PositionerManager"
+        "LeicaDMIStandManager"
       ],
       "overridden": false,
-      "properties": 2,
-      "required": 1,
-      "source_sha256": "a227f93190ab37a6aaf2ae6a4e62fa56b46a54f897499acf798925e8ccd57461"
+      "properties": 1,
+      "required": 0,
+      "source_sha256": "e80aed4973f6cb6f30e5dbd707ccf33c34320b5d7078db1f8a06d6908618a5c0"
     },
     "LeicaDMIStandMockManager": {
       "category": "stands",
@@ -388,7 +387,18 @@
       "overridden": false,
       "properties": 0,
       "required": 0,
-      "source_sha256": "1ebe9790e042e408f356711fff0f1a789957d7c4e3f63a0b349cfe9925a72b38"
+      "source_sha256": "82c4fab44f0a3a93a52ea23208e70d99cebb0d3537f34cbca0e287a4b9846ebc"
+    },
+    "LeicaDMIZPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "LeicaDMIZPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 1,
+      "source_sha256": "648bfcaacb9f338b304d7ede43a10e0ce714f1a6c1010f2d833d5dc6658d870b"
     },
     "MHXYStageManager": {
       "category": "positioners",
@@ -399,7 +409,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "af868f957f130032f65cc8a8edbe500caec7726946498b524c91da5eab1e54a8"
+      "source_sha256": "2600863f4848df0eb093bf38e8f429f6faff7be69f78baefc1c90a1a432dadc4"
     },
     "MPBLaserManager": {
       "category": "lasers",
@@ -410,7 +420,7 @@
       "overridden": false,
       "properties": 7,
       "required": 0,
-      "source_sha256": "baf04af45e35139652946bdff0de70497f6cf13ebabe04683232d34a97ccf9e6"
+      "source_sha256": "77a27d81eca7f101781742136e0a35076baa146fa11155b853f325a058635d1c"
     },
     "MockPositionerManager": {
       "category": "positioners",
@@ -421,7 +431,7 @@
       "overridden": false,
       "properties": 0,
       "required": 0,
-      "source_sha256": "e5c73c80f6495f0ebe4ee07a2fd7c03f53a44cdd0420684259e7b2d12efc1762"
+      "source_sha256": "469498982b1db96f047e3522651f0e25e6ea39015bc27fe27d34f6a6a43266b7"
     },
     "NidaqLaserManager": {
       "category": "lasers",
@@ -432,7 +442,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "f6579014cbd407f89c3bf788d78a5d3cbac7c748f37bc086dde1184bc16aa0b5"
+      "source_sha256": "278ebdc30297e8d554b0cfd351d3eb6837ff1012b6b795ed75ba05258a6f5281"
     },
     "NidaqPositionerManager": {
       "category": "positioners",
@@ -443,7 +453,7 @@
       "overridden": false,
       "properties": 3,
       "required": 3,
-      "source_sha256": "a1f73315b2089696e67a14f808147517cc4edf9218db540613debaaadc8dc6a4"
+      "source_sha256": "93a1138ad5e6ba1e83439f04837ab89058186dc31862d4ec5bf105d21803716c"
     },
     "OxxiusCombinerLaserManager": {
       "category": "lasers",
@@ -454,7 +464,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "77b0ba5b61ef95c8c2fcd41c0d3830ecc62488cd838e1b08723f7e07dc8e8458"
+      "source_sha256": "2e6f97fe2652c07774383de42e3069662ee867a1c29c51e6c51b2319b5b752e1"
     },
     "OxxiusLaserManager": {
       "category": "lasers",
@@ -465,7 +475,7 @@
       "overridden": false,
       "properties": 4,
       "required": 1,
-      "source_sha256": "a0863dc8fc09a217bc93591f8c8b8b190235ee25baadb86c0f9199009d840422"
+      "source_sha256": "dbba7efba69c72623771b610e826318e3f57a77bd7cb6ec1837627f3ee50ff78"
     },
     "PIStageManager": {
       "category": "positioners",
@@ -474,9 +484,9 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 0,
-      "source_sha256": "f755ebe962f4dd7e1efc6ecf2261b57b1a0e0855b8e2ea3dd0fe5720f9abc8f8"
+      "source_sha256": "745aa5892826f1a4f71e48f7cc2f51a20f2529bfe675353dc51125f9c369a6a0"
     },
     "PMTManager": {
       "category": "detectors",
@@ -487,7 +497,7 @@
       "overridden": false,
       "properties": 13,
       "required": 0,
-      "source_sha256": "f069504d17bc50b6a0261bbdd08efe7ea03bc5cda8a18d51f9da19642f7fb57e"
+      "source_sha256": "98ba2a93b2a922f1696717dc375dd4e513dd572530cfd3c42eaecb3fc05bb1a1"
     },
     "PhotometricsManager": {
       "category": "detectors",
@@ -498,7 +508,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "635602da3b1fa151f0063e87278c209a48be6ed30ea11b59b5aaeaa33b2ca1e1"
+      "source_sha256": "81743cbe65eab46cb5409629c55b7c1752a96502221cc4d05dd859f0be832f24"
     },
     "PiCamManager": {
       "category": "detectors",
@@ -509,7 +519,7 @@
       "overridden": false,
       "properties": 4,
       "required": 3,
-      "source_sha256": "ff1f91d167e547177d04fb211a22a67d688fdd567fcd08c5f341db2edf85aeaa"
+      "source_sha256": "7d3f9fe7daccb91cf27e2b4ee52d8ecd40c03137aa9302ef2e248f2370156095"
     },
     "PiezoconceptZManager": {
       "category": "positioners",
@@ -520,7 +530,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "0710a4dde6f59486fb029af2eb8c5d976504528cfe4ea704c7bcd9a9682b3dec"
+      "source_sha256": "3b4261311b0a9c1abd45549c7e2928517ed8938ef43ca51f7880ba9765cefe95"
     },
     "PiezoconceptZManager2": {
       "category": "positioners",
@@ -531,7 +541,7 @@
       "overridden": false,
       "properties": 2,
       "required": 0,
-      "source_sha256": "d4be9f41c75b7d3bbf0fcd8fb6dd77b252b563bf1e77b60bf5cd35a53391e201"
+      "source_sha256": "8a7225b67f5382f4e7a674415d31223d5ade3716b10ae8f7af9cc74c255e8ff4"
     },
     "PulseGeneratorLaserManager": {
       "category": "lasers",
@@ -542,7 +552,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "d3f99e94da52144422c051071dd6c3ae06a67f649c931d7690330b81f2ad4503"
+      "source_sha256": "ed3cef44cad2d85c941c0ace067c7ddea4fa7b5807732792855c3f8fadecc470"
     },
     "PulseStreamerLaserManager": {
       "category": "lasers",
@@ -553,7 +563,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "8e4bb63f7c1244fde224fb42156d7fd89c73d38281bed8ddd6a49a791b3a949f"
+      "source_sha256": "d11019784f3d66be3da65d347b03bbcbc000a3b854f16073274cbd7a8b2037f8"
     },
     "PulseStreamerManager": {
       "category": "pulsegen",
@@ -564,7 +574,7 @@
       "overridden": false,
       "properties": 0,
       "required": 0,
-      "source_sha256": "5f6064d17f7d68ae773b26e6e35b9a2f840fd89f62e9228c39aafe07a48b23e3"
+      "source_sha256": "c3ade4ef4860c91da1f2b4037c1bc17831944a6f9b1c7832ad450a4b66b090fb"
     },
     "PyMicroscopeLaserManager": {
       "category": "lasers",
@@ -575,7 +585,7 @@
       "overridden": false,
       "properties": 3,
       "required": 0,
-      "source_sha256": "8db5bead30c2878be97ca22e3e8021de5db933553acc8d844ecfe21e79fe47e3"
+      "source_sha256": "4fdfd8197691a069d914828682a6ad9958587cbe604dd48a86e7a660025d970f"
     },
     "RS232Manager": {
       "category": "rs232devices",
@@ -585,7 +595,7 @@
       "overridden": false,
       "properties": 2,
       "required": 2,
-      "source_sha256": "d601bca50088ba8577e55293234ac7d1fc6d7e43ee60e142718abd1e8dee5bbe"
+      "source_sha256": "1c005b241b1d2768f4ab7030b5d3cd529cd24850cacc775f7c937fcd5674472b"
     },
     "SQUIDManager": {
       "category": "rs232devices",
@@ -595,7 +605,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "fe16f3a633d1e1e04a4a8a96ee384d984abf11155284c24a68569f588ac52fff"
+      "source_sha256": "fc0190eb60a577d97a3955483fe39c22b088c7cfaee06d7fc38a4d1b578af01d"
     },
     "SQUIDStageManager": {
       "category": "positioners",
@@ -606,7 +616,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "79a40ddfbb16c89a0b8dd3f71e970865928111cb4244f5e7e3011ad7200f24fe"
+      "source_sha256": "cea6e388f2098883586ac7a629f75e8395abee7d52c7dd73c31d52312deb79f5"
     },
     "SerialDacZManager": {
       "category": "positioners",
@@ -617,7 +627,7 @@
       "overridden": false,
       "properties": 13,
       "required": 0,
-      "source_sha256": "33e414eca72033372f9c5676a203626a5a0ecb24468e410146e894219244f559"
+      "source_sha256": "9717abf74a030b8fd81880711098d2fea31e2a8472243368845c05301ce6e9ad"
     },
     "SmarACTPositionerManager": {
       "category": "positioners",
@@ -628,7 +638,7 @@
       "overridden": false,
       "properties": 2,
       "required": 0,
-      "source_sha256": "7ca15ecca2cedc13b4b0e40fda25732c5af8fc1497a54f389cdee7c0a335917b"
+      "source_sha256": "2d8a34b61a423763df7c14202bcbddd46471394fa2fb8e633acc81cf94dfa02b"
     },
     "StandaRotatorManager": {
       "category": "rotators",
@@ -639,7 +649,7 @@
       "overridden": false,
       "properties": 4,
       "required": 4,
-      "source_sha256": "a874d015c2afb412b818df86d43681b2f1ce770cdbc39c773743577ab2da9c6f"
+      "source_sha256": "e4225a5ba704cfaa3e2697759b5a9132ca9dedd0d1cdcd3c947793b90bc24d61"
     },
     "SwabianTimeTaggerManager": {
       "category": "detectors",
@@ -650,7 +660,7 @@
       "overridden": false,
       "properties": 15,
       "required": 3,
-      "source_sha256": "84c5463fa901d31e18cedc9fe5b8c400545c0bba6135873bbcf4c0a807e13341"
+      "source_sha256": "fbb1db25c095b1fd9a5e39600d614b43735cfbfb92c762c877e891941f422540"
     },
     "TISManager": {
       "category": "detectors",
@@ -661,7 +671,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "4a1cb9b4c0e96129c4baea84aa2d6126640e6f107180d46ab13749a464126f68"
+      "source_sha256": "a2965361081fa90032b4eddc2dfdfaf543860dfd4d903029d4054cd1025f9729"
     },
     "TeensyPulseManager": {
       "category": "pulsegen",
@@ -672,7 +682,7 @@
       "overridden": false,
       "properties": 0,
       "required": 0,
-      "source_sha256": "5a4914f6a438db566b893a1521dcc0f9e5c63e12ec60a55c9b78b7722e7756a8"
+      "source_sha256": "c96dc8bdb6a00a2c63a295df2e0ed82dfb306f2acc939eab55644c668a56891d"
     },
     "ThorCamTSIManager": {
       "category": "detectors",
@@ -683,7 +693,7 @@
       "overridden": false,
       "properties": 6,
       "required": 0,
-      "source_sha256": "46ff65d2ad40571b63ad95035e00a4262abb7f88b035a0809baa90cf11a0dba4"
+      "source_sha256": "d4d4452b0f673dc82a625ebbbdfe629969a5614359cf7116165bc2af5e4ff272"
     },
     "ThorlabsMFFManager": {
       "category": "flipMirrors",
@@ -693,7 +703,7 @@
       "overridden": false,
       "properties": 4,
       "required": 0,
-      "source_sha256": "ae65788f97422a238cde7687203c769fcbf9247e9307b8902499b3deb67a40d5"
+      "source_sha256": "dac45b3a2f647bd3896441dfc10aaa7030c80be32dbb36b0b360d72a5b1e5f3e"
     },
     "ThorlabsMFFMockManager": {
       "category": "flipMirrors",
@@ -703,7 +713,7 @@
       "overridden": false,
       "properties": 2,
       "required": 0,
-      "source_sha256": "cf8d871528c42d77703b97d2aea8a5b05975661fa4f2970247f41969fa1e6f57"
+      "source_sha256": "efc898f8b128625b690aeb8e3bd0bd166430393601ba4b59401e11cb88c0d638"
     },
     "TriggerScopeLaserManager": {
       "category": "lasers",
@@ -714,7 +724,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "845c9bd45f89a9ed9d5a50e530e836253fa084d3359c7030b8391ea011a96bfa"
+      "source_sha256": "47ac8d29d9fab7cc26f26aa068c585ccd2faddcc23d1bf81c1703e910f76afa6"
     },
     "TriggerScopePositionerManager": {
       "category": "positioners",
@@ -725,7 +735,7 @@
       "overridden": false,
       "properties": 3,
       "required": 3,
-      "source_sha256": "43a8a3488698595f0393d0fd0d015c8d10ec72b24e1f23144e3d1434c13b3b8f"
+      "source_sha256": "60a46ae33d986141a08cb87aae18b97aa031f6afe3cd9eb79df75376e6fef98b"
     }
   },
   "regenerate": "python tools/extract_manager_schemas.py --write",
