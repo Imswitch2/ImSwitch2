@@ -2,11 +2,11 @@
 ImProcess
 *********
 
-``ImProcess`` is Imswitch2's post-acquisition processing module.  It is the
+``ImProcess`` is ImSwitch2's post-acquisition processing module.  It is the
 generalized successor of the older ``ImReconstruct`` module: where
 ``ImReconstruct`` was hard-wired to MoNaLISA SIM reconstruction,
 ``ImProcess`` exposes a small plugin system so that every acquisition
-Imswitch2 can produce — MoNaLISA, STED, FLIM, confocal, widefield,
+ImSwitch2 can produce — MoNaLISA, STED, FLIM, confocal, widefield,
 WidefieldSTARSS, SNOUTY lightsheet — can be opened, viewed and
 post-processed with the same shell.
 
@@ -41,8 +41,8 @@ Launching ImProcess
 
 ImProcess can run in three modes:
 
-1. **As an Imswitch2 module** — alongside ``imcontrol``, started by the
-   main Imswitch2 launcher.  This is the default when ``modules.json``
+1. **As an ImSwitch2 module** — alongside ``imcontrol``, started by the
+   main ImSwitch2 launcher.  This is the default when ``modules.json``
    lists ``"improcess"`` in the ``enabled`` array.
 2. **Stand-alone with no setup** — direct entry point, useful when you
    only want a viewer / post-processor on your laptop with no
@@ -59,9 +59,9 @@ ImProcess can run in three modes:
 Data ingest
 ===========
 
-Any file Imswitch2 / Imcontrol can write is native to ImProcess:
+Any file ImSwitch2 / ImControl can write is native to ImProcess:
 
-* **HDF5** (``.h5``, ``.hdf5``) — the default Imswitch2 recording format
+* **HDF5** (``.h5``, ``.hdf5``) — the default ImSwitch2 recording format
 * **Zarr** (``.zarr`` directories)
 * **TIFF** (``.tif``, ``.tiff``)
 
@@ -646,7 +646,7 @@ reconstruction list, provenance included — as a collapsible tree with
 
 The reader is deliberately **layout-agnostic**: it walks whatever hierarchy the
 container actually has and reports every attribute it finds on the way down.
-Nothing in it encodes the ImSwitch recording layout, so files written by a
+Nothing in it encodes the ImSwitch2 recording layout, so files written by a
 future storer — or by another program entirely — display without any code
 change:
 
@@ -1039,7 +1039,7 @@ Everything about this backend is best-effort.  Without the package, on a GL
 session without instancing support, or for a table napari-storm refuses, the
 flag does nothing and the result keeps its preview; nothing else in the viewer
 changes.  napari-storm pins ``zarr<3`` for its own MINFLUX reader, so
-resolving the extra moves an environment onto zarr 2.x.  ImSwitch runs on
+resolving the extra moves an environment onto zarr 2.x.  ImSwitch2 runs on
 either zarr major; to stay on zarr 3, install the package itself with
 ``pip install --no-deps napari-storm`` instead of the extra.
 
@@ -1170,7 +1170,7 @@ Config schema
 =============
 
 To configure which plugins ImProcess loads, add a ``processing`` block
-to your Imcontrol setup file (the same JSON you select via
+to your ImControl setup file (the same JSON you select via
 ``imcontrol_options.json``)::
 
     {
@@ -1309,7 +1309,7 @@ The ``processing:`` block also accepts:
   the point-cloud renderer (Gaussian width, colour by depth, render range,
   appearance).  Only useful together with ``napariStormViewer``.
 
-To launch Imswitch2 with *only* ImProcess (no Imcontrol GUI) and *only*
+To launch ImSwitch2 with *only* ImProcess (no ImControl GUI) and *only*
 the plugins from one of these setup presets:
 
 1. Set ``modules.json`` to::
@@ -1333,7 +1333,7 @@ the plugins from one of these setup presets:
    above. The ``processing:`` block continues to control which plugins are
    *registered and offered in the picker*.
 
-These are the recommended setups for users who treat Imswitch2 as a
+These are the recommended setups for users who treat ImSwitch2 as a
 post-processing tool only — e.g. opening acquisitions taken on a different
 machine for reconstruction, preview, or quantitative analysis.
 
@@ -1459,7 +1459,7 @@ What a plugin gets for free, and what it must declare
 
 Every plugin that goes through the shared run path — the GUI, a workflow, a
 batch, live streaming — gets without any hook of its own: a provenance graph
-on each result it produces, a version stamp (the ImSwitch version for
+on each result it produces, a version stamp (the ImSwitch2 version for
 built-ins, a digest of the file for drop-ins), the staged save protocol with
 the provenance carried in the file, napari endpoints for every layerable
 result kind, batch runs, the command line, and replay.  Those live in the
@@ -1712,4 +1712,4 @@ See also
 * :doc:`improcess-workflows` — reconstructing and processing without the
   GUI: batch workflows, ports, saves, binding, replay
 * :doc:`imcontrol` — the ImControl module (hardware control)
-* :doc:`modules` — list of Imswitch2 modules
+* :doc:`modules` — list of ImSwitch2 modules
