@@ -39,6 +39,10 @@ class ImProcessMainController(MainController):
         # Connect view signals
         self.__mainView.sigClosing.connect(self.closeEvent)
         self.__mainView.sigLoadProcessorRequested.connect(self._load_runtime_processor)
+        if hasattr(self.__mainView, 'sigLoadReconstructorRequested'):
+            self.__mainView.sigLoadReconstructorRequested.connect(
+                self._load_runtime_reconstructor
+            )
         if hasattr(self.__mainView, 'sigReloadPluginsRequested'):
             self.__mainView.sigReloadPluginsRequested.connect(self._reload_user_plugins)
 
@@ -47,9 +51,15 @@ class ImProcessMainController(MainController):
         self._register_startup_runtime_processors()
         self.__mainView.createStartupRuntimeAnalysisWidgets()
         self._refresh_runtime_processor_choices()
+        self._refresh_reconstructor_choices()
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel()
+
+        # A widget controller that has something to say to the operator and
+        # no view of its own says it here; the main view owns the status bar.
+        if hasattr(self.__mainView, 'showStatusMessage'):
+            self.__commChannel.sigStatusMessage.connect(self.__mainView.showStatusMessage)
 
         # Bridge live results to imcontrol if enabled
         self.__commChannel.sigResultProduced.connect(self._onResultProduced)
@@ -176,24 +186,24 @@ class ImProcessMainController(MainController):
         """
         from imswitch.improcess.reconstructors.registry import get_registry
         from imswitch.improcess.reconstructors import register_default_reconstructors
-        from imswitch.improcess.processors import (
-            load_user_plugins,
-            register_default_processors,
-        )
+        from imswitch.improcess.processors import register_default_processors
+        from imswitch.improcess.plugins import load_user_plugins
 
         registry = get_registry()
         registry.clear()
 
         # Discover user drop-in analysis plugins first, so they are available to
-        # register_default_processors and every enumeration below. Tolerant: a
-        # broken plugin is logged and skipped, never blocking startup.
-        loaded_plugins, plugin_errors = load_user_plugins()
-        if loaded_plugins:
+        # register_default_processors / register_default_reconstructors and
+        # every enumeration below. Tolerant: a broken plugin is logged and
+        # skipped, never blocking startup.
+        loaded = load_user_plugins()
+        if loaded.ids:
             self.__logger.info(
-                f"Discovered {len(loaded_plugins)} user analysis plugin(s): "
-                f"{loaded_plugins}"
+                f"Discovered {len(loaded.ids)} user analysis plugin(s): "
+                f"processors={loaded.processors}, "
+                f"reconstructors={loaded.reconstructors}"
             )
-        for error in plugin_errors:
+        for error in loaded.errors:
             self.__logger.warning(
                 f"Skipped analysis plugin {error.path}: {error.message.splitlines()[-1]}"
             )
@@ -446,29 +456,35 @@ class ImProcessMainController(MainController):
         self._refresh_runtime_processor_choices()
 
     def _reload_user_plugins(self) -> None:
-        """Re-scan the drop-in plugins folder and refresh the tool list.
+        """Re-scan the drop-in plugins folder; refresh the tool list and the
+        reconstructor picker.
 
-        Newly added plugins appear in the 'Load tool' combo; removed ones drop
-        out. Re-registering with fresh instances means an edited plugin's new
+        Newly added plugins appear in the 'Load plugin' combo (processors) and
+        in the Parameters-dock picker (reconstructors); removed ones drop out.
+        Re-registering with fresh instances means an edited processor's new
         code is used the next time its panel is opened (an already-open panel
-        keeps the instance it was built with until closed and reopened).
+        keeps the instance it was built with until closed and reopened). An
+        edited reconstructor is swapped in at once, its parameter widget
+        rebuilt, unless a reconstruction is running -- then the reconstructors
+        are left alone, so a job never straddles two versions of one plugin.
         """
         from imswitch.improcess.reconstructors.registry import get_registry
-        from imswitch.improcess.processors import (
-            load_user_plugins,
-            register_processor_by_id,
-        )
+        from imswitch.improcess.processors import register_processor_by_id
+        from imswitch.improcess.plugins import load_user_plugins
 
-        loaded, errors = load_user_plugins()
-        self.__logger.info(f"Reloaded drop-in analysis plugins: {loaded}")
-        for error in errors:
+        loaded = load_user_plugins()
+        self.__logger.info(
+            f"Reloaded drop-in analysis plugins: processors={loaded.processors}, "
+            f"reconstructors={loaded.reconstructors}"
+        )
+        for error in loaded.errors:
             self.__logger.warning(
                 f"Skipped analysis plugin {error.path}: "
                 f"{error.message.splitlines()[-1]}"
             )
 
         registry = get_registry()
-        for processor_id in loaded:
+        for processor_id in loaded.processors:
             try:
                 register_processor_by_id(registry, processor_id)
             except Exception:
@@ -476,7 +492,165 @@ class ImProcessMainController(MainController):
                     f"Failed to (re)register plugin processor {processor_id!r}"
                 )
 
+        self._reload_user_reconstructors(registry, loaded.reconstructors)
         self._refresh_runtime_processor_choices()
+        self._refresh_reconstructor_choices()
+
+    def _refresh_reconstructor_choices(self) -> None:
+        """Offer every known-but-unregistered reconstructor in Tools -> Load
+        reconstructor: the built-ins the setup file did not name, plus any
+        drop-in that is discovered but not registered."""
+        from imswitch.improcess.reconstructors import available_reconstructor_specs
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        setter = getattr(self.__mainView, 'setAvailableReconstructors', None)
+        if not callable(setter):
+            return
+        loaded = {plugin.id for plugin in get_registry().reconstructors()}
+        setter(
+            [
+                (plugin_id, name, description)
+                for plugin_id, name, description in available_reconstructor_specs()
+                if plugin_id not in loaded
+            ]
+        )
+
+    def _load_runtime_reconstructor(self, plugin_id: str) -> None:
+        """Register a reconstructor for this session and make it active.
+
+        The counterpart of the processors' *Load tool* combo: a built-in the
+        setup file did not name (or a drop-in that is discovered but not
+        registered) is instantiated, offered in the Parameters-dock picker and
+        selected. Nothing is written to the setup file; to keep it across
+        sessions, add it to ``processing.reconstructors`` there.
+        """
+        from imswitch.improcess.reconstructors import register_reconstructor_by_id
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        registry = get_registry()
+        plugin = registry.get_reconstructor(plugin_id, raise_on_missing=False)
+        if plugin is None:
+            try:
+                plugin = register_reconstructor_by_id(registry, plugin_id)
+            except Exception:
+                self.__logger.exception(f"Failed to load reconstructor {plugin_id!r}")
+                self._show_status_message(
+                    f"Could not load reconstructor {plugin_id!r}; see the log for why"
+                )
+                self._refresh_reconstructor_choices()
+                return
+            self.__logger.info(
+                f"Runtime-loaded reconstructor: {plugin.id} ({plugin.name})"
+            )
+        else:
+            self.__logger.info(f"Reconstructor already loaded: {plugin_id}")
+
+        manager = getattr(
+            getattr(self, 'mainViewController', None), 'reconstructorManager', None
+        )
+        activated = (
+            bool(manager.reconstructorLoaded(plugin_id)) if manager is not None else False
+        )
+        if activated:
+            self._show_status_message(
+                f"Loaded {plugin.name}; it is now the active reconstructor"
+            )
+        else:
+            self._show_status_message(
+                f"Loaded {plugin.name}; select it in the Parameters dock once a "
+                "file it accepts is open"
+            )
+        self._refresh_reconstructor_choices()
+
+    def _reload_user_reconstructors(self, registry, loaded_ids) -> bool:
+        """Bring the registry's drop-in reconstructors in line with the folder.
+
+        Removed plugins are unregistered (the picker reads the registry, so a
+        stale entry would stay on offer), edited ones are re-registered with
+        a fresh instance, and unchanged ones keep the instance they have --
+        the version stamp is a digest of the file, so "unchanged" is exact
+        and an untouched plugin's parameter widget survives a reload. The
+        reconstructor manager then re-syncs the active reconstructor and the
+        picker.
+
+        Refused, with nothing touched, while a reconstruction is running: the
+        job holds the instance it started with, and swapping the registry
+        underneath it would leave the job, the picker and the active
+        reconstructor on different versions of one plugin. Returns whether
+        the reload happened.
+        """
+        from imswitch.improcess.model.plugin_versions import plugin_version
+        from imswitch.improcess.reconstructors import (
+            builtin_reconstructor_ids,
+            register_reconstructor_by_id,
+        )
+
+        if self._reconstruction_in_progress():
+            message = (
+                "A reconstruction is running; drop-in reconstructors were not "
+                "reloaded. Reload plugins again when it has finished."
+            )
+            self.__logger.warning(message)
+            self._show_status_message(message)
+            return False
+
+        builtin = set(builtin_reconstructor_ids())
+        wanted = set(loaded_ids)
+        for plugin in list(registry.reconstructors()):
+            if plugin.id not in builtin and plugin.id not in wanted:
+                registry.unregister_reconstructor(plugin.id)
+                self.__logger.info(
+                    f"Unregistered removed plugin reconstructor {plugin.id!r}"
+                )
+        for plugin_id in loaded_ids:
+            current = registry.get_reconstructor(plugin_id, raise_on_missing=False)
+            if (
+                current is not None
+                and plugin_version(current) == getattr(current, 'version', None)
+            ):
+                # Same file bytes as when it was registered: nothing to swap.
+                continue
+            try:
+                register_reconstructor_by_id(registry, plugin_id)
+                self.__logger.info(
+                    f"(Re)registered plugin reconstructor {plugin_id!r}"
+                )
+            except Exception:
+                self.__logger.exception(
+                    f"Failed to (re)register plugin reconstructor {plugin_id!r}"
+                )
+
+        manager = getattr(
+            getattr(self, 'mainViewController', None), 'reconstructorManager', None
+        )
+        if manager is not None:
+            manager.pluginsReloaded()
+        return True
+
+    def _reconstruction_in_progress(self) -> bool:
+        """Whether a reconstruction job or a live reconstruction is running."""
+        main_view_controller = getattr(self, 'mainViewController', None)
+        checks = (
+            getattr(
+                getattr(main_view_controller, 'reconstructorManager', None),
+                'isReconstructionRunning',
+                None,
+            ),
+            getattr(
+                getattr(main_view_controller, 'liveModeController', None),
+                'isLiveReconstructionRunning',
+                None,
+            ),
+        )
+        return any(callable(check) and bool(check()) for check in checks)
+
+    def _show_status_message(self, message: str) -> None:
+        show = getattr(self.__mainView, 'showStatusMessage', None)
+        if callable(show):
+            try:
+                show(message)
+            except Exception:
+                pass
 
     def _wire_runtime_result_processor(self, processor_id: str) -> None:
         widget = self.__mainView.getRuntimeAnalysisWidget(processor_id)
