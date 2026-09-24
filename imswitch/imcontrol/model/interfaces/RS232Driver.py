@@ -223,6 +223,7 @@ class RS232Driver:
             raise OSError('RS232 resource already closed')
         return self._resource.read()
 
+    @classmethod
     def getDefaults(cls, settings):
         try:
             baudrate = int(settings["baudrate"])
@@ -257,11 +258,12 @@ class RS232Driver:
                     settings["recv_termination"],
                     'recv_termination',
                 ),
-                 'baud_rate': baudrate,
-                 'parity': set_par,
-                 'stop_bits': set_stopb,
-                 'encoding': settings["encoding"],
-                 }
+                'baud_rate': baudrate,
+                'bytesize': settings["bytesize"],
+                'parity': set_par,
+                'stop_bits': set_stopb,
+                'encoding': settings["encoding"],
+            }
         }
         return defaults
 
