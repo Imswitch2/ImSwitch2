@@ -3,9 +3,11 @@ Widgets
 *******
 
 This page walks through the ImControl widgets, grouped by what they are
-for rather than by where they sit in the window.  For what the module is
-and what else it can do, see :doc:`imcontrol`; for the shortcuts and
-state-saving that apply across every module, see
+for rather than by where they sit in the window.  Where a widget has a
+workflow of its own — advanced scanning, tiling — it is introduced here
+and the task itself is covered in depth on its own page.  For what the
+module is and what else it can do, see :doc:`imcontrol`; for the
+shortcuts and state-saving that apply across every module, see
 :doc:`working-in-imswitch2`.
 
 .. admonition:: Documentation TODO — this page
@@ -189,8 +191,8 @@ Hardware control
 ================
 
 These widgets drive the physical hardware.  The main ones are the
-laser widget, scanning widget, positioner widget, focus-lock widget,
-and SLM widget.  Which widgets appear is controlled by the
+laser widget, scanning widget, tiling widget, positioner widget,
+focus-lock widget, and SLM widget.  Which widgets appear is controlled by the
 ``availableWidgets`` list in your setup JSON — see
 :doc:`imcontrol-setups`.
 
@@ -322,6 +324,22 @@ single image — see :doc:`devices/detectors`.
 See :doc:`advanced-scanning` for the exact pixel-count convention, Sequence
 Builder timing semantics, galvo setup requirements, scan-size guards and the
 Advanced Scan + Recording workflow.
+
+
+Tiling widget
+-------------
+
+Covers an area larger than one field of view by driving the stage through a
+square spiral, acquiring one tile at each stop and stitching them into a
+single overview as the run proceeds.  The overview is live: clicking it
+drives the stage, and it is what cell targeting operates on.
+
+.. image:: ./images/auto/TilingWidget.png
+   :width: 600px
+   :align: center
+
+See :doc:`tiling` for the controls in detail, cell detection, illumination
+correction, multi-detector runs, the saved output and the controller API.
 
 
 Alignment tools
