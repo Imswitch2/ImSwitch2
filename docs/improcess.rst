@@ -200,6 +200,18 @@ generic parameter panel for the active result. This runs one processor at a
 time and publishes its output back to the reconstruction list. It is not yet a
 saved, automatically executed multi-step processing chain.
 
+Reconstructors have the same runtime path.  The reconstructor picker at the
+top of the Parameters dock offers only the reconstructors that are registered,
+and the setup file's ``processing.reconstructors`` list decides which
+built-ins those are — so a setup that names only MoNaLISA never shows the
+others.  **Tools → Load reconstructor** lists every reconstructor ImProcess
+knows about but has not loaded (the built-ins the setup file did not name,
+plus any drop-in that is discovered but not registered) with a one-line
+description; picking one registers it for the session, adds it to the picker
+and makes it active.  Nothing is written to the setup file: to keep a
+reconstructor across sessions, add it to ``processing.reconstructors`` (the
+config editor offers every known id, drop-ins included).
+
 Toolbar icons are selected through ImProcess semantic action IDs and rendered
 with QtAwesome when available, with Qt standard icons as a fallback.  This
 keeps icon choices centralized while allowing each action to retain its
@@ -842,8 +854,9 @@ A camera time lapse or scan time lapse is recorded one item per timepoint:
 a file each (``<name>_time07_Camera.hdf5``, ``<name>_scan0007_APD.zarr``), or
 with *single file* storage a group each inside one HDF5 or Zarr file
 (``scan0/Camera``, ``scan1/Camera``, ...). The ``time-lapse`` reconstructor
-puts them back together as one ``(T, ...)`` stack. Add it to
-``processing.reconstructors`` in the setup file to make it pickable.
+puts them back together as one ``(T, ...)`` stack. Load it for the session from **Tools → Load
+reconstructor**, or add it to ``processing.reconstructors`` in the setup file
+to keep it.
 
 With **Time lapse** active, open any one item of the lapse -- the first, the
 last, or any in between -- and the whole lapse becomes the current source. A
@@ -1231,6 +1244,68 @@ the widget can open the selected output folder directly.  When the graph panel
 is enabled, completed batches also publish aggregate plots for region
 anisotropy, area-vs-anisotropy and per-sample summaries.
 
+.. _improcess-memory-limits:
+
+Memory limits
+=============
+
+How much RAM ImSwitch may spend on buffering and on automatic work is a
+property of the computer, so it lives in the per-machine options file
+``imcontrol_options.json`` (under the user config directory) rather than in
+the setup file, which travels between machines. The ``memory`` group holds
+three limits in MiB, each named for the one thing it bounds; the values
+shown are the defaults. Edit them in ImControl under **Tools → Memory
+limits…**, which saves this file and applies the new limits at once, or edit
+the file by hand and restart::
+
+    {
+        "setupFileName": "example_sted.json",
+        "memory": {
+            "writerQueueMB": 512,
+            "perDetectorQueueMB": 256,
+            "processingWorkingSetMB": 1024
+        }
+    }
+
+``writerQueueMB``
+    The backlog the recording writer may hold before the acquisition loop
+    blocks. Blocking is graceful backpressure: frames wait in the detector's
+    chunk queue meanwhile, and the log says the moment it starts.
+
+``perDetectorQueueMB``
+    The backlog any one *(detector, consumer)* chunk queue may hold before
+    that consumer's stream is declared incomplete -- for a recording, the
+    point at which it fails. It is per queue: a rig with several detectors
+    and several consumers (the recording, BeadRec, a workflow) can hold this
+    much in each. A recording's stall tolerance is roughly the two numbers
+    added: a smaller writer queue backed by a larger detector queue absorbs a
+    short stall as well, but only the writer's share is graceful.
+
+    One delivery larger than this -- a scan-driven detector's whole volume,
+    or a burst of camera frames after a late poll -- is still admitted when
+    the queue is empty, and warned about once, because refusing it would
+    refuse the measurement rather than bound a backlog; nothing further fits
+    behind it until it is read.
+
+``processingWorkingSetMB``
+    The working set ImProcess may spend on work nobody asked for: contrast
+    sampling (the sample size follows it) and the mean preview computed when
+    data is loaded. It defaults to 1 GiB, a transient working set sized for
+    a typical workstation; lower it on a small machine. Above it, the current-data panel shows the first plane
+    instead of the mean and says so; *Show mean* still computes the mean on
+    request. Opening a dataset whose decoded size exceeds it is announced in
+    the status bar before decoding starts, naming the size and whether
+    *Open virtual* offers a lazy path for that source. Nothing is refused.
+
+None of these is a process limit and ImSwitch claims none: camera drivers
+allocate their own buffers, datasets and results are as large as the data.
+A value that is not a positive whole number is reported at startup and the
+default stands; the dialog shows such a value as the default in force and
+replaces it when saved. Every message that quotes a limit names the setting
+that moves it, so the line in the log is the line to act on. Saving is
+refused while a recording runs: every queue check reads the limit in force,
+so a smaller queue would fail the recording in progress.
+
 Config schema
 =============
 
@@ -1514,8 +1589,9 @@ provenance embedding and napari conversion already done.  Register the
 reconstructor by adding the class to ``_AVAILABLE_RECONSTRUCTOR_CLASSES``
 in ``imswitch/improcess/reconstructors/__init__.py``.  Processors use the
 analogous ``_AVAILABLE_PROCESSOR_CLASSES`` map in
-``imswitch/improcess/processors/__init__.py``.  (Drop-in discovery, below,
-finds processors only; a reconstructor is always a built-in.)
+``imswitch/improcess/processors/__init__.py``.  Or skip the source tree
+altogether: a ``.py`` file in the plugins folder defining the class is a
+drop-in plugin (below), for reconstructors and processors alike.
 
 .. _improcess-headless-contract:
 
@@ -1600,8 +1676,8 @@ Beyond parameters, the checklist an author should walk through:
   ``.provenance.json`` companion.  napari conversion is automatic only for
   the known layerable kinds (``image``, ``composite``, ``rgb``, ``labels``,
   ``localization``); a new kind needs its own adapter.
-* **Registration**: built-ins go in the class maps above; drop-ins are
-  discovered from the plugins folder (processors only).
+* **Registration**: built-ins go in the class maps above; drop-ins
+  (processors and reconstructors) are discovered from the plugins folder.
 
 Two optional class attributes refine the UX without any extra method:
 
@@ -1631,11 +1707,14 @@ returned ``ProcessingResult`` and return ``PlotPayload`` objects from
 Drop-in analysis plugins
 ========================
 
-Adding a processor by editing the ImProcess source tree is fine for built-ins,
+Adding a plugin by editing the ImProcess source tree is fine for built-ins,
 but ImProcess also supports **Picasso-style drop-in plugins**: a single ``.py``
 file dropped into a user folder is discovered at startup and becomes a fully
-integrated analysis tool — parameter panel, result-kind gating and
-results-table / graph integration — with no packaging and no UI code.
+integrated plugin with no packaging and no UI code.  A ``Processor`` in the
+file becomes an analysis tool — parameter panel, result-kind gating and
+results-table / graph integration; a ``Reconstructor`` appears in the
+reconstructor picker of the Parameters dock, with its parameter widget, the
+file watcher, multidata runs and workflows behind it.
 
 This is deliberately separate from the *device* plugin system
 (:doc:`devices/plugins`), which uses pip-installed packages and entry points for
@@ -1645,26 +1724,37 @@ path.
 Using a plugin
 --------------
 
-#. In any ImProcess window, choose **Analyze → Drop-in plugins → Open plugins
-   folder…**.  The folder is ``~/.imswitch/improcess_plugins/`` and is created
-   on first use with an inert ``_example_plugin.py`` template (underscore-
-   prefixed files are ignored by discovery).
-#. Drop a ``.py`` file that defines one or more ``Processor`` subclasses into
-   that folder.  Ready-to-copy examples live in
-   ``examples/improcess_plugins/`` (``invert.py``, ``gaussian_blur.py``).
-#. Choose **Analyze → Drop-in plugins → Reload plugins** (or restart ImProcess).
-   The processor appears in the **Load tool** dropdown in the analysis toolbar;
-   load it, select a compatible result and run it.
+#. In any ImProcess window, choose **Plugins → Add plugin file…** and pick
+   the ``.py`` file: it is copied into the plugins folder and the plugins are
+   reloaded in one step.  Or choose **Plugins → Open plugins folder…** and
+   drop the file in yourself.  The folder is ``~/.imswitch/improcess_plugins/``
+   and is created on first use with an inert ``_example_plugin.py`` template
+   (underscore-prefixed files are ignored by discovery).  Ready-to-copy
+   examples live in ``examples/improcess_plugins/`` (``invert.py``,
+   ``gaussian_blur.py``, and the reconstructor ``frame_average.py``).
+#. If you copied the file by hand, choose **Plugins → Reload plugins** (or
+   restart ImProcess).
+#. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
+   load it, select a compatible result and run it.  A reconstructor appears in
+   the reconstructor picker at the top of the Parameters dock; pick it and use
+   *Reconstruct current* (or the multidata actions, or the file watcher) as
+   with any built-in.
 
 Reloading re-scans the folder, so newly added or removed plugins take effect
-immediately.  An edited plugin's new code is used the next time its panel is
-opened (an already-open panel keeps the version it was built with until it is
-closed and reopened).
+immediately.  An edited processor's new code is used the next time its panel
+is opened (an already-open panel keeps the version it was built with until it
+is closed and reopened).  An edited reconstructor takes effect at once: if it
+is the active one it is swapped in and its parameter widget rebuilt; a plugin
+whose file did not change keeps its instance and its widget state; a removed
+active reconstructor hands over to the first registered one.  While a
+reconstruction is running the reconstructors are left untouched and the
+status bar says so — reload again when it has finished — so a running job
+never straddles two versions of one plugin.
 
 Installing from the online store
 --------------------------------
 
-**Analyze → Drop-in plugins → Browse online plugins…** opens a store that lists
+**Plugins → Browse online plugins…** opens a store that lists
 plugins from the `Improcess-plugins
 <https://github.com/Imswitch2/Improcess-plugins>`_ registry.  Each entry can be
 installed, updated (when the registry offers a newer version) or uninstalled;
@@ -1724,6 +1814,14 @@ pure ``apply(result, params)`` returning a new ``ProcessingResult``, and
 ``default_params()`` declaring the parameters (see
 :ref:`improcess-headless-contract`).  Built-in ids always win a collision,
 so a stray file cannot shadow a core processor.
+
+A drop-in reconstructor is the same file shape around a ``Reconstructor``
+subclass, with the contract of *Writing a new plugin* above: ``name``, ``id``,
+``file_extensions``, ``default_params()``, ``make_param_widget``,
+``make_metadata_dialog`` (``None`` when there is no acquisition metadata to
+ask for) and ``process(data_obj, params, context=None)`` turning the raw
+``DataObj`` into a result.  ``examples/improcess_plugins/frame_average.py``
+is a complete one, with a parameter.  One file may define both kinds.
 
 Processors that consume several results
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

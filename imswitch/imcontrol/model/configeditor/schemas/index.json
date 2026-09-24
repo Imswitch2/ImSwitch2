@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 45,
-    "docs_agree": 132,
-    "docs_documented": 132,
-    "keys": 211,
+    "docs_agree": 133,
+    "docs_documented": 133,
+    "keys": 212,
     "managers": 61,
     "none_default_only": 28,
     "none_only": 18,
-    "optional": 149,
+    "optional": 150,
     "reads_any": 56,
     "refs": 15,
     "required": 62,
-    "typed_by_code": 92,
-    "typed_with_docs": 153,
-    "typed_with_examples": 124,
+    "typed_by_code": 93,
+    "typed_with_docs": 154,
+    "typed_with_examples": 125,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 56,
@@ -72,9 +72,9 @@
         "LaserManager"
       ],
       "overridden": true,
-      "properties": 7,
+      "properties": 8,
       "required": 2,
-      "source_sha256": "c0a45fcf328a39da6136746eb3032897aac7ddbc2d835a046039b1046e802759"
+      "source_sha256": "10d7578c16ea5b28ecb3fc60e14201fde4de37f0bcca50b9582dda6551bb1f8b"
     },
     "APDManager": {
       "category": "detectors",
@@ -85,7 +85,7 @@
       "overridden": false,
       "properties": 9,
       "required": 2,
-      "source_sha256": "f2e33b8b832a75d7bc8b3eb90ed494d0d6ba3a16366366533e96017cb32e0efc"
+      "source_sha256": "3e98abbc16cc8eb1b0350aaa09f484c522c964d71d2e69435285b1ad2f2ab18f"
     },
     "AVManager": {
       "category": "detectors",
@@ -96,7 +96,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "12dab6e572c65c7c52ec161fe20663565a9ecc1084ef18743ce2affe4ab397d8"
+      "source_sha256": "ddb9a81d03e1d186c94e0fd73f85d62d60f209b19dfbe8b42d1b98637c8b8ae6"
     },
     "BSC203StageManager": {
       "category": "positioners",
@@ -272,7 +272,7 @@
       "overridden": true,
       "properties": 3,
       "required": 2,
-      "source_sha256": "b6bab04efff3ef9c7c24e121af7b5fe97000223a8be2bbc250476b6ecf76ecde"
+      "source_sha256": "294bdd61b0edadf7a95a0a8287b35bcfa36282779263a35b266032f48b40f900"
     },
     "HamamatsuSLMdviManager": {
       "category": "slms",
@@ -410,7 +410,7 @@
       "overridden": false,
       "properties": 7,
       "required": 0,
-      "source_sha256": "d306520b6fef1e1c146e8516fd6c29b628f15512993b06369919c2ef4e95ff9a"
+      "source_sha256": "baf04af45e35139652946bdff0de70497f6cf13ebabe04683232d34a97ccf9e6"
     },
     "MockPositionerManager": {
       "category": "positioners",
@@ -487,7 +487,7 @@
       "overridden": false,
       "properties": 13,
       "required": 0,
-      "source_sha256": "a730be523cabfbfaebc57f8bea112068b4e0d433c3adf906d9a4b4856dc05e5f"
+      "source_sha256": "f069504d17bc50b6a0261bbdd08efe7ea03bc5cda8a18d51f9da19642f7fb57e"
     },
     "PhotometricsManager": {
       "category": "detectors",
@@ -498,7 +498,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "705e408559ec73700a11484cc8ccdbec25a725ec99ed068b513cee2da8c7cfbc"
+      "source_sha256": "635602da3b1fa151f0063e87278c209a48be6ed30ea11b59b5aaeaa33b2ca1e1"
     },
     "PiCamManager": {
       "category": "detectors",
@@ -509,7 +509,7 @@
       "overridden": false,
       "properties": 4,
       "required": 3,
-      "source_sha256": "9b4f61c5fc51a272bc9552d4e2c265017d17da1c437ef0005cfa83e307b16401"
+      "source_sha256": "ff1f91d167e547177d04fb211a22a67d688fdd567fcd08c5f341db2edf85aeaa"
     },
     "PiezoconceptZManager": {
       "category": "positioners",
@@ -650,7 +650,7 @@
       "overridden": false,
       "properties": 15,
       "required": 3,
-      "source_sha256": "ba1d4fae3b9259cbd6f187803e9eb6d250c8f255373c7d25de57bfdec9ae2dbb"
+      "source_sha256": "84c5463fa901d31e18cedc9fe5b8c400545c0bba6135873bbcf4c0a807e13341"
     },
     "TISManager": {
       "category": "detectors",
@@ -661,7 +661,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "aa7751738b0db8acb742ee8813a994e9b2a06950883738b27917c9c69a146e60"
+      "source_sha256": "4a1cb9b4c0e96129c4baea84aa2d6126640e6f107180d46ab13749a464126f68"
     },
     "TeensyPulseManager": {
       "category": "pulsegen",
@@ -683,7 +683,7 @@
       "overridden": false,
       "properties": 6,
       "required": 0,
-      "source_sha256": "16213c318c665935d32ea782e20e53b7af1fcccd4591e05c717670ee8488dd5f"
+      "source_sha256": "46ff65d2ad40571b63ad95035e00a4262abb7f88b035a0809baa90cf11a0dba4"
     },
     "ThorlabsMFFManager": {
       "category": "flipMirrors",

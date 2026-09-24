@@ -16,6 +16,8 @@ import h5py
 import sip
 import zarr
 import numpy as np
+
+from imswitch.imcommon.model import memory_limits
 from imswitch.imcommon.model.acquisition_metadata import VALID_COMPLETION_OUTCOMES
 import tifffile as tiff
 from qtpy import QtCore
@@ -45,7 +47,7 @@ import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
-    ChunkKind, RawFrameUnavailableError,
+    ChunkKind, RawFrameUnavailableError, _queueBudgetBytes,
 )
 from imswitch.imcontrol.model.managers import recording_metadata as _ome
 from imswitch.imcommon.model.zarr_compat import (
@@ -83,6 +85,11 @@ RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
 #: use its own buffer.
 WRITER_QUEUE_MAX_BYTES = 512 * 1024 * 1024
 
+
+def _writerQueueMaxBytes() -> int:
+    """The writer budget in force: ``memory.writerQueueMB`` if set, else the literal."""
+    return memory_limits.effectiveBytes('writerQueueBytes', WRITER_QUEUE_MAX_BYTES)
+
 # Finishing a recording drains whatever the writer queue holds -- up to
 # WRITER_QUEUE_MAX_BYTES of full-size camera frames, minutes of writing on a
 # slow disk -- so the drain is bounded by *progress*, not by a deadline: a
@@ -98,6 +105,46 @@ WRITER_QUEUE_MAX_BYTES = 512 * 1024 * 1024
 WRITER_STALL_TIMEOUT_S = 30.0
 WRITER_FINALIZE_TIMEOUT_S = 300.0
 WRITER_ABORT_TIMEOUT_S = 30.0
+
+
+def _memoryEstimateLine(detectorNames, shapes, dtypes, scanDriven, *,
+                        writerBudget=None, queueBudget=None) -> str:
+    """One line saying what a recording can hold, per queue, before it starts.
+
+    An estimate, not a cap: the limits are what ImSwitch chooses to hold, and
+    every number names the setting that moves it. Camera drivers' own ring
+    buffers and the data on disk are outside all of them. For a scan-driven
+    detector the frame is the assembled volume, sized only when the scan is
+    built -- its manager logs that itself, and the shape here is whatever it
+    last had.
+    """
+    writerBudget = _writerQueueMaxBytes() if writerBudget is None else int(writerBudget)
+    queueBudget = _queueBudgetBytes() if queueBudget is None else int(queueBudget)
+    describe = memory_limits.describeBytes
+    parts = []
+    for name in detectorNames:
+        shape = tuple(int(x) for x in (shapes.get(name) or ()))
+        try:
+            itemsize = int(np.dtype(dtypes.get(name)).itemsize)
+        except Exception:
+            itemsize = 2
+        frameBytes = int(np.prod(shape, dtype=np.int64)) * itemsize if shape else 0
+        part = f'{name}: {describe(frameBytes)} per frame'
+        if scanDriven.get(name):
+            part += ' (scan-driven: the volume is sized when the scan is built)'
+        part += (
+            f', {memory_limits.frameBudgetNote(frameBytes, queueBudget)}; '
+            f'write batch up to {WRITE_BATCH_FRAMES} frames = '
+            f'{describe(frameBytes * WRITE_BATCH_FRAMES)}, plus one chunk in hand'
+        )
+        parts.append(part)
+    return (
+        f'Recording memory (an estimate, not a cap): writer queue up to '
+        f'{describe(writerBudget)} ({memory_limits.settingRef("writerQueueBytes")}); '
+        f'each detector queue up to {describe(queueBudget)} '
+        f'({memory_limits.settingRef("perDetectorQueueBytes")}). '
+        + ' | '.join(parts)
+    )
 
 
 def _framesNBytes(frames) -> int:
@@ -156,10 +203,12 @@ DETECTOR_ARM_TIMEOUT_S = 5.0
 #: abort that followed still blocked until the open it had given up on
 #: returned.
 RECORDING_ARM_TIMEOUT = WRITER_OPEN_TIMEOUT_S + DETECTOR_ARM_TIMEOUT_S
-#: How long the acquisition loop may sit blocked on a full writer queue before
-#: it says so. Well under any detector's chunk-queue budget, so the stall is
-#: reported before the overflow it causes rather than after it.
-PRODUCER_STALL_WARN_S = 1.0
+#: How often an acquisition loop that stays blocked on a full writer queue
+#: says so again. The first line is logged the moment it blocks: the block is
+#: the signal, and the one-second delay this used to have let a detector's
+#: chunk queue overflow before the line that explained it (a 256 MiB queue at
+#: 512 MiB/s fills in half a second).
+PRODUCER_STALL_REPEAT_S = 5.0
 # SWMR requires HDF5 1.10+ object formats, but libver='latest' maps to
 # ('v200', 'v200') with HDF5 2.x. Pin the writer to the oldest SWMR-capable
 # format so Fiji/HDFView builds that do not understand HDF5 2.0 can still open
@@ -3471,6 +3520,7 @@ class WriterThread(threading.Thread):
         """
         payloadBytes = _framesNBytes(frames)
         blockedSince = None
+        lastReport = None
         stallReported = False
         while True:
             self._raise_if_failed()
@@ -3486,7 +3536,7 @@ class WriterThread(threading.Thread):
                 # appear.
                 admitted = (
                     self._queuedBytes == 0
-                    or self._queuedBytes + payloadBytes <= WRITER_QUEUE_MAX_BYTES
+                    or self._queuedBytes + payloadBytes <= _writerQueueMaxBytes()
                 )
                 if admitted:
                     self._queuedBytes += payloadBytes
@@ -3516,19 +3566,33 @@ class WriterThread(threading.Thread):
                         'enqueued; recording aborted'
                     ) from self._write_exception
                 # Writer still alive and draining - keep applying backpressure.
-                time.sleep(0.01)
                 if blockedSince is None:
-                    blockedSince = time.time()
-                elif (not stallReported
-                        and time.time() - blockedSince >= PRODUCER_STALL_WARN_S):
+                    # Said at once: the block itself is the event, and what
+                    # follows it -- the detector queue filling behind a
+                    # producer that has stopped draining -- is only
+                    # explicable with this line already in the log.
+                    blockedSince = lastReport = time.time()
                     stallReported = True
+                    mib = 1024 * 1024
                     logger.warning(
-                        f'Recording producer has been blocked for '
-                        f'{PRODUCER_STALL_WARN_S:g}s enqueuing frames for '
-                        f'"{detectorName}": the writer is not draining fast '
-                        f'enough. Frames arriving meanwhile are held in the '
-                        f'detector\'s chunk queue, which is bounded.'
+                        f'Recording producer blocked enqueuing '
+                        f'{payloadBytes / mib:.1f} MiB for "{detectorName}": '
+                        f'the writer queue holds {self._queuedBytes / mib:.0f} '
+                        f'of its {_writerQueueMaxBytes() // mib} MiB '
+                        f'({memory_limits.settingRef("writerQueueBytes")}) '
+                        f'and is not draining fast enough. Frames arriving '
+                        f'meanwhile are held in the detector\'s chunk queue, '
+                        f'bounded by '
+                        f'{memory_limits.settingRef("perDetectorQueueBytes")}.'
                     )
+                elif time.time() - lastReport >= PRODUCER_STALL_REPEAT_S:
+                    lastReport = time.time()
+                    logger.warning(
+                        f'Recording producer still blocked after '
+                        f'{time.time() - blockedSince:.0f}s enqueuing frames '
+                        f'for "{detectorName}".'
+                    )
+                time.sleep(0.01)
                 continue
     
     def noteDiscardedFrames(self, discarded: Dict[str, int]) -> None:
@@ -4017,7 +4081,8 @@ class RecordingWorker(Worker):
         # Get detector shapes
         shapes = {detectorName: self.__recordingManager.detectorsManager[detectorName].shape
                   for detectorName in self.detectorNames}
-        
+        self._logMemoryEstimate(shapes)
+
         # Initialize storer for streaming
         storerClass = self.__recordingManager._RecordingManager__storerMap[self.saveFormat]
         storer = storerClass(self.savename, self.__recordingManager.detectorsManager)
@@ -4431,6 +4496,25 @@ class RecordingWorker(Worker):
                 raise RuntimeError(
                     'Recording cleanup failed; partial output was aborted'
                 ) from cleanupErrors[0]
+
+    def _logMemoryEstimate(self, shapes):
+        """Say what this recording can hold before it starts; never fail over it."""
+        try:
+            detectors = self.__recordingManager.detectorsManager
+            dtypes = {}
+            for name in self.detectorNames:
+                try:
+                    dtypes[name] = detectors[name].dtype
+                except Exception:
+                    dtypes[name] = None
+            scanDriven = {
+                name: bool(self._isScanDrivenDetector(name)) for name in self.detectorNames
+            }
+            self.__logger.info(
+                _memoryEstimateLine(self.detectorNames, shapes, dtypes, scanDriven)
+            )
+        except Exception as exc:
+            self.__logger.debug(f'No memory estimate for this recording: {exc!r}')
 
     def _getNewFrames(self, detectorName):
         # readChunk (not getChunk): the destructive getChunk would steal

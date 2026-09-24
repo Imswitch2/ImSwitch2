@@ -25,6 +25,8 @@ class CommunicationChannel(SignalInterface):
 
     sigDisplayedFrameChanged = Signal()  # emitted when the displayed frame changes
 
+    sigStatusMessage = Signal(str)  # a transient line for the status bar (see ImProcessMainView.showStatusMessage)
+
     sigAddToMultiData = Signal(str, str)  # (path, datasetName)
 
     sigReconstruct = Signal(object, bool)

@@ -9,6 +9,7 @@ import numpy as np
 
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import memory_limits
 
 
 @dataclass
@@ -92,7 +93,20 @@ CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
 #:
 #: This is per consumer, per detector. Several registered consumers on one
 #: detector can each hold this much.
+#:
+#: The literal is the default; ``memory.perDetectorQueueMB`` in
+#: ``imcontrol_options.json`` overrides it per machine (see
+#: :func:`_queueBudgetBytes`).
 MAX_QUEUED_CONSUMER_BYTES = 256 * 1024 * 1024
+
+
+def _queueBudgetBytes() -> int:
+    """The per-queue budget in force: the configured setting, else the literal."""
+    return memory_limits.effectiveBytes('perDetectorQueueBytes', MAX_QUEUED_CONSUMER_BYTES)
+
+
+def _queueBudgetSetting() -> str:
+    return memory_limits.settingRef('perDetectorQueueBytes')
 
 #: Charged per queued frame on top of its pixels, so that a stream of tiny or
 #: empty frames is bounded by the same budget. A queued frame costs a list
@@ -646,7 +660,7 @@ class DetectorManager(SignalInterface):
                 # frames behind reported 1000 -- which sent the one field
                 # diagnosis it ever had looking for a catastrophic backlog
                 # instead of a hiccup.
-                budget = MAX_QUEUED_CONSUMER_BYTES // (1024 * 1024)
+                budget = memory_limits.describeBytes(_queueBudgetBytes())
                 # The logger prefixes the detector name; a propagated
                 # exception carries no such prefix, and the traceback alone
                 # does not say which detector lost the stream.
@@ -656,8 +670,8 @@ class DetectorManager(SignalInterface):
                     detector = ''
                 raise ChunkConsumerOverflowError(
                     f'{detector}readChunk consumer "{consumerKey}" fell far '
-                    f'enough behind to exceed its {budget} MiB queue budget; '
-                    f'its stream is incomplete'
+                    f'enough behind to exceed its {budget} queue budget '
+                    f'({_queueBudgetSetting()}); its stream is incomplete'
                 )
             frames = list(queue)
             queue.clear()
@@ -812,7 +826,8 @@ class DetectorManager(SignalInterface):
             held = queuedBytes.get(key, 0)
             arriving = sum(self._frameBytes(frame) for frame in newFrames)
             total = held + arriving
-            if total <= MAX_QUEUED_CONSUMER_BYTES or not consumerQueue:
+            budget = _queueBudgetBytes()
+            if total <= budget or not consumerQueue:
                 # Within budget -- or nothing was waiting, in which case one
                 # delivery is admitted however large. The budget bounds a
                 # *backlog*: frames a consumer has not read yet. A delivery
@@ -827,7 +842,7 @@ class DetectorManager(SignalInterface):
                 # next one overflows until this one is read.
                 consumerQueue.extend(newFrames)
                 queuedBytes[key] = total
-                if total > MAX_QUEUED_CONSUMER_BYTES:
+                if total > budget:
                     self._warnOversizedDelivery(key, arriving, len(newFrames))
                 continue
 
@@ -851,8 +866,8 @@ class DetectorManager(SignalInterface):
                 f'readChunk consumer "{key}" has not read what was held for '
                 f'it: {held / mib:.0f} MiB were waiting when a further '
                 f'{arriving / mib:.0f} MiB arrived, exceeding its '
-                f'{MAX_QUEUED_CONSUMER_BYTES // mib} MiB queue budget '
-                f'(about {max(1, MAX_QUEUED_CONSUMER_BYTES // max(1, perFrame))} '
+                f'{memory_limits.describeBytes(budget)} queue budget ({_queueBudgetSetting()}; '
+                f'about {max(1, budget // max(1, perFrame))} '
                 f'frames at this detector\'s {perFrame} bytes each); dropped '
                 f'all {dropped} frame(s). Its stream is incomplete, so it will '
                 f'fail on its next read rather than accept a gap; call '
@@ -879,10 +894,9 @@ class DetectorManager(SignalInterface):
         self.__logger.warning(
             f'readChunk consumer "{key}" was handed one delivery of '
             f'{arriving / mib:.0f} MiB ({frameCount} frame(s)) that alone '
-            f'exceeds its {MAX_QUEUED_CONSUMER_BYTES // mib} MiB queue '
-            f'budget (MAX_QUEUED_CONSUMER_BYTES). It was admitted, since '
-            f'nothing was waiting, but no further backlog fits behind it '
-            f'until it is read.'
+            f'exceeds its {memory_limits.describeBytes(_queueBudgetBytes())} queue budget '
+            f'({_queueBudgetSetting()}). It was admitted, since nothing was '
+            f'waiting, but no further backlog fits behind it until it is read.'
         )
 
     def releaseChunkConsumer(self, consumerKey: str) -> None:

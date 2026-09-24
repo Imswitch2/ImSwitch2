@@ -5,7 +5,11 @@ Reconstructors are populated in the global registry at startup based on
 config (or standalone defaults). Controllers retrieve plugins via the registry,
 never import them directly.
 
-For now, plugins are hard-coded imports here. Entry-point loading can come later.
+Built-ins are hard-coded imports here. User drop-in plugins (a ``.py`` file in
+the user plugins folder defining a ``Reconstructor`` subclass, see
+:mod:`imswitch.improcess.plugins`) are discovered at startup and on reload and
+join the same enumerations, gated by their presence on disk rather than by
+config. Entry-point loading can come later.
 """
 
 from .base import Reconstructor
@@ -37,10 +41,91 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'time-lapse': TimeLapseReconstructor,
 }
 
+# User drop-in reconstructors discovered from the plugins directory
+# (imswitch/improcess/plugins). Populated by the plugins package's
+# load_user_plugins(); empty until then, so importing this package never runs
+# user code. Built-in ids always win a collision (enforced at install time), so
+# a stray file cannot shadow a core reconstructor.
+_USER_RECONSTRUCTOR_CLASSES: dict[str, type] = {}
+
+
+def _all_reconstructor_classes() -> dict[str, type]:
+    """Built-in reconstructor classes plus discovered user drop-in plugins."""
+    return {**_AVAILABLE_RECONSTRUCTOR_CLASSES, **_USER_RECONSTRUCTOR_CLASSES}
+
+
+def _install_user_reconstructor_classes(
+    classes: dict[str, type],
+) -> tuple[list[str], list]:
+    """Replace the user table with ``classes``; built-in ids win a collision.
+
+    Called by :func:`imswitch.improcess.plugins.load_user_plugins` with what
+    one scan of the folder defined. Returns ``(installed_ids, errors)``.
+    """
+    from imswitch.improcess.plugins.user_plugins import PluginLoadError
+
+    _USER_RECONSTRUCTOR_CLASSES.clear()
+    installed: list[str] = []
+    errors: list = []
+    for plugin_id, plugin_cls in classes.items():
+        if plugin_id in _AVAILABLE_RECONSTRUCTOR_CLASSES:
+            errors.append(
+                PluginLoadError(
+                    path=getattr(plugin_cls, "__module__", plugin_id),
+                    message=(
+                        f"Plugin reconstructor id {plugin_id!r} collides with a "
+                        f"built-in; the built-in is kept."
+                    ),
+                )
+            )
+            continue
+        _USER_RECONSTRUCTOR_CLASSES[plugin_id] = plugin_cls
+        installed.append(plugin_id)
+    return installed, errors
+
+
+def clear_user_reconstructors() -> None:
+    """Forget all discovered user reconstructors (test/reset helper)."""
+    _USER_RECONSTRUCTOR_CLASSES.clear()
+
+
+def builtin_reconstructor_ids() -> list[str]:
+    """Return the ids of the shipped reconstructors only."""
+    return sorted(_AVAILABLE_RECONSTRUCTOR_CLASSES)
+
 
 def available_reconstructor_ids() -> list[str]:
-    """Return built-in reconstructor IDs accepted by setup processing config."""
-    return sorted(_AVAILABLE_RECONSTRUCTOR_CLASSES)
+    """Return reconstructor IDs (built-in + user plugins) accepted by config."""
+    return sorted(_all_reconstructor_classes())
+
+
+def available_reconstructor_specs() -> list[tuple[str, str, str]]:
+    """Return ``(id, name, description)`` for every known reconstructor.
+
+    Built-ins and discovered drop-ins alike, whether or not they are
+    registered: the *Load reconstructor* menu offers what is known but not
+    loaded. The description is the class's ``description`` attribute, or
+    ``""`` when it declares none.
+    """
+    return sorted(
+        (
+            plugin_id,
+            str(getattr(plugin_cls, "name", plugin_id) or plugin_id),
+            str(getattr(plugin_cls, "description", "") or ""),
+        )
+        for plugin_id, plugin_cls in _all_reconstructor_classes().items()
+    )
+
+
+def register_reconstructor_by_id(registry: PluginRegistry, plugin_id: str) -> Reconstructor:
+    """Instantiate and register one reconstructor (built-in or user plugin) by id."""
+    try:
+        plugin_cls = _all_reconstructor_classes()[plugin_id]
+    except KeyError as exc:
+        raise KeyError(f"Unknown reconstructor id: {plugin_id!r}") from exc
+    plugin = plugin_cls()
+    registry.register_reconstructor(plugin)
+    return plugin
 
 
 def register_default_reconstructors(
@@ -48,30 +133,38 @@ def register_default_reconstructors(
     filter_ids: list[str] | None = None
 ) -> None:
     """
-    Register built-in reconstructors.
-    
-    Called at module startup or when ImProcess launches standalone without
-    a setup file. Individual plugins are instantiated and registered here.
-    
+    Register built-in reconstructors plus all discovered user drop-in plugins.
+
+    Built-ins are gated by config (``filter_ids``); user plugins are gated by
+    their presence on disk, so a dropped-in reconstructor is always active.
+
     Args:
         registry: The plugin registry to populate
-        filter_ids: Optional list of plugin IDs to register. If None, all are registered.
+        filter_ids: Optional list of built-in reconstructor ids to register.
+            None registers all built-ins.
     """
     if filter_ids is None:
-        to_register = _AVAILABLE_RECONSTRUCTOR_CLASSES.items()
+        to_register = list(_AVAILABLE_RECONSTRUCTOR_CLASSES.items())
     else:
-        unknown = [pid for pid in filter_ids if pid not in _AVAILABLE_RECONSTRUCTOR_CLASSES]
+        all_classes = _all_reconstructor_classes()
+        unknown = [pid for pid in filter_ids if pid not in all_classes]
         if unknown:
             raise KeyError(
-                f"Unknown built-in reconstructor id(s): {unknown}. "
+                f"Unknown reconstructor id(s): {unknown}. "
                 f"Available reconstructors: {available_reconstructor_ids()}"
             )
-        to_register = [
-            (pid, _AVAILABLE_RECONSTRUCTOR_CLASSES[pid])
-            for pid in filter_ids
-        ]
-    
+        to_register = [(pid, all_classes[pid]) for pid in filter_ids]
+
+    registered_ids = set()
     for plugin_id, plugin_class in to_register:
+        registry.register_reconstructor(plugin_class())
+        registered_ids.add(plugin_id)
+
+    # User drop-in plugins: active whenever present, regardless of the built-in
+    # filter (unless already registered via an explicit filter id).
+    for plugin_id, plugin_class in _USER_RECONSTRUCTOR_CLASSES.items():
+        if plugin_id in registered_ids:
+            continue
         registry.register_reconstructor(plugin_class())
 
 
@@ -80,7 +173,11 @@ __all__ = [
     "PluginRegistry",
     "get_registry",
     "available_reconstructor_ids",
+    "available_reconstructor_specs",
+    "builtin_reconstructor_ids",
+    "clear_user_reconstructors",
     "register_default_reconstructors",
+    "register_reconstructor_by_id",
 ]
 
 

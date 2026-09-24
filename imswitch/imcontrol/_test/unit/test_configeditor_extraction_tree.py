@@ -70,12 +70,13 @@ def test_the_coverage_the_plan_is_built_on(report):
     # properties and fold into one property each.
     # 218 before the merge with the acquisition-layout branch: the removed
     # camera managers took 12 keys, the PMT's aiVoltageMin/aiVoltageMax and
-    # the Thorlabs camera's frameBufferDepth added 3.
-    assert report.keys == 209
+    # the Thorlabs camera's frameBufferDepth added 3. 210: AAAOTF's
+    # useMockOnFailure.
+    assert report.keys == 210
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 147
+    assert report.optional == 148
     assert report.refs == 14
     assert report.none_default_only == 28  # 31 with the removed camera managers
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
@@ -83,13 +84,14 @@ def test_the_coverage_the_plan_is_built_on(report):
     # every property its manager reads -- 17 rows added, all agreeing.
     # 135 before the removed camera managers' cards went with them (129), plus
     # the PMT's aiVoltageMax, which shared a row with aiVoltageMin and so was
-    # never counted as documented.
-    assert (report.docs_agree, report.docs_documented) == (130, 130)
+    # never counted as documented. 131: AAAOTF's useMockOnFailure.
+    assert (report.docs_agree, report.docs_documented) == (131, 131)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
     # 92: the PMT's aiVoltageMin/aiVoltageMax are read with a numeric default.
-    assert report.typed_by_code == 92
+    # 93: AAAOTF's useMockOnFailure is read with a bool default.
+    assert report.typed_by_code == 93
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys

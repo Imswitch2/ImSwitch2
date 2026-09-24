@@ -11,6 +11,7 @@ from imswitch.imcommon.view import PickDatasetsDialog
 from . import widgets
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
+from .MemoryLimitsDialog import MemoryLimitsDialog
 
 
 class _ResizeOnlyWhatMoved:
@@ -161,6 +162,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigOpenShortcutEditor = QtCore.Signal()
     sigOpenSessionNotes = QtCore.Signal()
     sigOpenConfigEditor = QtCore.Signal()
+    sigOpenMemoryLimits = QtCore.Signal()
     # Emitted on show/hide (i.e. module tab switches in the multi-module
     # window) so the ShortcutManager only keeps the visible module's set live.
     sigModuleVisibilityChanged = QtCore.Signal(bool)
@@ -179,6 +181,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.pickSetupDialog = PickSetupDialog(self)
         self.pickDatasetsDialog = PickDatasetsDialog(self, allowMultiSelect=False)
         self.sessionNotesDialog = SessionNotesDialog(self)
+        self.memoryLimitsDialog = MemoryLimitsDialog(self)
 
         self.viewSetupInfo = viewSetupInfo
 
@@ -230,6 +233,14 @@ class ImConMainView(QtWidgets.QMainWindow):
         )
         self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
         tools.addAction(self.configEditorAction)
+
+        self.memoryLimitsAction = QtWidgets.QAction('Memory limits…', self)
+        self.memoryLimitsAction.setToolTip(
+            'How much memory ImSwitch may use on this computer for recording'
+            ' buffers and automatic ImProcess work. Applied when saved.'
+        )
+        self.memoryLimitsAction.triggered.connect(self.sigOpenMemoryLimits)
+        tools.addAction(self.memoryLimitsAction)
 
         self.resetLayoutAction = QtWidgets.QAction('Reset panel layout', self)
         self.resetLayoutAction.setToolTip(
@@ -503,6 +514,12 @@ class ImConMainView(QtWidgets.QMainWindow):
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()
         return result == QtWidgets.QDialog.Accepted
+
+    def showMemoryLimitsDialog(self):
+        """Raise the memory-limits editor."""
+        self.memoryLimitsDialog.show()
+        self.memoryLimitsDialog.raise_()
+        self.memoryLimitsDialog.activateWindow()
 
     def showSessionNotesDialog(self):
         """Raise the (modeless) session-notes editor, opening it if needed."""

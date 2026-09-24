@@ -421,7 +421,28 @@ class FileIOController(ImProcessWidgetController):
         if virtual:
             self._main._currentDataObj.checkAndOpenData()
         else:
-            self._main._currentDataObj.checkAndLoadData()
+            # Open decodes the dataset whole, which is what was asked for; a
+            # dataset larger than the processing working set is announced
+            # before that starts (the DataObj logs the same line), with the
+            # lazy alternative named. Not a refusal, and not a switch: which
+            # mean the pattern finder receives depends on the open path today,
+            # so Open keeps materialising until that is settled.
+            dataObj = self._main._currentDataObj
+            notice = None
+            try:
+                # The estimate opens the source handle itself if it must;
+                # what it never does is decode anything.
+                estimate = getattr(dataObj, 'materializationNotice', None)
+                notice = estimate() if callable(estimate) else None
+            except Exception as exc:
+                # The estimate is a courtesy; the load below reports its own
+                # failures the way it always has.
+                self._logger.debug(f'No materialisation estimate: {exc!r}')
+            if notice:
+                signal = getattr(self._commChannel, 'sigStatusMessage', None)
+                if signal is not None:
+                    signal.emit(notice)
+            dataObj.checkAndLoadData()
         ready = getattr(self._main._currentDataObj, 'sourceReady', None)
         if ready is None:
             ready = (
