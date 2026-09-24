@@ -1,21 +1,8 @@
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.devices.graph import (
-    DeviceDescriptorSpec,
-    DeviceDependencySpec,
-    DeviceRelationKind,
-    DeviceRole,
-    HardwareDeviceId,
-)
-from imswitch.imcontrol.model.devices.status import (
-    DeviceFailureKind,
-    DeviceId,
-    DeviceManagerStatusMixin,
-    DeviceRuntimeMode,
-)
 from imswitch.imcontrol.model.interfaces.LeicaDMIHardware import createLeicaDMIHardware
 
 
-class LeicaDMIStandManager(DeviceManagerStatusMixin):
+class LeicaDMIStandManager:
     """Stand-facing Leica DMI adapter over the shared hardware interface."""
 
     def __init__(self, deviceInfo, *args, **lowLevelManagers):
@@ -32,11 +19,6 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
         rs232DeviceName = getattr(deviceInfo, "rs232device", None)
         if not rs232DeviceName:
             self._connectionError = "Missing microscopeStand.rs232device."
-            self._setConnectionError(
-                self._connectionError,
-                summary="Leica stand configuration is incomplete",
-                failure_kind=DeviceFailureKind.CONFIGURATION_ERROR,
-            )
             self.__logger.error(
                 "Leica DMI stand unavailable: missing microscopeStand.rs232device."
             )
@@ -46,19 +28,12 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
             rs232Manager = lowLevelManagers["rs232sManager"][rs232DeviceName]
         except Exception as exc:
             self._connectionError = str(exc)
-            self._setConnectionError(
-                exc,
-                summary="Leica stand RS232 transport is unavailable",
-            )
             self.__logger.error(
                 "Leica DMI stand unavailable: failed to access RS232 device "
                 f"{rs232DeviceName!r}: {exc}"
             )
             return
 
-        transport_is_mock = (
-            getattr(rs232Manager, "runtimeMode", None) is DeviceRuntimeMode.MOCK
-        )
         self._hardware = createLeicaDMIHardware(
             rs232Manager,
             managerProperties=managerProperties,
@@ -67,39 +42,12 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
 
         if self._hardware is None:
             self._connectionError = "Leica DMI hardware interface unavailable."
-            self._setConnectionError(
-                self._connectionError,
-                summary="Leica stand hardware interface is unavailable",
-            )
             self.__logger.warning(
                 "Leica DMI stand unavailable. See Leica DMI hardware log entry above."
             )
             return
 
-        if transport_is_mock:
-            self._setConnectionError(
-                "Leica RS232 transport is using a mock backend",
-                summary="Leica stand transport is mock",
-                mock_active=True,
-            )
-        else:
-            self._setConnected("Leica stand connected")
-
-    def getDeviceDescriptorSpec(self):
-        rs232_name = getattr(self._deviceInfo, "rs232device", None)
-        return DeviceDescriptorSpec(
-            role=DeviceRole.PRIMARY,
-            hardware_id=HardwareDeviceId("stand", f"leica:{rs232_name}"),
-            display_name="Leica stand",
-            category="stand",
-            dependencies=(
-                DeviceDependencySpec(
-                    DeviceRelationKind.USES_TRANSPORT,
-                    target=DeviceId("rs232", str(rs232_name)),
-                    label=str(rs232_name),
-                ),
-            ),
-        )
+        self._connectionError = None
 
     # ------------------------------------------------------------------
     # Availability and config
@@ -114,9 +62,11 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
 
     @property
     def connectionError(self):
+        if self._connectionError is not None:
+            return self._connectionError
         if self._hardware is not None:
             return getattr(self._hardware, "connectionError", None)
-        return self._connectionError
+        return None
 
     def _load_cube_config(self, deviceInfo):
         try:
@@ -157,17 +107,11 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
             result = method(*args)
         except Exception as exc:
             self._connectionError = str(exc)
-            self._setConnectionError(
-                exc,
-                summary="Leica stand communication failed",
-            )
             self.__logger.warning(f"Leica DMI command {methodName} failed: {exc}")
             raise
 
         if self._hardware.isConnected():
             self._connectionError = None
-            if self.runtimeMode is not DeviceRuntimeMode.MOCK:
-                self._setConnected("Leica stand connected")
         return result
 
     # ------------------------------------------------------------------

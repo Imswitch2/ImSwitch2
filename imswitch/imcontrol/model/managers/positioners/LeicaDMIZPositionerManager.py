@@ -1,16 +1,4 @@
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.devices.graph import (
-    DeviceDescriptorSpec,
-    DeviceDependencySpec,
-    DeviceRelationKind,
-    DeviceRole,
-    HardwareDeviceId,
-)
-from imswitch.imcontrol.model.devices.status import (
-    DeviceFailureKind,
-    DeviceId,
-    DeviceRuntimeMode,
-)
 from imswitch.imcontrol.model.interfaces.LeicaDMIHardware import createLeicaDMIHardware
 
 from .PositionerManager import PositionerManager
@@ -21,7 +9,7 @@ class LeicaDMIZPositionerManager(PositionerManager):
 
     The physical Leica connection is owned by ``LeicaDMIHardware`` and shared
     with the stand adapter when both reference the same RS232 manager.  This
-    class only provides Positioner semantics and cached device status.
+    class only provides Positioner semantics and cached position state.
     """
 
     def __init__(self, positionerInfo, name, *args, **lowLevelManagers):
@@ -45,11 +33,6 @@ class LeicaDMIZPositionerManager(PositionerManager):
         rs232DeviceName = managerProperties.get("rs232device")
         if not rs232DeviceName:
             self._connectionError = "Missing managerProperties.rs232device."
-            self._setConnectionError(
-                self._connectionError,
-                summary="Leica DMI Z configuration is incomplete",
-                failure_kind=DeviceFailureKind.CONFIGURATION_ERROR,
-            )
             self.__logger.error(
                 "Leica DMI Z positioner unavailable: missing "
                 "managerProperties.rs232device."
@@ -60,19 +43,12 @@ class LeicaDMIZPositionerManager(PositionerManager):
             rs232Manager = lowLevelManagers["rs232sManager"][rs232DeviceName]
         except Exception as exc:
             self._connectionError = str(exc)
-            self._setConnectionError(
-                exc,
-                summary="Leica DMI Z RS232 transport is unavailable",
-            )
             self.__logger.error(
                 "Leica DMI Z positioner unavailable: failed to access RS232 "
                 f"device {rs232DeviceName!r}: {exc}"
             )
             return
 
-        transport_is_mock = (
-            getattr(rs232Manager, "runtimeMode", None) is DeviceRuntimeMode.MOCK
-        )
         self._hardware = createLeicaDMIHardware(
             rs232Manager,
             managerProperties=managerProperties,
@@ -81,10 +57,6 @@ class LeicaDMIZPositionerManager(PositionerManager):
 
         if self._hardware is None:
             self._connectionError = "Leica DMI hardware interface unavailable."
-            self._setConnectionError(
-                self._connectionError,
-                summary="Leica DMI Z hardware interface is unavailable",
-            )
             self.__logger.warning(
                 "Leica DMI Z positioner unavailable. See Leica DMI hardware "
                 "log entry above."
@@ -93,11 +65,6 @@ class LeicaDMIZPositionerManager(PositionerManager):
 
         if not self._hardware.has_z_position_um():
             self._connectionError = "Leica DMI Z micrometer conversion is unavailable."
-            self._setConnectionError(
-                self._connectionError,
-                summary="Leica DMI Z calibration is unavailable",
-                failure_kind=DeviceFailureKind.CONFIGURATION_ERROR,
-            )
             self.__logger.warning(
                 "Leica DMI Z positioner unavailable: no calibration LUT is "
                 "configured and command 71042 did not return a valid Z "
@@ -105,31 +72,8 @@ class LeicaDMIZPositionerManager(PositionerManager):
             )
             return
 
-        if transport_is_mock:
-            self._setConnectionError(
-                "Leica RS232 transport is using a mock backend",
-                summary="Leica DMI Z transport is mock",
-                mock_active=True,
-            )
-        else:
-            self._setConnected("Leica DMI Z connected")
+        self._connectionError = None
         self.updatePosition()
-
-    def getDeviceDescriptorSpec(self):
-        rs232_name = (self._positionerInfo.managerProperties or {}).get("rs232device")
-        return DeviceDescriptorSpec(
-            role=DeviceRole.COMPONENT,
-            hardware_id=HardwareDeviceId("stand", f"leica:{rs232_name}"),
-            display_name="Leica objective Z",
-            category="stand",
-            dependencies=(
-                DeviceDependencySpec(
-                    DeviceRelationKind.USES_TRANSPORT,
-                    target=DeviceId("rs232", str(rs232_name)),
-                    label=str(rs232_name),
-                ),
-            ),
-        )
 
     @property
     def isAvailable(self) -> bool:
@@ -147,9 +91,11 @@ class LeicaDMIZPositionerManager(PositionerManager):
 
     @property
     def connectionError(self):
+        if self._connectionError is not None:
+            return self._connectionError
         if self._hardware is not None:
             return getattr(self._hardware, "connectionError", None)
-        return self._connectionError
+        return None
 
     def move(self, dist, axis=None):
         self._check_axis(axis)
@@ -196,18 +142,12 @@ class LeicaDMIZPositionerManager(PositionerManager):
             result = method(*args)
         except Exception as exc:
             self._connectionError = str(exc)
-            self._setConnectionError(
-                exc,
-                summary="Leica DMI Z communication failed",
-            )
             self.__logger.warning(
                 f"Leica DMI Z positioner command {methodName} failed: {exc}"
             )
             raise
 
         self._connectionError = None
-        if self.runtimeMode is not DeviceRuntimeMode.MOCK:
-            self._setConnected("Leica DMI Z connected")
         if updatePosition:
             if result is not None:
                 self.updateTrackedPosition({self._axis: result})

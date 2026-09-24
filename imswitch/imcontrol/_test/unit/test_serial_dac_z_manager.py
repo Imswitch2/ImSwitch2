@@ -3,8 +3,6 @@
 import pytest
 
 from imswitch.imcontrol.model.SetupInfo import PositionerInfo
-from imswitch.imcontrol.model.devices.status import DeviceConnectionState
-from imswitch.imcontrol.model.devices.status import DeviceConnectionState
 from imswitch.imcontrol.model.managers.positioners.SerialDacZManager import (
     SerialDacZManager,
 )
@@ -97,8 +95,6 @@ def test_successful_startup_marks_manager_available(monkeypatch):
 
     assert manager.isAvailable is True
     assert manager.connectionError is None
-    assert manager.connectionState is DeviceConnectionState.CONNECTED
-    assert manager.connectionState is DeviceConnectionState.CONNECTED
     assert manager.position["Z"] == 10.0
     assert len(created) == 1
     assert b"dac.SetDac(0.05)\r\n" in created[0].writes
@@ -118,8 +114,6 @@ def test_serial_open_failure_keeps_manager_constructed_but_unavailable(monkeypat
 
     assert manager.isAvailable is False
     assert manager.connectionError == "port unavailable"
-    assert manager.connectionState is DeviceConnectionState.ERROR
-    assert manager.connectionState is DeviceConnectionState.ERROR
     assert manager.position["Z"] == 0.0
 
 
@@ -136,8 +130,6 @@ def test_repl_failure_closes_open_serial(monkeypatch):
 
     assert manager.isAvailable is False
     assert manager.connectionError == "no prompt"
-    assert manager.connectionState is DeviceConnectionState.ERROR
-    assert manager.connectionState is DeviceConnectionState.ERROR
     assert created[0].is_open is False
     assert created[0].close_count == 1
 
@@ -169,8 +161,6 @@ def test_runtime_communication_failure_marks_unavailable_and_preserves_position(
 
     assert manager.isAvailable is False
     assert manager.connectionError == "serial link lost"
-    assert manager.connectionState is DeviceConnectionState.ERROR
-    assert manager.connectionState is DeviceConnectionState.ERROR
     assert manager.position["Z"] == 20.0
     assert serial_port.is_open is False
 
@@ -231,7 +221,6 @@ def test_finalize_sends_safe_voltage_and_closes(monkeypatch):
     assert b"dac.SetDac(0.25)\r\n" in serial_port.writes
     assert serial_port.is_open is False
     assert manager.isAvailable is False
-    assert manager.connectionState is DeviceConnectionState.DISCONNECTED
 
     # Cleanup remains harmless if called again.
     manager.finalize()
@@ -252,5 +241,3 @@ def test_finalize_closes_even_if_safe_voltage_command_fails(monkeypatch):
 
     assert serial_port.is_open is False
     assert manager.isAvailable is False
-    assert manager.connectionState is DeviceConnectionState.DISCONNECTED
-    assert manager.connectionState is DeviceConnectionState.DISCONNECTED

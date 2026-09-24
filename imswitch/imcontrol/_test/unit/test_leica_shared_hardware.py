@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from imswitch.imcontrol.model.devices.status import DeviceConnectionState
+from imswitch.imcontrol.model.interfaces import LeicaDMIHardware
 from imswitch.imcontrol.model.managers.positioners.LeicaDMIZPositionerManager import (
     LeicaDMIZPositionerManager,
 )
@@ -48,6 +48,60 @@ class FakeRS232sManager:
         return self._devices[name]
 
 
+@pytest.fixture(autouse=True)
+def fake_leica_hardware(monkeypatch):
+    monkeypatch.setattr(
+        LeicaDMIHardware,
+        "_loadPrivateHardwareClass",
+        lambda _logger: FakeLeicaHardware,
+    )
+    with LeicaDMIHardware._CACHE_LOCK:
+        LeicaDMIHardware._HARDWARE_CACHE.clear()
+    yield
+    with LeicaDMIHardware._CACHE_LOCK:
+        LeicaDMIHardware._HARDWARE_CACHE.clear()
+
+
+class FakeLeicaHardware:
+    def __init__(self, rs232Manager, *, managerProperties=None, logger=None):
+        self._rs232 = rs232Manager
+        self.connectionError = None
+        self._z_um_per_device_unit = 0.0
+        self.configure(managerProperties or {})
+
+    def configure(self, managerProperties):
+        response = self._rs232.query("71042")
+        self._z_um_per_device_unit = float(response.split()[1])
+
+    def isConnected(self):
+        return True
+
+    def has_z_position_um(self):
+        return self._z_um_per_device_unit > 0
+
+    def get_z_position_device_units(self):
+        return int(self._rs232.query("71023").split()[1])
+
+    def get_z_position_um(self):
+        return self.get_z_position_device_units() * self._z_um_per_device_unit
+
+    def move_z_relative_um(self, value):
+        steps = int(round(float(value) / self._z_um_per_device_unit))
+        self._rs232.query(f"71024 {steps}")
+        return self.get_z_position_um()
+
+    def set_z_position_um(self, value):
+        steps = int(round(float(value) / self._z_um_per_device_unit))
+        self._rs232.query(f"71022 {steps}")
+        return self.get_z_position_um()
+
+    def get_pos_nm(self):
+        return self.get_z_position_um() * 1000
+
+    def set_pos_nm(self, pos_nm):
+        return self.set_z_position_um(float(pos_nm) / 1000)
+
+
 def _positioner_info():
     return SimpleNamespace(
         axes=["Z"],
@@ -81,8 +135,8 @@ def test_stand_and_z_positioner_share_one_hardware_interface():
     assert stand._hardware is z._hardware
     assert stand.isConnected()
     assert z.isAvailable
-    assert stand.connectionState is DeviceConnectionState.CONNECTED
-    assert z.connectionState is DeviceConnectionState.CONNECTED
+    assert stand.connectionError is None
+    assert z.connectionError is None
 
 
 def test_z_positioner_reports_micrometers_and_refreshes_external_motion():
@@ -140,7 +194,7 @@ def test_transient_z_poll_failure_propagates_but_keeps_positioner_available():
     # Availability stays true so PositionerController's guarded live polling
     # keeps retrying instead of permanently hiding the positioner.
     assert z.isAvailable
-    assert z.connectionState is DeviceConnectionState.ERROR
+    assert z.connectionError == "temporary serial loss"
 
     z.updatePosition()
-    assert z.connectionState is DeviceConnectionState.CONNECTED
+    assert z.connectionError is None

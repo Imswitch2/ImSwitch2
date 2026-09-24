@@ -71,16 +71,11 @@ class SerialDacZManager(PositionerManager):
             self.__logger.warning(
                 f"Serial DAC Z manager unavailable on {self._port}: {exc}"
             )
-            self._setConnectionError(
-                exc,
-                summary="Serial DAC Z initialization failed",
-            )
             self._close_serial_safely()
             return
 
         self._is_available = True
         self.__logger.info("Serial DAC Z manager initialized")
-        self._setConnected("Serial DAC Z initialized")
 
     @property
     def isAvailable(self) -> bool:
@@ -137,10 +132,6 @@ class SerialDacZManager(PositionerManager):
             self.__logger.warning(
                 f"Serial DAC Z communication failed on {self._port}: {exc}"
             )
-            self._setConnectionError(
-                exc,
-                summary="Serial DAC Z communication failed",
-            )
             self._close_serial_safely()
             raise RuntimeError(
                 f"Serial DAC Z communication failed on {self._port}: {exc}"
@@ -148,6 +139,7 @@ class SerialDacZManager(PositionerManager):
 
         # No readback is available, so this is the last successfully commanded
         # position. Never advance it if communication failed above.
+        self._connection_error = None
         self._position[self._axis] = position
         return position
 
@@ -170,7 +162,6 @@ class SerialDacZManager(PositionerManager):
                 )
 
         self._close_serial_safely()
-        self._setFinalizedStatus()
 
     def _raise_if_unavailable(self):
         if self.isAvailable:
