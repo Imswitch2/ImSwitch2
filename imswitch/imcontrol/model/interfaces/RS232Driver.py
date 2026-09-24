@@ -2,6 +2,48 @@ import re
 import pyvisa
 from pyvisa import constants
 
+from imswitch.imcommon.model import initLogger
+
+
+_PARITIES = {
+    'none': constants.Parity.none,
+    'odd': constants.Parity.odd,
+    'even': constants.Parity.even,
+    'mark': constants.Parity.mark,
+    'space': constants.Parity.space,
+}
+
+_STOP_BITS = {
+    1.0: constants.StopBits.one,
+    1.5: constants.StopBits.one_and_a_half,
+    2.0: constants.StopBits.two,
+}
+
+# A line ending written out as escape sequences: backslash + r, backslash + n.
+_ESCAPED_TERMINATION = re.compile(r'(?:\\[rn])+')
+
+
+def decodeTermination(value, key='termination'):
+    """Return the line ending ``value`` stands for.
+
+    The config editor used to save a chosen ``\\r`` as the two characters
+    backslash + ``r`` (``"\\\\r"`` in the JSON) rather than a carriage return.
+    pyvisa then sent that pair after every command and waited for it before
+    returning a reply, so the device never saw the end of a command and every
+    query timed out. No device ends its lines with a literal backslash, so a
+    value made only of those escapes is decoded -- with a warning, because the
+    setup file itself is still wrong.
+    """
+    if isinstance(value, str) and _ESCAPED_TERMINATION.fullmatch(value):
+        decoded = value.replace('\\r', '\r').replace('\\n', '\n')
+        initLogger('RS232Driver').warning(
+            f'{key} is written as the characters {value!r} rather than the '
+            f'line ending {decoded!r}; using {decoded!r}. Fix the setup file: '
+            f'in JSON a carriage return is "\\r", not "\\\\r".'
+        )
+        return decoded
+    return value
+
 
 class _SerialAdapter:
     """Thin pyserial wrapper that mimics the pyvisa resource interface used by RS232Driver."""
@@ -181,32 +223,46 @@ class RS232Driver:
             raise OSError('RS232 resource already closed')
         return self._resource.read()
 
-    @classmethod
     def getDefaults(cls, settings):
-        baudrate = int(settings["baudrate"])
+        try:
+            baudrate = int(settings["baudrate"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(
+                f'Invalid baudrate {settings.get("baudrate")!r}; expected an integer'
+            ) from None
 
         parity = str(settings["parity"]).strip().lower()
-        if parity == "none":
-            set_par = constants.Parity.none
-        else:
-            raise ValueError(f"Unsupported parity value: {settings['parity']!r}")
+        if parity not in _PARITIES:
+            raise ValueError(
+                f'Unsupported parity {settings["parity"]!r}; expected one of '
+                f'{", ".join(_PARITIES)}'
+            )
+        set_par = _PARITIES[parity]
 
-        stopbits = float(settings["stopbits"])
-        if stopbits == 1:
-            set_stopb = constants.StopBits.one
-        elif stopbits == 2:
-            set_stopb = constants.StopBits.two
-        else:
-            raise ValueError(f"Unsupported stopbits value: {settings['stopbits']!r}")
+        try:
+            set_stopb = _STOP_BITS[float(settings["stopbits"])]
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(
+                f'Unsupported stopbits {settings["stopbits"]!r}; expected 1, '
+                f'1.5 or 2'
+            ) from None
 
-        defaults = {'ASRL': {'write_termination': settings["send_termination"],
-                             'read_termination': settings["recv_termination"],
-                             'baud_rate': baudrate,
-                             'bytesize': settings["bytesize"],
-                             'parity': set_par,
-                             'stop_bits': set_stopb,
-                             'encoding': settings["encoding"],
-                             }}
+        defaults = {
+            'ASRL': {
+                'write_termination': decodeTermination(
+                    settings["send_termination"],
+                    'send_termination',
+                ),
+                'read_termination': decodeTermination(
+                    settings["recv_termination"],
+                    'recv_termination',
+                ),
+                 'baud_rate': baudrate,
+                 'parity': set_par,
+                 'stop_bits': set_stopb,
+                 'encoding': settings["encoding"],
+                 }
+        }
         return defaults
 
 

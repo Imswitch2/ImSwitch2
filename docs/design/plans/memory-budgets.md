@@ -1,14 +1,14 @@
 # Memory limits: buffering and automatic work, not what can be measured
 
-*Status: proposal, revised after review rounds 3 and 4 (2026-09-21). Round 3
-reversed the direction rounds 1 and 2 had taken; round 4 accepted that
-direction and corrected its claims. Written out of the question the
-magic-number audit left open — the audit replaced frame counts with byte
-budgets, and the byte budgets are still literals in the source. This note says
-how to make them settable without recreating the defect class the audit closed.
-Phase A — the regression round 3 found, a large scan volume dropped by the byte
-budget already on this branch — is implemented (`d648967d`); nothing else is.
-Records of all four rounds at the end.*
+*Status: **implemented** on `feat/memory-limits` (stacked on PR #29), after
+review rounds 3 and 4 (2026-09-21). Round 3 reversed the direction rounds 1
+and 2 had taken; round 4 accepted that direction and corrected its claims.
+Written out of the question the magic-number audit left open — the audit
+replaced frame counts with byte budgets, and the byte budgets were literals in
+the source. Phase A (the regression, `d648967d`) landed on PR #29 itself;
+phases A′, B, C and D are on the stacked branch — see *Implementation* — with
+one deviation from the reviewed text, recorded there. Records of all four
+rounds at the end.*
 
 ## The principle
 
@@ -69,7 +69,7 @@ writerQueueMB          = 512   # backlog the writer may hold before the
 perDetectorQueueMB     = 256   # backlog any one (detector, consumer) queue may
                                # hold before that consumer's stream is declared
                                # incomplete
-processingWorkingSetMB = 256   # working set ImProcess may spend on automatic
+processingWorkingSetMB = 1024  # working set ImProcess may spend on automatic
                                # work: contrast sampling, the mean preview
 ```
 
@@ -77,7 +77,7 @@ processingWorkingSetMB = 256   # working set ImProcess may spend on automatic
 |---|---|---|
 | `writerQueueMB` | `WRITER_QUEUE_MAX_BYTES` | 512 MiB |
 | `perDetectorQueueMB` | `MAX_QUEUED_CONSUMER_BYTES` | 256 MiB, per queue |
-| `processingWorkingSetMB` | `_SAMPLE_WORKING_SET_BYTES`, and bounds `getMeanData` | 256 MiB; preview unbounded |
+| `processingWorkingSetMB` | `_SAMPLE_WORKING_SET_BYTES`, and bounds `getMeanData` | 256 MiB, preview unbounded; now 1 GiB (see *Decisions*) |
 
 The defaults are fixed literals, not fractions of physical RAM: every machine
 starts from the same numbers, a bug report quotes values that mean the same
@@ -207,15 +207,25 @@ file was opened with Open or Open virtual. So:
 - **Opening a file stays possible, and a log line does not make it safer.**
   Ordinary Open (`quickLoadData` → `checkAndLoadData`) materialises the whole
   dataset today; Open virtual is a separate action that opens only the lazy
-  handle. Above the working set, ordinary Open takes the lazy path when the
-  source truly supports one (`supports_lazy_indexing`; `TiffVirtualArray`
-  without `aszarr()` serves every plane by a whole-series `asarray()` and must
-  not be called bounded — round 1, kept) and says so; where it cannot, it says
-  what it is about to materialise — the decoded size of the *selected*
-  dataset, `shape × itemsize` from metadata (round 1, kept) — *before* it
-  starts. An explicit full load remains. No threshold refuses an open. This
-  narrows the unbounded-load finding to sources without a lazy path; it does
-  not close it.
+  handle. Above the working set, ordinary Open says what it is about to
+  materialise — the decoded size of the *selected* dataset, `shape ×
+  itemsize` from metadata (round 1, kept) — *before* it starts, in the status
+  bar and the log, and says whether Open virtual offers a genuine lazy path
+  for this source (`supports_lazy_indexing`; `TiffVirtualArray` without
+  `aszarr()` serves every plane by a whole-series `asarray()` and must not be
+  called bounded — round 1, kept). No threshold refuses an open.
+
+  **Deviation from the round-4 text, deliberate:** Open does *not* switch to
+  the lazy path automatically. Round 4 asked for both "prefer a genuine lazy
+  path where available" and "do not silently change either meaning of the
+  mean in this work" — and for a stack of more than 256 planes those
+  conflict, because a lazily opened source gets the plane-sampled mean and a
+  materialised one the exact mean, and `findPattern` takes whichever it is
+  handed. Switching large files to lazy would change what the pattern finder
+  receives for exactly the MoNaLISA stacks that are large. Until the
+  follow-up settles what `findPattern` should receive, Open keeps its
+  meaning and announces its cost; the automatic switch is the next step
+  after that follow-up, not before it.
 - **An exact bounded preview for in-plane-huge sources** — tiled accumulation,
   identical values, more reads — is the later answer if a rig ever has 16k²
   planes. Not a stride.
@@ -273,7 +283,7 @@ A field on `Options` (`imswitch/imcontrol/model/Options.py`), stored in
 class MemoryOptions:
     writerQueueMB: int = 512
     perDetectorQueueMB: int = 256
-    processingWorkingSetMB: int = 256
+    processingWorkingSetMB: int = 1024
 ```
 
 **Not the setup file.** It describes the microscope and travels between
@@ -283,8 +293,14 @@ ImProcess reads it through `load_processing_config`, which already calls
 `configfiletools.loadOptions()` through the single allowlisted
 improcess → imcontrol edge.
 
-**UI.** There is no preferences dialog today. Ship the settings and let the
-file be hand-edited; a dialog that edits three integers can follow.
+**UI.** ImControl's **Tools → Memory limits…** (`MemoryLimitsDialog`) shows
+the three values in force, says what each bounds, saves them to the options
+file and adopts them at once through `memory_limits.configure`. Saving is
+refused while a recording runs, since every queue check reads the limit in
+force and a smaller queue would fail the recording in progress. A value in
+the file that cannot be honoured is shown as the default in force and
+replaced on save. It lives in ImControl only: ImProcess must not import
+ImControl, and the file is ImControl's.
 
 ## Deferred, and what would justify each
 
@@ -352,15 +368,22 @@ before Phase B changes anything else about the queues.
   the warning is said once and again for a fresh registration.
 - **A′ — the four-shape stall test**, before B: actual arrival schedules,
   per-queue occupancy; the gate for every later queue change (*Acceptance*).
-- **B — the settings.** `MemoryOptions` on `Options`; the three literals read
-  from it; contrast sample count follows the working set. Defaults reproduce
-  every literal. Tests: defaults unchanged; small-budget behaviour for each.
-- **C — estimates and diagnostics.** The arm-time estimate line; the
-  oversized-payload warning; warn on first block; messages name the setting.
-- **D — safer automatic work.** Mean preview estimated, automatic skip above
-  the working set, explicit warn-and-proceed; decoded size and
-  `supports_lazy_indexing` on open. Narrows the unbounded-`asarray` finding
-  to sources without a lazy path.
+- **A′ — the four-shape stall test. Done.** `test_memory_limits_recording.py`:
+  real broker, real `WriterThread`, a storer whose disk the test stalls;
+  per-queue occupancy asserted at every step.
+- **B — the settings. Done.** `MemoryOptions` on `Options`; the three
+  literals read through `memory_limits.effectiveBytes` with the literal as
+  the default (so an unconfigured process, and a test that patches a
+  literal, behave exactly as before); contrast sample count follows the
+  working set. Defaults reproduce every literal.
+- **C — estimates and diagnostics. Done.** The arm-time estimate line
+  (`_memoryEstimateLine`); the point detector's volume line at scan build;
+  the oversized-delivery warning; the block reported at once and repeated;
+  every message names the setting.
+- **D — safer automatic work. Done, with the Open deviation above.** Mean
+  preview estimated (`DataObj.meanPreviewNotice`), automatic skip to the
+  first plane above the working set, explicit warn-and-proceed; decoded size
+  and lazy-path check announced before an Open materialises.
 - **E — optional.** Config-editor fields.
 
 ## Follow-ups outside this note
@@ -370,6 +393,20 @@ before Phase B changes anything else about the queues.
   materialised one. Decide which the pattern finder wants and make it
   independent of the open path.
 - **The Hamamatsu comment** says 2 GB where the code allocates 4 GiB.
+
+## Implementation
+
+| What | Where |
+|---|---|
+| The three limits, adopted once, literal until configured | `imswitch/imcommon/model/memory_limits.py`; `Options.MemoryOptions`; adopted in `imcontrol/__init__.py` and `improcess/model/processing_config.py` |
+| Detector queue honours `perDetectorQueueMB`; admit-when-empty; messages | `DetectorManager._queueBudgetBytes`, `_distributeChunkLocked`, `readChunk` |
+| Writer honours `writerQueueMB`; block reported at once; arm estimate | `RecordingManager._writerQueueMaxBytes`, `enqueue_frames`, `_memoryEstimateLine` |
+| Point detector's volume line at scan build | `APDManager.initiateImage`, `PMTManager.initiateImage` |
+| Contrast sample size follows the working set; strides from what a slice keeps | `contrast._max_samples`, `_strided_key`, `sample_values` |
+| Decoded size, lazy path, preview estimate (measured against the peak; a non-lazy source charged its series), notice before a load | `DataObj.decodedBytes`, `sourceHasLazyPath`, `planeReadIsBounded`, `materializationNotice`, `meanPreviewNotice`, `checkAndLoadData` |
+| Automatic vs explicit mean; status line | `DataFrameController.showMean(explicit=…)`, `DataEditController`, `FileIOController._loadAsCurrent`, `CommunicationChannel.sigStatusMessage` |
+| Tests | `imcommon/_test/test_memory_limits.py`; `imcontrol/_test/unit/test_memory_limits_recording.py`, `test_chunk_contract.py`; `improcess/_test/test_contrast.py`, `test_data_obj_io.py`, `test_data_frame_virtual.py`, `test_data_edit_controller.py` |
+| Docs | `docs/improcess.rst` *Memory limits*; changelog |
 
 ## Decisions
 
@@ -381,6 +418,13 @@ before Phase B changes anything else about the queues.
   round 3; what survives of the decision is its reason — the same default on
   every machine — applied to the three literals. Restated as
   512 / 256 / 256 MiB and accepted in round 4.
+- **The ImProcess working set defaults to 1 GiB** (2026-09-23). 256 MiB was
+  too small for a typical workstation, and nothing ties it to the
+  acquisition queues: it bounds a transient computation, not a backlog. The
+  code's fallback literals move with it, and a test holds the options
+  defaults and the literals to the same numbers.
+- **The limits are set from ImSwitch** (2026-09-23): Tools → Memory limits…
+  in ImControl, applied when saved, refused during a recording.
 
 ## Review round 1 (2026-09-21)
 
@@ -511,3 +555,69 @@ than closed. The four-shape test is required for any queue change, on actual
 arrival schedules and per-queue occupancy, and warning-before-overflow is not
 universal. The fixed 512 / 256 / 256 MiB defaults are accepted as the
 restatement of the round-2 decision.
+
+## Review round 6 (2026-09-22)
+
+Reviewed the implementation (`49f23eff`). Five findings, all reproduced and
+fixed without adding an acquisition restriction; the reviewer found no new
+acquisition-path blocker.
+
+1. **[P1] Invalid settings crashed at load, before validation.** The JSON
+   loader coerces `int` fields itself: `"lots"` raised `ValueError` and `2.5`
+   silently became `2`, so the promised warn-and-default never ran for a real
+   file. → the three fields are typed `Any` so the raw value reaches
+   `configure`; the bad-value test now goes through `Options.from_json`.
+2. **[P1] A non-lazy TIFF bypassed the preview safeguard.** The estimate
+   looked at the plane's size, not at whether reading a plane decodes the
+   whole series (`TiffVirtualArray` without `aszarr()`); 150 whole-series
+   reads with no warning, and the first-plane fallback cost the same. →
+   `meanPreviewBytes` charges such a source its decoded size on top, the
+   notice says why, and `planeReadIsBounded` tells the panels to show
+   nothing rather than read a plane that costs the series.
+3. **[P2] The edit window computed the mean it had just deferred.**
+   `setData` set it aside and then called the same method the button uses.
+   → automatic display (first plane, or nothing) and the explicit mean are
+   separate methods, as in the current-data panel.
+4. **[P2] Contrast sampling overshot for shapes with a singleton leading
+   axis.** The stride arithmetic charged the singleton a share of the
+   reduction it could not deliver: `(1, 100, 100, 100)` at 1 MiB returned
+   200 000 values against 61 680. → strides are derived from what each
+   slice actually keeps, only reducible axes count towards the exponent,
+   and the spatial stride is raised until the counted total fits; a shape
+   sweep pins the bound.
+5. **[P2] The preview estimate omitted live allocations.** 12 B/px charged;
+   22 B/px measured, from the retained input plane and a second float64
+   plane the division made. → the division is in place (measured peak
+   12 B/px) and the estimate charges 12 B/px plus the input plane's dtype;
+   a tracemalloc test keeps the estimate a ceiling.
+
+## Review round 7 (2026-09-23)
+
+Reviewed `299dfc68` after the first rig tests (settings startup confirmed on
+the rig). Five findings, all reproduced, all in automatic loading and in the
+settings validator; no new acquisition-path blocker.
+
+1. **[P1] Opening the edit window loaded the whole dataset.** The
+   first-plane fallback read through `.data`. → the edit window reads planes
+   through the lazy handle unless the data is already loaded, the same rule
+   as the current-data panel.
+2. **[P2] Switching datasets bypassed "nothing shown until asked".** Lowering
+   the slider maximum clamped it, and the clamp emitted `valueChanged` like a
+   drag, so plane 299 of a non-lazy TIFF was decoded behind a preview that
+   had just declined to read anything (and replaced the mean on screen). →
+   both views set the range with the slider and the frame field signal-
+   blocked, and keep the two in agreement.
+3. **[P2] The non-lazy preview peaked above its estimate.** Each plane was a
+   view of its decoded series and stayed bound while the next series was
+   decoded. → the fallback's plane read returns a detached copy, and the
+   mean loop releases each plane before the next read; the peak measured
+   0.198 MiB against a 0.211 MiB estimate on the reviewer's shape class.
+4. **[P2] Contrast sampling still overshot for lopsided leading axes.**
+   `(2, 1000000, 1, 1)` kept 166 667 against 61 680: one uniform stride
+   cannot shrink a size-2 axis by six, and nothing was left in-plane. → both
+   strides are found by binary search on the counted total (what a stride
+   keeps never grows with the stride), leading axes first so whole planes are
+   kept while that suffices.
+5. **[P2] Non-finite settings raised.** `"NaN"`, `"Infinity"`, `"1e309"`
+   reached `int()`. → finiteness is checked first; tested through
+   `Options.from_json`.

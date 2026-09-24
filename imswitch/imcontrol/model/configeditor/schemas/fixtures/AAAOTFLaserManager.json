@@ -9,7 +9,8 @@
       "protocolProfile": "aa.compatibility",
       "rs232device": "example",
       "toggleTrueExternal": true,
-      "ttlToggling": true
+      "ttlToggling": true,
+      "useMockOnFailure": true
     }
   }
 }

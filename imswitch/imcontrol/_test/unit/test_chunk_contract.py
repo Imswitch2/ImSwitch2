@@ -625,6 +625,9 @@ class _Recorder:
     def warning(self, message, *_a, **_k):
         self.lines.append(str(message))
 
+    def info(self, *_a, **_k):
+        pass
+
 
 def _shrinkBudget(monkeypatch, nbytes):
     from imswitch.imcontrol.model.managers.detectors import DetectorManager as module
@@ -734,7 +737,7 @@ def test_an_oversized_delivery_is_said_once_and_names_the_setting(monkeypatch):
         detector.readChunk('rec')
 
     assert len(log.lines) == 1
-    assert 'MAX_QUEUED_CONSUMER_BYTES' in log.lines[0]
+    assert 'memory.perDetectorQueueMB in imcontrol_options.json' in log.lines[0]
     assert 'admitted' in log.lines[0]
     assert 'rec' not in detector._chunkConsumersOverflowed
 
@@ -743,3 +746,31 @@ def test_an_oversized_delivery_is_said_once_and_names_the_setting(monkeypatch):
     _scan(detector)
     detector.readChunk('rec')
     assert len(log.lines) == 2
+
+
+def test_the_configured_per_queue_limit_is_the_one_the_queue_honours():
+    """memory.perDetectorQueueMB moves the budget; the literal is only the default."""
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+    from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+        DetectorManager,
+    )
+
+    memory_limits.configure(SimpleNamespace(perDetectorQueueMB=1), logger=_Recorder())
+    camera = _cameraDetector(size=64)                     # 8 KiB frames
+    perFrame = DetectorManager._frameBytes(np.zeros((64, 64), np.uint16))
+    fits = (1024 * 1024) // perFrame
+    log = _Recorder()
+    camera._DetectorManager__logger = log
+    camera.startChunkConsumer('idle', kind=ChunkKind.RAW)
+
+    for _ in range(fits + 2):
+        camera.produceFrame()
+        camera._distributeChunkLocked(camera.drainChunk())   # one frame per delivery
+
+    assert 'idle' in camera._chunkConsumersOverflowed
+    assert any('1.0 MiB queue budget' in line for line in log.lines)
+    assert any('memory.perDetectorQueueMB' in line for line in log.lines)
+    with pytest.raises(ChunkConsumerOverflowError, match='perDetectorQueueMB'):
+        camera.readChunk('idle')

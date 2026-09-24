@@ -10,6 +10,7 @@ from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
     ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes,
     isCriticalRestoreWarning,
+    memory_limits,
     shutdownState,
 )
 from imswitch.imcommon.framework import Thread
@@ -63,6 +64,8 @@ class ImConMainController(MainController):
         self.__mainView.sigOpenShortcutEditor.connect(self.openShortcutEditor)
         self.__mainView.sigOpenSessionNotes.connect(self.openSessionNotes)
         self.__mainView.sigOpenConfigEditor.connect(self.openConfigEditor)
+        self.__mainView.sigOpenMemoryLimits.connect(self.openMemoryLimits)
+        self.__mainView.memoryLimitsDialog.sigSaveRequested.connect(self.saveMemoryLimits)
         self.__mainView.sessionNotesDialog.sigNotesChanged.connect(self.setSessionNote)
 
         # The Config Studio, while it is open. One window at a time: a second
@@ -508,6 +511,43 @@ class ImConMainController(MainController):
         dialog = self.__mainView.sessionNotesDialog
         dialog.setNotes(self.__commChannel.getSessionNote())
         self.__mainView.showSessionNotesDialog()
+
+    def openMemoryLimits(self):
+        """Show the memory-limits editor, seeded with what the options file holds."""
+        options, _ = configfiletools.loadOptions()
+        dialog = self.__mainView.memoryLimitsDialog
+        dialog.setValues(getattr(options, 'memory', None))
+        self.__mainView.showMemoryLimitsDialog()
+
+    def saveMemoryLimits(self, values):
+        """Save the memory limits to the options file and adopt them now.
+
+        Refused while a recording runs: every queue check reads the limit in
+        force, so lowering a queue below what it holds would fail the
+        recording in progress. The dialog stays open with the reason.
+        """
+        dialog = self.__mainView.memoryLimitsDialog
+        master = self.__masterController
+        recordingManager = getattr(master, 'recordingManager', None)
+        if recordingManager is not None and getattr(recordingManager, 'record', False):
+            dialog.setStatus(
+                'A recording is running. Stop it first: a smaller queue '
+                'would fail the recording in progress.'
+            )
+            return
+
+        from imswitch.imcontrol.model.Options import MemoryOptions
+        try:
+            memory = MemoryOptions(**{field: int(value) for field, value in values.items()})
+            options, _ = configfiletools.loadOptions()
+            configfiletools.saveOptions(dataclasses.replace(options, memory=memory))
+        except Exception as e:
+            self.__logger.error(f'Could not save the memory limits: {e}', exc_info=True)
+            dialog.setStatus(f'Could not save the memory limits: {e}')
+            return
+        memory_limits.configure(memory, logger=self.__logger)
+        dialog.setStatus('')
+        dialog.accept()
 
     def openConfigEditor(self):
         """ Open the Config Studio on this microscope's setup files.

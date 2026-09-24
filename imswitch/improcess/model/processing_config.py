@@ -22,6 +22,10 @@ def load_processing_config(logger: Any = None) -> dict[str, Any]:
         from imswitch.imcontrol.model.SetupInfo import SetupInfo
 
         options, _ = configfiletools.loadOptions()
+        # Same per-machine limits imcontrol adopts at its startup; ImProcess
+        # running alone still reads them from the same file.
+        from imswitch.imcommon.model import memory_limits
+        memory_limits.configure(getattr(options, 'memory', None), logger=logger)
         setup_info = configfiletools.loadSetupInfo(options, SetupInfo)
         catch_all = getattr(setup_info, "_catchAll", None) or {}
         processing_config = catch_all.get("processing", {}) or {}
