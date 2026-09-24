@@ -30,7 +30,11 @@ class LeicaDMIZPositionerManager(PositionerManager):
         self._connectionError = None
 
         managerProperties = positionerInfo.managerProperties or {}
-        rs232DeviceName = managerProperties.get("rs232device")
+        # The shared Leica hardware consumes this optional key; keep it visible
+        # to config-editor schema extraction at the manager boundary.
+        managerProperties.get("calibCsvPath")
+        # rs232DeviceName = managerProperties.get("rs232device")
+        rs232DeviceName = managerProperties["rs232device"]
         if not rs232DeviceName:
             self._connectionError = "Missing managerProperties.rs232device."
             self.__logger.error(
