@@ -377,7 +377,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "e80aed4973f6cb6f30e5dbd707ccf33c34320b5d7078db1f8a06d6908618a5c0"
+      "source_sha256": "c98491db4e604b56bf176148cf6ee5d49636385c59781bdf6c92f3d33e55cdb1"
     },
     "LeicaDMIStandMockManager": {
       "category": "stands",
@@ -398,7 +398,7 @@
       "overridden": false,
       "properties": 2,
       "required": 1,
-      "source_sha256": "648bfcaacb9f338b304d7ede43a10e0ce714f1a6c1010f2d833d5dc6658d870b"
+      "source_sha256": "253f31fee780c1f7fd584e06a9cc8f5e5362d5f7e8ad6deb6ebfdaac7b5b997c"
     },
     "MHXYStageManager": {
       "category": "positioners",
@@ -627,7 +627,7 @@
       "overridden": false,
       "properties": 13,
       "required": 0,
-      "source_sha256": "9717abf74a030b8fd81880711098d2fea31e2a8472243368845c05301ce6e9ad"
+      "source_sha256": "25739563238d78a9df9a5d216fe5ef059063696bd214aac9a9eb2800c4ee2e01"
     },
     "SmarACTPositionerManager": {
       "category": "positioners",
