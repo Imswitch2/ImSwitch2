@@ -68,7 +68,7 @@ def test_next_ready_resolves_folder_to_seed_job(tmp_path):
     job = q.next_ready()
 
     assert isinstance(job, DiscoveredJob)
-    assert job.folder == str(folder)
+    assert job.job_path == str(folder)
     assert job.seed_path == os.path.join(str(folder), "exp_scan__00__CAM.zarr")
     assert len(q) == 0                       # removed once resolved
 
@@ -105,7 +105,7 @@ def test_next_ready_skips_empty_folder_and_resolves_a_later_one(tmp_path):
     q.add(str(ready))
 
     job = q.next_ready()
-    assert job.folder == str(ready)
+    assert job.job_path == str(ready)
     assert len(q) == 1                       # the empty folder stays pending
     assert q._pending_jobs == [str(empty)]
 

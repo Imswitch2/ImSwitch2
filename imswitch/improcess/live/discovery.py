@@ -23,7 +23,7 @@ Design choices (override if the pipeline needs otherwise):
   * ``JobQueue`` picks the seed store from the name alone -- the timepoint
     index is read from the substring starting at ``"scan"`` (see
     :func:`_seed_key`);
-  * output / cache dirs in :data:`_EXCLUDED_DIRS` are skipped by the watcher.
+  * output / cache dirs in :data:.
 """
 
 import os
@@ -34,31 +34,25 @@ from qtpy import QtCore
 from imswitch.imcommon.model.logging import initLogger
 
 
-# Immediate sub-directory names that are never timelapse folders.
-# NOTE: add new directories here that should NOT be treated as timelapses.
-
-# TODO: This structure is probably unnecessary, since we will filter these
-#   out before we insert the directories in the JobQueue
-
-_EXCLUDED_DIRS = (
-    "rec",
-    "deskew",
-    "Mini_Recon_Results",
-    "__pycache__",
-)
-
-# Timepoint store suffix (only .zarr for now)
+#: Suffixes that name a dataset. Used to tell a store from a container: a
+#: directory carrying one of these *is* the data, rather than a folder of it.
 _STORE_SUFFIX = (
     ".zarr",
     ".h5",
     ".hdf5",
 )
 
+#: Of those, the ones stored as a directory. A plain *file* carrying such a
+#: suffix is malformed rather than a dataset, so the watcher passes it over.
+_DIR_STORE_SUFFIX = (
+    ".zarr",
+)
+
 
 class DirectoryWatcher(QtCore.QObject):
-    """Emits ``sigTimelapseFound`` for each new immediate sub-directory of a root."""
+    """Emits ``sigEntryFound`` for each new immediate entry of a root folder."""
 
-    sigTimelapseFound = QtCore.Signal(str)  # absolute path of a newly-seen sub-directory
+    sigEntryFound = QtCore.Signal(str)  # absolute path of a newly-seen entry
 
     def __init__(
         self,
@@ -69,7 +63,7 @@ class DirectoryWatcher(QtCore.QObject):
     ) -> None:
         """
         Args:
-            root_path: Folder to watch for new timelapse sub-directories.
+            root_path: Folder to watch for new entries.
             poll_interval_ms: Delay between scans once started.
             parent: Optional Qt parent (keeps the watcher on its thread).
         """
@@ -109,12 +103,23 @@ class DirectoryWatcher(QtCore.QObject):
         return self._timer.isActive()
 
     def scan_once(self) -> list[str]:
-        """Return newly-seen sub-directory paths since the last scan, sorted.
+        """Return newly-seen entry paths since the last scan, sorted.
 
-        Immediate sub-directories only; entries in :data:`_EXCLUDED_DIRS` and
-        non-directory entries are skipped. Updates the seen-set; emits nothing.
-        Called by the timer slot and directly by tests. Returns ``[]`` (and
-        logs a warning) if the root is unreadable.
+        Immediate entries only. Every sub-directory is reported -- whether
+        it is a container or a ``.zarr`` store is :class:`JobQueue`'s call,
+        not this one's. Files are reported only when their suffix names a
+        single-*file* dataset, so a stray ``.txt`` and a ``.zarr`` that is
+        somehow a plain file are both passed over.
+
+        No name is excluded by convention. A folder holding no dataset --
+        an output directory, a cache -- simply never resolves into a job,
+        and one that does is checked against the selected reconstructor
+        before anything starts. A name list could never be exhaustive, so
+        the real filter is the one that reads what is actually there.
+
+        Updates the seen-set; emits nothing. Called by the timer slot and
+        directly by tests. Returns ``[]`` (and logs a warning) if the root
+        is unreadable.
         """
         try:
             # "with" closes the directory handle on block exit, guarding against
@@ -122,11 +127,14 @@ class DirectoryWatcher(QtCore.QObject):
             with os.scandir(self._root_path) as root_dir:
                 current_entries = set()
                 for entry in root_dir:
-                    # TODO: remove?
-                    if entry.name in _EXCLUDED_DIRS:
-                        continue
                     try:
-                        current_entries.add(os.path.abspath(entry.path))
+                        name = entry.name.lower()
+                        is_dataset_file = (
+                            name.endswith(_STORE_SUFFIX)
+                            and not name.endswith(_DIR_STORE_SUFFIX)
+                        )
+                        if entry.is_dir() or is_dataset_file:
+                            current_entries.add(os.path.abspath(entry.path))
                     except OSError:
                         continue
         except OSError as e:
@@ -139,18 +147,20 @@ class DirectoryWatcher(QtCore.QObject):
 
     @QtCore.Slot()
     def _tick(self) -> None:
-        """Timer slot: run :meth:`scan_once`, emit ``sigTimelapseFound`` per hit."""
+        """Timer slot: run :meth:`scan_once`, emit ``sigEntryFound`` per hit."""
         for path in self.scan_once():
-            self.sigTimelapseFound.emit(path)
+            self.sigEntryFound.emit(path)
 
 
 @dataclass(frozen=True)
 class DiscoveredJob:
-    """A timelapse folder resolved to a startable job.
+    """A root entry resolved to a startable job.
 
     Attributes:
-        seed_path: Absolute path to the timepoint-0 store in the folder.
-        job_path: Absolute path of the job.
+        seed_path: The dataset to open first. For a container that is its
+            timepoint-0 store; for a single dataset it is the entry itself.
+        job_path: The root entry this was resolved from. Names the job, and
+            is what goes back into the queue if it cannot start yet.
     """
 
     seed_path: str
@@ -178,62 +188,102 @@ def _seed_key(name: str) -> str:
     return name[i:]
 
 
-class JobQueue:
-    """Pending timelapse folders, resolved to jobs on demand.
+def _pick_seed(names: list[str]) -> str:
+    """The timepoint-0 store among sibling per-timepoint stores.
 
-    Fed by ``DirectoryWatcher.sigTimelapseFound``. Pure and synchronous: no Qt,
-    no store opening -- only ``os.listdir`` on the pending folders. The
-    controller calls :meth:`next_ready` on its heartbeat and starts one job at
-    a time.
+    Prefers the ``"scan"``-marker ordering (:func:`_seed_key`), falling back to
+    a plain lexical minimum when no sibling carries the marker. The fallback is
+    not cosmetic: ``_seed_key`` *raises* on an unmarked name, so one oddly-named
+    store would otherwise take down the controller's whole heartbeat rather than
+    just its own folder.
+    """
+    marked = [n for n in names if "scan" in n]
+    if marked:
+        return sorted(marked, key=_seed_key)[0]
+    return sorted(names)[0]
+
+
+class JobQueue:
+    """Pending root entries, resolved to jobs on demand.
+
+    Fed by ``DirectoryWatcher.sigEntryFound``. Pure and synchronous: no Qt
+    and no store opening -- only ``os.listdir`` on pending containers, so
+    a half-written store is never touched here. *What* a resolved job turns
+    out to be is settled later, by probing it. The controller calls
+    :meth:`next_ready` on its heartbeat and starts one job at a time.
     """
 
     def __init__(self) -> None:
         self._pending_jobs: list[str] = []
 
-    def add(self, folder: str) -> None:
-        """Register a timelapse folder as pending.
+    def add(self, entry: str) -> None:
+        """Register a root entry as pending.
 
-        Idempotent -- a folder already pending is ignored.
+        Idempotent -- an entry already pending is ignored.
         """
-        if folder not in self._pending_jobs:
-            self._pending_jobs.append(folder)
+        if entry not in self._pending_jobs:
+            self._pending_jobs.append(entry)
 
     def next_ready(self) -> DiscoveredJob | None:
-        """Return the first pending folder that now holds a store.
+        """Return the first pending entry that is now startable, or ``None``.
 
-        Lists pending folders in insertion order; the first that contains at
-        least one ``.zarr`` entry is removed from the queue and returned as a
-        :class:`DiscoveredJob` whose ``seed_path`` is the timepoint-0 store
-        (see :func:`_seed_key`). A folder with no store yet -- or one that
-        cannot be listed -- stays pending. Returns ``None`` if nothing resolves
-        this call.
+        An entry resolves in one of two ways:
+
+        * a **container** -- a directory whose own name carries no store suffix
+          -- resolves once it holds at least one store, seeded by the
+          timepoint-0 one (see :func:`_pick_seed`);
+        * anything else is itself the dataset: a single file, or a directory
+          that *is* a store because its name says so (``measurement.zarr``).
+
+        Entries are walked in insertion order and the first that resolves is
+        removed from the queue. One that does not -- a folder a recording has
+        created but not yet written into, or one that cannot be listed -- stays
+        pending for a later call, because that is the ordinary state of a
+        recording that has only just started.
         """
-        for job in list(self._pending_jobs):
-            try:
-                if os.path.isdir(job):
-                    names = os.listdir(job)
-                    stores = sorted(
-                        (n for n in names if n.lower().endswith(_STORE_SUFFIX)),
-                        key=_seed_key,
-                    )
-                else:
-                    stores = [job]
-            except OSError:
+        for job_path in list(self._pending_jobs):
+            seed_path = self._resolve_seed(job_path)
+            if seed_path is None:
                 continue
-            # stores = sorted(
-            #     (n for n in names if n.lower().endswith(_STORE_SUFFIX)),
-            #     key=_seed_key,
-            # )
-            if stores:
-                self._pending_jobs.remove(job)
-                return DiscoveredJob(
-                    seed_path=os.path.join(job, stores[0]),
-                    job_path=job,
-                )
+            self._pending_jobs.remove(job_path)
+            return DiscoveredJob(seed_path, job_path)
+
         return None
 
+    @staticmethod
+    def _resolve_seed(job_path: str) -> str | None:
+        """The dataset to open first for ``job_path``, or ``None`` if not yet.
+
+        ``None`` is the "still waiting" answer and never an error, so the
+        caller leaves such an entry pending rather than dropping it.
+        """
+        if not os.path.exists(job_path):
+            # Reported by the watcher but not there when asked. Without this
+            # the else-branch below would hand it out as a single dataset,
+            # since 'not a directory' and 'not there at all' look alike.
+            return None
+
+        is_container = (
+            os.path.isdir(job_path)
+            and not job_path.lower().endswith(_STORE_SUFFIX)
+        )
+        if not is_container:
+            return job_path
+
+        try:
+            names = os.listdir(job_path)
+        except OSError:
+            return None
+
+        stores = [n for n in names if n.lower().endswith(_STORE_SUFFIX)]
+        if not stores:
+            # Created but not yet written into. Ordinary, not a failure.
+            return None
+        return os.path.join(job_path, _pick_seed(stores))
+
+
     def reset(self) -> None:
-        """Drop all pending folders (for the future hard-reset button).
+        """Drop all pending entries (the hard-reset button).
 
         Checks if the list of pending jobs is empty or not. If the list
         is not empty, then the pending jobs will be cleared.
@@ -242,7 +292,7 @@ class JobQueue:
             self._pending_jobs.clear()
 
     def __len__(self) -> int:
-        """Number of pending folders."""
+        """Number of pending entries."""
         return len(self._pending_jobs)
 
 

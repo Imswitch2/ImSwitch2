@@ -1,18 +1,16 @@
 """Generic live reconstruction controller: drives LiveSource + any Reconstructor."""
 
-import numpy as np
 from qtpy import QtCore
 
 from imswitch.imcommon.model.logging import initLogger
-from imswitch.improcess.live import InMemoryStackWrapper
-from imswitch.improcess.live.buffer import StackRing
+from imswitch.improcess.live.buffer import RawDataBuffer
 from imswitch.improcess.live.workers import LiveProcessWorker, LiveStreamWorker
 from imswitch.improcess.model.processing_config import (
     live_stall_timeout_s,
     live_viewer_update_interval_s,
     load_processing_config,
 )
-from imswitch.improcess.reconstructors.base import Chunk, StreamInit
+from imswitch.improcess.reconstructors.base import StreamInit
 
 
 class LiveReconstructionController(QtCore.QObject):
@@ -20,7 +18,7 @@ class LiveReconstructionController(QtCore.QObject):
     Controller for live reconstruction that works with any Reconstructor.
     
     For StreamingReconstructor: creates a session and runs the streaming path.
-    For regular Reconstructor: buffers chunks and runs batch fallback.
+    Streaming only: the session consumes frames as they arrive.
     """
 
     sigFinished = QtCore.Signal()
@@ -51,10 +49,9 @@ class LiveReconstructionController(QtCore.QObject):
         self._stream_worker = None
         self._process_worker = None
         self._session = None
-        self._ring = None
+        self._raw_buffer = None
         self._frames_per_stack = None
 
-        self._buffer = []
         self._stack_info = None
         self._is_streaming = False
         self._running = False
@@ -92,7 +89,7 @@ class LiveReconstructionController(QtCore.QObject):
             on the worker thread, so a recording discovered before its data
             array exists is waited on, not skipped; ``sigFinished`` fires when
             the stack completes (or if startup ultimately fails, so a queue
-            driver still advances). ``False`` only when the batch-fallback path
+            driver still advances). ``False`` only when the streaming path
             fails to open the source synchronously.
         """
         if self._running:
@@ -104,32 +101,23 @@ class LiveReconstructionController(QtCore.QObject):
         self._source_arg = source_arg
         self._params = params or {}
         self._run_name = name
-        self._buffer = []
         self._stack_info = None
         self._finishing = False
 
-        # TODO: Remove the batch path and make the streaming path the default
-        #   The provided reconstructor must be a live reconstructor, since
-        #   this controller should ONLY handle live streaming
-
-        # supports_streaming lives on the reconstructor, so we can branch
-        # without opening the source first — the streaming path opens lazily on
-        # its worker thread.
-        self._is_streaming = getattr(self._reconstructor, "supports_streaming", False)
-        if self._is_streaming:
-            started = self._start_streaming_path()
-        else:
+        # Streaming only. The directory watcher offers itself solely to
+        # reconstructors declaring supports_streaming, so anything else
+        # reaching here is a wiring mistake rather than a fallback case.
+        # Read off the reconstructor, so the branch costs no I/O -- the
+        # streaming path opens the source lazily on its worker thread.
+        if not getattr(self._reconstructor, "supports_streaming", False):
             self._logger.error(
-                "The live mode is only compatible with a "
-                "reconstructor that supports streaming."
+                "Live mode is only compatible with a reconstructor that "
+                "supports streaming."
             )
             return False
-            # try:
-            #     self._stack_info = self._source.open(source_arg)
-            # except Exception as e:
-            #     self._logger.error(f"Failed to open source: {e}")
-            #     return False
-            # started = self._start_batch_fallback_path()
+
+        self._is_streaming = True
+        started = self._start_streaming_path()
 
         if not started:
             self._reset_workers()
@@ -159,7 +147,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._stream_worker = None
         self._process_worker = None
         self._session = None
-        self._ring = None
+        self._raw_buffer = None
         self._frames_per_stack = None
         self._finishing = False
         self._stopping = False
@@ -179,7 +167,7 @@ class LiveReconstructionController(QtCore.QObject):
                 shutting the whole mode down and no queue should advance.
             graceful: Let the timepoint in flight finish first. The frames for
                 it are normally already queued on the process thread (the stream
-                worker blocks on the inter-stack barrier once it has dispatched
+                worker blocks on the frame gate once it has dispatched
                 a whole stack), so this just drains that queue instead of
                 killing the thread mid-timepoint and leaving the viewer with a
                 half-reconstructed last timepoint. Teardown then happens
@@ -310,7 +298,6 @@ class LiveReconstructionController(QtCore.QObject):
             self._shutdown_workers()
         finally:
             self._running = False
-            self._buffer = []
             self._stack_info = None
             self._source = None
             self._source_arg = None
@@ -334,7 +321,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._session = self._reconstructor.make_session()
 
         # The process worker is built later, in _on_init_stack_ready, once the
-        # stack shape is known (it needs the StackRing + frames_per_stack, both
+        # stack shape is known (it needs the RawDataBuffer + frames_per_stack, both
         # derived from the StackInfo the stream worker produces on open).
         self._stream_thread = QtCore.QThread()
         self._stream_worker = LiveStreamWorker(
@@ -355,24 +342,30 @@ class LiveReconstructionController(QtCore.QObject):
 
     @QtCore.Slot(object)
     def _on_opened(self, stack_info) -> None:
-        """Record the stack metadata and allocate the shared frame ring."""
+        """Record the stack metadata and allocate the shared raw buffer."""
         if self._finishing:
             return
+
         self._stack_info = stack_info
         self._frames_per_stack = self._stream_worker.frames_per_stack
+
         try:
-            self._ring = StackRing(
+            # Sized for this job: a whole timepoint must fit, with a floor so
+            # a recording whose timepoint is one frame does not end up with a
+            # one-slot buffer and lock-step producer/consumer.
+            self._raw_buffer = RawDataBuffer.for_job(
                 self._frames_per_stack,
                 stack_info.frame_shape,
                 stack_info.dtype,
             )
         except ValueError as e:
-            self._logger.error(f"Cannot allocate frame ring: {e}")
+            self._logger.error(f"Cannot allocate raw buffer: {e}")
             self._finish_without_result()
             return
-        self._logger.debug(
-            f"Allocated StackRing: {self._frames_per_stack} x "
-            f"{tuple(stack_info.frame_shape)} ({self._ring.nbytes / 1e6:.1f} MB)"
+
+        self._logger.info(
+            f"Allocated RawDataBuffer: {self._raw_buffer.capacity} x "
+            f"{tuple(stack_info.frame_shape)} ({self._raw_buffer.nbytes / 1e6:.1f} MB)"
         )
 
     @QtCore.Slot(object)
@@ -399,8 +392,8 @@ class LiveReconstructionController(QtCore.QObject):
         self._process_thread = QtCore.QThread()
         self._process_worker = LiveProcessWorker(
             self._session,
-            self._ring,
-            self._stream_worker.stack_consumed,
+            self._raw_buffer,
+            self._stream_worker.frame_gate,
             self._frames_per_stack,
             viewer_update_interval_s=self._viewer_update_interval_s,
         )
@@ -423,12 +416,13 @@ class LiveReconstructionController(QtCore.QObject):
         self._logger.debug(
             f"Session initialized with output shape {getattr(plan, 'out_shape', '?')}"
         )
-        # Stack 0 was consumed by begin(), so pre-set the barrier for the first
-        # _poll_loop boundary, then release the stream worker.
+        # begin() consumed stack 0, so tell the gate those frames are done --
+        # otherwise the producer waits for a consumer that will never report
+        # them. Then release the stream worker.
         self._stream_worker.sigFramesReady.connect(self._process_worker.process_chunk)
         self._stream_worker.sigStackComplete.connect(self._process_worker.finalize)
-        self._stream_worker.stack_consumed.set()
-        self._stream_worker.resume(self._ring)
+        self._stream_worker.frame_gate.consumed_through(self._frames_per_stack - 1)
+        self._stream_worker.resume(self._raw_buffer)
 
     @QtCore.Slot(str)
     def _on_stream_failed(self, message: str) -> None:
@@ -458,55 +452,6 @@ class LiveReconstructionController(QtCore.QObject):
     def _finish_without_result(self) -> None:
         """Signal completion without a result so a queue driver advances."""
         self._finish_run()
-
-    def _start_batch_fallback_path(self) -> bool:
-        """Start batch fallback: buffer chunks, run process() on complete stack."""
-        self._logger.debug("Starting batch fallback path")
-
-        self._stream_thread = QtCore.QThread()
-        self._stream_worker = LiveStreamWorker(
-            self._source, stall_timeout_s=self._effective_stall_timeout()
-        )
-        self._stream_worker.moveToThread(self._stream_thread)
-
-        self._stream_worker.sigChunkReady.connect(self._on_chunk_for_buffer)
-        self._stream_worker.sigStackComplete.connect(self._on_batch_stack_complete)
-        self._stream_worker.sigStalled.connect(self._on_stalled)
-
-        self._stream_thread.started.connect(self._stream_worker.run)
-        self._stream_thread.start()
-        return True
-
-    @QtCore.Slot(object)
-    def _on_chunk_for_buffer(self, chunk: Chunk) -> None:
-        """Buffer a chunk for batch fallback."""
-        self._buffer.append(chunk)
-
-    @QtCore.Slot()
-    def _on_batch_stack_complete(self) -> None:
-        """Process the buffered stack with the batch reconstructor."""
-        if not self._buffer:
-            self._logger.warning("Stack complete but no chunks buffered")
-            self._finish_without_result()
-            return
-
-        self._logger.debug(f"Stack complete, processing {len(self._buffer)} buffered chunks")
-
-        full_data = np.concatenate([c.data for c in self._buffer], axis=0)
-
-        wrapper = InMemoryStackWrapper(
-            name=getattr(self._source, "name", "live"),
-            dataset_name=self._stack_info.detector_name or "detector",
-            data=full_data,
-            attrs=self._stack_info.attrs,
-        )
-
-        try:
-            result = self._reconstructor.process(wrapper, self._params)
-            self._on_stack_finished(result)
-        except Exception as e:
-            self._logger.error(f"Batch reconstruction failed: {e}")
-            self._finish_without_result()
 
     @QtCore.Slot(int)
     def _on_timepoint_done(self, timepoint: int) -> None:

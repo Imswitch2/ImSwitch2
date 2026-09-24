@@ -197,7 +197,7 @@ def test_controller_streaming_path():
     assert controller._running is False
     assert controller._stream_thread is None
     assert controller._process_thread is None
-    assert controller._ring is None
+    assert controller._raw_buffer is None
 
 
 def test_controller_batch_fallback_path():

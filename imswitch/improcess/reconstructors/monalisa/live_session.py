@@ -580,7 +580,7 @@ class MonalisaLiveSession(StreamingSession):
     ) -> tuple[int, int] | None:
         try:
             dx, dy = float(axis_step_size[0]), float(axis_step_size[1])
-            if dx == 0 or dy == 0:
+            if dx == 0.0 or dy == 0.0:
                 return None
             nx_s = max(1, int(np.ceil(abs(float(axis_length[0])) / abs(dx))))
             ny_s = max(1, int(np.ceil(abs(float(axis_length[1])) / abs(dy))))

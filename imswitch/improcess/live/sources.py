@@ -1,4 +1,4 @@
-"""Format-agnostic live source contracts and in-memory batch fallback."""
+"""Format-agnostic live source contracts and the in-memory stack wrapper."""
 
 import os
 import re
@@ -203,7 +203,7 @@ class InMemoryStackWrapper:
 
         # Mirror the DataObj axis/scale metadata contract so pass-through
         # reconstructors (e.g. View-only) get the same labels/calibration on the
-        # live batch-fallback path as on a batch load. Without these, their
+        # in-memory wrapper path as on a batch load. Without these, their
         # process() raises AttributeError on the in-memory wrapper.
         ndim = self._data.ndim
         fallback_scales, fallback_unit = axis_scales_from_element_size(self._attrs, ndim)

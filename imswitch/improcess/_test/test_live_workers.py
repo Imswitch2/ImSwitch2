@@ -5,7 +5,7 @@ import threading
 import numpy as np
 
 from imswitch.improcess.live import LiveProcessWorker, LiveSource, LiveStreamWorker
-from imswitch.improcess.live.buffer import StackRing
+from imswitch.improcess.live.buffer import FrameGate, RawDataBuffer
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.reconstructors.base import (
     Chunk,
@@ -149,8 +149,8 @@ def test_process_worker_reads_ring_and_pushes_per_frame():
     session = _TestSession()
     session.begin(_init_obj(init_frames=2, expected_frames=6), {})  # push (0, 2)
 
-    ring = StackRing(2, (4, 5), np.float32)  # frames_per_stack = 2
-    barrier = threading.Event()
+    ring = RawDataBuffer(2, (4, 5), np.float32)  # frames_per_stack = 2
+    barrier = FrameGate()
     worker = LiveProcessWorker(session, ring, barrier, frames_per_stack=2,
                                viewer_update_interval_s=0.0)  # emit every frame
 
@@ -162,16 +162,18 @@ def test_process_worker_reads_ring_and_pushes_per_frame():
     assert session.pushed_chunks == [(0, 2), (2, 3), (3, 4)]
     np.testing.assert_array_equal(session.buffer[2], 1.0)
     np.testing.assert_array_equal(session.buffer[3], 2.0)
-    assert barrier.is_set()  # (3 + 1) % 2 == 0 -> last frame of the stack
+    # The gate counts frames rather than latching at stack ends: every frame
+    # is reported, so a slot is freed as soon as its frame is done.
+    assert barrier.position == 3
 
 
 def test_process_worker_result_emit_is_throttled_but_always_fires_at_stack_end():
     session = _TestSession()
     session.begin(_init_obj(init_frames=2, expected_frames=30), {})
 
-    ring = StackRing(10, (4, 5), np.float32)
+    ring = RawDataBuffer(10, (4, 5), np.float32)
     # Large interval -> mid-stack frames are throttled out; only stack ends emit.
-    worker = LiveProcessWorker(session, ring, threading.Event(),
+    worker = LiveProcessWorker(session, ring, FrameGate(),
                                frames_per_stack=10, viewer_update_interval_s=1e6)
     updates = []
     worker.sigResultUpdated.connect(updates.append)
@@ -186,8 +188,8 @@ def test_process_worker_result_emit_is_throttled_but_always_fires_at_stack_end()
 def test_process_worker_result_emits_every_frame_when_interval_zero():
     session = _TestSession()
     session.begin(_init_obj(init_frames=2, expected_frames=20), {})
-    ring = StackRing(10, (4, 5), np.float32)
-    worker = LiveProcessWorker(session, ring, threading.Event(),
+    ring = RawDataBuffer(10, (4, 5), np.float32)
+    worker = LiveProcessWorker(session, ring, FrameGate(),
                                frames_per_stack=10, viewer_update_interval_s=0.0)
     updates = []
     worker.sigResultUpdated.connect(updates.append)
@@ -200,21 +202,24 @@ def test_process_worker_result_emits_every_frame_when_interval_zero():
 
 
 def test_process_worker_releases_barrier_even_when_push_raises():
-    """A bad frame is logged, not raised -- and the barrier is still set."""
+    """A bad frame is logged, not raised -- and its slot is still freed.
+
+    Withholding the report would leave the producer waiting on a slot whose
+    frame is never coming back."""
 
     class _BadPush(_TestSession):
         def push(self, chunk, start, end):
             raise RuntimeError("bad frame")
 
     session = _BadPush()
-    ring = StackRing(2, (4, 5), np.float32)
-    barrier = threading.Event()
+    ring = RawDataBuffer(2, (4, 5), np.float32)
+    barrier = FrameGate()
     worker = LiveProcessWorker(session, ring, barrier, frames_per_stack=2)
 
     ring.write(1, np.zeros((4, 5), np.float32))
-    worker.process_chunk(1)  # (1 + 1) % 2 == 0 -> last frame
+    worker.process_chunk(1)
 
-    assert barrier.is_set()
+    assert barrier.position == 1
 
 
 def test_live_process_worker_finalize_failure_emits_failed_signal():
@@ -227,7 +232,7 @@ def test_live_process_worker_finalize_failure_emits_failed_signal():
     session = _FinishFailsSession()
     session.begin(_init_obj(init_frames=1, expected_frames=1), {})
     worker = LiveProcessWorker(
-        session, StackRing(1, (4, 5), np.float32), threading.Event(), frames_per_stack=1
+        session, RawDataBuffer(1, (4, 5), np.float32), FrameGate(), frames_per_stack=1
     )
 
     failed = []
@@ -253,9 +258,9 @@ def _idle_worker(n_frames=1):
 def test_dispatch_chunks_ring_mode_unrolls_frames_to_the_ring():
     worker = _idle_worker()
     worker._frames_per_stack = 4
-    ring = StackRing(4, (4, 5), np.float32)
-    worker._ring = ring
-    worker._stack_consumed.set()  # so the boundary wait returns immediately
+    ring = RawDataBuffer(4, (4, 5), np.float32)
+    worker.resume(ring)          # also allocates the slot-ownership table
+    # Slots start unowned, so nothing is waited on here.
 
     emitted = []
     worker.sigFramesReady.connect(emitted.append)
@@ -266,7 +271,10 @@ def test_dispatch_chunks_ring_mode_unrolls_frames_to_the_ring():
     assert emitted == [4, 5, 6, 7]
     np.testing.assert_array_equal(ring.read(4)[0], stack[0])
     np.testing.assert_array_equal(ring.read(7)[0], stack[3])
-    assert not worker._stack_consumed.is_set()  # the boundary wait cleared it
+    # Each slot now records the frame occupying it, which is what the next
+    # pass waits on -- rather than deriving it from the index, which a
+    # skipped timepoint would make wrong.
+    assert worker._slot_owner == [4, 5, 6, 7]
 
 
 def test_dispatch_chunks_chunk_mode_emits_whole_chunks():
@@ -279,28 +287,32 @@ def test_dispatch_chunks_chunk_mode_emits_whole_chunks():
     assert got == [c]
 
 
-def test_await_stack_consumed_true_when_preset_and_clears_event():
+def test_await_free_slot_true_when_the_occupant_is_already_consumed():
+    """The argument is the frame *in* the slot, not the one being written."""
     worker = _idle_worker()
-    worker._stack_consumed.set()
-    assert worker._await_stack_consumed() is True
-    assert not worker._stack_consumed.is_set()
+    worker._ring = RawDataBuffer(4, (4, 5), np.float32)
+    worker._frame_gate.consumed_through(3)
+
+    assert worker._await_free_slot(3) is True
 
 
-def test_await_stack_consumed_times_out_and_signals_stall():
+def test_await_free_slot_times_out_and_signals_stall():
     worker = _idle_worker()
+    worker._ring = RawDataBuffer(4, (4, 5), np.float32)
     worker._stall_timeout_s = 0.05
     stalled, complete = [], []
     worker.sigStalled.connect(stalled.append)
     worker.sigStackComplete.connect(lambda: complete.append(True))
 
-    assert worker._await_stack_consumed() is False
+    assert worker._await_free_slot(0) is False   # nothing consumed -> never frees
     assert stalled and complete
 
 
-def test_await_stack_consumed_false_when_stopped():
+def test_await_free_slot_false_when_stopped():
     worker = _idle_worker()  # stall_timeout_s is None -> would block forever
+    worker._ring = RawDataBuffer(4, (4, 5), np.float32)
     worker._running = False   # simulate stop()
-    assert worker._await_stack_consumed() is False
+    assert worker._await_free_slot(0) is False
 
 
 class _RetryOpenSource(_TestSource):
@@ -596,8 +608,8 @@ class _PlaneSession(_TestSession):
 
 
 def _worker(session, frames_per_stack=10, interval=0.0):
-    ring = StackRing(frames_per_stack, (4, 5), np.float32)
-    return LiveProcessWorker(session, ring, threading.Event(),
+    ring = RawDataBuffer(frames_per_stack, (4, 5), np.float32)
+    return LiveProcessWorker(session, ring, FrameGate(),
                              frames_per_stack=frames_per_stack,
                              viewer_update_interval_s=interval), ring
 
@@ -694,23 +706,25 @@ def test_publishing_updates_logs_no_errors():
     assert worker._logger.error.call_args_list == []
 
 
-def test_barrier_is_released_at_every_stack_end():
+def test_every_frame_is_reported_not_only_stack_ends():
     """Removing the duplicated release must not cost the real one."""
     session = _PlaneSession()
     session.begin(_init_obj(init_frames=2, expected_frames=20), {})
-    ring = StackRing(10, (4, 5), np.float32)
-    barrier = threading.Event()
+    ring = RawDataBuffer(10, (4, 5), np.float32)
+    barrier = FrameGate()
     worker = LiveProcessWorker(session, ring, barrier, frames_per_stack=10,
                                viewer_update_interval_s=0.0)
 
     for i in range(2, 9):
         ring.write(i, np.zeros((4, 5), np.float32))
         worker.process_chunk(i)
-    assert not barrier.is_set()          # mid-stack
+    # The gate counts frames. A per-stack latch reported nothing until the
+    # stack ended, which is what made the buffer have to hold a whole one.
+    assert barrier.position == 8         # mid-stack, and already advancing
 
     ring.write(9, np.zeros((4, 5), np.float32))
     worker.process_chunk(9)              # (9 + 1) % 10 == 0 -> stack end
-    assert barrier.is_set()
+    assert barrier.position == 9
 
 
 def test_barrier_is_released_even_when_publishing_raises():
@@ -724,12 +738,12 @@ def test_barrier_is_released_even_when_publishing_raises():
 
     session = _BadPlane()
     session.begin(_init_obj(init_frames=2, expected_frames=20), {})
-    ring = StackRing(10, (4, 5), np.float32)
-    barrier = threading.Event()
+    ring = RawDataBuffer(10, (4, 5), np.float32)
+    barrier = FrameGate()
     worker = LiveProcessWorker(session, ring, barrier, frames_per_stack=10,
                                viewer_update_interval_s=0.0)
 
     ring.write(9, np.zeros((4, 5), np.float32))
     worker.process_chunk(9)
 
-    assert barrier.is_set()
+    assert barrier.position == 9

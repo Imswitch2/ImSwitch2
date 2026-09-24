@@ -4,7 +4,7 @@ Watches a chosen root folder for new *timelapse* sub-folders and drives one
 ``LiveReconstructionController`` run at a time. Discovery is two units from
 ``improcess/live/discovery.py``:
 
-* ``DirectoryWatcher`` -- root folder -> ``sigTimelapseFound(folder)`` for each
+* ``DirectoryWatcher`` -- root folder -> ``sigEntryFound(entry)`` for each
   new immediate sub-directory;
 * ``JobQueue`` -- a folder -> a :class:`DiscoveredJob` (its timepoint-0
   ``.zarr`` store) once one appears.
@@ -30,12 +30,6 @@ from .LiveReconstructionController import LiveReconstructionController
 class LiveModeController(ImProcessWidgetController):
     """Live reconstruction mode: watch -> queue -> one run at a time."""
 
-    # TODO: is 'LiveModeController' really a good descriptive name of the
-    #   controller? It acts like an orchestrator (watch -> queue -> dispatch)
-    #   and does no reconstruction itself, so 'LiveOrchestratorController' may
-    #   fit better. Deferred so it can land together with the planned
-    #   "Directory watcher" panel rename, rather than renaming twice.
-
     def __init__(self, *args, main_controller=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._main_controller = main_controller
@@ -43,7 +37,7 @@ class LiveModeController(ImProcessWidgetController):
 
         # All four collaborators live only while live mode is running; they are
         # built in _start_live and are None until then.
-        self._run_controller = None # Instance of 'LiveReconstructionController'
+        self._live_rec_ctr = None
         self._directory_watcher = None
         self._job_queue = None
         self._tick_timer = None
@@ -94,16 +88,16 @@ class LiveModeController(ImProcessWidgetController):
             self._watched_folder = folder_path
             self._job_queue = JobQueue()
             self._directory_watcher = DirectoryWatcher(folder_path, parent=self)
-            self._directory_watcher.sigTimelapseFound.connect(self._on_timelapse_found)
+            self._directory_watcher.sigEntryFound.connect(self._on_entry_found)
         self._currently_processing = False
 
-        if self._run_controller is None:
-            self._run_controller = LiveReconstructionController(self._commChannel)
+        if self._live_rec_ctr is None:
+            self._live_rec_ctr = LiveReconstructionController(self._commChannel)
         try:
-            self._run_controller.sigFinished.disconnect(self._on_job_finished)
+            self._live_rec_ctr.sigFinished.disconnect(self._on_job_finished)
         except TypeError:
             pass
-        self._run_controller.sigFinished.connect(self._on_job_finished)
+        self._live_rec_ctr.sigFinished.connect(self._on_job_finished)
 
         # Retry pending folders (a folder can appear before its first store).
         self._tick_timer = QtCore.QTimer(self)
@@ -124,8 +118,8 @@ class LiveModeController(ImProcessWidgetController):
             self._tick_timer.deleteLater()
             self._tick_timer = None
 
-        if self._run_controller is not None:
-            self._run_controller.stop()
+        if self._live_rec_ctr is not None:
+            self._live_rec_ctr.stop()
 
         self._currently_processing = False
         self._logger.info("Live mode stopped")
@@ -149,7 +143,7 @@ class LiveModeController(ImProcessWidgetController):
             self._logger.info("Skip ignored: no timelapse is being processed")
             return
         self._logger.info("Skipping the rest of the current timelapse")
-        self._run_controller.stop(notify_finished=True)
+        self._live_rec_ctr.stop(notify_finished=True)
 
     @QtCore.Slot()
     def _on_reset_clicked(self) -> None:
@@ -209,13 +203,16 @@ class LiveModeController(ImProcessWidgetController):
 
     # -------------------------------------------------------------- queueing
 
-    # TODO: update the name of this private-method, since we might discover
-    #   data that doesn't correspond to a time-lapse
-
     @QtCore.Slot(str)
-    def _on_timelapse_found(self, folder: str) -> None:
-        self._job_queue.add(folder)
-        self._logger.info(f"Discovered timelapse folder: {folder}")
+    def _on_entry_found(self, entry: str) -> None:
+        """Queue a newly-discovered root entry and try to start it.
+
+        An entry, not a timelapse folder: the watcher also reports single
+        recordings sitting in the root, and what each one turns out to be is
+        settled later, by probing it.
+        """
+        self._job_queue.add(entry)
+        self._logger.info(f"Discovered entry: {entry}")
         self._process_next_job()
 
     def _process_next_job(self) -> None:
@@ -245,13 +242,15 @@ class LiveModeController(ImProcessWidgetController):
             candidate = self._job_queue.next_ready()
             if candidate is None:
                 break
+
             candidate_type = probe_source_type(candidate.seed_path)
             if candidate_type is None:
                 # Defer only what is still there: an entry since deleted
                 # would otherwise be re-queued and re-probed forever.
                 if os.path.exists(candidate.seed_path):
                     deferred.append(candidate)
-                continue
+                break
+
             # Read like every other plugin capability, so an out-of-tree
             # reconstructor predating this one accepts whatever it is given
             # rather than failing to start at all.
@@ -263,9 +262,9 @@ class LiveModeController(ImProcessWidgetController):
                     f"{candidate_type.layout} recording of "
                     f"{candidate_type.frames_per_stack} frame(s) per timepoint"
                 )
-                continue
-            job, source_type = candidate, candidate_type
-            break
+            else:
+                job, source_type = candidate, candidate_type
+                break
 
         # Hand back the not-yet-readable ones whatever the outcome: dequeuing
         # is how they were inspected, and dropping one loses its recording.
@@ -294,7 +293,7 @@ class LiveModeController(ImProcessWidgetController):
         try:
             self._current_job_name = job_name
             self._current_save_stem = save_stem
-            started = self._run_controller.start(
+            started = self._live_rec_ctr.start(
                 reconstructor, source, params,
                 source_arg=job.seed_path, name=job_name,
             )

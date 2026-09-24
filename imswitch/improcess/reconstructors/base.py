@@ -101,8 +101,9 @@ class Reconstructor(ABC):
         layouts = self.accepted_layouts
         if layouts is not None and getattr(source_type, "layout", None) not in layouts:
             return False
-        if self.requires_frame_stacks and not getattr(
-            source_type, "has_frame_stacks", False
+        if (
+            self.requires_frame_stacks
+            and not getattr(source_type, "has_frame_stacks", False)
         ):
             return False
         return True

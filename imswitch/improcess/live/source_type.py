@@ -33,7 +33,10 @@ from typing import Any
 
 import numpy as np
 
-from imswitch.improcess.model.dataset_sources import HDF5_SPEC, ZARR_SPEC
+from imswitch.improcess.model.dataset_sources import (
+    HDF5_SPEC,
+    ZARR_SPEC,
+)
 
 # Reuse the recorder-metadata readers rather than keeping a second set that can
 # drift: _meta_lookup handles both the flat ImSwitch2 layout and legacy nested
@@ -256,11 +259,20 @@ def probe_source_type(seed_path: Any) -> RawSourceType | None:
     # outright rather than report it.
     scan_groups = _scan_group_count(seed_path, format_id)
     sibling_span = _sibling_lapse_span(seed_path)
-    if (not scan_groups and format_id == FORMAT_ZARR
-            and not _zarr_store_streamable(seed_path)):
+    if (
+        not scan_groups
+        and format_id == FORMAT_ZARR
+        and not _zarr_store_streamable(seed_path)
+    ):
         return None
 
-    source = ZarrLiveSource() if format_id == FORMAT_ZARR else Hdf5LiveSource()
+    if format_id == FORMAT_ZARR:
+        source = ZarrLiveSource()
+    elif format_id == FORMAT_HDF5:
+        source = Hdf5LiveSource()
+    else:
+        return None
+
     stack_info = None
     try:
         stack_info = source.open(seed_path)
@@ -289,6 +301,7 @@ def probe_source_type(seed_path: Any) -> RawSourceType | None:
         attrs = {**(group_attrs or {}), **(attrs or {})}
     if not attrs:
         attrs = _root_attrs(seed_path, format_id)
+
     return raw_source_type_from_evidence(
         attrs,
         format_id,
@@ -309,16 +322,16 @@ def _scan_group_count(path: Any, format_id: str) -> int:
     try:
         if format_id == FORMAT_ZARR:
             import zarr
-
             root = zarr.open(str(path), mode="r")
             if not hasattr(root, "keys"):
                 return 0
             return sum(1 for key in root.keys() if is_scan_group_name(key))
-
-        import h5py
-
-        with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
-            return sum(1 for key in handle.keys() if is_scan_group_name(key))
+        elif format_id == FORMAT_HDF5:
+            import h5py
+            with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
+                return sum(1 for key in handle.keys() if is_scan_group_name(key))
+        else:
+            return 0
     except Exception:
         return 0
 
@@ -328,13 +341,13 @@ def _root_attrs(path: Any, format_id: str) -> dict[str, Any]:
     try:
         if format_id == FORMAT_ZARR:
             import zarr
-
             return dict(zarr.open(str(path), mode="r").attrs)
-
-        import h5py
-
-        with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
-            return dict(handle.attrs)
+        elif format_id == FORMAT_HDF5:
+            import h5py
+            with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
+                return dict(handle.attrs)
+        else:
+            return {}
     except Exception:
         return {}
 
@@ -349,7 +362,6 @@ def _scan0_evidence(path: Any, format_id: str) -> "tuple[dict, int | None]":
     try:
         if format_id == FORMAT_ZARR:
             import zarr
-
             root = zarr.open(str(path), mode="r")
             names = sorted(
                 (k for k in root.keys() if is_scan_group_name(k)),
@@ -358,17 +370,18 @@ def _scan0_evidence(path: Any, format_id: str) -> "tuple[dict, int | None]":
             if not names:
                 return {}, None
             return _first_array_evidence(root[names[0]])
-
-        import h5py
-
-        with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
-            names = sorted(
-                (k for k in handle.keys() if is_scan_group_name(k)),
-                key=lambda k: int(str(k)[4:]),
-            )
-            if not names:
-                return {}, None
-            return _first_array_evidence(handle[names[0]])
+        elif format_id == FORMAT_HDF5:
+            import h5py
+            with h5py.File(str(path), "r", libver="latest", swmr=True) as handle:
+                names = sorted(
+                    (k for k in handle.keys() if is_scan_group_name(k)),
+                    key=lambda k: int(str(k)[4:]),
+                )
+                if not names:
+                    return {}, None
+                return _first_array_evidence(handle[names[0]])
+        else:
+            return {}, None
     except Exception:
         return {}, None
 

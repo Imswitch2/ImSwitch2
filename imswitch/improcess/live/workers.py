@@ -8,6 +8,7 @@ from qtpy import QtCore
 
 from imswitch.imcommon.model.logging import initLogger
 from imswitch.improcess.reconstructors.base import Chunk, StreamingSession
+from .buffer import FrameGate
 
 
 class LiveStreamWorker(QtCore.QObject):
@@ -21,22 +22,22 @@ class LiveStreamWorker(QtCore.QObject):
       3. wait for the controller to ``begin()`` the session (resume gate),
       4. stream the remaining frames.
     With ``do_open=False`` it behaves as a plain poll loop over an
-    already-opened source (used by the batch-fallback path).
+    already-opened source.
 
     Two hand-off modes, chosen per :meth:`resume`:
 
-    * **ring mode** (a ``StackRing`` was passed to ``resume``): each frame is
-      written into the ring and its ring index emitted on ``sigFramesReady``.
-      Between stacks the loop blocks on the ``stack_consumed`` event until the
-      process worker has drained the previous stack (option (b) barrier).
-    * **chunk mode** (no ring, e.g. the batch-fallback path): whole ``Chunk``
-      objects are emitted on ``sigChunkReady`` as today.
+    * **buffer mode** (a ``RawDataBuffer`` was passed to ``resume``): each
+      frame is written into the buffer and its global index emitted on
+      ``sigFramesReady``. Before reusing a slot the loop waits on the frame
+      gate for the frame that slot still holds.
+    * **chunk mode** (no buffer): whole ``Chunk`` objects are emitted on
+      ``sigChunkReady``, for a consumer that wants them unsplit.
     """
 
     sigOpened = QtCore.Signal(object)          # StackInfo
     sigInitStackReady = QtCore.Signal(object)  # first-stack ndarray
     sigChunkReady = QtCore.Signal(object)      # Chunk (chunk mode)
-    sigFramesReady = QtCore.Signal(int)        # ring index (ring mode)
+    sigFramesReady = QtCore.Signal(int)        # global frame index (buffer mode)
     sigStackComplete = QtCore.Signal()
     sigFailed = QtCore.Signal(str)
     sigStalled = QtCore.Signal(float)          # seconds waited
@@ -82,24 +83,31 @@ class LiveStreamWorker(QtCore.QObject):
         self._pending_chunks: list[Chunk] = []
         self._last_progress = None
         # Owned here (like _resume_event); the controller wires the process
-        # worker to this same Event. Only waited on in ring mode.
-        self._stack_consumed = threading.Event()
-        # Set by resume() for ring mode.
-        self._ring = None
+        # worker to this same gate. Only waited on in buffer mode.
+        self._frame_gate = FrameGate()
+        # Set by resume() for buffer mode.
+        self._raw_buffer = None
+        # Which frame index each buffer slot currently holds, or None while
+        # the slot has never been written. Producer-side and single-threaded:
+        # only this worker writes, so only it knows what it would overwrite.
+        self._slot_owner: list[int | None] = []
 
-    def resume(self, ring=None) -> None:
+    def resume(self, raw_buffer=None) -> None:
         """Release the post-``begin()`` gate so the remainder starts streaming.
 
         Args:
-            ring: A ``StackRing`` to write frames into (ring mode). ``None``
-                keeps chunk mode (``sigChunkReady``). The ``_stack_consumed``
-                barrier event is owned by this worker; the controller wires the
-                process worker to it before calling ``resume``.
+            raw_buffer: A ``RawDataBuffer`` to write frames into (buffer mode).
+                ``None`` keeps chunk mode (``sigChunkReady``). The frame gate
+                is owned by this worker; the controller wires the process
+                worker to it before calling ``resume``.
 
-        Storing ``ring`` *before* ``_resume_event.set()`` makes the set the
+        Store ``_raw_buffer`` *before* ``_resume_event.set()`` makes the set the
         happens-before edge, so the poll loop sees a fully-built ref.
         """
-        self._ring = ring
+        self._raw_buffer = raw_buffer
+        self._slot_owner = (
+            [None] * raw_buffer.capacity if raw_buffer is not None else []
+        )
         self._resume_event.set()
 
     @property
@@ -108,9 +116,14 @@ class LiveStreamWorker(QtCore.QObject):
         return self._frames_per_stack
 
     @property
-    def stack_consumed(self) -> threading.Event:
-        """The inter-stack barrier event (owned here; wire the process worker to it)."""
-        return self._stack_consumed
+    def frame_gate(self) -> FrameGate:
+        """The producer/consumer gate (owned here; wire the process worker to it).
+
+        Bounds how far ahead the producer may write. Replaces a per-stack
+        event: the bound is the same when the buffer holds one stack, but
+        stated per frame it also fits a buffer sized for the job.
+        """
+        return self._frame_gate
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -148,8 +161,10 @@ class LiveStreamWorker(QtCore.QObject):
                     self.sigFailed.emit(str(e))
                     return False
                 self._sleep()
+
         if stack_info is None:
             return False
+
         self._frames_per_stack = max(1, int(stack_info.frames_per_stack or 1))
         self.sigOpened.emit(stack_info)
         self._last_progress = time.monotonic()
@@ -180,8 +195,10 @@ class LiveStreamWorker(QtCore.QObject):
                         end=chunk.end,
                     )
                     self._pending_chunks.append(overflow)
+
             elif self._source.is_complete():
                 break
+
             else:
                 if self._stall_timeout_s is not None:
                     elapsed = time.monotonic() - self._last_progress
@@ -196,12 +213,15 @@ class LiveStreamWorker(QtCore.QObject):
                         )
                         return False
                 self._sleep()
+
         if self._interrupted():
             return False
+
         if not buffered:
             self._logger.error("Source completed without yielding any frames")
             self.sigFailed.emit("source yielded no frames")
             return False
+
         self.sigInitStackReady.emit(np.concatenate(buffered, axis=0))
 
         # 3. Wait for the controller to begin() the session before streaming the rest.
@@ -209,6 +229,7 @@ class LiveStreamWorker(QtCore.QObject):
             if self._interrupted():
                 return False
             self._resume_event.wait(0.05)
+
         return True
 
     def _poll_loop(self) -> None:
@@ -273,33 +294,37 @@ class LiveStreamWorker(QtCore.QObject):
     def _dispatch_chunks(self, chunks: list[Chunk]) -> bool:
         """Hand a batch of freshly-polled chunks to the consumer.
 
-        Chunk mode (``self._ring is None``): emit each ``Chunk`` on
-        ``sigChunkReady`` — unchanged behaviour.
+        Chunk mode (``self._raw_buffer is None``): emit each ``Chunk`` whole
+        on ``sigChunkReady``.
 
-        Ring mode: unroll every chunk into individual frames. For each ring
-        index ``ring_idx`` in ``[chunk.start, chunk.end)`` (``ring_idx =
-        chunk.start + offset``):
-          * if ``ring_idx`` is the first frame of a new stack
-            (``ring_idx > 0 and ring_idx % self._frames_per_stack == 0``), first
-            block on :meth:`_await_stack_consumed` so the previous stack's ring
-            slots are free;
-          * ``self._ring.write(ring_idx, chunk.data[offset])``;
-          * ``self.sigFramesReady.emit(ring_idx)``.
+        Buffer mode: unroll every chunk into individual frames. For each
+        global frame index ``frame_index`` in ``[chunk.start, chunk.end)``:
+          * look up the frame that currently occupies that index's slot; if
+            there is one and it has not been consumed, block on
+            :meth:`_await_free_slot` until it has;
+          * ``self._raw_buffer.write(frame_index, chunk.data[offset])`` and
+            record the slot's new occupant;
+          * ``self.sigFramesReady.emit(frame_index)``.
+
+        The wait is on the slot's *occupant*, not on ``frame_index -
+        capacity``: a timelapse that skips a timepoint leaves a hole in the
+        index sequence, and the arithmetic form would wait on a frame that
+        is never produced.
 
         Returns:
             ``True`` to keep looping; ``False`` if the caller should stop
             (barrier stalled or interruption during the wait).
         """
-        # non-ring mode
-        if self._ring is None:
+        # chunk mode
+        if self._raw_buffer is None:
             for chunk in chunks:
                 self.sigChunkReady.emit(chunk)
             return True
 
-        # ring mode
+        # buffer mode
         if self._frames_per_stack is None:
             self.sigFailed.emit(
-                "Ring mode requires 'frames_per_stack', which currently is 'None'."
+                "Buffer mode requires 'frames_per_stack', which currently is 'None'."
             )
             return False
 
@@ -310,34 +335,41 @@ class LiveStreamWorker(QtCore.QObject):
 
             frames_in_chunk = chunk.data.shape[0]
             for frame_idx in range(frames_in_chunk):
-                ring_idx = chunk.start + frame_idx
-                if ring_idx > 0 and ring_idx % frames_per_stack == 0:
-                    stack_consumed = self._await_stack_consumed()
-                    if not stack_consumed:
+                raw_buffer_idx = chunk.start + frame_idx
+                slot = raw_buffer_idx % self._raw_buffer.capacity
+                owner = self._slot_owner[slot]
+                # None means the slot has never been written, so there is
+                # nothing to overwrite. Asking for the occupant by name is
+                # what survives a timelapse skipping a timepoint: the global
+                # index jumps, and 'index - capacity' would name a frame that
+                # is never produced and so never consumed.
+                if owner is not None and not self._frame_gate.reached(owner):
+                    if not self._await_free_slot(owner):
                         return False
-                self._ring.write(ring_idx, chunk.data[frame_idx])
-                self.sigFramesReady.emit(ring_idx)
+                self._raw_buffer.write(raw_buffer_idx, chunk.data[frame_idx])
+                self._slot_owner[slot] = raw_buffer_idx
+                self.sigFramesReady.emit(raw_buffer_idx)
 
         return True
 
-    def _await_stack_consumed(self) -> bool:
-        """Block until the process worker has drained the current stack.
+    def _await_free_slot(self, owner_index: int) -> bool:
+        """Block until ``owner_index`` -- the frame currently in the slot we are
+        about to reuse -- has been consumed.
 
-        Polls ``self._stack_consumed`` in ``poll_interval_ms`` slices so an
-        interruption stays responsive, then clears the event before returning
-        so the *next* boundary actually waits. Bounded by
-        ``self._stall_timeout_s`` when it is set: on timeout, log, emit
-        ``sigStalled`` and ``sigStackComplete`` (tell the process worker to
-        finalize with partial data), and return ``False``. A ``None`` timeout
-        means wait indefinitely -- only an interruption breaks out.
+        Polls in ``poll_interval_ms`` slices so an interruption stays
+        responsive. Bounded by ``self._stall_timeout_s`` when it is set: on
+        timeout, log, emit ``sigStalled`` and ``sigStackComplete`` (tell the
+        process worker to finalize with partial data), and return ``False``. A
+        ``None`` timeout means wait indefinitely -- only an interruption breaks
+        out.
 
         Returns:
-            ``True`` once the stack has drained; ``False`` on stall-timeout or
+            ``True`` once the slot is free; ``False`` on stall-timeout or
             interruption.
         """
         step = self._poll_interval_ms / 1000.0
         start = time.monotonic()
-        while not self._stack_consumed.wait(step):
+        while not self._frame_gate.wait_until(owner_index, step):
             if self._interrupted():
                 return False
 
@@ -345,24 +377,23 @@ class LiveStreamWorker(QtCore.QObject):
                 elapsed = time.monotonic() - start
                 if elapsed > self._stall_timeout_s:
                     self._logger.warning(
-                        f"Process worker did not drain the stack within "
+                        f"Process worker did not keep up within "
                         f"{self._stall_timeout_s:.0f}s; finalizing with partial data"
                     )
                     self.sigStalled.emit(elapsed)
                     self.sigStackComplete.emit()
                     return False
-        self._stack_consumed.clear()
         return not self._interrupted()
 
     def stop(self) -> None:
         """Request the worker loop to stop and release any gate it may block on."""
         self._running = False
         self._resume_event.set()
-        self._stack_consumed.set()
+        self._frame_gate.release()
 
 
 class LiveProcessWorker(QtCore.QObject):
-    """Owns a StreamingSession: begins it, then reconstructs frames from a StackRing.
+    """Owns a StreamingSession: begins it, then reconstructs frames from the buffer.
 
     Everything here runs on the process thread — including ``session.begin()``,
     which for MoNaLISA localizes the whole first stack and must not block the UI.
@@ -379,8 +410,8 @@ class LiveProcessWorker(QtCore.QObject):
     def __init__(
         self,
         session: StreamingSession,
-        ring,
-        stack_consumed: "threading.Event",
+        raw_buffer,
+        frame_gate,
         frames_per_stack: int,
         viewer_update_interval_s: float = 0.2,
     ):
@@ -388,9 +419,9 @@ class LiveProcessWorker(QtCore.QObject):
         Args:
             session: A StreamingSession instance (not yet begun -- see
                 :meth:`begin_session`).
-            ring: The shared ``StackRing`` the stream worker writes into.
-            stack_consumed: Event to ``set()`` after the last frame of each
-                stack, releasing the stream worker's inter-stack barrier.
+            raw_buffer: The shared ``RawDataBuffer`` the stream worker writes into.
+            frame_gate: Gate to report each finished frame to, freeing its
+                buffer slot for the stream worker to reuse.
             frames_per_stack: Frames per stack (for the stack-boundary test).
             viewer_update_interval_s: Lower bound on wall-clock time between
                 viewer updates, so a fast process loop cannot flood the GUI
@@ -408,8 +439,8 @@ class LiveProcessWorker(QtCore.QObject):
         """
         super().__init__()
         self._session = session
-        self._ring = ring
-        self._stack_consumed = stack_consumed
+        self._raw_buffer = raw_buffer
+        self._frame_gate = frame_gate
         self._frames_per_stack = frames_per_stack
         self._viewer_update_interval_s = viewer_update_interval_s
         # Seed from the clock, not 0.0: time.monotonic() is an absolute reading
@@ -448,19 +479,20 @@ class LiveProcessWorker(QtCore.QObject):
 
     @QtCore.Slot(int)
     def process_chunk(self, index: int) -> None:
-        """Reconstruct the frame at ring ``index`` and drive result cadence + barrier.
+        """Reconstruct the frame at raw_buffer ``index`` and drive result cadence + barrier.
 
         Steps:
           1. bail if interruption was requested (the stream worker's own
              ``stop`` / ``_interrupted`` handles the barrier in that case);
-          2. ``frames = self._ring.read(index)`` — a ``(1, H, W)`` view; must be
+          2. ``frames = self._raw_buffer.read(index)`` — a ``(1, H, W)`` view; must be
              consumed synchronously here (``session.push`` must not retain it);
           3. ``self._session.push(frames, index, index + 1)``;
           4. publish a viewer update -- at the last frame of a stack, or once
              ``viewer_update_interval_s`` has elapsed since the previous one
              (whichever comes first). See :meth:`_publish_update`;
-          5. if ``(index + 1) % self._frames_per_stack == 0`` this was the last
-             frame of a stack -> ``self._stack_consumed.set()``.
+          5. report the frame to the gate, freeing its buffer slot; if
+             ``(index + 1) % self._frames_per_stack == 0`` this was the last
+             frame of a stack -> ``sigTimepointDone``.
 
         Steps 2–4 run in a try/except (a bad frame is logged, not raised — it
         must not kill the stream); **step 5 runs outside that try**, so an
@@ -470,13 +502,11 @@ class LiveProcessWorker(QtCore.QObject):
         if QtCore.QThread.currentThread().isInterruptionRequested():
             return
 
-        # The LiveProcessorWorker tries to read raw frame data from the StackRing.
-        # It then pushes the raw data to the StreamingSession instance, for example,
-        # the MonalisaSession, which performs the processing. The session instance
-        # then stores the result in a buffer: self.reconstructed.
+        # Reads the raw frame out of the shared RawDataBuffer and pushes it to
+        # the StreamingSession, which accumulates the reconstruction.
         stack_end = (index + 1) % self._frames_per_stack == 0
         try:
-            frames = self._ring.read(index)
+            frames = self._raw_buffer.read(index)
             self._session.push(frames, index, index + 1)
             now = time.monotonic()
             if stack_end or now - self._last_result_emit >= self._viewer_update_interval_s:
@@ -485,9 +515,14 @@ class LiveProcessWorker(QtCore.QObject):
         except Exception as e:
             self._logger.error(f"Error processing frame {index}: {e}")
 
+        # Outside the try, and for every frame rather than every stack: the
+        # frame has been read either way, and a slot never reported free is a
+        # slot the producer waits on forever. Reporting only at stack ends is
+        # what the per-stack barrier did, and it wedges a gate counting frames.
+        self._frame_gate.consumed_through(index)
+
         if stack_end:
             self.sigTimepointDone.emit(index // self._frames_per_stack)
-            self._stack_consumed.set()
 
     def _publish_update(self) -> None:
         """Send the viewer either the whole result or just the newest plane.
@@ -520,8 +555,8 @@ class LiveProcessWorker(QtCore.QObject):
         finished rather than cut off mid-way.
 
         That is what makes a graceful stop cheap: with reconstruction slower
-        than streaming, the stream worker is normally blocked on the inter-stack
-        barrier having already dispatched the whole timepoint, so those frames
+        than streaming, the stream worker is normally blocked on the frame
+        gate having already dispatched the whole timepoint, so those frames
         are sitting in this thread's queue. Draining them costs at most the rest
         of one timepoint and needs no extra synchronisation.
 

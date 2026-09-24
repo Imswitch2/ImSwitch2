@@ -71,7 +71,7 @@ def _controller(reconstructor=None):
     c._main_controller = SimpleNamespace(
         _activeReconstructor=reconstructor or object(), _widget=None
     )
-    c._run_controller = _FakeLive()
+    c._live_rec_ctr = _FakeLive()
     c._job_queue = JobQueue()
     c._directory_watcher = None
     c._tick_timer = None
@@ -85,7 +85,7 @@ def _controller(reconstructor=None):
     # _start_live() wires this in the real controller; the stub is built with
     # __new__ so it has to be done here or sigFinished goes nowhere. A lambda,
     # not the bound method: c has no initialised QObject to receive on.
-    c._run_controller.sigFinished.connect(lambda: c._on_job_finished())
+    c._live_rec_ctr.sigFinished.connect(lambda: c._on_job_finished())
     return c
 
 
@@ -117,9 +117,9 @@ def test_timelapse_with_a_store_is_queued_and_started(tmp_path):
     seed = _store(folder)
 
     c = _controller()
-    c._on_timelapse_found(str(folder))
+    c._on_entry_found(str(folder))
 
-    assert c._run_controller.start_calls == [seed]
+    assert c._live_rec_ctr.start_calls == [seed]
     assert c._currently_processing is True
 
 
@@ -128,13 +128,13 @@ def test_folder_without_a_store_stays_pending_until_one_appears(tmp_path):
     folder.mkdir()
 
     c = _controller()
-    c._on_timelapse_found(str(folder))
-    assert c._run_controller.start_calls == []
+    c._on_entry_found(str(folder))
+    assert c._live_rec_ctr.start_calls == []
     assert len(c._job_queue) == 1          # still pending
 
     seed = _store(folder)
     c._process_next_job()                  # tick timer would call this
-    assert c._run_controller.start_calls == [seed]
+    assert c._live_rec_ctr.start_calls == [seed]
 
 
 def test_one_run_at_a_time_advances_on_finish(tmp_path):
@@ -142,12 +142,12 @@ def test_one_run_at_a_time_advances_on_finish(tmp_path):
     _store(tmp_path / "b")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "a"))
-    c._on_timelapse_found(str(tmp_path / "b"))
-    assert len(c._run_controller.start_calls) == 1   # b waits
+    c._on_entry_found(str(tmp_path / "a"))
+    c._on_entry_found(str(tmp_path / "b"))
+    assert len(c._live_rec_ctr.start_calls) == 1   # b waits
 
     c._on_job_finished()
-    assert len(c._run_controller.start_calls) == 2
+    assert len(c._live_rec_ctr.start_calls) == 2
 
 
 def test_start_failure_does_not_stall_the_queue(tmp_path):
@@ -155,11 +155,11 @@ def test_start_failure_does_not_stall_the_queue(tmp_path):
     _store(tmp_path / "b")
 
     c = _controller()
-    c._run_controller.start_return = False
-    c._on_timelapse_found(str(tmp_path / "a"))
-    c._on_timelapse_found(str(tmp_path / "b"))
+    c._live_rec_ctr.start_return = False
+    c._on_entry_found(str(tmp_path / "a"))
+    c._on_entry_found(str(tmp_path / "b"))
 
-    assert len(c._run_controller.start_calls) == 2
+    assert len(c._live_rec_ctr.start_calls) == 2
     assert c._currently_processing is False
 
 
@@ -175,11 +175,11 @@ def test_job_is_named_after_its_timelapse_folder(tmp_path):
     _store(tmp_path / "timelapse_01")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "timelapse_00"))
+    c._on_entry_found(str(tmp_path / "timelapse_00"))
     c._on_job_finished()
-    c._on_timelapse_found(str(tmp_path / "timelapse_01"))
+    c._on_entry_found(str(tmp_path / "timelapse_01"))
 
-    assert c._run_controller.start_names == ["timelapse_00", "timelapse_01"]
+    assert c._live_rec_ctr.start_names == ["timelapse_00", "timelapse_01"]
 
 
 def test_job_name_survives_a_trailing_separator(tmp_path):
@@ -188,9 +188,9 @@ def test_job_name_survives_a_trailing_separator(tmp_path):
     _store(folder)
 
     c = _controller()
-    c._on_timelapse_found(str(folder) + os.sep)
+    c._on_entry_found(str(folder) + os.sep)
 
-    assert c._run_controller.start_names == ["timelapse_09"]
+    assert c._live_rec_ctr.start_names == ["timelapse_09"]
 
 
 def test_seed_is_the_lowest_indexed_store_via_multifile_source(tmp_path):
@@ -205,12 +205,12 @@ def test_seed_is_the_lowest_indexed_store_via_multifile_source(tmp_path):
     with patch(
         "imswitch.improcess.controller.LiveModeController.make_live_source"
     ) as mock_factory:
-        c._on_timelapse_found(str(folder))
+        c._on_entry_found(str(folder))
 
     mock_factory.assert_called_once()
     assert mock_factory.call_args.args[0] == seed
     assert mock_factory.call_args.args[1].layout == LAYOUT_MULTIFILE_LAPSE
-    assert c._run_controller.start_calls == [seed]
+    assert c._live_rec_ctr.start_calls == [seed]
 
 
 def _h5_dataset(folder, name="solo.h5", *, frames=6):
@@ -238,11 +238,11 @@ def test_a_single_dataset_job_is_started_too(tmp_path):
     with patch(
         "imswitch.improcess.controller.LiveModeController.make_live_source"
     ) as mock_factory:
-        c._on_timelapse_found(seed)
+        c._on_entry_found(seed)
 
     mock_factory.assert_called_once()
     assert mock_factory.call_args.args[1].layout == LAYOUT_SINGLE
-    assert c._run_controller.start_calls == [seed]
+    assert c._live_rec_ctr.start_calls == [seed]
 
 
 def test_a_job_the_reconstructor_cannot_use_is_skipped(tmp_path):
@@ -259,9 +259,9 @@ def test_a_job_the_reconstructor_cannot_use_is_skipped(tmp_path):
     _store(folder, "rec_scan0.zarr", num_timepoints=5, frames=1)
 
     c = _controller(reconstructor=_NeedsStacks())
-    c._on_timelapse_found(str(folder))
+    c._on_entry_found(str(folder))
 
-    assert c._run_controller.start_calls == []
+    assert c._live_rec_ctr.start_calls == []
     assert len(c._job_queue) == 0            # skipped, not left pending
 
 
@@ -300,17 +300,17 @@ def test_rerun_after_reset_gets_its_own_indexed_name(tmp_path):
     _store(folder)
 
     c = _controller()
-    c._on_timelapse_found(str(folder))
+    c._on_entry_found(str(folder))
     c._on_job_finished()
 
     c._on_reset_clicked()
-    c._on_timelapse_found(str(folder))
+    c._on_entry_found(str(folder))
     c._on_job_finished()
 
     c._on_reset_clicked()
-    c._on_timelapse_found(str(folder))
+    c._on_entry_found(str(folder))
 
-    assert c._run_controller.start_names == [
+    assert c._live_rec_ctr.start_names == [
         "timelapse_00", "timelapse_00.1", "timelapse_00.2"
     ]
 
@@ -321,11 +321,11 @@ def test_first_run_of_a_folder_keeps_its_bare_name(tmp_path):
     _store(tmp_path / "b")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "a"))
+    c._on_entry_found(str(tmp_path / "a"))
     c._on_job_finished()
-    c._on_timelapse_found(str(tmp_path / "b"))
+    c._on_entry_found(str(tmp_path / "b"))
 
-    assert c._run_controller.start_names == ["a", "b"]
+    assert c._live_rec_ctr.start_names == ["a", "b"]
 
 
 def test_reset_shuts_live_mode_down(tmp_path):
@@ -338,12 +338,12 @@ def test_reset_shuts_live_mode_down(tmp_path):
     _store(tmp_path / "timelapse_00")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "timelapse_00"))
+    c._on_entry_found(str(tmp_path / "timelapse_00"))
     assert c._currently_processing is True
 
     c._on_reset_clicked()
 
-    assert c._run_controller.stops == 1          # run in flight ended
+    assert c._live_rec_ctr.stops == 1          # run in flight ended
     assert c._currently_processing is False      # slot freed
     assert c._widget.liveCheck.isChecked() is False   # UI reflects the stop
 
@@ -354,8 +354,8 @@ def test_reset_leaves_nothing_queued_or_running(tmp_path):
     _store(tmp_path / "b")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "a"))
-    c._on_timelapse_found(str(tmp_path / "b"))    # b queued behind a
+    c._on_entry_found(str(tmp_path / "a"))
+    c._on_entry_found(str(tmp_path / "b"))    # b queued behind a
     assert len(c._job_queue) == 1
 
     c._on_reset_clicked()
@@ -383,14 +383,14 @@ def test_skip_ends_the_current_run_and_starts_the_next(tmp_path):
     _store(tmp_path / "b")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "a"))
-    c._on_timelapse_found(str(tmp_path / "b"))      # queued behind a
-    assert c._run_controller.start_names == ["a"]
+    c._on_entry_found(str(tmp_path / "a"))
+    c._on_entry_found(str(tmp_path / "b"))      # queued behind a
+    assert c._live_rec_ctr.start_names == ["a"]
 
     c._on_skip_clicked()
 
-    assert c._run_controller.stops == 1
-    assert c._run_controller.start_names == ["a", "b"]
+    assert c._live_rec_ctr.stops == 1
+    assert c._live_rec_ctr.start_names == ["a", "b"]
 
 
 def test_skip_asks_the_queue_to_advance_and_keeps_the_timepoint(tmp_path):
@@ -403,10 +403,10 @@ def test_skip_asks_the_queue_to_advance_and_keeps_the_timepoint(tmp_path):
     _store(tmp_path / "a")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "a"))
+    c._on_entry_found(str(tmp_path / "a"))
     c._on_skip_clicked()
 
-    assert c._run_controller.stop_kwargs == [
+    assert c._live_rec_ctr.stop_kwargs == [
         {"graceful": True, "notify_finished": True}
     ]
 
@@ -416,14 +416,14 @@ def test_skip_does_not_stop_watching(tmp_path):
     _store(tmp_path / "a")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "a"))
+    c._on_entry_found(str(tmp_path / "a"))
     c._on_skip_clicked()                            # abandoned, queue now empty
 
     _store(tmp_path / "c")
-    c._on_timelapse_found(str(tmp_path / "c"))      # discovered after the skip
+    c._on_entry_found(str(tmp_path / "c"))      # discovered after the skip
 
     assert c._widget.liveCheck.isChecked() is True
-    assert c._run_controller.start_names == ["a", "c"]
+    assert c._live_rec_ctr.start_names == ["a", "c"]
 
 
 def test_skipped_folder_is_not_reprocessed(tmp_path):
@@ -432,12 +432,12 @@ def test_skipped_folder_is_not_reprocessed(tmp_path):
     _store(tmp_path / "b")
 
     c = _controller()
-    c._on_timelapse_found(str(tmp_path / "a"))
-    c._on_timelapse_found(str(tmp_path / "b"))
+    c._on_entry_found(str(tmp_path / "a"))
+    c._on_entry_found(str(tmp_path / "b"))
     c._on_skip_clicked()                            # -> b
     c._on_job_finished()                            # b done, queue empty
 
-    assert c._run_controller.start_names == ["a", "b"]
+    assert c._live_rec_ctr.start_names == ["a", "b"]
     assert len(c._job_queue) == 0
 
 
@@ -445,7 +445,7 @@ def test_skip_with_nothing_running_is_a_no_op():
     c = _controller()
     c._on_skip_clicked()
 
-    assert c._run_controller.stops == 0
+    assert c._live_rec_ctr.stops == 0
 
 
 # --- saving a finished timelapse -----------------------------------------
@@ -465,7 +465,7 @@ def test_no_save_request_when_the_toggle_is_off(tmp_path):
     c = _controller()
     c._watched_folder = str(tmp_path)
 
-    c._on_timelapse_found(str(tmp_path / "timelapse_00"))
+    c._on_entry_found(str(tmp_path / "timelapse_00"))
     c._on_job_finished()
 
     assert _save_requests(c) == []
@@ -480,7 +480,7 @@ def test_finished_timelapse_is_saved_beside_the_watched_folder(tmp_path):
     c._watched_folder = str(root)
     c._widget.saveCheck.setChecked(True)
 
-    c._on_timelapse_found(str(root / "timelapse_00"))
+    c._on_entry_found(str(root / "timelapse_00"))
     c._on_job_finished()
 
     expected = os.path.join(str(tmp_path / "root_recon"), "timelapse_00_recon.tif")
@@ -499,7 +499,7 @@ def test_skipped_timelapse_is_saved_too(tmp_path):
     c._watched_folder = str(root)
     c._widget.saveCheck.setChecked(True)
 
-    c._on_timelapse_found(str(root / "timelapse_00"))
+    c._on_entry_found(str(root / "timelapse_00"))
     c._on_skip_clicked()                            # -> sigFinished -> save
 
     assert [name for name, _ in _save_requests(c)] == ["timelapse_00"]
@@ -516,7 +516,7 @@ def test_each_run_is_saved_under_its_own_name(tmp_path):
     c._watched_folder = str(root)
     c._widget.saveCheck.setChecked(True)
 
-    c._on_timelapse_found(str(folder))
+    c._on_entry_found(str(folder))
     c._on_job_finished()
     c._job_queue.add(str(folder))                   # as a reset re-discovery would
     c._process_next_job()
