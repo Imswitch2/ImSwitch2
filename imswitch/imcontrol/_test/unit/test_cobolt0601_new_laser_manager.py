@@ -114,6 +114,7 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
     m._laser = laser
     m._port = 'COM_TEST'
     m._modulation_power_mw = float(modulation_power_mw)
+    m._scan_resume_settle_s = 0.0
     m._setpoint_mw = 0
     m._enabled = False
     m._real_hw = True
