@@ -2,19 +2,19 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 45,
-    "docs_agree": 132,
-    "docs_documented": 132,
-    "keys": 211,
+    "docs_agree": 133,
+    "docs_documented": 133,
+    "keys": 212,
     "managers": 61,
     "none_default_only": 28,
     "none_only": 18,
-    "optional": 149,
+    "optional": 150,
     "reads_any": 56,
     "refs": 15,
     "required": 62,
-    "typed_by_code": 92,
-    "typed_with_docs": 153,
-    "typed_with_examples": 124,
+    "typed_by_code": 93,
+    "typed_with_docs": 154,
+    "typed_with_examples": 125,
     "uncertain": 0,
     "unresolved_reads": 3,
     "with_keys": 56,
@@ -72,9 +72,9 @@
         "LaserManager"
       ],
       "overridden": true,
-      "properties": 7,
+      "properties": 8,
       "required": 2,
-      "source_sha256": "c0a45fcf328a39da6136746eb3032897aac7ddbc2d835a046039b1046e802759"
+      "source_sha256": "10d7578c16ea5b28ecb3fc60e14201fde4de37f0bcca50b9582dda6551bb1f8b"
     },
     "APDManager": {
       "category": "detectors",
@@ -410,7 +410,7 @@
       "overridden": false,
       "properties": 7,
       "required": 0,
-      "source_sha256": "d306520b6fef1e1c146e8516fd6c29b628f15512993b06369919c2ef4e95ff9a"
+      "source_sha256": "baf04af45e35139652946bdff0de70497f6cf13ebabe04683232d34a97ccf9e6"
     },
     "MockPositionerManager": {
       "category": "positioners",

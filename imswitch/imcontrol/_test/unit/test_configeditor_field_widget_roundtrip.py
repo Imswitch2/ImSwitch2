@@ -6,6 +6,9 @@ selects and returns the int entry, and that a stale string in a select lands
 on the matching entry instead of growing a duplicate.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PyQt5")
@@ -13,6 +16,9 @@ pytest.importorskip("PyQt5")
 from PyQt5.QtTest import QTest
 
 from imswitch.imcontrol.view.configeditor import editor
+
+RS232_TEMPLATE = (Path(editor.__file__).parent / "builtin_templates" / "rs232devices"
+                  / "RS232Manager.json")
 
 
 def _type(fw, text):
@@ -78,6 +84,58 @@ def test_select_keeps_an_unknown_saved_value_selectable(qapp):
     fw = editor.FieldWidget(_field("baudrate", "select", opts=[9600, 115200]), 57600)
     assert fw._w.count() == 3
     assert fw.get_value() == 57600
+
+
+def _termination_field(key="recv_termination"):
+    """The RS232 template's own field, so the test follows the shipped options."""
+    template = json.loads(RS232_TEMPLATE.read_text(encoding="utf-8"))
+    return next(f for f in template["props"] if f["key"] == key)
+
+
+@pytest.mark.parametrize("key", ["recv_termination", "send_termination"])
+def test_choosing_a_termination_writes_the_real_line_ending(qapp, key):
+    """Choosing \\r used to save backslash + r, and every device query timed out."""
+    fw = editor.FieldWidget(_termination_field(key), None)
+    labels = [fw._w.itemText(i) for i in range(fw._w.count())]
+    assert labels == ["\\n", "\\r", "\\r\\n"]
+    chosen = {}
+    for index, label in enumerate(labels):
+        fw._w.setCurrentIndex(index)
+        fw._w.activated.emit(index)
+        chosen[label] = fw.get_value()
+    assert chosen == {"\\n": "\n", "\\r": "\r", "\\r\\n": "\r\n"}
+    assert json.dumps(chosen["\\r"]) == '"\\r"'
+
+
+def test_a_saved_carriage_return_lands_on_its_entry(qapp):
+    fw = editor.FieldWidget(_termination_field(), "\r")
+    assert fw._w.count() == 3
+    assert fw._w.currentText() == "\\r"
+    assert fw.get_value() == "\r"
+
+
+def test_an_escaped_termination_from_an_older_editor_reads_differently(qapp):
+    """The two characters an older editor saved must not pass for a line ending.
+
+    Shown as they are (\\\\r) next to the real \\r entry, kept untouched, and
+    replaced by the real carriage return once the operator picks it.
+    """
+    fw = editor.FieldWidget(_termination_field(), "\\r")
+    assert fw._w.count() == 4
+    assert fw._w.currentText() == "\\\\r"
+    assert fw.get_value() == "\\r"
+    index = fw._w.findText("\\r")
+    fw._w.setCurrentIndex(index)
+    fw._w.activated.emit(index)
+    assert fw.get_value() == "\r"
+
+
+@pytest.mark.parametrize("option, label", [
+    ("9600", "9600"), (9600, "9600"), ("none", "none"), ("µm", "µm"),
+    ("\r\n", "\\r\\n"), ("\t", "\\t"), ("\x03", "\\x03"), ("C:\\a", "C:\\\\a"),
+])
+def test_option_labels_escape_only_what_would_be_invisible_or_ambiguous(option, label):
+    assert editor._option_label(option) == label
 
 
 def test_raw_line_edit_reads_back_through_its_original(qapp):
