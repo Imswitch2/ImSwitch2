@@ -315,8 +315,8 @@ Roughly in priority order:
    another one.
 5. *(dropped by decision, 2026-07-02)* ~~Give the live-reconstruction debug
    loop a synthetic sample.~~ Judged overkill: replaying *real* legacy
-   recordings through the real storers/live sources (local harness in
-   ``Mini_Recon/live_replay/``, not in-repo) validates the streaming
+   recordings through the real storers/live sources (a local harness, not
+   in-repo) validates the streaming
    pipeline end-to-end with data whose reconstruction can actually be
    judged, which covers the need better than a simulated scene would.
 6. **Add SLM/rotator optical-effect stubs** where cheap (e.g. rotator mock

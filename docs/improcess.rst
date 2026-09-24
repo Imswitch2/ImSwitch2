@@ -869,15 +869,15 @@ enabled, raw frames are normalized with the same 4th-power frame-energy
 correction, ``(E_0 / E_i) ** 4``, before reconstruction. The option is off by
 default.
 
-Fast-Gauss uses the Mini_Recon-style Gaussian footprint: concentric
-rectangular shells around each localized focus, followed by a least-squares
+Fast-Gauss uses a Gaussian footprint: concentric rectangular shells
+around each localized focus, followed by a least-squares
 fit of Gaussian amplitude plus optional constant background. The parameter
 widget exposes the fit and footprint options that used to be hard-coded:
 ``Fast Gauss options -> Footprint rectangles`` defaults to ``3`` shells,
 ``Fast Gauss options -> Gaussian sigma`` defaults to ``2.0`` pixels, and
 ``Fast Gauss options -> Pinhole radius`` defaults to ``1.5`` times sigma.
 ``Fast Gauss options -> Footprint mode`` controls which footprint is active:
-``Rectangular shells`` keeps the Mini_Recon footprint, while
+``Rectangular shells`` keeps the shell footprint described above, while
 ``Circular pinhole`` replaces it with a circular detection footprint using the
 pinhole radius.
 The shared ``BG modelling`` option controls whether the fast path fits a
