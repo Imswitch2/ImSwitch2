@@ -892,6 +892,23 @@ live path: a 2D Right-Left / Up-Down scan, one Z slice, and optional
 timepoints. Use the default ``MoNaLISA`` method for the full coefficient-based
 pipeline.
 
+.. admonition:: Documentation TODO — scrub the remaining external references
+   :class: danger
+
+   These pages no longer name the private post-processing program that the
+   fast-Gauss footprint and the SNOUTY deskew were originally ported from, but
+   the application still does.  Two parameter tooltips in the fast-Gauss
+   options name it, and so do attribution headers in the SNOUTY deskew and
+   restack modules, a handful of source comments, and one test name.  The
+   tooltips are the urgent ones: users read those.
+
+   One reference is functional rather than cosmetic — the directory watcher
+   skips a results folder named after that program — so check whether such
+   folders still need excluding before deleting it.
+
+   The name is deliberately not repeated here, since keeping it out of the
+   published pages is the point.  ``git grep`` in the repository finds it.
+
 Pass-through reconstructors
 ===========================
 
