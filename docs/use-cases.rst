@@ -11,7 +11,7 @@ The user can change the setup option during execution in "Tools" -> "Pick hardwa
 
 Parallelized confocal and RESOLFT (MoNaLISA)
 ---------------------------------------------
-Here we explain how we implemented ImSwitch for `MoNaLISA <https://www.nature.com/articles/s41467-018-05799-w>`_. In the article, you will find more information
+Here we explain how we implemented ImSwitch2 for `MoNaLISA <https://www.nature.com/articles/s41467-018-05799-w>`_. In the article, you will find more information
 about the setup and how the data is reconstructed.
 
 Configuration file and hardware specifications
@@ -43,9 +43,9 @@ So, for example, we program our scan and then click "Scan Once" in REC to start 
 The metadata is also saved in the hdf5 and can be reloaded from the toolbar.
 It contains all the scanning pulses and hardware parameters related to the experiment.
 
-* GUI while using two-color widefield:
+* The hardware control module, shown here with a mock setup loaded:
 
-.. image:: ./images/gui.png
+.. image:: ./images/auto/mock-main-window.png
     :width: 600px
     :align: center
 
@@ -65,16 +65,16 @@ and ROI statistics.
 "Multidata management" stacks all the data incoming from the hardware control
 module.
 
-* The Image Processing module is illustrated in the following image:
+* The ImProcess module is illustrated in the following image:
 
-.. image:: ./images/reconstruction.png
+.. image:: ./images/auto/improcess-main-window.png
     :width: 600px
     :align: center
 
 
 Point-scanning confocal and STED 
 ----------------------------------
-Here we explain how we implemented ImSwitch for a `custom-built STED setup <https://doi.org/10.1088/1361-6463/ab4c13>`_ in the lab, previously controlled by a combination of closed-source software (image acquisition) and purpose-built software (hardware control). In the article, you will find more information about the setup, what hardware it contains, and the type of image acquisition we want to perform.
+Here we explain how we implemented ImSwitch2 for a `custom-built STED setup <https://doi.org/10.1088/1361-6463/ab4c13>`_ in the lab, previously controlled by a combination of closed-source software (image acquisition) and purpose-built software (hardware control). In the article, you will find more information about the setup, what hardware it contains, and the type of image acquisition we want to perform.
 
 Configuration file and hardware specifications
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -105,25 +105,15 @@ Main module
 ^^^^^^^^^^^^
 The main, and only, module for this use case is used to control all the hardware, screen the sample with widefield, acquiring the images, and inspecting them with the visualization tools. We have provided a more detailed explanation of the GUI :doc:`here <gui>`. To record a confocal image, the user sets the scan parameters that they want for each scan axis (length, pixel size, center position), the pixel dwell time, sets the laser powers they want to use, set the TTL start to 0 and end to 1 (units is lines) for the excitation laser they want to use, and runs the scan. The view of the detectors not in use can be hidden in the visualization tool. The scanning module will build the scanning curves, laser modulation curves, create those tasks in the Nidaq, and start them. The raw data is displayed in the liveview, where the image is updated line-by-line during the acquisition. For recording a STED image the procedure is much the same, with the addition that the use turns on the STED laser in the laser module, and sets the corresponding TTL start and end to the same values, and runs the scan. Before this the SLM has to be configured in order to create a desired depletion pattern, where for using a donut and tophat there are helpful tools in the SLM module to align the mask and the aberration correction that will be specific to each setup.
 
-Previous to any image acquisition, while using either a repeating fast confocal scan or a widefield image, the sample has to be set in focus, and the focus lock can then be used to lock the sample in the focal plane. The focus lock can be left on for as long as wanted, including across a whole tiling run. It is not, however, independent of acquisition when the scan drives the focus axis: this setup reaches one piezo both as the analog scanner ``ND-PiezoZ`` and as the serial positioner ``PiezoZ``, so a correcting lock would oppose the intentional Z waveform. ImSwitch suspends focus actuation for the duration of such a scan and waits for the focus signal to be reacquired before correcting again — see :ref:`focuslock-scan-arbitration`.
+Previous to any image acquisition, while using either a repeating fast confocal scan or a widefield image, the sample has to be set in focus, and the focus lock can then be used to lock the sample in the focal plane. The focus lock can be left on for as long as wanted, including across a whole tiling run. It is not, however, independent of acquisition when the scan drives the focus axis: this setup reaches one piezo both as the analog scanner ``ND-PiezoZ`` and as the serial positioner ``PiezoZ``, so a correcting lock would oppose the intentional Z waveform. ImSwitch2 suspends focus actuation for the duration of such a scan and waits for the focus signal to be reacquired before correcting again — see :ref:`focuslock-scan-arbitration`.
 
 The user can choose to save the acquired image to a desired folder and with a desired name by using the Snap button in the recording widget. It will be saved in hdf5 format, and will include all user-defined parameters from the GUI as metadata. Functionality to reload metadata parameters from a previously saved hdf5 file can be found in the toolbar, for easy and precise recreation of a previous experiment. Previously recorded images in tiff format can also be loaded in the visualization module in order to be directly compared with the last recorded image or each other. 
-
-* GUI after having acquired a confocal and a STED image:
-
-.. image:: ./images/sted-confocal-usecase.png
-    :width: 600px
-    :align: center
 
 
 CoolLED control through USB and TTLs using a NIDAQ
 ----------------------------------------------------
 
-.. image:: ./images/coolLED_GUI.png
-    :width: 600px
-    :align: center
-
-We got a CoolLED (https://www.coolled.com/) in the lab and decided to try ImSwitch out in a setting where we want to control the 8 lasers of the device,
+We got a CoolLED (https://www.coolled.com/) in the lab and decided to try ImSwitch2 out in a setting where we want to control the 8 lasers of the device,
 both by doing it manually using the sliders and buttons (using a USB port and RS232 communication protocol), but also being able to design and perform a sequence of TTLs and a X-Y-Z Stage controlled by a National Instruments card. This use case could be combined with the Napari viewer and a camera,
 or a point scanning system, or any of the other widgets explained in the other Use Cases.
 
@@ -155,7 +145,7 @@ The pulses will be directly handled by the National Instruments card and our TTL
 
 Event-triggered STED imaging
 ----------------------------------
-Here we explain how we implemented ImSwitch for `event-triggered STED imaging <https://doi.org/10.1101/2021.10.26.465907>`_ (etSTED) in the lab, on the same STED setup described above. For this imaging technique, where widefield and STED imaging modalities are connected and automatically controlled, ImSwitch was crucial to push the temporal resolution of the switch of imaging modalities at the moment of a detect event down to the tens of milliseconds timescale. In the article, you will find more information about the imaging technique and its hardware requirements.
+Here we explain how we implemented ImSwitch2 for `event-triggered STED imaging <https://doi.org/10.1101/2021.10.26.465907>`_ (etSTED) in the lab, on the same STED setup described above. For this imaging technique, where widefield and STED imaging modalities are connected and automatically controlled, ImSwitch2 was crucial to push the temporal resolution of the switch of imaging modalities at the moment of a detect event down to the tens of milliseconds timescale. In the article, you will find more information about the imaging technique and its hardware requirements.
 
 Configuration file and hardware specifications
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
