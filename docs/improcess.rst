@@ -69,9 +69,9 @@ There are three ways to open data:
 
 * **Drag and drop.** Drag one or more files onto the main window.
   Files with multiple datasets prompt a dataset picker.
-* **Folder watcher.** Point the watcher pane at a directory and tick
-  *"Watch and run"* — newly arrived files are loaded automatically and
-  optionally reconstructed.
+* **Directory watcher.** Point the watcher pane at a root folder and
+  tick *"Start monitoring"* — new timelapse sub-folders are picked up as
+  they appear and streamed through the active reconstructor.
 * **Manual load.** Use the *Load data* button or *File* menu.
 
 Plugin architecture
@@ -812,10 +812,9 @@ Active reconstructor
 A combo box at the top of the Parameters dock lists every registered
 reconstructor and shows which one will run when *Reconstruct current* fires.
 Picking a different entry swaps the parameter widget below the picker (with
-the dock title following along: ``Parameters — WidefieldSTARSS analysis``),
-re-wires the watcher's output subfolder (see below), and — for pass-through
-plugins — re-renders the currently loaded ``DataObj`` in the viewer
-immediately.
+the dock title following along: ``Parameters — WidefieldSTARSS analysis``)
+and — for pass-through plugins — re-renders the currently loaded
+``DataObj`` in the viewer immediately.
 
 The picker's choices come from the ``processing:`` config block at startup;
 if you list ``["view-only", "widefield-starss"]`` under ``reconstructors``,
@@ -1081,20 +1080,61 @@ only useful together with ``napariStormViewer``.
 Until a control is touched the renderer decides from the data, so an untouched
 panel never overrides what a result would draw on its own.
 
-File watcher save folder
-========================
+Directory watcher
+=================
 
-When the *Watch and run* checkbox is on, the watcher writes each
-reconstructed output under ``{watched_dir}/{default_save_subdir}/``.  The
-subdirectory name comes from the active reconstructor's class attribute::
+The watcher pane reconstructs timelapse folders as they appear on disk.
+Point it at a **root folder** — one level above the ``.zarr`` stores
+themselves — and tick **Start monitoring**.  Each new immediate
+sub-directory is treated as one timelapse and streamed through the active
+reconstructor, one run at a time.
 
-    class SnoutyReconstructor(Reconstructor):
-        id = "snouty"
-        default_save_subdir = "deskew"
+Discovery is two steps (``improcess/live/discovery.py``):
+``DirectoryWatcher`` reports each new sub-directory of the root, and
+``JobQueue`` waits until that folder's timepoint-0 store appears before
+queueing it.  Whether a store is ready to open is not decided in advance —
+the stream worker opens it with bounded retry, and following the later
+timepoints inside a folder is the ``LiveSource``'s job.
 
-The default is ``"rec"``.  Switching reconstructors in the active-reconstructor
-picker also retargets the watcher, so two watchers running back-to-back on the
-same folder with different plugins won't overwrite each other's outputs.
+Before a reader is built the recording is classified
+(``improcess/live/source_type.py``): its container format, on-disk layout
+and shape decide which ``LiveSource`` to use, and whether the selected
+reconstructor can work on that shape at all.  MoNaLISA needs stacks of
+frames per timepoint; a pass-through viewer does not.  Classification is
+deliberately separate from construction, so the compatibility gate can be
+consulted without building a reader first.
+
+Controls
+--------
+
+**Save reconstruction(s) (.tif)**
+    Off by default.  When on, a finished or skipped timelapse is written to
+    ``<watched folder>_recon/<name>_recon.tif`` — a *sibling* of the
+    watched folder, not a subdirectory of it.
+
+**Skip directory**
+    Stop reconstructing the current timelapse and move on to the next.
+    What has already been reconstructed is kept, and the timepoint in
+    progress is finished first.
+
+**Reset**
+    Forget which folders have been processed, so the root is reconstructed
+    again from the start.  Re-runs are indexed, and the two spellings
+    differ deliberately::
+
+        run 0:  timelapse_00      ->  timelapse_00_recon.tif
+        run 1:  timelapse_00.1    ->  timelapse_00_recon_1.tif
+
+    The results list keeps the folder name with a ``.1`` suffix; the file
+    puts the index last, which reads better as a filename.
+
+Turning monitoring off and on again for the *same* root keeps its seen-set,
+so nothing is reprocessed.  Choosing a different root starts fresh.
+
+.. note::
+
+   The panel is called **Directory watcher** in the interface, but the
+   setup-file key that shows or hides it is still ``fileWatcherPanel``.
 
 Result flow
 ===========
@@ -1386,8 +1426,6 @@ Done:
 * Active-reconstructor picker in the Parameters dock header — flip
   between registered plugins on the fly, with the param widget and dock
   title following the choice
-* File watcher's output subfolder driven by the active reconstructor's
-  ``default_save_subdir`` instead of a hardcoded ``rec/``
 * ``sigResultProduced`` decouples producers from the napari list widget,
   so future processor-chain runners and CLI batch processors can publish
   results without reaching into the main view
@@ -1544,9 +1582,22 @@ Two optional class attributes refine the UX without any extra method:
   (see *Pass-through reconstructors* above).  Use only when
   ``process()`` performs no real signal processing — otherwise every
   dataset load would silently trigger your compute step.
-* ``default_save_subdir = "deskew"`` (or another short folder name)
-  changes the subdirectory under which the file watcher writes outputs
-  for this plugin.  Defaults to ``"rec"``.
+* ``default_save_subdir = "deskew"`` (or another short folder name) is
+  declared by ``Reconstructor`` and overridden by a few built-ins, but see
+  the note below before relying on it.
+
+.. admonition:: Documentation TODO — ``default_save_subdir`` is unused
+   :class: danger
+
+   Nothing reads ``default_save_subdir``.  It is declared on
+   ``Reconstructor`` (default ``"rec"``) and overridden by ``beadrec``,
+   ``smlm-localizer`` (``smlm``) and ``tiling-mosaic`` (``mosaic``), and
+   contract tests pin those values — but no controller consults it.  The
+   directory watcher writes to ``<watched folder>_recon/`` regardless of
+   which reconstructor ran.
+
+   Either the save path should honour it again or the attribute and its
+   tests should go.  Until then, setting it in a new plugin has no effect.
 
 A ``Processor`` follows the same pattern but its ``apply(result, params)``
 takes a ``ProcessingResult`` and returns a new one — see
