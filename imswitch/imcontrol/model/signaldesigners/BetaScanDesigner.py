@@ -41,6 +41,9 @@ class BetaScanDesigner(ScanDesigner):
                                     'return_time']
 
     def checkSignalLength(self, scanParameters, setupInfo):
+        return not self.signalLengthRefusal(scanParameters, setupInfo)
+
+    def signalLengthRefusal(self, scanParameters, setupInfo):
         """Honour ``maxScanTimeMin`` from the dwell and the pixel counts.
 
         The cap was read by the Galvo designer alone, and declared only by
@@ -49,12 +52,11 @@ class BetaScanDesigner(ScanDesigner):
         seconds = self.estimateScanSeconds(scanParameters, setupInfo)
         limit = getattr(setupInfo.scan, 'maxScanTimeMin', None)
         if limit and seconds > 60 * float(limit):
-            self._logger.error(
+            return (
                 f'Scan would take {seconds / 60:.1f} min, above the '
                 f'{limit:g} min cap (scan.maxScanTimeMin).'
             )
-            return False
-        return True
+        return ''
 
     def estimateScanSeconds(self, scanParameters, setupInfo):
         """Wall-clock length of the scan these parameters describe."""
