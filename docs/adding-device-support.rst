@@ -2,8 +2,11 @@
 Adding support for more devices
 *******************************
 
-Imswitch2's hardware control module supports four main device types:
-**detectors**, **lasers**, **positioners**, and **rotators**.
+ImSwitch2's hardware control module drives several kinds of device. This
+page covers the four with an abstract manager base class: **detectors**,
+**lasers**, **positioners** and **rotators**. A setup file can also declare
+RS232 devices, SLMs, flip mirrors, a microscope stand and a pulse generator;
+see :doc:`setupinfo-reference`.
 
 .. note::
 
@@ -15,7 +18,7 @@ Imswitch2's hardware control module supports four main device types:
    the same base-class contracts, so the guidance below applies to both.
 
 In order to add an **in-tree** device, a corresponding device manager class is
-implemented in Imswitch2's code as described below.
+implemented in ImSwitch2's code as described below.
 
 .. toctree::
    :hidden:
@@ -47,7 +50,7 @@ and for rotators it is ``RotatorManager``.
 These derived classes are placed in the ``detectors``, ``lasers``, ``positioners`` and ``rotators`` sub-modules respectively in the ``imswitch.imcontrol.model.managers`` module.
 
 The required constructor signature for the device managers is ``__init__(deviceInfo, name, **lowLevelManagers)``.
-``deviceInfo`` is the ``DetectorInfo``, ``LaserInfo`` or ``PositionerInfo`` object which represents the device's entry in the setup file
+``deviceInfo`` is the ``DetectorInfo``, ``LaserInfo`` or ``PositionerInfo`` object (a plain ``DeviceInfo`` for rotators) which represents the device's entry in the setup file
 (see :doc:`the hardware control setup page <imcontrol-setups>` for further information).
 Inside it, the ``managerProperties`` dict field may contain manager-specific properties.
 ``name`` is a unique name that is used to identify the device,
@@ -63,8 +66,20 @@ Overriding non-abstract methods is generally fine,
 but you should make sure that they continue to work as expected.
 The device manager class must be placed in a .py file with the same name as the class,
 in the appropriate location as outlined above.
-No other action is required for the device manager to be available to use;
-it will automatically be managed by a multi-manager as outlined in `the original ImSwitch JOSS paper <https://doi.org/10.21105/joss.03394>`_.
+At run time nothing else is needed: a setup entry whose ``managerName`` is the class name
+loads it, and it is managed by a multi-manager as outlined in `the original ImSwitch JOSS paper <https://doi.org/10.21105/joss.03394>`_.
+
+The test suite keeps an inventory of the in-tree managers, so CI fails for a new one until you also:
+
+* register it in ``imswitch/imcontrol/model/plugins/builtins.py`` (and update the registered count
+  asserted in ``imswitch/imcontrol/_test/unit/test_setup_metadata.py``), or add its ``(kind, name)``
+  pair to ``_UNREGISTERED_CORE_MANAGERS`` in that test;
+* regenerate the configuration-editor schemas with ``python tools/extract_manager_schemas.py --write``
+  and update the manager count asserted in
+  ``imswitch/imcontrol/_test/unit/test_configeditor_schemas_match_source.py``;
+* add a card for it, listing every ``managerProperties`` key it reads, to its page under
+  ``docs/devices/`` (checked by ``test_devices_docs_drift.py``), or add its name to that test's
+  ``UNDOCUMENTED`` set.
 
 A simple reference implementation lives in-tree at
 ``imswitch/imcontrol/model/managers/positioners/NidaqPositionerManager.py``.
@@ -143,15 +158,28 @@ lowLevelManagers['rs232sManager']
    :members:
 
 
+lowLevelManagers['triggerScopeManager']
+---------------------------------------
+
+Present only when the setup file has a ``triggerScope`` block: a
+``TriggerScopeManager`` (``imswitch/imcontrol/model/managers/TriggerScopeManager.py``)
+that owns the serial connection to a TriggerScope board and its raw DAC/TTL
+primitives.  ``TriggerScopeLaserManager`` and ``TriggerScopePositionerManager``
+use it.  Without that block the key is absent, so read it with
+``lowLevelManagers.get('triggerScopeManager')``.
+
+
 lowLevelManagers['pulseGeneratorManager']
 -----------------------------------------
 
-Backend-agnostic digital pulse generator (Teensy / Arduino today;
-PulseStreamer once migrated; future NI / FPGA backends).  Available
-when ``setupInfo.teensyPulse`` (or future equivalent) is configured;
-``None`` otherwise.  Managers that depend on it should follow the
-mock-mode fallback pattern from
-:class:`~imswitch.imcontrol.model.managers.lasers.PulseGeneratorLaserManager.PulseGeneratorLaserManager`:
+Backend-agnostic digital pulse generator.  The low-level manager is
+built only from a ``teensyPulse`` block in the setup file, as a
+``TeensyPulseManager`` (Teensy / Arduino); it is ``None`` otherwise.
+``PulseStreamerManager`` also implements the pulse-generator interface,
+but ``MasterController`` does not construct it: a ``pulseStreamer`` block
+is ignored, and setup validation says so.  Managers that depend on the
+pulse generator should follow the mock-mode fallback pattern from
+``PulseGeneratorLaserManager``:
 
 .. code-block:: python
 
