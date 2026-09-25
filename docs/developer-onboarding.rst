@@ -9,7 +9,7 @@ up your environment, running tests, and contributing safely.
 
    **Before you start:** ImSwitch2 controls real microscope hardware. Incorrect
    changes can damage equipment or create unsafe conditions. Always follow the
-   safety guidelines in this document and ``AGENTS.md``.
+   safety guidelines in this document (see :ref:`red-zone-work`).
 
 
 Quick Start
@@ -21,17 +21,21 @@ Quick Start
 
       git clone https://github.com/Imswitch2/ImSwitch2.git
       cd ImSwitch2
-      pip install -e .
-      pip install -r requirements-dev.txt
+      pip install -e ".[test]" ruff
 
-2. **Run no-hardware validation** to verify your setup:
+2. **Run the no-hardware tests** the way CI does, to verify your setup:
 
    .. code-block:: bash
 
-      QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
-        imswitch/imcontrol/_test/unit \
-        imswitch/test_no_hardware_profile.py \
-        imswitch/test_no_hardware_ui_smoke.py -q
+      QT_QPA_PLATFORM=offscreen MPLBACKEND=Agg PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+      python -m pytest -p xdist.plugin -p pytestqt.plugin -p pytest_timeout -n auto --timeout=180 \
+          imswitch/test_no_hardware_profile.py imswitch/imcontrol/_test/unit \
+          imswitch/imcontrol/controller/_test imswitch/improcess/_test \
+          imswitch/imcommon/_test imswitch/imscripting/_test \
+          --ignore=imswitch/improcess/_test/test_snouty.py
+
+   :doc:`no-hardware-validation` explains what these tests cover and what
+   they cannot.
 
 3. **Run linting** to check code style:
 
@@ -45,7 +49,8 @@ Quick Start
 
       python -m imswitch
 
-   Select ``example_no_hardware.json`` from the setup picker.
+   Select ``example_no_hardware.json`` from the setup picker, or one of the
+   ``*mock*`` setups (for example ``mock_scan_setup.json``) to try scanning.
 
 
 Understanding the Codebase
@@ -62,13 +67,12 @@ Before making changes, familiarize yourself with the architecture:
   * Controller→Manager matrix (which controllers use which hardware)
   * Startup flow (initialization sequence)
 
-* **AI agent rules:** ``AGENTS.md``
+* **Red-zone rules:** :ref:`red-zone-work` below
 
   * Red-zone files (hardware control, requires mandatory human review)
-  * Coding standards and commit discipline
   * No-hardware vs hardware testing boundaries
 
-* **No-hardware validation:** ``docs/no-hardware-validation.md``
+* **No-hardware validation:** :doc:`no-hardware-validation`
 
   * How to run tests without physical hardware
   * What tests may and may not do
@@ -96,16 +100,11 @@ No-Hardware Work (Safe)
 * UI layout and responsiveness improvements
 * Documentation updates
 
-**Testing:** Run the no-hardware test suite:
-
-.. code-block:: bash
-
-   QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
-     imswitch/imcontrol/_test/unit \
-     imswitch/test_no_hardware_profile.py \
-     imswitch/test_no_hardware_ui_smoke.py -v
+**Testing:** Run the no-hardware tests (the command under *Quick Start*).
 
 **No physical hardware required.** Mock devices and simulated DAQ are sufficient.
+
+.. _red-zone-work:
 
 Hardware/Red-Zone Work (Requires Expert Review)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -133,7 +132,7 @@ Hardware/Red-Zone Work (Requires Expert Review)
 * Files with ``TTL``, ``trigger``, ``pulse``, ``waveform`` in names
 * Hardware manager initialization code
 
-See ``AGENTS.md`` for the complete list and identification patterns.
+When in doubt, treat a file as red-zone and say so in the pull request.
 
 
 Key Validation Commands
@@ -144,7 +143,8 @@ Before Opening a Pull Request
 
 Run these checks locally before pushing:
 
-1. **Linting** (critical lint errors must be zero):
+1. **Linting** (CI checks critical errors only — syntax errors and undefined
+   names, as configured in ``pyproject.toml`` — and they must be zero):
 
    .. code-block:: bash
 
@@ -160,10 +160,16 @@ Run these checks locally before pushing:
 
    .. code-block:: bash
 
-      QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
-        imswitch/imcontrol/_test/unit \
-        imswitch/test_no_hardware_profile.py \
-        imswitch/test_no_hardware_ui_smoke.py -v
+      QT_QPA_PLATFORM=offscreen MPLBACKEND=Agg PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+      python -m pytest -p xdist.plugin -p pytestqt.plugin -p pytest_timeout -n auto --timeout=180 \
+          imswitch/test_no_hardware_profile.py imswitch/imcontrol/_test/unit \
+          imswitch/imcontrol/controller/_test imswitch/improcess/_test \
+          imswitch/imcommon/_test imswitch/imscripting/_test \
+          --ignore=imswitch/improcess/_test/test_snouty.py
+
+   The display-dependent UI tests (``imswitch/imcontrol/_test/ui`` and
+   ``imswitch/test_no_hardware_ui_smoke.py``) are not in CI; run them locally
+   when you change widgets.
 
 3. **Whitespace check** (no trailing whitespace, newline at EOF):
 
@@ -208,37 +214,19 @@ Before committing, verify:
 Commit Message Guidelines
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Use conventional commit format:
+Start the subject with the area the change touches and say what now
+happens, in a sentence; the body explains why, and what was wrong before:
 
 .. code-block:: text
 
-   type(scope): brief description
+   Scan: a refused scan design ends the request with its reason
 
-   Optional detailed explanation.
+   A scan longer than scan.maxScanTimeMin used to fail with a TypeError
+   from makeFullScan. The request now ends with ScanRequestRejectedError
+   carrying the designer's reason, so a script can report it.
 
-   Co-authored-by: openhands <openhands@all-hands.dev>
-
-**Types:**
-
-* ``feat:``: New feature
-* ``fix:``: Bug fix
-* ``docs:``: Documentation changes
-* ``test:``: Test additions or updates
-* ``refactor:``: Code restructuring without behavior change
-* ``style:``: Formatting changes (no logic change)
-* ``chore:``: Build, CI, or tooling changes
-
-**Example:**
-
-.. code-block:: text
-
-   feat(laser): add widget state persistence for laser power
-
-   Implements getWidgetState() and setWidgetState() for LaserController.
-   Persists laser power values and modulation settings, but NOT enable
-   states (safety requirement).
-
-   Co-authored-by: openhands <openhands@all-hands.dev>
+Conventional-commit prefixes (``fix(cobolt): …``, ``docs: …``) are also in
+use in the history and are fine.  Keep one logical change per commit.
 
 
 Common Development Tasks
@@ -265,7 +253,7 @@ Adding a New Test
 
       def test_laser_power_calculation():
           """Test laser power calculation without hardware."""
-          from imswitch.imcontrol.model.managers import LaserManager
+          from imswitch.pluginapi import LaserManager
           
           # Test logic here
           assert True
@@ -277,7 +265,9 @@ Adding a New Test
       QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
         imswitch/imcontrol/_test/unit/test_your_new_file.py -v
 
-4. **Add to PR** with clear description of what's tested.
+4. **Add to PR** with clear description of what's tested.  A test in a
+   *new* directory only runs in CI once that directory is added to one of
+   the lanes in ``.github/workflows/ci.yml``.
 
 
 Modifying Configuration Files
@@ -287,11 +277,16 @@ ImSwitch2 uses JSON files for hardware configuration (``~/ImSwitchConfig/imcontr
 
 **To add a new configuration option:**
 
-1. **Update the model** in ``imswitch/imcontrol/model/SetupInfo.py``
+1. **Update the model** in ``imswitch/imcontrol/model/SetupInfo.py`` (or the
+   manager that reads the property)
 2. **Add validation** if needed (range checks, type validation)
-3. **Update documentation** in ``docs/imcontrol-setups.rst``
-4. **Add a test** verifying the new option parses correctly
-5. **Provide example** in ``example_no_hardware.json`` or a new example file
+3. **Regenerate the config-editor schemas** with
+   ``python tools/extract_manager_schemas.py --write`` and commit them; CI
+   fails while they are out of date
+4. **Update documentation** in :doc:`setupinfo-reference` (and the device
+   card in ``docs/devices``, which a test checks against the schemas)
+5. **Add a test** verifying the new option parses correctly
+6. **Provide example** in ``example_no_hardware.json`` or a new example file
 
 
 Debugging Tips
@@ -301,7 +296,7 @@ Debugging Tips
 
 .. code-block:: bash
 
-   python -m imswitch --log-level DEBUG
+   python -m imswitch --debug
 
 **Use the mock camera for UI testing:**
 
@@ -315,7 +310,7 @@ In your setup JSON:
          "managerName": "AVManager",
          "managerProperties": {
            "cameraListIndex": "mock",
-           "exposure": 50
+           "avcam": {"exposure": 100, "gain": 1}
          }
        }
      }
@@ -329,7 +324,7 @@ If tests fail in CI but pass locally, check:
 2. Are you explicitly loading pytest-qt?
 3. Are you importing napari/matplotlib during test collection?
 
-See ``docs/no-hardware-validation.md`` troubleshooting section.
+See :doc:`no-hardware-validation`.
 
 
 Pull Request Guidelines
@@ -371,10 +366,10 @@ Use descriptive branch names:
 
 .. code-block:: text
 
-   feature/laser-state-persistence
+   feat/laser-state-persistence
    fix/scan-widget-layout
    docs/update-installation-guide
-   test/add-positioner-validation
+   chore/pypi-release
 
 
 Getting Help
@@ -385,15 +380,13 @@ Getting Help
   * :doc:`installation` — Setup and dependencies
   * :doc:`contributing` — General contribution guidelines
   * :doc:`adding-device-support` — Hardware integration
-  * ``docs/design/ARCHITECTURE.md`` — System architecture
-  * ``docs/no-hardware-validation.md`` — Testing guide
+  * ``docs/design/ARCHITECTURE.md`` — System architecture (in the repository)
+  * :doc:`no-hardware-validation` — Testing guide
 
 * **Check existing issues:**
+  `GitHub Issues <https://github.com/Imswitch2/ImSwitch2/issues>`_
 
-  * `GitHub Issues <https://github.com/Imswitch2/ImSwitch2/issues>`_
-  * `GitHub Discussions <https://github.com/Imswitch2/ImSwitch2/discussions>`_
-
-* **Open a discussion** before starting large changes:
+* **Open an issue** before starting large changes:
 
   * Propose your approach
   * Get feedback from maintainers
@@ -408,16 +401,14 @@ Resources
 * :doc:`installation` — Installation and setup
 * :doc:`contributing` — How to contribute
 * :doc:`adding-device-support` — Adding new hardware
-* ``docs/design/ARCHITECTURE.md`` — Architecture overview
-* ``docs/no-hardware-validation.md`` — Testing without hardware
-* ``AGENTS.md`` — AI agent rules and red-zone files
-* ``ROADMAP.md`` — Project roadmap and milestones
+* :doc:`no-hardware-validation` — Testing without hardware
+* ``docs/design/ARCHITECTURE.md`` — Architecture overview (in the repository)
+* ``ROADMAP.md`` — Project roadmap and milestones (in the repository)
 
 **External:**
 
 * `ImSwitch2 GitHub <https://github.com/Imswitch2/ImSwitch2>`_
-* `Python Community Guidelines <https://www.python.org/psf/conduct/>`_
-* `Conventional Commits <https://www.conventionalcommits.org/>`_
+* `Code of conduct <https://github.com/Imswitch2/ImSwitch2/blob/main/CODE_OF_CONDUCT.md>`_
 
 
 Welcome Aboard!

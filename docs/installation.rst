@@ -27,7 +27,7 @@ Then launch:
 
 .. code-block:: bash
 
-   imswitch2
+   imswitch
 
 .. note::
 
@@ -46,17 +46,23 @@ Option B: Install from source (recommended for developers)
 
    # Optional extras
    pip install -e ".[hardware]"   # NI-DAQ, pyVISA, vendor drivers
-   pip install -e ".[full]"       # also napari, OpenCV, vispy
+   pip install -e ".[imagej]"     # ImageJ/Fiji .roi and RoiSet.zip import/export in the ROI manager
+   pip install -e ".[full]"       # OpenCV, plus what [imagej] installs
    pip install -e ".[storm]"      # napari-storm GPU point-cloud viewer for SMLM results
 
-   # Developer toolchain (tests, lint, docs)
-   pip install -r requirements-dev.txt
+   # Developer toolchain: the test suite as CI runs it, the linter, the docs build
+   pip install -e ".[test]" ruff
+   pip install -r docs/requirements-readthedocs.txt
 
 Launch:
 
 .. code-block:: bash
 
    python -m imswitch
+
+``--debug`` turns on DEBUG-level logging from every manager, and
+``--scale 0.8`` draws the whole interface at 80 % (the
+``IMSWITCH_UI_SCALE`` environment variable does the same; the flag wins).
 
 On first launch ImSwitch2 creates ``~/ImSwitchConfig/`` (or
 ``%USERPROFILE%\Documents\ImSwitchConfig\`` on Windows) and opens a
@@ -70,8 +76,10 @@ Vendor SDKs (not installed by pip)
 Some device managers depend on vendor-supplied Python packages that are
 **not on PyPI**.  They are not declared as project dependencies — if a
 manager needs one, install it manually following the vendor's procedure.
-When the SDK is missing, the manager logs a warning and falls back to a
-mock device, so ImSwitch2 will still start.
+When the SDK is missing, most managers log a warning and fall back to a
+mock device, so ImSwitch2 will still start; a few refuse instead (the
+Swabian Time Tagger stops the scan that needs it, for example).  Each
+device's page under *Hardware reference* says which it does.
 
 The pattern below is illustrative; the same approach applies to other
 vendor SDKs (Hamamatsu DCAM, Andor SDK3, Basler pylon, etc.).

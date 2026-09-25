@@ -2,8 +2,9 @@ Agent Task Templates
 ====================
 
 This page defines small, bounded task prompts for coding agents working on
-ImSwitch2. The goal is to make parallel agent work easier to review and safer
-to merge.
+ImSwitch2. The goal is to make agent work easier to review and safer to
+merge.  Run agent tasks one at a time, or give each its own git worktree:
+agents sharing one checkout overwrite each other's files and branches.
 
 General Rules
 -------------
@@ -12,7 +13,7 @@ Every agent task should be narrow enough to review in one pass. Prefer one
 file or one tightly related group of files. The agent must not merge, push, or
 deploy without human review.
 
-Agents must follow ``AGENTS.md``. In particular:
+Agents must follow the red-zone rules in :ref:`red-zone-work`. In particular:
 
 1. No direct hardware execution
 2. No hardware timing changes unless explicitly requested
@@ -56,7 +57,7 @@ Use this format for most small tasks:
 
    Commit instructions
    - Commit only files changed for this task.
-   - Use message: <type>: <short summary>
+   - Use message: <area>: <short summary>
 
 Doc-Only Task Template
 ----------------------
@@ -87,7 +88,7 @@ Doc-Only Task Template
 
    Sanity checks
    - git diff --check -- docs/path.rst docs/index.rst ROADMAP.md
-   - sphinx-build -b html docs /tmp/imswitch-docs-build, if Sphinx >=5 is available
+   - python -m sphinx -b html -W docs /tmp/imswitch-docs-build (Read the Docs fails on any warning)
 
    Commit instructions
    - Commit only documentation and roadmap changes.

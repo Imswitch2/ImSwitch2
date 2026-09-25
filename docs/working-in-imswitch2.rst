@@ -49,8 +49,8 @@ runs standalone with ``python -m imswitch.improcess`` when you only want to
 process data — on a laptop, away from the microscope.
 
 It works in two stages.  A **reconstructor** turns a raw recording into a
-result: MoNaLISA, SMLM localization, SNOUTY, WidefieldSTARSS, or simply
-view-only to look at what was acquired.  **Processors** then stack on top
+result: MoNaLISA, SMLM localization, SNOUTY, WidefieldSTARSS, BeadRec, a
+tiled mosaic, or simply view-only to look at what was acquired.  **Processors** then stack on top
 of a result — drift correction, projections, FRC, segmentation,
 colocalization and the rest — each producing a new result rather than
 overwriting the old one, so the chain that produced an image stays
@@ -62,11 +62,14 @@ ImScripting — automating both
 -----------------------------
 
 ImScripting is an editor and console for driving the other modules from
-Python.  Scripts reach them through ``api.imcontrol`` and
-``api.improcess``, and run on their own thread, so a long routine does not
-freeze the interface and can be cancelled.
+Python.  Scripts drive the microscope through ``api.imcontrol``, the
+methods ImControl exports for scripting; the main controller of every
+loaded module, ImProcess included, is also reachable as
+``controllers.<module>``.  Scripts run on their own thread, so a long
+routine does not freeze the interface and can be cancelled.
 
-See :doc:`scripting`.
+See :doc:`scripting`, which also points to the step-by-step tutorials
+that run on the simulated setups.
 
 Moving between modules
 ----------------------
@@ -87,28 +90,63 @@ three routes:
 Working across the modules
 ==========================
 
-The rest of this page covers behaviour that is not tied to any one module:
-shortcuts are config-driven and rebindable across the whole application,
-and widget state can be saved and restored independently of the hardware
-it describes.
+The rest of this page covers behaviour that is not tied to one widget:
+the menus, keyboard shortcuts, and saving and restoring widget state
+independently of the hardware it describes.
+
+
+Menus
+=====
+
+Two menus belong to the window rather than to a module:
+
+* **Preferences** — *Set active modules…* chooses which modules load (see
+  :doc:`modules`; ImSwitch2 restarts to apply it), and *Open user files
+  folder* opens ``ImSwitchConfig``, where setup files, scripts, saved
+  widget states and preferences live.
+* **Help** — *Documentation*, *Check for updates…* and *About*.
+
+ImControl adds its own:
+
+* **File** — load the parameters stored in a saved HDF5 file or Zarr store
+  back into the widgets, and *Save Widget States…* / *Load Widget
+  States…* (see below).
+* **Tools** — *Pick hardware setup…* (:doc:`imcontrol-setups`), *Session
+  notes…* (:ref:`session-notes`), *Edit hardware configuration…* (the
+  config editor, :doc:`imcontrol-setups`), *Memory limits…*
+  (:ref:`improcess-memory-limits`) and *Reset panel layout*, which puts
+  every panel back where the hardware setup places it, at the sizes its
+  contents ask for.
+* **Shortcuts** — *Configure Shortcuts…* and the current bindings.
+
+ImProcess has its own File, Image, Operations, Tools, Plugins, Shortcuts
+and View menus, described in :doc:`improcess`.
 
 
 Keyboard shortcuts
 ==================
 
-Keyboard shortcuts are **config-driven and rebindable**. Each shortcut-able
-action has a stable action ID; the tables below list the code defaults, but any
-binding can be changed, disabled, or extended without editing code.
+Keyboard shortcuts are **config-driven and rebindable** in ImControl and
+ImProcess, each with its own **Shortcuts** menu. Each shortcut-able action
+has a stable action ID; the tables below list ImControl's code defaults, but
+any binding can be changed, disabled, or extended without editing code.
 
 * **Edit interactively:** open *Shortcuts → Configure Shortcuts…* to view, edit,
   reset, or disable any binding via a key-sequence editor with live conflict
-  detection. Changes apply immediately and are persisted to the active setup
-  config.
+  detection. Changes apply immediately. ImControl saves them to the active
+  setup file; ImProcess, which has no setup file of its own, saves them to
+  ``improcess_shortcuts.json`` in ``ImSwitchConfig``.
 * **Edit in the config:** add a ``shortcuts`` map to the setup config JSON
   (``{ "<actionId>": "Ctrl+...", ... }``; ``null`` disables an action, a list
   binds multiple sequences). See :doc:`setupinfo-reference`.
 
-Default bindings for common operations:
+ImProcess's defaults follow Fiji where Fiji has an equivalent (``Ctrl+O``
+open, ``Ctrl+S`` save, ``Ctrl+Shift+C`` brightness/contrast, ``Ctrl+T`` ROI
+manager, ``Ctrl+M`` measure, …); its Shortcuts menu lists them all.
+ImScripting's editor keys (``Ctrl+N``, ``Ctrl+O``, ``Ctrl+S``,
+``Ctrl+Shift+S``) are fixed.
+
+ImControl's default bindings for common operations:
 
 .. list-table::
    :widths: 30 70
@@ -124,6 +162,8 @@ Default bindings for common operations:
      - Next detector (``settings.nextDetector``)
    * - ``Ctrl+P``
      - Load parameters from HDF5 (``app.loadParams``)
+   * - ``Ctrl+Alt+P``
+     - Load parameters from Zarr (``app.loadParamsZarr``)
    * - ``Ctrl+Shift+S``
      - Save widget state (``app.saveWidgetStates``)
    * - ``Ctrl+Shift+L``
@@ -145,7 +185,7 @@ bindings (when no ``shortcuts`` config overrides them):
    * - ``Ctrl+Left`` / ``Ctrl+Right``
      - Step X − / +
    * - ``Ctrl+Up`` / ``Ctrl+Down``
-     - Step Y − / +
+     - Step Y + / −
    * - ``Ctrl+Y`` / ``Ctrl+A``
      - Step Z + / −
 
@@ -177,8 +217,9 @@ parameters, SLM configuration, positioner step sizes, GUI layout, …). Think of
 as "save/restore the whole setup's UI state".
 
 * *File → Save Widget States* (``Ctrl+Shift+S``) writes a snapshot to a file;
-  *Load Widget States* (``Ctrl+Shift+L``) restores one. The current state is also
-  auto-saved on exit and restored on the next launch.
+  *Load Widget States* (``Ctrl+Shift+L``) restores one. On exit ImSwitch2 asks
+  whether to save the current state as the default for the next launch, and
+  restores that default when it starts.
 * **Passive by design:** restoring widget state never activates hardware — it
   sets saved *parameters* (laser power values, ROI/binning, scan parameters, SLM
   config selection, …) but does **not** turn lasers on, start acquisition or
@@ -188,7 +229,8 @@ as "save/restore the whole setup's UI state".
 Setup modes — fast runtime switching (can activate hardware)
 ------------------------------------------------------------
 
-The **Setup Modes** widget stores named *modes* that each capture only a
+The **Setup Modes** widget (shown when the setup file lists ``SetupModes`` in
+``availableWidgets``) stores named *modes* that each capture only a
 **chosen subset** of components (e.g. a mode that sets the scan type + laser
 powers + SLM configuration, leaving everything else untouched). Modes are for
 **switching configurations quickly during an experiment**.

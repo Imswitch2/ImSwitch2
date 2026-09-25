@@ -101,8 +101,8 @@
   <rect x="312" y="544" width="276" height="190" rx="6" fill="#e7f5f1" stroke="#b2ded3"/>
   <text x="324" y="566" font-size="13" font-weight="700" fill="#15806b">PluginRegistry — two contracts</text>
   <text x="324" y="588" font-size="12" fill="#1f2a33">Reconstructor: raw data → result</text>
-  <text x="324" y="605" font-size="12" fill="#1f2a33">monalisa · view-only · snouty ·</text>
-  <text x="324" y="622" font-size="12" fill="#1f2a33">widefield-starss · smlm-localizer</text>
+  <text x="324" y="605" font-size="12" fill="#1f2a33">monalisa · snouty · widefield-starss ·</text>
+  <text x="324" y="622" font-size="12" fill="#1f2a33">smlm-localizer · beadrec · …</text>
   <text x="324" y="639" font-size="12" fill="#1f2a33">Processor: stackable result steps</text>
   <line x1="324" y1="651" x2="576" y2="651" stroke="#b2ded3"/>
   <text x="324" y="669" font-size="12" fill="#1f2a33">ProcessingResult ·</text>

@@ -22,11 +22,11 @@ developing ImSwitch2 in this direction, believing that it is possible
 to integrate current state-of-the-art solutions into one unified
 piece of software.
 
-In this documentation page you will find all information you need
-about the installation, usage and development of ImSwitch2, both from
-the user perspective (GUI description and use cases) as well as for
-developers (scripting and API modules, and hardware control and JSON
-config files).
+This documentation covers installing ImSwitch2; using it, module by
+module (ImControl to run the microscope, ImProcess to work with the
+data, ImScripting to automate both); the hardware reference for the
+JSON setup files; and extending ImSwitch2 with new devices and
+plugins.
 
 .. _architecture-at-a-glance:
 
@@ -75,8 +75,9 @@ The parts
     this is what makes "switching hardware means editing a JSON file"
     true in practice.  Its presenter layer runs one controller per
     widget, and the controller methods marked with ``@APIExport`` are
-    harvested into the REST and Pyro5 APIs that ImScripting and external
-    clients call.
+    harvested into the ``api.imcontrol`` object that scripts call and,
+    when ``pyroServerInfo.active`` is set in the setup file, into a REST
+    and Pyro5 server for external clients.
 
 **ImProcess** — ``imswitch.improcess``
     Image processing and reconstruction.  ``python -m imswitch.improcess``
@@ -90,9 +91,10 @@ The parts
     The editor and console for automating the microscope.  Its model
     layer runs user code on a worker thread, so a long script never
     freezes the GUI and can be cancelled cooperatively.  Its presenter
-    layer assembles the scope that scripts see: ``api`` (the exported
-    surface of every loaded module), ``controllers``, ``mainWindow`` and
-    ``moduleCommChannel``.
+    layer assembles the scope that scripts see: ``api`` (the
+    ``@APIExport`` surface of each module that has one; today that is
+    ImControl, as ``api.imcontrol``), ``controllers`` (every module's main
+    controller), ``mainWindow`` and ``moduleCommChannel``.
 
 **ImCommon** — ``imswitch.imcommon``
     Not a loadable module but the library the others are built on: the
@@ -135,6 +137,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     :caption: Usage
 
     working-in-imswitch2
+    modules
     imcontrol
     improcess
     scripting
@@ -171,5 +174,4 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     :hidden:
     :caption: Scripting API reference
 
-    modules
     api/*
