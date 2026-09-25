@@ -3114,7 +3114,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if filename is not None:
             self._widget.setCustomFilename(filename)
         else:
-            self._widget.setCustomFilenameEnabled(False)
+            self._widget.clearCustomFilename()
 
     @APIExport(runOnUIThread=True)
     def setRecFolder(self, folderPath: str) -> None:

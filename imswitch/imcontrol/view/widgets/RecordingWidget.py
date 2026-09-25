@@ -438,8 +438,16 @@ class RecordingWidget(Widget):
         self.filenameEdit.setText('Filename' if enabled else 'Current time')
 
     def setCustomFilename(self, filename):
+        """ Names the next recordings ``filename``. Ticks "Specify file name"
+        too: getCustomFilename() reads the name only while it is ticked. """
+        self.specifyfile.setChecked(True)
         self.setCustomFilenameEnabled(True)
         self.filenameEdit.setText(filename)
+
+    def clearCustomFilename(self):
+        """ Goes back to time-based filenames. """
+        self.specifyfile.setChecked(False)
+        self.setCustomFilenameEnabled(False)
 
     def setRecFolder(self, folderPath):
         self.folderEdit.setText(folderPath)
