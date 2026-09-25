@@ -1,4 +1,4 @@
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 
 #: PyPI distribution name.  The import package stays ``imswitch``; only the
 #: distribution is renamed, because ``ImSwitch`` on PyPI is the upstream
