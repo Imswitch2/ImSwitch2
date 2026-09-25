@@ -16,7 +16,7 @@ from ..basecontrollers import SuperScanController
 
 # Optional: only if you want wavelength-based colors like MoNaLISA
 from imswitch.imcommon.view.guitools import colorutils
-from ...model import SignalDesignerFactory
+from ...model import ScanDesignRefusedError, SignalDesignerFactory
 from ._acquisition_layout_source import (
     build_advanced_scan_layouts,
     physical_kind_overrides,
@@ -120,6 +120,8 @@ class ScanControllerAdvanced(SuperScanController):
         Returns:
           signalDict = {'scanSignalsDict': ..., 'TTLCycleSignalsDict': ...}
           scanInfoDict
+        Raises ScanDesignRefusedError, with the reason, when the scan designer
+        refuses the scan (too long, voltages outside a scanner's range).
         """
         scan_des = self._get_scan_designer()
         ttl_des = self._get_ttl_designer()
@@ -131,12 +133,10 @@ class ScanControllerAdvanced(SuperScanController):
         self._copy_positioner_line_program_to_stage_params(stage_param, TTLParameters)
 
         # optional guard (like PointScan)
-        if hasattr(scan_des, "checkSignalLength"):
-            if not scan_des.checkSignalLength(scanParameters, self._setupInfo):
-                self._logger.error(
-                    "Signal too long: try scanning a smaller ROI, faster, or with a larger pixel size."
-                )
-                return None, None
+        if hasattr(scan_des, "signalLengthRefusal"):
+            refusal = scan_des.signalLengthRefusal(scanParameters, self._setupInfo)
+            if refusal:
+                raise ScanDesignRefusedError(refusal)
 
         scanSignalsDict, positions, scanInfoDict = scan_des.make_signal(stage_param, self._setupInfo)
 
@@ -149,11 +149,10 @@ class ScanControllerAdvanced(SuperScanController):
             if not scan_des.checkSignalComp(
                 scanParameters, self._setupInfo, scanInfoDict
             ):
-                self._logger.error(
+                raise ScanDesignRefusedError(
                     "Signal voltages outside scanner ranges: try scanning a "
                     "smaller ROI or a slower scan."
                 )
-                return None, None
 
         # --- TTL / digital ---
         ttl_param = copy.deepcopy(getattr(self._setupInfo.scan, "TTLCycleDesignerParams", {}))
@@ -354,10 +353,12 @@ class ScanControllerAdvanced(SuperScanController):
 
             ttlSignalsDict = None
             if include_ttl:
-                signalDict, scanInfoDict = self._make_full_scan(
-                    self._analogParameterDict, self._digitalParameterDict
-                )
-                if signalDict is None:
+                try:
+                    signalDict, scanInfoDict = self._make_full_scan(
+                        self._analogParameterDict, self._digitalParameterDict
+                    )
+                except ScanDesignRefusedError as error:
+                    self._logger.warning(f"Nothing to plot: {error}")
                     return
                 scanSignalsDict = signalDict.get("scanSignalsDict", {})
                 ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
@@ -708,41 +709,12 @@ class ScanControllerAdvanced(SuperScanController):
     ):
         """Runs a scan with current parameters."""
         try:
-            if self._beginScanRun(
-                sigScanStartingEmitted=sigScanStartingEmitted
+            if self._beginScanRunWithDesign(
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                recalculateSignals=recalculateSignals,
             ) is None:
                 return
             self._widget.setScanButtonChecked(True)
-
-            if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
-                self.getParameters()
-
-                # Only rebuild the (expensive) scan signal if the parameters
-                # actually changed since the last build. Repeated scan frames
-                # reuse identical parameters, so this avoids regenerating a
-                # byte-identical galvo/TTL signal — and the per-frame stall it
-                # causes — on every repeat. Live parameter edits still trigger
-                # a rebuild because the snapshot then differs.
-                paramsSnapshot = (
-                    copy.deepcopy(self._analogParameterDict),
-                    copy.deepcopy(self._digitalParameterDict),
-                )
-                signalsCached = (
-                    self.signalDict is not None
-                    and self.scanInfoDict is not None
-                    and paramsSnapshot == self._lastBuiltParams
-                )
-                if not signalsCached:
-                    # TTL cycle (linestep_enable) is the sole authority for per-laser emission
-                    self.signalDict, self.scanInfoDict = self._make_full_scan(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
-
-                    if self.signalDict is None:
-                        self.scanFailed()
-                        return
-
-                    self._lastBuiltParams = paramsSnapshot
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
@@ -761,6 +733,32 @@ class ScanControllerAdvanced(SuperScanController):
         except Exception:
             self._logger.error(traceback.format_exc())
             self.scanFailed()
+
+    def _buildScanSignals(self):
+        self.getParameters()
+
+        # Only rebuild the (expensive) scan signal if the parameters
+        # actually changed since the last build. Repeated scan frames
+        # reuse identical parameters, so this avoids regenerating a
+        # byte-identical galvo/TTL signal — and the per-frame stall it
+        # causes — on every repeat. Live parameter edits still trigger
+        # a rebuild because the snapshot then differs.
+        paramsSnapshot = (
+            copy.deepcopy(self._analogParameterDict),
+            copy.deepcopy(self._digitalParameterDict),
+        )
+        if (
+            self.signalDict is not None
+            and self.scanInfoDict is not None
+            and paramsSnapshot == self._lastBuiltParams
+        ):
+            return self.signalDict, self.scanInfoDict
+        # TTL cycle (linestep_enable) is the sole authority for per-laser emission
+        signalDict, scanInfoDict = self._make_full_scan(
+            self._analogParameterDict, self._digitalParameterDict
+        )
+        self._lastBuiltParams = paramsSnapshot
+        return signalDict, scanInfoDict
 
     def scanDone(self):
         """Called by the system when nidaq finishes."""
