@@ -193,7 +193,6 @@ def generation_inputs(args: argparse.Namespace):
     report = extraction.coverage_report(extractions, docs=cards or None)
     return schemagen.GenerationInputs(
         extractions=extractions,
-        classes=tree.classes,
         categories={name: categories[name] for name in resolved},
         overrides=schemagen.load_overrides(args.schemas_root),
         report=report,
@@ -289,7 +288,6 @@ def package_inputs(args: argparse.Namespace):
     schemas_root = args.schemas_root if args.schemas_root_given else root / PACKAGE_SCHEMAS_DIR
     return schemagen.GenerationInputs(
         extractions=extractions,
-        classes=tree.classes,
         categories={name: managers[name][0] for name in resolved},
         overrides=schemagen.load_overrides(schemas_root),
         report=extraction.coverage_report(extractions),

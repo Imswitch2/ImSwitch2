@@ -219,7 +219,7 @@ def _inputs(managers_root: Path, schemas_root: Path) -> sg.GenerationInputs:
         for name in names
     }
     return sg.GenerationInputs(
-        extractions=extractions, classes=tree.classes,
+        extractions=extractions,
         categories={name: "lasers" for name in names},
         overrides=sg.load_overrides(schemas_root),
         report=ex.coverage_report(extractions),
@@ -259,24 +259,11 @@ class TestGeneration:
         assert index["generator_version"] == sg.GENERATOR_VERSION
         assert index["regenerate"] == sg.REGENERATE_COMMAND
         entry = index["managers"]["SynthManager"]
-        assert entry["properties"] == 2 and entry["required"] == 1 and entry["overridden"] is False
-        assert len(entry["source_sha256"]) == 64
+        assert entry == {
+            "category": "lasers", "classes": ["SynthManager"],
+            "properties": 2, "required": 1, "overridden": False,
+        }, "counts only: nothing that depends on the source bytes"
         assert index["coverage"]["keys"] == 2
-
-    def test_source_hash_is_the_same_for_a_crlf_checkout(self, tmp_path):
-        # `* text=auto` checks sources out with CRLF on Windows. An index
-        # regenerated there must match the one CI regenerates on Linux.
-        def sha(checkout, source, eol=b"\n"):
-            checkout.mkdir()
-            managers, schemas = _tree(checkout, source)
-            synth = managers / "SynthManager.py"
-            synth.write_bytes(synth.read_bytes().replace(b"\n", eol))
-            index = json.loads(sg.generate_all(_inputs(managers, schemas))["index.json"])
-            return index["managers"]["SynthManager"]["source_sha256"]
-
-        lf = sha(tmp_path / "lf", SYNTH)
-        assert sha(tmp_path / "crlf", SYNTH, eol=b"\r\n") == lf
-        assert sha(tmp_path / "edited", SYNTH + "    # edited\n") != lf, "a real change still moves the hash"
 
     def test_write_then_check_is_clean_and_write_is_idempotent(self, tmp_path):
         managers, schemas = _tree(tmp_path, SYNTH)
@@ -307,6 +294,61 @@ class TestGeneration:
         (schemas / "managers" / "SynthManager.json").write_text("{}\n", encoding="utf-8")
         (schemas / "fixtures" / "Old.json").write_text("{}\n", encoding="utf-8")
         assert sg.check(files, schemas) == ["changed: managers/SynthManager.json", "stale: fixtures/Old.json"]
+
+
+BASE = '''
+    class SynthBase:
+        def __init__(self, laserInfo, name):
+            self.a = laserInfo.managerProperties["a"]
+'''
+
+DERIVED = '''
+    from .SynthBase import SynthBase
+
+
+    class SynthManager(SynthBase):
+        def __init__(self, laserInfo, name):
+            super().__init__(laserInfo, name)
+            self.b = laserInfo.managerProperties.get("b", 2.5)
+'''
+
+# At the top of the file, so every line below it moves.
+COMMENT = "    # a comment\n"
+
+
+class TestOnlyTheContractMovesTheOutput:
+    """A manager and its base class in separate files, like a positioner and
+    PositionerManager.py. Edits that leave the extracted contract alone must
+    leave every generated file byte-identical, on any checkout; a property
+    read anywhere in the chain must still move the manager's files."""
+
+    @staticmethod
+    def _generate(checkout: Path, base: str = BASE, derived: str = DERIVED, eol: str = "\n") -> dict[str, str]:
+        managers = checkout / "managers"
+        managers.mkdir(parents=True)
+        for stem, source in (("SynthBase", base), ("SynthManager", derived)):
+            (managers / f"{stem}.py").write_bytes(textwrap.dedent(source).replace("\n", eol).encode("utf-8"))
+        return sg.generate_all(_inputs(managers, checkout / "schemas"))
+
+    def test_a_comment_in_the_manager_or_its_base_changes_nothing(self, tmp_path):
+        reference = self._generate(tmp_path / "reference")
+        assert self._generate(tmp_path / "manager", derived=COMMENT + DERIVED) == reference
+        assert self._generate(tmp_path / "base", base=COMMENT + BASE) == reference
+
+    def test_a_crlf_checkout_generates_the_same_files(self, tmp_path):
+        # `* text=auto` checks sources out with CRLF on Windows.
+        assert self._generate(tmp_path / "crlf", eol="\r\n") == self._generate(tmp_path / "lf")
+
+    def test_an_inherited_property_moves_the_managers_schema_fixture_and_index(self, tmp_path):
+        before = self._generate(tmp_path / "before")
+        after = self._generate(
+            tmp_path / "after",
+            base=BASE + '            self.c = laserInfo.managerProperties.get("inheritedKey", 3)\n',
+        )
+        moved = {path for path in before if before[path] != after[path]}
+        assert {"managers/SynthManager.json", "fixtures/SynthManager.json", "index.json"} <= moved
+        assert "inheritedKey" in json.loads(after["managers/SynthManager.json"])["properties"]
+        assert "inheritedKey" in json.loads(after["fixtures/SynthManager.json"])["device"]["managerProperties"]
 
 
 class TestExitCriterion:
