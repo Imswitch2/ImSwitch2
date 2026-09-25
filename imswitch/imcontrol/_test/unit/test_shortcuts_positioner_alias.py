@@ -9,6 +9,7 @@ from qtpy import QtWidgets
 from imswitch.imcontrol.controller.ShortcutManager import (
     ShortcutManager, computePositionerJogDefaults,
 )
+from imswitch.imcontrol.controller.ImConMainController import ImConMainController
 from imswitch.imcontrol.view.widgets import PositionerWidget
 from imswitch.imcommon.model import ShortcutScope
 
@@ -369,3 +370,37 @@ def test_positioner_qaction_trigger_uses_registered_axis(qtbot):
     qtAction.trigger()
 
     assert stepUpSignals == [('Stage', 'X')]
+
+
+def test_main_controller_registers_jog_actions_for_unavailable_positioner():
+    """Configured positioners keep shortcuts while disconnected/mock."""
+    positioner_info = type('PositionerInfo', (), {
+        'forPositioning': True,
+        'hide': False,
+        'axes': ['Z'],
+        'shortcutModifier': 'ctrl',
+    })()
+    positioner_manager = type('PositionerManager', (), {'isAvailable': False})()
+
+    controller = ImConMainController.__new__(ImConMainController)
+    controller.controllers = {
+        'Positioner': type('PositionerController', (), {'_widget': Mock()})()
+    }
+    controller._ImConMainController__setupInfo = MockSetupInfo(
+        positioners={'Leica Z': positioner_info}
+    )
+    controller._ImConMainController__masterController = type(
+        'Master', (), {'positionersManager': {'Leica Z': positioner_manager}}
+    )()
+    shortcut_manager = Mock()
+    controller._ImConMainController__shortcutManager = shortcut_manager
+
+    controller._registerPositionerJogActions()
+
+    action_ids = [
+        call.kwargs['actionId'] for call in shortcut_manager.registerAction.call_args_list
+    ]
+    assert action_ids == [
+        'positioner.Leica Z.Z.plus',
+        'positioner.Leica Z.Z.minus',
+    ]

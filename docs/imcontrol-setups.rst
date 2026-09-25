@@ -71,6 +71,7 @@ under :doc:`devices/ <devices/detectors>`:
 * :doc:`devices/lasers` — every ``LaserManager``.
 * :doc:`devices/positioners` — every ``PositionerManager``.
 * :doc:`devices/rotators` — every ``RotatorManager``.
+* :doc:`devices/stands` — microscope stand integrations configured through ``microscopeStand``.
 
 For adding a *new* manager class (i.e. implementing one yourself), see
 :doc:`adding-device-support`.

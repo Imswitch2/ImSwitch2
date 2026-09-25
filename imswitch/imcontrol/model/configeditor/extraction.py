@@ -49,6 +49,7 @@ from typing import Iterable, Optional
 
 from imswitch.imcontrol.model.plugins.setup_metadata import (
     CATEGORY_METADATA,
+    CORE_MANAGERS_PACKAGE,
     KIND_METADATA,
 )
 
@@ -238,9 +239,17 @@ class ClassExtraction:
     """What one class, on its own, reads from its ``managerProperties``."""
 
     name: str
-    bases: tuple[str, ...]
-    module: str
+    bases: tuple[str, ...]  # the bases' own names, for display
+    module: str  # the source file, for hashing
     info_params: tuple[str, ...]
+    #: The dotted module the class lives in (``vendor.cameras``); with
+    #: ``name`` it is the class's identity, ``vendor.cameras:CameraManager``.
+    module_name: str = ""
+    #: The base-class expressions as written (``DetectorManager``, ``base.Base``).
+    base_exprs: tuple[str, ...] = ()
+    #: The bases, resolved to the keys of the dict this extraction lives in
+    #: (module-qualified in a tree). None until a tree or module resolves them.
+    base_ids: Optional[tuple[str, ...]] = None
     reads: dict[str, list[PropertyRead]] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)  # alias -> canonical
     refs: dict[str, str] = field(default_factory=dict)  # key -> category
@@ -260,12 +269,15 @@ class ManagerExtraction:
     """A manager's contract, merged over its base classes and other sources."""
 
     name: str
-    classes: tuple[str, ...]  # resolution order, subclass first
+    classes: tuple[str, ...]  # class names in resolution order, subclass first
     properties: dict[str, PropertySpec]
     discarded: list[DiscardedRead]
     open_passthrough: bool
     unresolved: list[UnresolvedRead] = field(default_factory=list)
     writes: list[PropertyWrite] = field(default_factory=list)
+    #: The same classes as the keys of the extraction dict (module-qualified
+    #: in a tree): what identifies them, where ``classes`` only names them.
+    class_ids: tuple[str, ...] = ()
 
     @property
     def reads_any(self) -> bool:
@@ -631,6 +643,7 @@ class _ClassScanner:
         self.result = ClassExtraction(
             name=cls.name,
             bases=tuple(_name_of(base) or "?" for base in cls.bases),
+            base_exprs=tuple(ast.unparse(base) for base in cls.bases),
             module=context.module,
             info_params=tuple(
                 arg.arg for arg in self.methods["__init__"].args.args[1:]
@@ -757,7 +770,9 @@ class _ClassScanner:
                         self.result.unresolved.append(UnresolvedRead(
                             ast.unparse(node), node.lineno, f"sub-key of {parent_key!r} is not a literal"))
                         continue
-                    read = _make_read(node, parent_key, access, resolved[1], self.parents)
+                    guard = (self._nested_guard_status(node, resolved[0], parent_key, function)
+                             if access == "subscript" else (False, None, False))
+                    read = _make_read(node, parent_key, access, resolved[1], self.parents, guard)
                     self._record(PropertyRead(**{**read.__dict__, "subkey": resolved[0]}))
                     continue
                 verdict, receiver_text = self._classify(receiver, function)
@@ -954,6 +969,28 @@ class _ClassScanner:
 
     # -- guards ---------------------------------------------------------------
 
+    def _nested_guard_status(self, node: ast.AST, subkey: str, parent_key: str,
+                             function) -> tuple[bool, Optional[str], bool]:
+        """The same guard walk for ``defaults["gain"]``, "own" meaning this nested dict.
+
+        ``defaults = props.get("defaults", {})`` then ``try: defaults["gain"]
+        except KeyError`` reads ``gain`` optionally: ``{"defaults": {}}`` is a
+        configuration the manager accepts. Without this the sub-key came out
+        required and the schema rejected it. A check on the outer dict, or
+        on another nested dict, guards nothing here.
+        """
+        def is_this_dict(receiver: ast.AST) -> bool:
+            return self._nested_alias(_unwrap_props_expr(receiver), function) == parent_key
+
+        def resolve_key(key_node: ast.AST):
+            return self.context.resolve_key(key_node, self.class_constants)
+
+        return _guard_status(
+            node, subkey, self.parents,
+            guards_key=lambda test, k: _test_guards_key(test, k, resolve_key, is_this_dict),
+            mentions_props=lambda test: _test_mentions(test, is_this_dict),
+        )
+
     def _guard_status(self, node: ast.AST, key: str, function) -> tuple[bool, Optional[str], bool]:
         """Whether a missing ``key`` can raise at this subscript (see :func:`_guard_status`)."""
         def is_own(receiver: ast.AST) -> bool:
@@ -1035,13 +1072,52 @@ def _bucket_category(bucket: str) -> Optional[str]:
 
 @dataclass
 class ModuleIndex:
-    """What a module defines and re-exports, for name -> class resolution."""
+    """What one module defines and imports, for module-scoped name resolution."""
 
-    classes: list[str]
-    reexports: dict[str, str]  # local name -> imported name
+    name: str  # the dotted module name
+    classes: list[str]  # classes defined at its top level
+    #: ``from m import x as y``: local name -> (absolute module, imported name).
+    imports: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: ``import a.b as c`` / ``import a.b``: local name -> the module it binds.
+    module_aliases: dict[str, str] = field(default_factory=dict)
+    #: ``from m import *``: the modules whose names this one takes.
+    star_imports: list[str] = field(default_factory=list)
 
 
-def _scanners_for_module(source: str, module: str) -> tuple[dict[str, _ClassScanner], ModuleIndex]:
+def _class_id(module_name: str, class_name: str) -> str:
+    """A class's identity: ``vendor.cameras:CameraManager`` (the ``python_name`` form)."""
+    return f"{module_name}:{class_name}" if module_name else class_name
+
+
+def _absolute_module(module: Optional[str], level: int, package: str) -> str:
+    """The module a ``from`` import names, relative imports resolved against ``package``."""
+    if level == 0:
+        return module or ""
+    parts = package.split(".") if package else []
+    parts = parts[: max(0, len(parts) - (level - 1))]
+    base = ".".join(parts)
+    if module:
+        return f"{base}.{module}" if base else module
+    return base
+
+
+def _module_level_statements(body: list[ast.stmt]) -> Iterable[ast.stmt]:
+    """Statements that bind module names: the body, and ``if``/``try``/``with`` blocks in it."""
+    for statement in body:
+        yield statement
+        if isinstance(statement, (ast.If, ast.With)):
+            yield from _module_level_statements(statement.body)
+            yield from _module_level_statements(getattr(statement, "orelse", []))
+        elif isinstance(statement, ast.Try) or type(statement).__name__ == "TryStar":
+            for block in (statement.body, statement.orelse, statement.finalbody):
+                yield from _module_level_statements(block)
+            for handler in statement.handlers:
+                yield from _module_level_statements(handler.body)
+
+
+def _scanners_for_module(
+    source: str, module: str, module_name: str = "", *, is_package: bool = False,
+) -> tuple[dict[str, _ClassScanner], ModuleIndex]:
     tree = ast.parse(source)
     context = _ModuleContext(tree, module)
     scanners = {
@@ -1049,39 +1125,61 @@ def _scanners_for_module(source: str, module: str) -> tuple[dict[str, _ClassScan
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef)
     }
-    reexports = {}
-    for node in tree.body:
+    for scanner in scanners.values():
+        scanner.result.module_name = module_name
+    index = ModuleIndex(name=module_name, classes=[n.name for n in tree.body if isinstance(n, ast.ClassDef)])
+    package = module_name if is_package else module_name.rpartition(".")[0]
+    for node in _module_level_statements(tree.body):
         if isinstance(node, ast.ImportFrom):
+            source_module = _absolute_module(node.module, node.level, package)
             for alias in node.names:
-                reexports[alias.asname or alias.name] = alias.name
-    index = ModuleIndex(classes=[n.name for n in tree.body if isinstance(n, ast.ClassDef)], reexports=reexports)
+                if alias.name == "*":
+                    index.star_imports.append(source_module)
+                else:
+                    index.imports[alias.asname or alias.name] = (source_module, alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    index.module_aliases[alias.asname] = alias.name
+                else:
+                    first = alias.name.split(".")[0]
+                    index.module_aliases[first] = first
     return scanners, index
 
 
-def _finish(scanners: dict[str, _ClassScanner]) -> dict[str, ClassExtraction]:
-    """Run pass 2 with attribute aliases and key helpers inherited from bases."""
+def _finish(scanners: dict[str, _ClassScanner], bases_of) -> dict[str, ClassExtraction]:
+    """Run pass 2 with attribute aliases and key helpers inherited from bases.
+
+    ``scanners`` is keyed by class identity; ``bases_of(id, scanner)`` gives
+    the identities of that class's bases -- within one module, its names;
+    in a tree, what the module's own imports make them.
+    """
     for scanner in scanners.values():
         scanner.find_key_helpers()
+    base_ids = {
+        cid: tuple(base for base in bases_of(cid, scanner) if base in scanners and base != cid)
+        for cid, scanner in scanners.items()
+    }
 
-    def inherited(name: str, seen=()) -> tuple[set[str], set[str], dict[str, KeyHelper]]:
-        scanner = scanners.get(name)
-        if scanner is None or name in seen:
+    def inherited(cid: str, seen=()) -> tuple[set[str], set[str], dict[str, KeyHelper]]:
+        scanner = scanners.get(cid)
+        if scanner is None or cid in seen:
             return set(), set(), {}
         info_attrs = set(scanner.result.info_attrs)
         props_attrs = set(scanner.result.props_attrs)
         helpers = dict(scanner.result.key_helpers)
-        for base in scanner.result.bases:
-            base_info, base_props, base_helpers = inherited(base, seen + (name,))
+        for base in base_ids[cid]:
+            base_info, base_props, base_helpers = inherited(base, seen + (cid,))
             info_attrs |= base_info
             props_attrs |= base_props
             for helper_name, helper in base_helpers.items():
                 helpers.setdefault(helper_name, helper)
         return info_attrs, props_attrs, helpers
 
-    for name, scanner in scanners.items():
+    for cid, scanner in scanners.items():
         info_attrs, props_attrs, helpers = set(), set(), {}
-        for base in scanner.result.bases:
-            base_info, base_props, base_helpers = inherited(base, (name,))
+        for base in base_ids[cid]:
+            base_info, base_props, base_helpers = inherited(base, (cid,))
             info_attrs |= base_info
             props_attrs |= base_props
             for helper_name, helper in base_helpers.items():
@@ -1089,43 +1187,169 @@ def _finish(scanners: dict[str, _ClassScanner]) -> dict[str, ClassExtraction]:
         scanner.inherited_info_attrs = info_attrs
         scanner.inherited_props_attrs = props_attrs
         scanner.inherited_helpers = helpers
-    return {name: scanner.scan() for name, scanner in scanners.items()}
+        scanner.result.base_ids = base_ids[cid]
+    return {cid: scanner.scan() for cid, scanner in scanners.items()}
 
 
 def extract_module(source: str, module: str = "<string>") -> dict[str, ClassExtraction]:
-    """Extract every class in one Python source text (bases resolve within it)."""
+    """Extract every class in one Python source text, keyed by class name.
+
+    Bases resolve within the text; a base it does not define is not scanned.
+    """
     scanners, _ = _scanners_for_module(source, module)
-    return _finish(scanners)
+    return _finish(scanners, lambda _cid, scanner: scanner.result.bases)
+
+
+class _TreeNames:
+    """Module-scoped name resolution over the modules and classes of one tree.
+
+    A name means what the module that uses it makes it mean: a class it
+    defines, or one it imports -- followed through re-exports. Two classes
+    called ``CameraManager`` in ``vendor.a`` and ``vendor.b`` are two
+    classes, and ``vendor.b``'s subclass of ``Base`` inherits ``vendor.b``'s
+    ``Base``. Only a name the module neither defines nor imports (a star
+    import from outside, something dynamic) falls back to the tree-wide
+    name, and only when exactly one class carries it.
+    """
+
+    FOUND, EXTERNAL, UNKNOWN = "found", "external", "unknown"
+
+    def __init__(self, modules: dict[str, ModuleIndex], class_ids: Iterable[str]):
+        self.modules = modules
+        self.class_ids = set(class_ids)
+        self.by_name: dict[str, list[str]] = {}
+        for cid in sorted(self.class_ids):
+            self.by_name.setdefault(cid.rpartition(":")[2], []).append(cid)
+
+    def lookup(self, module: str, name: str, seen: frozenset = frozenset()) -> tuple[str, Optional[str]]:
+        """``(FOUND, id)``, ``(EXTERNAL, None)`` for a module outside the tree, else ``(UNKNOWN, None)``."""
+        cid = _class_id(module, name)
+        if cid in self.class_ids:
+            return self.FOUND, cid
+        index = self.modules.get(module)
+        if index is None:
+            return self.EXTERNAL, None
+        if (module, name) in seen:
+            return self.UNKNOWN, None
+        seen = seen | {(module, name)}
+        if name in index.imports:
+            return self.lookup(*index.imports[name], seen)
+        for star in index.star_imports:
+            verdict, found = self.lookup(star, name, seen)
+            if verdict == self.FOUND:
+                return verdict, found
+        return self.UNKNOWN, None
+
+    def unique(self, name: str) -> Optional[str]:
+        ids = self.by_name.get(name, [])
+        return ids[0] if len(ids) == 1 else None
+
+    def resolve_expr(self, module: str, expr: str) -> Optional[str]:
+        """The class a base expression written in ``module`` stands for, or None."""
+        parts = expr.split(".")
+        if not all(part.isidentifier() for part in parts):
+            return None  # Generic[T], a call: nothing to resolve
+        if len(parts) == 1:
+            verdict, found = self.lookup(module, parts[0])
+            if verdict == self.FOUND:
+                return found
+            return self.unique(parts[0]) if verdict == self.UNKNOWN else None
+        head, attr = parts[:-1], parts[-1]
+        index = self.modules.get(module)
+        candidates = []
+        if index is not None:
+            first = head[0]
+            if first in index.module_aliases:
+                candidates.append(".".join([index.module_aliases[first], *head[1:]]))
+            if first in index.imports:
+                imported_module, imported_name = index.imports[first]
+                candidates.append(".".join(p for p in [imported_module, imported_name, *head[1:]] if p))
+        candidates.append(".".join(head))
+        for candidate in candidates:
+            if candidate in self.modules:
+                verdict, found = self.lookup(candidate, attr)
+                return found if verdict == self.FOUND else None
+        return None
 
 
 @dataclass
 class TreeExtraction:
+    #: ``module:Class`` -> what that class reads. Keyed by identity, not by
+    #: name: two modules may define classes of the same name.
     classes: dict[str, ClassExtraction]
-    modules: dict[str, ModuleIndex]  # file stem -> what it defines
+    modules: dict[str, ModuleIndex]  # dotted module name -> what it defines and imports
+    package: str = ""  # the package the tree root is, "" for a plain directory
+
+    def names(self) -> _TreeNames:
+        return _TreeNames(self.modules, self.classes)
 
 
-def extract_tree_indexed(root: Path) -> TreeExtraction:
-    """Extract every class under ``root`` and index what each module defines."""
+def package_of(root: Path) -> str:
+    """The dotted package ``root`` is, read from the ``__init__.py`` files above it."""
+    parts: list[str] = []
+    current = Path(root).resolve()
+    while (current / "__init__.py").is_file():
+        parts.append(current.name)
+        current = current.parent
+    return ".".join(reversed(parts))
+
+
+def extract_tree_indexed(root: Path, package: Optional[str] = None) -> TreeExtraction:
+    """Extract every class under ``root`` and index what each module defines and imports.
+
+    Modules are named from ``package`` -- the dotted package ``root`` is,
+    read from its ``__init__.py`` files when not given -- so a class's key is
+    exactly its ``python_name`` (``imswitch.imcontrol.model.managers.lasers.
+    AAAOTFLaserManager:AAAOTFLaserManager``). Private modules (``_x.py``) are
+    skipped; package ``__init__.py`` files are read, because a plugin may
+    define or re-export its manager there.
+    """
+    root = Path(root)
+    if package is None:
+        package = package_of(root)
     scanners: dict[str, _ClassScanner] = {}
     modules: dict[str, ModuleIndex] = {}
-    for path in sorted(Path(root).rglob("*.py")):
-        if path.name.startswith("_"):
+    for path in sorted(root.rglob("*.py")):
+        is_package = path.name == "__init__.py"
+        if path.name.startswith("_") and not is_package:
             continue
+        parts = list(path.relative_to(root).with_suffix("").parts)
+        if is_package:
+            parts = parts[:-1]
+        module_name = ".".join(part for part in [package, *parts] if part)
         try:
-            module_scanners, index = _scanners_for_module(path.read_text(encoding="utf-8"), str(path))
+            module_scanners, index = _scanners_for_module(
+                path.read_text(encoding="utf-8"), str(path), module_name, is_package=is_package)
         except (SyntaxError, UnicodeDecodeError):
             continue
-        modules.setdefault(path.stem, index)
-        for name, scanner in module_scanners.items():
-            # Same class name in two files (a mock beside its real manager):
-            # the first in sorted order wins.
-            scanners.setdefault(name, scanner)
-    return TreeExtraction(classes=_finish(scanners), modules=modules)
+        modules[module_name] = index
+        for class_name, scanner in module_scanners.items():
+            scanners[_class_id(module_name, class_name)] = scanner
+    names = _TreeNames(modules, scanners)
+
+    def bases_of(_cid: str, scanner: _ClassScanner) -> list[str]:
+        found = (names.resolve_expr(scanner.result.module_name, expr) for expr in scanner.result.base_exprs)
+        return [base for base in found if base is not None]
+
+    return TreeExtraction(classes=_finish(scanners, bases_of), modules=modules, package=package)
 
 
-def extract_tree(root: Path) -> dict[str, ClassExtraction]:
-    """Extract every class under ``root`` (recursively), keyed by class name."""
-    return extract_tree_indexed(root).classes
+def extract_tree(root: Path, package: Optional[str] = None) -> dict[str, ClassExtraction]:
+    """Extract every class under ``root`` (recursively), keyed by ``module:Class``."""
+    return extract_tree_indexed(root, package).classes
+
+
+def legacy_python_name(name: str, category: str) -> Optional[str]:
+    """Where ImSwitch imports an unregistered core manager from, as a ``python_name``.
+
+    ``MultiManager`` imports ``imswitch.imcontrol.model.managers.<dir>.<name>``
+    and takes the attribute ``<name>`` from it; that module and attribute are
+    the manager, whatever else shares its class name.
+    """
+    metadata = CATEGORY_METADATA.get(category)
+    if metadata is None:
+        return None
+    return f"{CORE_MANAGERS_PACKAGE}.{metadata.legacy_manager_directory}.{name}:{name}"
 
 
 def resolve_class_name(
@@ -1133,27 +1357,41 @@ def resolve_class_name(
     tree: TreeExtraction,
     python_name: Optional[str] = None,
 ) -> Optional[str]:
-    """The class that implements manager ``name``, or None.
+    """The identity (``module:Class``) of the class that implements manager ``name``, or None.
 
-    A registry contribution says so directly (``module:Class``). A legacy
-    stem may be the class name, or a module that re-exports it
-    (``ThorlabsMFFManager.py`` is ``from .ThorlabsMFF import ThorlabsMFFManager``),
-    or a module defining exactly one manager class. ``PyCoboltManager.py``
-    defines a vendor driver and no manager: it stays unresolved, on purpose.
+    With a ``python_name`` -- a registry contribution's, or
+    :func:`legacy_python_name` -- the answer is exact, as the import is: the
+    attribute of that module, defined there or re-exported
+    (``ThorlabsMFFManager.py`` is ``from .ThorlabsMFF import
+    ThorlabsMFFManager``). A module this tree does not have, or one without
+    that attribute, leaves the manager unresolved: an explicit identity is
+    never matched by name to some other class that happens to share it
+    (``external_driver.camera:CameraManager`` is not the plugin's own
+    ``CameraManager``). ``PyCoboltManager.py`` defines a vendor driver and
+    nothing of that name: it stays unresolved, on purpose. Without a
+    ``python_name``, the class of that name when only one module defines it,
+    else the one module of that name.
     """
+    names = tree.names()
     if python_name and ":" in python_name:
-        candidate = python_name.rsplit(":", 1)[1]
-        if candidate in tree.classes:
-            return candidate
-    if name in tree.classes:
-        return name
-    module = tree.modules.get(name)
-    if module is None:
+        module, _, attr = python_name.partition(":")
+        if module not in tree.modules:
+            return None
+        verdict, found = names.lookup(module, attr)
+        return found if verdict == names.FOUND else None
+    unique = names.unique(name)
+    if unique is not None:
+        return unique
+    stems = [m for m in tree.modules if m.rpartition(".")[2] == name]
+    if len(stems) != 1:
         return None
-    if name in module.reexports and module.reexports[name] in tree.classes:
-        return module.reexports[name]
-    if len(module.classes) == 1 and module.classes[0] in tree.classes and module.classes[0].endswith("Manager"):
-        return module.classes[0]
+    index = tree.modules[stems[0]]
+    verdict, found = names.lookup(index.name, name)
+    if verdict == names.FOUND:
+        return found
+    if len(index.classes) == 1 and index.classes[0].endswith("Manager"):
+        candidate = _class_id(index.name, index.classes[0])
+        return candidate if candidate in tree.classes else None
     return None
 
 
@@ -1162,14 +1400,16 @@ def resolve_class_name(
 # =============================================================================
 
 def resolution_order(name: str, classes: dict[str, ClassExtraction]) -> list[str]:
-    """The class and its bases, subclass first, restricted to what we scanned."""
+    """The class and its bases, subclass first, as keys of ``classes``."""
     order: list[str] = []
 
     def visit(current: str) -> None:
         if current in order or current not in classes:
             return
         order.append(current)
-        for base in classes[current].bases:
+        extraction = classes[current]
+        bases = extraction.base_ids if extraction.base_ids is not None else extraction.bases
+        for base in bases:
             visit(base)
 
     visit(name)
@@ -1236,8 +1476,9 @@ def merge_manager(
 ) -> ManagerExtraction:
     """One manager's contract: its own reads plus every base class's.
 
-    ``class_name`` is the implementing class when it differs from the
-    manager's name (see :func:`resolve_class_name`).
+    ``class_name`` is the implementing class's key in ``classes`` -- in a
+    tree, its ``module:Class`` identity (see :func:`resolve_class_name`);
+    without it, ``name`` must be a key.
     """
     order = resolution_order(class_name or name, classes)
     reads: dict[str, list[PropertyRead]] = {}
@@ -1322,7 +1563,8 @@ def merge_manager(
 
     return ManagerExtraction(
         name=name,
-        classes=tuple(order),
+        classes=tuple(classes[cid].name for cid in order),
+        class_ids=tuple(order),
         properties=properties,
         discarded=discarded,
         open_passthrough=passthrough,
@@ -1560,17 +1802,18 @@ def extract_managers(
     managers_root: Path,
     setups_dir: Optional[Path] = None,
     docs_dir: Optional[Path] = None,
-    class_names: Optional[dict[str, Optional[str]]] = None,
+    python_names: Optional[dict[str, Optional[str]]] = None,
+    package: Optional[str] = None,
 ) -> dict[str, ManagerExtraction]:
-    """Extract the named managers; ``class_names`` maps a name to its class when they differ."""
-    tree = extract_tree_indexed(managers_root)
+    """Extract the named managers; ``python_names`` says where each one's class lives."""
+    tree = extract_tree_indexed(managers_root, package)
     example_kinds = example_kinds_from_setups(setups_dir) if setups_dir else {}
     cards = docs_cards(docs_dir) if docs_dir else {}
-    class_names = class_names or {}
+    python_names = python_names or {}
     return {
         name: merge_manager(
             name, tree.classes,
-            class_name=class_names.get(name) or resolve_class_name(name, tree),
+            class_name=resolve_class_name(name, tree, python_names.get(name)),
             example_kinds=example_kinds, docs_cards=cards,
         )
         for name in sorted(manager_names)
