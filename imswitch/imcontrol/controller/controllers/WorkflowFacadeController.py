@@ -32,7 +32,11 @@ class WorkflowFacadeController(ImConWidgetController):
         The request is pre-flighted before any lifecycle signal is published;
         a refused start (a scan is already running, the previous one is still
         finishing, ...) raises ``ScanRequestRejectedError`` (a RuntimeError)
-        and nothing else happens. On rigs with several scanners ``source``
+        whose message is the reason, and nothing else happens. A scan design
+        the scan manager refuses (longer than ``scan.maxScanTimeMin``, a
+        scanner driven outside its voltage range) raises the same way; it is
+        found only after ``scanStarting`` went out, which is then paired with
+        a ``scanEnded``. On rigs with several scanners ``source``
         selects one by its widget key (see getScanSourceNames); without it the
         canonical Scan controller or a lone capable controller is used, and
         ambiguity raises. Repeat is switched off for the scan.

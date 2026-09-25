@@ -1,9 +1,10 @@
 import os
 
 import numpy as np
+import pytest
 
 from imswitch.imcontrol._test import setupInfoBasic
-from imswitch.imcontrol.model import ScanManagerBase
+from imswitch.imcontrol.model import ScanDesignRefusedError, ScanManagerBase
 
 
 def _stage_parameters(z_center):
@@ -78,7 +79,8 @@ def test_scan_rejected_when_signal_leaves_voltage_range():
                      'sequence_time': 0.005}
 
     sh = ScanManagerBase(setupInfo=setupInfoBasic)
-    assert sh.makeFullScan(stageParameters, TTLParameters) is None
+    with pytest.raises(ScanDesignRefusedError, match='voltages outside'):
+        sh.makeFullScan(stageParameters, TTLParameters)
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
