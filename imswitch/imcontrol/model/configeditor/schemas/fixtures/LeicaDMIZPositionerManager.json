@@ -1,7 +1,7 @@
 {
   "category": "positioners",
   "device": {
-    "managerName": "LeicaDMIManager",
+    "managerName": "LeicaDMIZPositionerManager",
     "managerProperties": {
       "calibCsvPath": "example",
       "rs232device": "example"

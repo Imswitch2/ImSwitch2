@@ -51,7 +51,9 @@ def build_default_device(
     }
 
     def field_type(f: dict, location: str, nested_key: Optional[str] = None) -> str:
-        return f.get("type") or resolved.get((location, nested_key, f["key"])) or "text"
+        # The resolved type -- the schema's, or the template's where it is a
+        # refinement -- so a default is coerced the way the form reads it.
+        return resolved.get((location, nested_key, f["key"])) or f.get("type") or "text"
 
     if template:
         for f in template.get("top", []):
@@ -81,6 +83,13 @@ def build_default_device(
             sub = {}
             for f in nest_fields:
                 sub[f["key"]] = _default_value(f.get("default", ""), field_type(f, "nested", nest_key))
+            # A sub-key the schema requires and the template does not list.
+            nest_schema = ((json_schema or {}).get("properties") or {}).get(nest_key) or {}
+            for sub_key in nest_schema.get("required") or []:
+                sub_prop = (nest_schema.get("properties") or {}).get(sub_key) or {}
+                if sub_key not in sub:
+                    sub[sub_key] = copy.deepcopy(sub_prop["default"]) if "default" in sub_prop \
+                        else _default_for_type(_infer_type_from_schema(sub_prop))
             d["managerProperties"][nest_key] = sub
 
     if kind_schema:

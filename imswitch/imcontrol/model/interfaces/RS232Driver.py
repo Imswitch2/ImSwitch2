@@ -225,6 +225,13 @@ class RS232Driver:
 
     @classmethod
     def getDefaults(cls, settings):
+        try:
+            baudrate = int(settings["baudrate"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(
+                f'Invalid baudrate {settings.get("baudrate")!r}; expected an integer'
+            ) from None
+
         parity = str(settings["parity"]).strip().lower()
         if parity not in _PARITIES:
             raise ValueError(
@@ -232,6 +239,7 @@ class RS232Driver:
                 f'{", ".join(_PARITIES)}'
             )
         set_par = _PARITIES[parity]
+
         try:
             set_stopb = _STOP_BITS[float(settings["stopbits"])]
         except (KeyError, TypeError, ValueError):
@@ -240,16 +248,23 @@ class RS232Driver:
                 f'1.5 or 2'
             ) from None
 
-        defaults = {'ASRL': {'write_termination': decodeTermination(
-                                 settings["send_termination"], 'send_termination'),
-                             'read_termination': decodeTermination(
-                                 settings["recv_termination"], 'recv_termination'),
-                             'baud_rate': settings["baudrate"],
-                             'bytesize': settings["bytesize"],
-                             'parity': set_par,
-                             'stop_bits': set_stopb,
-                             'encoding': settings["encoding"],
-                             }}
+        defaults = {
+            'ASRL': {
+                'write_termination': decodeTermination(
+                    settings["send_termination"],
+                    'send_termination',
+                ),
+                'read_termination': decodeTermination(
+                    settings["recv_termination"],
+                    'recv_termination',
+                ),
+                'baud_rate': baudrate,
+                'bytesize': settings["bytesize"],
+                'parity': set_par,
+                'stop_bits': set_stopb,
+                'encoding': settings["encoding"],
+            }
+        }
         return defaults
 
 

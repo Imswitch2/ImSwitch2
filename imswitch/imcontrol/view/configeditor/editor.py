@@ -18,18 +18,19 @@ import ast
 import colorsys
 import copy
 import json
+import math
 import os
 import re
 import sys
 from pathlib import Path
 import glob
-from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint, QRegularExpression
-from PyQt5.QtGui import QFont, QPalette, QColor, QRegularExpressionValidator
+from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint
+from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialogButtonBox, QDoubleSpinBox,
+    QApplication, QCheckBox, QComboBox, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
-    QSizePolicy, QSpinBox, QSplitter, QStatusBar, QTabWidget, QToolBar,
+    QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout,
     QDialog, QTextEdit, QLayout, QLayoutItem,
 )
@@ -1219,32 +1220,31 @@ class DeviceCanvas(QScrollArea):
 
 _MISSING = object()
 
-#: What may be typed into a numeric field. Regular expressions, not
-#: QIntValidator/QDoubleValidator: those carry a C++ int range and a decimal
-#: count, and refuse the tenth digit of a serial number. An empty box is null.
-_INT_PATTERN = r"[-+]?\d*"
-_FLOAT_PATTERN = r"[-+]?(\d+\.?\d*|\.\d*)([eE][-+]?\d*)?"
-
-
-def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+#: A number as a setup file writes one: an optional sign, digits with an
+#: optional fraction, an optional exponent. Nothing else -- no digit
+#: separators (``int("1_000")`` is 1000), no ``nan``/``inf``, no hex -- so
+#: what is read back is what the operator plainly typed and what JSON holds.
+_INTEGER_TEXT = re.compile(r"[-+]?\d+")
+_NUMBER_TEXT = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
 
 
 def _parse_number(text: str):
     """What an edited numeric field means: an int, else a float, else the text.
 
     Empty is null -- clearing a box is how a nullable number is unset -- and
-    text that is neither kind is kept as it is rather than lost; validation
-    says what is wrong with it.
+    text that is not a plain finite number is kept exactly as typed rather
+    than lost or reinterpreted; Apply says so, and validation says what is
+    wrong with it.
     """
     stripped = text.strip()
     if not stripped or stripped.lower() == "null":
         return None
-    for parse in (int, float):
-        try:
-            return parse(stripped)
-        except ValueError:
-            continue
+    if _INTEGER_TEXT.fullmatch(stripped):
+        return int(stripped)
+    if _NUMBER_TEXT.fullmatch(stripped):
+        number = float(stripped)
+        if math.isfinite(number):
+            return number
     return stripped
 
 
@@ -1328,16 +1328,15 @@ class FieldWidget(QWidget):
             else:
                 self._w.setCurrentIndex(1 if bool(value) else 2)
         elif tp in ("int", "float"):
-            # A validated line edit, not a spin box: a spin box is a C++ int
-            # that clamps, rounds to its decimals and cannot hold a string a
-            # file put under this key. Whatever the file held is shown as it
-            # is; the validator shapes what is typed, and only when the box
-            # started out holding a number (or nothing) -- a string under a
-            # numeric key is edited as free text, so it can be fixed at all.
+            # A plain line edit: no spin box, and no keystroke validator.
+            # A spin box is a C++ int that clamps and rounds; a validator
+            # drops every keystroke it refuses, so "8000.5" typed into an
+            # integer-kind box became 80005 and was saved. The kind is the
+            # editor's preference for how to read the text back, not a
+            # constraint -- the schema deliberately emits none -- so what is
+            # typed stays as typed, and Apply reads it as a number when it is
+            # one and warns when it is not.
             self._w = QLineEdit("" if value is None else str(value))
-            if value is None or _is_number(value):
-                pattern = _INT_PATTERN if tp == "int" else _FLOAT_PATTERN
-                self._w.setValidator(QRegularExpressionValidator(QRegularExpression(pattern), self._w))
         elif tp == "select":
             self._w = QComboBox()
             options = self._def.get("opts", [])
@@ -1946,6 +1945,33 @@ class PropertyEditor(QWidget):
         nested_keys: dict[str, dict] = {}
         for nest_key in schema.get("nested", {}):
             nested_keys[nest_key] = {}
+        # Numeric fields the operator filled with something that is not a
+        # number: saved as typed, and said so below.
+        not_numbers: list[tuple[str, str]] = []
+        props_on_load = self._device.get("managerProperties") or {}
+        nested_meta = schema.get("nested_meta", {})
+        # Dicts an edit to one of their fields creates (or turns into a dict).
+        edited_containers = {
+            section.split(":", 1)[1]
+            for (section, _key), fw in self._field_widgets.items()
+            if section.startswith("nested:") and fw.is_touched()
+        }
+
+        def container_exists(nest_key: str) -> bool:
+            """The dict will be in what Apply writes: the file has it, the code
+            requires it, or an edit creates it.
+
+            Decided before any field is written, so a sub-key the dict's
+            schema requires goes in with the edit that creates the dict --
+            not on the next Apply. Something under that key that is not a
+            dict (``null``) and that nobody edited is kept as it was rather
+            than filled in.
+            """
+            if nest_key in edited_containers:
+                return True
+            if nest_key in props_on_load:
+                return isinstance(props_on_load[nest_key], dict)
+            return bool(nested_meta.get(nest_key, {}).get("schema_req"))
 
         for (section, key), fw in self._field_widgets.items():
             if section in ("raw", "raw_prop"):
@@ -1965,12 +1991,18 @@ class PropertyEditor(QWidget):
                 continue
             val = fw.get_value()
             field = self._field_defs.get((section, key), {})
+            if fw.is_touched() and field.get("type") in ("int", "float") and isinstance(val, str):
+                not_numbers.append((field.get("label", key), val))
             # A property the file did not have is written only if the
             # manager's code requires it or the operator edited it; a form
             # may show a default without saving one unasked. A template's
             # own "req" is a hint for the label and the warning below, not
-            # proof: the file loaded without the key.
-            if not (field.get("schema_req") or (section, key) in self._present_keys or fw.is_touched()):
+            # proof: the file loaded without the key. A sub-key a dict's
+            # schema requires is required only where the dict exists.
+            required_here = bool(field.get("schema_req"))
+            if section.startswith("nested:"):
+                required_here = required_here and container_exists(section.split(":", 1)[1])
+            if not (required_here or (section, key) in self._present_keys or fw.is_touched()):
                 continue
             if fw._def.get("type") == "bool_auto" and val is None:
                 # "Automatic": keep the key absent so the consumer's own
@@ -1993,7 +2025,6 @@ class PropertyEditor(QWidget):
                 nest_key = section.split(":", 1)[1]
                 nested_keys[nest_key][key] = val
 
-        props_on_load = self._device.get("managerProperties") or {}
         for nest_key, nest_vals in nested_keys.items():
             original = props_on_load.get(nest_key, _MISSING)
             if nest_vals:
@@ -2002,6 +2033,12 @@ class PropertyEditor(QWidget):
                 # The container was there with nothing the form knows inside
                 # (empty, or not a dict at all): keep it exactly as it was.
                 props[nest_key] = copy.deepcopy(original)
+            elif container_exists(nest_key):
+                # The manager reads this dict unguarded -- a file without it
+                # does not start. Its fields show defaults but stay unwritten,
+                # like any optional field the file lacks; the dict is written
+                # with only what its own schema requires, which here is nothing.
+                props[nest_key] = {}
 
         # A device the file wrote without a managerProperties key, and into
         # which nothing was written now, stays without one.
@@ -2015,6 +2052,19 @@ class PropertyEditor(QWidget):
                 v = new_device.get(f["key"]) if f in schema.get("top", []) else props.get(f["key"])
                 if v is None or v == "" or v == []:
                     warnings.append(f"⚠  Required: {f['label']}")
+        # The same for the fields of a dict the template lays out, where the
+        # dict is in what is written.
+        for nest_key, children in schema.get("nested", {}).items():
+            container = props.get(nest_key)
+            if not isinstance(container, dict):
+                continue
+            for f in children:
+                if f.get("req"):
+                    v = container.get(f["key"])
+                    if v is None or v == "" or v == []:
+                        warnings.append(f"⚠  Required: {f['label']} ({nest_key})")
+        for label, text in not_numbers:
+            warnings.append(f"⚠  {label}: {text!r} is not a number; saved as typed")
         self._val_lbl.setText("\n".join(warnings))
 
         # Phase 2: Merge preserving unknown fields (including nested dicts)

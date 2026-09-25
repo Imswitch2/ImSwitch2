@@ -327,6 +327,11 @@ mock fallback.
      - Unit used by SCPI power setpoint commands.  Defaults to ``"mW"``, which
        matches Cobolt's current ``pycobolt`` ``Cobolt06`` wrapper.  Use ``"W"``
        only for firmware/configurations that expose SCPI setpoints in watts.
+   * - ``scanResumeSettleMs``
+     - float
+     - Extra delay, in milliseconds, after a successful pause-mode scan resume
+       before returning control to the scan.  Defaults to ``0`` and is only
+       relevant with ``emissionControl: "pause"``.
 
 **LaserInfo fields used**
 

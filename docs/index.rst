@@ -66,6 +66,7 @@ config files).
     devices/lasers
     devices/positioners
     devices/rotators
+    devices/stands
     Hdf5datafile
 
 .. toctree::
