@@ -26,9 +26,15 @@ helpers = importScript('tutorial_helpers.py')
 print('Loaded helpers from', getScriptDirPath())
 
 camera = api.imcontrol.getDetectorNames()[0]
-for numFrames in (3, 6):
-    name = f'tutorial_{numFrames}_frames'
-    # helpers.recordFrames() is tutorial 04 in one line: set the mode, the
-    # name and the format, record, wait, and put the settings back.
-    helpers.recordFrames(numFrames, name)
-    print(f'{numFrames} frames ->', helpers.newestRecording(name, camera))
+# helpers.applyCameraSettings() sets the camera settings a recording relies
+# on (see tutorial 04) and returns the previous ones, to put back.
+previousSettings = helpers.applyCameraSettings(camera, {'exposure': 20})   # ms
+try:
+    for numFrames in (3, 6):
+        name = f'tutorial_{numFrames}_frames'
+        # helpers.recordFrames() is tutorial 04 in one line: set the mode, the
+        # name and the format, record, wait, and put those settings back.
+        helpers.recordFrames(numFrames, name)
+        print(f'{numFrames} frames ->', helpers.newestRecording(name, camera))
+finally:
+    helpers.applyCameraSettings(camera, previousSettings)

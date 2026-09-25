@@ -2,6 +2,8 @@
 
 Imported by: 06_share_code_between_scripts.py
 
+(07_two_cameras.py uses it too.)
+
 A file of functions that several scripts can share. importScript() gives
 this module the same names a script has (``api``, ``sleep``,
 ``callAndWaitForSignal``, ...), but only after the file has been loaded:
@@ -10,6 +12,17 @@ use them inside functions, as below, not at the top level of the file.
 
 import glob
 import os
+
+
+def applyCameraSettings(camera, settings):
+    """Set camera parameters -- {name: value}, names as in the Settings
+    widget -- and return their previous values, to put back afterwards with
+    applyCameraSettings(camera, previous). Tutorial 04 explains why."""
+    previous = {name: api.imcontrol.getDetectorParameter(camera, name)
+                for name in settings}
+    for name, value in settings.items():
+        api.imcontrol.setDetectorParameter(camera, name, value)
+    return previous
 
 
 def newestRecording(name, detector):

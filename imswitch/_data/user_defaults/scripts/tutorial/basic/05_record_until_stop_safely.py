@@ -17,8 +17,17 @@ Setup
 Next: 06_share_code_between_scripts.py
 """
 
+camera = api.imcontrol.getDetectorNames()[0]
 signals = api.imcontrol.signals()
 log = getLogger()
+
+# As in tutorial 04: set the camera settings the recording relies on, and
+# remember the current ones to put them back.
+CAMERA_SETTINGS = {'exposure': 20}         # ms; add a trigger setting if yours has one
+previousSettings = {name: api.imcontrol.getDetectorParameter(camera, name)
+                    for name in CAMERA_SETTINGS}
+for name, value in CAMERA_SETTINGS.items():
+    api.imcontrol.setDetectorParameter(camera, name, value)
 
 # A session note is stored in the metadata of every file recorded from now
 # on -- the same text as in Tools > Session notes... in Hardware Control.
@@ -54,4 +63,6 @@ finally:
     else:
         waitForEnd.close()
     api.imcontrol.setSessionNote('')   # an empty note clears it
+    for name, value in previousSettings.items():
+        api.imcontrol.setDetectorParameter(camera, name, value)
     mainWindow.setCurrentModule('imscripting')

@@ -18,24 +18,31 @@ Next: 03_scan_timelapse.py
 
 import glob
 import os
-import tempfile
 
 import h5py
 
-PARAMS = os.path.join(getScriptDirPath(), 'scan_params', 'camera_scan_1um.json')
+# The names of this setup's devices -- change them for yours (see 01).
+CAMERA = 'Camera'
+STAGES = ['X', 'Y', 'Z']
+# Trigger mode and exposure the scan needs from the camera (see 01).
+CAMERA_SETTINGS = {'Trigger source': 'External "frame-trigger"',
+                   'Set exposure time': 0.005}                  # s
+
+# The steps of tutorial 01 -- load the scan settings with these names, save
+# and restore the Scan widget, set and restore the camera -- as functions.
+scan = importScript('scan_helpers.py')
 NAME = 'tutorial_scan'
-camera = api.imcontrol.getDetectorNames()[0]
 signals = api.imcontrol.signals()
 
-# Save the Scan widget's settings and your recording file format, so both
-# can be put back afterwards (see tutorial 01 and basic 04).
-backup = os.path.join(tempfile.gettempdir(), 'imswitch_tutorial_scan_backup.json')
-api.imcontrol.saveScanParamsToFile(backup)
+# Save the Scan widget's settings, the camera's and your recording file
+# format, so all can be put back afterwards (see tutorial 01 and basic 04).
+backup = scan.backupScanSettings()
+previousCamera = scan.applyCameraSettings(CAMERA, CAMERA_SETTINGS)
 previousFormat = api.imcontrol.getRecFileFormat()
 try:
-    api.imcontrol.loadScanParamsFromFile(PARAMS)
+    scan.loadScanSettings('camera_scan_1um.json', CAMERA, STAGES)
     api.imcontrol.setRecFileFormat('HDF5')     # read back with h5py below
-    api.imcontrol.setDetectorToRecord(camera)
+    api.imcontrol.setDetectorToRecord(CAMERA)
     # "Scan once": starting the recording starts one scan, and the
     # recording keeps each frame the scan's pulses trigger.
     api.imcontrol.setRecModeScanOnce()
@@ -48,15 +55,17 @@ finally:
     api.imcontrol.setDetectorToRecord(-1)
     api.imcontrol.setRecFileFormat(previousFormat)
     api.imcontrol.loadScanParamsFromFile(backup)
+    scan.applyCameraSettings(CAMERA, previousCamera)
 
-path = max(glob.glob(os.path.join(api.imcontrol.getRecFolder(), f'{NAME}_rec_{camera}*')),
+path = max(glob.glob(os.path.join(api.imcontrol.getRecFolder(), f'{NAME}_rec_{CAMERA}*')),
            key=os.path.getmtime)
 with h5py.File(path, 'r') as f:
-    frames = f[f'{camera}/data']               # (frames, rows, columns)
+    frames = f[f'{CAMERA}/data']               # (frames, rows, columns)
     print(f'{path}\n  {frames.shape[0]} frames of {frames.shape[2]} x {frames.shape[1]} px')
 
 # 10 x 10 positions, one pulse each: 100 frames. A count that does not match
-# the positions means pulses were lost -- worth checking on a new setup
-# before trusting a long acquisition. assert stops the script with an error
-# if the condition is false.
+# the positions means pulses were lost -- or the camera was not waiting for
+# them (its trigger mode) -- worth checking on a new setup before trusting a
+# long acquisition. assert stops the script with an error if the condition
+# is false.
 assert frames.shape[0] == 100, 'expected one frame per scan position'

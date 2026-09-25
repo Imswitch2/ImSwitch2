@@ -81,9 +81,14 @@ back, delete your copy and restart ImSwitch.
 | 04 | `04_camera_and_apd.py` | `mixed_hamamatsu_apd_mock_scan_setup.json` | a camera and an APD in one scan |
 | 05 | `05_laser_power_series.py` | `galvo_apd_mock_scan_setup.json` | lasers; several scans in one recording |
 
-The scanning tutorials load their scan settings from `scanning/scan_params/`.
-To make your own, set up a scan in the Scan widget and save it with
-`api.imcontrol.saveScanParamsToFile(path)`.
+The scanning tutorials load their scan settings from `scanning/scan_params/`
+(double-click one in the Files panel to read it). The camera and stage names
+are set at the top of each script and put into the settings when they are
+loaded, so to try a tutorial on another setup you change those names, not
+the file. To make your own settings, set up a scan in the Scan widget and
+save it with `api.imcontrol.saveScanParamsToFile(path)`.
+`scanning/scan_helpers.py` holds the steps of scanning 01 as functions for
+02-04.
 
 ## On your own microscope
 

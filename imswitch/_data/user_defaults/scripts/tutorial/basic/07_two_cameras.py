@@ -24,6 +24,18 @@ print('Cameras:', cameras)
 signals = api.imcontrol.signals()
 folder = api.imcontrol.getRecFolder()
 previousFormat = api.imcontrol.getRecFileFormat()
+helpers = importScript('tutorial_helpers.py')     # from tutorial 06
+
+# Each camera gets the settings the recording below relies on (tutorial 04
+# explains why). Different cameras name them differently: the Thorlabs one
+# has its exposure in µs, and an 'Operation Mode' that must be 'Software' --
+# 'Hardware' would make it wait for trigger pulses this setup never sends.
+CAMERA_SETTINGS = {
+    'Mock Camera': {'exposure': 20},                                  # ms
+    'Mock ThorCam TSI': {'Exposure': 20000, 'Operation Mode': 'Software'},  # µs
+}
+previousSettings = {camera: helpers.applyCameraSettings(camera, settings)
+                    for camera, settings in CAMERA_SETTINGS.items()}
 
 try:
     # One after the other: select one camera, snap, then the next. With a
@@ -52,6 +64,8 @@ finally:
     api.imcontrol.setDetectorToRecord(-1)
     api.imcontrol.setRecFilename(None)
     api.imcontrol.setRecFileFormat(previousFormat)
+    for camera, settings in previousSettings.items():
+        helpers.applyCameraSettings(camera, settings)
 
 # One file for both cameras: <name>_rec.hdf5, with a group per camera.
 path = max(glob.glob(os.path.join(folder, 'tutorial_two_cameras*.hdf5')),

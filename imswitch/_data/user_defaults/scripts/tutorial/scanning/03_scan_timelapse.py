@@ -17,18 +17,26 @@ Next: 04_camera_and_apd.py (on a different mock setup)
 
 import glob
 import os
-import tempfile
 import time
 
-PARAMS = os.path.join(getScriptDirPath(), 'scan_params', 'camera_scan_1um.json')
+# The names of this setup's devices -- change them for yours (see 01).
+CAMERA = 'Camera'
+STAGES = ['X', 'Y', 'Z']
+# Trigger mode and exposure the scan needs from the camera (see 01).
+CAMERA_SETTINGS = {'Trigger source': 'External "frame-trigger"',
+                   'Set exposure time': 0.005}                  # s
+
+# The steps of tutorial 01 -- load the scan settings with these names, save
+# and restore the Scan widget, set and restore the camera -- as functions.
+scan = importScript('scan_helpers.py')
 NAME = 'tutorial_timelapse'
 TIMEPOINTS, INTERVAL_S = 3, 2.0        # 3 scans, one every 2 seconds
 signals = api.imcontrol.signals()
 
-backup = os.path.join(tempfile.gettempdir(), 'imswitch_tutorial_scan_backup.json')
-api.imcontrol.saveScanParamsToFile(backup)
+backup = scan.backupScanSettings()
+previousCamera = scan.applyCameraSettings(CAMERA, CAMERA_SETTINGS)
 try:
-    api.imcontrol.loadScanParamsFromFile(PARAMS)
+    scan.loadScanSettings('camera_scan_1um.json', CAMERA, STAGES)
     # Each scan of the timelapse is saved to its own file;
     # timelapseSingleFile=True would put all timepoints into one file.
     api.imcontrol.setRecModeScanTimelapse(TIMEPOINTS, INTERVAL_S,
@@ -43,6 +51,7 @@ try:
 finally:
     api.imcontrol.setRecFilename(None)
     api.imcontrol.loadScanParamsFromFile(backup)
+    scan.applyCameraSettings(CAMERA, previousCamera)
 
 # One file per timepoint: <name>_rec_scan0_<camera>, ..._scan1_..., ...
 for path in sorted(glob.glob(os.path.join(api.imcontrol.getRecFolder(), f'{NAME}*'))):

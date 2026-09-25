@@ -145,6 +145,7 @@
   "scripts/tutorial/README.md": [
    "40711c2c3bc22851052349080561e25285f864207bdb6b0212946a0256e3759c",
    "9e1f5152c82cc64572abfd2497c8d0b8baa8598bf1928822c26f81c813e8caf8",
+   "dea4553a5d72f090260f650fbdc66e17eea97fe90a22120ce6fac87d19b11d7b",
    "e9d6666d52b729e649bd9eb6a28b55478b8599197f6bab6d92361b1259bd705f"
   ],
   "scripts/tutorial/basic/01_hello_imswitch.py": [
@@ -162,9 +163,11 @@
   ],
   "scripts/tutorial/basic/04_record_frames.py": [
    "728b62a07375ee87ed6254ad6c5ad681e7a622912ac0e0db8753db14add5ca3f",
+   "b2de5b2755a7da5662fac6c0aa805e7461d368c3885d6bde0e2cec012aaf10ba",
    "f0868522e4e7632dbec20d3ddae8b1a4aa527abeac3f7f7efb084eb34e1b620d"
   ],
   "scripts/tutorial/basic/05_record_until_stop_safely.py": [
+   "d401de8b5694c8bbddc477cfc4e72be6aa69dd121e68f9dedd42ceecd869c15c",
    "fe514bb2544ec0492dcef0b59e147fe7076b22ca9b2ce950ca4d50461dee4415"
   ],
   "scripts/tutorial/basic/05_two_cameras.py": [
@@ -174,13 +177,15 @@
    "6c0316cf55f1264a43a91b18e83086aa42480dbf276c8ddfbfe35e7633e23b50"
   ],
   "scripts/tutorial/basic/06_share_code_between_scripts.py": [
-   "12d6c88dc12f86b3ece10a46250042d571d8a7b254c42174b070a1d01830e446"
+   "12d6c88dc12f86b3ece10a46250042d571d8a7b254c42174b070a1d01830e446",
+   "1db8ab7b0c6dd73301c5d6ff1166042b3910b603199a38031bde3423852e3036"
   ],
   "scripts/tutorial/basic/07_record_until_stop_safely.py": [
    "77c30b70a71fe2726067a957cd13b5e884572731023306de9ef7b0397f662316"
   ],
   "scripts/tutorial/basic/07_two_cameras.py": [
-   "1104c7f2a1a587bb6f6e2be6b12ddff399402c4337efde1ea1421552115c6cf3"
+   "1104c7f2a1a587bb6f6e2be6b12ddff399402c4337efde1ea1421552115c6cf3",
+   "1f3b51e3be7869fad615964373fc16ad89a1ec6768c5eeae916761a7965411ee"
   ],
   "scripts/tutorial/basic/08_move_the_stage.py": [
    "fe59a5ce4ae7358983f5aed8890eb364d409d24dde0c5ec3430237e502b2d3e0"
@@ -190,24 +195,29 @@
   ],
   "scripts/tutorial/basic/tutorial_helpers.py": [
    "397753663c4a54be2423a2b62d6cd9f9aadf4d3cf5b235d5cee4026666226c23",
+   "5ef8c532b42af1f5da1bccd921065d52331cbde351e96ffaa83a74b34646d419",
    "c4f62b0807fb3e484b2c0cd3f16734ce1596f45c26bb4f2fb68b57e62109951c"
   ],
   "scripts/tutorial/scanning/01_run_a_scan.py": [
    "12876fd4873c95c883d89604a70f7ebb92b82e555fa098795c414a1ce12c70cd",
-   "546b0050e63f773ed63ed946053b32d4b94a5d81699f3fd1e0b0117f1a72a8df"
+   "546b0050e63f773ed63ed946053b32d4b94a5d81699f3fd1e0b0117f1a72a8df",
+   "e870fb48dfddf067c8625b6b544b37c7c70d558dfdbf46d211b522758101b01c"
   ],
   "scripts/tutorial/scanning/02_record_a_scan.py": [
    "2928f5343d1c138d13c61fd693829faf721b93c3a4f2dfc95e9d43494f243034",
-   "40b7664b2237a6eb4b8d5419b6e334db045d379fa8f1e8f52f71ab473062cc3c"
+   "40b7664b2237a6eb4b8d5419b6e334db045d379fa8f1e8f52f71ab473062cc3c",
+   "6fcdd55da0bbe3df5e2a7dc80e4440891f4bebf8af3164d133e8fbc9c343cee8"
   ],
   "scripts/tutorial/scanning/03_camera_and_apd.py": [
    "d0c2d72f67b31f796375fc7dd57dc962adae0bcab63321a12cfed059806c47fe"
   ],
   "scripts/tutorial/scanning/03_scan_timelapse.py": [
+   "c898bc11abd9925fdb3ed1633e8430c9f4bb0e4f2829e89a2e478815586d023f",
    "dd2b5bfafbcec5d30e7f138ed9ca48a2478ff8ca3f146457970a3a271d0508e8"
   ],
   "scripts/tutorial/scanning/04_camera_and_apd.py": [
-   "6d742ed8c3d8bea270a9c030df7a277386c307a388b4929d1d3b71378eba6ca8"
+   "6d742ed8c3d8bea270a9c030df7a277386c307a388b4929d1d3b71378eba6ca8",
+   "e3bd18be46bc111ca2f6bdb7281e0edc5ca495d3fe1163d34e797df2f97b5feb"
   ],
   "scripts/tutorial/scanning/04_scan_timelapse.py": [
    "18bd6431c8a19818b6564323f03e9c3eb08f3b94482e4dcaba8fb66d6f95a74c"
@@ -215,6 +225,9 @@
   "scripts/tutorial/scanning/05_laser_power_series.py": [
    "b413f4a9938b186e0a5bda86f7332d8daa357d53cf942026e19bf3cf47387775",
    "f941dd8bede21141e7090b0a706648ee1f3ed4120d4925740a8f13a58a0bc9b0"
+  ],
+  "scripts/tutorial/scanning/scan_helpers.py": [
+   "f48634c922897f13fc97a3b827651566ce7f6d75757b758201d43b0cec3b5739"
   ],
   "scripts/tutorial/scanning/scan_params/camera_scan_1um.json": [
    "bdf0e03a1ea3110944b92ec35edd81e3ca3c3a026d0f78f69789e82ade45f6a1"
