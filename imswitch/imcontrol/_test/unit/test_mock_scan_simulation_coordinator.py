@@ -707,6 +707,9 @@ def test_hamamatsu_mock_scan_once_recording_reaches_rec_frames(tmp_path):
         saveFormat=SaveFormat.HDF5,
         attrs={'Camera': {}},
         recFrames=4,
+        # The scan source declares the pulses per position (getNumCamTTL);
+        # this test drives the manager directly, so it declares them itself.
+        numCamTTL={'Camera': 1},
         stallTimeout=1.0,
     )
     assert recording.waitForAcquisitionStarted(2.0)
@@ -896,3 +899,171 @@ def test_mixed_hamamatsu_apd_mock_scan_once_records_each_target(tmp_path):
                 file.close()
     finally:
         recording.endRecording(emitSignal=False, wait=True)
+
+
+def test_z_only_stepped_scan_end_to_end_from_galvo_fixture(tmp_path):
+    """Phase D of docs/galvo-designer-single-axis-findings.md, full chain: the
+    tracked galvo_apd_mock_scan_setup.json powers a simulated Z-only scan
+    through the layers the real controller runs — the ScanControllerAdvanced
+    serializer (widget state -> analog/digital dicts), ScanManagerAdvanced's
+    makeFullScan (GalvoScanDesigner + checkSignalComp compliance + TTL
+    designer), the real updateScanStageAttrs shared-attribute publication,
+    RecordingManager, and finally the stored file: a (1, 1, N) dataset whose
+    ScanStage metadata carries the scan-axis provenance."""
+    import logging
+
+    from imswitch.imcommon.model.SharedAttributes import SharedAttributes
+    from imswitch.imcontrol.controller.basecontrollers import SuperScanController
+    from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
+        ScanControllerAdvanced,
+    )
+    from imswitch.imcontrol.model.scan_parameters import (
+        AdvancedScanParameterSerializer,
+    )
+    from imswitch.imcontrol._test.unit.test_scan_parameter_serializer import (
+        FakeScanWidget,
+    )
+
+    _ensure_qcore_app()
+    setup_info = _setup_from_user_default('galvo_apd_mock_scan_setup.json')
+
+    # 1) Controller serialization layer: the exact code
+    #    ScanControllerAdvanced._buildAnalogParameterDict/_buildDigitalParameterDict
+    #    delegate to, fed from widget state (Z scan dim, 10 um / 0.5 um).
+    widget = FakeScanWidget(n_scan_dims=len(setup_info.positioners))
+    widget.scan_dims = {0: 'Z', 1: 'None', 2: 'None'}
+    widget.size = {'Z': 10.0}
+    widget.step = {'Z': 0.5}
+    widget.center = {'Z': 5.0}
+    widget.seq_time = 2e-05
+    widget.phase_delay = 100.0
+    serializer = AdvancedScanParameterSerializer()
+    analog, positioners_scan = serializer.build_analog(
+        widget, setup_info.positioners)
+    digital = serializer.build_digital(
+        widget, analog, setup_info.positioners, setup_info.getTTLDevices())
+    assert positioners_scan == ['Z', 'None', 'None']
+    assert analog['target_device'] == ['Z', 'X', 'Y']  # scan dim + dummies
+
+    # 2) Signal construction: the real ScanControllerAdvanced._make_full_scan
+    #    (checkSignalLength guard + GalvoScanDesigner + checkSignalComp
+    #    voltage compliance + AdvancedScanTTLCycleDesigner), run unbound on
+    #    duck-typed controller state so no Qt widget is needed.
+    class _AdvancedScanBuilder:
+        _make_full_scan = ScanControllerAdvanced._make_full_scan
+        _get_scan_designer = ScanControllerAdvanced._get_scan_designer
+        _get_ttl_designer = ScanControllerAdvanced._get_ttl_designer
+        _copy_positioner_line_program_to_stage_params = (
+            ScanControllerAdvanced._copy_positioner_line_program_to_stage_params
+        )
+        _ttl_parameters_without_positioners = (
+            ScanControllerAdvanced._ttl_parameters_without_positioners
+        )
+        _log_linestep_scan_diagnostics = (
+            ScanControllerAdvanced._log_linestep_scan_diagnostics
+        )
+
+        def __init__(self):
+            self._setupInfo = setup_info
+            self.TTLDevices = setup_info.getTTLDevices()
+            self._logger = logging.getLogger('AdvancedScanBuilderTest')
+
+    builder = _AdvancedScanBuilder()
+    signals, scan_info = builder._make_full_scan(analog, digital)
+    assert signals is not None, 'signal construction refused the Z-only scan'
+    assert scan_info['img_dims'] == [20]
+    assert list(signals['scanSignalsDict']) == ['Z']  # only the active axis
+
+    # Production control flow enforces voltage compliance: the same scan
+    # centered at 0 um sweeps -4.75..+4.75 V, outside the piezo's configured
+    # 0..10 V range, and _make_full_scan itself must refuse it (previously
+    # the only remaining bound was the DAQ task's generic +-10 V range).
+    widget.center = {'Z': 0.0}
+    bad_analog, _ = serializer.build_analog(widget, setup_info.positioners)
+    bad_digital = serializer.build_digital(
+        widget, bad_analog, setup_info.positioners, setup_info.getTTLDevices())
+    assert builder._make_full_scan(bad_analog, bad_digital) == (None, None)
+    widget.center = {'Z': 5.0}
+
+    # 3) Shared attributes: the real SuperScanController.updateScanStageAttrs
+    #    publishing into a real SharedAttributes (duck-typed controller state,
+    #    no Qt widget needed).
+    shared = SharedAttributes()
+
+    class _StagePublisher:
+        updateScanStageAttrs = SuperScanController.updateScanStageAttrs
+        setSharedAttr = SuperScanController.setSharedAttr
+
+        def __init__(self):
+            self._analogParameterDict = analog
+            self._positionersScan = positioners_scan
+            self._setupInfo = setup_info
+            self.positioners = setup_info.positioners
+            self.settingAttr = False
+            self._commChannel = SimpleNamespace(sharedAttrs=shared)
+
+        def getParameters(self):
+            pass
+
+    _StagePublisher().updateScanStageAttrs()
+    flat_attrs = shared.getHDF5Attributes()
+    # Provenance: only the active axis is claimed; the 1-step X/Y dummies the
+    # serializer appends are collapsed out (finding 3).
+    assert flat_attrs['ScanStage:scan_axis_devices'] == ['Z']
+    assert flat_attrs['ScanStage:scan_axis_physical'] == ['Z']
+
+    # 4) Recording: real RecordingManager fed the shared attributes the way
+    #    RecordingController does, scan-synchronized via markScanStarted.
+    nidaq = NidaqManager(setup_info)
+    apd = APDManager(setup_info.detectors['APD'], 'APD', nidaq)
+    recording = RecordingManager(_ManualDetectorsManager({'APD': apd}))
+    memory_recordings = []
+    recording.sigMemoryRecordingAvailable.connect(
+        lambda name, file, path, saved: memory_recordings.append(
+            (name, file, path, saved)
+        )
+    )
+
+    recording.startRecording(
+        detectorNames=['APD'],
+        recMode=RecMode.ScanOnce,
+        savename=str(tmp_path / 'z_only_scan'),
+        saveMode=SaveMode.RAM,
+        saveFormat=SaveFormat.HDF5,
+        attrs={'APD': dict(flat_attrs)},
+        recFrames=1,
+        stallTimeout=1.0,
+    )
+    assert recording.waitForAcquisitionStarted(2.0)
+    generation = recording.recordingGeneration
+    assert recording.markScanStarted(scan_info, generation)
+
+    try:
+        nidaq.runScan(signals, scan_info)
+
+        assert _wait_for(lambda: len(memory_recordings) == 1, timeout=5.0)
+        mem_file, h5file, dataset = _recorded_dataset(memory_recordings, 'APD')
+        try:
+            # 5) The stored file: one (1, N) line as a single frame, with the
+            #    scan-axis provenance in its ScanStage metadata group.
+            assert dataset.shape == (1, 1, 20)
+            assert np.count_nonzero(dataset[:]) > 0
+            stage = h5file['APD/metadata/ScanStage']
+            devices = [
+                v.decode() if isinstance(v, bytes) else str(v)
+                for v in stage.attrs['scan_axis_devices']
+            ]
+            physical = [
+                v.decode() if isinstance(v, bytes) else str(v)
+                for v in stage.attrs['scan_axis_physical']
+            ]
+            assert devices == ['Z']
+            assert physical == ['Z']
+            assert apd.shape == (1, 20)
+        finally:
+            h5file.close()
+            mem_file.close()
+    finally:
+        recording.endRecording(emitSignal=False, wait=True)
+        apd.stopAcquisition()
+        nidaq.finalize()

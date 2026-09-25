@@ -1,0 +1,125 @@
+{
+  "__comment__": "Hardware-free Advanced-scan setup for testing simulated GALVO-designer APD scans, including single-axis (e.g. Z-only) scans. An APD (counter-input detector) plus NidaqPositioner/NidaqLaser devices driven by a SIMULATED NIDAQ (nidaq.simulation = true) so an Advanced scan can be designed, run and recorded with NO real hardware. X/Y are galvo-like smooth axes (vel_max/acc_max as in example_sted); Z is a piezo-like STEPPED axis (smoothScan false), so a Z-only scan runs as a step-and-dwell staircase. The APD ScanWorker generates random photon counts in simulation (APDManager auto-enables simulation when the NIDAQ simulates). For the Beta-designer variant see the untracked mock_scan_setup_APD.json pattern; for camera + live reconstruction see mock_scan_setup.json.",
+  "detectors": {
+    "APD": {
+      "managerName": "APDManager",
+      "managerProperties": {
+        "ctrInputLine": "Dev1/ctr0",
+        "terminal": "PFI0",
+        "displayRotation": "0",
+        "displayFlipX": "False",
+        "displayFlipY": "False"
+      },
+      "analogChannel": null,
+      "digitalLine": null,
+      "forAcquisition": true,
+      "forFocusLock": false
+    }
+  },
+  "lasers": {
+    "405 (ON)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line2",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 405,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "488 (EXC)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line1",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 488,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    }
+  },
+  "positioners": {
+    "X": {
+      "analogChannel": "Dev1/ao0",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.75,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": ["X"],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Y": {
+      "analogChannel": "Dev1/ao1",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.75,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": ["Y"],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Z": {
+      "analogChannel": "Dev1/ao2",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.0,
+        "minVolt": 0,
+        "maxVolt": 10,
+        "vel_max": 1000.0,
+        "acc_max": 1000.0,
+        "smoothScan": false
+      },
+      "axes": ["Z"],
+      "forScanning": true,
+      "forPositioning": true
+    }
+  },
+  "scan": {
+    "scanWidgetType": "Advanced",
+    "scanDesigner": "GalvoScanDesigner",
+    "scanDesignerParams": {},
+    "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
+    "TTLCycleDesignerParams": {},
+    "sampleRate": 100000,
+    "maxScanTimeMin": 0,
+    "lineClockLine": null,
+    "frameStartClockLine": null,
+    "frameEndClockLine": null
+  },
+  "nidaq": {
+    "timerCounterChannel": null,
+    "startTrigger": false,
+    "simulation": true
+  },
+  "availableWidgets": [
+    "Settings",
+    "View",
+    "Recording",
+    "Image",
+    "Scan"
+  ],
+  "processing": {
+    "graphPanel": false,
+    "profilePanel": false,
+    "frcPanel": false,
+    "projectionPanel": false,
+    "roiStatsPanel": false,
+    "roiManagerPanel": false,
+    "segmentationPanel": false,
+    "psfResolutionPanel": false,
+    "colocalizationPanel": false,
+    "multicolorPanel": false,
+    "reconstructors": ["monalisa", "view-only"],
+    "processors": []
+  }
+}

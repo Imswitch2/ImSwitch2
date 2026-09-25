@@ -1,23 +1,23 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 47,
-    "docs_agree": 137,
-    "docs_documented": 137,
-    "keys": 220,
-    "managers": 65,
-    "none_default_only": 31,
-    "none_only": 22,
+    "constrained": 45,
+    "docs_agree": 133,
+    "docs_documented": 133,
+    "keys": 212,
+    "managers": 61,
+    "none_default_only": 28,
+    "none_only": 18,
     "optional": 150,
-    "reads_any": 60,
+    "reads_any": 56,
     "refs": 15,
-    "required": 70,
-    "typed_by_code": 90,
-    "typed_with_docs": 158,
-    "typed_with_examples": 122,
+    "required": 62,
+    "typed_by_code": 93,
+    "typed_with_docs": 154,
+    "typed_with_examples": 125,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 60,
+    "with_keys": 56,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -72,9 +72,9 @@
         "LaserManager"
       ],
       "overridden": true,
-      "properties": 7,
+      "properties": 8,
       "required": 2,
-      "source_sha256": "c0a45fcf328a39da6136746eb3032897aac7ddbc2d835a046039b1046e802759"
+      "source_sha256": "10d7578c16ea5b28ecb3fc60e14201fde4de37f0bcca50b9582dda6551bb1f8b"
     },
     "APDManager": {
       "category": "detectors",
@@ -85,7 +85,7 @@
       "overridden": false,
       "properties": 9,
       "required": 2,
-      "source_sha256": "1818d19fd62221f060a072c53ce73a05ca0fb677ad67f7577190ed9ce590379e"
+      "source_sha256": "3e98abbc16cc8eb1b0350aaa09f484c522c964d71d2e69435285b1ad2f2ab18f"
     },
     "AVManager": {
       "category": "detectors",
@@ -96,7 +96,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "87f96ea2ff287feb5cb66c52875b425def702d7283ee815ed843ddea0fa27ecc"
+      "source_sha256": "ddb9a81d03e1d186c94e0fd73f85d62d60f209b19dfbe8b42d1b98637c8b8ae6"
     },
     "BSC203StageManager": {
       "category": "positioners",
@@ -108,17 +108,6 @@
       "properties": 4,
       "required": 0,
       "source_sha256": "9d732e0237540e6ee4f67a8ce52925f8e561441f7fdb0955732625884fd89357"
-    },
-    "BaslerManager": {
-      "category": "detectors",
-      "classes": [
-        "BaslerManager",
-        "DetectorManager"
-      ],
-      "overridden": false,
-      "properties": 3,
-      "required": 2,
-      "source_sha256": "099bfb50b8f31e5d79c1bae8a3f50fc0156822a4247bf653c3c41d1050b13139"
     },
     "Cobolt0601LaserManager": {
       "category": "lasers",
@@ -166,17 +155,6 @@
       "properties": 3,
       "required": 0,
       "source_sha256": "d0a64fdc74fe6fee367c299585649d6c01222a43d4062fe4b760cbfce16db043"
-    },
-    "ESP32CamManager": {
-      "category": "detectors",
-      "classes": [
-        "ESP32CamManager",
-        "DetectorManager"
-      ],
-      "overridden": false,
-      "properties": 4,
-      "required": 3,
-      "source_sha256": "98bed76c3780c871b933421088514564565ace670e4e6684d92880696ce35e48"
     },
     "ESP32LEDLaserManager": {
       "category": "lasers",
@@ -285,17 +263,6 @@
       "required": 1,
       "source_sha256": "ef2390b558f263ebf7e434502b347f23d4e59c292a32566a6844d007dc807983"
     },
-    "GXPIPYManager": {
-      "category": "detectors",
-      "classes": [
-        "GXPIPYManager",
-        "DetectorManager"
-      ],
-      "overridden": false,
-      "properties": 3,
-      "required": 2,
-      "source_sha256": "d010697209b408ed0337c118dd3f34d2b9438e46aec5020825f635b11c889570"
-    },
     "HamamatsuManager": {
       "category": "detectors",
       "classes": [
@@ -305,7 +272,7 @@
       "overridden": true,
       "properties": 3,
       "required": 2,
-      "source_sha256": "25a6906798fdd2e7b91e18e6d0ef0de8862dc432303529a3d33c1639f16cd07e"
+      "source_sha256": "294bdd61b0edadf7a95a0a8287b35bcfa36282779263a35b266032f48b40f900"
     },
     "HamamatsuSLMdviManager": {
       "category": "slms",
@@ -337,17 +304,6 @@
       "properties": 5,
       "required": 1,
       "source_sha256": "f5dcc6bf47fb496336eddfee389e8749cf555b14b8237399880c0170a0d5650d"
-    },
-    "JetsonCamManager": {
-      "category": "detectors",
-      "classes": [
-        "JetsonCamManager",
-        "DetectorManager"
-      ],
-      "overridden": false,
-      "properties": 2,
-      "required": 1,
-      "source_sha256": "9a6adde736106b5e2f7f5c40bc71a642ef58696f5973805a4153a688c2321e09"
     },
     "KDC101Manager": {
       "category": "rs232devices",
@@ -454,7 +410,7 @@
       "overridden": false,
       "properties": 7,
       "required": 0,
-      "source_sha256": "d306520b6fef1e1c146e8516fd6c29b628f15512993b06369919c2ef4e95ff9a"
+      "source_sha256": "baf04af45e35139652946bdff0de70497f6cf13ebabe04683232d34a97ccf9e6"
     },
     "MockPositionerManager": {
       "category": "positioners",
@@ -529,9 +485,9 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 11,
+      "properties": 13,
       "required": 0,
-      "source_sha256": "b1a0fa2c3989ddcf7d05fba3100eb24f6f74dd68f5ca5afc4c02eb00e4634a89"
+      "source_sha256": "f069504d17bc50b6a0261bbdd08efe7ea03bc5cda8a18d51f9da19642f7fb57e"
     },
     "PhotometricsManager": {
       "category": "detectors",
@@ -542,7 +498,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "47a80603909c378069d0ba0bda71b25a23b44ffc6dde565e9be288104eb855fa"
+      "source_sha256": "635602da3b1fa151f0063e87278c209a48be6ed30ea11b59b5aaeaa33b2ca1e1"
     },
     "PiCamManager": {
       "category": "detectors",
@@ -553,7 +509,7 @@
       "overridden": false,
       "properties": 4,
       "required": 3,
-      "source_sha256": "54cc926d047daec690eeef16a65c5c33cceaf2e649e29c99d741974fa5e77778"
+      "source_sha256": "ff1f91d167e547177d04fb211a22a67d688fdd567fcd08c5f341db2edf85aeaa"
     },
     "PiezoconceptZManager": {
       "category": "positioners",
@@ -608,7 +564,7 @@
       "overridden": false,
       "properties": 0,
       "required": 0,
-      "source_sha256": "51088663c13c53447407d607e432e935b62a0628b2f59b64853a0b6866de5e37"
+      "source_sha256": "5f6064d17f7d68ae773b26e6e35b9a2f840fd89f62e9228c39aafe07a48b23e3"
     },
     "PyMicroscopeLaserManager": {
       "category": "lasers",
@@ -694,7 +650,7 @@
       "overridden": false,
       "properties": 15,
       "required": 3,
-      "source_sha256": "94b616862e001a80eafc458494c783390325d1c3ef942de9fb0255e499e13963"
+      "source_sha256": "84c5463fa901d31e18cedc9fe5b8c400545c0bba6135873bbcf4c0a807e13341"
     },
     "TISManager": {
       "category": "detectors",
@@ -705,7 +661,7 @@
       "overridden": false,
       "properties": 3,
       "required": 2,
-      "source_sha256": "f368fd75720ae8366c19a3ef70d4c774df701c4298ff6abe07d2c73a9c9a831a"
+      "source_sha256": "4a1cb9b4c0e96129c4baea84aa2d6126640e6f107180d46ab13749a464126f68"
     },
     "TeensyPulseManager": {
       "category": "pulsegen",
@@ -716,7 +672,7 @@
       "overridden": false,
       "properties": 0,
       "required": 0,
-      "source_sha256": "daa6b15e1cc4662603d6d8fc6060280e2ba010843d30dee80753cd48425ef794"
+      "source_sha256": "5a4914f6a438db566b893a1521dcc0f9e5c63e12ec60a55c9b78b7722e7756a8"
     },
     "ThorCamTSIManager": {
       "category": "detectors",
@@ -725,9 +681,9 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 5,
+      "properties": 6,
       "required": 0,
-      "source_sha256": "a6969c345869b0584e70dc132118cf17b0fbc5a9c4652b44f9d3d90d0a96eb7d"
+      "source_sha256": "46ff65d2ad40571b63ad95035e00a4262abb7f88b035a0809baa90cf11a0dba4"
     },
     "ThorlabsMFFManager": {
       "category": "flipMirrors",

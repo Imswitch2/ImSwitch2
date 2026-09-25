@@ -383,6 +383,10 @@ def _infer_type_from_schema(prop_schema: dict) -> str:
         return "ref"
     if widget == "path":
         return "path"
+    if widget == "bool_auto":
+        # A boolean whose absence means something (the consumer's fallback):
+        # Automatic / On / Off, with Automatic leaving the key out.
+        return "bool_auto"
     if widget == "text":
         # A list of names edited as comma-separated text; the text widget
         # reads it back as a list when the value was one.

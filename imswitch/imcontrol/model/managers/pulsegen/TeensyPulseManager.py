@@ -276,6 +276,11 @@ class TeensyPulseManager(PulseGeneratorManager):
             self.__logger.warning(f'driver.stop() raised: {e}')
         if self._run_thread is not None and self._run_thread.is_alive():
             self._run_thread.join(timeout=2.0)
+            if self._run_thread.is_alive():
+                raise TimeoutError(
+                    'Teensy pulse worker did not stop within 2 s; the sequence '
+                    'may still be running'
+                )
 
     # ------------------------------------------------------------------
     # Snap override — go straight to the driver's native one-shot.

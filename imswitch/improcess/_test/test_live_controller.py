@@ -417,10 +417,12 @@ def test_controller_effective_stall_timeout_without_idle_source(qtbot, tmpdir, m
     controller = LiveReconstructionController(comm)
     stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
     source = _TestSource(stack, chunk_size=2)
-    # source.idles_between_stacks not set → defaults to False
-
     controller._source = source
-    assert controller._effective_stall_timeout() == 300.0  # default applies
+    # A source that does not declare continuous streaming gets no
+    # watchdog; one that does gets the default.
+    assert controller._effective_stall_timeout() is None
+    source.idles_between_stacks = False
+    assert controller._effective_stall_timeout() == 300.0
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

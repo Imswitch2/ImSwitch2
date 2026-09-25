@@ -100,6 +100,90 @@ class ViewOnlyReconstructor(Reconstructor):
     def make_metadata_dialog(self, parent: QtWidgets.QWidget) -> QtWidgets.QDialog | None:
         return None
 
+    def inspect_source(self, data_obj: "DataObj"):
+        """Show how the acquisition was interpreted, without gating on it.
+
+        View-only never refuses data, so it declares no requirements; but it is
+        often the first place a user opens an unfamiliar file, which makes it
+        the right place to say that the axis names are a guess.
+        """
+        from imswitch.improcess.reconstructors.base import SourceInspection
+
+        try:
+            resolved = data_obj.acquisition_layout
+        except Exception as error:
+            return SourceInspection(
+                source_kind=getattr(data_obj, "sourceKind", "image"),
+                issues=tuple(getattr(error, "issues", ())),
+                warning=str(error),
+            )
+        if resolved is None:
+            return None
+        return SourceInspection(
+            source_kind=getattr(data_obj, "sourceKind", "image"),
+            metadata={
+                "acquisition_layout_source": resolved.source,
+                "acquisition_layout_confidence": resolved.confidence,
+                "acquisition_payload_kind": resolved.layout.payload_kind,
+            },
+            issues=tuple(resolved.issues),
+        )
+
+    #: Provenance values that mean the layout was inferred rather than read.
+    #: The container declared nothing, so its axis names are a rank guess.
+    _INFERRED_PROVENANCE = frozenset({"shape-inference", "generic-fallback"})
+
+    #: Canonical storage roles to the names shown on the viewer's sliders.
+    _AXIS_DISPLAY_NAMES = {
+        "frame": "Frame",
+        "detector_y": "Y",
+        "detector_x": "X",
+        "scan_x": "X",
+        "scan_y": "Y",
+        "scan_z": "Z",
+        "channel": "C",
+        "condition": "Condition",
+        "time": "T",
+    }
+
+    def _axis_labels_for(
+        self, data_obj: "DataObj", source_axis_labels, ndim: int
+    ) -> list[str]:
+        """Name the axes from evidence, falling back to Frame rather than T/C.
+
+        A source that declares its own axes keeps them. A source that declares
+        nothing used to be labelled from rank alone, which called a plain 3D
+        camera stack ``C, Y, X`` -- channel data, on no evidence at all.
+
+        A file whose acquisition metadata cannot be resolved still has pixels,
+        and this reconstructor's whole promise is that it never refuses data.
+        ``getattr`` with a default swallows only ``AttributeError``, so a
+        resolution error propagated out of ``process`` and the user got no
+        image at all -- for a *naming* decision with a perfectly good fallback.
+        ``inspect_source`` reports the failure, so nothing is hidden by
+        continuing here.
+        """
+        try:
+            resolved = data_obj.acquisition_layout
+        except Exception:
+            resolved = None
+        layout = getattr(resolved, "layout", None)
+        inferred = layout is None or layout.provenance in self._INFERRED_PROVENANCE
+
+        if source_axis_labels and len(source_axis_labels) == ndim and not inferred:
+            return list(source_axis_labels)
+        if layout is not None and len(layout.storage_axes) == ndim:
+            return [
+                self._AXIS_DISPLAY_NAMES.get(axis, axis.capitalize())
+                for axis in layout.storage_axes
+            ]
+        if ndim >= 2:
+            # Only the trailing two axes are known to be the detector plane.
+            leading = ndim - 2
+            names = ["Frame"] if leading == 1 else [f"Frame{i}" for i in range(leading)]
+            return names + ["Y", "X"]
+        return _DEFAULT_AXIS_LABELS[-ndim:]
+
     def process(
         self, data_obj: "DataObj", params: dict, context=None
     ) -> ViewOnlyResult:
@@ -126,14 +210,7 @@ class ViewOnlyReconstructor(Reconstructor):
                     data_obj.checkAndUnloadData()
 
         ndim = data.ndim
-        if source_axis_labels and len(source_axis_labels) == ndim:
-            axis_labels = list(source_axis_labels)
-        elif ndim <= len(_DEFAULT_AXIS_LABELS):
-            axis_labels = _DEFAULT_AXIS_LABELS[-ndim:]
-        else:
-            # More dims than we have default labels for — pad the front.
-            extra = ndim - len(_DEFAULT_AXIS_LABELS)
-            axis_labels = [f"D{i}" for i in range(extra)] + _DEFAULT_AXIS_LABELS
+        axis_labels = self._axis_labels_for(data_obj, source_axis_labels, ndim)
 
         axis_scales = (
             list(source_axis_scales)

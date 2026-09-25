@@ -158,3 +158,22 @@ def test_real_teensy_round_trip():  # pragma: no cover
         drv.upload_sequence([...], 1); drv.start(); drv.wait_done()
         drv.close()
     """
+
+
+class _StuckThread:
+    def is_alive(self):
+        return True
+
+    def join(self, timeout=None):
+        return None
+
+
+def test_stop_reports_a_worker_that_did_not_stop(pulse_chain):
+    """stop() used to return as if it had succeeded while the worker was still
+    inside the driver, so the next run was refused as 'already running' with
+    nothing saying why."""
+    manager = pulse_chain
+    manager._running = True
+    manager._run_thread = _StuckThread()
+    with pytest.raises(TimeoutError, match='did not stop within 2 s'):
+        manager.stop()

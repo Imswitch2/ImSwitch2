@@ -53,12 +53,15 @@ def test_configured_value_is_used(monkeypatch):
     assert messages == []
 
 
-def test_omitted_key_uses_default_silently(monkeypatch):
-    """Leaving the property out is a legitimate choice, not a mistake."""
+def test_omitted_key_uses_default_and_says_so(monkeypatch):
+    """Leaving the property out is allowed, but the placeholder that results
+    lands in every file's PhysicalSize looking like a calibration -- so it is
+    named once at startup rather than passed off silently."""
     messages = _warnings(monkeypatch)
     param = DetectorManager.makeCameraPixelSizeParameter(_info({'cameraListIndex': 0}))
     assert param.value == pytest.approx(0.15)
-    assert messages == []
+    assert len(messages) == 1
+    assert 'not declared' in messages[0] and '0.15' in messages[0]
 
 
 @pytest.mark.parametrize(
@@ -159,3 +162,39 @@ def test_configured_camera_pixel_size_parses_or_returns_none(raw, expected):
         assert result is None
     else:
         assert result == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# Provenance: a file can tell a measured calibration from the placeholder
+# ---------------------------------------------------------------------------
+
+
+def _hamamatsu_manager(props):
+    from dataclasses import replace
+
+    from imswitch.imcontrol.model import DetectorsManager
+    from . import detectorInfosBasic
+
+    name, info = next(iter(detectorInfosBasic.items()))
+    info = replace(info, managerProperties={**info.managerProperties, **props})
+    return DetectorsManager({name: info}, updatePeriod=100)[name]
+
+
+def test_an_assumed_pixel_size_is_marked_as_such_next_to_the_value():
+    manager = _hamamatsu_manager({})
+    assert manager.parameters['Camera pixel size'].value == pytest.approx(0.15)
+    assert manager.parameters['Camera pixel size source'].value == 'assumed default'
+
+
+def test_a_declared_pixel_size_is_marked_as_the_setup_files():
+    manager = _hamamatsu_manager({'cameraPixelSizeUm': 0.082})
+    assert manager.parameters['Camera pixel size'].value == pytest.approx(0.082)
+    assert manager.parameters['Camera pixel size source'].value == 'setup file'
+
+
+def test_editing_the_pixel_size_marks_it_as_the_users():
+    manager = _hamamatsu_manager({})
+    manager.setParameter('Camera pixel size', 0.15)  # unchanged: still the default
+    assert manager.parameters['Camera pixel size source'].value == 'assumed default'
+    manager.setParameter('Camera pixel size', 0.2)
+    assert manager.parameters['Camera pixel size source'].value == 'user'

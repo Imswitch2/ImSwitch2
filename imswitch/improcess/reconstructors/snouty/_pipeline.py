@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Callable, List
 import numpy as np
 
 from .deskew_cpu import DeskewProcessorCPU
+from .metadata import recorded_snouty_geometry
 from .restack import restack_interleaved
 
 if TYPE_CHECKING:
@@ -82,15 +83,30 @@ def load_restack_deskew_timelapse(
             f'Expected 3D data (planes, cam_y, cam_x), got shape {stack.shape}'
         )
 
+    cycles = params.get('cycles', 1)
+    planes_in_cycle = params.get('planes_in_cycle', 1)
+    n_timepoints = params.get('n_timepoints', 1)
+    recorded = recorded_snouty_geometry(data_obj)
+    if recorded is not None:
+        cycles, planes_in_cycle, recorded_timepoints = recorded
+        if recorded_timepoints is not None:
+            n_timepoints = recorded_timepoints
+        if logger is not None:
+            logger.info(
+                f'Using the recorded acquisition layout: {cycles} cycles x '
+                f'{planes_in_cycle} planes/cycle x {n_timepoints} timepoint(s)'
+            )
+
     # De-interlace if requested (MS-RESOLFT)
     if params.get('restack', True):
-        cycles = params.get('cycles', 1)
-        planes_in_cycle = params.get('planes_in_cycle', 1)
         if cycles > 1 or planes_in_cycle > 1:
-            stack = restack_interleaved(stack, cycles, planes_in_cycle)
+            stack = restack_interleaved(
+                stack, cycles, planes_in_cycle, timepoints=n_timepoints
+            )
             if logger is not None:
                 logger.info(
-                    f'Restacked {cycles} cycles × {planes_in_cycle} planes/cycle'
+                    f'Restacked {cycles} cycles × {planes_in_cycle} planes/cycle '
+                    f'in each of {n_timepoints} timepoint(s)'
                 )
 
     # Pick processor (CPU or GPU)
@@ -132,11 +148,24 @@ def load_restack_deskew_timelapse(
     }
     processor = processor_class(processor_params)
 
-    # Split into timepoints along axis 0 and process each
-    n_timepoints = params.get('n_timepoints', 1)
+    # Split into timepoints along axis 0 and process each. np.array_split
+    # accepts an uneven division and hands back timepoints of different
+    # depths, which deskews into silently inconsistent volumes.
+    if n_timepoints < 1:
+        raise ValueError(f'Timepoints must be at least 1, got {n_timepoints}')
+    if stack.shape[0] % n_timepoints:
+        raise ValueError(
+            f'SNOUTY needs an equal number of planes per timepoint: '
+            f'{stack.shape[0]} frames does not divide into {n_timepoints} '
+            f'timepoint(s)'
+        )
     if logger is not None:
         logger.info(f'Processing {n_timepoints} timepoint(s) with {device} deskew...')
-    timepoint_stacks = np.array_split(stack, n_timepoints, axis=0)
+    planes_per_timepoint = stack.shape[0] // n_timepoints
+    timepoint_stacks = [
+        stack[index * planes_per_timepoint:(index + 1) * planes_per_timepoint]
+        for index in range(n_timepoints)
+    ]
     outputs = []
     for t, tp_stack in enumerate(timepoint_stacks):
         if n_timepoints > 1 and logger is not None:

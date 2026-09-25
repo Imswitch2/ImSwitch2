@@ -208,7 +208,7 @@ The editor loads built-in templates for every supported manager, lets you add an
 
 ### Minimal setup file
 
-A two-device setup (one webcam, one Cobolt laser, no DAQ):
+A two-device setup (one synthetic camera -- `AVManager` serves mock frames, no video driver is bundled -- one Cobolt laser, no DAQ):
 
 ```json
 {
@@ -216,7 +216,7 @@ A two-device setup (one webcam, one Cobolt laser, no DAQ):
     "Camera": {
       "managerName": "AVManager",
       "managerProperties": {
-        "cameraListIndex": 0,
+        "cameraListIndex": "mock",
         "avcam": { "exposure": 100, "gain": 1 }
       },
       "analogChannel": null,

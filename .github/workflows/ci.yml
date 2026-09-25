@@ -50,6 +50,7 @@ jobs:
           - lane: unit
             paths: >-
               imswitch/test_no_hardware_profile.py
+              imswitch/imcommon/_test
               imswitch/imcontrol/_test/unit
               imswitch/imcontrol/controller/_test
             extra: ""

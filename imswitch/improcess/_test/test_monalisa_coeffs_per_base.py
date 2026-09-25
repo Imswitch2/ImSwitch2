@@ -15,9 +15,121 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from imswitch.imcommon.model.acquisition_layout import (
+    ACQUISITION_LAYOUT_SCHEMA,
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    AcquisitionLayout,
+    AcquisitionLoop,
+    RecordedEventSpan,
+    TraversalRule,
+)
 from imswitch.improcess.reconstructors.monalisa.coeffs_to_image import (
     coeffs_to_image,
+    coeffs_to_image_from_placement,
+    placement_from_layout,
 )
+from imswitch.improcess.reconstructors.monalisa.result import (
+    MonalisaProcessingResult,
+)
+
+
+def _advanced_layout(*, rows=18, cols=18, conditions=2, spans=None, traversal=()):
+    """The Advanced Scan geometry behind the motivating regression."""
+    loops = [AcquisitionLoop('scan_y', 'scan_y', rows, step=0.05, unit='um')]
+    if conditions > 1:
+        loops.append(
+            AcquisitionLoop('linestep', 'condition', conditions, labels=('A', 'B'))
+        )
+    loops.append(AcquisitionLoop('scan_x', 'scan_x', cols, step=0.05, unit='um'))
+    return AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector='WidefieldCamera',
+        storage_axes=('frame', 'detector_y', 'detector_x'),
+        event_loops=tuple(loops),
+        traversal=traversal,
+        recorded_event_spans=spans,
+        scan_source='ScanControllerAdvanced',
+    )
+
+
+def test_placement_deinterleaves_18_by_18_line_step_conditions():
+    """648 frames are two per-line conditions, not two 324-frame time blocks.
+
+    frame = ((scan_y * 2 + condition) * 18) + scan_x, so frames 0-17 are
+    condition A of row 0 and 18-35 are condition B of that same row.
+    """
+    placement = placement_from_layout(_advanced_layout())
+
+    assert len(placement.slots) == 648
+    assert (placement.timepoints, placement.rows, placement.cols) == (2, 18, 18)
+    assert placement.n_conditions == 2 and placement.n_time == 1
+    assert placement.condition_labels == ('A', 'B')
+    # (t, z, y, x) for the first frames of the first two physical rows.
+    assert placement.slots[0] == (0, 0, 0, 0)
+    assert placement.slots[17] == (0, 0, 0, 17)
+    assert placement.slots[18] == (1, 0, 0, 0)
+    assert placement.slots[36] == (0, 0, 1, 0)
+    assert placement.slots[-1] == (1, 0, 17, 17)
+
+
+def test_placement_reassembles_conditions_into_separate_planes():
+    rows = cols = 18
+    coeffs = np.arange(rows * cols * 2, dtype=np.float32).reshape(-1, 1, 1)
+
+    image = coeffs_to_image_from_placement(
+        coeffs, placement_from_layout(_advanced_layout())
+    )
+
+    assert image.shape == (2, 1, rows, cols)
+    y, x = np.mgrid[0:rows, 0:cols]
+    for condition in (0, 1):
+        np.testing.assert_allclose(image[condition, 0], (y * 2 + condition) * cols + x)
+
+
+def test_placement_uses_producer_parity_for_a_gated_detector():
+    """Serpentine parity comes from the producer, not the recorded frames.
+
+    A detector that recorded only condition B still sees reversed lines,
+    because the unrecorded A traversal happened on the hardware.
+    """
+    rows, cols = 4, 3
+    layout = _advanced_layout(
+        rows=rows,
+        cols=cols,
+        spans=(RecordedEventSpan(cols, cols, stride=1, period=cols * 2, repeats=rows),),
+        traversal=(TraversalRule('scan_x', 'serpentine', ('scan_y', 'linestep')),),
+    )
+
+    placement = placement_from_layout(layout)
+
+    assert len(placement.slots) == rows * cols
+    # flat = scan_y * 2 + condition and condition is always B (1), so every
+    # recorded line has odd parity and runs backwards.
+    assert [slot[3] for slot in placement.slots[:cols]] == [2, 1, 0]
+    assert {slot[0] for slot in placement.slots} == {1}
+
+
+def test_condition_projection_metadata_names_the_axis_condition():
+    """The 6D result keeps T, so its metadata must say what T really holds."""
+    coeffs = np.arange(648, dtype=np.float32).reshape(1, 1, 648, 1, 1)
+
+    result = MonalisaProcessingResult.from_coeffs(
+        name='scan',
+        coeffs=coeffs,
+        scan_params=_scan_params(18, 18),
+        axis_label_map=_AXIS_LABELS,
+        placement=placement_from_layout(_advanced_layout()),
+    )
+
+    assert result.data.shape == (1, 1, 2, 1, 18, 18)
+    projection = result.acquisition_projection
+    assert projection['axis'] == 'T'
+    assert projection['display_name'] == 'Condition'
+    assert projection['components'] == ('time', 'condition')
+    assert projection['n_time'] == 1 and projection['n_conditions'] == 2
+    assert projection['condition_labels'] == ('A', 'B')
+
 
 
 # --- coeffs_to_image directly ----------------------------------------------
@@ -129,17 +241,28 @@ def test_recorded_linestep_metadata_sets_physical_grid_and_condition_count():
         )
     )
     controller._scanParDict = _scan_params(rows=35, cols=35)
+    attrs = {
+        'ScanStage:target_device': [b'X', b'Y', b'Z'],
+        'ScanStage:positive_direction': [True, True, True],
+        'ScanStage:axis_length': [0.9, 0.9, 1.0],
+        'ScanStage:axis_step_size': [0.05, 0.05, 1.0],
+        'ScanTTL:Nx': 18,
+        'ScanTTL:Ny': 18,
+        'ScanTTL:n_linesteps': 2,
+    }
+    # On this branch the dialog is filled from the resolved layout, which the
+    # legacy adapter infers from exactly these attributes; the controller no
+    # longer re-parses them itself.
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+
     data_obj = SimpleNamespace(
         numFrames=648,
-        attrs={
-            'ScanStage:target_device': [b'X', b'Y', b'Z'],
-            'ScanStage:positive_direction': [True, True, True],
-            'ScanStage:axis_length': [0.9, 0.9, 1.0],
-            'ScanStage:axis_step_size': [0.05, 0.05, 1.0],
-            'ScanTTL:Nx': 18,
-            'ScanTTL:Ny': 18,
-            'ScanTTL:n_linesteps': 2,
-        },
+        attrs=attrs,
+        acquisition_layout=resolve_acquisition_layout(
+            attrs, shape=(648, 8, 8), detector='Cam'
+        ),
     )
 
     controller.parseScanParamsFromAttrs(data_obj)

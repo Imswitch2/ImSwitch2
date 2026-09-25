@@ -217,8 +217,13 @@ class LiveStreamWorker(QtCore.QObject):
                     elapsed = time.monotonic() - self._last_progress
                     if elapsed > self._stall_timeout_s:
                         self._logger.warning(
-                            f"No new frames and no completion marker for {elapsed:.0f}s — "
-                            f"assuming the writer crashed; finalizing with the frames received so far"
+                            f"No new frames and no completion marker for "
+                            f"{elapsed:.0f}s; finalizing with the frames "
+                            f"received so far. The recording was either "
+                            f"stopped between timepoints or its writer "
+                            f"failed — this cannot be told apart from here, "
+                            f"so check the file's completion outcome before "
+                            f"treating the result as short."
                         )
                         self.sigStalled.emit(elapsed)
                         self.sigStackComplete.emit()

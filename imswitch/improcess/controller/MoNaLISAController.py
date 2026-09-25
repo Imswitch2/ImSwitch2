@@ -11,6 +11,7 @@ from imswitch.improcess.reconstructors.monalisa.result import MonalisaProcessing
 from imswitch.improcess.reconstructors.monalisa.scan_params import (
     AxisLabels,
     apply_scan_attrs,
+    scan_params_for_source,
     positive_int_attr,
 )
 from .basecontrollers import ImProcessWidgetController
@@ -110,12 +111,13 @@ class MoNaLISAController(ImProcessWidgetController):
         attrs = dataObj.attrs if dataObj is not None else None
         if not attrs:
             return
-        try:
-            numFrames = int(dataObj.numFrames)
-        except Exception:
-            numFrames = None
-        self._scanParDict = apply_scan_attrs(
-            self._scanParDict, attrs, self._axisLabels(), numFrames
+        # The resolver already decided what this recording's axes are; the
+        # dialog asks it first, through the same function the headless runs
+        # use, so the dialog and the reconstruction cannot disagree about one
+        # file. The attributes are the fallback for recordings without a
+        # usable layout.
+        self._scanParDict = scan_params_for_source(
+            self._scanParDict, dataObj, self._axisLabels()
         )
         self.updateScanParams()
 

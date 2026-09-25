@@ -289,9 +289,16 @@ class PulseStreamerManager(PulseGeneratorManager):
             self.__pulseStreamer.forceFinal()
         except Exception as e:
             self.__logger.warning(f'PulseStreamer stop() raised: {e}')
-        # Wait for the worker thread to acknowledge.
+        # Wait for the worker thread to acknowledge. A join that times out
+        # used to return as if it had succeeded, leaving the running flag set
+        # and the next run refused with 'A sequence is already running'.
         if self.__run_thread is not None and self.__run_thread.is_alive():
             self.__run_thread.join(timeout=1.0)
+            if self.__run_thread.is_alive():
+                raise TimeoutError(
+                    'PulseStreamer worker did not stop within 1 s; the sequence '
+                    'may still be streaming'
+                )
 
     def finalize(self) -> None:
         self.stop()

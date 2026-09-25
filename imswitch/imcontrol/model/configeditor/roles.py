@@ -17,7 +17,8 @@ The predicate language is deliberately tiny::
              {"field": "forScanning", "equals": true},
              {"name": {"not_contains": "mock"}}]}
 
-``field`` looks at the device entry, ``name`` at its key (case-insensitive),
+``field`` looks at the device entry (a dotted path reaches inside it:
+``managerProperties.smoothScan``), ``name`` at its key (case-insensitive),
 ``setup`` at a dotted path into the whole document; ``all``/``any``/``not``
 combine. An unknown condition is an error, never silently true.
 """
@@ -54,7 +55,7 @@ def holds(condition: dict, *, device: dict, name: str, setup: dict) -> bool:
     if "not" in condition:
         return not holds(condition["not"], device=device, name=name, setup=setup)
     if "field" in condition:
-        return _compare(device.get(condition["field"]) if isinstance(device, dict) else None, condition)
+        return _compare(_dotted(device, condition["field"]) if isinstance(device, dict) else None, condition)
     if "name" in condition:
         spec = condition["name"]
         lowered = name.lower()

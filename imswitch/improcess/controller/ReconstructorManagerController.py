@@ -36,6 +36,63 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._install_reconstructor_params(self._main._activeReconstructor)
         self._publishReconstructorChoices()
 
+    def isReconstructionRunning(self) -> bool:
+        """Whether a worker-thread reconstruction job is in flight."""
+        return self._reconstructionThread is not None
+
+    def pluginsReloaded(self):
+        """Re-sync the active reconstructor and the picker after drop-in
+        reconstructors were re-registered.
+
+        Three cases. The active one is untouched (a built-in, or a plugin
+        whose file did not change): only the picker is refreshed. The same id
+        is now a fresh instance (an edited plugin): it is swapped in and its
+        parameter widget rebuilt, so the edit is live at once. The active one
+        is gone (its file was removed): the first registered reconstructor
+        takes over, as at startup.
+        """
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        registry = get_registry()
+        active = self._main._activeReconstructor
+        fresh = (
+            registry.get_reconstructor(active.id, raise_on_missing=False)
+            if active is not None
+            else None
+        )
+        if active is not None and fresh is active:
+            pass
+        elif fresh is not None:
+            self._logger.info(
+                f"Reconstructor {fresh.id!r} was reloaded; using its new code"
+            )
+            self._main._activeReconstructor = fresh
+            self._install_reconstructor_params(fresh)
+        else:
+            if active is not None:
+                self._logger.info(
+                    f"Active reconstructor {active.id!r} is no longer available; "
+                    "selecting another"
+                )
+            self._main._activeReconstructor = self._select_reconstructor()
+            if self._main._activeReconstructor is not None:
+                self._install_reconstructor_params(self._main._activeReconstructor)
+        self._publishReconstructorChoices()
+
+    def reconstructorLoaded(self, plugin_id: str) -> bool:
+        """A reconstructor was registered at runtime: offer it in the picker
+        and make it active.
+
+        Returns whether it became the active one. It does not when it cannot
+        take the current source and the user's selection cannot be reopened
+        for it; the picker then does not offer it until a file it accepts is
+        open, and the caller says so.
+        """
+        self._publishReconstructorChoices()
+        self._on_user_changed_reconstructor(plugin_id)
+        active = self._main._activeReconstructor
+        return active is not None and active.id == plugin_id
+
     def _select_reconstructor(self):
         from imswitch.improcess.reconstructors.registry import get_registry
 
@@ -161,11 +218,56 @@ class ReconstructorManagerController(ImProcessWidgetController):
             setter = getattr(widget, 'set_source_inspection', None)
             if callable(setter):
                 setter(inspection)
+            # Shown for every reconstructor, not only the one plugin whose own
+            # widget implements the hook above. Without this the inspection
+            # that knows a scan stopped at four of six positions was assembled
+            # and thrown away, and the recording opened looking ordinary.
+            self._showSourceInspection(inspection)
+            self._logSourceInspection(data_obj, reconstructor, inspection)
         except Exception as exc:
             self._logger.warning(
                 f"Could not inspect {getattr(data_obj, 'name', 'source')} "
                 f"for {reconstructor.id}: {exc}"
             )
+
+    def _showSourceInspection(self, inspection) -> None:
+        """Put the inspection's warnings in the Parameters dock."""
+        show = getattr(self._widget, 'setSourceInspection', None)
+        if not callable(show):
+            return
+        lines = []
+        severity = 'warning'
+        if inspection is not None:
+            issues = getattr(inspection, 'issues', ()) or ()
+            for issue in issues:
+                lines.append(str(issue.message))
+                if getattr(issue, 'severity', 'warning') == 'error':
+                    severity = 'error'
+            if not issues:
+                # ``warning`` is derived from the issues when there are any, so
+                # it is only its own message when there are none.
+                warning = getattr(inspection, 'warning', None)
+                if warning:
+                    lines.append(str(warning))
+        try:
+            show("\n".join(lines), severity)
+        except Exception as exc:
+            self._logger.debug(f"Could not display the source inspection: {exc}")
+
+    def _logSourceInspection(self, data_obj, reconstructor, inspection) -> None:
+        """Report what the source inspection found, when nothing displays it."""
+        if inspection is None:
+            return
+        name = getattr(data_obj, 'name', 'source')
+        warning = getattr(inspection, 'warning', None)
+        if warning:
+            self._logger.warning(f"{name}: {warning}")
+        for issue in getattr(inspection, 'issues', ()) or ():
+            message = f"{name}: [{issue.code}] {issue.message}"
+            if getattr(issue, 'severity', 'warning') == 'error':
+                self._logger.error(message)
+            else:
+                self._logger.warning(message)
 
     def _on_user_changed_reconstructor(self, plugin_id: str):
         """Slot for view-side picker: swap the active reconstructor and
@@ -410,6 +512,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
         collected = []
         for dataObj in dataObjs:
             params = self._params_for_data_obj(reconstructor)
+            validator = getattr(reconstructor, "validate_source", None)
+            if callable(validator):
+                try:
+                    validator(dataObj)
+                except Exception as exc:
+                    self._logger.error(f"Reconstruction preflight failed: {exc}")
+                    return
             self._logger.info(
                 f"Running {reconstructor.id} reconstruction for {dataObj.name}"
             )
@@ -469,6 +578,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
         for data_obj in data_objs:
             params = self._params_for_data_obj(reconstructor)
             try:
+                validator = getattr(reconstructor, "validate_source", None)
+                if callable(validator):
+                    validator(data_obj)
                 estimate = reconstructor.estimate_resources(data_obj, params)
             except Exception as exc:
                 self._logger.error(f"Reconstruction preflight failed: {exc}")

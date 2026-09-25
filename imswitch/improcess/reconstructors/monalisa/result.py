@@ -6,7 +6,40 @@ import numpy as np
 import tifffile as tiff
 
 from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
-from .coeffs_to_image import output_pixel_size_nm, reconstruct_images_from_coeffs
+from .coeffs_to_image import (
+    LayoutPlacement,
+    output_pixel_size_nm,
+    reconstruct_images_from_coeffs,
+)
+
+
+def _projection_metadata(placement: LayoutPlacement | None) -> dict | None:
+    """Describe how acquisition loops were projected onto the 6D result axes.
+
+    The result keeps six dimensions so viewers, exporters and saved projects
+    stay compatible, which means line-step conditions have to share the T axis
+    with real elapsed time. Recording the projection is what makes that
+    acceptable: nothing downstream may read a condition index as a timepoint
+    just because it arrived on the axis historically called T.
+    """
+    if placement is None:
+        return None
+    folded = placement.folds_condition_into_time
+    if not folded:
+        display_name = "Time"
+    elif placement.n_time == 1:
+        display_name = "Condition"
+    else:
+        display_name = "Time x Condition"
+    return {
+        "axis": "T",
+        "display_name": display_name,
+        "components": ("time", "condition") if folded else ("time",),
+        "order": "time-major",
+        "n_time": placement.n_time,
+        "n_conditions": placement.n_conditions,
+        "condition_labels": placement.condition_labels,
+    }
 
 # Canonical semantic-name → scan-dimension-name map. Reconstructions produced
 # by MonalisaReconstructor use these names; the legacy controller path passes
@@ -43,6 +76,7 @@ class MonalisaProcessingResult(ProcessingResult):
         output_pixel_size_nm: tuple[float, float] | None = None,
         coeffs: np.ndarray | None = None,
         axis_label_map: dict[str, str] | None = None,
+        placement: "LayoutPlacement | None" = None,
     ):
         """
         Args:
@@ -122,6 +156,8 @@ class MonalisaProcessingResult(ProcessingResult):
         self.output_pixel_size_nm = output_pixel_size_nm
         self.coeffs = coeffs
         self.axis_label_map = axis_label_map
+        self.placement = placement
+        self.acquisition_projection = _projection_metadata(placement)
 
     @classmethod
     def from_coeffs(
@@ -131,6 +167,7 @@ class MonalisaProcessingResult(ProcessingResult):
         scan_params: dict,
         axis_label_map: dict[str, str],
         display_levels: tuple[float, float] | None = None,
+        placement: LayoutPlacement | None = None,
     ) -> "MonalisaProcessingResult":
         """Build a result by reassembling images from per-base coefficients.
 
@@ -142,8 +179,13 @@ class MonalisaProcessingResult(ProcessingResult):
                 ``scan_params['dimensions']``.
             display_levels: Optional (min, max); auto-computed from the 1st /
                 99.9th percentile when omitted.
+            placement: Optional recorded per-frame output coordinates. When
+                given it is authoritative and the scan-parameter arithmetic is
+                never consulted.
         """
-        data = reconstruct_images_from_coeffs(coeffs, scan_params, axis_label_map)
+        data = reconstruct_images_from_coeffs(
+            coeffs, scan_params, axis_label_map, placement=placement
+        )
         out_px = output_pixel_size_nm(scan_params, axis_label_map)
         if display_levels is None:
             display_levels = (
@@ -158,6 +200,7 @@ class MonalisaProcessingResult(ProcessingResult):
             output_pixel_size_nm=out_px,
             coeffs=coeffs,
             axis_label_map=axis_label_map,
+            placement=placement,
         )
 
     def getCoeffs(self) -> np.ndarray | None:

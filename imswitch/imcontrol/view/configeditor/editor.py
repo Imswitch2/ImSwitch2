@@ -767,11 +767,24 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
 # Theme helpers
 # =============================================================================
 def is_dark_mode() -> bool:
-    """Check if the application is in dark mode based on palette lightness."""
+    """Whether widgets in this application are drawn on a dark background.
+
+    The application palette is not enough: ImSwitch darkens itself with an
+    application style sheet (qdarkstyle) and leaves the palette light, so
+    inside ImSwitch the palette alone picked the light card colours -- white
+    cards with light text. A widget polished under the style sheet carries
+    the background it will really be drawn with, so that is asked as well.
+    """
     app = QApplication.instance()
     if app is None:
         return False
-    return app.palette().window().color().lightness() < 128
+    if app.palette().window().color().lightness() < 128:
+        return True
+    if not app.styleSheet():
+        return False
+    probe = QWidget()
+    probe.ensurePolished()
+    return probe.palette().window().color().lightness() < 128
 
 
 def get_themed_colors(is_dark: bool):
@@ -1253,6 +1266,26 @@ def _field_default(field_def: dict):
     return default
 
 
+_OPTION_ESCAPES = {"\\": "\\\\", "\r": "\\r", "\n": "\\n", "\t": "\\t"}
+
+
+def _option_label(option) -> str:
+    """How a select option reads in its combo box.
+
+    A line ending is an option like any other, but a carriage return shown
+    as itself is an invisible item. Control characters are written as their
+    escapes, and so is a backslash: the two characters ``\\r`` an older
+    editor saved must read differently from the carriage return it meant.
+    """
+    text = str(option)
+    if not any(ch in _OPTION_ESCAPES or ord(ch) < 32 for ch in text):
+        return text
+    return "".join(
+        _OPTION_ESCAPES.get(ch, f"\\x{ord(ch):02x}" if ord(ch) < 32 else ch)
+        for ch in text
+    )
+
+
 # =============================================================================
 # FieldWidget – single editable field row
 # =============================================================================
@@ -1280,6 +1313,19 @@ class FieldWidget(QWidget):
         if tp == "bool":
             self._w = QCheckBox()
             self._w.setChecked(bool(value) if value is not None else False)
+        elif tp == "bool_auto":
+            # Tri-state boolean: "Automatic" means the key stays ABSENT from
+            # the saved config so the consumer's fallback applies (e.g.
+            # smoothScan's device-name heuristic). Apply omits the key for
+            # Automatic instead of writing a default.
+            self._w = QComboBox()
+            self._w.addItem("Automatic (not set)", None)
+            self._w.addItem("On", True)
+            self._w.addItem("Off", False)
+            if value is None or value == "null":
+                self._w.setCurrentIndex(0)
+            else:
+                self._w.setCurrentIndex(1 if bool(value) else 2)
         elif tp in ("int", "float"):
             # A plain line edit: no spin box, and no keystroke validator.
             # A spin box is a C++ int that clamps and rounds; a validator
@@ -1296,7 +1342,7 @@ class FieldWidget(QWidget):
             if _coercion_module is not None:
                 options = _coercion_module.options_like(options, value)
             for option in options:
-                self._w.addItem(str(option), option)
+                self._w.addItem(_option_label(option), option)
             # Configs can outlive their template/plugin version.  Keeping the
             # saved value selectable prevents an open-and-save cycle from
             # silently changing it to the first currently known option.
@@ -1304,9 +1350,9 @@ class FieldWidget(QWidget):
             if idx < 0 and value is not None:
                 # A ``"9600"`` saved by an older editor should still land on
                 # the 9600 entry rather than gaining a second, identical one.
-                idx = self._w.findText(str(value))
+                idx = self._w.findText(_option_label(value))
             if idx < 0 and value is not None:
-                self._w.addItem(str(value), value)
+                self._w.addItem(_option_label(value), value)
                 idx = self._w.findData(value)
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
@@ -1415,6 +1461,8 @@ class FieldWidget(QWidget):
         tp = self._def["type"]
         if tp == "bool":
             return self._w.isChecked()
+        if tp == "bool_auto":
+            return self._w.currentData()  # None (Automatic) / True / False
         if tp in ("int", "float"):
             return _parse_number(self._w.text())
         if tp == "select":
@@ -1954,6 +2002,10 @@ class PropertyEditor(QWidget):
             if section.startswith("nested:"):
                 required_here = required_here and container_exists(section.split(":", 1)[1])
             if not (required_here or (section, key) in self._present_keys or fw.is_touched()):
+                continue
+            if fw._def.get("type") == "bool_auto" and val is None:
+                # "Automatic": keep the key absent so the consumer's own
+                # fallback applies (never write a default for it).
                 continue
             if section == "props":
                 key = self._alias_spelling.get((section, key), key)
@@ -3687,6 +3739,7 @@ class MainWindow(QMainWindow):
         self._saved_files: set = set()
         self._active_config_changed = False
 
+        self._adopt_dark_theme()
         self._build_toolbar()
         self._build_ui()
         self._build_status_bar()
@@ -3696,6 +3749,26 @@ class MainWindow(QMainWindow):
 
         self._detect_options_file()
         self._open_active_config(start_folder)
+
+    def _adopt_dark_theme(self):
+        """Look the same inside a dark host as when run on its own.
+
+        Standalone, ``main()`` puts the editor's theme on the application.
+        Opened from ImSwitch, the application's style sheet is qdarkstyle, so
+        the editor puts its own theme on its window instead, where it wins
+        over the application's and reaches nothing else of ImSwitch. A light
+        host is left alone: the cards follow ``is_dark_mode()``.
+
+        ImSwitch's 10 px font stays. Any ``font-size`` rule overrides the
+        sizes the editor sets with ``setFont``, so no rule here could give
+        back the standalone sizes -- only replace one uniform size with
+        another.
+        """
+        app = QApplication.instance()
+        if app is None or app.styleSheet() == _DARK_STYLESHEET or not is_dark_mode():
+            return
+        self.setPalette(_dark_palette(self.palette()))
+        self.setStyleSheet(_HOSTED_OVERRIDES + _DARK_STYLESHEET)
 
     # ── Build UI ──────────────────────────────────────────────────────────
     def _build_toolbar(self):
@@ -4265,8 +4338,8 @@ class MainWindow(QMainWindow):
         event.accept()
         self.sig_closed.emit()
 
-def dark_theme(app, palette):
-    """Apply complete dark theme with palette and comprehensive QSS stylesheet."""
+def _dark_palette(palette):
+    """Return ``palette`` with the editor's dark colours set."""
     # Set dark palette colors
     palette.setColor(QPalette.Window, QColor("#2B2B2B"))
     palette.setColor(QPalette.Base, QColor("#1E1E1E"))
@@ -4285,9 +4358,11 @@ def dark_theme(app, palette):
     palette.setColor(QPalette.Disabled, QPalette.Text, QColor("#707070"))
     palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#707070"))
     palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#707070"))
+    return palette
 
-    # Comprehensive QSS stylesheet
-    stylesheet = """
+
+# Comprehensive QSS stylesheet
+_DARK_STYLESHEET = """
         QFrame {
             background-color: #2B2B2B;
             color: #E0E0E0;
@@ -4546,8 +4621,33 @@ def dark_theme(app, palette):
             margin: 3px 0;
         }
     """
-    app.setStyleSheet(stylesheet)
-    return palette
+
+
+# Put in front of _DARK_STYLESHEET when the editor themes its own window inside
+# ImSwitch. They undo the qdarkstyle rules the editor's sheet does not otherwise
+# override: a blue-black background on every plain widget, and boxed tool bar
+# buttons. They come first so that the editor's own type rules, of equal
+# specificity, still win.
+_HOSTED_OVERRIDES = """
+        QWidget {
+            background-color: #2B2B2B;
+            color: #E0E0E0;
+        }
+        QToolBar QToolButton {
+            background-color: transparent;
+            border: none;
+            padding: 3px 6px;
+        }
+        QToolBar QToolButton:hover {
+            background-color: #3C3F41;
+        }
+"""
+
+
+def dark_theme(app, palette):
+    """Apply complete dark theme with palette and comprehensive QSS stylesheet."""
+    app.setStyleSheet(_DARK_STYLESHEET)
+    return _dark_palette(palette)
 
 # =============================================================================
 # Entry point
