@@ -1031,7 +1031,7 @@ localization results instead as GPU-rendered summed Gaussians through the
 optional `napari-storm <https://pypi.org/project/napari-storm/>`_ package,
 which is installed by the ``storm`` extra::
 
-    pip install "imswitch[storm]"
+    pip install "imswitch2[storm]"
 
 Everything about this backend is best-effort.  Without the package, on a GL
 session without instancing support, or for a table napari-storm refuses, the

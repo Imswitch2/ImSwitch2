@@ -21,7 +21,7 @@ Option A: Install from PyPI
 
 .. code-block:: bash
 
-   pip install imswitch
+   pip install imswitch2
 
 Then launch:
 
@@ -33,6 +33,14 @@ Then launch:
 
    PyPI releases trail the ``main`` branch.  For the latest fixes,
    prefer the source install below.
+
+.. warning::
+
+   The PyPI name is ``imswitch2``.  ``ImSwitch`` on PyPI is the original
+   project, and it installs the same ``imswitch`` package, so asking pip
+   for ``imswitch`` -- or installing a device plugin that requires it --
+   replaces Imswitch2 with it.  Only the distribution is renamed: the
+   command is still ``imswitch`` and scripts still ``import imswitch``.
 
 
 Option B: Install from source (recommended for developers)
