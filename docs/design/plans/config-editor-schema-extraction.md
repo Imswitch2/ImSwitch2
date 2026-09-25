@@ -5,9 +5,34 @@ decisions; revision 4 after second review; revision 5 records what Phase 0
 measured; revision 6 records Phase 1; revision 7 folds in the review of
 Phase 0; revision 8 records Phase 2; revision 9 folds in the review of
 Phases 1–2; revision 10 records Phase 3; revision 11 records Phase 4;
-revision 12 records Phase 5; revision 13 records Phase 6). Status: **all six
-phases implemented on `feat/config-editor-schema-extraction` (draft PR #35);
-merge gate: rebase onto `main` once PR #34 merges.**
+revision 12 records Phase 5; revision 13 records Phase 6; revision 14 folds
+in the review of the merged implementation; revision 15 the review of those
+fixes). Status: **all six phases merged to `main` (857261f2, through PR #34,
+which carried #35); the review fixes in PR #37.**
+
+## Changes in revision 15 (review of the revision-14 fixes)
+
+Two gaps in the fixes, both reproduced before they were fixed:
+
+| Finding | Fix |
+| --- | --- |
+| An explicit identity could still fall back to an unrelated class: a `python_name` whose module is outside the scanned package resolved to the package's own class of the same short name (`external_driver.camera:CameraManager` got `vendor_plugin.local:CameraManager`'s schema). | With a `python_name`, resolution is its import and nothing else; a module the tree does not have, or one without that attribute, leaves the manager unresolved (listed in the index and by `--write`). The module-suffix match goes too. Short names are matched only when no identity was given. |
+| An edit that creates an optional dict skipped its required children: editing `table.speed` saved `{"table": {"speed": 7}}` although `table`'s schema requires `count`; the next untouched Apply added it. | Apply decides first which dicts will be written -- in the file, required by the code, or created by an edit -- and writes their required sub-keys in the same Apply. Required fields left empty in a written dict are warned about, as top-level ones are. |
+
+## Changes in revision 14 (review of the implementation, after merge)
+
+Five findings against `47509eea`, each reproduced on `main` before it was
+fixed, one commit each. None changes a checked-in schema: every core manager
+resolves to the same class chain as before, and the 65 schemas, the index
+and the report snapshot regenerate byte-identically.
+
+| Finding | Fix |
+| --- | --- |
+| **P1.** Numeric editing silently changed the entered value: BSC203's `travelRangeUm` is integer-*kind* (its default is `8000`), so the field got an integer keystroke validator, which refused the `.` -- typing `8000.5` saved `80005`, and an existing fraction could not be edited. A widget preference imposed the constraint the schema deliberately does not emit. | No keystroke validator at all: any validator drops what it refuses, which is the bug class, not a tuning problem. Numeric fields are plain line edits; Apply reads back an int or a finite float when the text is plainly one (sign, digits, fraction, exponent -- no digit separators, `nan`/`inf` or hex, which `int()`/`float()` would reinterpret) and otherwise saves the text as typed and names it in the form's warning line. |
+| Plugin extraction generated another manager's schema and still passed `--check`: classes were indexed by short name, so `vendor.a:CameraManager` and `vendor.b:CameraManager` both got `vendor.a`'s contract; bases resolved the same way. | A tree's classes are keyed by identity, `module:Class` (the `python_name` form), with modules named from the package the root is. Bases resolve through the module's own scope -- defined there, or imported (relative, absolute, module aliases, re-exports, package `__init__` files, now read) -- and fall back to the tree-wide name only for a name the module neither defines nor imports, and only when it is unique. A `python_name` resolves exactly, as its import does; an unregistered core manager's is where `MultiManager` imports it from (`legacy_python_name`). |
+| Guard-aware requiredness failed for nested dicts: `try: defaults["gain"] except KeyError` made `gain` a required sub-key, so the schema rejected `{"defaults": {}}`, which the manager accepts. | The guard walk runs for sub-key subscripts too, "own" meaning that nested dict. |
+| Template-laid-out dicts bypassed the schema: Hamamatsu loaded without its required `hamamatsu` dict stayed without it on Apply, and without a warning; children's types and requiredness were ignored. | A laid-out dict's children are refined by its sub-schema (unlisted sub-keys added), and the dict's requiredness travels as `nested_meta`. Apply writes a required dict the file lacks with only what its own schema requires -- `{}` for Hamamatsu and TIS, which iterate theirs; the children keep showing defaults unwritten, like any optional key. A required sub-key is written where the dict exists; a non-dict under the key is kept as it was. The template drift test covers nested children. |
+| `--package hardware_vendor.plugin` executed `hardware_vendor/__init__.py`: `importlib.util.find_spec` imports a dotted name's parents. | `find_package_spec` asks the import system's finders level by level, handing a subpackage its parent's search locations; no module is executed. |
 
 ## Changes in revision 13 (Phase 6 implemented)
 
@@ -390,9 +415,9 @@ builds a channel name or returns the value verbatim. Therefore:
   property the file never had.
 - **Nothing a widget cannot hold is lost.** A spin box is a C++ `int`;
   `int("two")` raises. Phase 3 replaced the spin boxes with line edits that
-  show whatever the file held and validate only what is typed, and only when
-  the box started out holding a number; there is no range or decimal count
-  left to clamp or round to.
+  show whatever the file held; revision 14 removed their keystroke validator
+  too, since a validator drops what it refuses. There is no range, decimal
+  count or character filter left to change what is typed.
 - **Unknown stays verbatim.** Already guaranteed by `merge_preserving_unknown`
   (discovery plan Phase 2); this plan does not weaken it.
 

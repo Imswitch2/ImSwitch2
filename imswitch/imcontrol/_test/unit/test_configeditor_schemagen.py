@@ -212,11 +212,14 @@ class TestFixtures:
 
 # ── the whole set: determinism, write, check ──────────────────────────────
 def _inputs(managers_root: Path, schemas_root: Path) -> sg.GenerationInputs:
-    classes = ex.extract_tree(managers_root)
-    names = sorted(classes)
-    extractions = {name: ex.merge_manager(name, classes) for name in names}
+    tree = ex.extract_tree_indexed(managers_root)
+    names = sorted({extraction.name for extraction in tree.classes.values()})
+    extractions = {
+        name: ex.merge_manager(name, tree.classes, class_name=ex.resolve_class_name(name, tree))
+        for name in names
+    }
     return sg.GenerationInputs(
-        extractions=extractions, classes=classes,
+        extractions=extractions, classes=tree.classes,
         categories={name: "lasers" for name in names},
         overrides=sg.load_overrides(schemas_root),
         report=ex.coverage_report(extractions),

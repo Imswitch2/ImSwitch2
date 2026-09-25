@@ -475,8 +475,8 @@ def _validate_fixture(name: str, schema: dict, props: dict) -> None:
 def source_hash(manager: ex.ManagerExtraction, classes: dict[str, ex.ClassExtraction]) -> str:
     """SHA-256 over the source files of the manager's classes, in resolution order."""
     digest = hashlib.sha256()
-    for cls_name in manager.classes:
-        module = classes[cls_name].module
+    for cls_id in (manager.class_ids or manager.classes):
+        module = classes[cls_id].module
         try:
             digest.update(Path(module).read_bytes())
         except OSError:

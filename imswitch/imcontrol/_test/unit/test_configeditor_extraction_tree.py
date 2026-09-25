@@ -31,12 +31,18 @@ def core_catalog():
     """The core catalog: built-in registry, discovery off, explicit root.
 
     What the tool uses, so the figures do not depend on plugins installed on
-    the machine running the tests.
+    the machine running the tests. Every manager maps to its exact
+    ``python_name``: the registry's, or where ``MultiManager`` imports an
+    unregistered one from.
     """
     registry = build_default_registry(discover=False)
     python_names = {c.id: c.python_name for c in registry.list_contributions()}
     catalog = build_catalog(registry=registry, managers_root=MANAGERS_ROOT)
-    return {info.manager_name: python_names.get(info.manager_name) for info in catalog.managers()}
+    return {
+        info.manager_name: python_names.get(info.manager_name)
+        or ex.legacy_python_name(info.manager_name, info.category)
+        for info in catalog.managers()
+    }
 
 
 @pytest.fixture(scope="module")
@@ -44,8 +50,7 @@ def extractions():
     catalog = core_catalog()
     return ex.extract_managers(
         sorted(catalog), managers_root=MANAGERS_ROOT, setups_dir=SETUPS_DIR, docs_dir=DOCS_DIR,
-        class_names={name: python_name and python_name.rsplit(":", 1)[1]
-                     for name, python_name in catalog.items()},
+        python_names=catalog,
     )
 
 
@@ -193,7 +198,10 @@ def test_rs232_manager_is_open_because_the_driver_takes_the_whole_dict():
     # ``RS232Manager`` as a base class, although shipped setups select it by
     # that name and a template exists for it. Noted in the plan as a catalog
     # gap; not this module's to fix.
-    manager = ex.merge_manager("RS232Manager", ex.extract_tree(MANAGERS_ROOT))
+    tree = ex.extract_tree_indexed(MANAGERS_ROOT)
+    class_id = ex.resolve_class_name("RS232Manager", tree, ex.legacy_python_name("RS232Manager", "rs232devices"))
+    assert class_id == "imswitch.imcontrol.model.managers.rs232.RS232Manager:RS232Manager"
+    manager = ex.merge_manager("RS232Manager", tree.classes, class_name=class_id)
     assert manager.open_passthrough is True
     assert {"port", "recv_termination"} <= set(manager.properties)
 
