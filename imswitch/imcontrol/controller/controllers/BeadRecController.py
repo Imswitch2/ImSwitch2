@@ -704,7 +704,9 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                 axialName="XY"
             self.axialName = axialName
             self.imDisplay=self.currentRunImgs.get(axialName)
-            self._displayPixelSizeUm = self._reconstructionPixelSizeUm(False)
+            self._displayPixelSizeUm = self._reconstructionPixelSizeUm(
+                False, axialName
+            )
         else:
             self.axialName = None
             if imgListIdx is not None and imgListIdx<len(self.resultRecords):
@@ -867,7 +869,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                     axial_name=axialName,
                     timestamp=time.time(),
                     scaled=scaled,
-                    pixel_size_um=self._reconstructionPixelSizeUm(scaled),
+                    pixel_size_um=self._reconstructionPixelSizeUm(scaled, key),
                 ),
             )
             if not self.ongoingScan:
@@ -1409,7 +1411,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                 base = self.rescale(base)
             if base is not None:
                 self._showReconstruction(
-                    base, self._reconstructionPixelSizeUm(scaled)
+                    base,
+                    self._reconstructionPixelSizeUm(scaled, self.axialName),
                 )
                 return
         # Showing a saved list item (not the live reconstruction): orientation
@@ -1417,13 +1420,22 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self._orientBase = None
         self._widget.updateImage(self.imDisplay)
 
-    def _reconstructionPixelSizeUm(self, scaled):
-        """``(y, x)`` in µm of the current reconstruction, before orientation.
+    @staticmethod
+    def _isAxialImage(axialName):
+        """Whether ``axialName`` names an XZ/YZ follow-up of an auto-axial run."""
+        return axialName is not None and axialName != 'XY'
+
+    def _reconstructionPixelSizeUm(self, scaled, axialName):
+        """``(y, x)`` in µm of the reconstruction ``axialName``, before orientation.
 
         One scan step per pixel; after rescaling, the finer of the two steps on
         both axes (``rescale_reconstruction_to_pixel_size`` resamples to it).
-        None when the scan steps are unknown.
+        None when the scan steps are unknown -- which includes every XZ/YZ
+        image: ``stepSizes`` is read once, at Run, from the XY scan, so an
+        axial image's rows (Z) have no step BeadRec knows.
         """
+        if self._isAxialImage(axialName):
+            return None
         steps = self.__dict__.get('stepSizes')
         if steps is None or len(steps) < 2:
             return None
@@ -1447,7 +1459,12 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         }
         if self.__dict__.get('dims') is not None:
             annotations['BeadRec:scan_dims'] = [int(v) for v in self.dims]
-        if self.__dict__.get('stepSizes') is not None:
+        # The XY scan's steps; an XZ/YZ image's are not known (see
+        # _reconstructionPixelSizeUm), and writing XY's would mislabel it.
+        if (
+            self.__dict__.get('stepSizes') is not None
+            and not self._isAxialImage(self.__dict__.get('axialName'))
+        ):
             annotations['BeadRec:scan_step_um'] = [float(v) for v in self.stepSizes]
         annotations['BeadRec:frames_per_pixel'] = int(
             self.__dict__.get('framesPerPixel') or 1
@@ -1489,7 +1506,9 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         scaled = bool(self._widget.scaleButton.isChecked())
         if scaled:
             base = self.rescale(base)
-        self._showReconstruction(base, self._reconstructionPixelSizeUm(scaled))
+        self._showReconstruction(
+            base, self._reconstructionPixelSizeUm(scaled, self.axialName)
+        )
 
 
     def centerCoordQuery(self, mode):

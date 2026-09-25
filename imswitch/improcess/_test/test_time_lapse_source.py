@@ -37,6 +37,7 @@ from imswitch.improcess.model.lapse_source import (
     NotATimeLapse,
     TimeLapseShapeError,
     discover_time_lapse,
+    lapses_in_file,
     open_time_lapse,
     plan_time_lapse,
     read_lapse_headers,
@@ -176,6 +177,43 @@ def test_a_second_lapse_recorded_into_the_same_file_is_its_own_lapse(tmp_path):
         "scan3/Camera", "scan4/Camera", "scan5/Camera"
     ]
     assert len(second.excluded) == 3
+
+
+def _two_lapses_in_one_file(folder, fmt="hdf5"):
+    common = dict(camera=False, single_file=True, frames=2, layout_kind="time", fmt=fmt)
+    record_lapse(folder, 3, **common)
+    return record_lapse(folder, 3, started_at=None, **common)[0]
+
+
+@pytest.mark.parametrize("fmt", SINGLE_FILE_FORMATS)
+def test_the_lapses_in_one_file_are_counted_by_the_planning_rule(tmp_path, fmt):
+    one = record_lapse(tmp_path / "one", 3, camera=False, single_file=True,
+                       frames=2, layout_kind="time", fmt=fmt)[0]
+    two = _two_lapses_in_one_file(tmp_path / "two", fmt)
+
+    assert lapses_in_file(discover_time_lapse(one)) == 1
+    assert lapses_in_file(discover_time_lapse(two)) == 2
+
+
+def test_a_multi_file_lapse_is_one_lapse(tmp_path):
+    path = record_lapse(tmp_path, 3)[1]
+    assert lapses_in_file(discover_time_lapse(path)) == 1
+
+
+@pytest.mark.parametrize("picked", ["scan4", "scan4/Camera", "scan4/Camera/data", "/scan4/Camera/"])
+def test_a_path_inside_a_lapse_group_names_that_groups_item(tmp_path, picked):
+    """A path picked inside the container may stop at the group or go below
+    the detector; the item is the group's detector either way."""
+    path = _two_lapses_in_one_file(tmp_path)
+
+    index = discover_time_lapse(path, picked)
+
+    assert index.anchor.dataset == "scan4/Camera"
+    assert index.anchor_detector == "Camera"
+    plan = plan_time_lapse(index, read_lapse_headers(index))
+    assert [slot.dataset for slot in plan.slots] == [
+        "scan3/Camera", "scan4/Camera", "scan5/Camera"
+    ]
 
 
 def test_a_file_named_like_the_lapse_but_from_another_is_left_out(tmp_path):

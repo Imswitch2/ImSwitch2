@@ -860,7 +860,10 @@ to keep it.
 
 With **Time lapse** active, open any one item of the lapse -- the first, the
 last, or any in between -- and the whole lapse becomes the current source. A
-single-file lapse opens without the dataset picker. *Reconstruct current*
+single-file lapse opens without the dataset picker, unless the file holds more
+than one lapse: then the picker asks for an item, and the lapse of the item
+picked is opened. A path picked inside a Zarr lapse (``lapse.zarr/scan4``)
+names its item directly. *Reconstruct current*
 then returns the stack. It is lazy: a timepoint is read when the viewer shows
 it, so a 2000-point lapse appears at once instead of after loading every point,
 and the viewer holds only a few of its files open at a time.

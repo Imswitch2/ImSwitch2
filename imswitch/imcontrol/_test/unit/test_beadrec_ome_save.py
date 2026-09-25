@@ -81,9 +81,10 @@ def _controller(tmp_path, *, rotation=0, scaled=False):
         _logger=SimpleNamespace(warning=lambda *_a, **_k: None),
         lastDir=str(tmp_path),
     )
-    for name in ('_reconstructionPixelSizeUm', '_showReconstruction',
+    for name in ('_reconstructionPixelSizeUm', '_isAxialImage', '_showReconstruction',
                  '_applyOrientation', '_displayAnnotations', '_toTransformArgs',
-                 '_recordAnnotations', 'saveRec', 'saveAll', 'rescale'):
+                 '_recordAnnotations', 'saveRec', 'saveAll', 'rescale',
+                 'addCurrentRun'):
         attr = BeadRecController.__dict__[name]
         setattr(stub, name, attr.__func__ if isinstance(attr, staticmethod)
                 else attr.__get__(stub))
@@ -108,10 +109,11 @@ def _annotations(path):
 
 def test_the_reconstructions_pixel_is_one_scan_step_or_the_finer_step_when_rescaled(tmp_path):
     stub, _ = _controller(tmp_path)
-    assert stub._reconstructionPixelSizeUm(False) == (0.05, 0.02)      # (y, x)
-    assert stub._reconstructionPixelSizeUm(True) == (0.02, 0.02)
+    assert stub._reconstructionPixelSizeUm(False, 'XY') == (0.05, 0.02)      # (y, x)
+    assert stub._reconstructionPixelSizeUm(True, 'XY') == (0.02, 0.02)
+    assert stub._reconstructionPixelSizeUm(False, None) == (0.05, 0.02)
     stub.stepSizes = None
-    assert stub._reconstructionPixelSizeUm(False) is None
+    assert stub._reconstructionPixelSizeUm(False, 'XY') is None
 
 
 def test_save_writes_the_shown_image_with_its_rotated_pixel_size(tmp_path, monkeypatch):
@@ -119,7 +121,7 @@ def test_save_writes_the_shown_image_with_its_rotated_pixel_size(tmp_path, monke
 
     stub, _ = _controller(tmp_path, rotation=90)
     base = np.arange(12, dtype=np.float64).reshape(3, 4)
-    stub._showReconstruction(base, stub._reconstructionPixelSizeUm(False))
+    stub._showReconstruction(base, stub._reconstructionPixelSizeUm(False, 'XY'))
     assert stub.imDisplay.shape == (4, 3)                       # rotated on screen
     stub._widget.isSelectedCurrent = lambda: True
     path = str(tmp_path / 'shown.tiff')
@@ -155,3 +157,51 @@ def test_save_all_writes_each_record_with_its_own_pixel_size(tmp_path, monkeypat
     assert read_pixel_size_um(str(tmp_path / 'a.tif')) == (0.05, 0.02)
     assert read_pixel_size_um(str(tmp_path / 'b.tif')) is None
     assert _annotations(str(tmp_path / 'b.tif'))['BeadRec:source_path'] == '/data/b.tif'
+
+
+# ----------------------------------------------------------------------
+# Auto-axial: the XZ/YZ follow-ups have no step BeadRec knows
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('axial', ['XZ', 'YZ'])
+def test_an_axial_image_carries_no_pixel_size(tmp_path, axial):
+    """stepSizes is read once, at Run, from the XY scan; an axial image's
+    rows are Z, whose step BeadRec never receives -- so none, not XY's."""
+    stub, _ = _controller(tmp_path)
+    assert stub._reconstructionPixelSizeUm(False, axial) is None
+    assert stub._reconstructionPixelSizeUm(True, axial) is None
+
+
+def test_adding_an_auto_axial_run_labels_only_the_xy_image(tmp_path):
+    stub, _ = _controller(tmp_path)
+    stub.autoAxial = True
+    stub.ongoingScan = True
+    stub.currentRunImgs = {'XY': np.ones((3, 4)), 'XZ': np.ones((3, 4)), 'YZ': np.ones((3, 4))}
+    stub._widget.addToList = lambda name, axialName: axialName
+    records = []
+    stub._insertResultRecord = lambda index, record: records.insert(index, record)
+
+    stub.addCurrentRun()
+
+    pixel = {record.axial_name: record.pixel_size_um for record in records}
+    assert pixel == {'XY': (0.05, 0.02), 'XZ': None, 'YZ': None}
+
+
+def test_saving_a_shown_axial_image_writes_no_xy_calibration(tmp_path, monkeypatch):
+    from imswitch.imcontrol.controller.controllers import BeadRecController as module
+
+    stub, _ = _controller(tmp_path)
+    stub.axialName = 'XZ'
+    stub._showReconstruction(
+        np.ones((3, 4)), stub._reconstructionPixelSizeUm(False, stub.axialName)
+    )
+    path = str(tmp_path / 'xz.tiff')
+    monkeypatch.setattr(module.guitools, 'askForFilePath', lambda *_a, **_k: path)
+
+    stub.saveRec()
+
+    assert read_pixel_size_um(path) is None
+    annotations = _annotations(path)
+    assert annotations['BeadRec:axial_name'] == 'XZ'
+    assert 'BeadRec:scan_step_um' not in annotations

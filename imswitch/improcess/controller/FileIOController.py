@@ -28,15 +28,34 @@ from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
     NotATimeLapse,
     discover_time_lapse,
+    lapses_in_file,
 )
 from .MultiDataFrameController import MultiDataFrameController
 from .basecontrollers import ImProcessWidgetController
+
+#: What ``_loadTimeLapseAsCurrent`` answers for a file holding several lapses
+#: when no item of one was picked: the dataset picker has to ask first.
+_PICK_A_LAPSE_ITEM = 'pick-lapse-item'
 
 
 def _accepts_time_lapse(reconstructor) -> bool:
     return TIME_LAPSE_SOURCE_KIND in tuple(
         getattr(reconstructor, 'accepted_source_kinds', ()) or ()
     )
+
+
+def _picked_dataset(source) -> str | None:
+    """The dataset a path picked *inside* a container names, or None.
+
+    ``lapse.zarr/scan4/Camera`` resolves to the container ``lapse.zarr``; the
+    rest is which item the user meant. None when the container itself was
+    picked.
+    """
+    try:
+        inside = Path(source.original_path).relative_to(Path(source.path))
+    except (TypeError, ValueError):
+        return None
+    return inside.as_posix() if inside.parts else None
 
 
 def _route_as_current(controller, data_obj) -> str:
@@ -233,9 +252,12 @@ class FileIOController(ImProcessWidgetController):
             dataPath = str(source.path)
             if source.format_id == TILING_MANIFEST_SPEC.id:
                 return self._loadMetadataAsCurrent(source)
+            lapseItemToPick = False
             if _accepts_time_lapse(getattr(self._main, '_activeReconstructor', None)):
                 outcome = self._loadTimeLapseAsCurrent(source)
-                if outcome is not None:
+                if outcome == _PICK_A_LAPSE_ITEM:
+                    lapseItemToPick = True
+                elif outcome is not None:
                     return outcome
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
@@ -255,6 +277,18 @@ class FileIOController(ImProcessWidgetController):
             datasetsToRoute = list(self.pickDatasetsController.getSelectedDatasets())
             if not datasetsToRoute:
                 return 'empty'
+
+        if lapseItemToPick and len(datasetsToRoute) == 1:
+            # The file holds several lapses; the item picked says which one.
+            try:
+                outcome = self._loadTimeLapseAsCurrent(source, datasetsToRoute[0])
+            except Exception as exc:
+                self._logger.error(
+                    f"Could not open the time lapse of {datasetsToRoute[0]}: {exc}"
+                )
+                outcome = None
+            if outcome is not None:
+                return outcome
 
         if prefer_as_current and len(datasetsToRoute) == 1:
             try:
@@ -378,7 +412,7 @@ class FileIOController(ImProcessWidgetController):
 
         return _route_as_current(self, data_obj)
 
-    def _loadTimeLapseAsCurrent(self, source):
+    def _loadTimeLapseAsCurrent(self, source, dataset=None):
         """Open the whole lapse ``source`` belongs to, or return None.
 
         Only asked while a reconstructor that takes lapses is active, as the
@@ -388,9 +422,25 @@ class FileIOController(ImProcessWidgetController):
         a tiling tile -- returns None and opens as the image it is, with the
         reason logged, so choosing the reconstructor never makes a file
         unopenable.
+
+        The lapse is the one of the item picked: ``dataset``, or the path
+        picked inside the container (``lapse.zarr/scan4/Camera``). Where only
+        the file was picked and it holds more than one lapse, returns
+        ``_PICK_A_LAPSE_ITEM`` and the caller asks which item, rather than
+        opening the first lapse and leaving the others unreachable.
         """
+        if dataset is None:
+            dataset = _picked_dataset(source)
         try:
-            index = discover_time_lapse(source.path)
+            index = discover_time_lapse(source.path, dataset)
+            if dataset is None:
+                lapses = lapses_in_file(index)
+                if lapses > 1:
+                    self._logger.info(
+                        f"{Path(source.path).name} holds {lapses} time lapses; "
+                        "pick an item of the one to open."
+                    )
+                    return _PICK_A_LAPSE_ITEM
         except NotATimeLapse as exc:
             self._logger.info(f"Opening as a single image: {exc}")
             return None

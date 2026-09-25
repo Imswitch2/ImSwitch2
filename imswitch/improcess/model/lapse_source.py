@@ -252,6 +252,8 @@ def discover_time_lapse(
         groups = _lapse_groups(container)
         if dataset is None:
             dataset = _default_dataset(container, groups)
+        else:
+            dataset = _item_dataset(container, groups, dataset)
         image = resolve_image(container, dataset, validate_layout_metadata=False)
         attrs = _item_attrs(container, image.attrs)
         anchor_shape = tuple(int(size) for size in image.array.shape)
@@ -382,6 +384,22 @@ def _default_dataset(container, groups) -> str:
     if not names:
         raise NotATimeLapse("The file holds no image.")
     return names[0]
+
+
+def _item_dataset(container, groups, dataset: str) -> str:
+    """The ``scanN/<detector>`` item a dataset path of a single-file lapse lies in.
+
+    A path picked inside the container can name the group alone (``scan4``)
+    or reach below the detector (``scan4/Camera/data``); either way the item
+    is that group's detector. Any other path is returned as given.
+    """
+    parts = [part for part in str(dataset).split("/") if part]
+    if not parts or parts[0] not in {name for _ordinal, name in groups}:
+        return dataset
+    if len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    detectors = _group_detectors(container[parts[0]])
+    return f"{parts[0]}/{detectors[0]}" if detectors else dataset
 
 
 def _group_detectors(group) -> list[str]:
@@ -929,13 +947,13 @@ def _members_of_this_lapse(index: TimeLapseIndex, headers: LapseHeaders):
     return members, excluded
 
 
-def _anchor_run(headers: Sequence[LapseItemHeader], index: TimeLapseIndex):
-    """Split one file's groups into lapses and keep the anchor's.
+def _lapse_runs(headers: Sequence[LapseItemHeader]) -> list[list[LapseItemHeader]]:
+    """One file's groups, split into the lapses recorded into it.
 
     Groups are numbered by the next free slot in the file, so a second lapse
     recorded into the same file continues the numbering from where the first
     stopped. Within one lapse the recorded index only ever increases; where it
-    does not, a new lapse began.
+    does not, a new lapse began. Every header must carry a lapse index.
     """
     ordered = sorted(headers, key=lambda header: header.ref.ordinal)
     runs: list[list[LapseItemHeader]] = []
@@ -944,6 +962,29 @@ def _anchor_run(headers: Sequence[LapseItemHeader], index: TimeLapseIndex):
             runs[-1].append(header)
         else:
             runs.append([header])
+    return runs
+
+
+def lapses_in_file(index: TimeLapseIndex, detector: str | None = None) -> int:
+    """How many lapses the file of a single-file lapse holds.
+
+    Reads every group's header, never its pixels, and splits them by the rule
+    planning uses (:func:`_lapse_runs`), so the count agrees with what
+    :func:`plan_time_lapse` would stack. A multi-file lapse is one lapse.
+    """
+    if index.storage != STORAGE_ONE_GROUP_PER_ITEM:
+        return 1
+    headers = read_lapse_headers(index, detector)
+    indexed = [header for header in headers.headers if header.lapse_index is not None]
+    return max(1, len(_lapse_runs(indexed)))
+
+
+def _anchor_run(headers: Sequence[LapseItemHeader], index: TimeLapseIndex):
+    """Split one file's groups into lapses and keep the anchor's.
+
+    See :func:`_lapse_runs` for where one lapse ends and the next begins.
+    """
+    runs = _lapse_runs(headers)
     for run in runs:
         if any(header.ref.ordinal == index.anchor.ordinal for header in run):
             others = [header for other in runs if other is not run for header in other]
@@ -1443,6 +1484,7 @@ __all__ = [
     "TimepointSlot",
     "discover_time_lapse",
     "is_time_lapse_item",
+    "lapses_in_file",
     "open_time_lapse",
     "plan_time_lapse",
     "read_lapse_headers",

@@ -32,6 +32,8 @@ from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
     TimeLapseIndex,
     discover_time_lapse,
+    plan_time_lapse,
+    read_lapse_headers,
 )
 from imswitch.improcess.model.lazy_array import is_dask_array
 from imswitch.improcess.reconstructors import _AVAILABLE_RECONSTRUCTOR_CLASSES
@@ -101,6 +103,55 @@ def test_other_reconstructors_open_a_lapse_item_as_an_image(tmp_path):
     io._loadFromPath(str(item), prefer_as_current=True)
 
     assert emitted[0].sourceKind == "image"
+
+
+def _two_lapses_in_one_file(folder, fmt="hdf5"):
+    common = dict(camera=False, single_file=True, frames=2, layout_kind="time", fmt=fmt)
+    record_lapse(folder, 3, **common)
+    return record_lapse(folder, 3, started_at=None, **common)[0]
+
+
+def _stacked_items(index):
+    return [slot.dataset for slot in plan_time_lapse(index, read_lapse_headers(index)).slots]
+
+
+def test_a_file_holding_two_lapses_asks_for_an_item_and_opens_its_lapse(tmp_path):
+    """Picking the file alone cannot say which lapse; opening the first would
+    leave the second unreachable. The dataset picker asks, and the lapse of
+    the item picked is the one opened."""
+    path = _two_lapses_in_one_file(tmp_path)
+    io, emitted = _file_io(TimeLapseReconstructor())
+    offered = []
+    io.pickDatasetsController = SimpleNamespace(
+        setDatasets=lambda _path, names: offered.extend(names),
+        getSelectedDatasets=lambda: ["scan4/Camera"],
+    )
+    io._widget.showPickDatasetsDialog = lambda blocking=True: True
+
+    outcome = io._loadFromPath(str(path), prefer_as_current=True)
+
+    assert outcome == "current"
+    assert offered == [f"scan{n}/Camera" for n in range(6)]
+    (data_obj,) = emitted
+    assert data_obj.sourceKind == TIME_LAPSE_SOURCE_KIND
+    assert data_obj.sourceMetadata.anchor.dataset == "scan4/Camera"
+    assert _stacked_items(data_obj.sourceMetadata) == [
+        "scan3/Camera", "scan4/Camera", "scan5/Camera"
+    ]
+
+
+def test_a_path_picked_inside_a_zarr_lapse_opens_that_items_lapse(tmp_path):
+    path = _two_lapses_in_one_file(tmp_path, fmt="zarr")
+    io, emitted = _file_io(TimeLapseReconstructor())    # the picker must not show
+
+    outcome = io._loadFromPath(str(path / "scan4" / "Camera"), prefer_as_current=True)
+
+    assert outcome == "current"
+    (data_obj,) = emitted
+    assert data_obj.sourceMetadata.anchor.dataset == "scan4/Camera"
+    assert _stacked_items(data_obj.sourceMetadata) == [
+        "scan3/Camera", "scan4/Camera", "scan5/Camera"
+    ]
 
 
 def test_a_lapse_source_resolves_its_items_acquisition_layout(single_file_lapse):
