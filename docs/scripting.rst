@@ -120,9 +120,12 @@ what it will do, and only then press **Run all**.
 on its mock setup (``imswitch/imscripting/_test/test_shipped_tutorials.py``),
 so they are kept working.
 
-Only missing files are copied, so an existing ``scripts`` folder keeps its
-own copies: after an update, the tutorials are added next to them, and
-scripts that were removed from ImSwitch stay until you delete them.
+The copies are yours to edit. When you install a new ImSwitch version, a
+copy you have not edited is updated to the new version at the next start,
+and an untouched script ImSwitch no longer ships is moved to the trash; a
+file you edited is never changed or removed (the log names the ones that
+differ from the current version -- delete one and restart ImSwitch to get
+it back).
 
 Workflow Scripting Cookbooks
 =============================

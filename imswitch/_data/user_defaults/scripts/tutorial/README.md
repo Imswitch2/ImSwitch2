@@ -54,7 +54,9 @@ The tutorials are ordered so you only switch when a new block begins:
 
 Then change something -- the number of frames, an exposure time, a scan
 size -- and run it again. These files are your own copies: edit them
-freely. To get an original back, delete your copy and restart ImSwitch.
+freely. When you update ImSwitch, the tutorials you have *not* edited are
+updated too; the ones you edited are kept as they are. To get an original
+back, delete your copy and restart ImSwitch.
 
 ## basic
 

@@ -15,5 +15,9 @@ Every tutorial names its mock setup in its header ("Mock setup: ...", with
 imswitch/imscripting/_test/test_shipped_tutorials.py runs each one against
 that setup, so a tutorial that stops working fails the test suite.
 
-Only missing files are copied: an existing user folder keeps its own
-copies, and files removed here stay there.
+At every start a user's untouched copy of an older version is updated,
+and an untouched copy of a script removed here is moved to the trash;
+edited copies are kept (imcommon/model/dirtools.py, syncUserDefaults).
+After changing, adding, moving or removing any file under user_defaults,
+run  python tools/update_user_defaults_history.py  and commit the result --
+imcommon/_test/test_user_defaults_sync.py fails until you do.
