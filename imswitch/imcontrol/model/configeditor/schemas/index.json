@@ -1,23 +1,23 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 45,
-    "docs_agree": 133,
-    "docs_documented": 133,
-    "keys": 212,
-    "managers": 61,
-    "none_default_only": 28,
+    "constrained": 46,
+    "docs_agree": 136,
+    "docs_documented": 136,
+    "keys": 215,
+    "managers": 62,
+    "none_default_only": 29,
     "none_only": 18,
-    "optional": 150,
-    "reads_any": 56,
+    "optional": 153,
+    "reads_any": 57,
     "refs": 15,
     "required": 62,
-    "typed_by_code": 93,
-    "typed_with_docs": 154,
-    "typed_with_examples": 125,
+    "typed_by_code": 96,
+    "typed_with_docs": 157,
+    "typed_with_examples": 128,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 56,
+    "with_keys": 57,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -40,7 +40,7 @@
     },
     "positioner": {
       "class": "PositionerInfo",
-      "fields": 13,
+      "fields": 14,
       "required": 2
     },
     "rotator": {
@@ -107,7 +107,7 @@
       "overridden": false,
       "properties": 4,
       "required": 0,
-      "source_sha256": "9d732e0237540e6ee4f67a8ce52925f8e561441f7fdb0955732625884fd89357"
+      "source_sha256": "c2fa9a367c0203331e35d5845a9f0fbd359daa12b09772d28314764544a172aa"
     },
     "Cobolt0601LaserManager": {
       "category": "lasers",
@@ -128,9 +128,9 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 9,
+      "properties": 10,
       "required": 1,
-      "source_sha256": "8713e974c760e5dd0d06b66b41bcce38bfb628c58042b2d0111b5c2b0e8d4ea8"
+      "source_sha256": "3778615da0f10da993ff788cea6f4887719c079173f5669757b8d523e64a9e7f"
     },
     "CoboltLaserManager": {
       "category": "lasers",
@@ -208,7 +208,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "1379a42b6309f57745b18e5e310183d5d5374950bec34e772feecd19b4663ce4"
+      "source_sha256": "a6cafbaa3662a91926b7eab8f29a6be0e186cd0b4b51b7e082902100d9bce2e4"
     },
     "ElliptecManager": {
       "category": "rs232devices",
@@ -261,7 +261,7 @@
       "overridden": false,
       "properties": 3,
       "required": 1,
-      "source_sha256": "ef2390b558f263ebf7e434502b347f23d4e59c292a32566a6844d007dc807983"
+      "source_sha256": "b42832c265ac7131a9cff3cdeeb73928399428a4395138bcdd7c6bb5567c3981"
     },
     "HamamatsuManager": {
       "category": "detectors",
@@ -303,7 +303,7 @@
       "overridden": false,
       "properties": 5,
       "required": 1,
-      "source_sha256": "f5dcc6bf47fb496336eddfee389e8749cf555b14b8237399880c0170a0d5650d"
+      "source_sha256": "be285c3f47eabdafc55c30a2bd95bbe2ee18ef4524a543d49306a458516d8a0f"
     },
     "KDC101Manager": {
       "category": "rs232devices",
@@ -324,7 +324,7 @@
       "overridden": false,
       "properties": 6,
       "required": 4,
-      "source_sha256": "2081f4a5d6d7ab03da8178069a2072b533bedf10c2737c24f1218d96ee4d881f"
+      "source_sha256": "37b89afc45ff4c9cf80bf7ae356f0fdb398eaf1d91d46a9afc3337067f609662"
     },
     "KinesisRotatorManager": {
       "category": "rotators",
@@ -346,7 +346,7 @@
       "overridden": false,
       "properties": 6,
       "required": 1,
-      "source_sha256": "6a387f9d0fa1f6be6dadc361c4cc02b887c4371433ee2d97348f7ab4efb5cdfc"
+      "source_sha256": "23ff39c8612b389acd13db30b3e8cf2d5521e50fbc0356f8aacd39047aaa7a5a"
     },
     "LEDMatrixManager": {
       "category": "lasers",
@@ -369,16 +369,15 @@
       "required": 1,
       "source_sha256": "061ec9a6e3a2a465962d666153931aab63cb396eb4859fd1397585ec59bc10a8"
     },
-    "LeicaDMIManager": {
-      "category": "positioners",
+    "LeicaDMIStandManager": {
+      "category": "stands",
       "classes": [
-        "LeicaDMIManager",
-        "PositionerManager"
+        "LeicaDMIStandManager"
       ],
       "overridden": false,
-      "properties": 2,
-      "required": 1,
-      "source_sha256": "a227f93190ab37a6aaf2ae6a4e62fa56b46a54f897499acf798925e8ccd57461"
+      "properties": 1,
+      "required": 0,
+      "source_sha256": "9b627862d092767b46b1684580785ccbfbcb38e4f7467a18ba2c0bf6926556ac"
     },
     "LeicaDMIStandMockManager": {
       "category": "stands",
@@ -390,6 +389,17 @@
       "required": 0,
       "source_sha256": "1ebe9790e042e408f356711fff0f1a789957d7c4e3f63a0b349cfe9925a72b38"
     },
+    "LeicaDMIZPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "LeicaDMIZPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 1,
+      "source_sha256": "10cdf3a24b34e22d09b92e8b3f9e7e394c281e45d4f64fbcc1f0308fdf0775f9"
+    },
     "MHXYStageManager": {
       "category": "positioners",
       "classes": [
@@ -399,7 +409,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "af868f957f130032f65cc8a8edbe500caec7726946498b524c91da5eab1e54a8"
+      "source_sha256": "070e65a14da0a4b1d21068197ab10229404bb5e8c2541b995c50b831ad949ea6"
     },
     "MPBLaserManager": {
       "category": "lasers",
@@ -421,7 +431,7 @@
       "overridden": false,
       "properties": 0,
       "required": 0,
-      "source_sha256": "e5c73c80f6495f0ebe4ee07a2fd7c03f53a44cdd0420684259e7b2d12efc1762"
+      "source_sha256": "68bb4fefae79838ddaf7ed80adbcf352830e779f821e25daffab76c08f68f976"
     },
     "NidaqLaserManager": {
       "category": "lasers",
@@ -443,7 +453,7 @@
       "overridden": false,
       "properties": 3,
       "required": 3,
-      "source_sha256": "a1f73315b2089696e67a14f808147517cc4edf9218db540613debaaadc8dc6a4"
+      "source_sha256": "426d280141146a2086f8b4fba6fbebdc92484cab0b2be9fc4b895910bd2d2210"
     },
     "OxxiusCombinerLaserManager": {
       "category": "lasers",
@@ -474,9 +484,9 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 2,
+      "properties": 3,
       "required": 0,
-      "source_sha256": "f755ebe962f4dd7e1efc6ecf2261b57b1a0e0855b8e2ea3dd0fe5720f9abc8f8"
+      "source_sha256": "f29b1ddbb5bd92e37e6bad40ca4fb852ed90fc8506ad207e828f66c9f4a2a508"
     },
     "PMTManager": {
       "category": "detectors",
@@ -520,7 +530,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "0710a4dde6f59486fb029af2eb8c5d976504528cfe4ea704c7bcd9a9682b3dec"
+      "source_sha256": "337306dbcf42a860d1d703363e2673c74a2aa8ee8ba3e151a7e2e32e9ddc6fd5"
     },
     "PiezoconceptZManager2": {
       "category": "positioners",
@@ -531,7 +541,7 @@
       "overridden": false,
       "properties": 2,
       "required": 0,
-      "source_sha256": "d4be9f41c75b7d3bbf0fcd8fb6dd77b252b563bf1e77b60bf5cd35a53391e201"
+      "source_sha256": "ad8bb71bdfaccb564833596fe7ea59a31c4c7d2cd9a7dfcd1d74ba0db6a59314"
     },
     "PulseGeneratorLaserManager": {
       "category": "lasers",
@@ -606,7 +616,7 @@
       "overridden": false,
       "properties": 1,
       "required": 0,
-      "source_sha256": "79a40ddfbb16c89a0b8dd3f71e970865928111cb4244f5e7e3011ad7200f24fe"
+      "source_sha256": "392614d1317d8d7d2c703f09368b8a1e1d4d2056e759b99c5a6fd4c290205f44"
     },
     "SerialDacZManager": {
       "category": "positioners",
@@ -617,7 +627,7 @@
       "overridden": false,
       "properties": 13,
       "required": 0,
-      "source_sha256": "33e414eca72033372f9c5676a203626a5a0ecb24468e410146e894219244f559"
+      "source_sha256": "a532ed15fd4eeab36ed34905af726d649d9858bfa8145275f7472513cba93236"
     },
     "SmarACTPositionerManager": {
       "category": "positioners",
@@ -628,7 +638,7 @@
       "overridden": false,
       "properties": 2,
       "required": 0,
-      "source_sha256": "7ca15ecca2cedc13b4b0e40fda25732c5af8fc1497a54f389cdee7c0a335917b"
+      "source_sha256": "36dd374c3b4c71cdae29ed3d35d5b10477b87e2fee8f97c2490076d1dc663ee8"
     },
     "StandaRotatorManager": {
       "category": "rotators",
@@ -683,7 +693,7 @@
       "overridden": false,
       "properties": 6,
       "required": 0,
-      "source_sha256": "46ff65d2ad40571b63ad95035e00a4262abb7f88b035a0809baa90cf11a0dba4"
+      "source_sha256": "2712d892e80b098a6107e793c0bed2c5c9fc1e0a6c318808ce6b5602ea7b914e"
     },
     "ThorlabsMFFManager": {
       "category": "flipMirrors",
@@ -725,7 +735,7 @@
       "overridden": false,
       "properties": 3,
       "required": 3,
-      "source_sha256": "43a8a3488698595f0393d0fd0d015c8d10ec72b24e1f23144e3d1434c13b3b8f"
+      "source_sha256": "1b96861b989c7f0b9be40183843ad7c7c63925141cecf2b6627f2478cc52e922"
     }
   },
   "regenerate": "python tools/extract_manager_schemas.py --write",

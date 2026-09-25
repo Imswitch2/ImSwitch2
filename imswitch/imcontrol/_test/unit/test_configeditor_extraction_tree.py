@@ -62,41 +62,46 @@ def report(extractions):
 # ── the numbers the plan quotes ───────────────────────────────────────────
 def test_the_coverage_the_plan_is_built_on(report):
     # 65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
-    assert report.managers == 61, "60 plus RS232Manager, which the legacy scan no longer skips"
+    assert report.managers == 62, "61 plus RS232Manager, which the legacy scan no longer skips"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
     # methods other than __init__ are all followed now.
     # ... plus RS232Manager itself, once the catalog stopped skipping it.
     # Four fewer since the removed camera managers (see above): 59 -> 55.
-    assert report.reads_any == 55
-    assert report.with_keys == 55
+    assert report.reads_any == 56
+    assert report.with_keys == 56
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
     # 218 before the merge with the acquisition-layout branch: the removed
     # camera managers took 12 keys, the PMT's aiVoltageMin/aiVoltageMax and
     # the Thorlabs camera's frameBufferDepth added 3. 210: AAAOTF's
-    # useMockOnFailure.
-    assert report.keys == 210
+    # useMockOnFailure. 213: LeicaDMIZPositionerManager's shared-hardware
+    # calibCsvPath boundary read.
+    assert report.keys == 213
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 148
+    assert report.optional == 151
     assert report.refs == 14
-    assert report.none_default_only == 28  # 31 with the removed camera managers
+    assert report.none_default_only == 29  # 31 with the removed camera managers
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
     # 135 before the removed camera managers' cards went with them (129), plus
     # the PMT's aiVoltageMax, which shared a row with aiVoltageMin and so was
-    # never counted as documented. 131: AAAOTF's useMockOnFailure.
-    assert (report.docs_agree, report.docs_documented) == (131, 131)
+    # never counted as documented. 131: AAAOTF's useMockOnFailure. 134:
+    # Cobolt scanResumeSettleMs, PI runtime_timeout_ms, and Leica stand
+    # availableCubes are now documented by their cards.
+    assert (report.docs_agree, report.docs_documented) == (134, 134)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
     # 92: the PMT's aiVoltageMin/aiVoltageMax are read with a numeric default.
     # 93: AAAOTF's useMockOnFailure is read with a bool default.
-    assert report.typed_by_code == 93
+    # 96 after the MoNaLISA2 manager updates: scanResumeSettleMs,
+    # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
+    assert report.typed_by_code == 96
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -268,5 +273,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 61
+    assert totals["managers"] == 62
 

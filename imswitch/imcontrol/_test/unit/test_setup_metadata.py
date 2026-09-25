@@ -72,7 +72,7 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("positioner", "JenaPiezoZManager"),
     ("positioner", "KDC101PositionerManager"),
     ("positioner", "KinesisStageManager"),
-    ("positioner", "LeicaDMIManager"),
+    ("positioner", "LeicaDMIZPositionerManager"),
     ("positioner", "MHXYStageManager"),
     ("positioner", "PIStageManager"),
     ("positioner", "PiezoconceptZManager"),
@@ -90,6 +90,7 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("rs232", "SQUIDManager"),
     ("slm", "HamamatsuSLMdviManager"),
     ("slm", "HamamatsuSLMusbManager"),
+    ("stand", "LeicaDMIStandManager"),
     # Offered since the schema-extraction work: shipped setups select it by name.
     ("rs232", "RS232Manager"),
 }

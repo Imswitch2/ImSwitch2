@@ -473,12 +473,17 @@ def _validate_fixture(name: str, schema: dict, props: dict) -> None:
 # =============================================================================
 
 def source_hash(manager: ex.ManagerExtraction, classes: dict[str, ex.ClassExtraction]) -> str:
-    """SHA-256 over the source files of the manager's classes, in resolution order."""
+    """SHA-256 over the source files of the manager's classes, in resolution order.
+
+    Line endings are normalised to LF first: ``* text=auto`` checks sources
+    out with CRLF on Windows, and an index regenerated there must match the
+    one CI regenerates on Linux.
+    """
     digest = hashlib.sha256()
     for cls_id in (manager.class_ids or manager.classes):
         module = classes[cls_id].module
         try:
-            digest.update(Path(module).read_bytes())
+            digest.update(Path(module).read_bytes().replace(b"\r\n", b"\n"))
         except OSError:
             digest.update(module.encode("utf-8"))
         digest.update(b"\0")

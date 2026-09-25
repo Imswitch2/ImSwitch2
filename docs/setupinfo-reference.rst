@@ -749,23 +749,30 @@ or other microscope stand integration.
 
 Key fields:
 
-* ``managerName`` (str): Manager class (e.g., ``"LeicaDMIManager"``)
+* ``managerName`` (str): Manager class (e.g., ``"LeicaDMIStandManager"``)
 * ``rs232device`` (str): Name of the RS232 device to use (must match an entry in ``rs232devices``)
-* ``managerProperties`` (dict, optional): Manager-specific settings (e.g., available cube positions)
+* ``managerProperties`` (dict, optional): Manager-specific settings (e.g., available cube slot names)
 
 **Example**:
 
 .. code-block:: json
 
    "microscopeStand": {
-       "managerName": "LeicaDMIManager",
+       "managerName": "LeicaDMIStandManager",
        "rs232device": "LeicaStand",
        "managerProperties": {
-           "availableCubes": ["BF", "GFP", "RFP"]
+           "availableCubes": {
+               "1": "BF",
+               "2": "GFP",
+               "3": "RFP"
+           }
        }
    }
 
 **Required devices**: One RS232 connection.
+
+Use ``LeicaDMIZPositionerManager`` in ``positioners`` when the Leica DMI Z
+focus drive should also be exposed as a positioner.
 
 **See also**: :class:`~imswitch.imcontrol.model.SetupInfo.MicroscopeStandInfo`
 

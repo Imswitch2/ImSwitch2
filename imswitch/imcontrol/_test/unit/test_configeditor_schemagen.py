@@ -263,6 +263,21 @@ class TestGeneration:
         assert len(entry["source_sha256"]) == 64
         assert index["coverage"]["keys"] == 2
 
+    def test_source_hash_is_the_same_for_a_crlf_checkout(self, tmp_path):
+        # `* text=auto` checks sources out with CRLF on Windows. An index
+        # regenerated there must match the one CI regenerates on Linux.
+        def sha(checkout, source, eol=b"\n"):
+            checkout.mkdir()
+            managers, schemas = _tree(checkout, source)
+            synth = managers / "SynthManager.py"
+            synth.write_bytes(synth.read_bytes().replace(b"\n", eol))
+            index = json.loads(sg.generate_all(_inputs(managers, schemas))["index.json"])
+            return index["managers"]["SynthManager"]["source_sha256"]
+
+        lf = sha(tmp_path / "lf", SYNTH)
+        assert sha(tmp_path / "crlf", SYNTH, eol=b"\r\n") == lf
+        assert sha(tmp_path / "edited", SYNTH + "    # edited\n") != lf, "a real change still moves the hash"
+
     def test_write_then_check_is_clean_and_write_is_idempotent(self, tmp_path):
         managers, schemas = _tree(tmp_path, SYNTH)
         files = sg.generate_all(_inputs(managers, schemas))
