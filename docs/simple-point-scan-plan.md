@@ -10,8 +10,9 @@ written in P4.*
   contract gaps (power semantics vs compatibility, the recorded-T iteration
   owner, pixel-storage ownership, imported lengths); all four hold and are
   answered in D5, D3, D1 and D4. Review 3 added two D5 fixes. Decisions
-  2026-09-25: T as proposed in D3; no mid-iteration Stop. The design phase
-  is settled; next is implementing phase D. P1 not started.
+  2026-09-25: T as proposed in D3; no mid-iteration Stop; Advanced's
+  behaviour stays unchanged, except P0's `vel_max` refusal, which is kept.
+  The design phase is settled; next is implementing phase D. P1 not started.
 - **Branch:** `feat/simple-point-scan`, worktree `../Imswitch2-simple-point-scan`.
 - **Base:** stacked on PR #49 (`claude/quizzical-hofstadter-88bff6`, "a refused
   scan design ends the request with its reason"). P0 reports its new refusal
@@ -55,6 +56,7 @@ hard-coded for a particular rig.
 | What does T mean in an acquisition? | **N frames, back to back, one run, no interval** | Intervals stay a Recording feature (ScanLapse). Executed as N bounded NI-DAQ iterations in one run; with Save, as a ScanLapse with interval 0 (D3; confirmed 2026-09-25). |
 | Which lasers does the overview use? | **Channel 1 only.** A dropdown picks another channel | The overview always needs just one line pass. |
 | Does Acquire save? | **Optional "Save" toggle** | Runs the Recording controller's own Scan-once transaction, bound to this panel. There is no second writer (D2). |
+| May Simple change how Advanced behaves? | **No** (2026-09-25). The one exception is P0's `vel_max` refusal, already committed and kept on purpose | Phase D is scoped so that Advanced's behaviour is unchanged. Shared code is touched only additively, or behind conditions Advanced never meets (§6, "Advanced stays as it is"). |
 
 ## 3. Findings that shape the design
 
@@ -447,6 +449,28 @@ not export its own `runScan` (`test_scan_source_contract.py`).
 
 ## 6. Design phase D: contracts before P1
 
+**Advanced stays as it is (Lenny, 2026-09-25).** Every contract below is
+scoped so that Advanced behaves exactly as today. The one exception is P0's
+`vel_max` refusal, kept deliberately. Shared code is touched only in three
+ways:
+
+- **Additively:** a new entry point (`recordScanSeries`), and a load-refusal
+  hook that reacts only to the `simplePlan` key, which only Simple writes.
+- **Behind a condition Advanced never meets:** the detector managers attach
+  geometry and use fresh storage only when a scan carries `frame_geometry`,
+  which only Simple sets.
+- **Not at all:** continuation, power validation and power verification live
+  in Simple's controller.
+
+Two latent Advanced gaps found on the way are documented, not fixed:
+
+- per-step power for a gate whose linked `powerDevice` has an AO channel is
+  silently dropped;
+- per-step power for a calibrated laser skips its calibration table.
+
+The plan's test lists include a check that Advanced's existing tests pass
+unchanged.
+
 Review 1 (2026-09-25) showed that the plan overstated what can be inherited
 from Advanced unchanged. Each finding was checked against the code before
 being accepted; all six hold, and one more turned up while checking finding 3.
@@ -477,7 +501,7 @@ Review 3 (2026-09-25), both checked and holding:
 
 | Review 3 point | Answer |
 |---|---|
-| A power refusal must stop the scan; today the injection's blanket `except` swallows it | D5: pre-build `powerRefusal` raising `ScanDesignRefusedError`; the blanket `except` goes; tests prove no scan starts |
+| A power refusal must stop the scan; today the injection's blanket `except` swallows it | D5: in Simple, a pre-build `powerRefusal` and a post-build check that every requested power waveform exists, both raising `ScanDesignRefusedError`; tests prove no scan starts. Advanced's own handler is left as it is (decision 2026-09-25: Advanced's behaviour unchanged). |
 | §5.1 still said `advanced_mode = False` | §5.1: `advanced_mode` is the channel-power state |
 
 ### D1. Displayed geometry travels with the image (review finding 1)
@@ -541,6 +565,13 @@ Contract:
    Managers copy it per generation at build time. The same dict object is
    reused across repeat frames, and the coordinator strips its own keys at
    completion.
+
+   **Scope.** Only the Simple controller sets `frame_geometry`. Everything in
+   points 2–4 happens only for a generation that carries it. A scan without
+   it (every Advanced scan) takes today's path unchanged: same buffer reuse,
+   same published arrays, same display. That includes the existing quirk that
+   a same-shape rescan briefly shows the previous scan's leftover rows, which
+   stays as it is for Advanced.
 2. **Published with the pixels.** Scan-driven managers (APD, PMT, Time
    Tagger) publish each frame of that iteration, partial or final, as a
    `ScanFrame`: an `ndarray` subclass with a read-only `geometry` attribute.
@@ -564,7 +595,8 @@ Contract:
    the first D1 proposed for same-shape scans, would rewrite pixels already
    on screen or queued while they keep the old geometry. That includes after a
    build that then fails. The rule:
-   - every generation allocates **fresh** display storage in `initiateImage`,
+   - every generation **that carries `frame_geometry`** allocates **fresh**
+     display storage in `initiateImage`,
      even when the shape and dtype are unchanged. It is never cleared or
      reused in place;
    - an array published for generation k is never written after generation
@@ -608,7 +640,9 @@ Tests:
   axis and for stepped axes;
 - an EVENT_STREAM-leased (queued) frame carries its own geometry;
 - round trips under every display rotation and flip;
-- a derived array has no geometry.
+- a derived array has no geometry;
+- an Advanced scan (no `frame_geometry`) publishes plain arrays and reuses
+  its buffer exactly as today.
 
 ### D2. Acquire with Save: the transaction (review finding 2)
 
@@ -749,9 +783,10 @@ Contract:
   `_wantsAnotherIteration() = not stop and (mode is UNBOUNDED or (mode is BOUNDED(N) and framesDone < N))`.
   `SINGLE` never continues.
 - Advanced's `scanDone()` branches on `self._widget.repeatEnabled()`
-  directly, and `_shouldContinueRepeat` reads the widget too. Both move to the
-  policy (a small refactor in Advanced and the base class; Advanced's
-  behaviour is unchanged, its policy is the Repeat box).
+  directly, and `_shouldContinueRepeat` reads the widget too. The Simple
+  controller **overrides both** with the policy above. Advanced's code is not
+  touched, so its behaviour is unchanged, including the edge case where
+  re-ticking Repeat during a recording-started scan keeps it going.
 - With Save, each lapse point arrives through `runScanExternal` and so runs
   in `SINGLE` mode: the lapse drives the points, and the controller never adds
   one.
@@ -818,7 +853,7 @@ the reason; nothing is normalized):
 | per-axis step sizes | kept per axis; anisotropic X/Y shows as such, and only moving the pixel slider makes it isotropic |
 | per-axis lengths | **kept verbatim**, including a length that is not a whole number of steps (10 µm at 0.3 µm: 33 pixels, not rewritten to 9.9 µm, which would change the swept waveform and the first pixel's position). Plans Simple creates itself snap `length = N · step`. An imported length is re-derived only when the user moves that axis's region or the pixel slider. |
 | `phase_delay`, `d3step_delay` | model fields |
-| `linestep_power_percent` | per channel, only for lasers whose power has an AO path (D5) |
+| `linestep_power_percent` | per channel; applied only for gates with their own AO channel, exactly as in Advanced. Stored values for other gates are kept and never applied (D5) |
 | `scan_dim_target_device` | `dims` |
 | Repeat | Live |
 
@@ -837,88 +872,82 @@ Tests: executable equality for each representable feature, including an
 imported non-integral length (10 µm at 0.3 µm) and imported inactive power;
 one refusal test per unrepresentable feature, in each direction.
 
-### D5. Laser power mapping (review findings 5, and review 2 point 1)
+### D5. Laser power mapping (review 1 finding 5, review 2 point 1, review 3)
 
-**One set of power semantics, serialized and shared.** Review 2 caught that
-the first D5 contradicted D4. It let Simple apply power with
-`advanced_mode = False` through a private hook while Advanced ignored the same
-dicts, so identical saved dicts would give different AO waveforms. Simple
-could also activate power values that were inactive in an Advanced file.
-There is now no Simple-only rule:
+**Advanced's power semantics, used as they are.** Simple does not add power
+behaviour that Advanced lacks, and it does not change Advanced's. Review 2's
+point holds: the same saved dicts must build the same waveforms in both
+panels, and Simple must never switch on power that was off in an Advanced
+file.
 
 - **The switch is Advanced's own `advanced_mode`.** Checked 2026-09-25 on the
   mock setup: `advanced_mode = True` with no timing windows produces
   **identical** TTL waveforms to `advanced_mode = False` (every DO array
   equal, two line steps). It additionally applies `linestep_power_percent`,
   which `False` ignores. So a Simple plan whose channels set power serializes
-  as `advanced_mode = True`, with empty pulse windows. Advanced loads that as
-  its own "advanced mode, no windows, per-step power", and both controllers
-  build the same waveforms from the same dicts.
+  as `advanced_mode = True` with empty pulse windows. Advanced loads that as
+  its own "advanced mode, no windows, per-step power", and both panels build
+  the same waveforms.
 - **Keys stay Advanced's.** `linestep_power_percent[gate][step]` and
-  `linestep_power_enabled[gate]` are both keyed by the **gate** (the TTL
-  device), so `_ttl_parameters_without_positioners` keeps them. The model
-  carries both: per gate and channel, the percentage; per gate, the enabled
-  flag. On import `linestep_power_enabled` is preserved, and a missing key
-  means enabled, as in Advanced today.
+  `linestep_power_enabled[gate]` are keyed by the gate (the TTL device). The
+  model carries both: per gate and channel the percentage, per gate the
+  enabled flag. On import `linestep_power_enabled` is preserved, and a
+  missing key means enabled, as in Advanced.
 - **Inactive stays inactive.** An Advanced file with `advanced_mode = False`
-  and stored `linestep_power_percent` imports with power **off**, values kept.
-  Simple does not apply them until the user turns channel power on, which
-  flips `advanced_mode` visibly. See D4's subset table.
+  and stored percentages imports with channel power **off**, values kept.
+  Simple applies them only after the user turns channel power on, which flips
+  `advanced_mode` visibly.
 
-Routing, shared by both controllers:
+Which lasers get per-channel power: **exactly those Advanced applies it to**,
+gates with their own `analogChannel`.
 
-| Configuration | Per-channel power | AO key | TTL mask |
-|---|---|---|---|
-| gate has its own `analogChannel` (an AOM) | yes | the gate | the gate's TTL |
-| gate's `powerDevice` has an `analogChannel` | yes | the power device | the **gate's** TTL |
-| power set over serial (an AOTF over RS232, `example_sted`'s 561AOTF) or no power device | no; the lane shows the Laser panel's setpoint, read-only | — | — |
+| Configuration | Per-channel power in Simple | Advanced today |
+|---|---|---|
+| gate has its own `analogChannel` (an AOM) | yes, same waveform as Advanced | applied |
+| gate's `powerDevice` has an `analogChannel` | no; the lane shows the Laser panel's setpoint, read-only | silently dropped (latent gap, documented, not fixed) |
+| power set over serial (an AOTF over RS232, e.g. `example_sted`'s 561AOTF) or no power device | no; setpoint shown read-only | not applied |
 
-- `powerRoute(gate)` lives in `ScanControllerAdvanced`, so Advanced routes the
-  same way. For Advanced this fixes a silent drop: a split gate whose power
-  device has an AO channel gets no waveform today. It is a behaviour change
-  for Advanced and goes in the changelog. The Advanced widget's list of
-  power-capable devices (`setLinestepPowerCapableDevices`) uses the same
-  route.
-- Two gates sharing one AO power device in the **same** line step with
-  different powers is refused in both controllers (one AO channel, one value
-  per line pass). In different line steps each pass takes its own value.
-- **A power refusal stops the scan** (review 3). Today `_make_full_scan`
-  wraps `_inject_linestep_power_ao` in `except Exception` and logs at debug
-  level (`ScanControllerAdvanced.py:165-173`). A refused or failed power
-  setting would therefore quietly produce a scan with no power waveform while
-  the gates still fire. The contract:
-  - power settings are validated **before** any signal is built, by a
-    `powerRefusal(TTLParameters)` check next to `signalLengthRefusal`. It
-    raises `ScanDesignRefusedError` with the reason, so #49's path turns it
-    into a refused start (API: `ScanRequestRejectedError`; Scan button: only
-    `sigScanRequestRejected`; plot: a warning);
-  - the blanket `except` around the injection is removed. Any other failure
-    there fails the build instead of scanning at the wrong power. This is a
-    behaviour change for Advanced and goes in the changelog.
-- **Percent to volts goes through the laser manager's own mapping.**
-  `NidaqLaserManager` converts a value to volts through its calibration table
-  when `calibCsvPath` is set (value units %), and passes volts through
-  otherwise (value units V). `_inject_linestep_power_ao` maps percent linearly
-  onto `valueRangeMin … valueRangeMax` and skips the table. That is right for
-  an uncalibrated laser and wrong for a calibrated one (found by reading,
-  2026-09-25). The shared injector asks the laser manager for the voltage.
+- Stored percentages for a gate without its own AO channel are kept and never
+  applied, in both panels, so executable equality holds.
+- Percent to volts: both panels use today's mapping in
+  `_inject_linestep_power_ao`, linear onto `valueRangeMin … valueRangeMax`.
+  For a laser calibrated with `calibCsvPath` this skips the calibration table
+  that `NidaqLaserManager` uses for its static value (found by reading,
+  2026-09-25). This is a documented limitation of both panels. Simple labels
+  the value "% of the analog range" for such a laser.
+
+**Refusals stop the scan, in Simple** (review 3). Advanced wraps the
+injection in `except Exception` and logs at debug level
+(`ScanControllerAdvanced.py:165-173`). That stays as it is. Simple's
+controller makes its own path strict without touching that code:
+
+- **Before building:** `powerRefusal(plan)` validates channel power (a gate
+  without its own AO channel, a value outside 0–100 %, a channel naming a
+  laser that is not a gate). It raises `ScanDesignRefusedError` with the
+  reason, so #49's path turns it into a refused start.
+- **After building, before arming:** Simple checks that every gate with
+  channel power on has its AO waveform in `scanSignalsDict`. If one is missing
+  (the injection failed and Advanced's handler swallowed it), it raises
+  `ScanDesignRefusedError` ("Channel power for 488 could not be built; the
+  scan was not started"). The run is still unpublished at that point, so this
+  too is a refused start.
 
 Tests:
 
 - same dicts give equal AO and DO waveforms in Simple and Advanced, with
-  power on and with power off;
+  channel power on and off;
 - an Advanced file with inactive power imports inactive and builds no power
   waveform;
 - `linestep_power_enabled` round-trips, including the missing-key default;
-- direct-AO laser; split gate + AO power device, now also in Advanced; split
-  gate + serial power device (no waveform, read-only display);
-- shared power device in different line steps (two values) and in one
-  (refused): through the API the request is rejected with the reason, the Scan
-  button publishes only the refusal, and **no scan starts** (no run reserved,
-  no NI-DAQ `runScan`, no laser armed), in both controllers;
-- an exception inside the injection fails the build, and no scan starts;
-- calibrated laser: the AO level equals the laser manager's own voltage for
-  that percentage.
+- a gate with a linked AO `powerDevice` gets no per-channel power control,
+  and its stored values build no waveform in either panel;
+- a refused power setting and a forced injection failure: through the API
+  the request is rejected with the reason, the Scan button publishes only the
+  refusal, and **no scan starts** (no run reserved, no NI-DAQ `runScan`, no
+  laser armed);
+- Advanced with the same forced injection failure behaves exactly as today:
+  it scans without the power waveform and logs at debug level. This test
+  exists to show the difference is deliberate.
 
 ### D6. Overview planning (review finding 6)
 
@@ -986,7 +1015,7 @@ A new `scanWidgetType` must be registered in all of these places:
 | Phase | Content | Done when |
 |---|---|---|
 | **P0** | Backend. `GalvoScanDesigner.scanSpeedRefusal` enforced inside `make_signal` (raises `ScanDesignRefusedError` with a fix hint). `ScanDesigner.estimateScanTime` (base returns `None`; Galvo implements §F4). An Advanced-controller helper that builds designer parameters once, for building, plotting and estimating. | Tests: refused above `vel_max`, accepted at or below it, stepped axes exempt, and the reason reaches the request through the Advanced controller. Estimate within 1 % or 2 ms of full builds for 1D, 2D, line steps, XZ, XYZ and a stepped fast axis. **Done** (`4c0c671b`). Existing scan tests pass. `advanced-scanning.rst` and the changelog updated. |
-| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. Also the small refactors they require in shared code: the run execution mode and continuation policy in `SuperScanController` / Advanced (D3); the shared power route, the pre-build `powerRefusal` check, the removal of the blanket `except` around the injection, and the laser-manager voltage mapping in `_inject_linestep_power_ao` (D5); the state-refusal hook in `applyComponentState` (D4); `ScanFrame`, fresh display storage per generation in APD/PMT/Time Tagger, and the geometry handling in `ImageController` / `ImageWidget` (D1); and `RecordingController.recordScanSeries` (D2, D3). | Each refactor keeps Advanced's behaviour, except the two intended Advanced fixes in D5 (split gate with AO power device; calibrated lasers), which get their own tests and changelog entries. Advanced's existing tests pass unchanged. The D1–D5 contract tests pass. |
+| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. The code they need, all scoped so that Advanced's behaviour is unchanged: Simple's own continuation policy (D3); Simple's `powerRefusal` and post-build power verification (D5); the additive state-refusal hook in `applyComponentState` (D4); `ScanFrame` and fresh storage per generation, only for scans carrying `frame_geometry`, plus the geometry handling in `ImageController` / `ImageWidget` (D1); and the additive `RecordingController.recordScanSeries` (D2, D3). | The D1–D5 contract tests pass. Advanced's existing tests pass **unchanged**, and the "Advanced as today" tests in D1 and D5 pass. |
 | **P1** | `simple_scan.py` (with D4's fields), controller and panel without napari. D6 overview planning. New mock setup `galvo_apd_simple_mock_scan_setup.json`. Registration checklist (§7). | D4 executable-equality and refusal tests pass. D6 planning tests pass. The mock setup starts. The measured overview frame rate is shown on the mock. |
 | **P2** | The panel's own napari rectangle layer, drawn over the current detector's layer, converted with D1's geometry; the inverse display transform. | D1's tests pass, plus drawing is disabled on a layer without geometry. |
 | **P3** | Channel lanes, per-channel power (D5), PMT note, Z and T (D3), Save toggle (D2). | D2, D3 and D5 end-to-end tests on the mock setup: N time partitions recorded, one run end, Stop mid-series with and without Save, missing Recording, writer failure, double start, and each power route. |
