@@ -1,7 +1,6 @@
 """MoNaLISA-specific processing result."""
 
-import os
-from pathlib import Path
+import copy
 
 import numpy as np
 import tifffile as tiff
@@ -46,7 +45,7 @@ def _projection_metadata(placement: LayoutPlacement | None) -> dict | None:
 
 # ImageJ's hyperstack layout addresses data with 32-bit offsets, so it caps
 # out below 4 GB. Past that only BigTIFF can hold the file -- and BigTIFF
-# cannot carry ImageJ metadata (see save()).
+# cannot carry ImageJ metadata (see write_files()).
 IMAGEJ_MAX_BYTES = 3_900_000_000
 
 # Canonical semantic-name → scan-dimension-name map. Reconstructions produced
@@ -336,22 +335,7 @@ class MonalisaProcessingResult(ProcessingResult):
             idx[base_axis] = base_idx
             out.append(self.data[tuple(idx)])
         return out
-
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        """
-        Save MoNaLISA reconstruction as ImageJ-compatible 6D TIFF.
-        
-        Args:
-            path: Output file path
-            fmt: Format string ("tiff" only for now)
-        """
-        if fmt != "tiff":
-            raise ValueError(f"MoNaLISA result only supports 'tiff' format, got '{fmt}'")
-        
-        # Compute ImageJ metadata. Dimension names are resolved through the
-        # result's axis-label map so both reconstructor-produced ("Right-Left")
-        # and legacy controller-produced ("Right/Left") scan params save.
-
+    
 
     supported_formats = ("tiff", "imagej")
 
@@ -404,21 +388,15 @@ class MonalisaProcessingResult(ProcessingResult):
         ijmetadata = {'axes': 'TZCYX', 'provenance': document.to_json()}
         resolution = (10000.0 / vxsizec, 10000.0 / vxsizer)
 
-        # (Dataset, Base, T, Z, Y, X) -> (T, Z, Dataset, Base, Y, X) -> (T, Z, C, Y, X)
-        data_to_save = np.moveaxis(self.data, [0, 1, 2, 3, 4, 5], [2, 3, 0, 1, 4, 5])
-        data_to_save = np.ascontiguousarray(data_to_save).reshape(
-            numTimepoints, numSlices, numDatasets * numBases, numRows, numCols
-        )
-
         # `bigtiff` and `imagej` are mutually exclusive: asking for both makes
         # tifffile emit "writing nonconformant BigTIFF ImageJ" and produces a
         # file ImageJ may not open as a hyperstack. Write the ImageJ layout
         # while the data fits it, and only fall back to BigTIFF beyond that --
         # where the ImageJ metadata cannot be carried anyway.
-        if data_to_save.nbytes < IMAGEJ_MAX_BYTES:
-            with tiff.TiffWriter(str(path), imagej=True) as tif:
+        if folded.nbytes < IMAGEJ_MAX_BYTES:
+            with tiff.TiffWriter(str(plan.primary), imagej=True) as tif:
                 tif.write(
-                    data_to_save,
+                    folded,
                     resolution=resolution,
                     metadata=ijmetadata,
                     photometric='minisblack',
@@ -426,21 +404,18 @@ class MonalisaProcessingResult(ProcessingResult):
             return
 
         initLogger('MonalisaProcessingResult').warning(
-            f'Reconstruction is {data_to_save.nbytes / 1e9:.1f} GB, past the '
+            f'Reconstruction is {folded.nbytes / 1e9:.1f} GB, past the '
             f'ImageJ hyperstack limit; writing BigTIFF without ImageJ '
             f'metadata (axis order is still {ijmetadata["axes"]}).'
         )
-        with tiff.TiffWriter(str(path), bigtiff=True) as tif:
-            tif.write(
-                data_to_save,
-                resolution=resolution,
-                photometric='minisblack',
-        with tiff.TiffWriter(str(plan.primary), bigtiff=True, imagej=True) as tif:
+        # Not ImageJ's description, but tifffile's own JSON one, which still
+        # carries the axes and the provenance record.
+        with tiff.TiffWriter(str(plan.primary), bigtiff=True) as tif:
             tif.write(
                 folded,
                 resolution=resolution,
                 metadata=ijmetadata,
-                photometric='minisblack'
+                photometric='minisblack',
             )
 
 

@@ -1208,7 +1208,9 @@ def test_saved_tiff_is_a_conformant_imagej_hyperstack(synthetic_stack, tmp_path)
     out = tmp_path / "s_recon.tif"
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        session.result().save(out, "tiff")
+        # "tiff" is OME-TIFF through the shared writer; the ImageJ
+        # hyperstack is its own format.
+        session.result().save(out, "imagej")
 
     nonconformant = [w for w in caught if "nonconformant" in str(w.message)]
     assert nonconformant == [], [str(w.message) for w in nonconformant]
