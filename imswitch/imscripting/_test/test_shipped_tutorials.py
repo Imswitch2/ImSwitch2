@@ -25,7 +25,8 @@ USER_DEFAULTS = Path(imswitch.__file__).parent / '_data' / 'user_defaults'
 TUTORIALS = USER_DEFAULTS / 'scripts' / 'tutorial'
 SETUPS = USER_DEFAULTS / 'imcontrol_setups'
 
-_MOCK_SETUP = re.compile(r'^\s*Mock setup:\s*(\S+\.json)\s*$', re.MULTILINE)
+# The file name may be followed by a note, e.g. "<- a new setup".
+_MOCK_SETUP = re.compile(r'^\s*Mock setup:\s*(\S+\.json)(?:\s.*)?$', re.MULTILINE)
 _IMPORTED_BY = re.compile(r'^\s*Imported by:\s*(\S+\.py)\s*$', re.MULTILINE)
 
 
@@ -62,7 +63,8 @@ def test_there_are_basic_and_scanning_tutorials():
 def test_header_says_what_it_teaches_and_what_it_needs(path):
     doc = _docstring(path)
     assert doc.startswith('Tutorial '), 'first line: "Tutorial <folder> <nn> -- <title>"'
-    for section in ('You will learn', 'Setup', 'Mock setup:', 'Needs:', 'Next:'):
+    for section in ('You will learn', 'Setup', 'Mock setup:', 'It simulates:',
+                    'Your own microscope:', 'Next:'):
         assert section in doc, f'header is missing "{section}"'
     setup = _MOCK_SETUP.search(doc).group(1)
     assert (SETUPS / setup).is_file(), f'{setup} is not a shipped setup'

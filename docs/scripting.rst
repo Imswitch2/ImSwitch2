@@ -85,25 +85,29 @@ Tutorials
 ImSwitch copies its scripts into ``~/ImSwitchConfig/scripts``
 (``Documents\ImSwitchConfig\scripts`` on Windows) on first start. The
 ``tutorial`` folder there is a sequence of short scripts that build on each
-other, each written for a *mock setup* -- a hardware configuration of
-simulated devices that ships with ImSwitch -- so they run without a
-microscope. The header of every tutorial says what it teaches, which mock
-setup to load (**Tools > Pick hardware setup…** in the Hardware Control
-tab), and what a real setup needs to run it.
+other. Each is written for a *simulated setup*: a setup file, shipped with
+ImSwitch, whose cameras, stages, scanners and lasers are all mock devices,
+so the tutorials run without a microscope. The header of every tutorial
+says what it teaches, which setup file to load (``Mock setup:``; choose it
+with **Tools > Pick hardware setup…** in the Hardware Control tab), what
+that setup simulates (``It simulates:``), and what your own microscope
+needs for the script (``Your own microscope:``). ``tutorial/README.md``
+explains how to load a setup and asks you to read each script, predict
+what it will do, and only then press **Run all**.
 
 ``tutorial/basic``
-    One camera (``example_mock.json``) and then two cameras and stages
-    (``example_no_hardware.json``): snapping into numpy and to files, camera
-    settings and the live view, recording a number of frames and reading the
-    file back, recording several cameras, moving stages and waiting for
-    them, clean-up that survives the Stop button, and sharing code between
-    scripts with ``importScript()``.
+    One camera (``example_mock.json``, steps 01-06): snapping into numpy
+    and to files, camera settings and the live view, recording a number of
+    frames and reading the file back, clean-up that survives the Stop
+    button, and sharing code between scripts with ``importScript()``. Then
+    two cameras and stages (``example_no_hardware.json``, steps 07-08).
 
 ``tutorial/scanning``
-    Scans that trigger a camera (``hamamatsu_mock_scan_setup.json``), a
-    camera and an APD in one scan
-    (``mixed_hamamatsu_apd_mock_scan_setup.json``), scan timelapses, and a
-    laser power series in one recording (``galvo_apd_mock_scan_setup.json``).
+    Scans that trigger a camera, one frame per scan position, and scan
+    timelapses (``hamamatsu_mock_scan_setup.json``, steps 01-03); a camera
+    and an APD in one scan (``mixed_hamamatsu_apd_mock_scan_setup.json``);
+    and a laser power series in one recording
+    (``galvo_apd_mock_scan_setup.json``).
     Scan settings are loaded from files in ``scanning/scan_params``; make
     your own in the Scan widget and save them with
     ``api.imcontrol.saveScanParamsToFile()``.

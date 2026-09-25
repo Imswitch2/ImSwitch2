@@ -8,17 +8,20 @@ You will learn
   * to leave the lasers off and the recording stopped whatever happens
 
 Setup
-  Mock setup: galvo_apd_mock_scan_setup.json
-  Needs:      an Advanced Scan widget, a point detector (APD), and the
-              Laser and Recording widgets. On the mock, 488 (EXC) has an
-              analog power channel (0-10 V); 405 (ON) is on/off only, and a
-              value set on an on/off laser is ignored.
+  Mock setup:   galvo_apd_mock_scan_setup.json   <- a new setup
+  It simulates: a point-scanning microscope -- galvo mirrors for X and Y
+                and a Z piezo, driven by an NI-DAQ card -- with an APD
+                ("APD") and two lasers: "405 (ON)", which can only be
+                switched on and off, and "488 (EXC)", whose power is set as
+                0-10 V.
+  Your own microscope: needs an Advanced Scan widget, a point detector,
+                and the Laser and Recording widgets. Change LASER and
+                POWERS to your laser and its units (mW, %, V -- whatever
+                the Laser widget shows). A value set on an on/off laser is
+                ignored.
 
-  This is the pattern of a real power series: change LASER and POWERS to
-  your laser and its units (mW, %, V -- whatever the Laser widget shows).
-
-Next: that is the last tutorial. The workflows folder has complete
-      acquisitions for real rigs.
+Next: that was the last tutorial. The workflows folder has complete
+      acquisitions for real microscopes.
 """
 
 import glob
@@ -29,7 +32,7 @@ import h5py
 
 PARAMS = os.path.join(getScriptDirPath(), 'scan_params', 'point_scan_5um.json')
 LASER = '488 (EXC)'
-POWERS = [0.0, 1.0, 2.5, 5.0]         # in the laser's units: V on the mock
+POWERS = [0.0, 1.0, 2.5, 5.0]         # in the laser's units: V on this setup
 NAME = 'tutorial_power_series'
 log = getLogger()
 signals = api.imcontrol.signals()
@@ -37,23 +40,26 @@ print('Lasers:', api.imcontrol.getLaserNames())
 
 backup = os.path.join(tempfile.gettempdir(), 'imswitch_tutorial_scan_backup.json')
 api.imcontrol.saveScanParamsToFile(backup)
-api.imcontrol.loadScanParamsFromFile(PARAMS)
+api.imcontrol.loadScanParamsFromFile(PARAMS)     # a 5 x 5 µm scan, 50 x 50 px
 previousFormat = api.imcontrol.getRecFileFormat()
-api.imcontrol.setRecFileFormat('HDF5')         # read back with h5py below
+api.imcontrol.setRecFileFormat('HDF5')           # read back with h5py below
+# One recording for the whole series: it runs until stopRecording(), and
+# every scan in between adds one image to the same file.
 api.imcontrol.setRecModeUntilStop()
 api.imcontrol.setRecFilename(NAME)
 try:
     callAndWaitForSignal(signals.recordingStarted, api.imcontrol.startRecording,
                          timeout=30)
-    api.imcontrol.setLaserActive(LASER, True)
+    api.imcontrol.setLaserActive(LASER, True)      # switch the laser on
     for power in POWERS:
-        api.imcontrol.setLaserValue(LASER, power)
-        runScanAndWait(timeout=600)      # each scan adds one image to the file
+        api.imcontrol.setLaserValue(LASER, power)  # then set its power
+        runScanAndWait(timeout=600)                # one scan = one image
         log.info(f'scan at {power} done')
 finally:
     # Lasers first: whatever went wrong, the sample should not stay lit.
     api.imcontrol.setLaserValue(LASER, 0)
     api.imcontrol.setLaserActive(LASER, False)
+    # Then end the recording, as in basic tutorial 05.
     waitForEnd = getWaitForSignal(signals.recordingEnded, timeout=60)
     if api.imcontrol.stopRecording():
         waitForEnd()
@@ -66,6 +72,6 @@ finally:
 path = max(glob.glob(os.path.join(api.imcontrol.getRecFolder(), f'{NAME}_rec_APD*')),
            key=os.path.getmtime)
 with h5py.File(path, 'r') as f:
-    images = f['APD/data']
+    images = f['APD/data']          # one image per scan, in scan order
     print(f'{os.path.basename(path)}: {images.shape[0]} scan images of '
           f'{images.shape[-1]} x {images.shape[-2]} px, one per power')
