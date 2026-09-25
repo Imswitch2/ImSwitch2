@@ -160,6 +160,15 @@ class ScanDesigner(SignalDesigner, ABC):
         return ('Signal too long: try scanning a smaller ROI, faster, or with '
                 'a larger pixel size.')
 
+    def estimateScanTime(self, parameterDict, setupInfo):
+        """ Seconds the scan ``make_signal`` would build takes, estimated
+        without building it, or ``None`` when this designer cannot say.
+
+        ``parameterDict`` is what ``make_signal`` receives. A designer that
+        can estimate may raise ScanDesignRefusedError for a design it would
+        refuse. """
+        return None
+
     @abstractmethod
     def make_signal(self, parameterDict, setupInfo):
         """ Method to be defined by child. Should return a dictionary with

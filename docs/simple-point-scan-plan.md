@@ -3,7 +3,8 @@
 *Work-in-progress plan. The user documentation will be a Sphinx `.rst` page
 written in P4.*
 
-- **Status:** planned 2026-09-25; P0 in progress.
+- **Status:** planned 2026-09-25; P0 done 2026-09-25 (speed rule, estimator,
+  tests); P1 not started.
 - **Branch:** `feat/simple-point-scan`, worktree `../Imswitch2-simple-point-scan`.
 - **Base:** stacked on PR #49 (`claude/quizzical-hofstadter-88bff6`, "a refused
   scan design ends the request with its reason"). P0 reports its new refusal
@@ -120,9 +121,12 @@ turnaround is exact.
 | XYZ 100 × 100 × 10 µm, 1 ms slice delay | 5.2716 s | 5.2545 s | −0.32 % | 6 ms |
 | XZ 30 × 6 µm (Z stepped) | 0.1738 s | 0.1738 s | +0.00 % | 2 ms |
 
-The estimate always comes out slightly low. The cause is the slow galvo axis
-moving from zero to its first position: the proxy's slow axis spans only 2–3
-steps, so that move is shorter than in the real scan.
+The error comes from the slow galvo axis travelling to its first position and
+back. The proxy's slow axis spans only 2–3 steps, so that travel differs from
+the real scan's. It amounts to a few milliseconds per slow sweep, so it shows
+in relative terms only on very short scans: P0's XZ test case with a stepped
+piezo fast axis estimates 9.8 ms for a 9.1 ms scan. The tested bound is
+**1 % or 2 ms, whichever is larger**.
 
 A full build takes up to 1.2 s (1000 × 1000 at 100 µs), far too slow for a
 slider. The estimate reuses the designer's own code, so it cannot drift when the
@@ -149,6 +153,12 @@ scanner at several times its configured limit.
 The panel needs this rule to set its minimum dwell, and Advanced users need it
 for their own scans. Per the recurring lesson "a rule enforced in one place is
 not enforced", the rule lives in the designer and the panel only asks it.
+
+**Done in P0.** `make_signal` raises `ScanDesignRefusedError`, so the scan
+managers, the Advanced run path, its plots and the estimate all refuse the same
+designs. At a sweep of exactly `vel_max`, the turnaround spline's rounded
+corners peak 0.25 % above the limit. That is the spline's own shape, not the
+sweep, and the test allows 0.5 %.
 
 ### F6. The viewer has no scanner coordinates
 

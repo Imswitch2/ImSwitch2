@@ -1,9 +1,12 @@
+import itertools
+
 import numpy as np
 import matplotlib.pyplot as plt
 
 from scipy.interpolate import BPoly
 
 from .basesignaldesigners import ScanDesigner, ScanInfoContract
+from ..errors import ScanDesignRefusedError
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
@@ -117,6 +120,91 @@ class GalvoScanDesigner(ScanDesigner):
             )
         return ''
 
+    def scanSpeedRefusal(self, scanParameters, setupInfo):
+        """ Why the fast axis would sweep faster than its scanner allows, or
+        ``''`` when it would not.
+
+        A smoothly swept fast axis moves one step per dwell, so its speed is
+        ``axis_step_size / sequence_time``. The smooth-scan spline builds the
+        turnaround to ``vel_max`` but never compared the sweep itself against
+        it: at twice ``vel_max`` a 100 µm line overshot to ±250 µm, and only
+        the voltage check stopped it, with a reason that did not name the
+        cause. ``make_signal`` enforces this, so every path that builds a
+        scan (the scan managers, the Advanced controller, its plots and
+        :meth:`estimateScanTime`) refuses the same designs.
+
+        Stepped fast axes are exempt; they hold each position for the dwell.
+        A missing ``vel_max`` is left to the missing-limits error.
+        """
+        device_count = len([positioner for positioner in setupInfo.positioners.values()
+                            if positioner.forScanning])
+        active = self._active_axis_indices(
+            scanParameters['axis_length'], scanParameters['axis_step_size'], device_count
+        )
+        if not active:
+            return ''
+        fast = active[0]
+        name = scanParameters['target_device'][fast]
+        props = setupInfo.positioners[name].managerProperties
+        vel_max = props.get('vel_max')
+        dwell_us = float(scanParameters['sequence_time']) * 1e6
+        if (vel_max is None or dwell_us <= 0
+                or not is_smooth_scan_axis(name, props)):
+            return ''
+        step_um = abs(float(scanParameters['axis_step_size'][fast]))
+        speed = step_um / dwell_us  # µm/µs
+        vel_max = float(vel_max)
+        # the tolerance keeps a design exactly at the limit (step / dwell ==
+        # vel_max, computed with float rounding) on the accepted side
+        if speed <= vel_max * (1 + 1e-9):
+            return ''
+        return (
+            f'Fast axis {name} would sweep at {speed:.3g} µm/µs, above its '
+            f'vel_max of {vel_max:g} µm/µs. Use a dwell of at least '
+            f'{step_um / vel_max:.3g} µs for {step_um:g} µm pixels, or pixels '
+            f'of at most {vel_max * dwell_us:.3g} µm at a {dwell_us:g} µs dwell.'
+        )
+
+    def estimateScanTime(self, parameterDict, setupInfo):
+        """ Seconds the scan ``make_signal`` would build takes, without
+        building it.
+
+        The fast axis is built at its real length, so its turnaround is
+        exact. Every slow axis with more than three steps is built with two
+        and with three steps instead, and the durations are extrapolated
+        multilinearly to the real step counts: each further step on a slow
+        axis repeats a fixed block of samples. What the proxies cannot
+        reproduce is a slow galvo axis travelling to its first position and
+        back over its real span, so the result is off by a few milliseconds
+        per slow sweep: within 1 % or 2 ms, whichever is larger (-0.33 % on a
+        100 x 100 x 10 µm XYZ scan). The cost is at most ``2**k`` builds, where ``k`` is the
+        number of slow axes with more than three steps, each as long as one
+        fast line per slow step.
+
+        Raises ScanDesignRefusedError when ``make_signal`` would refuse the
+        design.
+        """
+        device_count = len([positioner for positioner in setupInfo.positioners.values()
+                            if positioner.forScanning])
+        lengths = list(parameterDict['axis_length'])
+        steps = list(parameterDict['axis_step_size'])
+        active = self._active_axis_indices(lengths, steps, device_count)
+        counts = {i: pixels_for_length_step(lengths[i], steps[i]) for i in active[1:]}
+        extrapolated = [i for i, n in counts.items() if n > 3]
+
+        total = 0.0
+        for proxy in itertools.product((2, 3), repeat=len(extrapolated)):
+            weight = 1.0
+            proxyLengths = list(lengths)
+            for axis, n in zip(extrapolated, proxy):
+                # linear interpolation weight of this corner for the real count
+                weight *= (3 - counts[axis]) if n == 2 else (counts[axis] - 2)
+                proxyLengths[axis] = n * steps[axis]
+            proxyParameters = dict(parameterDict, axis_length=proxyLengths)
+            _, _, scanInfo = self.make_signal(proxyParameters, setupInfo)
+            total += weight * scanInfo['tot_scan_time_s']
+        return total
+
     def make_signal(self, parameterDict, setupInfo):
         # --- Per-call state (reset each invocation, accumulated by private methods) ---
         self.__timestep = 1e6 / setupInfo.scan.sampleRate  # time step [µs]
@@ -152,6 +240,9 @@ class GalvoScanDesigner(ScanDesigner):
                 "device that should be stepped instead of swept can set "
                 "'smoothScan': false and needs no limits."
             )
+        refusal = self.scanSpeedRefusal(parameterDict, setupInfo)
+        if refusal:
+            raise ScanDesignRefusedError(refusal)
 
         device_count = len(positioners)
         # convert vel_max from µm/µs to V/µs

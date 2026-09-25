@@ -132,6 +132,18 @@ For example::
 Use values measured or specified for the actual scanner. Missing velocity or
 acceleration limits stop signal construction with a configuration error.
 
+The fast axis sweeps one pixel per dwell, so ``step / dwell`` must not exceed
+its ``vel_max``. A faster scan is refused before anything moves. The message
+names the axis and the limit, and gives a dwell or pixel size that would pass,
+for example *Fast axis X would sweep at 0.2 µm/µs, above its vel_max of
+0.1 µm/µs. Use a dwell of at least 20 µs for 2 µm pixels, or pixels of at most
+1 µm at a 10 µs dwell.*
+
+Before this check, such a scan ran: the galvo was driven past its limit and
+overshot each line several times over, and the scan was stopped only if that
+overshoot left the scanner's voltage range. A stepped fast axis
+(``smoothScan: false``) holds each position for the dwell and is not limited.
+
 Signal construction also refuses more than 10 million spatial positions. The
 optional ``scan.maxScanTimeMin`` setup value adds a duration guard; ``null`` or
 omission disables that time guard. The guard is an early estimate, not a
@@ -199,6 +211,10 @@ Advanced scan troubleshooting
    * - Galvo signal construction reports missing limits
      - Add realistic ``vel_max`` and ``acc_max`` values to every real scanning
        positioner's ``managerProperties``.
+   * - Scan refused: the fast axis would sweep above ``vel_max``
+     - Lengthen the dwell or use smaller pixels, as the message says. If the
+       scanner is really faster than configured, measure it and raise
+       ``vel_max``; do not raise it just to make the scan pass.
    * - Camera records too few or no frames
      - Confirm its line-step enable boxes and TTL windows, then ensure exposure
        plus readout fits between triggers. Plot with TTL included.
