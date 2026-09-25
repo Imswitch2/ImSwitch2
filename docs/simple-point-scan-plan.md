@@ -4,7 +4,9 @@
 written in P4.*
 
 - **Status:** planned 2026-09-25; P0 done 2026-09-25 (speed rule, estimator,
-  tests); P1 not started.
+  tests). Review 1 (2026-09-25) found that the plan overstated what Advanced
+  gives for free; its six findings are verified and answered in §6, a design
+  phase **D** that now comes before P1. P1 not started.
 - **Branch:** `feat/simple-point-scan`, worktree `../Imswitch2-simple-point-scan`.
 - **Base:** stacked on PR #49 (`claude/quizzical-hofstadter-88bff6`, "a refused
   scan design ends the request with its reason"). P0 reports its new refusal
@@ -19,7 +21,9 @@ user can read. It is built on the Advanced backend. The panel has two modes:
 
 - **Overview** is for looking around and finding cells. It scans live over the
   largest field the scanners can reach, using big pixels and the fastest safe
-  dwell. Each frame should take one second or less.
+  dwell. It aims for about one frame per second and shows the measured frame
+  rate. When a setup cannot reach that rate, it says so and shows the fastest
+  overview it can (§6, D6).
 - **Acquisition** is for taking the image. It uses a region drawn as a
   rectangle in the napari viewer. Two sliders set the pixel size (from the
   overview pixel size down to Nyquist) and the dwell time (from the fastest
@@ -42,10 +46,10 @@ hard-coded for a particular rig.
 
 | Question | Decision | Consequence |
 |---|---|---|
-| Coexist with Advanced? | **Replace.** Selected per rig with `scanWidgetType: "SimplePointScan"` | Still one scan panel per setup. Moving a rig between Simple and Advanced is a config change, and scan files load in both directions (see §5.2). |
-| What does T mean in an acquisition? | **N frames, back to back, one run, no interval** | Intervals stay a Recording feature (ScanLapse). |
+| Coexist with Advanced? | **Replace.** Selected per rig with `scanWidgetType: "SimplePointScan"` | Still one scan panel per setup. Moving a rig between Simple and Advanced is a config change. Scan files load across only within an explicit representable subset; anything outside it is refused with the reason (D4). |
+| What does T mean in an acquisition? | **N frames, back to back, one run, no interval** | Intervals stay a Recording feature (ScanLapse). Executed as N bounded NI-DAQ iterations in one run (D3; **to confirm**). |
 | Which lasers does the overview use? | **Channel 1 only.** A dropdown picks another channel | The overview always needs just one line pass. |
-| Does Acquire save? | **Optional "Save" toggle** | Arms an ordinary Scan-once recording bound to this panel. There is no second writer. |
+| Does Acquire save? | **Optional "Save" toggle** | Runs the Recording controller's own Scan-once transaction, bound to this panel. There is no second writer (D2). |
 
 ## 3. Findings that shape the design
 
@@ -75,18 +79,27 @@ This confirms the "Replace" decision.
 to `AdvancedScanParameterSerializer`, which reads about 30 duck-typed widget
 methods.
 
-A subclass that fills the same dicts from a plain plan object inherits
-everything else unchanged:
+A subclass that fills the same dicts from a plain plan object inherits these
+unchanged:
 
 - the run lifecycle and coordinator arming;
-- repeat re-arming;
-- recording layouts (`getAcquisitionLayouts`, `getNumCamTTL`, `getDimsScan`);
-- per-line-step analog laser power;
+- recording layouts for a single frame (`getAcquisitionLayouts`,
+  `getNumCamTTL`, `getDimsScan`);
 - #49's refusal handling.
 
-A saved scan is simply `{analogParameterDict, digitalParameterDict, mode}`
-(`SuperScanController.getComponentState`). So any scan that Simple can express
-loads in Advanced as it is.
+**Corrected after review 1.** The first version of this plan also listed
+"repeat re-arming" and "per-line-step analog laser power" as inherited, and
+said any Simple scan "loads in Advanced as it is". None of the three holds:
+
+- Advanced's `scanDone()` decides on the widget's Repeat box, so bounded T
+  frames need a new continuation policy (D3).
+- Per-step power is applied only in `advanced_mode`, only to the gate's own
+  AO channel, and is filtered to TTL devices (D5).
+- The Simple model and Advanced's saved state each hold things the other
+  cannot represent (D4).
+
+A saved scan is `{analogParameterDict, digitalParameterDict, mode}`
+(`SuperScanController.getComponentState`).
 
 ### F3. Flyback dominates overview frame time
 
@@ -232,9 +245,10 @@ builds waveforms itself.
 | `mode` | `'overview'` or `'acquisition'` |
 | `dims` | For example `['X', 'Y']`, `['X', 'Z']`, `['X', 'Y', 'Z']`, `['X', 'Y', 'T']`. Entries are positioner names or `'T'`. |
 | `overview` | Centre and size per overview axis, plus the channel index to use. |
-| `acquisition` | Centre and size per spatial dimension, the XY pixel size, the Z step, the dwell, and the number of T frames. |
+| `acquisition` | Centre, size and **step per spatial dimension** (the pixel slider sets X and Y together; a loaded anisotropic scan keeps its steps, D4), the dwell, and the number of T frames. |
+| `delays` | `phase_delay` and `d3step_delay` in µs, the Expert section's two fields. |
 | `channels` | A list of lists of laser names, e.g. `[['561'], ['640']]`. |
-| `channel_power` | Per-channel power percentage for lasers with an analog channel. |
+| `channel_power` | Per-channel power percentage, only for lasers whose power has an AO path (D5). |
 
 `ScanLimits.from_setup(setupInfo)` derives the limits:
 
@@ -252,17 +266,19 @@ builds waveforms itself.
 
 The model's functions:
 
-- **`plan_to_dicts(plan, limits, positioners, ttlDevices)`** returns exactly the
-  two dicts `AdvancedScanParameterSerializer` produces. The channels become
+- **`plan_to_dicts(plan, limits, positioners, ttlDevices)`** returns the two
+  dicts the Advanced path executes. The channels become
   `n_linesteps = len(channels)` and
   `linestep_enable[laser][s] = laser in channels[s]`, with
   `advanced_mode = False`. Overview mode sends only the overview channel.
-- **`dicts_to_plan(analog, digital)`** is the inverse. It refuses, with the
-  reason, a program that uses timing windows, sequence rows, intra-pixel
-  positioner movement or device locks: "This scan uses timing windows; open it
-  in the Advanced panel."
-- **`estimate(plan)`** returns the frame time and the total time (× Z planes × T
-  frames) from `GalvoScanDesigner.estimateScanTime`.
+  Per-channel power follows D5, not the Advanced serializer's AO-only rule.
+- **`dicts_to_plan(analog, digital)`** is the inverse, over the representable
+  subset defined in D4 only. Anything outside it is refused with the reason
+  ("This scan uses timing windows; open it in the Advanced panel."), never
+  normalized.
+- **`estimate(plan)`** returns the frame time and the total time: × Z planes,
+  and for T, N frames plus N − 1 measured re-arm gaps (D3). It uses
+  `GalvoScanDesigner.estimateScanTime`.
 - **Slider mappings** are logarithmic in both directions:
   - pixel size runs from the overview pixel size to the Nyquist size;
   - dwell runs from the minimum dwell at the current pixel size to the maximum.
@@ -275,25 +291,20 @@ The model's functions:
 - **Two plans.** It keeps an overview plan and an acquisition plan and swaps
   them when the mode changes. Overview turns repeat on; acquisition turns it off,
   unless the user ticks Live.
-- **Overview pixel count.** It picks the largest pixel count for which the
-  estimated frame time with channel 1 at minimum dwell is at most
-  `overviewFrameTimeS`. The search is a bisection on the estimate, a few
-  milliseconds per step. Minimum dwell depends on the step, so the search
-  re-evaluates it each time.
-- **Geometry stamp.** On every `sigScanBuilt` it records the centre, step and
-  pixel count per axis, and the detector's display transform. This is what the
-  rectangle is converted with (F6).
+- **Overview planning.** Field, pixel count and dwell are chosen together,
+  in the order and with the fallback defined in D6.
+- **Displayed geometry.** The rectangle is converted with the geometry of the
+  image the layer is showing, delivered with that image. See D1; this replaces
+  the earlier "stamp on `sigScanBuilt`", which the review showed can describe
+  a different image from the one on screen.
 - **Saved state.** It adds a `simplePlan` key to its component state. On
-  restore it uses `simplePlan` when present, then tries to convert the
-  Advanced-style dicts. If neither works it keeps the defaults and warns.
-- **Save toggle.** It arms a Scan-once recording bound to this controller. The
-  hook to use is still to be confirmed in P3; the candidate is
-  `scanWorkflow.prepare_recording_for_scan` in `WorkflowServices.py:207`, which
-  is how TriggerScope binds.
-- **T frames.** One run repeats N times. The mechanism is still to be confirmed
-  in P3: either a bounded variant of `_shouldContinueRepeat`, or N frames as one
-  build. Also still to check: how a Scan-once recording and the acquisition
-  layout see a run that contains several frames.
+  restore it uses `simplePlan` when present, else converts the Advanced dicts
+  within D4's subset, else keeps the defaults and says why.
+- **Save toggle.** It asks the Recording controller to run its own Scan-once
+  transaction bound to this controller (D2). The panel does not start the scan
+  itself when Save is on.
+- **T frames.** N bounded NI-DAQ iterations in one run, through an explicit
+  continuation policy instead of the widget's Repeat box (D3).
 
 ### 5.3 Panel
 
@@ -357,7 +368,8 @@ Overview always scans the two overview axes in 2D at the current Z.
 ### 5.5 Mapping the rectangle to scanner coordinates
 
 For a layer at scale `(s_y, s_x)` with the identity display transform, and the
-geometry stamp `(c_x, c_y, N_x, N_y)` of the frame on screen:
+geometry `(c_x, c_y, N_x, N_y)` delivered with the image the layer is showing
+(D1):
 
 - `x = c_x − (N_x − 1)/2 · s_x + col_world`
 - `y = c_y − (N_y − 1)/2 · s_y + row_world`
@@ -366,9 +378,9 @@ When the detector has a display rotation or flip, its inverse is applied first.
 This needs a new inverse function in `display_transform.py`, tested as a round
 trip.
 
-When the frame on screen changes geometry, for example from overview to
-acquisition, the rectangle is re-projected. It stays fixed in scanner
-coordinates.
+When the image on screen changes geometry, for example from overview to
+acquisition, the rectangle is re-projected at the moment that image reaches the
+layer, not when the next scan is built. It stays fixed in scanner coordinates.
 
 The later option of giving scanning detectors a real `translate` in napari, so
 the acquisition shows up inside a frozen overview like a map, is out of scope.
@@ -383,6 +395,8 @@ the origin is the first pixel.
   "nyquistPixelSizeUm": null,
   "overviewAxes": null,
   "overviewFieldUm": null,
+  "overviewMinFieldUm": null,
+  "overviewMinPixels": 64,
   "overviewFrameTimeS": 1.0,
   "minSamplesPerPixel": 2,
   "maxDwellMs": 10.0
@@ -398,8 +412,9 @@ the origin is the first pixel.
   want?**
 - **`minSamplesPerPixel: 2`** gives 20 µs at 100 kHz, the "about 0.02 ms" from
   the request.
-- **Overview field** is `overviewFieldUm`, or else the largest centred field
-  that passes the voltage check including the turnaround overshoot.
+- **Overview field, pixel count and dwell** are chosen together, as D6
+  defines. The field depends on the sweep speed through the turnaround
+  overshoot, so it cannot be chosen first on its own.
 
 The whole block is optional. Without it the panel works with the fallbacks
 above.
@@ -419,7 +434,297 @@ Proposed exports:
 Runs go through the existing `runScanAndWait(source)`. A scan controller must
 not export its own `runScan` (`test_scan_source_contract.py`).
 
-## 6. Registration checklist
+## 6. Design phase D: contracts before P1
+
+Review 1 (2026-09-25) showed that the plan overstated what can be inherited
+from Advanced unchanged. Each finding was checked against the code before
+being accepted; all six hold, and one more turned up while checking finding 3.
+These contracts come before P1 because they fix the model's and the
+controller's interfaces. Each one names the tests that hold it.
+
+| Review finding | Verified | Answer |
+|---|---|---|
+| 1. Geometry stamped at `sigScanBuilt` can describe a different image from the one displayed | yes | D1: geometry travels with the image and is applied with it |
+| 2. `prepare_recording_for_scan` does not arm a recording | yes; it also returns success with no Recording controller | D2: use the Recording controller's own Scan-once transaction through a new synchronous entry point |
+| 3. T execution deferred too late; `scanDone()` decides on the widget's Repeat box | yes | D3: bounded iterations and a continuation policy (to confirm) |
+| 4. File compatibility exceeds what the model represents | yes | D4: explicit representable subset, refusal instead of normalization, two claims tested separately |
+| 5. Linked laser power is not resolved | yes, and worse: per-step power is applied only in `advanced_mode`, which Simple does not set | D5: power routes |
+| 6. Overview field and sampling are coupled; an estimate cannot promise a real frame rate | yes | D6: joint planning, fallback, measured rate |
+| New: Stop cannot interrupt a running NI-DAQ iteration | yes; true for every NI-DAQ scan today | D3: Stop means "after this frame" until a separate mid-iteration Stop exists |
+
+### D1. Displayed geometry travels with the image (review finding 1)
+
+Verified:
+
+- The first plan updated the geometry on `sigScanBuilt`, but napari can still
+  be showing the previous scan at that moment. A build that then fails or is
+  aborted publishes no frame, so the mismatch would last until the next
+  successful scan.
+- The image path carries no scan identity: `sigImageUpdated(image, init,
+  scale)` → `DetectorsManager` → `sigUpdateImage` → `ImageController.update` →
+  `apply_display_transform` → `ImageWidget.setImage`.
+- `sigUpdateImage` has eight subscribers: Image, BeadRec, FLIMHist,
+  AlignAverage, AlignXY, FFT, EventTriggered and EtSnouty. Changing its
+  signature would touch all of them.
+
+Contract:
+
+1. **Identity.** Before arming, the controller puts a `frame_geometry` into
+   the `scanInfoDict` the detectors receive. It holds:
+   - the run and iteration identity;
+   - per scanned axis: device name, centre, step and pixel count, in image
+     axis order.
+2. **Published with the pixels.** Scan-driven managers (APD, PMT, Time
+   Tagger) publish each frame of that iteration, partial or final, as a
+   `ScanFrame`: an `ndarray` subclass with a read-only `geometry` attribute.
+   - Every subscriber still receives an array; no signature changes.
+   - Derived arrays do not inherit the attribute (`__array_finalize__` drops
+     it), so a stale geometry cannot ride along on a copy.
+   - Checked 2026-09-25: such a subclass passes through ImSwitch's
+     `Signal(np.ndarray, …)`, directly and queued across threads, as the same
+     object with its attribute intact; `frame[1:]` and `frame * 2` carry none.
+   - The helper lives once, on `DetectorManager`.
+3. **Applied atomically.** `ImageController.update` reads the geometry
+   **before** `apply_display_transform`. `ImageWidget.setImage` stores
+   `(geometry, display transform)` in the layer's `metadata` in the same call
+   that sets `layer.data`. The geometry on a layer is therefore always that of
+   the pixels it shows.
+4. **Nothing published, nothing changed.** A build that fails, is refused or
+   is aborted before its first frame leaves the old image and its geometry in
+   place, consistent by construction.
+5. **Which layer.** The rectangle is converted with the geometry of the layer
+   it is drawn over: the current detector's layer.
+   - Switching detectors re-projects the rectangle with the new layer's
+     geometry.
+   - A layer without geometry (a camera, or a detector that has not scanned
+     yet) disables drawing, and says why.
+
+Tests:
+
+- a delayed frame of scan k arriving after scan k+1 was built keeps k's
+  geometry until k+1's first frame is applied;
+- a failed build and an aborted build leave the displayed geometry unchanged;
+- two detectors with different geometries (one never scanned) and switching
+  between them;
+- partial frames carry the new geometry;
+- round trips under every display rotation and flip;
+- a derived array has no geometry.
+
+### D2. Acquire with Save: the transaction (review finding 2)
+
+Verified:
+
+- `prepare_recording_for_scan` (`WorkflowServices.py:207`) binds only a recording
+  that the standalone flow has already armed (`_awaitingScanSourceArm`), and
+  returns success when there is no Recording controller. It cannot arm
+  anything.
+- On a setup with a `'Scan'` panel, the Recording controller's own Scan-once
+  path already is the complete transaction (`RecordingController.py:342` and
+  `:452`):
+  1. preflight (`_preflightNewScanRequest`);
+  2. bind the source (`getRecordingScanSource()`, i.e. the `'Scan'` controller);
+  3. geometry and layouts (`_applyScanGeometryToRecordingArgs`:
+     `getNumScanPositions`, `getNumCamTTL`, `getAcquisitionLayouts`);
+  4. arm the writer (`_startManagerRecording`);
+  5. wait for the arm (`_waitForManagerArm`);
+  6. request the scan (`_requestScanStart`). A failed or refused start calls
+     `_handleRecordingFailure(…, abortManager=True)`, which rolls the writer
+     back.
+- That path is reachable only through the REC button. The API's
+  `startRecording()` presses it and returns nothing, and `setRecModeScanOnce`
+  / `setDetectorToRecord` rewrite the user's Recording panel as a side effect.
+
+Contract:
+
+- With Save on, the panel never starts the scan itself. It calls a new
+  Recording entry point, `recordScanOnce(source, detectorNames)`. That runs
+  steps 1–6 above with an **explicit** source and the given detectors, and
+  returns synchronously: accepted (with the request, to follow its end), or
+  refused with the reason. It leaves the Recording panel's own mode and
+  detector selection as the user set them.
+- Failure at each step:
+
+| Step | Failure | Outcome |
+|---|---|---|
+| Recording controller present | missing | Save is disabled with "Load the Recording panel to save"; Acquire without Save still works |
+| 1 preflight | a recording or scan already in progress | refused; nothing changes |
+| 3 geometry, layouts | an accessor fails, or the design is refused (#49) | refused with the reason; no file |
+| 4–5 arm writer | fails or times out | refused with the reason; the writer is rolled back; no scan |
+| 6 scan start | refused (`ScanRequestRejectedError`) | the writer is rolled back; the reason is shown in the panel |
+| run | Stop mid-series | the recording is finalized with the frames taken and marked incomplete (D3) |
+
+- **Double start.** Acquire is disabled from the click until the request
+  resolves, and `recordScanOnce` refuses while a request is pending. Both
+  layers are tested.
+
+Tests: missing Recording; writer arm failure (no scan starts); refused design
+(nothing left armed); refused scan start (writer rolled back); double click;
+Stop mid-series; success writes exactly the planned frames.
+
+### D3. T frames and Stop (review finding 3, plus a new finding)
+
+**New finding: Stop cannot interrupt a running NI-DAQ iteration.** `abortScan`
+only sets flags (`_scanStopRequested`, `_repeatPending = False`). Nothing
+stops the NI-DAQ tasks of the iteration that is already running; the
+`'abort'` finish mode is applied only after the iteration ends. This is true
+for every NI-DAQ scan today: a long XYZ stack in Advanced also runs to its end
+after Stop. For a beginner panel, a Stop button that does not stop is a defect.
+
+Two ways to execute T:
+
+| | **A. Bounded iterations (recommended)** | B. One waveform with a virtual T axis |
+|---|---|---|
+| Stop | after the current frame | only after all N frames (see above) |
+| Waveform size | one frame | N frames; 512 × 512 × 40 already exceeds the 10 M-position cap |
+| Frame timing | a re-arm gap between frames (to be measured) | exact, no gaps |
+| Recording | N iterations in one run; see D2 | one iteration with a T axis |
+| Estimate | frame × N + (N − 1) × measured gap | exact from the designer |
+
+Decision to confirm: **A**, because Stop and the size cap rule B out.
+
+Contract for A:
+
+- The controller owns a continuation policy, `_wantsAnotherIteration()`:
+  `Live and not stop` or `framesDone < N and not stop`.
+- Advanced's `scanDone()` branches on `self._widget.repeatEnabled()`
+  directly, and `_shouldContinueRepeat` reads the widget too. Both move to the
+  policy (a small refactor in Advanced and the base class, behaviour
+  unchanged for Advanced: its policy is the Repeat box).
+- Live and T are exclusive: Live is disabled while T is a dimension, and
+  choosing T turns Live off, visibly.
+- Stop during frame k of N: frame k completes, no frame k+1 is armed, the run
+  ends once with `sigScanEnded`, and the recording (D2) is finalized with k
+  frames and marked incomplete.
+- One run completion for the whole series: `sigScanEnded` exactly once.
+- The recording accessors describe the whole series. The Scan-once recording
+  computes its frame count from `getNumScanPositions` and its layout from
+  `getAcquisitionLayouts` (`RecordingController._applyScanGeometryToRecordingArgs`).
+  So the Simple controller declares N frames and a T axis there, not one frame
+  repeated.
+
+Tests: exactly N NI-DAQ iterations and N recorded frames; one
+`sigScanEnded`; Stop mid-series → k frames, incomplete; Live disabled with T;
+Advanced's Repeat behaviour unchanged.
+
+Separate decision: **mid-iteration Stop for NI-DAQ** (stop the AO/DO/counter
+tasks, finish detectors with `'abort'`, park the scanners). This benefits
+Advanced as much as Simple, touches the shared NI-DAQ path, and needs its own
+design and rig test. Until it exists, the panel's Stop says "Stopping after
+this frame (≈ 12 s)" rather than pretending.
+
+### D4. Compatibility contract (review finding 4)
+
+Two claims, tested separately:
+
+1. **Same executable scan.** For a plan inside the representable subset
+   below, `plan_to_dicts(plan)` loaded into the Advanced controller builds
+   the same waveforms (every AO and DO array equal) as the Simple controller
+   builds from the same plan.
+2. **Settings survive a round trip.** This is *not* promised through
+   Advanced. A Simple file keeps everything only when it is reloaded into
+   Simple. Advanced re-saving a Simple file drops `simplePlan`, and that is
+   stated, not hidden.
+
+Representable subset, Advanced → Simple (anything else is **refused** with
+the reason; nothing is normalized):
+
+| Advanced state | Simple |
+|---|---|
+| `advanced_mode` false, no sequence rows, no intra-pixel positioner program, no device locks | required |
+| every enabled TTL device is a laser with a digital line | required (a TTL-triggered camera or other TTL device is refused) |
+| every line step enables at least one laser | required (an empty line pass is refused) |
+| per-axis step sizes | kept per axis; anisotropic X/Y shows as such, and only moving the pixel slider makes it isotropic |
+| `phase_delay`, `d3step_delay` | model fields |
+| `linestep_power_percent` | per channel, only for lasers whose power has an AO path (D5) |
+| `scan_dim_target_device` | `dims` |
+| Repeat | Live |
+
+Simple → Advanced:
+
+- The file's executable dicts are the **acquisition** plan. The overview
+  plan and the T count live only in `simplePlan`.
+- A plan with T > 1 has no Advanced equivalent (Advanced has no bounded
+  repeat count). The base `applyComponentState` gains a refusal hook: a
+  controller that cannot represent a state's declared features refuses to
+  load it, with the reason, instead of loading one frame.
+- Model gains the fields the review found missing: per-axis steps, phase
+  delay, slice delay.
+
+Tests: executable equality for each representable feature; one refusal
+test per unrepresentable feature, in each direction.
+
+### D5. Laser power mapping (review finding 5)
+
+Three configurations, resolved by one function, `powerRoute(gate)`:
+
+| Configuration | Per-channel power | AO key | TTL mask |
+|---|---|---|---|
+| gate has its own `analogChannel` (AOM, 488 (EXC) in the mock) | yes | the gate | the gate's TTL |
+| gate's `powerDevice` has an `analogChannel` | yes | the power device | the **gate's** TTL |
+| power set over serial (AOTF via RS232, `example_sted`'s 561AOTF) or no power device | no; the lane shows the Laser panel's setpoint, read-only | — | — |
+
+Rules:
+
+- Two gates sharing one AO power device in the **same** lane with
+  different powers is refused (one AO channel, one value per line pass).
+- In different lanes they are fine; each line pass takes its own value.
+- Existing code paths that must change:
+  - `_make_full_scan` injects per-step power only when `advanced_mode` is
+    true. Simple sends `advanced_mode = False`, so as the plan stood no
+    power would be applied at all. A controller hook
+    (`_linestepPowerApplies(TTLParameters)`, default: `advanced_mode`) keeps
+    Advanced's behaviour and lets Simple opt in.
+  - `_inject_linestep_power_ao` reads `analogChannel` on the name it is
+    given and masks with that name's TTL. It needs the route: AO key and
+    mask source separately.
+  - `_ttl_parameters_without_positioners` filters `linestep_power_percent`
+    to TTL devices, which would drop a power device keyed by its own name.
+
+Tests: direct-AO laser; split gate + AO power device; split gate + serial
+power device (no waveform, read-only display); shared power device in
+different lanes (two values) and in one lane (refused).
+
+### D6. Overview planning (review finding 6)
+
+Unknowns: field `F` per overview axis, pixel count `N` across the longer
+axis (step `s = F / N`), dwell `d`. Rules, in order:
+
+1. Dwell is not free: `d = d_min(s) = max(minSamplesPerPixel / sampleRate, s / vel_max)`.
+   Overview always runs at the fastest safe dwell.
+2. For a given `F`, the feasible `N` form an interval:
+   - voltage feasibility **improves** with `N`: smaller steps mean a slower
+     sweep and less turnaround overshoot;
+   - frame time **worsens** with `N`.
+   Two bisections give `N_voltage` (smallest feasible) and `N_time` (largest
+   within budget). Take `N = N_time` if `N_voltage ≤ N_time` and
+   `N_time ≥ N_min` (default 64).
+3. Voltage feasibility per candidate:
+   - the fast axis from the proxy build's `minmaxes` (measured: identical to
+     the full build's, overshoot included);
+   - the slow axis analytically, `centre ± (N − 1)/2 · s`.
+4. If no `N` works, shrink `F` by 20 % and repeat, down to
+   `overviewMinFieldUm`.
+5. If nothing meets the budget, run the fastest feasible combination at
+   `F_min` and show its frame time in amber with the reason ("1 s per frame
+   is not reachable on this setup; this overview takes 1.8 s"). Never refuse
+   to show an overview for timing alone.
+6. The chosen combination is validated by the real build when the overview
+   starts. A refusal there (#49's path) shrinks `F` once more and retries,
+   at most three times, then reports.
+
+Budget and the promise: the budget is `overviewFrameTimeS − overhead`,
+where `overhead` is the measured re-arm gap between frames. It is learned,
+not assumed: during Live the controller measures the frame period, keeps an
+average of (period − estimate), and re-plans when the target is missed by
+more than 10 %. The panel shows the **measured** frame rate. The opening
+promise becomes "aims for about one frame per second and shows the
+measured rate".
+
+Tests: monotonicity assumptions on the mock setup; the chosen `N` meets the
+budget and the next `N` does not; the fallback path; re-planning from a
+simulated overhead.
+
+## 7. Registration checklist
 
 A new `scanWidgetType` must be registered in all of these places:
 
@@ -440,18 +745,19 @@ A new `scanWidgetType` must be registered in all of these places:
   block's `scanWidgetType` values), the `scan-lifecycle.rst` controller
   inventory, and a new user page `simple-point-scan.rst` in the toctree.
 
-## 7. Phases
+## 8. Phases
 
 | Phase | Content | Done when |
 |---|---|---|
-| **P0** | Backend. `GalvoScanDesigner.scanSpeedRefusal` enforced inside `make_signal` (raises `ScanDesignRefusedError` with a fix hint). `ScanDesigner.estimateScanTime` (base returns `None`; Galvo implements §F4). An Advanced-controller helper that builds designer parameters once, for building, plotting and estimating. | Tests: refused above `vel_max`, accepted at or below it, stepped axes exempt, and the reason reaches the request through the Advanced controller. Estimate within 1 % of full builds for 1D, 2D, line steps, XZ, XYZ and a stepped fast axis. Existing scan tests pass. `advanced-scanning.rst` and the changelog updated. |
-| **P1** | `simple_scan.py`, controller and panel without napari. New mock setup `galvo_apd_simple_mock_scan_setup.json`. Registration checklist (§6). | Headless controller tests: plan → dicts equals the Advanced serializer's output for the same scan. A Simple scan file loads in Advanced and back. An overview frame is at most `overviewFrameTimeS` by the estimate. The mock setup starts. |
-| **P2** | The panel's own napari rectangle layer, the geometry stamp, and the inverse display transform. | Round-trip test: draw, convert to region, re-draw after a geometry change. Tested for every display rotation and flip. |
-| **P3** | Channel lanes, per-channel power, PMT note, Z and T, Save toggle. | Widget tests (offscreen). A Scan-once recording from the Save toggle has the expected axes on the mock setup. |
+| **P0** | Backend. `GalvoScanDesigner.scanSpeedRefusal` enforced inside `make_signal` (raises `ScanDesignRefusedError` with a fix hint). `ScanDesigner.estimateScanTime` (base returns `None`; Galvo implements §F4). An Advanced-controller helper that builds designer parameters once, for building, plotting and estimating. | Tests: refused above `vel_max`, accepted at or below it, stepped axes exempt, and the reason reaches the request through the Advanced controller. Estimate within 1 % or 2 ms of full builds for 1D, 2D, line steps, XZ, XYZ and a stepped fast axis. **Done** (`4c0c671b`). Existing scan tests pass. `advanced-scanning.rst` and the changelog updated. |
+| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. Also the small refactors they require in shared code: the continuation policy in `SuperScanController` / Advanced (D3), the power-route and power-applies hooks (D5), the state-refusal hook in `applyComponentState` (D4), `ScanFrame` and its handling in `ImageController` / `ImageWidget` (D1), and `RecordingController.recordScanOnce` (D2). | Each refactor keeps Advanced's behaviour (its existing tests unchanged and passing). The D1–D5 contract tests pass. You confirm D3's choice. |
+| **P1** | `simple_scan.py` (with D4's fields), controller and panel without napari. D6 overview planning. New mock setup `galvo_apd_simple_mock_scan_setup.json`. Registration checklist (§7). | D4 executable-equality and refusal tests pass. D6 planning tests pass. The mock setup starts. The measured overview frame rate is shown on the mock. |
+| **P2** | The panel's own napari rectangle layer, drawn over the current detector's layer, converted with D1's geometry; the inverse display transform. | D1's tests pass, plus drawing is disabled on a layer without geometry. |
+| **P3** | Channel lanes, per-channel power (D5), PMT note, Z and T (D3), Save toggle (D2). | D2, D3 and D5 end-to-end tests on the mock setup: exactly N frames recorded, one run end, Stop mid-series, missing Recording, writer failure, double start, and each power route. |
 | **P4** | `simple-point-scan.rst`, config-editor section, scripting API plus a tutorial script. Optional: a mock APD that images a synthetic cell sample from the galvo waveform, so overview → rectangle → acquisition can be demonstrated without hardware. | Sphinx `-W` build, tutorial runner, CI lanes. |
 | **P5** | Rig check on STED/confocal. | Estimated time vs measured time per frame; overview frame rate; rectangle lands on the right cells; channel separation on APDs. |
 
-## 8. Risks and open questions
+## 9. Risks and open questions
 
 1. **Enforcing `vel_max` changes behaviour on rigs (P0).** A rig whose
    `vel_max` is a copied placeholder (0.1 µm/µs, from `example_sted`) but whose
@@ -465,12 +771,21 @@ A new `scanWidgetType` must be registered in all of these places:
    across. Measured galvo limits will probably allow much more.
    Bidirectional scanning would halve the turnarounds, but `GalvoScanDesigner`
    doesn't support it; that would be a separate project.
-3. **Re-arm overhead per repeat frame** (NI-DAQ task rebuild plus detector
-   thread) isn't in the estimate. Measure it in P5 and add it as a constant if
-   it matters.
-4. **T frames in one run**, and how recording and the acquisition layout see
-   them, still has to be confirmed (P3).
+3. **Re-arm overhead between frames** (NI-DAQ task rebuild plus detector
+   threads) is not in the designer's estimate. D6 learns it from the measured
+   frame period during Live; T estimates use the same measured gap (D3). P5
+   records its size on the rig.
+4. **T execution (D3)** needs your confirmation: bounded iterations
+   (recommended) or one waveform.
 5. **Nyquist formula** (§5.6): still to review.
 6. **Name.** `SimplePointScan` sits next to the legacy `PointScan` panel. Its
    dock title will be "Point scan" with the mode segmented control. Rename
    before P1 if you'd prefer another name.
+7. **Stop cannot interrupt a running NI-DAQ iteration** (D3). This affects
+   Advanced today, for example on long XYZ stacks. A real mid-iteration Stop
+   is a separate piece of work on the shared NI-DAQ path. **To decide:**
+   whether to schedule it, and whether before or after this panel ships.
+8. **D1 adds an `ndarray` subclass to the live image path.** Every subscriber
+   still gets an array, but code that tests `type(x) is np.ndarray`, pickles
+   frames, or hands them to C extensions must be checked. The D phase audits
+   the eight `sigUpdateImage` subscribers.
