@@ -272,8 +272,10 @@ The model's functions:
 - **`plan_to_dicts(plan, limits, positioners, ttlDevices)`** returns the two
   dicts the Advanced path executes. The channels become
   `n_linesteps = len(channels)` and
-  `linestep_enable[laser][s] = laser in channels[s]`, with
-  `advanced_mode = False`. Overview mode sends only the overview channel.
+  `linestep_enable[laser][s] = laser in channels[s]`. `advanced_mode` is the
+  channel-power state: true exactly when channel power is on, and then always
+  with empty pulse windows, false otherwise (D5). Overview mode sends only the
+  overview channel.
   Per-channel power follows D5, not the Advanced serializer's AO-only rule.
 - **`dicts_to_plan(analog, digital)`** is the inverse, over the representable
   subset defined in D4 only. Anything outside it is refused with the reason
@@ -468,6 +470,13 @@ checked and hold:
 | 2. Recorded T had two possible iteration owners | yes | D3: one execution mode per run, fixed by the entry point; external starts are always `SINGLE` |
 | 3. Pixel storage, not just geometry, needs an owner | yes | D1: fresh display storage per generation, never cleared in place; a snapshot on the one queued path |
 | 4. Imported lengths conflict with `length = N · step` | yes | D4: imported lengths kept verbatim; D1's geometry works for any length |
+
+Review 3 (2026-09-25), both checked and holding:
+
+| Review 3 point | Answer |
+|---|---|
+| A power refusal must stop the scan; today the injection's blanket `except` swallows it | D5: pre-build `powerRefusal` raising `ScanDesignRefusedError`; the blanket `except` goes; tests prove no scan starts |
+| §5.1 still said `advanced_mode = False` | §5.1: `advanced_mode` is the channel-power state |
 
 ### D1. Displayed geometry travels with the image (review finding 1)
 
@@ -865,6 +874,19 @@ Routing, shared by both controllers:
 - Two gates sharing one AO power device in the **same** line step with
   different powers is refused in both controllers (one AO channel, one value
   per line pass). In different line steps each pass takes its own value.
+- **A power refusal stops the scan** (review 3). Today `_make_full_scan`
+  wraps `_inject_linestep_power_ao` in `except Exception` and logs at debug
+  level (`ScanControllerAdvanced.py:165-173`). A refused or failed power
+  setting would therefore quietly produce a scan with no power waveform while
+  the gates still fire. The contract:
+  - power settings are validated **before** any signal is built, by a
+    `powerRefusal(TTLParameters)` check next to `signalLengthRefusal`. It
+    raises `ScanDesignRefusedError` with the reason, so #49's path turns it
+    into a refused start (API: `ScanRequestRejectedError`; Scan button: only
+    `sigScanRequestRejected`; plot: a warning);
+  - the blanket `except` around the injection is removed. Any other failure
+    there fails the build instead of scanning at the wrong power. This is a
+    behaviour change for Advanced and goes in the changelog.
 - **Percent to volts goes through the laser manager's own mapping.**
   `NidaqLaserManager` converts a value to volts through its calibration table
   when `calibCsvPath` is set (value units %), and passes volts through
@@ -883,7 +905,10 @@ Tests:
 - direct-AO laser; split gate + AO power device, now also in Advanced; split
   gate + serial power device (no waveform, read-only display);
 - shared power device in different line steps (two values) and in one
-  (refused);
+  (refused): through the API the request is rejected with the reason, the Scan
+  button publishes only the refusal, and **no scan starts** (no run reserved,
+  no NI-DAQ `runScan`, no laser armed), in both controllers;
+- an exception inside the injection fails the build, and no scan starts;
 - calibrated laser: the AO level equals the laser manager's own voltage for
   that percentage.
 
@@ -953,7 +978,7 @@ A new `scanWidgetType` must be registered in all of these places:
 | Phase | Content | Done when |
 |---|---|---|
 | **P0** | Backend. `GalvoScanDesigner.scanSpeedRefusal` enforced inside `make_signal` (raises `ScanDesignRefusedError` with a fix hint). `ScanDesigner.estimateScanTime` (base returns `None`; Galvo implements §F4). An Advanced-controller helper that builds designer parameters once, for building, plotting and estimating. | Tests: refused above `vel_max`, accepted at or below it, stepped axes exempt, and the reason reaches the request through the Advanced controller. Estimate within 1 % or 2 ms of full builds for 1D, 2D, line steps, XZ, XYZ and a stepped fast axis. **Done** (`4c0c671b`). Existing scan tests pass. `advanced-scanning.rst` and the changelog updated. |
-| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. Also the small refactors they require in shared code: the run execution mode and continuation policy in `SuperScanController` / Advanced (D3); the shared power route and the laser-manager voltage mapping in `_inject_linestep_power_ao` (D5); the state-refusal hook in `applyComponentState` (D4); `ScanFrame`, fresh display storage per generation in APD/PMT/Time Tagger, and the geometry handling in `ImageController` / `ImageWidget` (D1); and `RecordingController.recordScanSeries` (D2, D3). | Each refactor keeps Advanced's behaviour, except the two intended Advanced fixes in D5 (split gate with AO power device; calibrated lasers), which get their own tests and changelog entries. Advanced's existing tests pass unchanged. The D1–D5 contract tests pass. You confirm D3's choice. |
+| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. Also the small refactors they require in shared code: the run execution mode and continuation policy in `SuperScanController` / Advanced (D3); the shared power route, the pre-build `powerRefusal` check, the removal of the blanket `except` around the injection, and the laser-manager voltage mapping in `_inject_linestep_power_ao` (D5); the state-refusal hook in `applyComponentState` (D4); `ScanFrame`, fresh display storage per generation in APD/PMT/Time Tagger, and the geometry handling in `ImageController` / `ImageWidget` (D1); and `RecordingController.recordScanSeries` (D2, D3). | Each refactor keeps Advanced's behaviour, except the two intended Advanced fixes in D5 (split gate with AO power device; calibrated lasers), which get their own tests and changelog entries. Advanced's existing tests pass unchanged. The D1–D5 contract tests pass. You confirm D3's choice. |
 | **P1** | `simple_scan.py` (with D4's fields), controller and panel without napari. D6 overview planning. New mock setup `galvo_apd_simple_mock_scan_setup.json`. Registration checklist (§7). | D4 executable-equality and refusal tests pass. D6 planning tests pass. The mock setup starts. The measured overview frame rate is shown on the mock. |
 | **P2** | The panel's own napari rectangle layer, drawn over the current detector's layer, converted with D1's geometry; the inverse display transform. | D1's tests pass, plus drawing is disabled on a layer without geometry. |
 | **P3** | Channel lanes, per-channel power (D5), PMT note, Z and T (D3), Save toggle (D2). | D2, D3 and D5 end-to-end tests on the mock setup: N time partitions recorded, one run end, Stop mid-series with and without Save, missing Recording, writer failure, double start, and each power route. |
