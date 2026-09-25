@@ -119,6 +119,19 @@ class AAAOTFLaserManager(LaserManager):
         else:
             self._ttlToggling = False
 
+        # The configured idle/park control mode: external exactly when the
+        # two flags disagree (both false -- the common case -- and both true
+        # both park internal; either flag alone parks external). Recorded so
+        # setScanModeActive(False) can restore *this* mode at scan end
+        # instead of unconditionally internal control, which silently
+        # re-parked a deliberately-external channel internal after every
+        # scan and left its TTL gating disabled until the next manual write.
+        self._parkExternal = bool(self._toggleTrueExternal) != bool(self._ttlToggling)
+        # Tracks the last confirmed emission state so a power write under
+        # ttlToggling can restore it after select_internal_control's O0 tail
+        # (see _apply_ttl_control_mode / setValue).
+        self._enabled = False
+
         # Everything above is configuration and raises on a bad setup file.
         # From here on the controller is talked to, and a controller that does
         # not answer must not take ImSwitch down with it.
@@ -127,20 +140,7 @@ class AAAOTFLaserManager(LaserManager):
                 self._run('prepare_frequency_programming')
                 self._run('set_channel_frequency', self._frequency_mhz)
 
-            if self._toggleTrueExternal:
-                if self._ttlToggling:
-                    #self.blankingOnInternal()
-                    self.internalControl()
-                else:
-                    #self.blankingOnInternal()
-                    self.externalControl()
-            else:
-                if self._ttlToggling:
-                    #self.blankingOnExternal()
-                    self.externalControl()
-                else:
-                    #self.blankingOnInternal()
-                    self.internalControl()
+            self._applyParkMode()
         except ProtocolError as exc:
             self._startWithoutController(name, exc)
 
@@ -257,37 +257,72 @@ class AAAOTFLaserManager(LaserManager):
             return False
         return True
 
-    def _apply_ttl_control_mode(self, *, before_command: bool) -> None:
+    def _applyParkMode(self):
+        """Put the channel into its configured idle control mode.
+
+        Used at construction and whenever the channel leaves scan mode
+        (``setScanModeActive(False)``); see the ``_parkExternal`` comment in
+        ``__init__`` for how the mode is derived from the two flags.
+        """
+        if self._parkExternal:
+            self.externalControl()
+        else:
+            self.internalControl()
+
+    def _apply_ttl_control_mode(self, *, before_command: bool) -> bool:
         """Switch control mode around a write, when ``ttlToggling`` is set.
 
         The channel is put into the mode ImSwitch needs to issue the command,
         then returned to the opposite mode so an external TTL source can drive
         it. A no-op when ``ttlToggling`` is off.
+
+        Returns whether *internal* control was selected. A caller whose write
+        depends on the emission (``O``) state surviving the switch needs this:
+        ``select_internal_control`` sends ``LnI1O0``, which turns emission off
+        as a side effect (see the module docstring on ``aa.compatibility``).
         """
         if not self._ttlToggling:
-            return
+            return False
         use_external = (self._toggleTrueExternal if before_command
                         else not self._toggleTrueExternal)
         if use_external:
             self.externalControl()
-        else:
-            self.internalControl()
+            return False
+        self.internalControl()
+        return True
 
     def setEnabled(self, enabled):
-        """Turn on (1) or off (0) laser emission"""
+        """Turn on (1) or off (0) laser emission.
+
+        Returns whether the command was accepted (the same bool ``_run``
+        reports), so a caller such as the scan arming path can tell a
+        rejected or failed enable from one that actually went through
+        instead of assuming success silently.
+        """
         self._apply_ttl_control_mode(before_command=True)
-        self._run('set_channel_enabled', bool(enabled))
+        result = self._run('set_channel_enabled', bool(enabled))
+        if result:
+            self._enabled = bool(enabled)
         self._apply_ttl_control_mode(before_command=False)
+        return result
 
     def setValue(self, power):
         """Handles output power.
         Sends a RS232 command to the laser specifying the new intensity.
+
+        Under ``ttlToggling``, issuing the write may require switching to
+        internal control, whose ``LnI1O0`` command turns emission off as a
+        side effect. If the channel was on, that leaves it dark under the
+        external park with the widget still reading ON -- restore the
+        confirmed enabled state before returning to that park.
         """
         amplitude = self._amplitude_for(power)
         if amplitude is None:
             return
-        self._apply_ttl_control_mode(before_command=True)
+        went_internal = self._apply_ttl_control_mode(before_command=True)
         self._run('set_channel_amplitude', amplitude)
+        if went_internal and self._enabled:
+            self._run('set_channel_enabled', True)
         self._apply_ttl_control_mode(before_command=False)
 
     def _amplitude_for(self, power):
@@ -332,8 +367,13 @@ class AAAOTFLaserManager(LaserManager):
 
         When a scan starts the channel is switched to external control so
         the scanner's TTL line gates the diffracted beam on/off. When the
-        scan ends it returns to internal control so ImSwitch governs the
-        output again.
+        scan ends it returns to the channel's *configured* park mode --
+        external for a channel meant to idle under external control
+        (``toggleTrueExternal`` xor ``ttlToggling``), internal otherwise --
+        rather than unconditionally internal control. Re-parking a
+        deliberately-external channel internal on every scan end silently
+        disabled its TTL gating until the next manual write re-selected
+        external control.
 
         Note: light is only produced while active if (1) the channel
         amplitude was set to a non-zero value via setValue, and (2) the
@@ -342,7 +382,7 @@ class AAAOTFLaserManager(LaserManager):
         if active:
             self.externalControl()
         else:
-            self.internalControl()
+            self._applyParkMode()
 
     def internalControl(self):
         """Switch the channel to internal control"""

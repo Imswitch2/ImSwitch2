@@ -42,12 +42,16 @@ from imswitch.imcontrol.controller.controllers.LaserController import (
 
 class _Laser:
     """``zeroesOnExit`` models NidaqLaserManager, whose setScanModeActive(False)
-    is implemented as setValue(0) and so discards the user's setpoint."""
+    is implemented as setValue(0) and so discards the user's setpoint.
+    ``rejectsEnable`` models a manager (AAAOTFLaserManager, MPBLaserManager)
+    that reports an explicit False instead of raising when an enable request
+    cannot be honoured."""
 
-    def __init__(self, name, zeroesOnExit=False):
+    def __init__(self, name, zeroesOnExit=False, rejectsEnable=False):
         self.name = name
         self.calls = []
         self._zeroesOnExit = zeroesOnExit
+        self._rejectsEnable = rejectsEnable
 
     def setScanModeActive(self, active):
         self.calls.append(('scanMode', active))
@@ -56,6 +60,8 @@ class _Laser:
 
     def setEnabled(self, enabled):
         self.calls.append(('enabled', enabled))
+        if self._rejectsEnable:
+            return False
 
     def setValue(self, value):
         # AAAOTFLaserManager and most other managers define exactly this
@@ -64,9 +70,11 @@ class _Laser:
 
 
 class _LasersManager:
-    def __init__(self, names, zeroesOnExit=()):
-        self._lasers = {name: _Laser(name, name in zeroesOnExit)
-                        for name in names}
+    def __init__(self, names, zeroesOnExit=(), rejectsEnable=()):
+        self._lasers = {
+            name: _Laser(name, name in zeroesOnExit, name in rejectsEnable)
+            for name in names
+        }
 
     def __iter__(self):
         return iter(self._lasers.items())
@@ -123,11 +131,12 @@ class _Logger:
         self.messages.append(('error', message))
 
 
-def _controller(names=('561', '561AOTF'), pairs=None, zeroesOnExit=()):
+def _controller(names=('561', '561AOTF'), pairs=None, zeroesOnExit=(),
+                rejectsEnable=()):
     """``pairs`` maps a gate laser to the device that sets its power."""
     pairs = pairs or {}
     ctrl = LaserController.__new__(LaserController)
-    ctrl._master = _Master(_LasersManager(names, zeroesOnExit))
+    ctrl._master = _Master(_LasersManager(names, zeroesOnExit, rejectsEnable))
     ctrl._widget = _Widget()
     ctrl._logger = _Logger()
     ctrl._scanArmedLasers = []
@@ -193,6 +202,34 @@ def test_a_missing_power_device_is_reported_and_does_not_block_the_gate():
 
     assert ctrl._scanArmedLasers == ['561']
     assert any(level == 'error' for level, _ in ctrl._logger.messages)
+
+
+def test_a_rejected_power_device_enable_is_warned_and_does_not_block_the_gate():
+    """A manager that reports False (rather than raising) on an enable it
+    could not honour -- AAAOTFLaserManager on a transport failure,
+    MPBLaserManager with no positive setpoint -- must not look like a
+    silent success: the gate is still armed, but a warning names the
+    laser that may not actually emit."""
+    ctrl = _controller(names=('561', '561AOTF'),
+                       pairs={'561': '561AOTF'},
+                       rejectsEnable=('561AOTF',))
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert ctrl._scanArmedLasers == ['561', '561AOTF']
+    assert ('enabled', True) in ctrl._master.lasersManager['561AOTF'].calls
+    assert any(level == 'warning' and '561AOTF' in message and '561' in message
+               for level, message in ctrl._logger.messages)
+
+
+def test_a_manager_reporting_none_on_enable_is_not_warned():
+    """Most managers do not yet report a result (the old interface);
+    ``None`` must not be mistaken for a confirmed failure."""
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert not any(level == 'warning' for level, _ in ctrl._logger.messages)
 
 
 def test_arming_never_writes_the_power():

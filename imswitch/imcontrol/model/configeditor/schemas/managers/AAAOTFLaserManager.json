@@ -54,7 +54,7 @@
       "x-imswitch-widget": "ref"
     },
     "toggleTrueExternal": {
-      "description": "Whether the channel should default to external (``true``) or",
+      "description": "The channel idles external exactly when this and ``ttlToggling`` differ.",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:optional(in)",

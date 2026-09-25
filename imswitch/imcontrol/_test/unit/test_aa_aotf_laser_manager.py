@@ -183,6 +183,27 @@ def test_set_enabled_false_command_sequence():
     assert rs232.cmds == ['L1O0']
 
 
+def test_set_enabled_returns_true_on_success():
+    m, _ = _build()
+    assert m.setEnabled(True) is True
+    assert m.setEnabled(False) is True
+
+
+def test_set_enabled_returns_false_on_rejection_without_raising():
+    """A caller such as the scan arming path relies on this bool to warn
+    instead of assuming a rejected enable succeeded. ``_run`` returns False
+    (rather than raising) when the profile has no such operation --
+    triggered here with a stand-in profile, since every real profile
+    implements ``set_channel_enabled``."""
+    m, _ = _build()
+
+    class _ProfileWithoutEnable:
+        profile_id = 'test.no-enable'
+
+    m._profile = _ProfileWithoutEnable()
+    assert m.setEnabled(True) is False
+
+
 def test_channel_index_is_used_in_every_command():
     m, rs232 = _build(channel=3)
     rs232.cmds.clear()
@@ -231,8 +252,31 @@ def test_scan_mode_active_switches_to_external_control():
     assert rs232.cmds == ['L1I0']
 
 
-def test_scan_mode_inactive_returns_to_internal_control():
+def test_scan_mode_inactive_returns_to_internal_control_when_that_is_idle():
+    """Both flags default false -> idle mode is internal."""
     m, rs232 = _build()
+    rs232.cmds.clear()
+    m.setScanModeActive(False)
+    assert rs232.cmds == ['L1I1O0']
+
+
+def test_scan_mode_inactive_restores_external_idle_mode():
+    """ttlToggling alone idles external (the TTL-gating configuration). A
+    scan end must not silently re-park it internal -- that disabled TTL
+    gating until the next manual write happened to select external again."""
+    m, rs232 = _build(ttlToggling=True)
+    rs232.cmds.clear()
+    m.setScanModeActive(True)
+    rs232.cmds.clear()
+    m.setScanModeActive(False)
+    assert rs232.cmds == ['L1I0']
+
+
+def test_scan_mode_inactive_restores_internal_idle_mode_when_both_flags_set():
+    """Both flags true -> idle mode is internal (see the init tests)."""
+    m, rs232 = _build(toggleTrueExternal=True, ttlToggling=True)
+    rs232.cmds.clear()
+    m.setScanModeActive(True)
     rs232.cmds.clear()
     m.setScanModeActive(False)
     assert rs232.cmds == ['L1I1O0']
@@ -270,6 +314,51 @@ def test_without_ttl_toggling_no_control_mode_commands_are_added():
     rs232.cmds.clear()
     m.setValue(500)
     assert rs232.cmds == ['L1P500']
+
+
+def test_ttl_toggling_power_write_restores_emission_when_channel_is_on():
+    """select_internal_control's LnI1O0 turns emission off as a side effect
+    of issuing the write. If the channel was confirmed on, that must not
+    leave it dark under the external park while the widget still reads ON."""
+    m, rs232 = _build(ttlToggling=True)
+    m.setEnabled(True)
+    rs232.cmds.clear()
+
+    m.setValue(500)
+
+    assert rs232.cmds == ['L1I1O0', 'L1P500', 'L1O1', 'L1I0']
+
+
+def test_ttl_toggling_power_write_does_not_resend_enable_when_channel_is_off():
+    m, rs232 = _build(ttlToggling=True)
+    rs232.cmds.clear()
+
+    m.setValue(500)
+
+    assert rs232.cmds == ['L1I1O0', 'L1P500', 'L1I0']
+
+
+def test_ttl_toggling_with_toggle_true_external_power_write_does_not_resend_enable():
+    """This direction issues the write in *external* control, which does not
+    clobber the O state -- no restore is needed even if the channel is on."""
+    m, rs232 = _build(ttlToggling=True, toggleTrueExternal=True)
+    m.setEnabled(True)
+    rs232.cmds.clear()
+
+    m.setValue(500)
+
+    assert rs232.cmds == ['L1I0', 'L1P500', 'L1I1O0']
+
+
+def test_ttl_toggling_power_write_after_disable_does_not_resend_enable():
+    m, rs232 = _build(ttlToggling=True)
+    m.setEnabled(True)
+    m.setEnabled(False)
+    rs232.cmds.clear()
+
+    m.setValue(500)
+
+    assert rs232.cmds == ['L1I1O0', 'L1P500', 'L1I0']
 
 
 # ---------------------------------------------------------------------------

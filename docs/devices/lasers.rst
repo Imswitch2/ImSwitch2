@@ -143,13 +143,14 @@ filter, controlled over RS232.
    * - ``toggleTrueExternal``
      - bool
      - ``false``
-     - Whether the channel should default to external (``true``) or
-       internal (``false``) control after power changes.
+     - The channel idles external exactly when this and ``ttlToggling`` differ.
+       See **Idle control mode** below.
    * - ``ttlToggling``
      - bool
      - ``false``
      - If ``true``, flip to the opposite control mode briefly during
-       enable/value writes so an external TTL source can gate the channel.
+       enable/value writes so an external TTL source can gate the channel
+       the rest of the time. See **Idle control mode**.
    * - ``calibCsvPath``
      - str
      - *(unset)*
@@ -163,6 +164,39 @@ filter, controlled over RS232.
        channel in mock mode instead of aborting ImSwitch. Set to ``false``
        when a missing AOTF must be a startup error. Configuration errors
        abort startup either way.
+
+**Idle control mode**
+
+The channel's *idle* control mode — what it is in at startup, and what
+``setScanModeActive(False)`` restores when a scan ends — is external exactly
+when the two flags **disagree**; when they agree (including the common case
+of both omitted) it is internal:
+
+.. A csv-table on purpose: in a manager's section, every list-table row whose
+   first cell is a literal is read as a property card by the config-editor
+   extraction (docs_cards in imcontrol/model/configeditor/extraction.py).
+
+.. csv-table::
+   :header: "``toggleTrueExternal``", "``ttlToggling``", "Idle mode"
+   :widths: 30, 30, 40
+
+   "``false``", "``false``", "internal — TTL is not used; the manager sets the amplitude and enable state directly (the default)."
+   "``false``", "``true``", "external — the intended TTL-gating configuration: the channel idles on its external input, and every enable/value write briefly selects internal control to issue the command before returning to external."
+   "``true``", "``false``", "external, with no per-write toggling: writes are sent while already external."
+   "``true``", "``true``", "internal, with per-write toggling inverted (writes are issued in *external* control, then the channel returns to *internal*)."
+
+Setting both flags is rarely what is wanted for TTL gating — it idles
+internal, so the external TTL input is not followed except during the brief
+write window. ``ttlToggling: true`` alone is the configuration for a channel
+whose scan-gated TTL line is wired to *this* channel's own modulation input
+(see :doc:`../setupinfo-reference`'s split gate/power-device layout for the
+alternative, where the AOTF channel stays internal for the whole scan and an
+unrelated line gates something else).
+
+A power write (``setValue``) that has to pass through internal control to be
+issued restores the channel's confirmed enabled state before returning to an
+external idle mode, so changing the setpoint of a channel that is currently
+on does not leave it dark while the widget still reads ON.
 
 **LaserInfo fields used**
 
