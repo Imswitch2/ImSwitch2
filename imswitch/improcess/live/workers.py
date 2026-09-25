@@ -558,12 +558,22 @@ class LiveProcessWorker(QtCore.QObject):
         try:
             frames = self._raw_buffer.read(index)
             self._session.push(frames, index, index + 1)
-            now = time.monotonic()
-            if stack_end or now - self._last_result_emit >= self._viewer_update_interval_s:
-                self._publish_update()
-                self._last_result_emit = now
+            self._frames_committed = max(self._frames_committed, index + 1)
         except Exception as e:
             self._logger.error(f"Error processing frame {index}: {e}")
+            # A dropped frame is missing from the result; the final record
+            # must not call that complete.
+            self._failed_chunks.append((index, index + 1, str(e)))
+        else:
+            now = time.monotonic()
+            if stack_end or now - self._last_result_emit >= self._viewer_update_interval_s:
+                try:
+                    self._publish_update()
+                except Exception as e:
+                    # The frame is in; only the viewer update could not be
+                    # made or recorded, which does not make the result partial.
+                    self._logger.error(f"Could not publish the live update: {e}")
+                self._last_result_emit = now
 
         # Outside the try, and for every frame rather than every stack: the
         # frame has been read either way, and a slot never reported free is a
@@ -592,8 +602,22 @@ class LiveProcessWorker(QtCore.QObject):
                 self.sigTimepointUpdated.emit(int(plane[0]), plane[1])
                 return
 
-        self.sigResultUpdated.emit(self._session.result())
+        # A whole result is a snapshot, and leaves with its provenance record;
+        # if that cannot be made, nothing is emitted for it.
+        result = self._session.result()
+        self._record(result, "partial")
+        self.sigResultUpdated.emit(result)
         self._sent_initial_result = True
+
+    def _final_status(self) -> str:
+        if self._stalled:
+            return "stalled"
+        if self._failed_chunks:
+            return "partial"
+        expected = self._provenance[3] if self._provenance is not None else None
+        if expected is not None and self._frames_committed < int(expected):
+            return "partial"
+        return "complete"
 
     @QtCore.Slot()
     def finish_pending(self) -> None:
@@ -624,7 +648,6 @@ class LiveProcessWorker(QtCore.QObject):
         """Finalize the session and emit the final result."""
         try:
             final_result = self._session.finish()
-            self.sigStackFinished.emit(final_result)
         except Exception as e:
             self._logger.error(f"Error finalizing session: {e}")
             self.sigFailed.emit(str(e))

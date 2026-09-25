@@ -78,9 +78,18 @@ class CommunicationChannel(SignalInterface):
     Listeners: DataFrameController
     """
 
-    sigStatusMessage = Signal(str)  # a transient line for the status bar (see ImProcessMainView.showStatusMessage)
+    sigStatusMessage = Signal(str)
+    """A transient line for the status bar. Payload: ``(message,)``.
 
-    sigAddToMultiData = Signal(str, str)  # (path, datasetName)
+    Used for notices the operator should see where they are looking -- e.g.
+    how much a load is about to materialise -- rather than in the log.
+    ``ImProcessMainController`` forwards it to
+    ``ImProcessMainView.showStatusMessage``.
+
+    Emitters: DataFrameController, FileIOController
+    Listeners: ImProcessMainController
+    """
+
     sigPatternVisibilityChanged = Signal(bool)
     """The pattern overlay was shown or hidden. Payload: ``(visible,)``.
 
@@ -156,7 +165,8 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: ImProcessMainController, ImageToolbarController,
         LiveReconstructionController, MemoryLiveController, MoNaLISAController,
-        ReconstructorManagerController, ResultProcessorController
+        NapariEndpointController, ReconstructorManagerController,
+        ResultProcessorController, WorkflowController
     Listeners: ImProcessMainController, ReconstructionViewController
     """
 

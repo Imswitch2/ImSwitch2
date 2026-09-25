@@ -693,17 +693,20 @@ class ZarrLiveSource(LiveSource):
         return attrs
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
-        expected_frames = self._coerce_int(attrs.get("recording:planned_frames"))
+        # _meta_lookup, not attrs.get: legacy ImSwitch-1 stores nest these
+        # under an ``ImswitchData`` attr, where a top-level read never sees
+        # them -- a finished store's ``writing=False`` included.
+        expected_frames = self._coerce_int(_meta_lookup(attrs, "recording:planned_frames"))
         if expected_frames is None:
-            expected_frames = self._coerce_int(attrs.get("recording:expected_frames"))
+            expected_frames = self._coerce_int(_meta_lookup(attrs, "recording:expected_frames"))
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
         lifecycle = normalize_recording_lifecycle(
             attrs,
             RecordingLifecycleMarkers(
-                writing=_optional_bool(attrs.get("writing")),
-                frames_committed=self._coerce_int(attrs.get("recording:frames_committed")),
+                writing=_optional_bool(_meta_lookup(attrs, "writing")),
+                frames_committed=self._coerce_int(_meta_lookup(attrs, "recording:frames_committed")),
                 live_writer_attached=True,
             ),
         )
@@ -1334,7 +1337,6 @@ class Hdf5LiveSource(LiveSource):
 
         frame_shape = self._dataset.shape[-2:]
         all_attrs = {**attrs, **dataset_attrs}
-        self._refresh_state_from_attrs(all_attrs)
         self._refresh_barrier_state()
         self._refresh_state_from_attrs(all_attrs)
         dataset_path = all_attrs.get('recording:dataset_path') or self._dataset_path
@@ -1369,7 +1371,6 @@ class Hdf5LiveSource(LiveSource):
             return []
 
         self._dataset.refresh()
-        self._refresh_state_from_attrs(self._read_dataset_attrs())
         self._refresh_barrier_state()
         self._refresh_state_from_attrs(self._read_dataset_attrs())
         readable_length = self._readable_length()
@@ -1399,7 +1400,6 @@ class Hdf5LiveSource(LiveSource):
             return True
 
         self._dataset.refresh()
-        self._refresh_state_from_attrs(self._read_dataset_attrs())
         self._refresh_barrier_state()
         self._refresh_state_from_attrs(self._read_dataset_attrs())
         current_length = self._dataset.shape[0]
@@ -1537,30 +1537,21 @@ class Hdf5LiveSource(LiveSource):
 
         return attrs
 
-    def _flatten_metadata(self, group: h5py.Group, attrs: dict[str, Any], prefix: str) -> None:
-        """Recursively flatten metadata group into attrs dict with category prefixes."""
-        for key in group.attrs.keys():
-            flat_key = f"{prefix}{key}" if prefix else key
-            attrs[flat_key] = group.attrs[key]
-
-        for subgroup_name in group.keys():
-            subgroup = group[subgroup_name]
-            if isinstance(subgroup, h5py.Group):
-                new_prefix = f"{subgroup_name}:" if not prefix else f"{prefix}{subgroup_name}:"
-                self._flatten_metadata(subgroup, attrs, new_prefix)
-
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
         """Update internal state from attributes."""
-        expected_frames = self._coerce_int(attrs.get("recording:planned_frames"))
+        # _meta_lookup, not attrs.get: legacy ImSwitch-1 stores nest these
+        # under an ``ImswitchData`` attr, where a top-level read never sees
+        # them -- a finished store's ``writing=False`` included.
+        expected_frames = self._coerce_int(_meta_lookup(attrs, "recording:planned_frames"))
         if expected_frames is None:
-            expected_frames = self._coerce_int(attrs.get("recording:expected_frames"))
+            expected_frames = self._coerce_int(_meta_lookup(attrs, "recording:expected_frames"))
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
         lifecycle = normalize_recording_lifecycle(
             attrs,
             RecordingLifecycleMarkers(
-                writing=_optional_bool(attrs.get("writing")),
+                writing=_optional_bool(_meta_lookup(attrs, "writing")),
                 frames_committed=self._frames_committed,
                 stream_complete=self._stream_complete,
                 live_writer_attached=True,

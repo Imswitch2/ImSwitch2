@@ -71,6 +71,9 @@ class ReconstructionView(QtWidgets.QFrame):
     sigResultsRemoved = QtCore.Signal()
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
+    #: (layer metadata, (min, max)) -- a rendered layer's contrast changed,
+    #: however it was changed: our toolbar, napari's own slider, or a render.
+    sigImageLevelsChanged = QtCore.Signal(object, object)
 
     # Methods
     def __init__(

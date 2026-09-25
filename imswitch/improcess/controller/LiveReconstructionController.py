@@ -1,6 +1,5 @@
 """Generic live reconstruction controller: drives LiveSource + any Reconstructor."""
 
-import numpy as np
 from qtpy import QtCore
 
 from imswitch.imcommon.model.logging import initLogger
@@ -59,6 +58,11 @@ class LiveReconstructionController(QtCore.QObject):
         self._finishing = False
         self._stopping = False
         self._notify_on_stop = False
+
+    @property
+    def is_running(self) -> bool:
+        """Whether a live reconstruction is in progress."""
+        return bool(self._running)
 
     def start(
         self,
@@ -399,6 +403,16 @@ class LiveReconstructionController(QtCore.QObject):
             viewer_update_interval_s=self._viewer_update_interval_s,
         )
         self._process_worker.set_init(init_obj, self._params)
+        # Provenance for every snapshot and the final result: what was
+        # reconstructed, with which settings, from which stream. The first
+        # stack is consumed by begin() and never arrives as a frame; it counts
+        # towards the committed frames all the same.
+        init_shape = getattr(init_data, "shape", None)
+        self._process_worker.setProvenance(
+            self._reconstructor, self._params, init_obj,
+            expected_frames=getattr(stack_info, "expected_frames", None),
+            initial_frames=int(init_shape[0]) if init_shape else 0,
+        )
         self._process_worker.moveToThread(self._process_thread)
         self._process_worker.sigResultUpdated.connect(self._on_result_updated)
         self._process_worker.sigTimepointUpdated.connect(self._on_timepoint_updated)
@@ -414,27 +428,12 @@ class LiveReconstructionController(QtCore.QObject):
         """Session is ready (off-thread) -- wire the stream->process hot path."""
         if self._finishing:
             return
-
-        # Provenance for every snapshot and the final result: what was
-        # reconstructed, with which settings, from which stream. A stall is
-        # forwarded so the final record says "stalled", not "complete".
-        setter = getattr(self._process_worker, "setProvenance", None)
-        if callable(setter):
-            # The first stack was consumed by begin() and never arrives as a
-            # chunk; it counts towards the committed frames all the same.
-            init_shape = getattr(init_data, "shape", None)
-            setter(
-                self._reconstructor, self._params, init_obj,
-                expected_frames=getattr(stack_info, "expected_frames", None),
-                initial_frames=int(init_shape[0]) if init_shape else 0,
-            )
-            self._stream_worker.sigStalled.connect(self._process_worker.markStalled)
-
-        # Wire the remainder only after begin() succeeds, then release the gate.
-        self._stream_worker.sigChunkReady.connect(self._process_worker.processChunk)
         self._logger.debug(
             f"Session initialized with output shape {getattr(plan, 'out_shape', '?')}"
         )
+        # A stall is forwarded so the final record says "stalled", not
+        # "complete".
+        self._stream_worker.sigStalled.connect(self._process_worker.markStalled)
         # begin() consumed stack 0, so tell the gate those frames are done --
         # otherwise the producer waits for a consumer that will never report
         # them. Then release the stream worker.

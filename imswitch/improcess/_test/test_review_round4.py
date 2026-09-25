@@ -335,31 +335,31 @@ def test_a_session_closed_during_export_discards_the_late_result(tmp_path):
 # 10. failed chunks are never "complete" -----------------------------------------------
 
 def test_a_dropped_chunk_makes_the_final_record_partial():
-    from imswitch.improcess._test.test_reconstruction_provenance_paths import _stream_worker
+    from imswitch.improcess._test.test_reconstruction_provenance_paths import _frames, _stream_worker
 
     worker, session = _stream_worker(expected=4)
-    from imswitch.improcess.reconstructors.base import Chunk
 
     def failing_push(chunk, start, end):
         raise RuntimeError("bad chunk")
 
     finals = []
     worker.sigStackFinished.connect(finals.append)
-    worker.processChunk(Chunk(np.zeros((2, 4, 4)), 0, 2))
+    real_push = session.push
     session.push = failing_push
-    worker.processChunk(Chunk(np.zeros((2, 4, 4)), 2, 4))
+    _frames(worker, 2, 3)                          # frame 2 is dropped ...
+    session.push = real_push
+    _frames(worker, 3, 4)                          # ... so reaching frame 4 is not enough
     worker.finalize()
     assert output_node(finals[0])["completion"]["status"] == "partial"
 
 
 def test_fewer_frames_than_expected_is_partial_too():
-    from imswitch.improcess._test.test_reconstruction_provenance_paths import _stream_worker
-    from imswitch.improcess.reconstructors.base import Chunk
+    from imswitch.improcess._test.test_reconstruction_provenance_paths import _frames, _stream_worker
 
     worker, _ = _stream_worker(expected=6)
     finals = []
     worker.sigStackFinished.connect(finals.append)
-    worker.processChunk(Chunk(np.zeros((2, 4, 4)), 0, 2))
+    _frames(worker, 2, 4)
     worker.finalize()
     assert output_node(finals[0])["completion"]["status"] == "partial"
 
