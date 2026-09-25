@@ -44,6 +44,7 @@ class PIStageManager(PositionerManager, SignalInterface):
                 f"PI stage {self.device!r} not available. Continuing without initializing it."
             )
             self.device = None
+            self.joystickStatus = False
             return
 
         self.X = GCSDevice(self.device)
