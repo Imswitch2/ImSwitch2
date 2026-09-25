@@ -22,7 +22,8 @@ name: imswitch-pypi
 #   1. Bump `__version__` in imswitch/__init__.py and merge to main.  PyPI
 #      never accepts the same version twice, even after a deletion.
 #   2. Optional dry run: Actions > imswitch-pypi > Run workflow uploads the
-#      chosen ref to TestPyPI.
+#      chosen ref to TestPyPI (or to PyPI if `target-index: pypi` is selected
+#      for an authorized one-time/manual publish).
 #   3. Publish a GitHub release tagged v<__version__>.  The build refuses a
 #      tag that does not match, then uploads to PyPI.
 # A release runs this file as it exists at the tagged commit, so changes here
@@ -32,6 +33,15 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      target-index:
+        description: "Index to upload to"
+        type: choice
+        required: true
+        default: testpypi
+        options:
+          - testpypi
+          - pypi
 
 permissions:
   contents: read
@@ -83,7 +93,7 @@ jobs:
 
   publish-testpypi:
     name: Upload to TestPyPI
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.target-index == 'testpypi'
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -105,7 +115,7 @@ jobs:
 
   publish-pypi:
     name: Upload to PyPI
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target-index == 'pypi')
     needs: build
     runs-on: ubuntu-latest
     environment:
