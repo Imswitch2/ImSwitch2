@@ -34,10 +34,9 @@ def _plane_read_is_bounded(data_obj):
 
 def _say(controller, message):
     """A line where the operator is looking, if the channel has a status bar."""
-    signal = getattr(getattr(controller, '_commChannel', None), 'sigStatusMessage', None)
-    emit = getattr(signal, 'emit', None)
-    if callable(emit):
-        emit(message)
+    comm_channel = getattr(controller, '_commChannel', None)
+    if hasattr(comm_channel, 'sigStatusMessage'):
+        comm_channel.sigStatusMessage.emit(message)
 
 
 class DataFrameController(ImProcessWidgetController):

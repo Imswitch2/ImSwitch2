@@ -86,6 +86,9 @@
    "5e70b40e26bdf6eb1ef46f4c073500bc9d9d2cc157b885df8ff5148e1952c122",
    "e3385e22358b59d10510e3f05b1010255af97c1e556a0dd287af84b571eac6ad"
   ],
+  "imcontrol_setups/mock_scan_monalisa_live.json": [
+   "bd62a73d62cb636e38fd894959dd2cc391037b64cfef881c998b2b58eef45da8"
+  ],
   "imcontrol_setups/mock_scan_setup.json": [
    "bdacbca888e84613129cfc5938e14f532f9dfe44f7df0a930501798ee249ff01"
   ],

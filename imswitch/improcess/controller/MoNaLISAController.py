@@ -196,7 +196,6 @@ class MoNaLISAController(ImProcessWidgetController):
         if consolidate and runs:
             result = run_consolidation(adapter, runs)
             self._commChannel.sigResultProduced.emit(result, f'{result.name}_multi')
-            self._commChannel.sigExecutionFinished.emit(self._main.reconstructionController.getImage())
 
     def _buildMonalisaResult(self, name, coeffsList):
         """Assemble a MonalisaProcessingResult from one or more datasets' coeffs

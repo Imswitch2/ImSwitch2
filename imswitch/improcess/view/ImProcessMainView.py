@@ -22,7 +22,7 @@ from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
-from .WatcherFrame import WatcherFrame
+from .DirectoryWatcherFrame import DirectoryWatcherFrame
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
@@ -325,7 +325,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
-        self.watcherFrame = WatcherFrame()
+        self.directoryWatcherFrame = DirectoryWatcherFrame()
 
         btnFrame = BtnFrame()
         self._btnFrame = btnFrame
@@ -494,16 +494,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if not showActionsPanel:
             actionsDock.hide()
 
-        self.watcherDock = Dock('File watcher', size=(2, 3))
-        self.watcherDock.addWidget(self.watcherFrame)
-        self.dockArea.addDock(self.watcherDock, 'bottom', actionsDock)
-        self.docks['File watcher'] = self.watcherDock
+        # Kept, not just consumed: setDirectoryWatcherAvailable() has to be
+        # able to tell "hidden because this plugin cannot stream" from
+        # "hidden because the config switched the panel off".
+        self._showFileWatcherPanel = bool(showFileWatcherPanel)
+        self.directoryWatcherDock = Dock('Directory watcher', size=(2, 3))
+        self.directoryWatcherDock.addWidget(self.directoryWatcherFrame)
+        self.dockArea.addDock(self.directoryWatcherDock, 'bottom', actionsDock)
+        self.docks['Directory watcher'] = self.directoryWatcherDock
         if not showFileWatcherPanel:
-            self.watcherDock.hide()
+            self.directoryWatcherDock.hide()
 
         self.multiDataDock = Dock('Multidata management', size=(2, 3))
         self.multiDataDock.addWidget(self.multiDataFrame)
-        self.dockArea.addDock(self.multiDataDock, 'above', self.watcherDock)
+        self.dockArea.addDock(self.multiDataDock, 'above', self.directoryWatcherDock)
         self.docks['Multidata management'] = self.multiDataDock
         if not showMultiDataPanel:
             self.multiDataDock.hide()
@@ -1551,6 +1555,92 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             recon.toggleReconListPane()
         elif not visible and not collapsed:
             recon.toggleReconListPane()
+
+    @staticmethod
+    def _setDockVisible(dock, visible: bool) -> None:
+        """Show or hide a dock *and its tab label*.
+
+        ``Dock`` does not override ``hide()``, so it is plain
+        ``QWidget.hide()`` -- which hides the dock's own widget only. Once a
+        dock joins a tab group (anything added ``'above'`` / ``'below'`` it)
+        pyqtgraph reparents its ``label`` into the tab bar, so the tab keeps
+        showing for a hidden dock and the panel still looks available.
+
+        Hiding at construction time happens to look right only because the
+        tab group is created afterwards.
+        """
+        if visible:
+            dock.show()
+        else:
+            dock.hide()
+        label = getattr(dock, 'label', None)
+        if label is None:
+            return
+        try:
+            label.setVisible(bool(visible))
+        except Exception:
+            pass
+
+    def isDirectoryWatcherRunning(self) -> bool:
+        """Whether a directory watch is currently monitoring."""
+        live = getattr(self.directoryWatcherFrame, 'liveCheck', None)
+        return bool(live is not None and live.isChecked())
+
+    def stopDirectoryWatcher(self) -> None:
+        """Stop any running watch by clearing the monitoring checkbox.
+
+        Clearing it emits ``sigLiveChanged(False)`` through the frame's own
+        wiring, which is what actually shuts the watcher down -- the view
+        never owns the run. Already-idle is left alone, so no spurious
+        signal is emitted.
+        """
+        live = getattr(self.directoryWatcherFrame, 'liveCheck', None)
+        if live is not None and live.isChecked():
+            live.setChecked(False)
+
+    def confirmDirectoryWatcherInterruption(self) -> bool:
+        """Ask before an action that would end a running watch; True = go on.
+
+        Returns ``True`` immediately when nothing is running, so callers can
+        guard unconditionally -- the same shape as ``confirm_bulk_publish``.
+        """
+        if not self.isDirectoryWatcherRunning():
+            return True
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            'Stop directory watching?',
+            'Directory watching is running. Changing the reconstructor '
+            'will stop it, and the timelapse currently being processed '
+            'will not be finished. Continue?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
+
+    def setDirectoryWatcherAvailable(self, available: bool) -> None:
+        """Show the Directory watcher only for reconstructors that stream.
+
+        The panel starts a live streaming run, so a reconstructor with no
+        ``make_session()`` has nothing to offer it -- leaving it visible
+        invites the user to start a watch that could never produce a result.
+
+        Hiding a *running* watch would be worse than showing it, so the
+        monitoring checkbox is cleared on the way out. That emits
+        ``sigLiveChanged(False)`` through the frame's existing wiring, which
+        is what actually stops the watcher -- the dock never owns the run.
+
+        The startup flag still wins: a panel the config switched off stays
+        off for every reconstructor.
+        """
+        dock = self.docks.get('Directory watcher')
+        if dock is None:
+            return
+
+        show = bool(available) and self._showFileWatcherPanel
+        if not show:
+            self.stopDirectoryWatcher()
+        self._setDockVisible(dock, show)
+        self._syncDockVisibilityActions()
 
     def setReconstructionActionsVisible(
         self,

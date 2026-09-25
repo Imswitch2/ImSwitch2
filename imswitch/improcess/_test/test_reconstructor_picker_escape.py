@@ -86,7 +86,7 @@ def _manager(reconstructors, active, data_obj):
     for name in (
         "_accepts_current_source", "_offerable", "_reopen_path_for",
         "_publishReconstructorChoices", "_reopen_current_source",
-        "_on_user_changed_reconstructor",
+        "_on_user_changed_reconstructor", "_confirm_reconstructor_change",
     ):
         bound = getattr(Manager, name)
         setattr(manager, name, (lambda fn: lambda *a, **k: fn(manager, *a, **k))(bound))

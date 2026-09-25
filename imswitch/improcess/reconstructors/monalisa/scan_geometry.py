@@ -37,6 +37,14 @@ def get_rectangles_coords(num_rects: int = 1) -> tuple[np.ndarray, np.ndarray]:
     """
     Generate X and Y pixel offsets for concentric rectangular shells.
 
+    Fully vectorized. The union of shells ``0 .. num_rects - 1`` (Chebyshev
+    distance from the center) is exactly the filled square of half-width
+    ``num_rects - 1``, so this builds that square in one shot with
+    ``meshgrid`` and then reorders the points with a single ``lexsort`` into
+    the same shell-by-shell perimeter walk (innermost to outermost; per
+    shell: top row, bottom row, left column, right column, each ascending)
+    that a naive per-shell loop would produce, with no duplicated points.
+
     Args:
         num_rects: Number of rectangular shells.
 
@@ -47,38 +55,25 @@ def get_rectangles_coords(num_rects: int = 1) -> tuple[np.ndarray, np.ndarray]:
     if num_rects < 1:
         raise ValueError("num_rects must be >= 1")
 
-    all_x = []
-    all_y = []
-    for rect_idx in range(num_rects):
-        if rect_idx == 0:
-            # Innermost "shell" is the single central pixel. Emit it once;
-            # the generic perimeter construction below would duplicate it
-            # (top and bottom rows both collapse onto the center), which would
-            # double-weight the center in the Gaussian fit.
-            all_x.append(np.array([0.0]))
-            all_y.append(np.array([0.0]))
-            continue
+    half = num_rects - 1
+    coords = np.arange(-half, half + 1, 1, dtype=float)
+    X, Y = np.meshgrid(coords, coords)
+    Xf, Yf = X.ravel(), Y.ravel()
 
-        width = rect_idx * 2
-        height = rect_idx * 2
+    # Chebyshev distance from the center = which shell a point belongs to.
+    r = np.maximum(np.abs(Xf), np.abs(Yf))
 
-        x_left, x_right = -width / 2, width / 2
-        y_bottom, y_top = -height / 2, height / 2
+    # Within a shell, classify each point into its perimeter edge. Top/bottom
+    # rows are checked first so corners land there (not on the side columns),
+    # matching the non-duplicating construction of the original loop.
+    is_top = Yf == r
+    is_bottom = (~is_top) & (Yf == -r)
+    is_left = (~is_top) & (~is_bottom) & (Xf == -r)
+    group = np.select([is_top, is_bottom, is_left], [0, 1, 2], default=3)  # else: right
+    pos = np.where(group <= 1, Xf, Yf)  # rows walk x; columns walk y
 
-        top_x = np.arange(x_left, x_right + 1, 1, dtype=float)
-        top_y = np.ones(len(top_x), dtype=float) * y_top
-
-        bottom_x = np.arange(x_left, x_right + 1, 1, dtype=float)
-        bottom_y = np.ones(len(bottom_x), dtype=float) * y_bottom
-
-        side_y = np.arange(y_bottom + 1, y_top, 1, dtype=float)
-        right_x = np.ones(len(side_y), dtype=float) * x_right
-        left_x = np.ones(len(side_y), dtype=float) * x_left
-
-        all_x.extend([top_x, bottom_x, left_x, right_x])
-        all_y.extend([top_y, bottom_y, side_y, side_y])
-
-    return np.concatenate(all_x), np.concatenate(all_y)
+    order = np.lexsort((pos, group, r))  # primary: r, then group, then pos
+    return Xf[order], Yf[order]
 
 
 def get_pinhole_footprint(radius_px: float) -> tuple[np.ndarray, np.ndarray]:
