@@ -17,12 +17,17 @@ PROFILE_PATH = (
 )
 
 
-def _install_gui_dependency_stubs():
+def _install_gui_dependency_stubs(*, matplotlib=True):
     """Install minimal napari/vispy/matplotlib stubs for headless UI smoke.
 
     The smoke test verifies ImControl's own startup graph. It intentionally
     avoids importing the real napari stack because local/CI environments can
     have incompatible napari/pydantic or binary GUI dependencies.
+
+    ``matplotlib=False`` leaves matplotlib and colour real and stubs only the
+    napari/vispy canvas, which is what cannot start offscreen (no OpenGL
+    context). The scripting-tutorial runner uses that: setups with a
+    BeadRec widget need the real matplotlib through pyqtgraph's colour maps.
     """
     import numpy as np
     from qtpy import QtCore, QtWidgets
@@ -250,6 +255,8 @@ def _install_gui_dependency_stubs():
         'colour': colour_module,
     }
     for name, module in stubs.items():
+        if not matplotlib and name.split('.')[0] in ('matplotlib', 'colour'):
+            continue
         sys.modules[name] = module
 
 
@@ -271,6 +278,12 @@ def test_no_hardware_profile_constructs_imcontrol_ui(tmp_path, monkeypatch):
     assert Path(dirtools.UserFileDirs.Root).is_relative_to(tmp_path / "home")
 
     from imswitch.imcommon.controller import ModuleCommunicationChannel
+    from imswitch.imcontrol.controller.ImConMainController import ImConMainController
+
+    # view.close() below asks "Save the current widget state?" in a modal box
+    # that nobody answers offscreen; the test hung there after passing.
+    monkeypatch.setattr(ImConMainController, "_shouldSaveWidgetStateOnClose",
+                        lambda self: False)
 
     view_setup_info = ViewSetupInfo.from_json(PROFILE_PATH.read_text(), infer_missing=True)
     options = Options(setupFileName=PROFILE_PATH.name)

@@ -451,7 +451,7 @@ Bundled Example Scripts (WFS Specifics)
 =======================================
 
 The WFS workflow collection includes representative scripts under
-``imswitch/_data/user_defaults/scripts/wfs/``. These are designed to be
+``imswitch/_data/user_defaults/scripts/workflows/wfs/``. These are designed to be
 copied into the Scripting widget and edited for your active microscope setup:
 
 ``01_WidefieldSTARSS_example.py``
@@ -490,7 +490,7 @@ hardware.
 **For other workflows**
 
 When building workflows for your own modality, follow the same pattern:
-create example scripts in ``imswitch/_data/user_defaults/scripts/<your_modality>/``,
+create example scripts in ``imswitch/_data/user_defaults/scripts/workflows/<your_modality>/``,
 include a README with usage instructions, and provide commented templates
 that show all common parameter combinations.
 
@@ -720,7 +720,7 @@ this checklist:
 5. **Register script examples**
 
    Create example scripts in
-   ``imswitch/_data/user_defaults/scripts/<your_modality>/``. Include a
+   ``imswitch/_data/user_defaults/scripts/workflows/<your_modality>/``. Include a
    README with setup instructions and parameter explanations.
 
 6. **Extend buildWorkflowFacade if needed**

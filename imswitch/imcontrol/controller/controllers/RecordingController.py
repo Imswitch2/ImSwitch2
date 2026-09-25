@@ -2457,9 +2457,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 )
             return
 
+        # A scan recording's public recordingEnded is published here, once,
+        # when the writer has drained and the scan has ended. The worker
+        # publishes only the detailed terminal in the scan modes: it has held
+        # the legacy signal back since 48a6ae31 (2022), when this controller
+        # still ended its cycle on it and a scan cycle has to end on the scan.
+        # The controller now listens to the detailed terminal instead, so
+        # nothing else published it -- scripts waiting for it after a scan
+        # recording hung, and the joystick stayed disabled.
         emitRecordingEnded = (
-            self.recMode == RecMode.ScanLapse
-            and self.stopRequested
+            self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse)
             and not self.__dict__.get(
                 '_recordingFailedCurrent', False
             )
@@ -2556,12 +2563,13 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         if emitRecordingEnded:
             try:
-                # Emit manually only for a soft ScanLapse stop, because that
-                # path never calls recordingManager.endRecording().
+                # See emitRecordingEnded above: the scan modes' only public
+                # terminal. (A soft ScanLapse stop also never reaches
+                # recordingManager.endRecording(), so it needs this as well.)
                 self._commChannel.sigRecordingEnded.emit()
             except Exception:
                 self.__logger.error(
-                    'Failed to publish the recording-lapse stop terminal',
+                    'Failed to publish the scan-recording end terminal',
                     exc_info=True,
                 )
 
@@ -3114,7 +3122,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if filename is not None:
             self._widget.setCustomFilename(filename)
         else:
-            self._widget.setCustomFilenameEnabled(False)
+            self._widget.clearCustomFilename()
 
     @APIExport(runOnUIThread=True)
     def setRecFolder(self, folderPath: str) -> None:
@@ -3126,8 +3134,35 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.specifyfile.setChecked(enable)
     
     @APIExport(runOnUIThread=True)
-    def setSnapModeSave(self,mode="tiff") -> None:
-        self._widget.saveSnapFormatList.setCurrentText(mode)
+    def setRecFileFormat(self, fileFormat: str) -> None:
+        """ Sets the file format recordings are saved in: 'HDF5', 'TIFF' or
+        'ZARR' (any case) -- the Recording widget's "File format". Raises
+        ValueError for any other name, and RuntimeError while snaps are set
+        to go to the image display, which fixes the format to TIFF. """
+        if not self._widget.isSaveFormatEditable():
+            raise RuntimeError(
+                'The recording file format is fixed to TIFF while the snap '
+                'save mode sends snaps to the image display.'
+            )
+        if not self._widget.setSaveFormatByName(fileFormat):
+            raise ValueError(
+                f'Unknown recording format {fileFormat!r}; use HDF5, TIFF or ZARR.'
+            )
+
+    @APIExport(runOnUIThread=True)
+    def getRecFileFormat(self) -> str:
+        """ Returns the file format recordings are saved in: 'HDF5', 'TIFF'
+        or 'ZARR'. """
+        return SaveFormat(self._widget.getSaveFormat()).name
+
+    @APIExport(runOnUIThread=True)
+    def setSnapModeSave(self, mode="tiff") -> None:
+        """ Sets the file format snaps are saved in: 'HDF5', 'TIFF' or 'ZARR'
+        (any case). Raises ValueError for any other name. """
+        if not self._widget.setSaveSnapFormat(mode):
+            raise ValueError(
+                f'Unknown snap format {mode!r}; use HDF5, TIFF or ZARR.'
+            )
     
     @APIExport(runOnUIThread=True)
     def getRecFolder(self) -> str:
