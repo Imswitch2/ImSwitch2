@@ -98,11 +98,11 @@ runnable on a mock setup.
 Tutorials
 =========
 
-ImSwitch copies its scripts into ``~/ImSwitchConfig/scripts``
+ImSwitch2 copies its scripts into ``~/ImSwitchConfig/scripts``
 (``Documents\ImSwitchConfig\scripts`` on Windows) on first start. The
 ``tutorial`` folder there is a sequence of short scripts that build on each
 other. Each is written for a *simulated setup*: a setup file, shipped with
-ImSwitch, whose cameras, stages, scanners and lasers are all mock devices,
+ImSwitch2, whose cameras, stages, scanners and lasers are all mock devices,
 so the tutorials run without a microscope. The header of every tutorial
 says what it teaches, which setup file to load (``Mock setup:``; choose it
 with **Tools > Pick hardware setup…** in the Hardware Control tab), what
@@ -136,11 +136,11 @@ what it will do, and only then press **Run all**.
 on its mock setup (``imswitch/imscripting/_test/test_shipped_tutorials.py``),
 so they are kept working.
 
-The copies are yours to edit. When you install a new ImSwitch version, a
+The copies are yours to edit. When you install a new ImSwitch2 version, a
 copy you have not edited is updated to the new version at the next start,
-and an untouched script ImSwitch no longer ships is moved to the trash; a
+and an untouched script ImSwitch2 no longer ships is moved to the trash; a
 file you edited is never changed or removed (the log names the ones that
-differ from the current version -- delete one and restart ImSwitch to get
+differ from the current version -- delete one and restart ImSwitch2 to get
 it back).
 
 Workflow Scripting Cookbooks

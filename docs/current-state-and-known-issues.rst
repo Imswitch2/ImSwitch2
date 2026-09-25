@@ -78,12 +78,6 @@ widget-by-widget with screenshots or constrained-viewport smoke tests.  The
 BeadRec widget still starts and stops with a *Run* checkbox rather than
 Start/Stop buttons.
 
-Help menu
-~~~~~~~~~
-
-*Help → Documentation* still opens the original ImSwitch project's
-documentation, not ImSwitch2's.
-
 Rules for New Work
 ------------------
 

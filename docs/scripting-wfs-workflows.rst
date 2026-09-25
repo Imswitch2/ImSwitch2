@@ -467,8 +467,9 @@ Bundled Example Scripts (WFS Specifics)
 =======================================
 
 The WFS workflow collection includes representative scripts under
-``imswitch/_data/user_defaults/scripts/workflows/wfs/``. These are designed to be
-copied into the Scripting widget and edited for your active microscope setup:
+``imswitch/_data/user_defaults/scripts/workflows/wfs/``, which ImSwitch2 copies
+to ``ImSwitchConfig/scripts/workflows/wfs/``, where the Scripting module's file
+list shows them.  Open one there and edit it for your microscope setup:
 
 ``01_WidefieldSTARSS_example.py``
     Basic polarisation-resolved WidefieldStarss acquisition.
