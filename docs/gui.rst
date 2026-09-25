@@ -15,26 +15,38 @@ shortcuts and state-saving that apply across every module, see
 
    Outstanding work on the Widgets page, recorded 2026-09-23.
 
-   * **Coverage.**  13 of the 42 captured widgets appear here.  The likely
-     candidates for adding are the scan variants (``ScanWidgetPointScan``,
-     ``ScanWidgetMoNaLISA``, ``ScanWidgetAdvanced``), ``ViewerToolsWidget``,
-     ``LineProfileWidget``, ``AutofocusWidget``, ``RotatorWidget``,
-     ``FLIMHistWidget`` and ``SetupModesWidget``.  The ``TriggerScope*`` and
-     device-specific captures probably belong with their hardware pages
-     instead, not here.
+   * **Coverage.**  14 of the 42 captured widgets appear here, plus the
+     populated ``mock-View.png``.  Widgets with no section yet: the scan
+     variants (``ScanWidgetPointScan``, ``ScanWidgetMoNaLISA``,
+     ``ScanWidgetAdvanced`` — the last partly covered below), Analysis,
+     Autofocus, BFTimelapse, BSC203, Console, EtMonalisa, EtSnouty, EtSTED, FLIMHist, FlipMirror,
+     LeicaStand (*Stand*), LightSheetMulticolor, LineProfile, MotCorr,
+     Rotator, RotationScan, SetupModes (described in
+     :doc:`working-in-imswitch2`), SetupStatus, SLMs, the six
+     ``TriggerScope*`` panels, ViewerTools, Watcher (*File Watcher*) and
+     WellPlate.  The ``TriggerScope*`` and device-specific ones probably
+     belong with their hardware pages instead.
    * **Unpopulated captures.**  A widget whose contents are added by its
      controller renders as an empty frame when captured standalone.  The View
      widget already uses the populated ``mock-View.png`` for this reason; the
      same swap may suit others, and the mock-setup pass produces one image per
      dock to choose from.
-   * **Five widgets cannot be captured at all.**  ``CoordTransformWidget``,
-     ``EtMonalisaWidget`` and ``EtSTEDWidget`` fail with OpenGL errors — they
-     need a real GL context, as ImProcess does — and ``MotCorrWidget`` needs a
-     constructor stub in ``WIDGET_STUBS``.
+   * **Five widgets cannot be captured at all.**  The two
+     ``CoordTransformWidget`` classes, ``EtMonalisaWidget`` and
+     ``EtSTEDWidget`` fail with OpenGL errors — they need a real GL context,
+     as ImProcess does — and ``MotCorrWidget`` needs a constructor stub in
+     ``WIDGET_STUBS``.  ``WellPlateWidget`` constructs fine but has no capture
+     yet; regenerating adds it.
    * **SLMWidget has a latent import bug.**  It calls ``pg.dockarea.DockArea()``
      while importing only ``pyqtgraph``, which resolves in the running
      application solely because ``ImConMainView`` imports that submodule first.
-     The screenshot tool works around it; the widget should import it itself.
+     The screenshot tool has no workaround, so a fresh run cannot regenerate
+     ``SLMWidget.png``; the committed image predates that.  The widget should
+     import the submodule itself.
+   * **SLM and BFTimelapse have no default dock.**  Both are missing from
+     ``_DEFAULT_RIGHT_DOCK_INFOS`` in ``ImConMainView.py``, so without a
+     ``widgetLayout`` in the setup file they get no panel even when listed in
+     ``availableWidgets`` (``example_sted.json`` lists ``SLM`` this way).
    * **Image resolution.**  Captures are taken at 1x device pixel ratio, so a
      small widget yields a small image.  Capturing at 2x and displaying at
      native size would keep them sharp at any zoom.
@@ -70,37 +82,51 @@ Recording and data storage
 Either during a scan or in free-running mode, the recording section
 collects images from the selected detectors and saves them.
 
-Images can be saved to disk, to RAM (for sharing with the image
-processing module), or both.  Recording modes:
+**Detector(s) to capture** chooses what is recorded: *Current detector at
+start*, or, on setups with more than one detector, *All acquisition
+detectors* or *Specific detector(s)*.  With several detectors, **Save
+recordings in a single file** writes them into one file instead of one file
+per detector.
+
+Recording modes:
 
 * **Number of frames** – save a fixed frame count.
 * **Time (s)** – save for a fixed duration.
-* **Scan once** – stop when the current scan completes.
-* **Timelapse** – sequential recordings spaced by a user-defined
-  interval; each scan iteration (or each raw burst) is saved to its
-  own file.
-* **3D Lapse** – same as timelapse but stepping a positioner between
-  acquisitions, as an alternative way to do a 3D scan.
-* **Run until stop** – recording thread runs until the user stops it.
+* **Camera timelapse** – one frame at a time from a camera, the given number
+  of frames spaced by **Interval [s]**.  Scan-driven detectors are refused.
+* **Scan once** – record one scan; the recording ends when the scan does.
+* **Timelapse scan** – repeat the scan the given number of times, waiting
+  **Freq [s]** after each scan before starting the next.
+* **Run until STOP** – record until you press **REC** again (the default).
 
-On a setup with a single scan widget, scan recordings need no further
-input.  A setup with several scan widgets (a TriggerScope rig with both a
-raster and a RESOLFT panel, for example) is asked which scanner to use, but
-only where the answer cannot be inferred:
+Both timelapse modes save each timepoint to its own file unless **Save all
+timepoints in a single file** is ticked.  A single-file timelapse needs HDF5
+or Zarr; with TIFF it is refused.
 
-* **Scan once** infers it.  Press **REC** to arm the recording, then start
-  the scan you want from its own scan widget; the recording takes its frame
-  count and scan dimensions from that scanner.  If the recording cannot be
-  armed for it, the scan does not start and the reason is logged.
-* **Timelapse scan** is started by the recording itself, so it cannot infer
-  anything — pick the scanner in the **Scan source** control that appears
-  next to the mode.  The choice is remembered between sessions, but it is
-  never made for you: while the control still reads *Select scan source...*
-  the recording is refused rather than defaulting to a scanner, since that
-  scanner's hardware would actually be driven.
+How **REC** relates to the scan depends on the setup:
 
-Data is saved as HDF5 with every user-interactable parameter
-(laser power, scan parameters, …) stored alongside the images.
+* **With a** ``Scan`` **widget** (the NI-DAQ scan panel in any of its
+  variants), **Scan once** + **REC** arms the recording *and* starts that
+  scan.  Do not press the scan widget's own start button as well.
+* **Without one** (standalone scan panels such as the TriggerScope or
+  LightSheet widgets), **REC** only arms the recording.  Start the scan you
+  want from its own widget; the recording takes its frame count and scan
+  dimensions from that scanner.  If the recording cannot be armed for it, the
+  scan does not start and the reason is logged.
+
+**Timelapse scan** is started by the recording itself.  On a setup with more
+than one scan widget that can drive a recording, pick the scanner in the
+**Scan source** control that appears below the mode.  The choice is
+remembered between sessions, but it is never made for you: while the control
+still reads *Select scan source...* the recording is refused rather than
+defaulting to a scanner, since that scanner's hardware would actually be
+driven.
+
+**File format** (recordings) and **Snap format** (single images) offer HDF5,
+TIFF and Zarr, each written with OME metadata; every user-interactable
+parameter (laser power, scan parameters, …) is stored alongside the images.
+When ImProcess is loaded, **Rec save mode** can also keep a recording in
+memory for reconstruction, with or without saving it to disk.
 
 Single images can also be saved after a scan via the **Snap** button —
 this is typical when working with point detectors as in confocal or
@@ -114,6 +140,25 @@ The output folder is not remembered between sessions.  With
 today's date every time ImSwitch2 starts, and it is created on demand when a
 recording or snapshot is saved, so it does not have to exist beforehand.
 
+When a recording cannot keep up
+-------------------------------
+
+Frames pass through a writer queue on their way to disk.  When a recording
+is armed, the log estimates for each detector how many frames that queue can
+hold.  If the disk falls behind and the queue fills, the acquisition loop
+waits; the log says so the moment it starts waiting, repeats every few
+seconds while it continues, and says when it resumes.  The queue sizes are
+set under **Tools → Memory limits…** (see :ref:`improcess-memory-limits`).
+
+A detector that delivers no frame for ten seconds, or for three of its own
+frame intervals if that is longer (a camera with a 30 s exposure, say), is
+treated as stalled and the recording fails.  A recording that ends early is
+marked ``stopped_early`` in its ``recording:completion_outcome`` attribute
+rather than ``complete``, and frames a detector delivered beyond the planned
+count are counted in ``recording:discarded_frames``.
+
+
+.. _session-notes:
 
 Session notes
 -------------
@@ -136,8 +181,8 @@ Where the note ends up depends on the format:
   recording's attributes, and in the embedded OME-XML for HDF5.
 * **OME-TIFF** — the OME ``Description`` of the image, which is what Fiji
   shows under *Image ▸ Show Info* and what OMERO imports as the image
-  description.  TIFF carries no shared attributes, so this is the note's
-  only route into it.
+  description.  The other shared attributes go into a map annotation in the
+  same OME-XML.
 
 "Session" means until ImSwitch2 is closed: the note is deliberately not saved
 with the rest of the widget state, because a note about this morning's
@@ -150,8 +195,8 @@ Data visualization
 ImSwitch2 uses `napari <https://napari.org/>`_ for live visualization
 of detector frames.  Both point detectors and cameras are supported,
 with good multi-channel rendering out of the box.  Multiple cameras
-and point detectors can run simultaneously; point-detector images are
-updated line-by-line during acquisition.
+and point detectors can run simultaneously.  During a scan, point-detector
+images are redrawn as lines arrive, at a limited rate.
 
 .. image:: ./images/auto/mock-View.png
    :align: center
@@ -201,9 +246,15 @@ Laser widget
 
 There are two typical use modes: **offline** (driven only by the
 buttons and sliders in the widget) and **triggered** by an acquisition
-card controlled by the scanning widget.  In the latter case, enable
-**Digital Modulation** and set the desired powers used during the
-scan.
+card controlled by the scanning widget.  In the latter case, set the powers
+here and tick the laser in the scan widget's TTL list: when the scan starts it
+hands every ticked laser's gate to the scan and locks its on/off button for
+the run.  The power stays editable during the scan.
+
+**Presets** store the current power of every laser under a name in the setup
+file: **Save as…** creates one, **Load selected** applies it, **Save to
+selected** overwrites it, and **More…** clears the selection or deletes the
+selected preset.
 
 .. image:: ./images/auto/LaserWidget.png
    :width: 600px
@@ -221,8 +272,14 @@ other beam-shaping schemes.  You can pick a mask type per side
 (donut, tophat, gaussian, half/quad/hex/split alignment patterns),
 adjust mask position, and tune Zernike-polynomial aberration-correction
 coefficients (tip/tilt, defocus, spherical, vertical/horizontal coma,
-vertical/oblique astigmatism — more can be added).  Parameters can be
-saved to and loaded from pickled files.
+vertical/oblique astigmatism — more can be added).  Parameters are saved
+to and loaded from JSON files in the ``imcontrol_slm`` folder of the user
+directory (``ImSwitchConfig``, see :doc:`imcontrol-setups`), one per objective (``info_oil.json``, ``info_glyc.json``); pick
+the objective first, as saving and loading refuse *No objective*.
+
+The SLM panel only appears if the setup's ``widgetLayout`` places ``"SLM"``:
+without a ``widgetLayout``, listing it in ``availableWidgets`` creates no
+panel.
 
 .. image:: ./images/auto/SLMWidget.png
    :width: 600px
@@ -237,8 +294,18 @@ beam is reflected off the cover slip in total internal reflection and
 detected on a camera; sample movement along z maps to lateral
 displacement of the spot.  The widget tracks the spot centroid and
 drives a PI controller against the connected z-positioner to
-counter-act drift.  Controls include lock/unlock, z-positioner
-setpoint, a double-reflection handling option, and PI gains.
+counter-act drift.  **Lock** holds the spot at the position it has when
+pressed; **kp** and **ki** are the PI gains, **Two foci** handles a double
+reflection, and **Pause during scans** (on by default) suspends the lock while
+a scan drives the focus axis.  **From (µm)** / **To (µm)** and **Calib** run a
+calibration of spot position against Z, **See calib** shows the curve, and
+**Camera Dialog** opens the focus camera's settings.
+
+A status label shows the lock state: *Locked*, *Suspended (scan)*
+while a scan owns the focus axis, *Reacquiring…* while it waits for the focus
+signal to return after the scan, and *Lock lost after scan* if it does not.
+How a scan decides whether it conflicts with the lock is described in
+:ref:`focuslock-scan-arbitration`.
 
 .. image:: ./images/auto/FocusLockWidget.png
    :width: 600px
@@ -263,9 +330,10 @@ Scanning widget
 This module drives systems that need scanning to acquire an image.
 The reference implementation targets NI-DAQ cards but can be
 generalized to other DAQs.  Your setup file declares the analog and
-digital lines connected to each instrument; the ``ScanDesigner`` and
-``SignalDesigner`` generate the matching waveforms.  Modality-specific
-designers can be plugged in by subclassing those abstract bases.
+digital lines connected to each instrument; a ``ScanDesigner`` generates
+the analog scanner waveforms and a ``TTLCycleDesigner`` the digital ones.
+Modality-specific designers can be plugged in by subclassing them (both
+derive from the abstract ``SignalDesigner``).
 
 .. image:: ./images/auto/ScanWidgetBase.png
    :align: center
@@ -312,14 +380,17 @@ each pixel's dwell time:
 
 **Dwell time (ms)** is the time spent per pixel; the widget shows the resulting
 **Dead time** so you can see how much of each pixel is not being used.
-**Delay [sampl.] D2 / D3** compensate scanner response on the fast and slow
-axes.  **Plot scan** previews the generated waveforms, with **include TTL** to
+**Delay [sampl.] D2** is the galvo's response lag, by which the detector
+readout is delayed, and **D3** the settling time before each slice step of a 3-D scan.  Both
+are entered in microseconds, whatever the D2 label says, and start from
+``phase_delay`` / ``d3step_delay`` in ``scan.scanDesignerParams`` of the setup
+file.  **Plot** previews the generated waveforms, with **include TTL** to
 overlay the device gating.
 
 With point detectors, a line-step scan produces one frame per scan holding all
-steps: ``APDManager`` keeps them as separate channels (saved as
-``(T, C, Y, X)``, one channel per step), while ``PMTManager`` sums them into a
-single image — see :doc:`devices/detectors`.
+steps, saved as ``(T, C, Y, X)`` with one channel per step.  The PMT's live
+view shows the steps summed into one image, but its recordings keep them as
+separate channels, as the APD's do — see :doc:`devices/detectors`.
 
 See :doc:`advanced-scanning` for the exact pixel-count convention, Sequence
 Builder timing semantics, galvo setup requirements, scan-size guards and the
@@ -402,8 +473,16 @@ Computes the Fourier transform of incoming frames in real time.
 Bead reconstruction tool
 ------------------------
 
-During a scan, integrates and reconstructs an image from a bead scan —
-one scan step per pixel.
+During a scan, integrates the camera signal inside a region (**Show ROI**)
+at every scan step and builds an image with one pixel per step, typically
+of a bead, to see the scanned beam's profile.  Tick **Run** to reconstruct during scans.
+**Scale** resamples the result to the scan's pixel size, and **Rotate** (in
+90° steps) with **Flip H** / **Flip V** corrects its orientation for the scan
+direction.  **Save Rec** saves the displayed reconstruction as TIFF and
+**Load** opens TIFF images into the list beside it (**Add Current**,
+**Remove**, **Clear All**, **Save All**).  **Run fit** fits the model chosen
+next to it (Gaussian, donut, exponential, sine, …) to the displayed image;
+**Analysis Parameters** sets the fit options.
 
 .. image:: ./images/auto/BeadRecWidget.png
    :width: 600px

@@ -2,7 +2,7 @@
 Scan lifecycle and detector acquisition
 ***************************************
 
-How Imswitch2 tracks *which controller is running a scan*, *which detectors
+How ImSwitch2 tracks *which controller is running a scan*, *which detectors
 take part in it*, and *when it is safe to tear the scan down*.  Consumers such
 as BeadRec resolve scan geometry and running-state from the same mechanism.
 
@@ -24,8 +24,9 @@ Why this exists
 Several widgets need to know, at runtime, which controller is currently
 running a hardware scan:
 
-* ``BeadRecController`` polls ``isScanRunning()`` from its worker thread and
-  reads scan dimensions / step sizes / frames-per-pixel on every scan start.
+* ``BeadRecController`` reads scan dimensions / step sizes /
+  frames-per-pixel on every scan start, and its worker consumes frames only
+  while the scan is running (see `How BeadRec consumes this`_).
 * Recording orchestration and display pipelines have the same question.
 
 Historically ``CommunicationChannel`` answered by **guesswork**:
@@ -125,8 +126,9 @@ order:
    (see ``controllers/_beadrec_scan_source.py``) and reports
    ``isBeadRecCompatible() == True``.
 2. **The** ``'Scan'`` **widget key** — legacy path; covers
-   ``ScanControllerAdvanced`` / ``ScanControllerMoNaLISA``, which expose the
-   legacy accessors but not the protocol.
+   ``ScanControllerAdvanced`` / ``ScanControllerMoNaLISA`` /
+   ``ScanControllerPointScan``, which expose the legacy accessors but not the
+   protocol.
 3. **First-compatible iteration** (``getBeadRecScanSource``) — idle fallback
    only, e.g. when the user presses BeadRec *Run* before starting a scan.
 
@@ -135,9 +137,13 @@ the controller set ``isRunning = True``.  During a scan the answer therefore
 always comes from the controller actually scanning; the iterate-and-guess path
 only ever serves idle reads.
 
-Unchanged and out of scope: ``getNumScanPositions()``, ``getNumCamTTL()`` and
-``getNextAxial()`` stay on the ``'Scan'`` key (consumed by
-``RecordingController`` and the MoNaLISA axial workflow only).
+``getNumScanPositions()`` and ``getNumCamTTL()`` (consumed by
+``RecordingController``) resolve through ``_resolveScanAccessor``: the active
+scan source first, then the ``'Scan'`` controller, then — while idle on a
+setup without a ``'Scan'`` widget — the one registered controller that exposes
+the accessor.  If several expose it, the lookup logs a warning and resolves
+nothing rather than guess.  Only ``getNextAxial()`` (the MoNaLISA axial
+workflow) stays on the ``'Scan'`` key.
 
 
 The scan-execution coordinator
@@ -274,6 +280,14 @@ Scan lifecycle sequence
                 └─ sigScanEnded             (skipped for non-final parts;
                                              run reservation released here)
 
+The order of ``sigScanBuilt`` and ``arm`` above is the TriggerScope one.  On
+NI-DAQ, ``sigScanBuilt`` is emitted by ``nidaqManager.runScan``, which the
+coordinator calls as the backend start inside ``arm``: it arrives after the
+SCAN lease is taken and the tasks are built, just before they start.  That is
+why ``sigScanDevicesResolved`` is published before ``arm``: consumers that
+must write to the DAQ in response (laser arming) would be refused once
+``runScan`` has marked it busy.
+
 Only the controller that *armed* the iteration reacts: ``tokenForOwner(self)``
 returns ``None`` for everyone else, so a board-wide NI-DAQ or TriggerScope done
 signal cannot make a bystander publish an early ``sigScanEnded``.
@@ -387,7 +401,7 @@ bases), registered under widget key ``'Scan'`` as
      - protocol (``BeadRecScanSourceMixin``)
    * - ``ScanControllerPointScan``
      - ``PointScan``
-     - none
+     - legacy accessors via ``'Scan'`` key
    * - ``ScanControllerAdvanced``
      - ``Advanced``
      - legacy accessors via ``'Scan'`` key
@@ -499,9 +513,12 @@ event-triggered workflow that *requests* scans via
 How BeadRec consumes this
 =========================
 
-* ``BeadWorker`` polls ``commChannel.isScanRunning()`` in its acquisition loop
-  — now answered by the active source for *any* scanner family, so the worker
-  no longer dies on setups without a ``'Scan'`` widget (e.g. Snouty).
+* ``BeadWorker`` consumes frames only while ``_scanFramesReady()`` is true:
+  the scan has started (``commChannel.isScanRunning()``, answered by the
+  active source for *any* scanner family, so the worker no longer dies on
+  setups without a ``'Scan'`` widget such as Snouty) *and* BeadRec has flushed
+  the camera's pre-scan backlog on ``sigScanStarted``.  After the scan ends it
+  keeps draining until the expected frames have arrived.
 * **Frames come via** ``DetectorManager.readChunk('BeadRec')``, the
   multi-consumer chunk distributor.  The raw ``getChunk()`` is a destructive
   read; when the ``RecordingManager`` polled the same camera during a
@@ -513,9 +530,12 @@ How BeadRec consumes this
 
   All destructive frame consumers go through ``readChunk`` (consumer keys
   ``'RecordingManager'``, ``'BeadRec'`` and ``'WorkflowFacade'`` for the WFS
-  workflow camera facade).  Components that only *peek* — live view, focus
-  lock, autofocus, EtSnouty event detection, tiling preview — use the
-  non-destructive ``getLatestFrame`` and need no registration.  An enforcement
+  workflow camera facade).  Autofocus and tiling open a short-lived consumer
+  (``'autofocus'``, ``'tiling'``) through ``grab_fresh_frame`` in
+  ``controller/_fresh_frame.py`` to wait for a frame exposed after the stage
+  move.  Components that only *peek* — live view, focus lock, EtSnouty event
+  detection, tiling's scan-driven tiles — use the non-destructive
+  ``getLatestFrameShared`` and need no registration.  An enforcement
   test (``test_detector_chunk_consumers.py``) fails CI if new production code
   calls ``.getChunk()`` directly outside the detector layer.
 * On ``sigScanStarted``, ``BeadRecController.updateParameters()`` reads
