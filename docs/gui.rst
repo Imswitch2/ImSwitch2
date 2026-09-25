@@ -13,7 +13,7 @@ shortcuts and state-saving that apply across every module, see
 .. admonition:: Documentation TODO — this page
    :class: danger
 
-   Outstanding work on the Widgets page, recorded 2026-09-23.
+   Outstanding work on the Widgets page, recorded 2026-09-25.
 
    * **Coverage.**  14 of the 42 captured widgets appear here, plus the
      populated ``mock-View.png``.  Widgets with no section yet: the scan
@@ -35,14 +35,14 @@ shortcuts and state-saving that apply across every module, see
      ``CoordTransformWidget`` classes, ``EtMonalisaWidget`` and
      ``EtSTEDWidget`` fail with OpenGL errors — they need a real GL context,
      as ImProcess does — and ``MotCorrWidget`` needs a constructor stub in
-     ``WIDGET_STUBS``.  ``WellPlateWidget`` constructs fine but has no capture
-     yet; regenerating adds it.
+     ``WIDGET_STUBS``.  ``WellPlateWidget`` builds as an empty 22×22 frame
+     standalone (its controller adds everything), so the tool refuses to write
+     it; only the mock-setup pass can show it.
    * **SLMWidget has a latent import bug.**  It calls ``pg.dockarea.DockArea()``
      while importing only ``pyqtgraph``, which resolves in the running
      application solely because ``ImConMainView`` imports that submodule first.
-     The screenshot tool has no workaround, so a fresh run cannot regenerate
-     ``SLMWidget.png``; the committed image predates that.  The widget should
-     import the submodule itself.
+     The screenshot tool imports it the same way before capturing; the widget
+     should import the submodule itself.
    * **SLM and BFTimelapse have no default dock.**  Both are missing from
      ``_DEFAULT_RIGHT_DOCK_INFOS`` in ``ImConMainView.py``, so without a
      ``widgetLayout`` in the setup file they get no panel even when listed in
@@ -72,7 +72,6 @@ depend on the detector selected, and additional ones can be exposed by
 the corresponding ``DetectorManager``.
 
 .. image:: ./images/auto/SettingsWidget.png
-   :width: 600px
    :align: center
 
 
@@ -257,7 +256,6 @@ selected** overwrites it, and **More…** clears the selection or deletes the
 selected preset.
 
 .. image:: ./images/auto/LaserWidget.png
-   :width: 600px
    :align: center
 
 

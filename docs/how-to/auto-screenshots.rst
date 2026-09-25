@@ -47,6 +47,9 @@ one first with ``PYTHONPATH=.``.
    # Render on the real display (default is offscreen)
    python tools/screenshot_widgets.py --show
 
+   # Write to another folder, to compare before replacing the committed images
+   python tools/screenshot_widgets.py --out /tmp/shots
+
 Options:
 
 ``WIDGET ...``
@@ -62,10 +65,15 @@ Options:
    ``--mock-setup`` names another file).
 ``--no-subprocess``
    Capture every standalone widget in the script's own process.
+``--light``
+   Capture the standalone widgets in Qt's plain style instead of
+   ImSwitch2's dark style sheet.
+``--out DIR``
+   Write the images to ``DIR`` instead of ``docs/images/auto/``.
 ``--single`` / ``--single-mock``
    Internal: used by the script to start its child processes.
 
-Output goes to ``docs/images/auto/``:
+Output goes to ``docs/images/auto/`` (or the ``--out`` folder):
 
 * ``<WidgetClass>.png`` for each standalone capture, for example
   ``LaserWidget.png``.
@@ -88,9 +96,12 @@ Two capture modes
 isolation with the ``optionsBasic`` test fixture as its options.  Fast and
 dependency-free but the layout is "empty": controllers haven't run, so
 per-laser rows, per-positioner axes, and live plots are absent unless a
-populator (below) fills them in.  These captures use a plain
-``QApplication`` without the application's dark style sheet, so they come
-out in Qt's default light style.
+populator (below) fills them in.  The script applies the application's
+dark style sheet (the one ``prepareApp`` installs), so the captures look
+like the running program; ``--light`` leaves it off.  A widget that comes
+out smaller than 32 pixels in either direction — an empty frame whose
+content only its controller adds, such as ``WellPlateWidget`` — is skipped
+rather than written.
 
 **Mock-setup (``--mock-setup``).**  Builds the full ImControl main window
 with a setup from ``imswitch/_data/user_defaults/imcontrol_setups/`` (the
@@ -114,21 +125,27 @@ provides no OpenGL context, and the pass builds napari's OpenGL image
 viewer, so offscreen it crashes and is reported as
 ``mock setup: child killed by signal 11``.
 
-The mock-setup pass starts ImControl the way the application does, which
-brings two dialogs with it:
+The window is requested at 1920 × 1080 but cannot be larger than the
+screen it is shown on, so the full-window capture is roomiest on a large
+monitor; on a laptop screen the docks are as cramped as they would be in
+use.  Once the window is up, the panels are re-sized for their content, as
+**Tools → Reset panel layout** does.
 
-* At start-up it restores the widget state saved in your ``ImSwitchConfig``
-  folder.  If part of that state cannot be applied, a warning dialog can
-  open, and the capture waits until it is closed.
-* When the pass closes the window, ImControl asks *Save the current widget
-  state as the default for the next startup?*.  All images have been
-  written by then.  Answer **No** to keep the mock session out of your saved
-  state.
+The pass runs without anyone at the keyboard:
 
-The pass runs in a child process with a 120 s limit.  If a dialog is left
-unanswered, the child is stopped and the pass is reported as
-``mock setup: timeout after 120s``, which also makes the exit status
-non-zero.
+* On macOS and Linux it runs with a throwaway ``ImSwitchConfig`` (``HOME``
+  points at a temporary folder that is deleted afterwards), so it neither
+  restores nor saves the widget state of your own setup.  Windows finds the
+  folder through *Documents*, so there the real one is used.
+* Every dialog the pass would open — a restore warning at start-up, *Save
+  the current widget state…?* on close — is answered **No**.
+* Once the images are written, the child process exits without the napari
+  teardown, which can crash at interpreter exit and would otherwise mark a
+  good pass as failed.
+
+The pass runs in a child process with a 120 s limit and is reported as
+``mock setup: timeout after 120s`` if it takes longer, which makes the exit
+status non-zero.
 
 Crash isolation
 ---------------
