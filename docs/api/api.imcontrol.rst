@@ -52,6 +52,15 @@ api.imcontrol
       Moves the specified positioner axis by the specified number of
       micrometers. 
 
+   .. method:: getRecFileFormat() -> str
+
+      Returns the file format recordings are saved in: 'HDF5', 'TIFF' or
+      'ZARR'. 
+
+   .. method:: getRecFolder() -> str
+
+      Returns the folder recordings and snaps are saved in. 
+
    .. method:: getScanRequestStatus(requestId: str) -> dict
 
       Status of a scan started with runScan, as ``{requestId, source,
@@ -140,6 +149,13 @@ api.imcontrol
       Sets the step size of the specified positioner to the specified
       number of micrometers. 
 
+   .. method:: setRecFileFormat(fileFormat: str) -> None
+
+      Sets the file format recordings are saved in: 'HDF5', 'TIFF' or
+      'ZARR' (any case) -- the Recording widget's "File format". Raises
+      ValueError for any other name, and RuntimeError while snaps are set
+      to go to the image display, which fixes the format to TIFF. 
+
    .. method:: setRecFilename(filename: Optional[str]) -> None
 
       Sets the name of the file to record to. This only sets the name of
@@ -180,7 +196,9 @@ api.imcontrol
       - acquisitionStarted
       - acquisitionStopped
       - recordingStarted
-      - recordingEnded
+      - recordingEnded (the recording is finished and its files are
+        written; for a scan-once or scan-timelapse recording, once after
+        the last scan)
       - recordingFailed
       - scanStarting (the run-level start, before hardware arms)
       - scanStarted (the execution backend started the iteration)
@@ -192,9 +210,16 @@ api.imcontrol
       They can be accessed like this: api.imcontrol.signals().scanEnded
       
 
-   .. method:: snapImage() -> None
+   .. method:: snapImage(output: bool = False) -> Optional[Dict[str, numpy.ndarray]]
 
-      Take a snap and save it as the selected file format at the set file path. 
+      Take a snap. With output=True, return it as {detector name: image}
+      without saving; otherwise save it in the snap format at the set file
+      path. 
+
+   .. method:: setSnapModeSave(mode: str = 'tiff') -> None
+
+      Sets the file format snaps are saved in: 'HDF5', 'TIFF' or 'ZARR'
+      (any case). Raises ValueError for any other name. 
 
    .. method:: startRecording() -> None
 

@@ -429,6 +429,20 @@ class RecordingWidget(Widget):
     def setsaveFormatEnabled(self, value):
         self.saveFormatList.setEnabled(value)
 
+    def setSaveFormatByName(self, formatName):
+        """ Selects the recording file format by name, ignoring case. Returns
+        False, changing nothing, for an unknown name. """
+        index = self.saveFormatList.findText(
+            str(formatName), QtCore.Qt.MatchFixedString
+        )
+        if index < 0:
+            return False
+        self.saveFormatList.setCurrentIndex(index)
+        return True
+
+    def isSaveFormatEditable(self):
+        return self.saveFormatList.isEnabled()
+
     def setSnapSaveMode(self, saveMode):
         self.snapSaveModeList.setCurrentIndex(saveMode - 1)
 
