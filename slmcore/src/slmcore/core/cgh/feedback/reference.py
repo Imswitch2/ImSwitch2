@@ -20,14 +20,14 @@ class PositionReferenceMode(str,Enum):
 
     GLOBAL_FIT = "global_fit"
     EDITABLE = "editable"
-    SAVED = "saved"
+    REFERENCE = "reference"
 
     @classmethod
     def normalize(cls,value: Any) -> "PositionReferenceMode":
         if isinstance(value,cls):
             return value
         text = str(value or cls.GLOBAL_FIT.value).strip().lower()
-        aliases = {"global":cls.GLOBAL_FIT.value}
+        aliases = {"global":cls.GLOBAL_FIT.value,"saved":cls.REFERENCE.value}
         return cls(aliases.get(text,text))
 
 
@@ -213,7 +213,7 @@ def reference_positions_for_localization(
 ) -> np.ndarray:
     """Resolve a saved full-image reference into this localization's crop frame."""
     if not np.array_equal(reference.lattice_indices,localization.lattice_indices):
-        raise ValueError("Saved reference lattice does not match the current target")
+        raise ValueError("Reference lattice does not match the current target")
     return np.asarray(reference.positions_px,dtype=np.float64) - (
         localization_crop_offset_px(localization)
     )

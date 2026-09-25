@@ -259,3 +259,30 @@ def test_slmcore_qt_top_level_is_strict_host_facing_api():
     assert not hasattr(qt,"ParamForm")
     assert not hasattr(qt,"SectionsCollectionView")
     assert not hasattr(qt,"SLMRuntimeViewBinding")
+
+
+def test_session_factory_shares_one_live_position_reference_store(tmp_path):
+    _app()
+    from slmcore.qt import SLMQtSessionFactory
+
+    factory = SLMQtSessionFactory(workspace=SLMWorkspace(tmp_path))
+    first,first_panel = factory.create(
+        definition=_setup(),
+        on_startup_preferences_changed=_discard,
+    )
+    second,second_panel = factory.create(
+        definition=_setup(),
+        on_startup_preferences_changed=_discard,
+    )
+    try:
+        assert first.application_session.feedback._position_reference_store is (
+            factory.position_reference_store
+        )
+        assert second.application_session.feedback._position_reference_store is (
+            factory.position_reference_store
+        )
+    finally:
+        first.dispose()
+        second.dispose()
+        first_panel.deleteLater()
+        second_panel.deleteLater()

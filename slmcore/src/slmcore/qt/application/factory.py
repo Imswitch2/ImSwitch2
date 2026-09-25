@@ -8,6 +8,7 @@ from qtpy import QtWidgets
 
 from ...application.configuration import SLMConfigurationService,StartupRuntime
 from ...application.runtime_factory import SLMRuntimeFactory
+from ...application.position_reference_store import PositionReferenceStore
 from ...application.session import SLMSession
 from ...core.cgh.execution.executor import CGHExecutor
 from ...core.engine.registry import DEFAULT_REGISTRIES,SLMRegistries
@@ -57,6 +58,11 @@ class SLMQtSessionFactory:
 
         self.registries = registries
         self.workspace = workspace
+        self.position_reference_store = PositionReferenceStore(
+            persistent_root=(
+                None if workspace is None else workspace.position_references_root
+            )
+        )
 
     def create(
         self,
@@ -110,9 +116,7 @@ class SLMQtSessionFactory:
         calibration_store = (
             None if workspace is None else workspace.calibration_store
         )
-        position_reference_store = (
-            None if workspace is None else workspace.position_reference_store
-        )
+        position_reference_store = self.position_reference_store
         fov_position_calibration_store = (
             None if workspace is None else workspace.fov_position_calibration_store
         )

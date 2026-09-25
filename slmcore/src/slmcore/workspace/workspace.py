@@ -7,7 +7,6 @@ from ..core.engine.registry import SLMRegistries
 from .calibration_store import SLMCalibrationStore
 from .config_store import SLMConfigStore
 from .correction_store import SLMCorrectionStore
-from .position_reference_store import SLMPositionReferenceStore
 from .fov_position_calibration_store import SLMFOVPositionCalibrationStore
 from .geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
 
@@ -43,7 +42,6 @@ class SLMWorkspace:
         self._config_stores: dict[tuple[str,int],SLMConfigStore] = {}
         self._correction_stores: dict[tuple[str,str],SLMCorrectionStore] = {}
         self._calibration_store: SLMCalibrationStore | None = None
-        self._position_reference_store: SLMPositionReferenceStore | None = None
         self._fov_position_calibration_store: SLMFOVPositionCalibrationStore | None = None
         self._geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None = None
 
@@ -52,14 +50,6 @@ class SLMWorkspace:
         if self._calibration_store is None:
             self._calibration_store = SLMCalibrationStore(self.calibrations_root)
         return self._calibration_store
-
-    @property
-    def position_reference_store(self) -> SLMPositionReferenceStore:
-        if self._position_reference_store is None:
-            self._position_reference_store = SLMPositionReferenceStore(
-                self.position_references_root
-            )
-        return self._position_reference_store
 
     @property
     def fov_position_calibration_store(self) -> SLMFOVPositionCalibrationStore:

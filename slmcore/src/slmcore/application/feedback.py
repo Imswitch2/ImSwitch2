@@ -38,6 +38,9 @@ from ..core.cgh.localization.policy import suggest_localization_sources
 from ..core.cgh.coordinates import reference_px_to_k,k_to_reference_px
 from ..core.cgh.propagation import simulate_propagation_fft
 from ..core.measurement import ImageMeasurement
+from .position_reference_store import (
+    PositionReferenceLifetime,PositionReferenceRecord,PositionReferenceStore,
+)
 
 if TYPE_CHECKING:
     from .session import SLMSession
@@ -161,25 +164,25 @@ class PositionReferenceSelection:
     """Transient per-section/plane position-reference choice."""
 
     mode: PositionReferenceMode=PositionReferenceMode.GLOBAL_FIT
-    saved_name: str | None=None
+    reference_name: str | None=None
     editable_geometry: EditablePositionReferenceGeometry | None=None
     editable_locks: frozenset[str]=frozenset()
 
     def __post_init__(self) -> None:
         mode = PositionReferenceMode.normalize(self.mode)
-        saved_name = (
+        reference_name = (
             None
-            if self.saved_name is None or not str(self.saved_name).strip()
-            else str(self.saved_name).strip()
+            if self.reference_name is None or not str(self.reference_name).strip()
+            else str(self.reference_name).strip()
         )
         geometry = self.editable_geometry
         if geometry is not None and not isinstance(geometry,EditablePositionReferenceGeometry):
             geometry = EditablePositionReferenceGeometry.from_mapping(geometry)
         locks = _normalize_editable_locks(self.editable_locks)
-        if mode is PositionReferenceMode.SAVED and saved_name is None:
-            raise ValueError("Saved position-reference mode requires a name")
+        if mode is PositionReferenceMode.REFERENCE and reference_name is None:
+            raise ValueError("Named position-reference mode requires a name")
         object.__setattr__(self,"mode",mode)
-        object.__setattr__(self,"saved_name",saved_name)
+        object.__setattr__(self,"reference_name",reference_name)
         object.__setattr__(self,"editable_geometry",geometry)
         object.__setattr__(self,"editable_locks",locks)
 
@@ -190,13 +193,14 @@ class PositionReferenceContext:
 
     selection: PositionReferenceSelection
     plane_name: str | None
-    saved_names: tuple[str,...]=()
+    references: tuple[PositionReferenceRecord,...]=()
+    persistence_available: bool=False
     compatible: bool=True
     compatibility_error: str=""
     change_allowed: bool=True
     change_unavailable_reason: str=""
-    save_allowed: bool=False
-    save_unavailable_reason: str=""
+    create_allowed: bool=False
+    create_unavailable_reason: str=""
     fit_geometry: EditablePositionReferenceGeometry | None=None
 
 
@@ -486,7 +490,7 @@ class SLMFeedbackService:
         *,
         measurements: MeasurementDispatcher | None=None,
         callbacks: SLMFeedbackCallbacks | None=None,
-        position_reference_store=None,
+        position_reference_store: PositionReferenceStore | None=None,
         fov_position_calibration_store=None,
         geometry_orientation_calibration_store=None,
     ) -> None:
@@ -781,12 +785,12 @@ class SLMFeedbackService:
             selection = PositionReferenceSelection()
             self._position_reference_selections[key] = selection
         if (
-            selection.mode is PositionReferenceMode.SAVED
+            selection.mode is PositionReferenceMode.REFERENCE
             and (
                 key[1] is None
                 or self._position_reference_store is None
                 or not self._position_reference_store.exists(
-                    key[1],selection.saved_name
+                    key[1],selection.reference_name
                 )
             )
         ):
@@ -803,7 +807,7 @@ class SLMFeedbackService:
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         selection = self.position_reference_selection(section)
-        saved_names = (
+        references = (
             ()
             if plane is None or self._position_reference_store is None
             else self._position_reference_store.list(plane)
@@ -834,17 +838,21 @@ class SLMFeedbackService:
                 fit_geometry = None
 
         change_reason = self._position_reference_change_reason(section)
-        save_reason = self._position_reference_save_reason(section)
+        create_reason = self._position_reference_create_reason(section)
         return PositionReferenceContext(
             selection=selection,
             plane_name=plane,
-            saved_names=tuple(saved_names),
+            references=tuple(references),
+            persistence_available=bool(
+                self._position_reference_store is not None
+                and self._position_reference_store.persistence_available
+            ),
             compatible=compatible,
             compatibility_error=compatibility_error,
             change_allowed=not bool(change_reason),
             change_unavailable_reason=change_reason,
-            save_allowed=not bool(save_reason),
-            save_unavailable_reason=save_reason,
+            create_allowed=not bool(create_reason),
+            create_unavailable_reason=create_reason,
             fit_geometry=fit_geometry,
         )
 
@@ -853,7 +861,7 @@ class SLMFeedbackService:
         section_key: str,
         *,
         mode: PositionReferenceMode | str,
-        saved_name: str | None=None,
+        reference_name: str | None=None,
         editable_geometry: EditablePositionReferenceGeometry | Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
     ) -> PositionReferenceSelection:
@@ -881,19 +889,19 @@ class SLMFeedbackService:
             editable_geometry = editable_position_reference_geometry(localization)
         selection = PositionReferenceSelection(
             mode=normalized_mode,
-            saved_name=saved_name,
+            reference_name=reference_name,
             editable_geometry=editable_geometry,
             editable_locks=_normalize_editable_locks(editable_locks),
         )
         plane = self._active_feedback_plane(section)
-        if selection.mode is PositionReferenceMode.SAVED:
+        if selection.mode is PositionReferenceMode.REFERENCE:
             if plane is None:
                 raise RuntimeError(
-                    "Select a measurement plane before using a saved position reference."
+                    "Select a measurement plane before using a named position reference."
                 )
             if self._position_reference_store is None:
                 raise RuntimeError("Position-reference storage is unavailable")
-            self._position_reference_store.load(plane,selection.saved_name)
+            self._position_reference_store.get(plane,selection.reference_name)
         self._position_reference_selections[(section,plane)] = selection
         self._section_changed(section)
         return selection
@@ -934,17 +942,13 @@ class SLMFeedbackService:
         self._section_changed(section)
         return selection
 
-    def save_position_reference(
-        self,section_key: str,name: str,*,overwrite: bool=False,
+    def _build_position_reference(
+        self,section_key: str,name: str,
     ) -> PositionReference:
-        self._require_editor_mode()
         section = str(section_key)
-        reason = self._position_reference_save_reason(section)
+        reason = self._position_reference_create_reason(section)
         if reason:
             raise RuntimeError(reason)
-        store = self._position_reference_store
-        if store is None:
-            raise RuntimeError("Position-reference storage is unavailable")
         plane = self._active_feedback_plane(section)
         if plane is None:  # guarded above; retained for static clarity.
             raise RuntimeError("Select a measurement plane first")
@@ -952,12 +956,12 @@ class SLMFeedbackService:
             section
         ).measurement
         if measurement is None or measurement.localization is None:
-            raise RuntimeError("Accept a localization before saving a reference")
+            raise RuntimeError("Accept a localization before creating a reference")
         localization = orient_localization(
             measurement.localization,self.feedback_orientation(section),
         )
         config_path = self.session.current_config_path
-        reference = PositionReference(
+        return PositionReference(
             name=name,
             plane_name=plane,
             lattice_indices=localization.lattice_indices,
@@ -975,18 +979,47 @@ class SLMFeedbackService:
                 "feedback_orientation":self.feedback_orientation(section).value,
             },
         )
-        store.save(reference,overwrite=bool(overwrite))
+
+    def add_position_reference(
+        self,
+        section_key: str,
+        name: str,
+        *,
+        lifetime: PositionReferenceLifetime | str=PositionReferenceLifetime.SESSION,
+        overwrite: bool=False,
+    ) -> PositionReference:
+        self._require_editor_mode()
+        store = self._position_reference_store
+        if store is None:
+            raise RuntimeError("Position-reference storage is unavailable")
+        section = str(section_key)
+        reference = self._build_position_reference(section,name)
+        store.add(
+            reference,lifetime=lifetime,overwrite=bool(overwrite),
+        )
         previous = self.position_reference_selection(section)
+        plane = self._active_feedback_plane(section)
         self._position_reference_selections[(section,plane)] = (
             PositionReferenceSelection(
-                mode=PositionReferenceMode.SAVED,
-                saved_name=reference.name,
+                mode=PositionReferenceMode.REFERENCE,
+                reference_name=reference.name,
                 editable_geometry=previous.editable_geometry,
                 editable_locks=previous.editable_locks,
             )
         )
         self._section_changed(section)
         return reference
+
+    def persist_position_reference(
+        self,section_key: str,name: str,
+    ) -> PositionReferenceRecord:
+        self._require_editor_mode()
+        plane = self._active_feedback_plane(section_key)
+        if plane is None:
+            raise RuntimeError("Select a measurement plane first")
+        if self._position_reference_store is None:
+            raise RuntimeError("Position-reference storage is unavailable")
+        return self._position_reference_store.persist(plane,str(name))
 
     def delete_position_reference(self,section_key: str,name: str) -> None:
         self._require_editor_mode()
@@ -1085,16 +1118,17 @@ class SLMFeedbackService:
         plane = self._active_feedback_plane(section)
         if plane is None:
             raise RuntimeError(
-                "Saved position references require an active measurement plane"
+                "Named position references require an active measurement plane"
             )
         if self._position_reference_store is None:
             raise RuntimeError("Position-reference storage is unavailable")
-        reference = self._position_reference_store.load(
-            plane,selection.saved_name,
+        record = self._position_reference_store.get_record(
+            plane,selection.reference_name,
         )
+        reference = record.reference
         if tuple(reference.image_shape) != tuple(measurement.acquisition.image.shape):
             raise RuntimeError(
-                "Saved reference image shape %s does not match current measurement %s"
+                "Reference image shape %s does not match current measurement %s"
                 % (reference.image_shape,measurement.acquisition.image.shape)
             )
         current_detector = str(measurement.acquisition.detector or "").strip() or None
@@ -1104,19 +1138,20 @@ class SLMFeedbackService:
             and reference.detector_name != current_detector
         ):
             raise RuntimeError(
-                'Saved reference detector "%s" does not match current detector "%s"'
+                'Reference detector "%s" does not match current detector "%s"'
                 % (reference.detector_name,current_detector)
             )
         positions = reference_positions_for_localization(reference,localization)
         return positions,{
             "mode":selection.mode.value,
-            "label":"Saved: %s" % reference.name,
+            "label":reference.name,
             "name":reference.name,
             "plane_name":reference.plane_name,
             "created_at":reference.created_at,
+            "lifetime":record.lifetime.value,
         }
 
-    def _position_reference_save_reason(self,section_key: str) -> str:
+    def _position_reference_create_reason(self,section_key: str) -> str:
         status = self.session.runtime.get_section_feedback_status(section_key)
         if FeedbackCapability.POSITION_CORRECTION not in set(status.capabilities):
             return "Position references are unavailable for this target."
@@ -1126,13 +1161,13 @@ class SLMFeedbackService:
         if self._position_reference_store is None:
             return "Position-reference storage is unavailable."
         if self._active_feedback_plane(section_key) is None:
-            return "Select a measurement plane before saving a position reference."
+            return "Select a measurement plane before creating a position reference."
         inspection = self.session.runtime.get_section_feedback_inspection(section_key)
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
-            return "Accept a localization before saving a position reference."
+            return "Accept a localization before creating a position reference."
         if not _localization_is_complete(measurement.localization):
-            return "Only a complete, genuinely localized target can be saved as a reference."
+            return "Only a complete, genuinely localized target can be used as a reference."
         return ""
 
     def _on_position_reference_store_changed(self) -> None:
@@ -1140,13 +1175,13 @@ class SLMFeedbackService:
         for section in tuple(runtime.section_keys):
             key = self._position_reference_key(section)
             selection = self._position_reference_selections.get(key)
-            if selection is not None and selection.mode is PositionReferenceMode.SAVED:
+            if selection is not None and selection.mode is PositionReferenceMode.REFERENCE:
                 plane = key[1]
                 if (
                     plane is None
                     or self._position_reference_store is None
                     or not self._position_reference_store.exists(
-                        plane,selection.saved_name
+                        plane,selection.reference_name
                     )
                 ):
                     self._position_reference_selections[key] = PositionReferenceSelection()

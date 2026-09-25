@@ -12,6 +12,9 @@ from .feedback import (
     MeasurementDispatcher,MeasurementRequest,PositionReferenceContext,
     PositionReferenceSelection,SLMFeedbackCallbacks,SLMFeedbackService,
 )
+from .position_reference_store import (
+    PositionReferenceLifetime,PositionReferenceRecord,PositionReferenceStore,
+)
 from .runtime_factory import SLMRuntimeFactory
 from .section_layout import PreparedSectionLayoutChange,SLMSectionLayoutService
 from .session import SLMSession,SLMSessionCallbacks
@@ -33,6 +36,9 @@ __all__ = [
     "PreparedSectionLayoutChange",
     "PositionReferenceContext",
     "PositionReferenceSelection",
+    "PositionReferenceLifetime",
+    "PositionReferenceRecord",
+    "PositionReferenceStore",
     "SLMCalibrationCallbacks",
     "SLMCalibrationService",
     "SLMConfigurationService",

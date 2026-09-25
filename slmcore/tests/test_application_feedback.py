@@ -313,19 +313,21 @@ def _attach_reference_localization(runtime,section_key="sec_0"):
     return localization
 
 
-def test_saved_position_reference_is_shared_but_selection_is_transient(tmp_path):
-    from slmcore import PositionReferenceMode,SLMWorkspace
+def test_named_session_reference_is_shared_but_selection_is_transient(tmp_path):
+    from slmcore import (
+        PositionReferenceLifetime,PositionReferenceMode,PositionReferenceStore,
+    )
 
-    workspace = SLMWorkspace(tmp_path)
+    store = PositionReferenceStore(tmp_path / "position_references")
     runtime_a = _runtime(serial="SER-A")
     session_a = SLMSession(
         runtime=runtime_a,
-        position_reference_store=workspace.position_reference_store,
+        position_reference_store=store,
     )
     session_a.calibration.active_plane = lambda _section:"sample"
     localization = _attach_reference_localization(runtime_a)
 
-    reference = session_a.feedback.save_position_reference(
+    reference = session_a.feedback.add_position_reference(
         "sec_0","aligned OFF",
     )
     assert reference.metadata["source_slm_serial"] == "SER-A"
@@ -333,33 +335,41 @@ def test_saved_position_reference_is_shared_but_selection_is_transient(tmp_path)
         reference.positions_px,
         localization.measured_positions_px + np.array([[16.0],[8.0]]),
     )
+    assert store.get_record(
+        "sample","aligned OFF"
+    ).lifetime is PositionReferenceLifetime.SESSION
     assert session_a.feedback.position_reference_selection(
         "sec_0"
-    ).mode is PositionReferenceMode.SAVED
+    ).mode is PositionReferenceMode.REFERENCE
 
-    # A different SLM session on the same workspace sees the resource, but it
-    # does not inherit the other session's active selection.
+    # A different SLM session sharing the same live store sees the reference,
+    # but it does not inherit the other session's active selection.
     runtime_b = _runtime(serial="SER-B")
     session_b = SLMSession(
         runtime=runtime_b,
-        position_reference_store=workspace.position_reference_store,
+        position_reference_store=store,
     )
     session_b.calibration.active_plane = lambda _section:"sample"
     context = session_b.feedback.position_reference_context("sec_0")
-    assert context.saved_names == ("aligned OFF",)
+    assert tuple(record.name for record in context.references) == ("aligned OFF",)
     assert context.selection.mode is PositionReferenceMode.GLOBAL_FIT
 
     selection = session_b.feedback.set_position_reference(
-        "sec_0",mode="saved",saved_name="aligned OFF",
+        "sec_0",mode="reference",reference_name="aligned OFF",
     )
-    assert selection.mode is PositionReferenceMode.SAVED
-    # Selecting a saved reference before acquiring/localizing is valid; actual
+    assert selection.mode is PositionReferenceMode.REFERENCE
+    # Selecting a named reference before acquiring/localizing is valid; actual
     # lattice/image compatibility is checked as soon as localization exists.
     assert session_b.feedback.position_reference_context("sec_0").compatible
 
+    session_b.feedback.persist_position_reference("sec_0","aligned OFF")
+    assert store.get_record(
+        "sample","aligned OFF"
+    ).lifetime is PositionReferenceLifetime.PERSISTENT
+    assert len(store.list("sample")) == 1
+
     session_a.dispose()
     session_b.dispose()
-
 
 def _fov_calibration_for_runtime(runtime,name,displacement=(0.01,-0.02)):
     from slmcore import FOVPositionCalibration

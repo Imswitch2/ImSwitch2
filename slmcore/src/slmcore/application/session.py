@@ -18,6 +18,7 @@ from .configuration import (
 )
 from .control_mode import SLMControlMode
 from .runtime_factory import SLMRuntimeFactory
+from .position_reference_store import PositionReferenceStore
 from .feedback import (
     AutomaticFeedbackState,MeasurementDispatcher,SLMFeedbackCallbacks,
     SLMFeedbackService,
@@ -93,7 +94,7 @@ class SLMSession:
         current_config_path: str | None=None,
         measurement_dispatcher: MeasurementDispatcher | None=None,
         calibration_store=None,
-        position_reference_store=None,
+        position_reference_store: PositionReferenceStore | None=None,
         fov_position_calibration_store=None,
         geometry_orientation_calibration_store=None,
         startup_preferences=None,

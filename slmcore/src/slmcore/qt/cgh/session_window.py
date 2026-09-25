@@ -66,7 +66,8 @@ class MeasurementsAction(str,Enum):
     POSITION_APPLY = "position_apply"
     POSITION_REFERENCE_SET = "position_reference_set"
     POSITION_REFERENCE_FIT_CENTER = "position_reference_fit_center"
-    POSITION_REFERENCE_SAVE = "position_reference_save"
+    POSITION_REFERENCE_ADD = "position_reference_add"
+    POSITION_REFERENCE_PERSIST = "position_reference_persist"
     POSITION_REFERENCE_DELETE = "position_reference_delete"
     FOV_CALIBRATION_FIT = "fov_calibration_fit"
     FOV_CALIBRATION_SAVE = "fov_calibration_save"
@@ -129,8 +130,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._feedback_orientation_change_reason = ""
         self._position_reference_context: dict[str,Any] = {
             "mode":"global_fit",
-            "saved_name":None,
-            "saved_names":(),
+            "reference_name":None,
+            "references":(),
+            "persistence_available":False,
             "editable_geometry":None,
             "editable_locks":{},
             "fit_geometry":None,
@@ -139,8 +141,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "compatibility_error":"",
             "change_allowed":True,
             "change_unavailable_reason":"",
-            "save_allowed":False,
-            "save_unavailable_reason":"",
+            "create_allowed":False,
+            "create_unavailable_reason":"",
         }
         self._position_reference_preview = None
         self._fov_calibration_context: dict[str,Any] = {}
@@ -350,16 +352,16 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.measurement_view.sigAcceptRequested.connect(
             self._accept_localization_candidate,
         )
-        self.position_reference_save_button = QtWidgets.QPushButton(
-            "Save Reference…"
+        self.position_reference_add_button = QtWidgets.QPushButton(
+            "Add Session Reference…"
         )
-        self.position_reference_save_button.setMinimumHeight(23)
-        self.position_reference_save_button.setMinimumWidth(140)
-        self.position_reference_save_button.clicked.connect(
-            self._save_position_reference_requested,
+        self.position_reference_add_button.setMinimumHeight(23)
+        self.position_reference_add_button.setMinimumWidth(160)
+        self.position_reference_add_button.clicked.connect(
+            self._add_position_reference_requested,
         )
         self.measurement_view.add_action_widget(
-            self.position_reference_save_button
+            self.position_reference_add_button
         )
 
         layout.addWidget(self.measurement_view,1)
@@ -814,14 +816,47 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         controls_layout.addWidget(self.position_reference_info_label)
 
-        self.position_reference_delete_button = QtWidgets.QPushButton(
-            "Delete reference"
+        references_label = QtWidgets.QLabel("References")
+        references_font = references_label.font()
+        references_font.setBold(True)
+        references_label.setFont(references_font)
+        controls_layout.addWidget(references_label)
+
+        self.position_reference_list = QtWidgets.QListWidget(controls)
+        self.position_reference_list.setMaximumHeight(105)
+        self.position_reference_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SingleSelection
         )
+        self.position_reference_list.itemSelectionChanged.connect(
+            self._refresh_position_reference_manager_actions,
+        )
+        controls_layout.addWidget(self.position_reference_list)
+
+        reference_actions = QtWidgets.QHBoxLayout()
+        reference_actions.setContentsMargins(0,0,0,0)
+        reference_actions.setSpacing(5)
+        self.position_reference_use_button = QtWidgets.QPushButton("Use")
+        self.position_reference_use_button.setFixedHeight(24)
+        self.position_reference_use_button.clicked.connect(
+            self._use_managed_position_reference,
+        )
+        reference_actions.addWidget(self.position_reference_use_button,1)
+        self.position_reference_delete_button = QtWidgets.QPushButton("Delete")
         self.position_reference_delete_button.setFixedHeight(24)
         self.position_reference_delete_button.clicked.connect(
             self._delete_position_reference_requested,
         )
-        controls_layout.addWidget(self.position_reference_delete_button)
+        reference_actions.addWidget(self.position_reference_delete_button,1)
+        controls_layout.addLayout(reference_actions)
+
+        self.position_reference_persist_button = QtWidgets.QPushButton(
+            "Save permanently"
+        )
+        self.position_reference_persist_button.setFixedHeight(24)
+        self.position_reference_persist_button.clicked.connect(
+            self._persist_position_reference_requested,
+        )
+        controls_layout.addWidget(self.position_reference_persist_button)
         controls_layout.addSpacing(7)
 
         correction_label = QtWidgets.QLabel("Position correction")
@@ -1097,8 +1132,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         geometry=self._geometry_mode_active()
         analysis_widget=getattr(self,'measurement_analysis_widget',None)
         if analysis_widget is not None:analysis_widget.setVisible(not geometry)
-        save_reference=getattr(self,'position_reference_save_button',None)
-        if save_reference is not None:save_reference.setVisible(not geometry)
+        add_reference=getattr(self,'position_reference_add_button',None)
+        if add_reference is not None:add_reference.setVisible(not geometry)
         if geometry:
             self._apply_geometry_measurement_state()
         else:
@@ -1276,23 +1311,61 @@ class CGHSessionWindow(QtWidgets.QDialog):
             return
         context = dict(self._position_reference_context or {})
         mode = str(context.get("mode") or "global_fit")
-        saved_name = context.get("saved_name")
-        saved_names = tuple(context.get("saved_names") or ())
+        reference_name = context.get("reference_name")
+        references = tuple(
+            dict(item) for item in (context.get("references") or ())
+        )
         token = (
-            "saved:%s" % saved_name
-            if mode == "saved" and saved_name else mode
+            "reference:%s" % reference_name
+            if mode == "reference" and reference_name else mode
         )
         blocker = QtCore.QSignalBlocker(combo)
         try:
             combo.clear()
             combo.addItem("Global fit","global_fit")
             combo.addItem("Editable lattice","editable")
-            for name in saved_names:
-                combo.addItem("Saved: %s" % name,"saved:%s" % name)
+            for item in references:
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                lifetime = str(item.get("lifetime") or "session")
+                suffix = "Persistent" if lifetime == "persistent" else "Session"
+                combo.addItem(
+                    "%s · %s" % (name,suffix),"reference:%s" % name,
+                )
             index = combo.findData(token)
             combo.setCurrentIndex(index if index >= 0 else 0)
         finally:
             del blocker
+
+        reference_list = getattr(self,"position_reference_list",None)
+        if reference_list is not None:
+            previous_name = self._selected_managed_position_reference_name()
+            preferred_name = previous_name or (
+                str(reference_name) if mode == "reference" and reference_name else ""
+            )
+            list_blocker = QtCore.QSignalBlocker(reference_list)
+            try:
+                reference_list.clear()
+                selected_item = None
+                for entry in references:
+                    name = str(entry.get("name") or "").strip()
+                    if not name:
+                        continue
+                    lifetime = str(entry.get("lifetime") or "session")
+                    suffix = "Persistent" if lifetime == "persistent" else "Session"
+                    item = QtWidgets.QListWidgetItem(
+                        "%s · %s" % (name,suffix)
+                    )
+                    item.setData(QtCore.Qt.UserRole,name)
+                    item.setData(QtCore.Qt.UserRole+1,lifetime)
+                    reference_list.addItem(item)
+                    if name == preferred_name:
+                        selected_item = item
+                if selected_item is not None:
+                    reference_list.setCurrentItem(selected_item)
+            finally:
+                del list_blocker
 
         editable_widget = getattr(
             self,"position_reference_editable_widget",None
@@ -1345,10 +1418,23 @@ class CGHSessionWindow(QtWidgets.QDialog):
             info = "Current localization · global affine fit"
         elif mode == "editable":
             info = "Current localization · editable affine lattice"
-        elif saved_name:
-            info = "Saved: %s" % saved_name
+        elif reference_name:
+            entry = next(
+                (
+                    item for item in references
+                    if str(item.get("name") or "") == str(reference_name)
+                ),
+                None,
+            )
+            lifetime = "" if entry is None else str(entry.get("lifetime") or "")
+            suffix = (
+                " · Persistent" if lifetime == "persistent"
+                else " · Session" if lifetime == "session"
+                else ""
+            )
+            info = "%s%s" % (reference_name,suffix)
         else:
-            info = "Saved reference"
+            info = "Named reference"
         if plane:
             info += " · Plane: %s" % plane
         if not compatible and compatibility_error:
@@ -1364,25 +1450,87 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 mode == "editable" and change_allowed
             )
 
-        delete_button = getattr(
-            self,"position_reference_delete_button",None
-        )
-        if delete_button is not None:
-            selected_saved = bool(mode == "saved" and saved_name)
-            delete_button.setVisible(selected_saved)
-            delete_button.setEnabled(selected_saved and change_allowed)
-            delete_button.setToolTip(reason)
-
-        save_button = getattr(self,"position_reference_save_button",None)
-        if save_button is not None:
-            save_reason = str(context.get("save_unavailable_reason") or "")
-            save_allowed = bool(
-                context.get("save_allowed",False)
+        add_button = getattr(self,"position_reference_add_button",None)
+        if add_button is not None:
+            create_reason = str(context.get("create_unavailable_reason") or "")
+            create_allowed = bool(
+                context.get("create_allowed",False)
                 and self._selected_is_current_context()
                 and not self._cgh_computing
             )
-            save_button.setEnabled(save_allowed)
-            save_button.setToolTip(save_reason)
+            add_button.setEnabled(create_allowed)
+            add_button.setToolTip(create_reason)
+
+        self._refresh_position_reference_manager_actions()
+
+    def _selected_managed_position_reference_name(self) -> str:
+        reference_list = getattr(self,"position_reference_list",None)
+        item = None if reference_list is None else reference_list.currentItem()
+        if item is None:
+            return ""
+        return str(item.data(QtCore.Qt.UserRole) or "").strip()
+
+    def _selected_managed_position_reference_lifetime(self) -> str:
+        reference_list = getattr(self,"position_reference_list",None)
+        item = None if reference_list is None else reference_list.currentItem()
+        if item is None:
+            return ""
+        return str(item.data(QtCore.Qt.UserRole+1) or "").strip()
+
+    def _refresh_position_reference_manager_actions(self,*_args: Any) -> None:
+        context = dict(self._position_reference_context or {})
+        name = self._selected_managed_position_reference_name()
+        lifetime = self._selected_managed_position_reference_lifetime()
+        active_name = (
+            str(context.get("reference_name") or "").strip()
+            if str(context.get("mode") or "") == "reference"
+            else ""
+        )
+        current_context = bool(
+            self._selected_is_current_context() and not self._cgh_computing
+        )
+        change_allowed = bool(
+            context.get("change_allowed",True) and current_context
+        )
+        reason = str(context.get("change_unavailable_reason") or "")
+
+        use_button = getattr(self,"position_reference_use_button",None)
+        if use_button is not None:
+            use_button.setEnabled(bool(name) and change_allowed)
+            use_button.setToolTip(reason if name and not change_allowed else "")
+
+        delete_button = getattr(self,"position_reference_delete_button",None)
+        if delete_button is not None:
+            deleting_active = bool(name and name == active_name)
+            delete_allowed = bool(
+                name and current_context and (not deleting_active or change_allowed)
+            )
+            delete_button.setEnabled(delete_allowed)
+            delete_button.setToolTip(
+                reason if deleting_active and not change_allowed else ""
+            )
+
+        persist_button = getattr(self,"position_reference_persist_button",None)
+        if persist_button is not None:
+            persistence_available = bool(
+                context.get("persistence_available",False)
+            )
+            persist_button.setEnabled(
+                bool(name)
+                and lifetime == "session"
+                and current_context
+                and persistence_available
+            )
+            if lifetime == "persistent":
+                persist_button.setToolTip("This reference is already persistent.")
+            elif not persistence_available:
+                persist_button.setToolTip(
+                    "Persistent position-reference storage is unavailable."
+                )
+            else:
+                persist_button.setToolTip(
+                    "Keep this reference across application sessions."
+                )
 
     def _make_position_geometry_spinbox(
         self,minimum: float,maximum: float,decimals: int,suffix: str,step: float,
@@ -1503,13 +1651,13 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
     def _on_position_reference_changed(self,_index: int) -> None:
         token = str(self.position_reference_combo.currentData() or "global_fit")
-        if token.startswith("saved:"):
-            mode,saved_name = "saved",token.split(":",1)[1]
+        if token.startswith("reference:"):
+            mode,reference_name = "reference",token.split(":",1)[1]
         else:
-            mode,saved_name = token,None
+            mode,reference_name = token,None
         payload = {
             "mode":mode,
-            "saved_name":saved_name,
+            "reference_name":reference_name,
         }
         if mode == "editable":
             geometry = self._position_reference_context.get("editable_geometry")
@@ -1564,14 +1712,29 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if stack is not None:
             stack.setCurrentIndex(max(0,min(int(index),stack.count()-1)))
 
-    def _save_position_reference_requested(self,*_args: Any) -> None:
+    def _add_position_reference_requested(self,*_args: Any) -> None:
         name,ok = QtWidgets.QInputDialog.getText(
-            self,"Save position reference","Reference name:"
+            self,"Add session reference","Reference name:"
         )
         name = str(name or "").strip()
         if ok and name:
             self._emit(
-                MeasurementsAction.POSITION_REFERENCE_SAVE,{"name":name},
+                MeasurementsAction.POSITION_REFERENCE_ADD,{"name":name},
+            )
+
+    def _use_managed_position_reference(self,*_args: Any) -> None:
+        name = self._selected_managed_position_reference_name()
+        if name:
+            self._emit(
+                MeasurementsAction.POSITION_REFERENCE_SET,
+                {"mode":"reference","reference_name":name},
+            )
+
+    def _persist_position_reference_requested(self,*_args: Any) -> None:
+        name = self._selected_managed_position_reference_name()
+        if name:
+            self._emit(
+                MeasurementsAction.POSITION_REFERENCE_PERSIST,{"name":name},
             )
 
     def _save_fov_calibration_requested(self,*_args: Any) -> None:
@@ -1583,9 +1746,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._emit(MeasurementsAction.FOV_CALIBRATION_SAVE,{"name":name})
 
     def _delete_position_reference_requested(self,*_args: Any) -> None:
-        name = str(
-            dict(self._position_reference_context or {}).get("saved_name") or ""
-        ).strip()
+        name = self._selected_managed_position_reference_name()
         if name:
             self._emit(
                 MeasurementsAction.POSITION_REFERENCE_DELETE,{"name":name},
