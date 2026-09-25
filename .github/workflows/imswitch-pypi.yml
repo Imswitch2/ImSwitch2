@@ -1,44 +1,121 @@
 name: imswitch-pypi
 
-# DISABLED tag trigger until the ImSwitch2 rebrand lands.  Reasons:
-#   1. setup.cfg still says `name = ImSwitch`, which is taken on PyPI
-#      by the upstream project (last release 2.0.0, Jan 2023).  Any
-#      tag push from this fork tries to publish ImSwitch 0.x to a
-#      package this maintainer does not own → token rejection.
-#   2. Even with a valid token, 0.1.0 is a version downgrade against
-#      the upstream 2.0.0, which PyPI refuses.
+# Publishes the `imswitch2` distribution to PyPI with Trusted Publishing:
+# PyPI trusts this workflow's GitHub OIDC identity (repository + this file's
+# name + the job's environment), so there is no API token and no repository
+# secret.  Renaming this file or an environment breaks publishing until the
+# PyPI side is updated to match.
 #
-# To reactivate:
-#   - Rename the package in setup.cfg (e.g. `name = imswitch2`).
-#   - Register the new name on PyPI with a maintainer account.
-#   - Set the PYPI_API_TOKEN secret in the repo settings.
-#   - Restore the `push:` block below.
+# One-time setup, on each index (a "pending publisher" also works before the
+# project exists; the first upload then creates it):
+#   PyPI      https://pypi.org/manage/account/publishing/
+#   TestPyPI  https://test.pypi.org/manage/account/publishing/
+#     PyPI project name  imswitch2
+#     Owner              Imswitch2
+#     Repository name    Imswitch2
+#     Workflow name      imswitch-pypi.yml
+#     Environment name   pypi       (TestPyPI: testpypi)
+# GitHub creates both environments on first use.  Adding required reviewers
+# to `pypi` (Settings > Environments) makes every upload wait for approval.
 #
-# workflow_dispatch stays available for manual testing during the rebrand.
+# Releasing:
+#   1. Bump `__version__` in imswitch/__init__.py and merge to main.  PyPI
+#      never accepts the same version twice, even after a deletion.
+#   2. Optional dry run: Actions > imswitch-pypi > Run workflow uploads the
+#      chosen ref to TestPyPI.
+#   3. Publish a GitHub release tagged v<__version__>.  The build refuses a
+#      tag that does not match, then uploads to PyPI.
+# A release runs this file as it exists at the tagged commit, so changes here
+# must be merged before tagging.
+
 on:
+  release:
+    types: [published]
   workflow_dispatch:
-  # push:
-  #   tags:
-  #     - '*'
+
+permissions:
+  contents: read
 
 jobs:
-  build-n-publish:
+  build:
+    name: Build sdist and wheel
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-      with:
-        ref: ${{ github.ref }}
-    - name: Set up Python 3.9
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.9
-    - name: Install pypa/build
-      run: |
-        python3 -m pip install build --user
-    - name: Build a binary wheel and a source tarball
-      run: |
-        python3 -m build --sdist --wheel --outdir dist/ .
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@master
-      with:
-        password: ${{ secrets.PYPI_API_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - name: Check the metadata PyPI will render
+        run: python -m twine check --strict dist/*
+      - name: Check the distribution name and the release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'EOF'
+          import os
+          import pathlib
+          import sys
+
+          ns = {}
+          exec(pathlib.Path('imswitch/__init__.py').read_text(), ns)
+          wheels = sorted(pathlib.Path('dist').glob('*.whl'))
+          sdists = sorted(pathlib.Path('dist').glob('*.tar.gz'))
+          if len(wheels) != 1 or len(sdists) != 1:
+              sys.exit(f'expected one wheel and one sdist, got {wheels + sdists}')
+          name, version = wheels[0].name.split('-')[:2]
+          if name != ns['__distname__']:
+              sys.exit(f'built {name!r}, but imswitch.__distname__ is {ns["__distname__"]!r}')
+          tag = os.environ['RELEASE_TAG']
+          if tag and tag.removeprefix('v') != version:
+              sys.exit(f'release tag {tag!r} does not match the package version {version!r}; '
+                       'bump imswitch.__version__ or retag')
+          print(f'{name} {version}' + (f' for release {tag}' if tag else ''))
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Upload to TestPyPI
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/imswitch2
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # A second dry run of an unchanged version would otherwise fail on
+          # "file already exists"; the build checks above still run.
+          skip-existing: true
+
+  publish-pypi:
+    name: Upload to PyPI
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/imswitch2
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
