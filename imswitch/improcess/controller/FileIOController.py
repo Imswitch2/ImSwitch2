@@ -488,10 +488,8 @@ class FileIOController(ImProcessWidgetController):
                 # The estimate is a courtesy; the load below reports its own
                 # failures the way it always has.
                 self._logger.debug(f'No materialisation estimate: {exc!r}')
-            if notice:
-                signal = getattr(self._commChannel, 'sigStatusMessage', None)
-                if signal is not None:
-                    signal.emit(notice)
+            if notice and hasattr(self._commChannel, 'sigStatusMessage'):
+                self._commChannel.sigStatusMessage.emit(notice)
             dataObj.checkAndLoadData()
         ready = getattr(self._main._currentDataObj, 'sourceReady', None)
         if ready is None:

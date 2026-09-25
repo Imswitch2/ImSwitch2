@@ -21,7 +21,6 @@ https://github.com/user-attachments/assets/5744edc2-409e-4802-b06e-1972b8335a37
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 <!-- TODO: once CI is public, add:
 [![CI](https://github.com/<org>/<repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<org>/<repo>/actions/workflows/ci.yml)
-[![Docs](https://readthedocs.org/projects/imswitch/badge/?version=latest)](https://imswitch.readthedocs.io)
 [![codecov](https://codecov.io/gh/<org>/<repo>/branch/main/graph/badge.svg)](https://codecov.io/gh/<org>/<repo>)
 -->
 
@@ -90,7 +89,7 @@ Imswitch2 creates `~/ImSwitchConfig/` on first launch and opens a setup-picker d
 
 > **The first launch is slow — give it a minute.**  Before the window appears, Imswitch2 creates its `~/ImSwitchConfig/` folder structure and copies the example setups and scripts into it, and Python, napari and matplotlib build their caches.  Later launches skip all of this and start much faster.
 
-A fresh install loads three modules, one tab each down the left edge of the window: **Hardware Control** (ImControl, the microscope), **Image Processing** (ImProcess, reconstruction and analysis) and **Scripting** (ImScripting, the script editor).  To change which ones load, use **Preferences > Set active modules…** or edit `~/ImSwitchConfig/config/modules.json`.  An existing `modules.json` is never overwritten, so a config folder from an older install keeps the modules it lists.
+A fresh install loads three modules, one tab each down the left edge of the window: **Hardware Control** (ImControl, the microscope), **Image Processing** (ImProcess, reconstruction and analysis) and **Scripting** (ImScripting, the script editor).  To change which ones load, use **Preferences > Set active modules…** or edit `~/ImSwitchConfig/config/modules.json`.  A `modules.json` you changed is kept when you update Imswitch2 (see *Updates to the shipped files* below).
 
 For real hardware:
 
@@ -198,6 +197,8 @@ Documents\ImSwitchConfig\          (Windows)
   └── imcontrol_setups/
       └── my_microscope.json       # hardware definition
 ```
+
+**Updates to the shipped files.**  The example setups, the mock setups, the scripting tutorials and `config/modules.json` are copied into `~/ImSwitchConfig/` from the Imswitch2 package.  At every start, a copy you have not edited that is an older shipped version is updated to the current one, and an untouched script Imswitch2 no longer ships is moved to the trash.  Files you edited are never changed or removed; the log names the ones that differ from the current version -- delete one and restart to get the current version.
 
 A GUI editor is included for building setup files without writing JSON by hand.
 Open it from a running ImSwitch under **Tools > Edit hardware configuration...**,

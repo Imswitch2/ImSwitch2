@@ -1,0 +1,98 @@
+{
+    "__comment__": "Hardware-free MoNaLISA setup for exercising the live-reconstruction loop end to end (record -> watch folder -> live reconstruct). It merges mock_scan_setup.json (mock AVManager camera + MockPositionerManager stages + simulated NIDAQ, so it boots with no hardware and can run a MoNaLISA Scan-once / Scan-lapse recording) with a 'processing' block that enables the MoNaLISA reconstructor in ImProcess. Also set modules.json 'enabled' to ['imcontrol', 'improcess']. Recorded frames are mock content, so reconstructions are structurally valid but not meaningful images - the point is the wiring. Record in ZARR format with 'single lapse file' OFF so a Scan-lapse produces one <name>_rec_scanN.zarr per timepoint.",
+    "detectors": {
+        "Camera": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "AVManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "avcam": {
+                    "exposure": 100,
+                    "gain": 1
+                }
+            },
+            "forAcquisition": true
+        }
+    },
+    "lasers": {},
+    "positioners": {
+        "X": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": [
+                "X"
+            ],
+            "forScanning": true,
+            "forPositioning": true,
+            "resetOnClose": false
+        },
+        "Y": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": [
+                "Y"
+            ],
+            "forScanning": true,
+            "forPositioning": true,
+            "resetOnClose": false
+        },
+        "Z": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": [
+                "Z"
+            ],
+            "forScanning": true,
+            "forPositioning": true,
+            "resetOnClose": false
+        }
+    },
+    "scan": {
+        "scanWidgetType": "MoNaLISA",
+        "scanDesigner": "BetaScanDesigner",
+        "scanDesignerParams": {
+            "return_time": 0.01
+        },
+        "TTLCycleDesigner": "BetaTTLCycleDesigner",
+        "TTLCycleDesignerParams": {},
+        "sampleRate": 100000,
+        "lineClockLine": null,
+        "frameStartClockLine": null,
+        "frameEndClockLine": null
+    },
+    "nidaq": {
+        "timerCounterChannel": null,
+        "startTrigger": false,
+        "simulation": true
+    },
+    "processing": {
+        "reconstructors": [
+            "monalisa",
+            "view-only"
+        ],
+        "processors": [
+            "resize",
+            "drift-correct",
+            "convert-type"
+        ],
+        "fileWatcherPanel": true,
+        "reconstructionPanel": true
+    },
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image",
+        "Positioner",
+        "Scan",
+        "BeadRec",
+        "FFT"
+    ]
+}
