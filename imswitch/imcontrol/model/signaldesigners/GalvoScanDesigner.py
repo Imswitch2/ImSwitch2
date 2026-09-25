@@ -84,6 +84,9 @@ class GalvoScanDesigner(ScanDesigner):
         return True
 
     def checkSignalLength(self, scanParameters, setupInfo):
+        return not self.signalLengthRefusal(scanParameters, setupInfo)
+
+    def signalLengthRefusal(self, scanParameters, setupInfo):
         """ Check that the signal would not be too large (to be stored in
         the RAM and to be generated and run inside a reasonable time). """
         # TODO: Think about changing the way >d3 steps are generated and sent to the nidaq -
@@ -101,12 +104,18 @@ class GalvoScanDesigner(ScanDesigner):
         # TODO: Update these limits, arbitrarly 
         scan_steps = np.prod(n_steps_dx)
         min_scan_time = scan_steps * scanParameters['sequence_time'] * 2
-        if hasattr(setupInfo.scan, "maxScanTimeMin"):
-            if setupInfo.scan.maxScanTimeMin and min_scan_time > 60*setupInfo.scan.maxScanTimeMin:
-                return False
+        limit = getattr(setupInfo.scan, 'maxScanTimeMin', None)
+        if limit and min_scan_time > 60 * limit:
+            return (
+                f'Scan would take at least {min_scan_time / 60:.1f} min, above '
+                f'the {limit:g} min cap (scan.maxScanTimeMin).'
+            )
         if scan_steps > 1e7:
-            return False
-        return True
+            return (
+                f'Scan has {int(scan_steps)} positions, above the '
+                '10000000-position limit.'
+            )
+        return ''
 
     def make_signal(self, parameterDict, setupInfo):
         # --- Per-call state (reset each invocation, accumulated by private methods) ---

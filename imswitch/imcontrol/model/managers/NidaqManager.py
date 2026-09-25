@@ -49,7 +49,7 @@ except ImportError:
         def Task(*_args, **_kwargs):
             raise ImportError(
                 'nidaqmx is required for NI-DAQ hardware. '
-                'Install it with: pip install "imswitch[hardware]"'
+                'Install it with: pip install "imswitch2[hardware]"'
             )
 
     nidaqmx = _UnavailableNidaqmx()
@@ -116,7 +116,7 @@ class NidaqManager(SignalInterface):
             if hasNidaqDevices and not self.__simulating:
                 raise ImportError(
                     'nidaqmx is required for NI-DAQ hardware in this setup. '
-                    'Install it with: pip install "imswitch[hardware]"'
+                    'Install it with: pip install "imswitch2[hardware]"'
                 )
             if hasNidaqDevices:
                 self.__logger.info(

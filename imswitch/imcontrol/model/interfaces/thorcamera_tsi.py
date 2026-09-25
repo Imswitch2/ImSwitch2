@@ -33,7 +33,7 @@ class ThorTSICamera:
         except ImportError as e:
             raise ImportError(
                 "thorlabs_tsi_sdk not found. Install with: "
-                "pip install thorlabs_tsi_sdk or pip install ImSwitch[hardware]"
+                "pip install thorlabs_tsi_sdk or pip install 'imswitch2[hardware]'"
             ) from e
         
         self._sdk = TLCameraSDK()

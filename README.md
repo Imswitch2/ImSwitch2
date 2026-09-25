@@ -1,7 +1,8 @@
 <div align="center">
 
 <!-- TODO: replace with a project logo (e.g. docs/images/logo.svg).  Suggested width: 320 px. -->
-<a href="#"><img src="docs/images/imswitch2_logo.png" alt="Imswitch2 logo" width="320"/></a>
+<!-- Absolute URL: this README is also the PyPI project page, where a relative path is a broken image. -->
+<a href="#"><img src="https://raw.githubusercontent.com/Imswitch2/Imswitch2/main/docs/images/imswitch2_logo.png" alt="Imswitch2 logo" width="320"/></a>
 
 <!-- 80-second tour.  Leave the bare URL below exactly as it is: an uploaded attachment URL is
      the only form GitHub expands into a player.  Wrapping it in a markdown link leaves a link,

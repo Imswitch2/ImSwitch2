@@ -43,9 +43,12 @@ also catches a signal emitted synchronously inside the call::
 handle bound to that scan: ``handle.wait(timeout)`` returns ``True`` when
 it has ended (``False`` on timeout), and ``handle.successful`` /
 ``handle.message`` say how. ``runScanAndWait(timeout)`` wraps both and
-raises on refusal, failure or timeout. A start that is refused (a scan is
-already running, the previous one is still finishing) raises
-``ScanRequestRejectedError`` immediately; no ``scanEnded`` follows for it.
+raises on refusal, failure or timeout. A start that is refused raises
+``ScanRequestRejectedError`` immediately, with the reason as its message: a
+scan is already running, the previous one is still finishing, or the scan
+manager refused the design -- a scan longer than the setup's
+``scan.maxScanTimeMin``, say, or one that drives a scanner outside its
+voltage range. A refused start never runs, so there is no end to wait for.
 On rigs with several scanners, ``getScanSourceNames()`` lists the choices
 for ``runScan(source=...)``.
 

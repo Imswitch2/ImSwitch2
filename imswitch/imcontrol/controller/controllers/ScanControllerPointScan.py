@@ -64,22 +64,12 @@ class ScanControllerPointScan(SuperScanController):
                         sigScanStartingEmitted):
         """ Runs a scan with the set scanning parameters. """
         try:
-            if self._beginScanRun(
-                sigScanStartingEmitted=sigScanStartingEmitted
+            if self._beginScanRunWithDesign(
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                recalculateSignals=recalculateSignals,
             ) is None:
                 return
             self._widget.setScanButtonChecked(True)
-
-            if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
-                self.getParameters()
-                try:
-                    self.signalDict, self.scanInfoDict = self._master.scanManager.makeFullScan(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
-                except TypeError:
-                    self._logger.error(traceback.format_exc())
-                    self.scanFailed()
-                    return
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 

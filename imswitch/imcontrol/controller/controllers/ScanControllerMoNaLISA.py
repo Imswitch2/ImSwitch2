@@ -113,30 +113,20 @@ class ScanControllerMoNaLISA(SuperScanController):
         """ Runs a scan with the set scanning parameters. """
 
         try:
-            if self._beginScanRun(
-                sigScanStartingEmitted=sigScanStartingEmitted
+            if self._beginScanRunWithDesign(
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                recalculateSignals=recalculateSignals,
             ) is None:
                 return
             self._widget.setScanButtonChecked(True)
             # Do not mutate axial buffers until this exact start has acquired
             # run ownership. A duplicate user/API start while another
-            # iteration is active must be a side-effect-free refusal.
+            # iteration is active, or a refused scan design, must be a
+            # side-effect-free refusal.
             if not axialFollowUp:
                 self.checkAxialAutoScan()
                 if self.autoAxial:
                     self.setupAxial()
-
-            if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
-                self.getParameters()
-                try:
-                    self.signalDict, self.scanInfoDict = self._master.scanManager.makeFullScan(
-                        self._analogParameterDict, self._digitalParameterDict,
-                        staticPositioner=self._widget.isContLaserMode()
-                    )
-                except TypeError:
-                    self._logger.error(traceback.format_exc())
-                    self.scanFailed()
-                    return
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
@@ -151,6 +141,13 @@ class ScanControllerMoNaLISA(SuperScanController):
         except Exception:
             self._logger.error(traceback.format_exc())
             self.scanFailed()
+
+    def _buildScanSignals(self):
+        self.getParameters()
+        return self._master.scanManager.makeFullScan(
+            self._analogParameterDict, self._digitalParameterDict,
+            staticPositioner=self._widget.isContLaserMode()
+        )
 
     def resetPositioners(self):
         """ For when 'center' is not 0: put back positioner in position before the scan.
