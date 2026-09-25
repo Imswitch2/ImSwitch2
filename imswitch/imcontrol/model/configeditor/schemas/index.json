@@ -486,7 +486,7 @@
       "overridden": false,
       "properties": 3,
       "required": 0,
-      "source_sha256": "c673060e048ef6ad78f5501c1dacca87d7d33db6806779ec849b407da193dd68"
+      "source_sha256": "f29b1ddbb5bd92e37e6bad40ca4fb852ed90fc8506ad207e828f66c9f4a2a508"
     },
     "PMTManager": {
       "category": "detectors",
