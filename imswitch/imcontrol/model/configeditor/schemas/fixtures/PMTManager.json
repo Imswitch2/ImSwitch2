@@ -3,6 +3,8 @@
   "device": {
     "managerName": "PMTManager",
     "managerProperties": {
+      "aiVoltageMax": 1.5,
+      "aiVoltageMin": 1.5,
       "analogInputLine": 1,
       "cameraPixelSizeUm": null,
       "deviceName": "example",

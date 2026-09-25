@@ -6,8 +6,14 @@ import tifffile as tiff
 import zarr
 import time
 
-from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import initLogger, memory_limits
 from imswitch.improcess.model.dataset_sources import resolve_dataset_source
+from imswitch.improcess.model.acquisition_layout_resolver import (
+    ResolvedAcquisitionLayout,
+    adapt_tiling_manifest,
+    persist_layout_override,
+    resolve_acquisition_layout,
+)
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     default_axis_labels,
@@ -20,11 +26,34 @@ from imswitch.improcess.model.image_sources import (
     resolve_image,
 )
 from imswitch.improcess.model.plane_navigation import (
+    plane_axes,
+    extract_plane,
     iter_planes,
     mean_plane,
     plane_count,
 )
 from imswitch.improcess.model.virtual_image import virtual_source_from_resolved_image
+
+
+#: Planes the Data panel's mean preview averages at most.
+MEAN_PREVIEW_MAX_PLANES = 256
+
+#: Working set automatic work may spend: the mean preview computed on load, and
+#: the notice before a dataset larger than this is materialised. The literal
+#: is the default -- 1 GiB, the same as ``MemoryOptions`` -- and
+#: ``memory.processingWorkingSetMB`` in ``imcontrol_options.json`` overrides it
+#: per machine.
+_PROCESSING_WORKING_SET_BYTES = 1024 * 1024 * 1024
+#: What ``getMeanData`` allocates per pixel of one plane besides the input
+#: plane it holds: a float64 accumulator (divided in place) and the float32
+#: result. The input plane's own bytes are added per its dtype.
+_MEAN_PREVIEW_BYTES_PER_PIXEL = 8 + 4
+
+
+def _processing_working_set_bytes() -> int:
+    return memory_limits.effectiveBytes(
+        'processingWorkingSetBytes', _PROCESSING_WORKING_SET_BYTES
+    )
 
 
 class DataObj:
@@ -52,6 +81,8 @@ class DataObj:
         self._axis_scales = None
         self._scale_unit = None
         self._source_info = None
+        self._acquisitionLayoutResolution = None
+        self._acquisitionLayoutOverride = None
         self.sourceKind = "image"
         self.sourceMetadata = None
         self.sourceSummary = None
@@ -159,6 +190,98 @@ class DataObj:
         return self._source_info
 
     @property
+    def acquisition_layout(self) -> ResolvedAcquisitionLayout:
+        """Resolve acquisition semantics without materializing image pixels."""
+        if self._acquisitionLayoutResolution is not None:
+            return self._acquisitionLayoutResolution
+        if self.sourceKind != "image":
+            self._acquisitionLayoutResolution = adapt_tiling_manifest(
+                self.sourceMetadata,
+            )
+            return self._acquisitionLayoutResolution
+
+        if self._file is None and self.dataPath is not None:
+            self.checkAndOpenData()
+        image = self._resolveImage() if self._file is not None else None
+        if image is not None:
+            attrs = image.attrs
+            shape = image.array.shape
+            detector = (
+                attrs.get("recording:detector_name")
+                or attrs.get("detector_name")
+                or self._datasetName
+                or "unknown"
+            )
+            axis_labels = image.axis_labels
+            dataset_path = image.array_path
+            explicit_axes = any(
+                key in attrs
+                for key in ("ngff:axes", "tiff:axes", "axes", "_ARRAY_DIMENSIONS")
+            )
+        else:
+            attrs = self._attrs or {}
+            shape = np.shape(self._data)
+            detector = self._datasetName or "unknown"
+            axis_labels = self._axis_labels
+            dataset_path = None
+            explicit_axes = False
+
+        # Remember what resolution was keyed on, so a persisted override can
+        # be written against the same identity it will be read back with.
+        self._acquisitionLayoutDetector = str(detector)
+        self._acquisitionLayoutResolution = resolve_acquisition_layout(
+            attrs,
+            shape=shape,
+            detector=str(detector),
+            axis_labels=axis_labels,
+            axis_metadata_explicit=explicit_axes,
+            user_override=self._acquisitionLayoutOverride,
+            source_path=self.dataPath,
+            dataset_path=dataset_path,
+            fingerprint=self.sourceFingerprint,
+        )
+        return self._acquisitionLayoutResolution
+
+    @property
+    def recording_lifecycle(self):
+        if self.sourceKind != "image":
+            return None
+        if self._file is None and self.dataPath is not None:
+            self.checkAndOpenData()
+        return self._resolveImage().recording_lifecycle
+
+    def setAcquisitionLayoutOverride(self, layout, *, persist: bool = False) -> None:
+        """Apply a validated user choice, optionally in a fingerprinted sidecar."""
+        self._acquisitionLayoutOverride = layout
+        self._acquisitionLayoutResolution = None
+        resolved = self.acquisition_layout
+        if not persist:
+            return
+        if self.dataPath is None:
+            raise ValueError("Cannot persist a layout override without a source path")
+        # The identity the *resolver* will use when it reads the sidecar back,
+        # not the one the layout happens to declare. They differ whenever the
+        # container names its data something else -- a TIFF series is
+        # ``Image0`` while the layout says ``Camera`` -- and the override was
+        # then rejected as targeting a different detector the moment the file
+        # was reopened, silently restoring the metadata it was written to
+        # correct.
+        persist_layout_override(
+            self.dataPath,
+            resolved.layout,
+            detector=self._resolutionDetectorName(resolved),
+            dataset_path=(self._source_info or {}).get("dataset_path"),
+            fingerprint=self.sourceFingerprint,
+        )
+
+    def _resolutionDetectorName(self, resolved) -> str:
+        """The detector name resolution is keyed on for this source."""
+        name = self.__dict__.get("_acquisitionLayoutDetector")
+        if name:
+            return str(name)
+        return str(getattr(resolved.layout, "detector", "") or "unknown")
+
+    @property
     def dataLoaded(self):
         return self._data is not None
 
@@ -207,10 +330,149 @@ class DataObj:
         if not self.dataLoaded:
             try:
                 self.checkAndOpenData()
+                # Said before it starts, not after: a dataset larger than the
+                # working set is about to be decoded whole, and the operator
+                # who did not mean that has a lazy alternative to know about.
+                notice = self.materializationNotice()
+                if notice:
+                    self.__logger.warning(notice)
                 if self.data is not None:
                     self.__logger.debug('Data loaded')
             except Exception:
                 pass
+
+    # --- what loading and previewing would cost --------------------------
+
+    def decodedBytes(self):
+        """Bytes the selected dataset occupies once decoded, or None if unknown.
+
+        Read from the source's shape and dtype without materialising anything:
+        a compressed HDF5 well under a gigabyte on disk can decode to many, a
+        Zarr source is a directory, and one file can hold several datasets of
+        which only this one is being opened.
+        """
+        if self.sourceKind != "image":
+            return None
+        if self._data is not None:
+            return int(getattr(self._data, 'nbytes', 0))
+        source = self.data_source
+        array = getattr(source, 'array', None)
+        if array is None:
+            return None
+        try:
+            shape = tuple(int(size) for size in array.shape)
+            itemsize = int(np.dtype(array.dtype).itemsize)
+        except Exception:
+            return None
+        return int(np.prod(shape, dtype=np.int64)) * itemsize
+
+    def sourceHasLazyPath(self):
+        """Whether the open source serves planes without reading the whole.
+
+        A TIFF series without zarr support answers False: its virtual array
+        serves every plane by a whole-series read, so opening it "virtually"
+        bounds nothing.
+        """
+        array = getattr(self._dataSource, 'array', None)
+        return bool(getattr(array, 'supports_lazy_indexing', False))
+
+    def materializationNotice(self):
+        """Why loading this dataset whole is worth saying first, or None.
+
+        None when the data is already in memory, its size is unknown, or it
+        fits the processing working set. The notice names the size, the
+        setting and whether a lazy path exists for this source.
+        """
+        if self._data is not None:
+            return None
+        nbytes = self.decodedBytes()
+        if nbytes is None:
+            return None
+        budget = _processing_working_set_bytes()
+        if nbytes <= budget:
+            return None
+        if self.sourceHasLazyPath():
+            alternative = 'this source can be opened lazily instead (Open virtual)'
+        else:
+            alternative = 'this source has no lazy path, so opening it means decoding it whole'
+        return (
+            f'Materialising {memory_limits.describeBytes(nbytes)} for '
+            f'{self.name}/{self.datasetName}, above the '
+            f'{memory_limits.describeBytes(budget)} processing working set '
+            f'({memory_limits.settingRef("processingWorkingSetBytes")}); '
+            f'{alternative}.'
+        )
+
+    def meanPreviewBytes(self):
+        """What ``getMeanData`` allocates at its peak, or None if unknown.
+
+        Per pixel of one plane: the float64 accumulator, the float32 result
+        and the input plane in its own dtype. The preview is bounded in plane
+        count already (``MEAN_PREVIEW_MAX_PLANES``); this is its in-plane
+        cost, which that bound says nothing about.
+
+        A source without a lazy path is charged the whole decoded dataset on
+        top: its "plane" read decodes the entire series (see
+        :meth:`sourceHasLazyPath`), so the preview loop does that once per
+        sampled plane, and the reader's capability, not the plane's size, is
+        what decides whether it is affordable.
+        """
+        if self.sourceKind != "image":
+            return None
+        if self._data is not None:
+            array = self._data
+        else:
+            array = self.data_handle
+            if array is None:
+                return None
+        try:
+            shape = tuple(int(size) for size in array.shape)
+            itemsize = int(np.dtype(array.dtype).itemsize)
+        except Exception:
+            return None
+        if len(shape) < 2:
+            return None
+        plane = plane_axes(shape, self.axis_labels)
+        if plane is None:
+            return None
+        planeBytes = int(shape[plane[0]]) * int(shape[plane[1]]) * (
+            _MEAN_PREVIEW_BYTES_PER_PIXEL + itemsize
+        )
+        if self._data is None and not self.sourceHasLazyPath():
+            decoded = self.decodedBytes()
+            if decoded is not None:
+                planeBytes += decoded
+        return planeBytes
+
+    def meanPreviewNotice(self):
+        """Why computing the mean preview is worth saying first, or None."""
+        nbytes = self.meanPreviewBytes()
+        if nbytes is None:
+            return None
+        budget = _processing_working_set_bytes()
+        if nbytes <= budget:
+            return None
+        if self._data is None and not self.sourceHasLazyPath():
+            how = (
+                f'needs {memory_limits.describeBytes(nbytes)}: this source has '
+                f'no lazy path, so every plane read decodes the whole series'
+            )
+        else:
+            how = f'needs {memory_limits.describeBytes(nbytes)} for one plane'
+        return (
+            f'The mean preview of {self.name}/{self.datasetName} {how}, above the '
+            f'{memory_limits.describeBytes(budget)} processing working set '
+            f'({memory_limits.settingRef("processingWorkingSetBytes")}).'
+        )
+
+    def planeReadIsBounded(self):
+        """Whether reading one plane costs one plane.
+
+        True for data in memory and for sources with a lazy path; False for
+        a virtual source whose plane read decodes the whole series, where
+        showing even the first plane costs as much as loading everything.
+        """
+        return self._data is not None or self.sourceHasLazyPath()
 
     def checkAndOpenData(self):
         if self.sourceKind != "image":
@@ -244,6 +506,7 @@ class DataObj:
         self._dataSource = None
         self._attrs = None
         self._resolvedImage = None
+        self._acquisitionLayoutResolution = None
         self._meanData = None
         if self.sourceKind != "image":
             self._metadataSourceReady = False
@@ -262,15 +525,30 @@ class DataObj:
             if handle is not None and handle.ndim > 0 and not self.dataMaterialized:
                 frame_count = plane_count(handle.shape, labels)
                 if frame_count > 0:
+                    # A display preview, so bounded like every other display
+                    # reduction: at most MEAN_PREVIEW_MAX_PLANES planes, taken
+                    # at an even stride. Reading every plane of a 60 000-frame
+                    # recording on the GUI thread froze the window for the
+                    # duration, for a preview.
+                    stride = max(1, -(-frame_count // MEAN_PREVIEW_MAX_PLANES))
+                    indices = range(0, frame_count, stride)
                     accumulator = None
-                    for frame in iter_planes(handle, labels):
+                    for index in indices:
+                        frame = np.asarray(extract_plane(handle, index, labels))
                         if accumulator is None:
                             accumulator = np.zeros(frame.shape, dtype=np.float64)
                         accumulator += frame
-                    self._meanData = np.asarray(
-                        accumulator / frame_count,
-                        dtype=np.float32,
-                    )
+                        # Released before the next read, not after it: the
+                        # assignment above evaluates the new plane while the
+                        # old one is still bound, which for a source without a
+                        # lazy path meant two decoded series at once.
+                        del frame
+                    # Divide in place: ``accumulator / n`` made a second
+                    # float64 plane that lived alongside the first until the
+                    # float32 conversion, which is what the estimate charges
+                    # for and what a 16k x 16k plane cannot afford twice.
+                    accumulator /= len(indices)
+                    self._meanData = accumulator.astype(np.float32)
                 else:
                     self._meanData = mean_plane(self.data, labels)
             else:
@@ -280,7 +558,11 @@ class DataObj:
 
     def _resolveImage(self):
         if self._resolvedImage is None:
-            self._resolvedImage = resolve_image(self._file, self._datasetName)
+            self._resolvedImage = resolve_image(
+                self._file,
+                self._datasetName,
+                validate_layout_metadata=False,
+            )
             self._dataSource = virtual_source_from_resolved_image(self._resolvedImage)
             self._applyResolvedImageMetadata(self._resolvedImage)
         return self._resolvedImage

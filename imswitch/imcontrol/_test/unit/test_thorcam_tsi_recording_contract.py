@@ -25,6 +25,9 @@ from imswitch.imcontrol.model.SetupInfo import DetectorInfo
 from imswitch.imcontrol.model.managers.detectors.ThorCamTSIManager import (
     ThorCamTSIManager,
 )
+from imswitch.imcontrol.model.interfaces.thorcamera_tsi import (
+    MockThorTSICamera, ThorTSICamera,
+)
 
 
 def _make_manager(**kwargs):
@@ -189,3 +192,173 @@ def test_bulb_mode_no_trigger_empty_chunk():
     
     assert chunk.ndim == 3, "Must return 3-D"
     assert len(chunk) == 0, "No trigger → empty chunk, not fabricated frames"
+
+
+
+class _FakeSdkCamera:
+    """The thorlabs_tsi_sdk surface ThorTSICamera's re-arm path touches."""
+
+    def __init__(self):
+        self.is_armed = False
+        self.frames_per_trigger_zero_for_unlimited = 1
+        self.operation_mode = 0
+        self.arm_depths = []
+
+    def arm(self, frames_to_buffer):
+        self.is_armed = True
+        self.arm_depths.append(int(frames_to_buffer))
+
+    def disarm(self):
+        self.is_armed = False
+
+
+def _wrapper_over(sdk):
+    from imswitch.imcontrol.model.interfaces.thorcamera_tsi import ThorTSICamera
+    wrapper = ThorTSICamera.__new__(ThorTSICamera)
+    wrapper._camera = sdk
+    return wrapper
+
+
+def test_a_trigger_mode_change_rearms_at_the_depth_the_camera_was_armed_with():
+    """The re-arm used to read frames-per-trigger (1) as the ring depth, so
+    the first Operation Mode change -- which every startup makes while
+    restoring detector state -- shrank the SDK ring from four frames to one
+    for the rest of the session."""
+    sdk = _FakeSdkCamera()
+    wrapper = _wrapper_over(sdk)
+    wrapper.arm(buffer_size=4)
+    assert sdk.arm_depths == [4]
+
+    wrapper.set_trigger_mode('hardware')
+    assert sdk.is_armed and sdk.operation_mode == 1
+    assert sdk.arm_depths == [4, 4]
+
+    wrapper.set_trigger_mode('software')
+    assert sdk.arm_depths == [4, 4, 4]
+
+
+def test_the_ring_depth_is_a_manager_property():
+    from imswitch.imcontrol.model.interfaces.thorcamera_tsi import DEFAULT_FRAME_BUFFER_DEPTH
+
+    assert _make_manager()._camera.armed_buffer_size == DEFAULT_FRAME_BUFFER_DEPTH == 4
+
+    info = DetectorInfo(
+        analogChannel=None, digitalLine=None, managerName='ThorCamTSIManager',
+        managerProperties={'cameraSerial': 'MOCK_TSI', 'frameBufferDepth': 8},
+        forAcquisition=True, forFocusLock=False,
+    )
+    mgr = ThorCamTSIManager(info, 'ThorCam')
+    assert mgr._camera.armed_buffer_size == 8
+
+
+def _make_software_only_manager(monkeypatch, defaults=None):
+    """Build a manager around a CS165MU-like software-only camera."""
+    def _software_only_camera(_self, serial, dll_location):
+        return MockThorTSICamera(
+            serial=serial,
+            supported_trigger_modes=('software',),
+            supports_trigger_polarity=False,
+        )
+
+    monkeypatch.setattr(ThorCamTSIManager, '_initCamera', _software_only_camera)
+    return _make_manager(defaults=defaults or {})
+
+
+def test_software_only_camera_needs_no_config_migration(monkeypatch):
+    """Legacy trigger_polarity config is harmless on a software-only camera."""
+    mgr = _make_software_only_manager(
+        monkeypatch,
+        defaults={
+            'operation_mode': 'Software',
+            'trigger_polarity': 'Active High',
+        },
+    )
+    try:
+        assert mgr.parameters['Operation Mode'].options == ['Software']
+        assert 'Trigger Polarity' not in mgr.parameters
+        assert mgr.getChunk().shape[0] == 1
+    finally:
+        mgr.finalize()
+
+
+def test_software_only_camera_rejects_explicit_hardware_default(monkeypatch):
+    """Do not silently downgrade a requested hardware-synchronised setup."""
+    with pytest.raises(ValueError, match="Hardware.*not supported"):
+        _make_software_only_manager(
+            monkeypatch,
+            defaults={'operation_mode': 'Hardware'},
+        )
+
+
+def test_trigger_mode_rejection_does_not_corrupt_parameter_state():
+    """A rejected SDK write must leave the manager/UI value unchanged."""
+    mgr = _make_manager(defaults={'operation_mode': 'Software'})
+    try:
+        previous = mgr.parameters['Operation Mode'].value
+
+        def reject_mode(_mode):
+            raise RuntimeError('SDK rejected mode')
+
+        mgr._camera.set_trigger_mode = reject_mode
+        with pytest.raises(RuntimeError, match='SDK rejected mode'):
+            mgr.setParameter('Operation Mode', 'Hardware')
+        assert mgr.parameters['Operation Mode'].value == previous
+    finally:
+        mgr.finalize()
+
+
+def test_interface_probe_detects_software_only_camera():
+    """Capability probing is SDK-behaviour based, not model-name based."""
+    class SoftwareOnlyVendorCamera:
+        model = 'Any software-only TSI camera'
+
+        def __init__(self):
+            self._operation_mode = 0
+
+        @property
+        def operation_mode(self):
+            return self._operation_mode
+
+        @operation_mode.setter
+        def operation_mode(self, value):
+            if value != 0:
+                raise RuntimeError('Command is not supported')
+            self._operation_mode = value
+
+    camera = ThorTSICamera.__new__(ThorTSICamera)
+    camera._camera = SoftwareOnlyVendorCamera()
+    assert camera._detect_supported_trigger_modes() == ('software',)
+    camera._supported_trigger_modes = ('software',)
+    assert camera._detect_trigger_polarity_support() is False
+
+
+def test_trigger_changes_restore_actual_arm_buffer_size():
+    """Runtime trigger edits disarm/re-arm with the last arm() buffer size."""
+    class VendorCamera:
+        model = 'Trigger-capable TSI camera'
+
+        def __init__(self):
+            self.is_armed = True
+            self.operation_mode = 0
+            self.trigger_polarity = 0
+            self.arm_calls = []
+
+        def disarm(self):
+            self.is_armed = False
+
+        def arm(self, buffer_size):
+            self.arm_calls.append(buffer_size)
+            self.is_armed = True
+
+    camera = ThorTSICamera.__new__(ThorTSICamera)
+    camera._camera = VendorCamera()
+    camera._supported_trigger_modes = ('software', 'hardware', 'bulb')
+    camera._supports_trigger_polarity = True
+    camera._last_arm_buffer_size = 4
+
+    camera.set_trigger_mode('hardware')
+    camera.set_trigger_polarity('active_low')
+
+    assert camera._camera.operation_mode == 1
+    assert camera._camera.trigger_polarity == 1
+    assert camera._camera.arm_calls == [4, 4]

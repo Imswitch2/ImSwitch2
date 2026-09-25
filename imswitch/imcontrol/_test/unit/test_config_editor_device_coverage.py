@@ -50,7 +50,8 @@ def test_blank_schemas_exist():
         assert blank.get("category") == cat
         assert "top" not in blank
         assert "props" in blank
-    form = editor._schema_for_manager("BaslerManager")
+    # An untemplated detector (BaslerManager until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit).
+    form = editor._schema_for_manager("PhotometricsManager")
     top = {f["key"]: f for f in form["top"]}
     assert top["forAcquisition"]["type"] == "bool" and top["forAcquisition"]["grp"] == "Device"
     assert top["analogChannel"]["type"] == "text"

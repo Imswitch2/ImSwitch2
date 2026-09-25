@@ -155,6 +155,14 @@ filter, controlled over RS232.
      - *(unset)*
      - Optional path to a 2-column CSV (raw, measured).  If present, a
        LUT is built and ``valueUnits`` switches from ``"arb"`` to ``"%"``.
+   * - ``useMockOnFailure``
+     - bool
+     - ``true``
+     - When the controller does not answer the startup commands (a pyvisa
+       timeout, say), send a best-effort channel OFF and continue with this
+       channel in mock mode instead of aborting ImSwitch. Set to ``false``
+       when a missing AOTF must be a startup error. Configuration errors
+       abort startup either way.
 
 **LaserInfo fields used**
 
@@ -170,8 +178,9 @@ filter, controlled over RS232.
 **Vendor library**
 
 None — commands are sent as plain ASCII over the shared RS232 manager.
-No mock fallback in this manager itself; mocking comes from the RS232
-sub-manager.
+Two mock paths: the RS232 sub-manager substitutes a mock port when the port
+cannot be opened at all, and this manager enters mock mode (see
+``useMockOnFailure``) when the port opens but the controller does not answer.
 
 **Source**
 
@@ -318,6 +327,11 @@ mock fallback.
      - Unit used by SCPI power setpoint commands.  Defaults to ``"mW"``, which
        matches Cobolt's current ``pycobolt`` ``Cobolt06`` wrapper.  Use ``"W"``
        only for firmware/configurations that expose SCPI setpoints in watts.
+   * - ``scanResumeSettleMs``
+     - float
+     - Extra delay, in milliseconds, after a successful pause-mode scan resume
+       before returning control to the scan.  Defaults to ``0`` and is only
+       relevant with ``emissionControl: "pause"``.
 
 **LaserInfo fields used**
 

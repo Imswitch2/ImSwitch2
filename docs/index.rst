@@ -150,6 +150,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/lasers
     devices/positioners
     devices/rotators
+    devices/stands
     Hdf5datafile
 
 .. toctree::

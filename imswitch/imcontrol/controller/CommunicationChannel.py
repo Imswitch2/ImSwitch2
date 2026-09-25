@@ -734,8 +734,8 @@ class CommunicationChannel(SignalInterface):
          - scanStarted (the execution backend started the iteration)
          - scanDone (an iteration finished)
          - scanEnded (the run is over, on every terminal path)
-         - scanRejected(reason) (a start request was refused; no scanEnded
-           will follow for it)
+         - scanRejected(reason) (a start request was refused and its scan
+           never runs; reason says why)
 
         They can be accessed like this: api.imcontrol.signals().scanEnded
         """

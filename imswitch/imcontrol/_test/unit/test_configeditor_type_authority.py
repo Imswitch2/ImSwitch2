@@ -219,6 +219,8 @@ class TestMaterialize:
         assert {k: f["type"] for k, f in props.items()} == {
             "cameraPixelSizeUm": "json", "cameraSerial": "text", "defaults": "json",
             "dllLocation": "text", "flushFrameLimit": "int",
+            # The SDK ring depth, declared when the audit made it settable.
+            "frameBufferDepth": "int",
         }
         assert props["cameraSerial"]["nullable"] is True
         assert props["cameraSerial"]["tip"].startswith("Camera serial number")
@@ -481,8 +483,10 @@ _CORPUS = corpus()
 def test_the_corpus_is_what_the_plan_says():
     sources = {item[0].split(":", 1)[0] for item in _CORPUS}
     assert sources == {"shipped", "generated", "value-shape"}
-    assert len(shipped_setups()) == 15
-    assert len(generated_fixtures()) == 65
+    # 16: galvo_apd_mock_scan_setup.json joined the shipped setups with the
+    # single-axis scan work. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
+    assert len(shipped_setups()) == 16
+    assert len(generated_fixtures()) == 62
     assert len(value_shape_fixtures()) == 13
     assert sum(1 for item in _CORPUS if item[0].startswith("shipped")) >= 78
 
@@ -523,3 +527,168 @@ def _schema_codes(report):
 def test_generated_schemas_are_what_the_editor_reads():
     """The editor's catalog and the validator read the same file for a manager."""
     assert editor._MANAGER_CATALOG.get("APDManager").properties_schema == resources.generated_schema_for("APDManager")
+
+
+# ── review of PR #35: a widget preference is not a constraint ────────────
+class TestNumericEditsAreKeptAsTyped:
+    """BSC203's travelRangeUm is integer-*kind* (its default is 8000) but the
+    manager accepts a fraction; the keystroke validator turned a typed
+    "8000.5" into 80005 and Apply saved it."""
+
+    DEVICE = {"managerName": "BSC203StageManager", "axes": ["X"],
+              "managerProperties": {"port": "COM9", "travelRangeUm": 8000}}
+
+    def test_a_fraction_typed_into_an_integer_kind_field_is_saved(self, property_editor):
+        form = editor._schema_for_manager("BSC203StageManager")
+        assert {f["key"]: f["type"] for f in form["props"]}["travelRangeUm"] == "int"
+        property_editor.load_device("positioners", "stage", copy.deepcopy(self.DEVICE))
+        _type(property_editor._field_widgets[("props", "travelRangeUm")], "8000.5")
+        applied = _apply(property_editor)
+        assert applied["managerProperties"]["travelRangeUm"] == 8000.5
+        assert property_editor._val_lbl.text() == ""
+
+    def test_text_that_is_not_a_number_is_saved_as_typed_and_named(self, property_editor):
+        property_editor.load_device("positioners", "stage", copy.deepcopy(self.DEVICE))
+        _type(property_editor._field_widgets[("props", "travelRangeUm")], "8000,5")
+        applied = _apply(property_editor)
+        assert applied["managerProperties"]["travelRangeUm"] == "8000,5"
+        assert "'8000,5' is not a number" in property_editor._val_lbl.text()
+
+    def test_an_untouched_string_under_a_numeric_key_is_not_reported(self, property_editor):
+        """Not an edit: validation's to report, not Apply's."""
+        device = copy.deepcopy(self.DEVICE)
+        device["managerProperties"]["travelRangeUm"] = "wide"
+        assert_json_identical(_round_trip(property_editor, "positioners", "stage", device), device)
+        assert property_editor._val_lbl.text() == ""
+
+
+# ── review of PR #35: a dict the template lays out is still the schema's ──
+NESTED_TEMPLATE = {
+    "top": [],
+    "props": [{"key": "port", "label": "Port", "default": "COM1", "req": True, "grp": "Basic", "tip": "", "opts": []}],
+    "nested": {"table": [
+        {"key": "speed", "label": "Speed", "type": "text", "default": "1", "req": False, "grp": "Table", "tip": "", "opts": []},
+        {"key": "mode", "label": "Mode", "type": "select", "default": "a", "req": False, "grp": "Table", "tip": "", "opts": ["a", "b"]},
+    ]},
+}
+
+
+def _nested_schema(*, container_required: bool) -> dict:
+    return {
+        "type": "object",
+        "required": ["port"] + (["table"] if container_required else []),
+        "properties": {
+            "port": {"x-imswitch-kind": "string"},
+            "table": {
+                "type": "object", "x-imswitch-kind": "object",
+                "required": ["count"],
+                "properties": {
+                    "speed": {"x-imswitch-kind": "integer", "x-imswitch-source": ["code:int()"]},
+                    "mode": {"x-imswitch-kind": "string"},
+                    "count": {"x-imswitch-kind": "integer", "x-imswitch-source": ["code:required"]},
+                },
+            },
+        },
+    }
+
+
+class TestTemplateNestedContainers:
+    """The template lays a dict out field by field; the schema still types it.
+
+    Loading Hamamatsu without its required ``hamamatsu`` dict and pressing
+    Apply left the dict absent, with no warning: normalisation skipped the
+    schema of any dict the template laid out, so neither the dict's
+    requiredness nor its children's types reached the form.
+    """
+
+    def test_children_are_typed_and_the_container_carries_its_requiredness(self):
+        fields = normalized_fields(template=NESTED_TEMPLATE, json_schema=_nested_schema(container_required=True))
+        by_key = {(f.location, f.nested_key, f.key): f for f in fields}
+        assert by_key[("nested", "table", "speed")].type == "int", "the sub-schema's kind wins over plain text"
+        assert by_key[("nested", "table", "mode")].type == "select", "a select stays a refinement"
+        count = by_key[("nested", "table", "count")]
+        assert count.type == "int" and count.required and count.required_by_schema and count.group == "Table"
+        container = by_key[("container", None, "table")]
+        assert container.required_by_schema is True
+        form = materialize_device_schema(template=NESTED_TEMPLATE, json_schema=_nested_schema(container_required=True))
+        assert form["nested_meta"] == {"table": {"schema_req": True}}
+        children = {f["key"]: f for f in form["nested"]["table"]}
+        assert children["count"]["schema_req"] is True and children["speed"]["type"] == "int"
+        assert "schema_req" not in children["speed"]
+        optional = materialize_device_schema(template=NESTED_TEMPLATE, json_schema=_nested_schema(container_required=False))
+        assert optional["nested_meta"] == {"table": {"schema_req": False}}
+
+    @pytest.fixture
+    def with_schema(self, monkeypatch):
+        def install(container_required: bool):
+            form = materialize_device_schema(template=NESTED_TEMPLATE,
+                                             json_schema=_nested_schema(container_required=container_required))
+            monkeypatch.setattr(editor, "_schema_for_manager", lambda _name: copy.deepcopy(form))
+        return install
+
+    def test_a_required_container_the_file_lacks_is_written_with_only_what_it_requires(self, property_editor, with_schema):
+        with_schema(True)
+        applied = _round_trip(property_editor, "detectors", "d", {"managerName": "X", "managerProperties": {"port": "COM3"}})
+        assert applied["managerProperties"] == {"port": "COM3", "table": {"count": 0}}
+
+    def test_an_optional_container_the_file_lacks_stays_absent(self, property_editor, with_schema):
+        with_schema(False)
+        device = {"managerName": "X", "managerProperties": {"port": "COM3"}}
+        assert_json_identical(_round_trip(property_editor, "detectors", "d", device), device)
+
+    def test_a_required_sub_key_is_written_into_a_dict_the_file_has(self, property_editor, with_schema):
+        with_schema(False)
+        applied = _round_trip(property_editor, "detectors", "d",
+                              {"managerName": "X", "managerProperties": {"port": "COM3", "table": {"speed": 5}}})
+        assert applied["managerProperties"]["table"] == {"speed": 5, "count": 0}
+
+    def test_something_that_is_not_a_dict_is_kept_as_it_was(self, property_editor, with_schema):
+        with_schema(True)
+        device = {"managerName": "X", "managerProperties": {"port": "COM3", "table": None}}
+        assert_json_identical(_round_trip(property_editor, "detectors", "d", device), device)
+
+    def test_an_edit_that_creates_an_optional_dict_writes_what_the_dict_requires(self, property_editor, with_schema):
+        """Review of PR #37: editing ``speed`` saved ``{"table": {"speed": 7}}``,
+        which the schema rejects, and the next untouched Apply added ``count``."""
+        jsonschema = pytest.importorskip("jsonschema")
+        with_schema(False)
+        property_editor.load_device("detectors", "d", {"managerName": "X", "managerProperties": {"port": "COM3"}})
+        _type(property_editor._field_widgets[("nested:table", "speed")], "7")
+        first = _apply(property_editor)
+        assert first["managerProperties"]["table"] == {"speed": 7, "count": 0}
+        assert jsonschema.Draft202012Validator(_nested_schema(container_required=False)).is_valid(first["managerProperties"])
+        assert_json_identical(_round_trip(property_editor, "detectors", "d", first), first), "stable on the next Apply"
+
+    def test_an_edit_turns_a_non_dict_into_a_complete_dict(self, property_editor, with_schema):
+        with_schema(False)
+        property_editor.load_device("detectors", "d",
+                                    {"managerName": "X", "managerProperties": {"port": "COM3", "table": None}})
+        _type(property_editor._field_widgets[("nested:table", "speed")], "7")
+        assert _apply(property_editor)["managerProperties"]["table"] == {"speed": 7, "count": 0}
+
+    def test_a_required_field_left_empty_in_a_dict_is_warned_about(self, property_editor, monkeypatch):
+        template = copy.deepcopy(NESTED_TEMPLATE)
+        template["nested"]["table"][1]["req"] = True  # "mode", a template hint
+        form = materialize_device_schema(template=template, json_schema=_nested_schema(container_required=True))
+        monkeypatch.setattr(editor, "_schema_for_manager", lambda _name: copy.deepcopy(form))
+        _round_trip(property_editor, "detectors", "d",
+                    {"managerName": "X", "managerProperties": {"port": "COM3", "table": {"count": 2}}})
+        assert "Required: Mode (table)" in property_editor._val_lbl.text()
+        _round_trip(property_editor, "detectors", "d",
+                    {"managerName": "X", "managerProperties": {"port": "COM3", "table": {"count": 2, "mode": "b"}}})
+        assert "(table)" not in property_editor._val_lbl.text()
+
+    def test_a_new_device_seeds_the_required_sub_key_the_template_does_not_list(self):
+        device = build_default_device("X", template=NESTED_TEMPLATE, json_schema=_nested_schema(container_required=True))
+        assert device["managerProperties"]["table"] == {"speed": 1, "mode": "a", "count": 0}
+
+    def test_the_real_hamamatsu_without_its_dict(self, property_editor):
+        """The reviewer's case: the dict is written, empty -- the manager iterates it."""
+        applied = _round_trip(property_editor, "detectors", "cam",
+                              {"managerName": "HamamatsuManager", "managerProperties": {"cameraListIndex": 0}})
+        assert applied["managerProperties"] == {"cameraListIndex": 0, "hamamatsu": {}}
+        # The template marks two of its fields as the ones to fill.
+        assert "(hamamatsu)" in property_editor._val_lbl.text()
+        applied = _round_trip(property_editor, "detectors", "cam",
+                              {"managerName": "TISManager", "managerProperties": {"cameraListIndex": 0}})
+        assert applied["managerProperties"] == {"cameraListIndex": 0, "tis": {}}

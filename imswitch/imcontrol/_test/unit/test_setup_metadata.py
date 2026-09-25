@@ -42,10 +42,6 @@ def test_metadata_is_the_shared_mapping_contract():
 # silent filename discovery into a review decision.
 _UNREGISTERED_CORE_MANAGERS = {
     ("detector", "APDManager"),
-    ("detector", "BaslerManager"),
-    ("detector", "ESP32CamManager"),
-    ("detector", "GXPIPYManager"),
-    ("detector", "JetsonCamManager"),
     ("detector", "PMTManager"),
     ("detector", "PhotometricsManager"),
     ("detector", "PiCamManager"),
@@ -76,7 +72,7 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("positioner", "JenaPiezoZManager"),
     ("positioner", "KDC101PositionerManager"),
     ("positioner", "KinesisStageManager"),
-    ("positioner", "LeicaDMIManager"),
+    ("positioner", "LeicaDMIZPositionerManager"),
     ("positioner", "MHXYStageManager"),
     ("positioner", "PIStageManager"),
     ("positioner", "PiezoconceptZManager"),
@@ -94,6 +90,7 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("rs232", "SQUIDManager"),
     ("slm", "HamamatsuSLMdviManager"),
     ("slm", "HamamatsuSLMusbManager"),
+    ("stand", "LeicaDMIStandManager"),
     # Offered since the schema-extraction work: shipped setups select it by name.
     ("rs232", "RS232Manager"),
 }

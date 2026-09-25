@@ -312,3 +312,49 @@ class TestKindDiagnostics:
         data = {"detectors": {"d": {"managerName": "APDManager", "vendorTop": {"x": 1},
                                     "managerProperties": {"ctrInputLine": "Dev1/ctr0", "terminal": "PFI0"}}}}
         assert _codes(validate_setup_data(data, registry), "kind.schema") == []
+
+
+class TestSmoothScanDecidesTheGalvoRole:
+    """``smoothScan`` decides whether an axis is swept, and so whether it needs
+    ``vel_max``/``acc_max``; the device-name heuristic applies only when the key
+    is absent. The role rule the validator applies and the designer's own
+    check must agree on every combination."""
+
+    CASES = {
+        # name,               smoothScan,  expected to need limits
+        "ND-PiezoZ":          (False,      False),   # stepped: never enters the spline
+        "Mock Galvo":         (True,       True),    # declared smooth despite the name
+        "Mock Z":             (None,       False),   # absent: the name heuristic
+        "ND-GalvoY":          (None,       True),    # absent: the name heuristic
+    }
+
+    def _setup(self):
+        positioners = {}
+        for name, (smooth, _needs) in self.CASES.items():
+            props = {"conversionFactor": 1.0}
+            if smooth is not None:
+                props["smoothScan"] = smooth
+            positioners[name] = {"managerName": "NidaqPositionerManager", "axes": ["X"],
+                                 "forScanning": True, "managerProperties": props}
+        return {"scan": {"scanDesigner": "GalvoScanDesigner"}, "positioners": positioners}
+
+    def test_the_rule_and_the_designer_agree(self):
+        data = self._setup()
+        expected = sorted(name for name, (_s, needs) in self.CASES.items() if needs)
+        rule = sorted(f.name for f in roles_module.evaluate(_galvo_role(), data) if f.missing_required)
+        info = setup_info_module.SetupInfo.from_dict(data, infer_missing=True)
+        assert rule == expected
+        assert sorted(scan_axes_missing_limits(info.positioners)) == expected
+
+    def test_a_field_condition_reaches_inside_the_device_entry(self):
+        device = {"managerProperties": {"smoothScan": False}}
+        holds = lambda c: roles_module.holds(c, device=device, name="x", setup={})
+        assert holds({"field": "managerProperties.smoothScan", "equals": False})
+        assert holds({"field": "managerProperties.missing", "exists": False})
+        assert not holds({"field": "managerProperties.smoothScan", "exists": False})
+
+    def test_the_role_offers_smooth_scan_as_a_three_state_field(self):
+        from imswitch.imcontrol.model.configeditor.schemas import role_field
+
+        field = role_field("smoothScan", _galvo_role()["properties"]["smoothScan"], group="Scan axis")
+        assert field["type"] == "bool_auto"

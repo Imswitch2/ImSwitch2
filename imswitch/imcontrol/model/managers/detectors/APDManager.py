@@ -4,9 +4,10 @@ import threading
 import time
 
 from imswitch.imcommon.framework import Signal, Thread, Worker
-from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import initLogger, memory_limits
 from .._scan_execution import PARTICIPANTS_KEY
 from .DetectorManager import (
+    _queueBudgetBytes,
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
@@ -42,6 +43,35 @@ def _joinScanThreadBounded(thread, timeoutMs, detectorName):
         )
 
 
+def _timerClockTerminalOf(nidaqManager):
+    """The timer counter's output terminal, or None when none is configured.
+
+    Tolerant of test doubles: anything that is not a terminal name is None,
+    which only matters on hardware, where requireTimerClock() refuses it.
+    """
+    accessor = getattr(nidaqManager, 'getTimerClockTerminal', None)
+    terminal = accessor() if callable(accessor) else None
+    return terminal if isinstance(terminal, str) else None
+
+
+def _timerRateOf(nidaqManager):
+    """The timer counter's pulse rate in hertz; 1 MHz when it cannot say."""
+    try:
+        return float(getattr(nidaqManager, 'timerRateHz'))
+    except (AttributeError, TypeError, ValueError):
+        return 1e6
+
+
+def _requireTimerClock(detectorName, terminal):
+    if terminal is None:
+        raise RuntimeError(
+            f'{detectorName} takes its sample clock from the NI-DAQ timer '
+            f'counter, but nidaq.timerCounterChannel is not set in the setup '
+            f'file. Set it to a counter no detector uses, e.g. "Dev1/ctr2".'
+        )
+    return terminal
+
+
 class APDManager(DetectorManager):
     """ DetectorManager that deals with an avalanche photodiode connected to a
     counter input on a Nidaq card.
@@ -65,8 +95,11 @@ class APDManager(DetectorManager):
         # for typical fluorescence; the TTL-multiplying path will reallocate
         # as float32 (to preserve NaN as a "no-data" marker) in initiateImage.
         self._image = np.zeros(fullShape, dtype=np.uint16)
-        self._detection_samplerate = float(1e6)
-        self._nidaq_clock_source = r'ctr2InternalOutput'  # counter output task generating a 1 MHz frequency digitial pulse train
+        # The sample clock is the NI-DAQ timer counter's pulse train: its rate
+        # and terminal come from the manager that generates it, not from a
+        # literal here (which named counter 2 whatever the setup file chose).
+        self._detection_samplerate = _timerRateOf(nidaqManager)
+        self._nidaq_clock_source = _timerClockTerminalOf(nidaqManager)
         manager_props = detectorInfo.managerProperties
         self._channel = manager_props["ctrInputLine"]
         device_name = manager_props.get("deviceName", "Dev1")
@@ -679,7 +712,11 @@ class APDManager(DetectorManager):
             s = None
 
         # ---- S == 1: could be 2D (1, Ny, Nx) OR 3D (1, Nz, Ny, Nx) (or higher) ----
-        if np.squeeze(self._image).ndim == 2:
+        # <= 2, not == 2: a single-line scan's (1, N) buffer squeezes to rank
+        # 1, and with the old == 2 dispatch NEITHER branch ran -- every pixel
+        # of a 1-axis scan was silently dropped. The [..., y, :n] write below
+        # handles the (1, N) buffer as-is (y == 0).
+        if np.squeeze(self._image).ndim <= 2:
             # (1, Ny, Nx)
             Ny = self._image.shape[-2]
             if y >= Ny:
@@ -723,6 +760,10 @@ class APDManager(DetectorManager):
         Raw buffer is allocated as reversed + leading 1.
         """
         img_dims = tuple(int(x) for x in img_dims)
+        # Defensive: logical dims are always at least (Nx, Ny) -- a bare (N,)
+        # (1-axis scan reaching here unnormalized) becomes one line (N, 1).
+        if len(img_dims) < 2:
+            img_dims = img_dims + (1,) * (2 - len(img_dims))
 
         img_dims_extra = tuple(reversed(img_dims))
 
@@ -735,6 +776,19 @@ class APDManager(DetectorManager):
                 or self._image.dtype != image_dtype):
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)
             self.setShape(img_dims_extra)
+            # The recording's raw frame is this whole volume, delivered once
+            # per scan, and its size is known here and nowhere earlier -- the
+            # recording armed against whatever shape the manager last had. Say
+            # what one costs against the queue budget that will hold it.
+            # A double built without a logger (tests) has nothing to say it to.
+            log = getattr(self, '_APDManager__logger', None)
+            if log is not None:
+                log.info(
+                    f'Raw scan volume {img_dims_extra} {np.dtype(image_dtype).name}: '
+                    f'{memory_limits.describeBytes(self._image.nbytes)} per scan, '
+                    f'{memory_limits.frameBudgetNote(self._image.nbytes, _queueBudgetBytes())} '
+                    f'({memory_limits.settingRef("perDetectorQueueBytes")}).'
+                )
 
         self._image_display = np.zeros(
             tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]),
@@ -755,6 +809,10 @@ class APDManager(DetectorManager):
             return np.empty((0, 0, 0), dtype=self.dtype)
         self.__newFrameReady = False
         return np.expand_dims(self._image_display, axis=0).copy()
+
+    def requireTimerClock(self):
+        """The sample-clock terminal, or a clear refusal when none exists."""
+        return _requireTimerClock(self._name, self._nidaq_clock_source)
 
     @property
     def rawFrameIsDeferred(self) -> bool:
@@ -902,6 +960,10 @@ class APDManager(DetectorManager):
 
         while im.ndim > self._image_display.ndim:
             im = np.squeeze(im[0])
+        # a single-line scan squeezes to rank 1; the display contract is a
+        # 2-D (1, N) image
+        if im.ndim < 2:
+            im = im.reshape(1, -1)
 
         self._image_display = im
         # Publish the boundary before asking the shared latest-frame broker to
@@ -1025,6 +1087,13 @@ class ScanWorker(Worker):
         # img_dims contains physical scan axes only (no linestep); n_linesteps is separate.
         scan_dims = list(scanInfoDict["img_dims"])
         scan_axes = list(scanInfoDict.get("img_axes_phys", ["x", "y", "z"][:len(scan_dims)]))
+        # Singleton-line normalization: a 1-axis scan is ONE line of N
+        # pixels. Pad the logical dims to (N, 1) with a size-1 'y' so the
+        # line-based assembly keeps its 2-D contract: loop dims [N, 1], raw
+        # buffer (1, N), display (1, N), chunks (frames, 1, N).
+        if len(scan_dims) == 1:
+            scan_dims.append(1)
+            scan_axes.append("y")
         self._linestep = max(1, int(scanInfoDict.get("n_linesteps", 1)))
 
         # Y is the slow scan axis
@@ -1034,7 +1103,8 @@ class ScanWorker(Worker):
         # Loop dims: expand Y by linestep (Ny -> Ny*S), keep other dims unchanged
         self._img_dims = scan_dims  # recursion uses physical scan axes only (x,y,z,...)
         self._loop_dims = scan_dims.copy()
-        self._loop_dims[y_idx] = int(self._loop_dims[y_idx] * self._linestep)
+        if len(self._loop_dims) > y_idx:
+            self._loop_dims[y_idx] = int(self._loop_dims[y_idx] * self._linestep)
 
         # Output dims for manager allocation: keep linestep as its own axis (for later stack/sum/max)
         # We append linestep as the LAST axis in output_image_dims (manager can reorder if desired)
@@ -1056,7 +1126,13 @@ class ScanWorker(Worker):
         self._throw_startacc = round(
             scanInfoDict.get('scan_throw_startacc', 0) * self._frac_scan_det_rate)  # starting acceleration
 
-        self._phase_delay = int(scanInfoDict.get('phase_delay', 0))  # phase delay samples - galvo response time
+        # Galvo response lag, declared in microseconds; converted to detection
+        # samples at the timer rate (identical at 1 MHz, which is why it used
+        # to pass as a sample count).
+        self._phase_delay = int(round(
+            float(scanInfoDict.get('phase_delay', 0) or 0)
+            * self._manager._detection_samplerate / 1e6
+        ))
         self._smooth_axes = scanInfoDict.get('smooth_axes', [False, False, False])
 
         # samples to throw due to smooth between d>2 step transitioning
@@ -1072,14 +1148,20 @@ class ScanWorker(Worker):
             self._inputTaskGeneration = (
                 self._manager._nidaqManager.startInputTask(
                     self._name, 'ci', self._channel, 'finite',
-                    self._manager._nidaq_clock_source,
+                    self._manager.requireTimerClock(),
                     self._manager._detection_samplerate,
                     self._samples_total, True, 'ao/StartTrigger',
                     self._manager._terminal,
                 )
             )
         self._manager.initiateImage(self._output_image_dims)
-        self._manager.setPixelSize(scanInfoDict['pixel_sizes'])  # 'pixel_sizes' order: low dim to high dim
+        # 'pixel_sizes' order: low dim to high dim. A 1-axis scan reports one
+        # entry; pad the unscanned singleton 'y' with the fast step so the
+        # display scale stays two-dimensional (aspect 1:1 per pixel).
+        pixel_sizes = list(scanInfoDict['pixel_sizes'])
+        if len(pixel_sizes) == 1:
+            pixel_sizes.append(pixel_sizes[0])
+        self._manager.setPixelSize(pixel_sizes)
 
     def _logLinestepReadPlan(self, scanInfoDict):
         if self._linestep <= 1:
@@ -1208,7 +1290,14 @@ class ScanWorker(Worker):
             # optional: logger warning
             line_samples = line_samples[:n]
         pixels = np.asarray(line_samples).reshape(-1, frac).sum(axis=1)
-        if not self._manager._ttlmultiplying:
+        if self._manager._simulation_mode and not self._manager._ttlmultiplying:
+            # The synthetic generator's own ceiling. It used to be applied to
+            # real counts as well, so a bright feature at a long dwell -- 10 ms
+            # at 1 Mcps is 10000 counts -- came back flat-topped at exactly
+            # mockPhotonCountMax, indistinguishable from detector saturation
+            # and adjustable only through a key named for the mock. A real
+            # APD's only ceiling is the frame's dtype, applied where the frame
+            # is assembled.
             pixels = np.clip(pixels, 0, self._manager._mock_photon_count_max)
         return pixels
 

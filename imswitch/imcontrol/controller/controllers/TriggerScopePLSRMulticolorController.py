@@ -12,7 +12,7 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin, check_firmware_scan_dac_ranges
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
@@ -59,7 +59,15 @@ class TriggerScopePLSRMulticolorController(
         self._widget.onLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.offLaserEdit.addItems(self.TTLDevices.keys())
         self._widget.roLaserEdit.addItems(self.TTLDevices.keys())
-        self._widget.CameraTTLEdit.addItems(self.TTLDevices.keys())
+        # This mode is the exception among the RESOLFT panels: it *programs*
+        # the camera line into the firmware (``CameraTTLChan``), so the chosen
+        # detector has to have a TriggerScope line for the scan to run at all.
+        # Offering one without a line would arm the recording and then fail
+        # part-way through uploading parameters.
+        self._widget.CameraTTLEdit.addItems(
+            name for name in self._setupInfo.detectors
+            if name in self.TTLDevices
+        )
         self._widget.Laser2Edit.addItems(self.TTLDevices.keys())
         self._widget.Laser3Edit.addItems(self.TTLDevices.keys())
         self._widget.roScanDeviceEdit.addItems(self.positioners.keys())
@@ -195,6 +203,9 @@ class TriggerScopePLSRMulticolorController(
         scanParameterDict['Laser3OnUs'] = int(self._scanParameterDict['Laser3OnMs'] * 1000)
         scanParameterDict['DelayAfterLaser3Us'] = int(self._scanParameterDict['DelayAfterLaser3Ms'] * 1000)
         scanParameterDict['MulticolorScanThirdV'] = self._scanParameterDict['MulticolorScanThirdUm'] / multicolorConvFactor
+        check_firmware_scan_dac_ranges(
+            self.positioners, deviceParameterDict, scanParameterDict, what='multicolor pLS-RESOLFT scan',
+        )
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
@@ -387,8 +398,12 @@ class TriggerScopePLSRMulticolorController(
         laser2 = deviceParameterDict.get('Laser2')
         laser3 = deviceParameterDict.get('Laser3')
 
+        cameraTTL = deviceParameterDict.get('CameraTTL')
+
         missingTTLDevices = []
-        for device in [onLaser, offLaser, roLaser, laser2, laser3]:
+        # The camera belongs in this list for the multicolor mode alone: it is
+        # the one that programs the camera's line into the firmware.
+        for device in [onLaser, offLaser, roLaser, laser2, laser3, cameraTTL]:
             if device and device not in self.TTLDevices:
                 missingTTLDevices.append(device)
 

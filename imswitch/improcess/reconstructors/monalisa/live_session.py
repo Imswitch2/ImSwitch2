@@ -23,6 +23,41 @@ except ImportError:
     cp = None
 
 
+
+def directions_from_orientation(orientation: str) -> list[str]:
+    """``['+'|'-', ...]`` per dialog axis (x, y, z, t) from a detected orientation.
+
+    Orientation strings are ``"+x+y"``-style: each axis letter is preceded by
+    its sign, in either order (``"+y-x"`` is a transposed candidate). Only the
+    sign per axis is reported here; z and t are never mirrored by this path.
+    """
+    signs = {"x": "+", "y": "+"}
+    for index, char in enumerate(orientation):
+        if char in signs and index > 0 and orientation[index - 1] in "+-":
+            signs[char] = orientation[index - 1]
+    return [signs["x"], signs["y"], "+", "+"]
+
+
+def expected_orientation_signs(layout) -> dict[str, str] | None:
+    """Per-axis sign the recorded layout implies, or ``None`` without a layout.
+
+    Derived from ``physical_orientation_flips`` -- the one place the layout's
+    ``direction`` is interpreted -- for the ``scan_x``/``scan_y`` loops.
+    """
+    if layout is None:
+        return None
+    from imswitch.imcommon.model.acquisition_layout import physical_orientation_flips
+
+    flips = physical_orientation_flips(layout)
+    signs = {}
+    for loop in layout.event_loops:
+        if loop.kind == "scan_x":
+            signs["x"] = "-" if loop.id in flips else "+"
+        elif loop.kind == "scan_y":
+            signs["y"] = "-" if loop.id in flips else "+"
+    return signs or None
+
+
 class MonalisaLiveSession(StreamingSession):
     """
     Streaming reconstruction session for MoNaLISA fast-Gauss live pipeline.
@@ -40,6 +75,7 @@ class MonalisaLiveSession(StreamingSession):
         self.nx_c = None
         self.ny_c = None
         self.num_linesteps = 1
+        self.detected_orientation = None
         self.num_frames_per_condition = None
         self.num_frames_in_stack = None
         self.use_gpu = False
@@ -48,6 +84,104 @@ class MonalisaLiveSession(StreamingSession):
         self.name = ""
         self.scan_params = {}
         self.output_pixel_size_nm = None
+
+    @staticmethod
+    def _geometry_from_recorded_layout(stack_info):
+        """``(nx_s, ny_s, timepoints, linesteps)`` from the resolved layout.
+
+        ``None`` when there is no usable layout, or when an *inferred* one
+        describes a frame order this path cannot assemble.
+
+        This is the same resolved contract the offline path consumes, so live
+        and batch reconstruction of one recording cannot disagree about the
+        frame order -- and it is the resolver, not this module, that decides
+        what the stage metadata means.
+
+        The streaming path assembles one contiguous stack per timepoint;
+        line-step conditions interleaved per line are part of that stack and
+        are de-interleaved by ``num_linesteps``. A recording that *declares*
+        anything else -- conditions laid out any other way, a reversed or
+        serpentine fast axis, a gated detector, a Z loop -- is refused rather
+        than silently reshaped into timepoints. The same shape merely
+        *inferred* from legacy metadata is declined instead, so a file that
+        used to open still opens through the older ladder below.
+        """
+        from imswitch.imcommon.model.acquisition_layout import UnconsumedLoopError
+
+        from .coeffs_to_image import (
+            linestep_conditions_interleave_per_line,
+            placement_from_layout,
+        )
+
+        resolved = getattr(stack_info, "acquisition_layout", None)
+        if resolved is None or not resolved.is_usable:
+            return None
+        layout = resolved.layout
+        try:
+            placement = placement_from_layout(layout)
+        except UnconsumedLoopError as error:
+            if resolved.is_authoritative:
+                raise ValueError(str(error)) from error
+            return None
+        if placement is None:
+            return None
+
+        unsupported = []
+        if (
+            placement.n_conditions > 1
+            and not linestep_conditions_interleave_per_line(layout)
+        ):
+            unsupported.append(
+                f"{placement.n_conditions} line-step conditions that are not "
+                f"interleaved per line"
+            )
+        if placement.slices > 1:
+            unsupported.append(f"{placement.slices} Z slices")
+        if any(rule.order != "forward" for rule in layout.traversal):
+            unsupported.append("a reversed or serpentine fast axis")
+        if layout.recorded_event_spans is not None:
+            unsupported.append("a detector gated to part of the scan")
+        if unsupported:
+            if not resolved.is_authoritative:
+                return None
+            raise ValueError(
+                "Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and "
+                "cannot represent " + ", ".join(unsupported) + ". Use the "
+                "MoNaLISA reconstruction method, which places every frame by "
+                "its recorded coordinate."
+            )
+        return (
+            placement.cols,
+            placement.rows,
+            placement.n_time,
+            placement.n_conditions,
+        )
+
+    def _cross_check_orientation_against_layout(self, orientation, resolved) -> None:
+        """Warn when the data-detected orientation contradicts the layout.
+
+        The detection is authoritative for this path; the layout's sign is
+        what every metadata-placing consumer uses, so a disagreement means
+        either a mis-detection on a featureless first stack or a wrong
+        ``isPositiveDirection`` in the setup file -- both worth a line in the
+        log before the images from two methods come out mirrored.
+        """
+        layout = getattr(resolved, "layout", None)
+        if layout is None or not getattr(resolved, "is_usable", False):
+            return
+        expected = expected_orientation_signs(layout)
+        if not expected:
+            return
+        detected = dict(zip(("x", "y"), directions_from_orientation(orientation)[:2]))
+        mismatched = [axis for axis, sign in expected.items() if detected.get(axis) != sign]
+        if mismatched:
+            self._logger.warning(
+                f"Detected scan orientation {orientation!r} disagrees with the "
+                f"recorded layout on axis {', '.join(mismatched)} (layout says "
+                f"{expected}); using the detected orientation. If the layout is "
+                f"right, check the first stack; if the detection is right, check "
+                f"isPositiveDirection in the setup file."
+            )
 
     def begin(self, init_obj, params: dict) -> StreamPlan:
         """
@@ -99,14 +233,32 @@ class MonalisaLiveSession(StreamingSession):
             step_x_nm, step_y_nm = self.scan_stage_step_size_nm(
                 imswitch_meta, axis_step_size
             )
-            self.nx_s, self.ny_s = self._resolve_scan_steps(
-                axis_startpos,
-                axis_length,
-                axis_step_size,
-                imswitch_meta,
-                init_obj.stack_info,
-                data.shape[0],
+            # The resolver decides what the stage metadata means. The ladder
+            # below re-derives the same thing with its own arithmetic and is
+            # only for sources the resolver cannot describe.
+            resolved_geometry = self._geometry_from_recorded_layout(
+                init_obj.stack_info
             )
+            if resolved_geometry is not None:
+                (
+                    self.nx_s,
+                    self.ny_s,
+                    recorded_timepoints,
+                    recorded_linesteps,
+                ) = resolved_geometry
+                # The layout outranks the ScanTTL attribute it may have been
+                # derived from.
+                self.num_linesteps = recorded_linesteps
+            else:
+                recorded_timepoints = None
+                self.nx_s, self.ny_s = self._resolve_scan_steps(
+                    axis_startpos,
+                    axis_length,
+                    axis_step_size,
+                    imswitch_meta,
+                    init_obj.stack_info,
+                    data.shape[0],
+                )
         except KeyError as e:
             raise ValueError(f"Missing required scan geometry key: {e}") from e
 
@@ -114,7 +266,11 @@ class MonalisaLiveSession(StreamingSession):
         self.num_frames_in_stack = (
             self.num_frames_per_condition * self.num_linesteps
         )
-        num_time_points = self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
+        num_time_points = (
+            recorded_timepoints
+            if recorded_timepoints is not None
+            else self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
+        )
         num_output_conditions = num_time_points * self.num_linesteps
 
         self._logger.info(
@@ -185,6 +341,15 @@ class MonalisaLiveSession(StreamingSession):
             )
             self._logger.info(f"Detected scan orientation: {orientation}")
 
+        # Orientation is decided from the data, not from metadata: the eight
+        # candidates already include every mirror, so a negative stage
+        # direction is resolved here empirically and the layout's sign must
+        # NOT be applied on top. The layout is a cross-check.
+        self.detected_orientation = orientation
+        self._cross_check_orientation_against_layout(
+            orientation, getattr(init_obj.stack_info, "acquisition_layout", None)
+        )
+
         self.processor.update_frame_inds(
             loc_result.nx_c, loc_result.ny_c, self.nx_s, self.ny_s, orientation
         )
@@ -205,11 +370,14 @@ class MonalisaLiveSession(StreamingSession):
 
         self.scan_params = {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
-            "directions": ["+", "+", "+", "+"],
+            # What was actually used to assemble the image, not a placeholder.
+            "directions": directions_from_orientation(orientation),
             "steps": [self.nx_s, self.ny_s, 1, num_output_conditions],
             "step_sizes": [float(step_x_nm), float(step_y_nm), 1.0, 1.0],
             "n_linesteps": self.num_linesteps,
-            "unidirectional": False,
+            # This path assembles contiguous stacks: a unidirectional raster,
+            # never a snake scan (a serpentine layout is refused above).
+            "unidirectional": True,
         }
 
         self._logger.info(

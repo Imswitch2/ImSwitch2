@@ -51,7 +51,9 @@ def build_default_device(
     }
 
     def field_type(f: dict, location: str, nested_key: Optional[str] = None) -> str:
-        return f.get("type") or resolved.get((location, nested_key, f["key"])) or "text"
+        # The resolved type -- the schema's, or the template's where it is a
+        # refinement -- so a default is coerced the way the form reads it.
+        return resolved.get((location, nested_key, f["key"])) or f.get("type") or "text"
 
     if template:
         for f in template.get("top", []):
@@ -64,11 +66,30 @@ def build_default_device(
             else:
                 d[f["key"]] = _default_value(v, tp)
         for f in template.get("props", []):
-            d["managerProperties"][f["key"]] = _default_value(f.get("default", ""), field_type(f, "prop"))
+            tp = field_type(f, "prop")
+            if tp == "bool_auto":
+                # Tri-state boolean whose absent state is meaningful: the
+                # consumer applies its own fallback (e.g. smoothScan's device
+                # name heuristic). A null/absent default must stay ABSENT --
+                # materializing a value here would silently change behavior
+                # for devices that relied on the fallback.
+                v = f.get("default", "")
+                if v in (None, "", "null"):
+                    continue
+                d["managerProperties"][f["key"]] = bool(v)
+                continue
+            d["managerProperties"][f["key"]] = _default_value(f.get("default", ""), tp)
         for nest_key, nest_fields in template.get("nested", {}).items():
             sub = {}
             for f in nest_fields:
                 sub[f["key"]] = _default_value(f.get("default", ""), field_type(f, "nested", nest_key))
+            # A sub-key the schema requires and the template does not list.
+            nest_schema = ((json_schema or {}).get("properties") or {}).get(nest_key) or {}
+            for sub_key in nest_schema.get("required") or []:
+                sub_prop = (nest_schema.get("properties") or {}).get(sub_key) or {}
+                if sub_key not in sub:
+                    sub[sub_key] = copy.deepcopy(sub_prop["default"]) if "default" in sub_prop \
+                        else _default_for_type(_infer_type_from_schema(sub_prop))
             d["managerProperties"][nest_key] = sub
 
     if kind_schema:

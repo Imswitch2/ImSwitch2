@@ -25,8 +25,10 @@ class ThorCamTSIManager(DetectorManager):
     - ``defaults`` -- dict of default values:
         - ``exposure_us``: exposure time in microseconds (default: 50000)
         - ``gain``: camera gain (default: 0)
-        - ``operation_mode``: 'Software', 'Hardware', or 'Bulb' (default: 'Software')
-        - ``trigger_polarity``: 'Active High' or 'Active Low' (default: 'Active High')
+        - ``operation_mode``: 'Software', 'Hardware', or 'Bulb' (default: 'Software');
+          available choices depend on camera capabilities
+        - ``trigger_polarity``: 'Active High' or 'Active Low' (default: 'Active High');
+          ignored when the connected camera does not support configurable polarity
         - ``frame_rate``: frame rate in Hz when frame rate control enabled (default: 30)
     """
     
@@ -39,6 +41,8 @@ class ThorCamTSIManager(DetectorManager):
         dll_location = props.get('dllLocation', 'dlls/64_lib')
         defaults = props.get('defaults', {})
         self._flushFrameLimit = int(props.get('flushFrameLimit', 256))
+        from imswitch.imcontrol.model.interfaces.thorcamera_tsi import DEFAULT_FRAME_BUFFER_DEPTH
+        self._frameBufferDepth = int(props.get('frameBufferDepth', DEFAULT_FRAME_BUFFER_DEPTH))
         
         # Get default values
         default_exposure_us = defaults.get('exposure_us', 50000)
@@ -49,6 +53,23 @@ class ThorCamTSIManager(DetectorManager):
         
         # Initialize camera (with mock fallback)
         self._camera = self._initCamera(serial, dll_location)
+
+        mode_labels = {
+            'software': 'Software',
+            'hardware': 'Hardware',
+            'bulb': 'Bulb',
+        }
+        supported_modes = [
+            mode_labels[mode] for mode in self._camera.supported_trigger_modes
+        ]
+        if default_mode not in supported_modes:
+            model = self._camera.model
+            self._camera.dispose()
+            self._camera = None
+            raise ValueError(
+                f"Configured operation mode '{default_mode}' is not supported by "
+                f"{model}. Supported modes: {', '.join(supported_modes)}"
+            )
         
         # Get sensor dimensions
         fullShape = (
@@ -74,12 +95,7 @@ class ThorCamTSIManager(DetectorManager):
             ),
             'Operation Mode': DetectorListParameter(
                 group='Trigger', value=default_mode,
-                options=['Software', 'Hardware', 'Bulb'],
-                editable=True
-            ),
-            'Trigger Polarity': DetectorListParameter(
-                group='Trigger', value=default_polarity,
-                options=['Active High', 'Active Low'],
+                options=supported_modes,
                 editable=True
             ),
             'ROI X0': DetectorNumberParameter(
@@ -101,6 +117,12 @@ class ThorCamTSIManager(DetectorManager):
                 detectorInfo
             ),
         }
+        if self._camera.supports_trigger_polarity:
+            parameters['Trigger Polarity'] = DetectorListParameter(
+                group='Trigger', value=default_polarity,
+                options=['Active High', 'Active Low'],
+                editable=True
+            )
         
         super().__init__(
             detectorInfo, name, fullShape=fullShape,
@@ -112,7 +134,7 @@ class ThorCamTSIManager(DetectorManager):
         self._applyDefaults()
         
         # Arm camera for continuous acquisition
-        self._camera.arm(buffer_size=4)
+        self._camera.arm(buffer_size=self._frameBufferDepth)
         self.__logger.info(f"Initialized {model}, serial: {self._camera.serial}")
     
     def _initCamera(self, serial, dll_location):
@@ -147,7 +169,10 @@ class ThorCamTSIManager(DetectorManager):
         self.setParameter('Exposure', self.parameters['Exposure'].value)
         self.setParameter('Gain', self.parameters['Gain'].value)
         self.setParameter('Operation Mode', self.parameters['Operation Mode'].value)
-        self.setParameter('Trigger Polarity', self.parameters['Trigger Polarity'].value)
+        if 'Trigger Polarity' in self.parameters:
+            self.setParameter(
+                'Trigger Polarity', self.parameters['Trigger Polarity'].value
+            )
         self.setParameter('Frame Rate', self.parameters['Frame Rate'].value)
     
     def getLatestFrame(self, is_save=False):
@@ -181,39 +206,58 @@ class ThorCamTSIManager(DetectorManager):
         )
     
     def setParameter(self, name, value):
-        """Set a parameter value and update hardware."""
-        super().setParameter(name, value)
-        
-        if name == 'Exposure':
-            self._camera.set_exposure_us(value)
-        
-        elif name == 'Gain':
-            self._camera.set_gain(value)
-        
-        elif name == 'Frame Rate':
-            self._camera.set_frame_rate(value)
-        
-        elif name == 'Operation Mode':
+        """Set a parameter value and update hardware.
+
+        Trigger settings are committed to the manager only after the camera
+        accepts them, so a rejected SDK write cannot leave the UI/cache claiming
+        a mode that is not active on the device.
+        """
+        if name == 'Operation Mode':
+            parameter = self.parameters[name]
+            if value not in parameter.options:
+                raise ValueError(
+                    f"Operation mode '{value}' is not supported by {self.model}; "
+                    f"supported modes: {', '.join(parameter.options)}"
+                )
             mode_map = {
                 'Software': 'software',
                 'Hardware': 'hardware',
                 'Bulb': 'bulb'
             }
             self._camera.set_trigger_mode(mode_map[value])
-        
-        elif name == 'Trigger Polarity':
+            super().setParameter(name, value)
+            return self.parameters
+
+        if name == 'Trigger Polarity':
+            if name not in self.parameters:
+                raise AttributeError(
+                    f'Trigger polarity is not supported by {self.model}'
+                )
             polarity_map = {
                 'Active High': 'active_high',
                 'Active Low': 'active_low'
             }
             self._camera.set_trigger_polarity(polarity_map[value])
-        
+            super().setParameter(name, value)
+            return self.parameters
+
+        super().setParameter(name, value)
+
+        if name == 'Exposure':
+            self._camera.set_exposure_us(value)
+
+        elif name == 'Gain':
+            self._camera.set_gain(value)
+
+        elif name == 'Frame Rate':
+            self._camera.set_frame_rate(value)
+
         elif name in ['ROI X0', 'ROI Y0', 'ROI X1', 'ROI Y1']:
             # Update ROI when any corner changes
             self._updateROI()
-        
+
         return self.parameters
-    
+
     def _updateROI(self):
         """Apply current ROI parameters to camera."""
         x0 = int(self.parameters['ROI X0'].value)
@@ -235,7 +279,7 @@ class ThorCamTSIManager(DetectorManager):
         self._camera.set_roi(x0, y0, x1, y1)
         
         if was_armed:
-            self._camera.arm(buffer_size=4)
+            self._camera.arm(buffer_size=self._frameBufferDepth)
         
         # Update shape
         self._shape = (x1 - x0 + 1, y1 - y0 + 1)
@@ -337,7 +381,7 @@ class ThorCamTSIManager(DetectorManager):
         camera continuously armed but must not silently no-op when it is disarmed.
         """
         if not self._camera.is_armed:
-            self._camera.arm(buffer_size=4)
+            self._camera.arm(buffer_size=self._frameBufferDepth)
     
     def stopAcquisition(self):
         """Stop acquisition (no-op, camera stays armed)."""

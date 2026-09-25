@@ -81,9 +81,9 @@ def test_the_generation_set_is_the_catalog_plus_template_backed_managers(inputs)
     # The two mock contributions resolve through their python_name; the one
     # name left is a vendor driver module the legacy scan mistook for a manager.
     assert set(inputs.unresolved) == {"PyCoboltManager"}
-    # 65 in the catalog, minus that one, plus PiezoconceptZManager2, which only
-    # a template names.
-    assert len(names) == 65
+    # 61 in the catalog, minus that one, plus PiezoconceptZManager2, which only
+    # a template names. (65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.)
+    assert len(names) == 62
 
 
 def test_index_names_every_manager_and_its_override_status(generated):
@@ -93,7 +93,8 @@ def test_index_names_every_manager_and_its_override_status(generated):
     assert index["managers"]["AAAOTFLaserManager"]["overridden"] is True
     assert index["managers"]["HamamatsuManager"]["overridden"] is True
     assert index["managers"]["NidaqLaserManager"]["overridden"] is False
-    assert index["coverage"]["keys"] >= 216
+    # 211: the removed camera managers took their keys with them.
+    assert index["coverage"]["keys"] >= 211
 
 
 # ── validity ──────────────────────────────────────────────────────────────

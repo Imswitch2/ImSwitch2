@@ -152,7 +152,7 @@ class ScanWidgetBase(SuperScanWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.seqTimePar = QtWidgets.QLineEdit('1')  # ms
+        self.seqTimePar = QtWidgets.QLineEdit('10')  # ms; a stage needs its move and settle inside each dwell
 
         self.scanPar = {
                         'seqTime': self.seqTimePar

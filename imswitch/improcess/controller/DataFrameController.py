@@ -10,6 +10,36 @@ def _is_image_source(data_obj):
     return getattr(data_obj, 'sourceKind', 'image') == 'image'
 
 
+def _mean_preview_notice(data_obj):
+    """Why the mean preview is worth saying first, or None (fits, or unknown)."""
+    notice = getattr(data_obj, 'meanPreviewNotice', None)
+    if not callable(notice):
+        return None
+    try:
+        return notice()
+    except Exception:
+        return None
+
+
+def _plane_read_is_bounded(data_obj):
+    """False only when the object says a plane read decodes the whole series."""
+    bounded = getattr(data_obj, 'planeReadIsBounded', None)
+    if not callable(bounded):
+        return True
+    try:
+        return bool(bounded())
+    except Exception:
+        return True
+
+
+def _say(controller, message):
+    """A line where the operator is looking, if the channel has a status bar."""
+    signal = getattr(getattr(controller, '_commChannel', None), 'sigStatusMessage', None)
+    emit = getattr(signal, 'emit', None)
+    if callable(emit):
+        emit(message)
+
+
 class DataFrameController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -31,7 +61,7 @@ class DataFrameController(ImProcessWidgetController):
         self._commChannel.sigDetectionPreviewUpdated.connect(self.detectionPreviewUpdated)
         self._commChannel.sigDetectionPreviewVisibilityChanged.connect(self.detectionPreviewVisibilityChanged)
 
-        self._widget.sigShowMeanClicked.connect(self.showMean)
+        self._widget.sigShowMeanClicked.connect(lambda *_: self.showMean(explicit=True))
         self._widget.sigAdjustDataClicked.connect(self.adjustData)
         self._widget.sigUnloadDataClicked.connect(self.unloadData)
         self._widget.sigFrameNumberChanged.connect(self.setImgSlice)
@@ -84,12 +114,43 @@ class DataFrameController(ImProcessWidgetController):
         else:
             self._logger.error('No data to edit')
 
-    def showMean(self):
-        img = (
-            self._dataObj.getMeanData()
-            if self._dataObj is not None and _is_image_source(self._dataObj)
-            else np.zeros((1, 1))
-        )
+    def showMean(self, explicit=False):
+        """Display the mean plane -- automatically on load, or on request.
+
+        The mean is estimated before it is computed: a float64 accumulator and
+        a float32 result of one plane, which the plane-count bound on the
+        preview says nothing about. Above the processing working set the
+        *automatic* preview is skipped in favour of the first plane, with the
+        estimate and the setting said where the operator is looking; the
+        *explicit* one (the Show mean button) is what they asked for, so it is
+        computed after the same line. The preview keeps its native coordinates
+        either way: the pattern finder and the detection preview take
+        pixel-unit parameters from this image, so it is never approximated in
+        plane.
+        """
+        if self._dataObj is None or not _is_image_source(self._dataObj):
+            img = np.zeros((1, 1))
+        else:
+            notice = _mean_preview_notice(self._dataObj)
+            if notice is not None and not explicit:
+                data = self._currentDataArray()
+                if data is not None and _plane_read_is_bounded(self._dataObj):
+                    self._logger.info(f'{notice} Showing the first plane instead; '
+                                      f'Show mean computes it on request.')
+                    _say(self, f'{notice} Showing the first plane; Show mean computes it.')
+                    self.setImgSlice(0)
+                    return
+                # A plane read that decodes the whole series is the very cost
+                # being avoided, so nothing is read until asked.
+                self._logger.info(f'{notice} Nothing shown until asked; Show mean '
+                                  f'computes it on request.')
+                _say(self, f'{notice} Nothing shown until asked; Show mean computes it.')
+                img = np.zeros((1, 1))
+            else:
+                if notice is not None:
+                    self._logger.warning(f'{notice} Computing it as requested.')
+                    _say(self, f'{notice} Computing it as requested.')
+                img = self._dataObj.getMeanData()
         self._displayedImage = img
         self._widget.setImage(img, autoLevels=True)
         self._commChannel.sigDisplayedFrameChanged.emit()

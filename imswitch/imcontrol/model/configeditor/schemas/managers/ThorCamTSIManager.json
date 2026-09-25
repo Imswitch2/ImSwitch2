@@ -86,6 +86,19 @@
         "code:int()",
         "code:optional(get)"
       ]
+    },
+    "frameBufferDepth": {
+      "description": "Frames the SDK ring buffer holds between the camera and the acquisition loop. What the depth buys is tolerance to latency spikes (a GC pause, an HDF5 resize, a writer block) of up to ``depth / framerate`` seconds; the camera is re-armed at this depth on every trigger-mode change.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:int()",
+        "code:optional(get)"
+      ]
     }
   },
   "title": "ThorCamTSIManager managerProperties",

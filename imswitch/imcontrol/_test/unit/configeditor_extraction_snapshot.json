@@ -2,7 +2,7 @@
   "managers": [
     {
       "constrained": 0,
-      "keys": 7,
+      "keys": 8,
       "name": "AAAOTFLaserManager",
       "refs": 1,
       "required": 2,
@@ -37,15 +37,6 @@
       "unresolved": 0
     },
     {
-      "constrained": 1,
-      "keys": 3,
-      "name": "BaslerManager",
-      "refs": 0,
-      "required": 2,
-      "uncertain": 0,
-      "unresolved": 0
-    },
-    {
       "constrained": 0,
       "keys": 2,
       "name": "Cobolt0601LaserManager",
@@ -55,8 +46,8 @@
       "unresolved": 0
     },
     {
-      "constrained": 1,
-      "keys": 9,
+      "constrained": 2,
+      "keys": 10,
       "name": "Cobolt0601NewLaserManager",
       "refs": 0,
       "required": 1,
@@ -78,15 +69,6 @@
       "name": "CoolLEDLaserManager",
       "refs": 1,
       "required": 0,
-      "uncertain": 0,
-      "unresolved": 0
-    },
-    {
-      "constrained": 1,
-      "keys": 4,
-      "name": "ESP32CamManager",
-      "refs": 0,
-      "required": 3,
       "uncertain": 0,
       "unresolved": 0
     },
@@ -183,15 +165,6 @@
     {
       "constrained": 1,
       "keys": 3,
-      "name": "GXPIPYManager",
-      "refs": 0,
-      "required": 2,
-      "uncertain": 0,
-      "unresolved": 0
-    },
-    {
-      "constrained": 1,
-      "keys": 3,
       "name": "HamamatsuManager",
       "refs": 0,
       "required": 2,
@@ -221,15 +194,6 @@
       "keys": 5,
       "name": "JenaPiezoZManager",
       "refs": 1,
-      "required": 1,
-      "uncertain": 0,
-      "unresolved": 0
-    },
-    {
-      "constrained": 1,
-      "keys": 2,
-      "name": "JetsonCamManager",
-      "refs": 0,
       "required": 1,
       "uncertain": 0,
       "unresolved": 0
@@ -290,10 +254,10 @@
     },
     {
       "constrained": 0,
-      "keys": 2,
-      "name": "LeicaDMIManager",
-      "refs": 1,
-      "required": 1,
+      "keys": 1,
+      "name": "LeicaDMIStandManager",
+      "refs": 0,
+      "required": 0,
       "uncertain": 0,
       "unresolved": 0
     },
@@ -303,6 +267,15 @@
       "name": "LeicaDMIStandMockManager",
       "refs": 0,
       "required": 0,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 0,
+      "keys": 2,
+      "name": "LeicaDMIZPositionerManager",
+      "refs": 1,
+      "required": 1,
       "uncertain": 0,
       "unresolved": 0
     },
@@ -371,7 +344,7 @@
     },
     {
       "constrained": 0,
-      "keys": 2,
+      "keys": 3,
       "name": "PIStageManager",
       "refs": 0,
       "required": 0,
@@ -379,8 +352,8 @@
       "unresolved": 0
     },
     {
-      "constrained": 6,
-      "keys": 11,
+      "constrained": 8,
+      "keys": 13,
       "name": "PMTManager",
       "refs": 0,
       "required": 0,
@@ -514,7 +487,7 @@
       "unresolved": 0
     },
     {
-      "constrained": 11,
+      "constrained": 10,
       "keys": 15,
       "name": "SwabianTimeTaggerManager",
       "refs": 0,
@@ -541,8 +514,8 @@
       "unresolved": 0
     },
     {
-      "constrained": 2,
-      "keys": 5,
+      "constrained": 3,
+      "keys": 6,
       "name": "ThorCamTSIManager",
       "refs": 0,
       "required": 0,
@@ -588,23 +561,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 47,
-    "docs_agree": 135,
-    "docs_documented": 135,
-    "keys": 218,
-    "managers": 65,
-    "none_default_only": 31,
-    "none_only": 22,
-    "optional": 148,
-    "reads_any": 59,
+    "constrained": 46,
+    "docs_agree": 134,
+    "docs_documented": 134,
+    "keys": 213,
+    "managers": 62,
+    "none_default_only": 29,
+    "none_only": 18,
+    "optional": 151,
+    "reads_any": 56,
     "refs": 14,
-    "required": 70,
-    "typed_by_code": 90,
-    "typed_with_docs": 156,
-    "typed_with_examples": 122,
+    "required": 62,
+    "typed_by_code": 96,
+    "typed_with_docs": 155,
+    "typed_with_examples": 128,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 59,
+    "with_keys": 56,
     "writes": 0
   }
 }

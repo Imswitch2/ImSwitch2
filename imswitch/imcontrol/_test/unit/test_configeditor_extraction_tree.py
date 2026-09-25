@@ -31,12 +31,18 @@ def core_catalog():
     """The core catalog: built-in registry, discovery off, explicit root.
 
     What the tool uses, so the figures do not depend on plugins installed on
-    the machine running the tests.
+    the machine running the tests. Every manager maps to its exact
+    ``python_name``: the registry's, or where ``MultiManager`` imports an
+    unregistered one from.
     """
     registry = build_default_registry(discover=False)
     python_names = {c.id: c.python_name for c in registry.list_contributions()}
     catalog = build_catalog(registry=registry, managers_root=MANAGERS_ROOT)
-    return {info.manager_name: python_names.get(info.manager_name) for info in catalog.managers()}
+    return {
+        info.manager_name: python_names.get(info.manager_name)
+        or ex.legacy_python_name(info.manager_name, info.category)
+        for info in catalog.managers()
+    }
 
 
 @pytest.fixture(scope="module")
@@ -44,8 +50,7 @@ def extractions():
     catalog = core_catalog()
     return ex.extract_managers(
         sorted(catalog), managers_root=MANAGERS_ROOT, setups_dir=SETUPS_DIR, docs_dir=DOCS_DIR,
-        class_names={name: python_name and python_name.rsplit(":", 1)[1]
-                     for name, python_name in catalog.items()},
+        python_names=catalog,
     )
 
 
@@ -56,30 +61,47 @@ def report(extractions):
 
 # ── the numbers the plan quotes ───────────────────────────────────────────
 def test_the_coverage_the_plan_is_built_on(report):
-    assert report.managers == 65, "64 plus RS232Manager, which the legacy scan no longer skips"
+    # 65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
+    assert report.managers == 62, "61 plus RS232Manager, which the legacy scan no longer skips"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
     # methods other than __init__ are all followed now.
     # ... plus RS232Manager itself, once the catalog stopped skipping it.
-    assert report.reads_any == 59
-    assert report.with_keys == 59
+    # Four fewer since the removed camera managers (see above): 59 -> 55.
+    assert report.reads_any == 56
+    assert report.with_keys == 56
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
-    assert report.keys == 218
+    # 218 before the merge with the acquisition-layout branch: the removed
+    # camera managers took 12 keys, the PMT's aiVoltageMin/aiVoltageMax and
+    # the Thorlabs camera's frameBufferDepth added 3. 210: AAAOTF's
+    # useMockOnFailure. 213: LeicaDMIZPositionerManager's shared-hardware
+    # calibCsvPath boundary read.
+    assert report.keys == 213
     assert report.alias_spellings == 9
-    assert report.required == 70, "68 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 148
+    # 70 before the removed camera managers took their 8 required keys.
+    assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
+    assert report.optional == 151
     assert report.refs == 14
-    assert report.none_default_only == 31
+    assert report.none_default_only == 29  # 31 with the removed camera managers
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
-    assert (report.docs_agree, report.docs_documented) == (135, 135)
+    # 135 before the removed camera managers' cards went with them (129), plus
+    # the PMT's aiVoltageMax, which shared a row with aiVoltageMin and so was
+    # never counted as documented. 131: AAAOTF's useMockOnFailure. 134:
+    # Cobolt scanResumeSettleMs, PI runtime_timeout_ms, and Leica stand
+    # availableCubes are now documented by their cards.
+    assert (report.docs_agree, report.docs_documented) == (134, 134)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
-    assert report.typed_by_code == 90
+    # 92: the PMT's aiVoltageMin/aiVoltageMax are read with a numeric default.
+    # 93: AAAOTF's useMockOnFailure is read with a bool default.
+    # 96 after the MoNaLISA2 manager updates: scanResumeSettleMs,
+    # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
+    assert report.typed_by_code == 96
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -181,7 +203,10 @@ def test_rs232_manager_is_open_because_the_driver_takes_the_whole_dict():
     # ``RS232Manager`` as a base class, although shipped setups select it by
     # that name and a template exists for it. Noted in the plan as a catalog
     # gap; not this module's to fix.
-    manager = ex.merge_manager("RS232Manager", ex.extract_tree(MANAGERS_ROOT))
+    tree = ex.extract_tree_indexed(MANAGERS_ROOT)
+    class_id = ex.resolve_class_name("RS232Manager", tree, ex.legacy_python_name("RS232Manager", "rs232devices"))
+    assert class_id == "imswitch.imcontrol.model.managers.rs232.RS232Manager:RS232Manager"
+    manager = ex.merge_manager("RS232Manager", tree.classes, class_name=class_id)
     assert manager.open_passthrough is True
     assert {"port", "recv_termination"} <= set(manager.properties)
 
@@ -248,5 +273,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 65
+    assert totals["managers"] == 62
 

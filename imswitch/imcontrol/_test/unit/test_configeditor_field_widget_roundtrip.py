@@ -6,6 +6,9 @@ selects and returns the int entry, and that a stale string in a select lands
 on the matching entry instead of growing a duplicate.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PyQt5")
@@ -13,6 +16,9 @@ pytest.importorskip("PyQt5")
 from PyQt5.QtTest import QTest
 
 from imswitch.imcontrol.view.configeditor import editor
+
+RS232_TEMPLATE = (Path(editor.__file__).parent / "builtin_templates" / "rs232devices"
+                  / "RS232Manager.json")
 
 
 def _type(fw, text):
@@ -78,6 +84,58 @@ def test_select_keeps_an_unknown_saved_value_selectable(qapp):
     fw = editor.FieldWidget(_field("baudrate", "select", opts=[9600, 115200]), 57600)
     assert fw._w.count() == 3
     assert fw.get_value() == 57600
+
+
+def _termination_field(key="recv_termination"):
+    """The RS232 template's own field, so the test follows the shipped options."""
+    template = json.loads(RS232_TEMPLATE.read_text(encoding="utf-8"))
+    return next(f for f in template["props"] if f["key"] == key)
+
+
+@pytest.mark.parametrize("key", ["recv_termination", "send_termination"])
+def test_choosing_a_termination_writes_the_real_line_ending(qapp, key):
+    """Choosing \\r used to save backslash + r, and every device query timed out."""
+    fw = editor.FieldWidget(_termination_field(key), None)
+    labels = [fw._w.itemText(i) for i in range(fw._w.count())]
+    assert labels == ["\\n", "\\r", "\\r\\n"]
+    chosen = {}
+    for index, label in enumerate(labels):
+        fw._w.setCurrentIndex(index)
+        fw._w.activated.emit(index)
+        chosen[label] = fw.get_value()
+    assert chosen == {"\\n": "\n", "\\r": "\r", "\\r\\n": "\r\n"}
+    assert json.dumps(chosen["\\r"]) == '"\\r"'
+
+
+def test_a_saved_carriage_return_lands_on_its_entry(qapp):
+    fw = editor.FieldWidget(_termination_field(), "\r")
+    assert fw._w.count() == 3
+    assert fw._w.currentText() == "\\r"
+    assert fw.get_value() == "\r"
+
+
+def test_an_escaped_termination_from_an_older_editor_reads_differently(qapp):
+    """The two characters an older editor saved must not pass for a line ending.
+
+    Shown as they are (\\\\r) next to the real \\r entry, kept untouched, and
+    replaced by the real carriage return once the operator picks it.
+    """
+    fw = editor.FieldWidget(_termination_field(), "\\r")
+    assert fw._w.count() == 4
+    assert fw._w.currentText() == "\\\\r"
+    assert fw.get_value() == "\\r"
+    index = fw._w.findText("\\r")
+    fw._w.setCurrentIndex(index)
+    fw._w.activated.emit(index)
+    assert fw.get_value() == "\r"
+
+
+@pytest.mark.parametrize("option, label", [
+    ("9600", "9600"), (9600, "9600"), ("none", "none"), ("µm", "µm"),
+    ("\r\n", "\\r\\n"), ("\t", "\\t"), ("\x03", "\\x03"), ("C:\\a", "C:\\\\a"),
+])
+def test_option_labels_escape_only_what_would_be_invisible_or_ambiguous(option, label):
+    assert editor._option_label(option) == label
 
 
 def test_raw_line_edit_reads_back_through_its_original(qapp):
@@ -201,9 +259,11 @@ def test_a_typed_text_edit_counts(qapp):
     assert fw.is_touched() and fw.get_value() == "COM4"
 
 
-# ── a numeric field is a line edit, never a spin box ──────────────────────
-# A spin box is a C++ int that clamps, rounds and cannot hold a string; the
-# line edit shows whatever the file held and validates only what is typed.
+# ── a numeric field is a plain line edit: no spin box, no validator ───────
+# A spin box is a C++ int that clamps, rounds and cannot hold a string. A
+# keystroke validator is no better: it drops what it refuses, so "8000.5"
+# typed into an integer-kind box became 80005 (review of PR #35, BSC203's
+# travelRangeUm). What is typed stays as typed.
 @pytest.mark.parametrize("tp, value", [("int", "two"), ("int", 5_000_000_000), ("int", 2.5),
                                        ("float", "fast"), ("int", True)])
 def test_a_value_no_spin_box_could_hold_is_shown_as_it_is_and_survives(qapp, tp, value):
@@ -223,13 +283,37 @@ def test_a_string_under_a_numeric_key_is_edited_as_free_text(qapp):
     assert fw.get_value() == 3 and isinstance(fw.get_value(), int)
 
 
-def test_the_validator_refuses_letters_but_not_a_long_number(qapp):
-    fw = editor.FieldWidget(_field("channel", "int"), 3)
-    assert fw._w.validator() is not None
-    _type(fw, "12abc34")
-    assert fw._w.text() == "1234"
+@pytest.mark.parametrize("tp", ["int", "float"])
+def test_no_keystroke_is_ever_dropped(qapp, tp):
+    """What was typed is what is read back -- a number when it is one."""
+    fw = editor.FieldWidget(_field("channel", tp), 3)
+    assert fw._w.validator() is None
+    for typed in ("12abc34", "8000,5", "1_000", "nan", "inf", "0x10", "1e400"):
+        _type(fw, typed)
+        assert fw._w.text() == typed
+        assert fw.get_value() == typed and isinstance(fw.get_value(), str), typed
     _type(fw, "-6000000000")
     assert fw.get_value() == -6_000_000_000
+
+
+def test_an_integer_kind_box_takes_a_fraction(qapp):
+    """The kind is how the text is read back, not what may be typed."""
+    fw = editor.FieldWidget(_field("travelRangeUm", "int"), 8000)
+    _type(fw, "8000.5")
+    assert fw._w.text() == "8000.5"
+    assert fw.get_value() == 8000.5 and isinstance(fw.get_value(), float)
+
+
+def test_an_existing_fraction_under_an_integer_kind_stays_editable(qapp):
+    from PyQt5.QtCore import Qt
+    fw = editor.FieldWidget(_field("travelRangeUm", "int"), 8000.5)
+    fw._w.setCursorPosition(len(fw._w.text()))
+    QTest.keyClicks(fw._w, "5")
+    assert fw._w.text() == "8000.55" and fw.get_value() == 8000.55
+    QTest.keyClick(fw._w, Qt.Key_Backspace)
+    QTest.keyClick(fw._w, Qt.Key_Backspace)
+    QTest.keyClick(fw._w, Qt.Key_Backspace)
+    assert fw.get_value() == 8000 and isinstance(fw.get_value(), int)
 
 
 def test_a_float_field_takes_a_point_and_scientific_notation(qapp):
@@ -248,9 +332,26 @@ def test_clearing_a_numeric_field_writes_null(qapp):
     assert fw.is_touched() and fw.get_value() is None
 
 
-def test_a_null_number_shows_an_empty_validated_box(qapp):
+def test_a_null_number_shows_an_empty_box(qapp):
     fw = editor.FieldWidget(_field("k", "int"), None)
-    assert fw._w.text() == "" and fw._w.validator() is not None
+    assert fw._w.text() == "" and fw._w.validator() is None
     assert fw.get_value() is None
     _type(fw, "7")
     assert fw.get_value() == 7
+
+
+# ── the three-state boolean: Automatic keeps the key absent ────────────────
+
+@pytest.mark.parametrize("value, index", [(None, 0), (True, 1), (False, 2)])
+def test_bool_auto_shows_what_the_file_holds_and_returns_it_untouched(qapp, value, index):
+    fw = editor.FieldWidget(_field("smoothScan", "bool_auto"), value)
+    assert fw._w.currentIndex() == index
+    assert fw.get_value() is value
+
+
+def test_bool_auto_set_back_to_automatic_returns_none(qapp):
+    fw = editor.FieldWidget(_field("smoothScan", "bool_auto"), False)
+    fw._w.setCurrentIndex(0)
+    fw._w.activated.emit(0)                      # what a user's choice emits
+    assert fw.is_touched()
+    assert fw.get_value() is None                # the apply loop omits the key

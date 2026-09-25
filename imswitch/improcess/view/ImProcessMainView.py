@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.dockarea import Dock, DockArea
@@ -37,6 +39,11 @@ from .guitools import BetterPushButton
 from .icons import improcessIcon
 
 
+# The largest fraction of the screen this window may insist on. Anything above
+# 1.0 puts the bottom edge off-screen with no way back.
+_MAX_MINIMUM_SCREEN_FRACTION = 0.8
+
+
 class ImProcessMainView(QtWidgets.QMainWindow):
     sigSaveReconstruction = QtCore.Signal()
     sigSaveReconstructionAll = QtCore.Signal()
@@ -64,6 +71,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     # dock header. Carries the plugin id (e.g. "view-only", "monalisa").
     sigActiveReconstructorChanged = QtCore.Signal(str)
     sigLoadProcessorRequested = QtCore.Signal(str)
+    # Emitted when the user picks a reconstructor to load at runtime from
+    # Tools -> Load reconstructor. Carries the plugin id.
+    sigLoadReconstructorRequested = QtCore.Signal(str)
     # Emitted when the user asks to re-scan the drop-in analysis plugins folder.
     sigReloadPluginsRequested = QtCore.Signal()
     # Workflows: export the current result's provenance as a workflow file,
@@ -291,6 +301,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addSeparator()
         self._processorToolbar.addWidget(QtWidgets.QLabel('Panels: '))
         self._buildAnalysisToolShortcuts()
+        self._buildLoadReconstructorMenu()
 
         self._pluginsToolbar = self.addToolBar('Plugins')
         self._pluginsToolbar.setObjectName('ImProcessPluginsToolbar')
@@ -438,6 +449,21 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         parameterGrid.addWidget(self._activeReconstructorCombo, 0, 0)
         parameterGrid.addWidget(self.parTree, 1, 0)
+        # What the source inspection found, for every reconstructor rather than
+        # only the ones whose own widget happens to implement a hook for it.
+        # A recording that stopped at four of six scan positions used to open
+        # looking like an ordinary four-frame stack, because the inspection
+        # that knew better had nowhere to go.
+        self.sourceInspectionLabel = QtWidgets.QLabel()
+        self.sourceInspectionLabel.setWordWrap(True)
+        self.sourceInspectionLabel.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse
+        )
+        self.sourceInspectionLabel.setStyleSheet(
+            'QLabel { color: #d08b28; padding: 4px; }'
+        )
+        self.sourceInspectionLabel.hide()
+        parameterGrid.addWidget(self.sourceInspectionLabel, 2, 0)
         self.parameterGrid = parameterGrid
 
         # Single DockArea backs the central widget so every panel is a
@@ -611,6 +637,48 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         combo.setCurrentIndex(0)
         combo.blockSignals(False)
 
+    def _buildLoadReconstructorMenu(self) -> None:
+        """Add Tools -> Load reconstructor, filled by the controller.
+
+        The Parameters-dock picker only offers reconstructors that are
+        registered, and the setup file decides which built-ins those are. This
+        submenu lists every reconstructor ImProcess knows about but has not
+        loaded, so one can be brought in for the session without editing the
+        setup file or hunting for its source.
+        """
+        self._analysisMenu.addSeparator()
+        self._loadReconstructorMenu = self._analysisMenu.addMenu('Load reconstructor')
+        self._loadReconstructorMenu.setToolTipsVisible(True)
+        self._loadReconstructorActions: dict[str, QtWidgets.QAction] = {}
+        self.setAvailableReconstructors([])
+
+    def setAvailableReconstructors(
+        self,
+        choices: list[tuple[str, str, str]],
+        placeholder: str = 'All reconstructors loaded',
+    ) -> None:
+        """Fill Tools -> Load reconstructor with ``(id, name, description)``
+        entries; an empty list leaves a disabled placeholder."""
+        menu = self._loadReconstructorMenu
+        menu.clear()
+        self._loadReconstructorActions = {}
+        if not choices:
+            action = menu.addAction(placeholder)
+            action.setEnabled(False)
+            return
+        for plugin_id, plugin_name, description in choices:
+            action = QtWidgets.QAction(str(plugin_name or plugin_id), menu)
+            tooltip = str(description or '') or f'Load the {plugin_name} reconstructor'
+            action.setToolTip(tooltip)
+            action.setStatusTip(tooltip)
+            action.triggered.connect(
+                lambda _checked=False, pid=str(plugin_id): (
+                    self.sigLoadReconstructorRequested.emit(pid)
+                )
+            )
+            menu.addAction(action)
+            self._loadReconstructorActions[str(plugin_id)] = action
+
     def setLoadedRuntimeProcessors(self, choices: list[tuple[str, str]]) -> None:
         combo = self._loadedProcessorCombo
         combo.blockSignals(True)
@@ -746,6 +814,19 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._pluginsMenu.addAction(open_action)
         self._pluginMenuActions['open-folder'] = open_action
 
+        add_action = QtWidgets.QAction(
+            improcessIcon('plugin-add', self), 'Add plugin file...', self
+        )
+        add_action.setToolTip(
+            'Copy a plugin file (.py) into the plugins folder and reload'
+        )
+        add_action.setStatusTip(add_action.toolTip())
+        add_action.triggered.connect(
+            lambda _checked=False: self._addPluginFiles()
+        )
+        self._pluginsMenu.addAction(add_action)
+        self._pluginMenuActions['add-file'] = add_action
+
         reload_action = QtWidgets.QAction(
             improcessIcon('plugin-reload', self), 'Reload plugins', self
         )
@@ -761,6 +842,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self._pluginsToolbar.addSeparator()
         self._pluginsToolbar.addAction(store_action)
+        self._pluginsToolbar.addAction(add_action)
         self._pluginsToolbar.addAction(reload_action)
 
         # Installed napari plugins as one-way endpoints for results. The menu
@@ -780,6 +862,49 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         directory = user_plugins_directory(create=True)
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(directory))
+
+    def _addPluginFiles(self) -> None:
+        """Copy user-chosen plugin files into the plugins folder and reload.
+
+        The one-click form of "open the folder, copy the file, reload": what
+        someone who just wrote a reconstructor or processor wants from the
+        menu bar. Files that discovery would not see (not ``.py``, or
+        underscore-prefixed) are reported rather than copied.
+        """
+        from imswitch.improcess.plugins import (
+            install_plugin_files,
+            user_plugins_directory,
+        )
+
+        paths, _selected_filter = QtWidgets.QFileDialog.getOpenFileNames(
+            self, 'Add plugin file', '', 'Python plugin (*.py);;All files (*)'
+        )
+        if not paths:
+            return
+        directory = user_plugins_directory(create=True)
+        installed, skipped = install_plugin_files(
+            paths, directory, overwrite=self._confirmPluginOverwrite
+        )
+        parts = []
+        if installed:
+            names = ', '.join(os.path.basename(path) for path in installed)
+            parts.append(f'Added plugin file(s): {names}')
+        if skipped:
+            parts.append('Not added: ' + '; '.join(skipped))
+        self.showStatusMessage('. '.join(parts), timeout_ms=10000)
+        if installed:
+            self.sigReloadPluginsRequested.emit()
+
+    def _confirmPluginOverwrite(self, name: str) -> bool:
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            'Replace plugin file?',
+            f'A plugin file named {name!r} already exists in the plugins '
+            'folder. Replace it?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
 
     def _openPluginStore(self) -> None:
         """Open the online plugin store; reload plugins after any change."""
@@ -1724,6 +1849,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def addNewData(self, reconObj, name):
         self.reconstructionWidget.addNewData(reconObj, name)
 
+    def setSourceInspection(self, summary: str, severity: str = 'warning') -> None:
+        """Show, in the Parameters dock, what is unusual about the loaded data.
+
+        Shared by every reconstructor: the alternative was a per-plugin hook
+        that exactly one plugin implemented, so for the default view the whole
+        inspection -- an incomplete scan included -- was assembled and then
+        discarded.
+        """
+        label = getattr(self, 'sourceInspectionLabel', None)
+        if label is None:
+            return
+        if not summary:
+            label.clear()
+            label.hide()
+            return
+        colour = '#c0392b' if severity == 'error' else '#d08b28'
+        label.setStyleSheet(f'QLabel {{ color: {colour}; padding: 4px; }}')
+        label.setText(summary)
+        label.show()
+
     def setParameterWidget(self, widget):
         """Replace the legacy parameter tree with the active reconstructor UI."""
         old = self.parameterGrid.itemAtPosition(1, 0)
@@ -1847,6 +1992,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self.sigClosing.emit()
         event.accept()
+
+    def minimumSizeHint(self):
+        """ Never demand more room than the screen has.
+
+        This view is a page of MultiModuleWindow's tab widget, so its minimum
+        is the application window's minimum too -- one module insisting on
+        more height than the screen has opens *every* tab with its bottom edge
+        below the screen, with no way to resize it back.
+        """
+        hint = super().minimumSizeHint()
+        screen = self.screen() if hasattr(self, 'screen') else None
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            hint.setWidth(min(hint.width(),
+                              int(available.width() * _MAX_MINIMUM_SCREEN_FRACTION)))
+            hint.setHeight(min(hint.height(),
+                               int(available.height() * _MAX_MINIMUM_SCREEN_FRACTION)))
+        return hint
 
     def showEvent(self, event):
         super().showEvent(event)

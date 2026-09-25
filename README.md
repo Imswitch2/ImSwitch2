@@ -87,6 +87,10 @@ python -m imswitch
 
 Imswitch2 creates `~/ImSwitchConfig/` on first launch and opens a setup-picker dialog.  Pick one of the bundled example setups (e.g. `example_no_hardware.json`) to see the UI without any device connected.
 
+> **The first launch is slow — give it a minute.**  Before the window appears, Imswitch2 creates its `~/ImSwitchConfig/` folder structure and copies the example setups and scripts into it, and Python, napari and matplotlib build their caches.  Later launches skip all of this and start much faster.
+
+A fresh install loads three modules, one tab each down the left edge of the window: **Hardware Control** (ImControl, the microscope), **Image Processing** (ImProcess, reconstruction and analysis) and **Scripting** (ImScripting, the script editor).  To change which ones load, use **Preferences > Set active modules…** or edit `~/ImSwitchConfig/config/modules.json`.  An existing `modules.json` is never overwritten, so a config folder from an older install keeps the modules it lists.
+
 For real hardware:
 
 ```bash
@@ -188,7 +192,8 @@ Imswitch2 reads all hardware configuration from `~/ImSwitchConfig/`:
 ~/ImSwitchConfig/                  (Linux / macOS)
 Documents\ImSwitchConfig\          (Windows)
   ├── config/
-  │   └── imcontrol_options.json   # active setup filename + recording folder
+  │   ├── imcontrol_options.json   # active setup filename + recording folder
+  │   └── modules.json             # which modules (tabs) load at startup
   └── imcontrol_setups/
       └── my_microscope.json       # hardware definition
 ```
@@ -208,7 +213,7 @@ The editor loads built-in templates for every supported manager, lets you add an
 
 ### Minimal setup file
 
-A two-device setup (one webcam, one Cobolt laser, no DAQ):
+A two-device setup (one synthetic camera -- `AVManager` serves mock frames, no video driver is bundled -- one Cobolt laser, no DAQ):
 
 ```json
 {
@@ -216,7 +221,7 @@ A two-device setup (one webcam, one Cobolt laser, no DAQ):
     "Camera": {
       "managerName": "AVManager",
       "managerProperties": {
-        "cameraListIndex": 0,
+        "cameraListIndex": "mock",
         "avcam": { "exposure": 100, "gain": 1 }
       },
       "analogChannel": null,

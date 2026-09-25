@@ -330,3 +330,43 @@ def test_zarr_lapse_source_poll_after_close(tmp_zarr_path):
     
     assert source.poll() == []
     assert source.is_complete() is True
+
+
+def test_zarr_lapse_poll_stops_at_the_byte_budget_and_resumes(tmp_zarr_path, monkeypatch):
+    """A poll used to walk every timepoint in one call, so a finished lapse
+    was materialised whole before its first chunk was processed. The budget
+    ends the walk; the cursor stays put; the next poll carries on."""
+    from imswitch.improcess.live import sources
+
+    frames_per_stack, num_timepoints, frame_shape = 4, 3, (3, 5)
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    root.attrs['timestamp'] = 123456.0
+    root.attrs['rec_mode'] = 'recording'
+    for scan_idx in range(num_timepoints):
+        det_group = root.create_group(f'scan{scan_idx}').create_group('CAM')
+        data = np.arange(
+            frames_per_stack * frame_shape[0] * frame_shape[1], dtype=np.uint16
+        ).reshape(frames_per_stack, *frame_shape) + scan_idx * 1000
+        array = ZarrStorer._create_array(det_group, 'data', data=data, chunks=(2, *frame_shape))
+        array.attrs['detector_name'] = 'CAM'
+        array.attrs['writing'] = False
+        array.attrs['axes'] = ['T', 'Y', 'X']
+        array.attrs['recording:frames_per_stack'] = frames_per_stack
+        array.attrs['recording:num_timepoints'] = num_timepoints
+        array.attrs['recording:single_lapse_file'] = True
+        array.attrs['recording:dataset_path'] = f'/scan{scan_idx}/CAM/data'
+        det_group.create_group('metadata').create_group('ScanStage').attrs['position'] = [0.0, 0.0, float(scan_idx)]
+
+    chunk_bytes = 2 * frame_shape[0] * frame_shape[1] * 2
+    monkeypatch.setattr(sources, 'LIVE_POLL_MAX_BYTES', 2 * chunk_bytes)
+
+    source = ZarrLapseSource(detector_name='CAM', chunk_size=2)
+    source.open(tmp_zarr_path)
+    polls = []
+    while not source.is_complete():
+        polls.append(source.poll())
+
+    assert [len(chunks) for chunks in polls] == [2, 2, 2]
+    chunks = [chunk for poll in polls for chunk in poll]
+    assert [(c.start, c.end) for c in chunks] == [(i, i + 2) for i in range(0, 12, 2)]
+    assert int(chunks[2].data[0, 0, 0]) == 1000  # the second timepoint, read on the second poll

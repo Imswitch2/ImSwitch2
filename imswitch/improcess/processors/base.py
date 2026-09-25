@@ -148,10 +148,25 @@ class Processor(ABC):
     - Max-projection along an axis
     - FLIM lifetime overlay (requires FLIM metadata)
     """
+
+    def __new__(cls, *args, **kwargs):
+        # A processor without an id used to load as "unnamed": its footprint
+        # said every step was `unnamed`, and a second such plugin was dropped
+        # by the duplicate-id guard with a warning naming an id nobody typed.
+        # Checked where a processor is made -- every registration and every
+        # run makes one -- rather than where a class is defined, so a shared
+        # intermediate base class, never registered itself, needs no id.
+        if cls.id == "unnamed":
+            raise TypeError(
+                f"{cls.__module__}.{cls.__qualname__} must set a stable `id` "
+                f"(a short slug such as 'my-filter'); the inherited 'unnamed' "
+                f"placeholder is not one"
+            )
+        return super().__new__(cls)
     
     # Class attributes (override in subclasses)
     name: str = "Unnamed Processor"  # Human-readable
-    id: str = "unnamed"  # Stable identifier for config + registry
+    id: str = "unnamed"  # Stable identifier for config + registry; every concrete subclass sets it
     category: str = "Other"  # Human-readable grouping for runtime tools/docs
     #: Semantic result kinds this processor accepts (ProcessingResult.kind).
     #: Checked by accepts() BEFORE the shape/axis gate, so a table result with

@@ -223,3 +223,27 @@ class TestRecordingWorkerDtypePreservation:
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_real_photon_counts_are_not_clipped_to_the_mock_ceiling(apd_detector_info, mock_nidaq_manager):
+    """mockPhotonCountMax bounds the synthetic generator. It used to be applied
+    to real counts too, so a bright feature at a long dwell came back
+    flat-topped at exactly 5000, indistinguishable from detector saturation."""
+    from imswitch.imcontrol.model.managers.detectors.APDManager import APDManager, ScanWorker
+
+    apd = APDManager(apd_detector_info, 'APD', mock_nidaq_manager)
+    worker = ScanWorker.__new__(ScanWorker)
+    worker._manager = apd
+    worker._frac_det_dwell = 4
+    samples = np.array([3000, 3000, 3000, 3000] * 2)  # 12000 counts per pixel
+
+    apd._simulation_mode = False
+    np.testing.assert_array_equal(
+        ScanWorker.samples_to_pixels(worker, samples), [12000, 12000]
+    )
+
+    apd._simulation_mode = True
+    np.testing.assert_array_equal(
+        ScanWorker.samples_to_pixels(worker, samples),
+        [apd._mock_photon_count_max] * 2,
+    )

@@ -1,27 +1,27 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 47,
-    "docs_agree": 137,
-    "docs_documented": 137,
-    "keys": 220,
-    "managers": 65,
-    "none_default_only": 31,
-    "none_only": 22,
-    "optional": 150,
-    "reads_any": 60,
+    "constrained": 46,
+    "docs_agree": 136,
+    "docs_documented": 136,
+    "keys": 215,
+    "managers": 62,
+    "none_default_only": 29,
+    "none_only": 18,
+    "optional": 153,
+    "reads_any": 57,
     "refs": 15,
-    "required": 70,
-    "typed_by_code": 90,
-    "typed_with_docs": 158,
-    "typed_with_examples": 122,
+    "required": 62,
+    "typed_by_code": 96,
+    "typed_with_docs": 157,
+    "typed_with_examples": 128,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 60,
+    "with_keys": 57,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
-  "generator_version": 1,
+  "generator_version": 2,
   "kinds": {
     "detector": {
       "class": "DetectorInfo",
@@ -40,7 +40,7 @@
     },
     "positioner": {
       "class": "PositionerInfo",
-      "fields": 13,
+      "fields": 14,
       "required": 2
     },
     "rotator": {
@@ -72,9 +72,8 @@
         "LaserManager"
       ],
       "overridden": true,
-      "properties": 7,
-      "required": 2,
-      "source_sha256": "c0a45fcf328a39da6136746eb3032897aac7ddbc2d835a046039b1046e802759"
+      "properties": 8,
+      "required": 2
     },
     "APDManager": {
       "category": "detectors",
@@ -84,8 +83,7 @@
       ],
       "overridden": false,
       "properties": 9,
-      "required": 2,
-      "source_sha256": "1818d19fd62221f060a072c53ce73a05ca0fb677ad67f7577190ed9ce590379e"
+      "required": 2
     },
     "AVManager": {
       "category": "detectors",
@@ -95,8 +93,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 2,
-      "source_sha256": "87f96ea2ff287feb5cb66c52875b425def702d7283ee815ed843ddea0fa27ecc"
+      "required": 2
     },
     "BSC203StageManager": {
       "category": "positioners",
@@ -106,19 +103,7 @@
       ],
       "overridden": false,
       "properties": 4,
-      "required": 0,
-      "source_sha256": "9d732e0237540e6ee4f67a8ce52925f8e561441f7fdb0955732625884fd89357"
-    },
-    "BaslerManager": {
-      "category": "detectors",
-      "classes": [
-        "BaslerManager",
-        "DetectorManager"
-      ],
-      "overridden": false,
-      "properties": 3,
-      "required": 2,
-      "source_sha256": "099bfb50b8f31e5d79c1bae8a3f50fc0156822a4247bf653c3c41d1050b13139"
+      "required": 0
     },
     "Cobolt0601LaserManager": {
       "category": "lasers",
@@ -129,8 +114,7 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 1,
-      "source_sha256": "31b9f79e6350f4b342c2e8ff7cdbde9216344c8f8b1deed942da7305ad120ad5"
+      "required": 1
     },
     "Cobolt0601NewLaserManager": {
       "category": "lasers",
@@ -139,9 +123,8 @@
         "LaserManager"
       ],
       "overridden": false,
-      "properties": 9,
-      "required": 1,
-      "source_sha256": "8713e974c760e5dd0d06b66b41bcce38bfb628c58042b2d0111b5c2b0e8d4ea8"
+      "properties": 10,
+      "required": 1
     },
     "CoboltLaserManager": {
       "category": "lasers",
@@ -153,8 +136,7 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 1,
-      "source_sha256": "4b864808e24163b1609c9bdf83638c4283611da4237e3f386b448e59beb3c0c4"
+      "required": 1
     },
     "CoolLEDLaserManager": {
       "category": "lasers",
@@ -164,19 +146,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 0,
-      "source_sha256": "d0a64fdc74fe6fee367c299585649d6c01222a43d4062fe4b760cbfce16db043"
-    },
-    "ESP32CamManager": {
-      "category": "detectors",
-      "classes": [
-        "ESP32CamManager",
-        "DetectorManager"
-      ],
-      "overridden": false,
-      "properties": 4,
-      "required": 3,
-      "source_sha256": "98bed76c3780c871b933421088514564565ace670e4e6684d92880696ce35e48"
+      "required": 0
     },
     "ESP32LEDLaserManager": {
       "category": "lasers",
@@ -186,8 +156,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 0,
-      "source_sha256": "43bad7d6c93e9afe57e2a0af02d26e219a32e09a1e3e51d062269fdb5212e598"
+      "required": 0
     },
     "ESP32LEDMatrixManager": {
       "category": "lasers",
@@ -197,8 +166,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 1,
-      "source_sha256": "61230c8c04e357ab2a023dcfd070154dae31f30285b244cf8acda04cc97f2e59"
+      "required": 1
     },
     "ESP32LightSheetManager": {
       "category": "lasers",
@@ -208,8 +176,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 2,
-      "source_sha256": "d80278e5d13c8e7a0450f17349032430eafa50afc030f5cb2849f01a22c9270b"
+      "required": 2
     },
     "ESP32Manager": {
       "category": "rs232devices",
@@ -218,8 +185,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 0,
-      "source_sha256": "8d4aeeae641dc3c64cbf95d6461509592e621f0ec2a22772148e7934491ef5ea"
+      "required": 0
     },
     "ESP32StageManager": {
       "category": "positioners",
@@ -229,8 +195,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 1,
-      "source_sha256": "1379a42b6309f57745b18e5e310183d5d5374950bec34e772feecd19b4663ce4"
+      "required": 1
     },
     "ElliptecManager": {
       "category": "rs232devices",
@@ -239,8 +204,7 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 2,
-      "source_sha256": "b4cec9422612b683791b2a2aecf3c71f5ae4ef18153729b06ab699712c004454"
+      "required": 2
     },
     "ElliptecRotatorManager": {
       "category": "rotators",
@@ -250,8 +214,7 @@
       ],
       "overridden": false,
       "properties": 4,
-      "required": 2,
-      "source_sha256": "2faf533d3186ea1eb84425dd2b9c6c58a587e162eff5853690eaf0a774ffcbc9"
+      "required": 2
     },
     "GRBLLaserManager": {
       "category": "lasers",
@@ -261,8 +224,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 2,
-      "source_sha256": "63db9d09950a3ca5e29bf1c0d2d1570bc06c71f21e1ccf0e0e10ab50f9aae8bf"
+      "required": 2
     },
     "GRBLManager": {
       "category": "rs232devices",
@@ -271,8 +233,7 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 1,
-      "source_sha256": "340191cf0642ca5b7712efe2ea322ff78ade369ad6c857991964c67442c8af3a"
+      "required": 1
     },
     "GRBLStageManager": {
       "category": "positioners",
@@ -282,19 +243,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 1,
-      "source_sha256": "ef2390b558f263ebf7e434502b347f23d4e59c292a32566a6844d007dc807983"
-    },
-    "GXPIPYManager": {
-      "category": "detectors",
-      "classes": [
-        "GXPIPYManager",
-        "DetectorManager"
-      ],
-      "overridden": false,
-      "properties": 3,
-      "required": 2,
-      "source_sha256": "d010697209b408ed0337c118dd3f34d2b9438e46aec5020825f635b11c889570"
+      "required": 1
     },
     "HamamatsuManager": {
       "category": "detectors",
@@ -304,8 +253,7 @@
       ],
       "overridden": true,
       "properties": 3,
-      "required": 2,
-      "source_sha256": "25a6906798fdd2e7b91e18e6d0ef0de8862dc432303529a3d33c1639f16cd07e"
+      "required": 2
     },
     "HamamatsuSLMdviManager": {
       "category": "slms",
@@ -314,8 +262,7 @@
       ],
       "overridden": false,
       "properties": 1,
-      "required": 0,
-      "source_sha256": "6631010ed9613a61fb161455080405864efd63165597a7134522c63a8a72afe1"
+      "required": 0
     },
     "HamamatsuSLMusbManager": {
       "category": "slms",
@@ -324,8 +271,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 0,
-      "source_sha256": "65147e869c2c135a60f6d0dee09fbb43f5137c9041ee51c77dfb05a00909d3ae"
+      "required": 0
     },
     "JenaPiezoZManager": {
       "category": "positioners",
@@ -335,19 +281,7 @@
       ],
       "overridden": false,
       "properties": 5,
-      "required": 1,
-      "source_sha256": "f5dcc6bf47fb496336eddfee389e8749cf555b14b8237399880c0170a0d5650d"
-    },
-    "JetsonCamManager": {
-      "category": "detectors",
-      "classes": [
-        "JetsonCamManager",
-        "DetectorManager"
-      ],
-      "overridden": false,
-      "properties": 2,
-      "required": 1,
-      "source_sha256": "9a6adde736106b5e2f7f5c40bc71a642ef58696f5973805a4153a688c2321e09"
+      "required": 1
     },
     "KDC101Manager": {
       "category": "rs232devices",
@@ -356,8 +290,7 @@
       ],
       "overridden": false,
       "properties": 4,
-      "required": 4,
-      "source_sha256": "ececf0a36e5e0825a05ecf1549714f0752882a434565a12f7f38de1cd1786f28"
+      "required": 4
     },
     "KDC101PositionerManager": {
       "category": "positioners",
@@ -367,8 +300,7 @@
       ],
       "overridden": false,
       "properties": 6,
-      "required": 4,
-      "source_sha256": "2081f4a5d6d7ab03da8178069a2072b533bedf10c2737c24f1218d96ee4d881f"
+      "required": 4
     },
     "KinesisRotatorManager": {
       "category": "rotators",
@@ -378,8 +310,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 1,
-      "source_sha256": "8c07d96905812a9a00abfa7cd567b88d5264977ac78e79c4545625dd069579f8"
+      "required": 1
     },
     "KinesisStageManager": {
       "category": "positioners",
@@ -389,8 +320,7 @@
       ],
       "overridden": false,
       "properties": 6,
-      "required": 1,
-      "source_sha256": "6a387f9d0fa1f6be6dadc361c4cc02b887c4371433ee2d97348f7ab4efb5cdfc"
+      "required": 1
     },
     "LEDMatrixManager": {
       "category": "lasers",
@@ -399,8 +329,7 @@
       ],
       "overridden": false,
       "properties": 0,
-      "required": 0,
-      "source_sha256": "34e4a90ee1859d93992d4e4a34a0985c6fddcb15699b23dd96fd05efe116086d"
+      "required": 0
     },
     "LantzLaserManager": {
       "category": "lasers",
@@ -410,19 +339,16 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 1,
-      "source_sha256": "061ec9a6e3a2a465962d666153931aab63cb396eb4859fd1397585ec59bc10a8"
+      "required": 1
     },
-    "LeicaDMIManager": {
-      "category": "positioners",
+    "LeicaDMIStandManager": {
+      "category": "stands",
       "classes": [
-        "LeicaDMIManager",
-        "PositionerManager"
+        "LeicaDMIStandManager"
       ],
       "overridden": false,
-      "properties": 2,
-      "required": 1,
-      "source_sha256": "a227f93190ab37a6aaf2ae6a4e62fa56b46a54f897499acf798925e8ccd57461"
+      "properties": 1,
+      "required": 0
     },
     "LeicaDMIStandMockManager": {
       "category": "stands",
@@ -431,8 +357,17 @@
       ],
       "overridden": false,
       "properties": 0,
-      "required": 0,
-      "source_sha256": "1ebe9790e042e408f356711fff0f1a789957d7c4e3f63a0b349cfe9925a72b38"
+      "required": 0
+    },
+    "LeicaDMIZPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "LeicaDMIZPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 1
     },
     "MHXYStageManager": {
       "category": "positioners",
@@ -442,8 +377,7 @@
       ],
       "overridden": false,
       "properties": 1,
-      "required": 0,
-      "source_sha256": "af868f957f130032f65cc8a8edbe500caec7726946498b524c91da5eab1e54a8"
+      "required": 0
     },
     "MPBLaserManager": {
       "category": "lasers",
@@ -453,8 +387,7 @@
       ],
       "overridden": false,
       "properties": 7,
-      "required": 0,
-      "source_sha256": "d306520b6fef1e1c146e8516fd6c29b628f15512993b06369919c2ef4e95ff9a"
+      "required": 0
     },
     "MockPositionerManager": {
       "category": "positioners",
@@ -464,8 +397,7 @@
       ],
       "overridden": false,
       "properties": 0,
-      "required": 0,
-      "source_sha256": "e5c73c80f6495f0ebe4ee07a2fd7c03f53a44cdd0420684259e7b2d12efc1762"
+      "required": 0
     },
     "NidaqLaserManager": {
       "category": "lasers",
@@ -475,8 +407,7 @@
       ],
       "overridden": false,
       "properties": 1,
-      "required": 0,
-      "source_sha256": "f6579014cbd407f89c3bf788d78a5d3cbac7c748f37bc086dde1184bc16aa0b5"
+      "required": 0
     },
     "NidaqPositionerManager": {
       "category": "positioners",
@@ -486,8 +417,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 3,
-      "source_sha256": "a1f73315b2089696e67a14f808147517cc4edf9218db540613debaaadc8dc6a4"
+      "required": 3
     },
     "OxxiusCombinerLaserManager": {
       "category": "lasers",
@@ -497,8 +427,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 2,
-      "source_sha256": "77b0ba5b61ef95c8c2fcd41c0d3830ecc62488cd838e1b08723f7e07dc8e8458"
+      "required": 2
     },
     "OxxiusLaserManager": {
       "category": "lasers",
@@ -508,8 +437,7 @@
       ],
       "overridden": false,
       "properties": 4,
-      "required": 1,
-      "source_sha256": "a0863dc8fc09a217bc93591f8c8b8b190235ee25baadb86c0f9199009d840422"
+      "required": 1
     },
     "PIStageManager": {
       "category": "positioners",
@@ -518,9 +446,8 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 2,
-      "required": 0,
-      "source_sha256": "f755ebe962f4dd7e1efc6ecf2261b57b1a0e0855b8e2ea3dd0fe5720f9abc8f8"
+      "properties": 3,
+      "required": 0
     },
     "PMTManager": {
       "category": "detectors",
@@ -529,9 +456,8 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 11,
-      "required": 0,
-      "source_sha256": "b1a0fa2c3989ddcf7d05fba3100eb24f6f74dd68f5ca5afc4c02eb00e4634a89"
+      "properties": 13,
+      "required": 0
     },
     "PhotometricsManager": {
       "category": "detectors",
@@ -541,8 +467,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 1,
-      "source_sha256": "47a80603909c378069d0ba0bda71b25a23b44ffc6dde565e9be288104eb855fa"
+      "required": 1
     },
     "PiCamManager": {
       "category": "detectors",
@@ -552,8 +477,7 @@
       ],
       "overridden": false,
       "properties": 4,
-      "required": 3,
-      "source_sha256": "54cc926d047daec690eeef16a65c5c33cceaf2e649e29c99d741974fa5e77778"
+      "required": 3
     },
     "PiezoconceptZManager": {
       "category": "positioners",
@@ -563,8 +487,7 @@
       ],
       "overridden": false,
       "properties": 1,
-      "required": 0,
-      "source_sha256": "0710a4dde6f59486fb029af2eb8c5d976504528cfe4ea704c7bcd9a9682b3dec"
+      "required": 0
     },
     "PiezoconceptZManager2": {
       "category": "positioners",
@@ -574,8 +497,7 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 0,
-      "source_sha256": "d4be9f41c75b7d3bbf0fcd8fb6dd77b252b563bf1e77b60bf5cd35a53391e201"
+      "required": 0
     },
     "PulseGeneratorLaserManager": {
       "category": "lasers",
@@ -585,8 +507,7 @@
       ],
       "overridden": false,
       "properties": 1,
-      "required": 0,
-      "source_sha256": "d3f99e94da52144422c051071dd6c3ae06a67f649c931d7690330b81f2ad4503"
+      "required": 0
     },
     "PulseStreamerLaserManager": {
       "category": "lasers",
@@ -596,8 +517,7 @@
       ],
       "overridden": false,
       "properties": 1,
-      "required": 0,
-      "source_sha256": "8e4bb63f7c1244fde224fb42156d7fd89c73d38281bed8ddd6a49a791b3a949f"
+      "required": 0
     },
     "PulseStreamerManager": {
       "category": "pulsegen",
@@ -607,8 +527,7 @@
       ],
       "overridden": false,
       "properties": 0,
-      "required": 0,
-      "source_sha256": "51088663c13c53447407d607e432e935b62a0628b2f59b64853a0b6866de5e37"
+      "required": 0
     },
     "PyMicroscopeLaserManager": {
       "category": "lasers",
@@ -618,8 +537,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 0,
-      "source_sha256": "8db5bead30c2878be97ca22e3e8021de5db933553acc8d844ecfe21e79fe47e3"
+      "required": 0
     },
     "RS232Manager": {
       "category": "rs232devices",
@@ -628,8 +546,7 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 2,
-      "source_sha256": "d601bca50088ba8577e55293234ac7d1fc6d7e43ee60e142718abd1e8dee5bbe"
+      "required": 2
     },
     "SQUIDManager": {
       "category": "rs232devices",
@@ -638,8 +555,7 @@
       ],
       "overridden": false,
       "properties": 1,
-      "required": 0,
-      "source_sha256": "fe16f3a633d1e1e04a4a8a96ee384d984abf11155284c24a68569f588ac52fff"
+      "required": 0
     },
     "SQUIDStageManager": {
       "category": "positioners",
@@ -649,8 +565,7 @@
       ],
       "overridden": false,
       "properties": 1,
-      "required": 0,
-      "source_sha256": "79a40ddfbb16c89a0b8dd3f71e970865928111cb4244f5e7e3011ad7200f24fe"
+      "required": 0
     },
     "SerialDacZManager": {
       "category": "positioners",
@@ -660,8 +575,7 @@
       ],
       "overridden": false,
       "properties": 13,
-      "required": 0,
-      "source_sha256": "33e414eca72033372f9c5676a203626a5a0ecb24468e410146e894219244f559"
+      "required": 0
     },
     "SmarACTPositionerManager": {
       "category": "positioners",
@@ -671,8 +585,7 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 0,
-      "source_sha256": "7ca15ecca2cedc13b4b0e40fda25732c5af8fc1497a54f389cdee7c0a335917b"
+      "required": 0
     },
     "StandaRotatorManager": {
       "category": "rotators",
@@ -682,8 +595,7 @@
       ],
       "overridden": false,
       "properties": 4,
-      "required": 4,
-      "source_sha256": "a874d015c2afb412b818df86d43681b2f1ce770cdbc39c773743577ab2da9c6f"
+      "required": 4
     },
     "SwabianTimeTaggerManager": {
       "category": "detectors",
@@ -693,8 +605,7 @@
       ],
       "overridden": false,
       "properties": 15,
-      "required": 3,
-      "source_sha256": "94b616862e001a80eafc458494c783390325d1c3ef942de9fb0255e499e13963"
+      "required": 3
     },
     "TISManager": {
       "category": "detectors",
@@ -704,8 +615,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 2,
-      "source_sha256": "f368fd75720ae8366c19a3ef70d4c774df701c4298ff6abe07d2c73a9c9a831a"
+      "required": 2
     },
     "TeensyPulseManager": {
       "category": "pulsegen",
@@ -715,8 +625,7 @@
       ],
       "overridden": false,
       "properties": 0,
-      "required": 0,
-      "source_sha256": "daa6b15e1cc4662603d6d8fc6060280e2ba010843d30dee80753cd48425ef794"
+      "required": 0
     },
     "ThorCamTSIManager": {
       "category": "detectors",
@@ -725,9 +634,8 @@
         "DetectorManager"
       ],
       "overridden": false,
-      "properties": 5,
-      "required": 0,
-      "source_sha256": "a6969c345869b0584e70dc132118cf17b0fbc5a9c4652b44f9d3d90d0a96eb7d"
+      "properties": 6,
+      "required": 0
     },
     "ThorlabsMFFManager": {
       "category": "flipMirrors",
@@ -736,8 +644,7 @@
       ],
       "overridden": false,
       "properties": 4,
-      "required": 0,
-      "source_sha256": "ae65788f97422a238cde7687203c769fcbf9247e9307b8902499b3deb67a40d5"
+      "required": 0
     },
     "ThorlabsMFFMockManager": {
       "category": "flipMirrors",
@@ -746,8 +653,7 @@
       ],
       "overridden": false,
       "properties": 2,
-      "required": 0,
-      "source_sha256": "cf8d871528c42d77703b97d2aea8a5b05975661fa4f2970247f41969fa1e6f57"
+      "required": 0
     },
     "TriggerScopeLaserManager": {
       "category": "lasers",
@@ -757,8 +663,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 2,
-      "source_sha256": "845c9bd45f89a9ed9d5a50e530e836253fa084d3359c7030b8391ea011a96bfa"
+      "required": 2
     },
     "TriggerScopePositionerManager": {
       "category": "positioners",
@@ -768,8 +673,7 @@
       ],
       "overridden": false,
       "properties": 3,
-      "required": 3,
-      "source_sha256": "43a8a3488698595f0393d0fd0d015c8d10ec72b24e1f23144e3d1434c13b3b8f"
+      "required": 3
     }
   },
   "regenerate": "python tools/extract_manager_schemas.py --write",

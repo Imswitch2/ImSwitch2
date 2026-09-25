@@ -3,7 +3,7 @@
   "additionalProperties": true,
   "properties": {
     "avcam": {
-      "description": "Dictionary of AV camera property name → value pairs applied via ``setPropertyValue`` at startup.",
+      "description": "Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup; the mock accepts and ignores them.",
       "type": "object",
       "x-imswitch-kind": "object",
       "x-imswitch-source": [
@@ -13,7 +13,7 @@
       ]
     },
     "cameraListIndex": {
-      "description": "Index of the camera in the enumerated AV camera list (0-based).  Set to an invalid value (e.g. ``\"mock\"``) to force the mock fallback.",
+      "description": "Accepted for compatibility; ``\"mock\"`` states what every value does.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:required",

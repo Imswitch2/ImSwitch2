@@ -206,7 +206,9 @@ def test_lapse_sources_idle_between_stacks_but_plain_sources_do_not():
         ZarrMultiFileLapseSource,
     )
 
-    assert LiveSource.idles_between_stacks is False
+    # The watchdog is opt-in per continuously streaming source: a source that
+    # says nothing is left alone rather than finalised as crashed.
+    assert LiveSource.idles_between_stacks is True
     for cls in (ZarrLiveSource, Hdf5LiveSource):
         assert cls.idles_between_stacks is False, cls.__name__
     for cls in (

@@ -3,6 +3,7 @@ import json
 import configparser
 from ast import literal_eval
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
+from ._triggerscope_scan_geometry import check_dac_range
 import numpy as np
 import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
@@ -11,6 +12,10 @@ from imswitch.imcontrol.view import guitools
 from imswitch.imcommon.view.guitools import colorutils
 from ._beadrec_scan_source import BeadRecScanSourceMixin
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
+from ._acquisition_layout_source import (
+    build_triggerscope_raster_layouts,
+    scan_driven_detector_names,
+)
 
 
 def trimRasterLengthForFirmwareBoundary(length, stepSize):
@@ -230,6 +235,9 @@ class TriggerScopeRasterController(
             stepSizesVolt.append(stepSize / convFactor)
             startPosVolt.append(self._analogParameterDict['axis_startpos'][index] / convFactor)
 
+        for target, startVolt, lengthVolt in zip(AOtargets, startPosVolt, lengthsVolt):
+            check_dac_range(self.positioners, target, (startVolt, startVolt + lengthVolt),
+                            what='Raster scan')
         rasterScanParameters['Analog'] = {'targets': AOtargets,
                                           'lengths': lengthsVolt,
                                           'stepSizes': stepSizesVolt,
@@ -494,6 +502,33 @@ class TriggerScopeRasterController(
         self.getParameters()
         included = self._digitalParameterDict.get('target_device', [])
         return {d: 1 for d in included if d in self._setupInfo.detectors}
+
+    def getAcquisitionLayouts(self, detectorNames):
+        """Return the X-fast/Y-slow raster layout for each detector."""
+        self.getParameters()
+        directions = {}
+        for kind, device in zip(
+            ("scan_x", "scan_y"),
+            self._analogParameterDict.get("target_device", ()),
+        ):
+            try:
+                positive = bool(
+                    self._setupInfo.positioners[device].isPositiveDirection
+                )
+            except Exception:
+                continue
+            directions[kind] = 1 if positive else -1
+        return build_triggerscope_raster_layouts(
+            detectorNames,
+            dimensions=self.getBeadRecScanDims(),
+            step_sizes=self.getBeadRecStepSizes(),
+            pulse_counts=self.getNumCamTTL(),
+            scan_source=type(self).__name__,
+            scan_driven_detectors=scan_driven_detector_names(
+                self, detectorNames
+            ),
+            directions=directions,
+        )
 
     def runScan(self) -> None:
         """Runs a scan with the set scanning parameters."""

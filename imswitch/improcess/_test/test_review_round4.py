@@ -53,6 +53,10 @@ def _h5(path, shape=(2, 8, 8), name="data", seed=0):
     with h5py.File(str(path), "w") as handle:
         dataset = handle.create_dataset(name, data=np.random.default_rng(seed).random(shape).astype(np.float32))
         dataset.attrs["element_size_um"] = [1.0, 0.1, 0.1]
+        # The axes are declared, not left to be guessed from the rank: a
+        # file that says nothing reads as Frame/Y/X, never as channels.
+        if len(shape) == 3:
+            dataset.attrs["axes"] = "CYX"
     return path
 
 
@@ -132,6 +136,7 @@ def test_replay_refuses_a_different_dataset_and_a_missing_fingerprint_field(regi
         for name, seed in (("a", 1), ("b", 2)):
             d = handle.create_dataset(name, data=np.random.default_rng(seed).random((2, 8, 8)).astype(np.float32))
             d.attrs["element_size_um"] = [1.0, 0.1, 0.1]
+            d.attrs["axes"] = "CYX"
     recorded = fingerprint_of(open_source(SourceSpec(path=str(raw), dataset="a")))
     wf = Workflow("r", [
         Source("raw", SourceSpec(path=str(raw), dataset="a", fingerprint=recorded)),

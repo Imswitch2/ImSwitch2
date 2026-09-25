@@ -47,6 +47,50 @@ def pixels_for_length_step(length, step) -> int:
     return max(1, int(round(float(length) / step)))
 
 
+def scan_axis_provenance(positioners_scan, positioners_info,
+                         axis_lengths=None, axis_step_sizes=None):
+    """WRITE-ONLY recording provenance for the scanned dims.
+
+    Returns ``(devices, physical_axes)``: the devices that actually scan
+    (in dim order) and each device's physical stage axis from its
+    :class:`PositionerInfo` (``'?'`` when unknown). Recorded images are
+    stored with compatibility ``YX`` axes even for a single-axis scan (a
+    Z-only profile is a ``(1, N)`` image whose ``PhysicalSizeX`` is the Z
+    step), so this is what preserves *which physical axis was actually
+    scanned* — e.g. ``(['ND-PiezoZ'], ['Z'])``.
+
+    ``'None'`` dims are always dropped. When ``axis_lengths`` and
+    ``axis_step_sizes`` are given (index-aligned with ``positioners_scan``,
+    e.g. the analog dict's ``target_device``/``axis_length``/
+    ``axis_step_size``), devices whose axis collapses to a single step are
+    dropped too — the same :func:`pixels_for_length_step` ``> 1`` rule the
+    designers use for active-axis collapse, so a one-plane assigned axis
+    (which emits no waveform) is not claimed as scanned. This also filters
+    the 1-length dummy entries ``build_analog`` appends for non-scan axes.
+    An entry with no corresponding length/step is kept (legacy behavior).
+
+    Deliberately not consumed anywhere in ImSwitch (no ImProcess reader): it
+    exists for the person or tool opening the file. See
+    ``docs/galvo-designer-single-axis-findings.md``, phase C.
+    """
+    devices = []
+    for i, dev in enumerate(positioners_scan):
+        if not dev or dev == 'None':
+            continue
+        if (axis_lengths is not None and axis_step_sizes is not None
+                and i < len(axis_lengths) and i < len(axis_step_sizes)
+                and pixels_for_length_step(axis_lengths[i],
+                                           axis_step_sizes[i]) <= 1):
+            continue
+        devices.append(dev)
+    physical = []
+    for dev in devices:
+        info = positioners_info.get(dev) if positioners_info else None
+        axes = list(getattr(info, 'axes', None) or [])
+        physical.append(str(axes[0]) if axes else '?')
+    return devices, physical
+
+
 def axis_pixel_positions(n_pixels, step, *, center=None, start=0.0):
     """Physical positions of ``n_pixels`` scan pixels spaced *exactly* ``step``.
 
@@ -116,13 +160,16 @@ class AdvancedScanParameterSerializer:
 
         seq_time = widget.getSeqTimePar()
         analogParameterDict["sequence_time"] = seq_time
+        # Only a widget without the field falls back to zero. A blank or
+        # garbled entry raises: a bare except here used to turn a typo into a
+        # silent zero-microsecond phase delay.
         try:
             analogParameterDict["phase_delay"] = widget.getPhaseDelayPar()
-        except Exception:
+        except AttributeError:
             analogParameterDict["phase_delay"] = 0
         try:
             analogParameterDict["d3step_delay"] = widget.getd3StepDelayPar()
-        except Exception:
+        except AttributeError:
             analogParameterDict["d3step_delay"] = 0
 
         return analogParameterDict, positionersScan
@@ -355,6 +402,16 @@ class AdvancedScanParameterSerializer:
                 widget.setSeqTimePar(digitalParameterDict["sequence_time"])
             except Exception:
                 pass
+        # The delays are serialised by build_analog and were never written
+        # back, so a calibrated phase delay came back as 0 after a restart and
+        # the persisted value was overwritten by the next scan.
+        for key, setter in (("phase_delay", "setPhaseDelayPar"),
+                            ("d3step_delay", "setd3StepDelayPar")):
+            if key in analogParameterDict and hasattr(widget, setter):
+                try:
+                    getattr(widget, setter)(analogParameterDict[key])
+                except Exception:
+                    pass
         dig = digitalParameterDict or {}
 
         try:
@@ -473,3 +530,21 @@ class AdvancedScanParameterSerializer:
 
 
 __all__ = ["AdvancedScanParameterSerializer"]
+
+
+def seed_scan_delays_from_setup(widget, setupInfo) -> None:
+    """Seed the panel's phase and D3-step delay fields from the setup file.
+
+    Both are rig facts -- the galvo's response lag and the settle a slice
+    change needs -- so they belong in ``scan.scanDesignerParams`` as
+    ``phase_delay``/``d3step_delay`` (microseconds), not in a widget literal.
+    The two panels used to open with different literals (100 and 0) for the
+    same mirror. A persisted widget state applied later still wins, as it
+    should: it is what the operator last calibrated.
+    """
+    scan = getattr(setupInfo, "scan", None)
+    params = getattr(scan, "scanDesignerParams", None) or {}
+    for key, setter in (("phase_delay", "setPhaseDelayPar"),
+                        ("d3step_delay", "setd3StepDelayPar")):
+        if key in params and hasattr(widget, setter):
+            getattr(widget, setter)(params[key])

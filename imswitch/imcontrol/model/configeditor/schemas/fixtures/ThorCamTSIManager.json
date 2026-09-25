@@ -13,7 +13,8 @@
         "trigger_polarity": "example"
       },
       "dllLocation": "example",
-      "flushFrameLimit": 1
+      "flushFrameLimit": 1,
+      "frameBufferDepth": 1
     }
   }
 }

@@ -119,17 +119,12 @@
       ]
     },
     "n_bins": {
-      "description": "Number of TCSPC histogram bins per pixel.",
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
+      "description": "Number of TCSPC histogram bins per pixel. Omitted, it spans one period of ``laser_rep_rate_mhz`` at ``binwidth_ps`` (391 bins at 80 MHz / 32 ps). A declared window shorter than 80 % of the period is warned about at startup: the ``moment`` and ``phasor`` fits read a truncated decay as a short lifetime, plausibly and without any other sign.",
       "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:default:integer",
-        "code:int()",
-        "code:optional(get)"
+        "code:optional(get)",
+        "docs:integer"
       ]
     },
     "start_channel": {
@@ -193,8 +188,8 @@
     "DetectorManager"
   ],
   "x-imswitch-unresolved-reads": [
-    "tl.get(str(self._click_ch), 0.5) (line 80; sub-key of 'trigger_levels' is not a literal)",
-    "tl.get(str(self._line_ch), 0.5) (line 86; sub-key of 'trigger_levels' is not a literal)",
-    "tl.get(str(self._start_ch), 0.5) (line 83; sub-key of 'trigger_levels' is not a literal)"
+    "tl.get(str(self._click_ch), 0.5) (line 93; sub-key of 'trigger_levels' is not a literal)",
+    "tl.get(str(self._line_ch), 0.5) (line 99; sub-key of 'trigger_levels' is not a literal)",
+    "tl.get(str(self._start_ch), 0.5) (line 96; sub-key of 'trigger_levels' is not a literal)"
   ]
 }

@@ -86,7 +86,7 @@ def test_auto_levels_and_histogram_accept_lazy_arrays_without_materializing():
 def test_sample_values_bounds_output_size_for_oversized_ndarray(monkeypatch):
     import imswitch.improcess.model.contrast as contrast_module
 
-    monkeypatch.setattr(contrast_module, "_SAMPLE_ELEMENT_THRESHOLD", 500)
+    monkeypatch.setattr(contrast_module, "_SAMPLE_WORKING_SET_BYTES", 500 * contrast_module._WORKING_SET_BYTES_PER_ELEMENT)
 
     data = np.arange(10_000, dtype=np.float32)
 
@@ -100,7 +100,7 @@ def test_sample_values_bounds_output_size_for_oversized_ndarray(monkeypatch):
 def test_auto_levels_samples_oversized_ndarray_within_tolerance(monkeypatch):
     import imswitch.improcess.model.contrast as contrast_module
 
-    monkeypatch.setattr(contrast_module, "_SAMPLE_ELEMENT_THRESHOLD", 500)
+    monkeypatch.setattr(contrast_module, "_SAMPLE_WORKING_SET_BYTES", 500 * contrast_module._WORKING_SET_BYTES_PER_ELEMENT)
 
     data = np.arange(10_000, dtype=np.float32)
 
@@ -113,7 +113,7 @@ def test_auto_levels_samples_oversized_ndarray_within_tolerance(monkeypatch):
 def test_sample_values_prefers_downsampling_leading_axes_over_spatial(monkeypatch):
     import imswitch.improcess.model.contrast as contrast_module
 
-    monkeypatch.setattr(contrast_module, "_SAMPLE_ELEMENT_THRESHOLD", 100)
+    monkeypatch.setattr(contrast_module, "_SAMPLE_WORKING_SET_BYTES", 100 * contrast_module._WORKING_SET_BYTES_PER_ELEMENT)
 
     # 200 planes of 5x5 -- comfortably reducible via the leading (frame) axis
     # alone, so the 5x5 in-plane resolution should be preserved.
@@ -155,3 +155,79 @@ def test_safe_display_levels_coerces_mixed_nan_to_zero_span():
     minimum, maximum = safe_display_levels(5.0, np.nan, min_span=2.0)
     assert minimum == 0.0
     assert maximum == 2.0
+
+
+def test_a_configured_working_set_lowers_the_sample_count():
+    """memory.processingWorkingSetMB is honoured by the sampler, not only by the threshold."""
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+    from imswitch.improcess.model import contrast as contrast_module
+
+    data = np.arange(4 * 512 * 512, dtype=np.uint16).reshape(4, 512, 512)
+    assert data.size > 2_000_000 // 4  # big enough that the sample size matters
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    allowed = (1024 * 1024) // contrast_module._WORKING_SET_BYTES_PER_ELEMENT
+    assert contrast_module._should_sample(data)
+    values = contrast_module.finite_values(data)
+    assert values.size <= allowed
+    assert values.size > allowed // 8
+
+    memory_limits.reset()
+    assert contrast_module._max_samples() == contrast_module._MAX_SAMPLE_VALUES
+
+
+def test_a_singleton_leading_axis_does_not_defeat_the_sample_bound():
+    """(1, 100, 100, 100) at a 1 MiB working set came back with 200 000 values
+    against 61 680 allowed: the singleton axis was charged a share of the
+    reduction it could not deliver."""
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+    from imswitch.improcess.model import contrast as contrast_module
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    allowed = contrast_module._max_samples()
+    values = contrast_module.finite_values(np.zeros((1, 100, 100, 100), np.uint16))
+    assert values.size <= allowed
+    assert values.size > allowed // 4          # and not needlessly starved
+
+
+@pytest.mark.parametrize('shape', [
+    (1, 100, 100, 100), (3, 1, 512, 512), (1, 1, 1000, 1000), (7, 5, 3, 64, 64),
+    (1, 30, 30), (1000, 1, 1), (2, 2), (1, 1, 1, 1, 4096),
+    # Review round 7: leading axes that cannot all shrink by one uniform
+    # factor, with nothing left in-plane to make up the difference.
+    (2, 1_000_000, 1, 1), (3, 500_000, 1, 1), (2, 7, 100_000, 1, 1), (1_000_000, 2, 1),
+])
+@pytest.mark.parametrize('max_samples', [1, 7, 100, 61_680])
+def test_the_strided_key_keeps_at_most_the_allowed_count(shape, max_samples):
+    from imswitch.improcess.model import contrast as contrast_module
+
+    key = contrast_module._strided_key(shape, max_samples)
+    kept = int(np.prod([len(range(0, size, s.step or 1)) for size, s in zip(shape, key)]))
+    assert kept <= max_samples
+    assert kept >= 1
+
+
+def test_whole_planes_are_still_preferred_when_the_leading_axes_can_meet_the_allowance():
+    from imswitch.improcess.model import contrast as contrast_module
+
+    key = contrast_module._strided_key((400, 64, 64), 64 * 64 * 10)
+    assert key[1].step in (None, 1) and key[2].step in (None, 1)   # planes untouched
+    kept = len(range(0, 400, key[0].step))
+    assert 1 <= kept <= 10
+
+
+def test_the_reviewers_shape_is_within_its_allowance():
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+    from imswitch.improcess.model import contrast as contrast_module
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    allowed = contrast_module._max_samples()
+    values = contrast_module.finite_values(np.zeros((2, 1_000_000, 1, 1), np.uint16))
+    assert values.size <= allowed           # was 166 667 against 61 680
+    assert values.size > allowed // 2

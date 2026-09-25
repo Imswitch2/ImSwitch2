@@ -51,12 +51,18 @@ Detectors
      - Automatic fallback: loaded whenever the real camera fails to
        initialize, or explicitly via ``"cameraListIndex": "mock"``.
      - No (free-runs).
-   * - ``HamamatsuManager`` / ``PhotometricsManager``
+   * - ``HamamatsuManager``
      - ``MockHamamatsu`` (``imswitch.imcontrol.model.interfaces.hamamatsu_mock``)
      - Same fallback pattern; ``"cameraListIndex": "mock"``.
      - Yes. ``mockTrigger(n)`` queues externally-triggered frames;
        ``getFrames()`` drains the queue in external-trigger mode and only
        free-runs on wall-clock in internal-trigger mode. Emits ``uint16``.
+   * - ``PhotometricsManager``
+     - ``MockPhotometrics`` (``imswitch.imcontrol.model.interfaces.photometrics_mock``)
+     - Same fallback pattern; ``"cameraListIndex": "mock"``.
+     - Yes. ``mockTrigger(n)`` queues frames in either external trigger
+       mode; the internal trigger free-runs on wall-clock at the exposure
+       cadence. Emits ``uint16``.
    * - ``ThorCamTSIManager``
      - ``MockThorTSICamera``
      - Automatic when ``cameraSerial`` starts with ``MOCK_``, or when the

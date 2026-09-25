@@ -18,18 +18,19 @@ import ast
 import colorsys
 import copy
 import json
+import math
 import os
 import re
 import sys
 from pathlib import Path
 import glob
-from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint, QRegularExpression
-from PyQt5.QtGui import QFont, QPalette, QColor, QRegularExpressionValidator
+from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint
+from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialogButtonBox, QDoubleSpinBox,
+    QApplication, QCheckBox, QComboBox, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
-    QSizePolicy, QSpinBox, QSplitter, QStatusBar, QTabWidget, QToolBar,
+    QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout,
     QDialog, QTextEdit, QLayout, QLayoutItem,
 )
@@ -766,11 +767,24 @@ def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
 # Theme helpers
 # =============================================================================
 def is_dark_mode() -> bool:
-    """Check if the application is in dark mode based on palette lightness."""
+    """Whether widgets in this application are drawn on a dark background.
+
+    The application palette is not enough: ImSwitch darkens itself with an
+    application style sheet (qdarkstyle) and leaves the palette light, so
+    inside ImSwitch the palette alone picked the light card colours -- white
+    cards with light text. A widget polished under the style sheet carries
+    the background it will really be drawn with, so that is asked as well.
+    """
     app = QApplication.instance()
     if app is None:
         return False
-    return app.palette().window().color().lightness() < 128
+    if app.palette().window().color().lightness() < 128:
+        return True
+    if not app.styleSheet():
+        return False
+    probe = QWidget()
+    probe.ensurePolished()
+    return probe.palette().window().color().lightness() < 128
 
 
 def get_themed_colors(is_dark: bool):
@@ -1205,32 +1219,31 @@ class DeviceCanvas(QScrollArea):
 
 _MISSING = object()
 
-#: What may be typed into a numeric field. Regular expressions, not
-#: QIntValidator/QDoubleValidator: those carry a C++ int range and a decimal
-#: count, and refuse the tenth digit of a serial number. An empty box is null.
-_INT_PATTERN = r"[-+]?\d*"
-_FLOAT_PATTERN = r"[-+]?(\d+\.?\d*|\.\d*)([eE][-+]?\d*)?"
-
-
-def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+#: A number as a setup file writes one: an optional sign, digits with an
+#: optional fraction, an optional exponent. Nothing else -- no digit
+#: separators (``int("1_000")`` is 1000), no ``nan``/``inf``, no hex -- so
+#: what is read back is what the operator plainly typed and what JSON holds.
+_INTEGER_TEXT = re.compile(r"[-+]?\d+")
+_NUMBER_TEXT = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
 
 
 def _parse_number(text: str):
     """What an edited numeric field means: an int, else a float, else the text.
 
     Empty is null -- clearing a box is how a nullable number is unset -- and
-    text that is neither kind is kept as it is rather than lost; validation
-    says what is wrong with it.
+    text that is not a plain finite number is kept exactly as typed rather
+    than lost or reinterpreted; Apply says so, and validation says what is
+    wrong with it.
     """
     stripped = text.strip()
     if not stripped or stripped.lower() == "null":
         return None
-    for parse in (int, float):
-        try:
-            return parse(stripped)
-        except ValueError:
-            continue
+    if _INTEGER_TEXT.fullmatch(stripped):
+        return int(stripped)
+    if _NUMBER_TEXT.fullmatch(stripped):
+        number = float(stripped)
+        if math.isfinite(number):
+            return number
     return stripped
 
 
@@ -1251,6 +1264,26 @@ def _field_default(field_def: dict):
         except (ValueError, TypeError):
             return {}
     return default
+
+
+_OPTION_ESCAPES = {"\\": "\\\\", "\r": "\\r", "\n": "\\n", "\t": "\\t"}
+
+
+def _option_label(option) -> str:
+    """How a select option reads in its combo box.
+
+    A line ending is an option like any other, but a carriage return shown
+    as itself is an invisible item. Control characters are written as their
+    escapes, and so is a backslash: the two characters ``\\r`` an older
+    editor saved must read differently from the carriage return it meant.
+    """
+    text = str(option)
+    if not any(ch in _OPTION_ESCAPES or ord(ch) < 32 for ch in text):
+        return text
+    return "".join(
+        _OPTION_ESCAPES.get(ch, f"\\x{ord(ch):02x}" if ord(ch) < 32 else ch)
+        for ch in text
+    )
 
 
 # =============================================================================
@@ -1280,24 +1313,36 @@ class FieldWidget(QWidget):
         if tp == "bool":
             self._w = QCheckBox()
             self._w.setChecked(bool(value) if value is not None else False)
+        elif tp == "bool_auto":
+            # Tri-state boolean: "Automatic" means the key stays ABSENT from
+            # the saved config so the consumer's fallback applies (e.g.
+            # smoothScan's device-name heuristic). Apply omits the key for
+            # Automatic instead of writing a default.
+            self._w = QComboBox()
+            self._w.addItem("Automatic (not set)", None)
+            self._w.addItem("On", True)
+            self._w.addItem("Off", False)
+            if value is None or value == "null":
+                self._w.setCurrentIndex(0)
+            else:
+                self._w.setCurrentIndex(1 if bool(value) else 2)
         elif tp in ("int", "float"):
-            # A validated line edit, not a spin box: a spin box is a C++ int
-            # that clamps, rounds to its decimals and cannot hold a string a
-            # file put under this key. Whatever the file held is shown as it
-            # is; the validator shapes what is typed, and only when the box
-            # started out holding a number (or nothing) -- a string under a
-            # numeric key is edited as free text, so it can be fixed at all.
+            # A plain line edit: no spin box, and no keystroke validator.
+            # A spin box is a C++ int that clamps and rounds; a validator
+            # drops every keystroke it refuses, so "8000.5" typed into an
+            # integer-kind box became 80005 and was saved. The kind is the
+            # editor's preference for how to read the text back, not a
+            # constraint -- the schema deliberately emits none -- so what is
+            # typed stays as typed, and Apply reads it as a number when it is
+            # one and warns when it is not.
             self._w = QLineEdit("" if value is None else str(value))
-            if value is None or _is_number(value):
-                pattern = _INT_PATTERN if tp == "int" else _FLOAT_PATTERN
-                self._w.setValidator(QRegularExpressionValidator(QRegularExpression(pattern), self._w))
         elif tp == "select":
             self._w = QComboBox()
             options = self._def.get("opts", [])
             if _coercion_module is not None:
                 options = _coercion_module.options_like(options, value)
             for option in options:
-                self._w.addItem(str(option), option)
+                self._w.addItem(_option_label(option), option)
             # Configs can outlive their template/plugin version.  Keeping the
             # saved value selectable prevents an open-and-save cycle from
             # silently changing it to the first currently known option.
@@ -1305,9 +1350,9 @@ class FieldWidget(QWidget):
             if idx < 0 and value is not None:
                 # A ``"9600"`` saved by an older editor should still land on
                 # the 9600 entry rather than gaining a second, identical one.
-                idx = self._w.findText(str(value))
+                idx = self._w.findText(_option_label(value))
             if idx < 0 and value is not None:
-                self._w.addItem(str(value), value)
+                self._w.addItem(_option_label(value), value)
                 idx = self._w.findData(value)
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
@@ -1416,6 +1461,8 @@ class FieldWidget(QWidget):
         tp = self._def["type"]
         if tp == "bool":
             return self._w.isChecked()
+        if tp == "bool_auto":
+            return self._w.currentData()  # None (Automatic) / True / False
         if tp in ("int", "float"):
             return _parse_number(self._w.text())
         if tp == "select":
@@ -1897,6 +1944,33 @@ class PropertyEditor(QWidget):
         nested_keys: dict[str, dict] = {}
         for nest_key in schema.get("nested", {}):
             nested_keys[nest_key] = {}
+        # Numeric fields the operator filled with something that is not a
+        # number: saved as typed, and said so below.
+        not_numbers: list[tuple[str, str]] = []
+        props_on_load = self._device.get("managerProperties") or {}
+        nested_meta = schema.get("nested_meta", {})
+        # Dicts an edit to one of their fields creates (or turns into a dict).
+        edited_containers = {
+            section.split(":", 1)[1]
+            for (section, _key), fw in self._field_widgets.items()
+            if section.startswith("nested:") and fw.is_touched()
+        }
+
+        def container_exists(nest_key: str) -> bool:
+            """The dict will be in what Apply writes: the file has it, the code
+            requires it, or an edit creates it.
+
+            Decided before any field is written, so a sub-key the dict's
+            schema requires goes in with the edit that creates the dict --
+            not on the next Apply. Something under that key that is not a
+            dict (``null``) and that nobody edited is kept as it was rather
+            than filled in.
+            """
+            if nest_key in edited_containers:
+                return True
+            if nest_key in props_on_load:
+                return isinstance(props_on_load[nest_key], dict)
+            return bool(nested_meta.get(nest_key, {}).get("schema_req"))
 
         for (section, key), fw in self._field_widgets.items():
             if section in ("raw", "raw_prop"):
@@ -1916,12 +1990,22 @@ class PropertyEditor(QWidget):
                 continue
             val = fw.get_value()
             field = self._field_defs.get((section, key), {})
+            if fw.is_touched() and field.get("type") in ("int", "float") and isinstance(val, str):
+                not_numbers.append((field.get("label", key), val))
             # A property the file did not have is written only if the
             # manager's code requires it or the operator edited it; a form
             # may show a default without saving one unasked. A template's
             # own "req" is a hint for the label and the warning below, not
-            # proof: the file loaded without the key.
-            if not (field.get("schema_req") or (section, key) in self._present_keys or fw.is_touched()):
+            # proof: the file loaded without the key. A sub-key a dict's
+            # schema requires is required only where the dict exists.
+            required_here = bool(field.get("schema_req"))
+            if section.startswith("nested:"):
+                required_here = required_here and container_exists(section.split(":", 1)[1])
+            if not (required_here or (section, key) in self._present_keys or fw.is_touched()):
+                continue
+            if fw._def.get("type") == "bool_auto" and val is None:
+                # "Automatic": keep the key absent so the consumer's own
+                # fallback applies (never write a default for it).
                 continue
             if section == "props":
                 key = self._alias_spelling.get((section, key), key)
@@ -1940,7 +2024,6 @@ class PropertyEditor(QWidget):
                 nest_key = section.split(":", 1)[1]
                 nested_keys[nest_key][key] = val
 
-        props_on_load = self._device.get("managerProperties") or {}
         for nest_key, nest_vals in nested_keys.items():
             original = props_on_load.get(nest_key, _MISSING)
             if nest_vals:
@@ -1949,6 +2032,12 @@ class PropertyEditor(QWidget):
                 # The container was there with nothing the form knows inside
                 # (empty, or not a dict at all): keep it exactly as it was.
                 props[nest_key] = copy.deepcopy(original)
+            elif container_exists(nest_key):
+                # The manager reads this dict unguarded -- a file without it
+                # does not start. Its fields show defaults but stay unwritten,
+                # like any optional field the file lacks; the dict is written
+                # with only what its own schema requires, which here is nothing.
+                props[nest_key] = {}
 
         # A device the file wrote without a managerProperties key, and into
         # which nothing was written now, stays without one.
@@ -1962,6 +2051,19 @@ class PropertyEditor(QWidget):
                 v = new_device.get(f["key"]) if f in schema.get("top", []) else props.get(f["key"])
                 if v is None or v == "" or v == []:
                     warnings.append(f"⚠  Required: {f['label']}")
+        # The same for the fields of a dict the template lays out, where the
+        # dict is in what is written.
+        for nest_key, children in schema.get("nested", {}).items():
+            container = props.get(nest_key)
+            if not isinstance(container, dict):
+                continue
+            for f in children:
+                if f.get("req"):
+                    v = container.get(f["key"])
+                    if v is None or v == "" or v == []:
+                        warnings.append(f"⚠  Required: {f['label']} ({nest_key})")
+        for label, text in not_numbers:
+            warnings.append(f"⚠  {label}: {text!r} is not a number; saved as typed")
         self._val_lbl.setText("\n".join(warnings))
 
         # Phase 2: Merge preserving unknown fields (including nested dicts)
@@ -3637,6 +3739,7 @@ class MainWindow(QMainWindow):
         self._saved_files: set = set()
         self._active_config_changed = False
 
+        self._adopt_dark_theme()
         self._build_toolbar()
         self._build_ui()
         self._build_status_bar()
@@ -3646,6 +3749,26 @@ class MainWindow(QMainWindow):
 
         self._detect_options_file()
         self._open_active_config(start_folder)
+
+    def _adopt_dark_theme(self):
+        """Look the same inside a dark host as when run on its own.
+
+        Standalone, ``main()`` puts the editor's theme on the application.
+        Opened from ImSwitch, the application's style sheet is qdarkstyle, so
+        the editor puts its own theme on its window instead, where it wins
+        over the application's and reaches nothing else of ImSwitch. A light
+        host is left alone: the cards follow ``is_dark_mode()``.
+
+        ImSwitch's 10 px font stays. Any ``font-size`` rule overrides the
+        sizes the editor sets with ``setFont``, so no rule here could give
+        back the standalone sizes -- only replace one uniform size with
+        another.
+        """
+        app = QApplication.instance()
+        if app is None or app.styleSheet() == _DARK_STYLESHEET or not is_dark_mode():
+            return
+        self.setPalette(_dark_palette(self.palette()))
+        self.setStyleSheet(_HOSTED_OVERRIDES + _DARK_STYLESHEET)
 
     # ── Build UI ──────────────────────────────────────────────────────────
     def _build_toolbar(self):
@@ -4215,8 +4338,8 @@ class MainWindow(QMainWindow):
         event.accept()
         self.sig_closed.emit()
 
-def dark_theme(app, palette):
-    """Apply complete dark theme with palette and comprehensive QSS stylesheet."""
+def _dark_palette(palette):
+    """Return ``palette`` with the editor's dark colours set."""
     # Set dark palette colors
     palette.setColor(QPalette.Window, QColor("#2B2B2B"))
     palette.setColor(QPalette.Base, QColor("#1E1E1E"))
@@ -4235,9 +4358,11 @@ def dark_theme(app, palette):
     palette.setColor(QPalette.Disabled, QPalette.Text, QColor("#707070"))
     palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#707070"))
     palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#707070"))
+    return palette
 
-    # Comprehensive QSS stylesheet
-    stylesheet = """
+
+# Comprehensive QSS stylesheet
+_DARK_STYLESHEET = """
         QFrame {
             background-color: #2B2B2B;
             color: #E0E0E0;
@@ -4496,8 +4621,33 @@ def dark_theme(app, palette):
             margin: 3px 0;
         }
     """
-    app.setStyleSheet(stylesheet)
-    return palette
+
+
+# Put in front of _DARK_STYLESHEET when the editor themes its own window inside
+# ImSwitch. They undo the qdarkstyle rules the editor's sheet does not otherwise
+# override: a blue-black background on every plain widget, and boxed tool bar
+# buttons. They come first so that the editor's own type rules, of equal
+# specificity, still win.
+_HOSTED_OVERRIDES = """
+        QWidget {
+            background-color: #2B2B2B;
+            color: #E0E0E0;
+        }
+        QToolBar QToolButton {
+            background-color: transparent;
+            border: none;
+            padding: 3px 6px;
+        }
+        QToolBar QToolButton:hover {
+            background-color: #3C3F41;
+        }
+"""
+
+
+def dark_theme(app, palette):
+    """Apply complete dark theme with palette and comprehensive QSS stylesheet."""
+    app.setStyleSheet(_DARK_STYLESHEET)
+    return _dark_palette(palette)
 
 # =============================================================================
 # Entry point
