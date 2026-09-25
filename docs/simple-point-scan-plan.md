@@ -9,7 +9,9 @@ written in P4.*
   phase **D** that now comes before P1. Review 2 (2026-09-25) found four
   contract gaps (power semantics vs compatibility, the recorded-T iteration
   owner, pixel-storage ownership, imported lengths); all four hold and are
-  answered in D5, D3, D1 and D4. P1 not started.
+  answered in D5, D3, D1 and D4. Review 3 added two D5 fixes. Decisions
+  2026-09-25: T as proposed in D3; no mid-iteration Stop. The design phase
+  is settled; next is implementing phase D. P1 not started.
 - **Branch:** `feat/simple-point-scan`, worktree `../Imswitch2-simple-point-scan`.
 - **Base:** stacked on PR #49 (`claude/quizzical-hofstadter-88bff6`, "a refused
   scan design ends the request with its reason"). P0 reports its new refusal
@@ -50,7 +52,7 @@ hard-coded for a particular rig.
 | Question | Decision | Consequence |
 |---|---|---|
 | Coexist with Advanced? | **Replace.** Selected per rig with `scanWidgetType: "SimplePointScan"` | Still one scan panel per setup. Moving a rig between Simple and Advanced is a config change. Scan files load across only within an explicit representable subset; anything outside it is refused with the reason (D4). |
-| What does T mean in an acquisition? | **N frames, back to back, one run, no interval** | Intervals stay a Recording feature (ScanLapse). Executed as N bounded NI-DAQ iterations in one run; with Save, as a ScanLapse with interval 0 (D3; **to confirm**). |
+| What does T mean in an acquisition? | **N frames, back to back, one run, no interval** | Intervals stay a Recording feature (ScanLapse). Executed as N bounded NI-DAQ iterations in one run; with Save, as a ScanLapse with interval 0 (D3; confirmed 2026-09-25). |
 | Which lasers does the overview use? | **Channel 1 only.** A dropdown picks another channel | The overview always needs just one line pass. |
 | Does Acquire save? | **Optional "Save" toggle** | Runs the Recording controller's own Scan-once transaction, bound to this panel. There is no second writer (D2). |
 
@@ -455,7 +457,7 @@ controller's interfaces. Each one names the tests that hold it.
 |---|---|---|
 | 1. Geometry stamped at `sigScanBuilt` can describe a different image from the one displayed | yes | D1: geometry travels with the image and is applied with it |
 | 2. `prepare_recording_for_scan` does not arm a recording | yes; it also returns success with no Recording controller | D2: use the Recording controller's own Scan-once transaction through a new synchronous entry point |
-| 3. T execution deferred too late; `scanDone()` decides on the widget's Repeat box | yes; also, recording expects one assembled frame per scan-driven session | D3: bounded iterations under a continuation policy; with Save, a ScanLapse with interval 0 (to confirm) |
+| 3. T execution deferred too late; `scanDone()` decides on the widget's Repeat box | yes; also, recording expects one assembled frame per scan-driven session | D3: bounded iterations under a continuation policy; with Save, a ScanLapse with interval 0 (confirmed) |
 | 4. File compatibility exceeds what the model represents | yes | D4: explicit representable subset, refusal instead of normalization, two claims tested separately |
 | 5. Linked laser power is not resolved | yes, and worse: per-step power is applied only in `advanced_mode`, which Simple does not set | D5: power routes |
 | 6. Overview field and sampling are coupled; an estimate cannot promise a real frame rate | yes | D6: joint planning, fallback, measured rate |
@@ -714,7 +716,7 @@ controller's **ScanLapse** already does the rest:
 - an interval of 0 starts the next point on the next event-loop turn;
 - Stop mid-lapse discards the current point and keeps the earlier ones.
 
-So, **to confirm**:
+**Decided (Lenny, 2026-09-25):**
 
 - **T without Save:** the Simple controller runs N bounded iterations itself,
   under its own continuation policy. No recording is involved.
@@ -778,11 +780,17 @@ Tests:
 - Live disabled with T;
 - Advanced's Repeat behaviour unchanged.
 
-Separate decision: **mid-iteration Stop for NI-DAQ** (stop the AO/DO/counter
-tasks, finish detectors with `'abort'`, park the scanners). This benefits
-Advanced as much as Simple, touches the shared NI-DAQ path, and needs its own
-design and rig test. Until it exists, the panel's Stop says "Stopping after
-this frame (≈ 12 s)" rather than pretending.
+**No mid-iteration Stop (Lenny, 2026-09-25).** A real mid-iteration Stop for
+NI-DAQ (stopping the AO/DO/counter tasks, finishing detectors with `'abort'`,
+parking the scanners) is not scheduled. Stop therefore always means "after
+the current frame", and the panel says so instead of pretending. While
+stopping, the button reads "Stopping after this frame (≈ 12 s)", using the
+estimate of what remains of the running iteration.
+
+This is also why D3's per-frame iterations matter beyond T: a long single
+waveform, such as an XYZ stack, cannot be stopped before it ends. The panel
+shows the estimated duration before such a scan starts, so the operator knows
+up front.
 
 ### D4. Compatibility contract (review finding 4)
 
@@ -978,7 +986,7 @@ A new `scanWidgetType` must be registered in all of these places:
 | Phase | Content | Done when |
 |---|---|---|
 | **P0** | Backend. `GalvoScanDesigner.scanSpeedRefusal` enforced inside `make_signal` (raises `ScanDesignRefusedError` with a fix hint). `ScanDesigner.estimateScanTime` (base returns `None`; Galvo implements §F4). An Advanced-controller helper that builds designer parameters once, for building, plotting and estimating. | Tests: refused above `vel_max`, accepted at or below it, stepped axes exempt, and the reason reaches the request through the Advanced controller. Estimate within 1 % or 2 ms of full builds for 1D, 2D, line steps, XZ, XYZ and a stepped fast axis. **Done** (`4c0c671b`). Existing scan tests pass. `advanced-scanning.rst` and the changelog updated. |
-| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. Also the small refactors they require in shared code: the run execution mode and continuation policy in `SuperScanController` / Advanced (D3); the shared power route, the pre-build `powerRefusal` check, the removal of the blanket `except` around the injection, and the laser-manager voltage mapping in `_inject_linestep_power_ao` (D5); the state-refusal hook in `applyComponentState` (D4); `ScanFrame`, fresh display storage per generation in APD/PMT/Time Tagger, and the geometry handling in `ImageController` / `ImageWidget` (D1); and `RecordingController.recordScanSeries` (D2, D3). | Each refactor keeps Advanced's behaviour, except the two intended Advanced fixes in D5 (split gate with AO power device; calibrated lasers), which get their own tests and changelog entries. Advanced's existing tests pass unchanged. The D1–D5 contract tests pass. You confirm D3's choice. |
+| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. Also the small refactors they require in shared code: the run execution mode and continuation policy in `SuperScanController` / Advanced (D3); the shared power route, the pre-build `powerRefusal` check, the removal of the blanket `except` around the injection, and the laser-manager voltage mapping in `_inject_linestep_power_ao` (D5); the state-refusal hook in `applyComponentState` (D4); `ScanFrame`, fresh display storage per generation in APD/PMT/Time Tagger, and the geometry handling in `ImageController` / `ImageWidget` (D1); and `RecordingController.recordScanSeries` (D2, D3). | Each refactor keeps Advanced's behaviour, except the two intended Advanced fixes in D5 (split gate with AO power device; calibrated lasers), which get their own tests and changelog entries. Advanced's existing tests pass unchanged. The D1–D5 contract tests pass. |
 | **P1** | `simple_scan.py` (with D4's fields), controller and panel without napari. D6 overview planning. New mock setup `galvo_apd_simple_mock_scan_setup.json`. Registration checklist (§7). | D4 executable-equality and refusal tests pass. D6 planning tests pass. The mock setup starts. The measured overview frame rate is shown on the mock. |
 | **P2** | The panel's own napari rectangle layer, drawn over the current detector's layer, converted with D1's geometry; the inverse display transform. | D1's tests pass, plus drawing is disabled on a layer without geometry. |
 | **P3** | Channel lanes, per-channel power (D5), PMT note, Z and T (D3), Save toggle (D2). | D2, D3 and D5 end-to-end tests on the mock setup: N time partitions recorded, one run end, Stop mid-series with and without Save, missing Recording, writer failure, double start, and each power route. |
@@ -1003,16 +1011,16 @@ A new `scanWidgetType` must be registered in all of these places:
    threads) is not in the designer's estimate. D6 learns it from the measured
    frame period during Live; T estimates use the same measured gap (D3). P5
    records its size on the rig.
-4. **T execution (D3)** needs your confirmation: bounded iterations without
-   Save, and a ScanLapse with interval 0 with Save.
+4. **T execution (D3)**: decided 2026-09-25. Bounded iterations without Save,
+   and a ScanLapse with interval 0 with Save.
 5. **Nyquist formula** (§5.6): still to review.
 6. **Name.** `SimplePointScan` sits next to the legacy `PointScan` panel. Its
    dock title will be "Point scan" with the mode segmented control. Rename
    before P1 if you'd prefer another name.
 7. **Stop cannot interrupt a running NI-DAQ iteration** (D3). This affects
-   Advanced today, for example on long XYZ stacks. A real mid-iteration Stop
-   is a separate piece of work on the shared NI-DAQ path. **To decide:**
-   whether to schedule it, and whether before or after this panel ships.
+   Advanced too, for example on long XYZ stacks. Decided 2026-09-25: no
+   mid-iteration Stop. Stop means "after the current frame", and the panel
+   says so, with the remaining time.
 8. **D1 adds an `ndarray` subclass to the live image path.** Every subscriber
    still gets an array, but code that tests `type(x) is np.ndarray`, pickles
    frames, or hands them to C extensions must be checked. The D phase audits
