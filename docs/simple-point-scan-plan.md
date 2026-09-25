@@ -47,7 +47,7 @@ hard-coded for a particular rig.
 | Question | Decision | Consequence |
 |---|---|---|
 | Coexist with Advanced? | **Replace.** Selected per rig with `scanWidgetType: "SimplePointScan"` | Still one scan panel per setup. Moving a rig between Simple and Advanced is a config change. Scan files load across only within an explicit representable subset; anything outside it is refused with the reason (D4). |
-| What does T mean in an acquisition? | **N frames, back to back, one run, no interval** | Intervals stay a Recording feature (ScanLapse). Executed as N bounded NI-DAQ iterations in one run (D3; **to confirm**). |
+| What does T mean in an acquisition? | **N frames, back to back, one run, no interval** | Intervals stay a Recording feature (ScanLapse). Executed as N bounded NI-DAQ iterations in one run; with Save, as a ScanLapse with interval 0 (D3; **to confirm**). |
 | Which lasers does the overview use? | **Channel 1 only.** A dropdown picks another channel | The overview always needs just one line pass. |
 | Does Acquire save? | **Optional "Save" toggle** | Runs the Recording controller's own Scan-once transaction, bound to this panel. There is no second writer (D2). |
 
@@ -446,7 +446,7 @@ controller's interfaces. Each one names the tests that hold it.
 |---|---|---|
 | 1. Geometry stamped at `sigScanBuilt` can describe a different image from the one displayed | yes | D1: geometry travels with the image and is applied with it |
 | 2. `prepare_recording_for_scan` does not arm a recording | yes; it also returns success with no Recording controller | D2: use the Recording controller's own Scan-once transaction through a new synchronous entry point |
-| 3. T execution deferred too late; `scanDone()` decides on the widget's Repeat box | yes | D3: bounded iterations and a continuation policy (to confirm) |
+| 3. T execution deferred too late; `scanDone()` decides on the widget's Repeat box | yes; also, recording expects one assembled frame per scan-driven session | D3: bounded iterations under a continuation policy; with Save, a ScanLapse with interval 0 (to confirm) |
 | 4. File compatibility exceeds what the model represents | yes | D4: explicit representable subset, refusal instead of normalization, two claims tested separately |
 | 5. Linked laser power is not resolved | yes, and worse: per-step power is applied only in `advanced_mode`, which Simple does not set | D5: power routes |
 | 6. Overview field and sampling are coupled; an estimate cannot promise a real frame rate | yes | D6: joint planning, fallback, measured rate |
@@ -533,12 +533,31 @@ Verified:
 - That path is reachable only through the REC button. The API's
   `startRecording()` presses it and returns nothing, and `setRecModeScanOnce`
   / `setDetectorToRecord` rewrite the user's Recording panel as a side effect.
+  A second `startRecording()` while REC is already checked is silently
+  ignored.
+- A failure before the recording manager assigns a generation (preflight,
+  geometry, layout validation) publishes no `sigRecordingFailed`. The reason
+  reaches only the log (`RecordingController.py:2135`). This is why the entry
+  point must return the reason itself.
+- The scan start goes through `runScanExternal`, which forces `setScanMode()`
+  and `setRepeatEnabled(False)` (`basecontrollers.py:508`). A Scan-once
+  recording therefore always covers one iteration.
+- `_waitForManagerArm` blocks the GUI thread for up to 35 s while the writer
+  opens. The panel shows "Arming the recording…" and does not pretend to be
+  responsive.
+- The inherited `getNumScanPositions` builds from
+  `scanManager.getScanSignalsDict(self._analogParameterDict)`: no
+  `getParameters()`, no line-step count, no positioner program. The layouts
+  build from `_stage_parameters`. Only the recording manager's
+  `SCAN_POSITION_COUNT_MISMATCH` check holds the two together. The Simple
+  controller computes both from `_stage_parameters`.
 
 Contract:
 
 - With Save on, the panel never starts the scan itself. It calls a new
-  Recording entry point, `recordScanOnce(source, detectorNames)`. That runs
-  steps 1–6 above with an **explicit** source and the given detectors, and
+  Recording entry point, `recordScanSeries(source, detectorNames, frames=1)`.
+  With one frame it runs steps 1–6 above; with more it runs a ScanLapse with
+  interval 0 (D3). It uses an **explicit** source and the given detectors, and
   returns synchronously: accepted (with the request, to follow its end), or
   refused with the reason. It leaves the Recording panel's own mode and
   detector selection as the user set them.
@@ -551,10 +570,10 @@ Contract:
 | 3 geometry, layouts | an accessor fails, or the design is refused (#49) | refused with the reason; no file |
 | 4–5 arm writer | fails or times out | refused with the reason; the writer is rolled back; no scan |
 | 6 scan start | refused (`ScanRequestRejectedError`) | the writer is rolled back; the reason is shown in the panel |
-| run | Stop mid-series | the recording is finalized with the frames taken and marked incomplete (D3) |
+| run | Stop | the current iteration completes; see D3 for what is kept |
 
 - **Double start.** Acquire is disabled from the click until the request
-  resolves, and `recordScanOnce` refuses while a request is pending. Both
+  resolves, and `recordScanSeries` refuses while a request is pending. Both
   layers are tested.
 
 Tests: missing Recording; writer arm failure (no scan starts); refused design
@@ -570,41 +589,74 @@ stops the NI-DAQ tasks of the iteration that is already running; the
 for every NI-DAQ scan today: a long XYZ stack in Advanced also runs to its end
 after Stop. For a beginner panel, a Stop button that does not stop is a defect.
 
-Two ways to execute T:
+Ways to execute T:
 
-| | **A. Bounded iterations (recommended)** | B. One waveform with a virtual T axis |
+| | **A. Bounded iterations** | B. One waveform with a virtual T axis |
 |---|---|---|
 | Stop | after the current frame | only after all N frames (see above) |
 | Waveform size | one frame | N frames; 512 × 512 × 40 already exceeds the 10 M-position cap |
 | Frame timing | a re-arm gap between frames (to be measured) | exact, no gaps |
-| Recording | N iterations in one run; see D2 | one iteration with a T axis |
 | Estimate | frame × N + (N − 1) × measured gap | exact from the designer |
 
-Decision to confirm: **A**, because Stop and the size cap rule B out.
+B is ruled out by Stop and by the size cap. A is the execution model; what
+differs is who drives the iterations when the series is recorded.
 
-Contract for A:
+**Recording N iterations.** The recording agent's trace shows the recording
+manager expects exactly **one** assembled frame per session from a
+scan-driven detector (`_expectedFramesFor`, `RecordingManager.py:3939`), and
+scan-driven layouts describe one frame per session
+(`_acquisition_layout_source.py:502-518`). "N iterations in one Scan-once
+session" would need new code in the recording manager. The Recording
+controller's **ScanLapse** already does the rest:
+
+- it runs N timepoints in one run (non-final parts keep the reservation, so
+  no other scan can start in between; `sigScanEnded` fires once);
+- it writes one file with one group and one time partition per timepoint
+  (`scan0`, `scan1`, …, `with_time_partition`);
+- an interval of 0 starts the next point on the next event-loop turn;
+- Stop mid-lapse discards the current point and keeps the earlier ones.
+
+So, **to confirm**:
+
+- **T without Save:** the Simple controller runs N bounded iterations itself,
+  under its own continuation policy. No recording is involved.
+- **T with Save:** the Save transaction (D2) runs a **ScanLapse with interval
+  0 and N points**, single file, instead of a Scan-once. It is the same
+  entry point with a point count, `recordScanSeries(source, detectorNames, N)`;
+  N = 1 is the Scan-once case.
+
+This keeps your decision's meaning (N frames, back to back, one run, no
+interval; intervals remain the Recording panel's feature) while reusing the
+recording path that already handles time partitions and mid-series Stop. The
+file layout is one group per frame with a time partition, not one array with
+a T axis. ImProcess already resolves that as time.
+
+Contract:
 
 - The controller owns a continuation policy, `_wantsAnotherIteration()`:
-  `Live and not stop` or `framesDone < N and not stop`.
+  `Live and not stop`, or `framesDone < N and not stop` for T without Save.
 - Advanced's `scanDone()` branches on `self._widget.repeatEnabled()`
   directly, and `_shouldContinueRepeat` reads the widget too. Both move to the
-  policy (a small refactor in Advanced and the base class, behaviour
-  unchanged for Advanced: its policy is the Repeat box).
+  policy (a small refactor in Advanced and the base class; Advanced's
+  behaviour is unchanged, its policy is the Repeat box).
+- `runScanExternal` forces Repeat off. That stays correct: with Save, the
+  lapse drives the points, and each point is one iteration.
 - Live and T are exclusive: Live is disabled while T is a dimension, and
   choosing T turns Live off, visibly.
-- Stop during frame k of N: frame k completes, no frame k+1 is armed, the run
-  ends once with `sigScanEnded`, and the recording (D2) is finalized with k
-  frames and marked incomplete.
-- One run completion for the whole series: `sigScanEnded` exactly once.
-- The recording accessors describe the whole series. The Scan-once recording
-  computes its frame count from `getNumScanPositions` and its layout from
-  `getAcquisitionLayouts` (`RecordingController._applyScanGeometryToRecordingArgs`).
-  So the Simple controller declares N frames and a T axis there, not one frame
-  repeated.
+- Stop during frame k of N:
+  - without Save, frame k completes, no frame k+1 is armed, and the run ends
+    once with `sigScanEnded`;
+  - with Save, the lapse's own cancel applies: frames 1 … k−1 are kept, the
+    current point is discarded, and the run ends once.
+- Found in passing, before relying on ScanLapse: `lapseTotal` is read with no
+  N ≥ 1 check, and N = 0 sends the first point as non-final, so the recording
+  waits for a run end that never comes until REC is pressed off (read, not
+  run). `recordScanSeries` validates N itself; the ScanLapse bug is worth its
+  own fix.
 
-Tests: exactly N NI-DAQ iterations and N recorded frames; one
-`sigScanEnded`; Stop mid-series → k frames, incomplete; Live disabled with T;
-Advanced's Repeat behaviour unchanged.
+Tests: without Save, exactly N NI-DAQ iterations and one `sigScanEnded`;
+with Save, N time partitions in one file; Stop mid-series in both; Live
+disabled with T; Advanced's Repeat behaviour unchanged.
 
 Separate decision: **mid-iteration Stop for NI-DAQ** (stop the AO/DO/counter
 tasks, finish detectors with `'abort'`, park the scanners). This benefits
@@ -750,10 +802,10 @@ A new `scanWidgetType` must be registered in all of these places:
 | Phase | Content | Done when |
 |---|---|---|
 | **P0** | Backend. `GalvoScanDesigner.scanSpeedRefusal` enforced inside `make_signal` (raises `ScanDesignRefusedError` with a fix hint). `ScanDesigner.estimateScanTime` (base returns `None`; Galvo implements §F4). An Advanced-controller helper that builds designer parameters once, for building, plotting and estimating. | Tests: refused above `vel_max`, accepted at or below it, stepped axes exempt, and the reason reaches the request through the Advanced controller. Estimate within 1 % or 2 ms of full builds for 1D, 2D, line steps, XZ, XYZ and a stepped fast axis. **Done** (`4c0c671b`). Existing scan tests pass. `advanced-scanning.rst` and the changelog updated. |
-| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. Also the small refactors they require in shared code: the continuation policy in `SuperScanController` / Advanced (D3), the power-route and power-applies hooks (D5), the state-refusal hook in `applyComponentState` (D4), `ScanFrame` and its handling in `ImageController` / `ImageWidget` (D1), and `RecordingController.recordScanOnce` (D2). | Each refactor keeps Advanced's behaviour (its existing tests unchanged and passing). The D1–D5 contract tests pass. You confirm D3's choice. |
+| **D** | The contracts in §6, with the tests each one names written first, failing, against stubs where the code does not exist yet. Also the small refactors they require in shared code: the continuation policy in `SuperScanController` / Advanced (D3), the power-route and power-applies hooks (D5), the state-refusal hook in `applyComponentState` (D4), `ScanFrame` and its handling in `ImageController` / `ImageWidget` (D1), and `RecordingController.recordScanSeries` (D2, D3). | Each refactor keeps Advanced's behaviour (its existing tests unchanged and passing). The D1–D5 contract tests pass. You confirm D3's choice. |
 | **P1** | `simple_scan.py` (with D4's fields), controller and panel without napari. D6 overview planning. New mock setup `galvo_apd_simple_mock_scan_setup.json`. Registration checklist (§7). | D4 executable-equality and refusal tests pass. D6 planning tests pass. The mock setup starts. The measured overview frame rate is shown on the mock. |
 | **P2** | The panel's own napari rectangle layer, drawn over the current detector's layer, converted with D1's geometry; the inverse display transform. | D1's tests pass, plus drawing is disabled on a layer without geometry. |
-| **P3** | Channel lanes, per-channel power (D5), PMT note, Z and T (D3), Save toggle (D2). | D2, D3 and D5 end-to-end tests on the mock setup: exactly N frames recorded, one run end, Stop mid-series, missing Recording, writer failure, double start, and each power route. |
+| **P3** | Channel lanes, per-channel power (D5), PMT note, Z and T (D3), Save toggle (D2). | D2, D3 and D5 end-to-end tests on the mock setup: N time partitions recorded, one run end, Stop mid-series with and without Save, missing Recording, writer failure, double start, and each power route. |
 | **P4** | `simple-point-scan.rst`, config-editor section, scripting API plus a tutorial script. Optional: a mock APD that images a synthetic cell sample from the galvo waveform, so overview → rectangle → acquisition can be demonstrated without hardware. | Sphinx `-W` build, tutorial runner, CI lanes. |
 | **P5** | Rig check on STED/confocal. | Estimated time vs measured time per frame; overview frame rate; rectangle lands on the right cells; channel separation on APDs. |
 
@@ -775,8 +827,8 @@ A new `scanWidgetType` must be registered in all of these places:
    threads) is not in the designer's estimate. D6 learns it from the measured
    frame period during Live; T estimates use the same measured gap (D3). P5
    records its size on the rig.
-4. **T execution (D3)** needs your confirmation: bounded iterations
-   (recommended) or one waveform.
+4. **T execution (D3)** needs your confirmation: bounded iterations without
+   Save, and a ScanLapse with interval 0 with Save.
 5. **Nyquist formula** (§5.6): still to review.
 6. **Name.** `SimplePointScan` sits next to the legacy `PointScan` panel. Its
    dock title will be "Point scan" with the mode segmented control. Rename
