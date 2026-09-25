@@ -70,7 +70,7 @@ jobs:
           if name != ns['__distname__']:
               sys.exit(f'built {name!r}, but imswitch.__distname__ is {ns["__distname__"]!r}')
           tag = os.environ['RELEASE_TAG']
-          if tag and tag.removeprefix('v') != version:
+          if tag and tag != f'v{version}':
               sys.exit(f'release tag {tag!r} does not match the package version {version!r}; '
                        'bump imswitch.__version__ or retag')
           print(f'{name} {version}' + (f' for release {tag}' if tag else ''))
