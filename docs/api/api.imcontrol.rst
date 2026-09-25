@@ -9,7 +9,35 @@ api.imcontrol
    .. method:: getDetectorNames() -> List[str]
 
       Returns the device names of all detectors. These device names can
-      be passed to other detector-related functions. 
+      be passed to other detector-related functions.
+
+   .. method:: getDetectorParameter(detectorName: str, parameterName: str) -> Any
+
+      Returns the value of the specified detector-specific parameter, in
+      the parameter's own units -- the value the Settings widget shows.
+      Parameter names and units differ from detector to detector;
+      getDetectorParameters lists them. Raises AttributeError for a name
+      the detector does not have.
+
+   .. method:: getDetectorParameters(detectorName: str) -> Dict[str, Dict[str, Any]]
+
+      Returns all detector-specific parameters of the specified detector
+      as {parameter name: {'value', 'units', 'editable', 'options'}}. 'units'
+      is None for a parameter that picks from a list of 'options', and
+      'options' is None for a numerical one. Only an editable parameter can
+      be changed with setDetectorParameter.
+
+      The exposure time, for example, is ``'exposure'`` in ms on the
+      simulated camera of the mock setups, ``'Exposure'`` in µs on a
+      Thorlabs camera and ``'Set exposure time'`` in s on a Hamamatsu
+      camera. To change a parameter and put it back afterwards::
+
+         before = api.imcontrol.getDetectorParameter(camera, 'exposure')
+         try:
+             api.imcontrol.setDetectorParameter(camera, 'exposure', 10)
+             ...
+         finally:
+             api.imcontrol.setDetectorParameter(camera, 'exposure', before)
 
    .. method:: getLaserNames() -> List[str]
 
