@@ -368,11 +368,15 @@ Overview always scans the two overview axes in 2D at the current Z.
 ### 5.5 Mapping the rectangle to scanner coordinates
 
 For a layer at scale `(s_y, s_x)` with the identity display transform, and the
-geometry `(c_x, c_y, N_x, N_y)` delivered with the image the layer is showing
+first-pixel centres `(x₀, y₀)` delivered with the image the layer is showing
 (D1):
 
-- `x = c_x − (N_x − 1)/2 · s_x + col_world`
-- `y = c_y − (N_y − 1)/2 · s_y + row_world`
+- `x = x₀ + col_world`
+- `y = y₀ + row_world`
+
+(`x₀ = c_x − (N_x − 1)/2 · s_x` only when the swept length is exactly
+`N_x · s_x`, which the Simple model guarantees; the geometry carries `x₀`
+itself so that nothing depends on it.)
 
 When the detector has a display rotation or flip, its inverse is applied first.
 This needs a new inverse function in `display_transform.py`, tested as a round
@@ -464,16 +468,53 @@ Verified:
   scale)` → `DetectorsManager` → `sigUpdateImage` → `ImageController.update` →
   `apply_display_transform` → `ImageWidget.setImage`.
 - `sigUpdateImage` has eight subscribers: Image, BeadRec, FLIMHist,
-  AlignAverage, AlignXY, FFT, EventTriggered and EtSnouty. Changing its
-  signature would touch all of them.
+  AlignAverage, AlignXY, FFT, EventTriggered and EtSnouty (plus one-shot
+  lambdas in SLMs and the binary-mask lease). Its argument list is pinned by
+  `communication_channel_signal_inventory.json`. Two relays take a defaulted
+  trailing parameter (`detectorName=` in `DetectorsManager.py:78`,
+  `captureGeneration=` in `EventTriggeredBaseController.py:759`), so adding an
+  argument would silently fill those instead of failing. Changing the
+  signature is therefore out.
+- `sigScanBuilt` fires even when the build then fails: the failure is raised
+  only after the emit returns (`NidaqManager.py:1405`).
+- For APD, PMT and Time Tagger, the emit and `layer.data = …` run in one
+  synchronous call on the GUI thread. The one queued path is `LVWorker`, when
+  something holds an EVENT_STREAM lease on a point detector. A frame that
+  carries its own geometry is correct on both paths; a manager attribute read
+  at apply time would race on the second.
+- **Same-shape reuse mixes two images.** If scan B has the same shape and
+  dtype as scan A, `initiateImage` neither reallocates nor clears `_image`
+  (`APDManager.py:775`, `PMTManager.py:699`). B's partial frames show B's
+  lines over A's remaining rows, drawn at B's scale. This is already a
+  display defect today, and with geometry attached it would be a false one.
+- **Fast-axis centring.** The fast axis sweeps `centre ± length / 2`, while
+  `N = round(length / step)`. The `(N − 1)/2` centring used in §5.5 is exact
+  only when `length == N · step`.
+- `_recreateLiveLayer` (called when the number of dimensions changes)
+  copies name, colormap, contrast, scale and visibility, but not `metadata`.
+- Every detector has its own always-visible `Live: <name>` layer.
+  `setCurrentDetector` changes neither napari's selection nor visibility.
+- The display transform is re-read per frame from the setup file. Nothing
+  changes it at run time, and there is no inverse.
 
 Contract:
 
 1. **Identity.** Before arming, the controller puts a `frame_geometry` into
    the `scanInfoDict` the detectors receive. It holds:
    - the run and iteration identity;
-   - per scanned axis: device name, centre, step and pixel count, in image
-     axis order.
+   - per scanned axis: device name, step, pixel count and the **position of
+     the first pixel's centre**, in image axis order.
+
+   The first-pixel position is computed with the designer's own conventions:
+   `axis_pixel_positions` for stepped axes, and `centre − length/2 + step/2`
+   for the swept fast axis. The Simple model always sends
+   `length = N · step`, so the two conventions agree. A test compares the
+   recorded positions with the positions the generated waveform actually
+   visits.
+
+   Managers copy it per generation at build time. The same dict object is
+   reused across repeat frames, and the coordinator strips its own keys at
+   completion.
 2. **Published with the pixels.** Scan-driven managers (APD, PMT, Time
    Tagger) publish each frame of that iteration, partial or final, as a
    `ScanFrame`: an `ndarray` subclass with a read-only `geometry` attribute.
@@ -487,14 +528,21 @@ Contract:
 3. **Applied atomically.** `ImageController.update` reads the geometry
    **before** `apply_display_transform`. `ImageWidget.setImage` stores
    `(geometry, display transform)` in the layer's `metadata` in the same call
-   that sets `layer.data`. The geometry on a layer is therefore always that of
+   that sets `layer.data`, on both of its branches, including after
+   `_recreateLiveLayer`. The geometry on a layer is therefore always that of
    the pixels it shows.
-4. **Nothing published, nothing changed.** A build that fails, is refused or
+4. **No mixed frames.** A new generation clears the display buffer even when
+   the shape is unchanged, so no partial frame of scan B shows pixels of scan
+   A under B's geometry.
+5. **Nothing published, nothing changed.** A build that fails, is refused or
    is aborted before its first frame leaves the old image and its geometry in
    place, consistent by construction.
-5. **Which layer.** The rectangle is converted with the geometry of the layer
-   it is drawn over: the current detector's layer.
-   - Switching detectors re-projects the rectangle with the new layer's
+6. **Which layer.** Every detector's layer is visible at once, and "current
+   detector" changes neither napari's selection nor visibility. So the panel
+   names its **reference detector** explicitly: a small choice in the Region
+   card, defaulting to the first scan-driven detector of the scan. The
+   rectangle is converted with that layer's geometry.
+   - Changing the reference re-projects the rectangle with the new layer's
      geometry.
    - A layer without geometry (a camera, or a detector that has not scanned
      yet) disables drawing, and says why.
@@ -507,6 +555,12 @@ Tests:
 - two detectors with different geometries (one never scanned) and switching
   between them;
 - partial frames carry the new geometry;
+- a same-shape scan after another shows no pixels of the first under the
+  second's geometry;
+- the geometry survives a 2D ↔ 3D layer recreation;
+- recorded first-pixel positions match the waveform, for the swept fast
+  axis and for stepped axes;
+- an EVENT_STREAM-leased (queued) frame carries its own geometry;
 - round trips under every display rotation and flip;
 - a derived array has no geometry.
 
