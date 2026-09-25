@@ -2,28 +2,54 @@
 Positioners — reference
 ************************
 
-This page documents every ``PositionerManager`` implementation in
-ImSwitch.  For each manager you get the setup-file JSON it expects,
+This page documents the ``PositionerManager`` implementations in
+ImSwitch2.  For each manager you get the setup-file JSON it expects,
 field-by-field, plus any required low-level managers and vendor
-libraries.
+libraries.  Four managers have no card here yet:
+``ESP32StageManager``, ``GRBLStageManager``, ``SerialDacZManager`` and
+``TriggerScopePositionerManager``.
 
 For the manager-writing-side perspective see
-:doc:`/adding-device-support`; for end-to-end recipes see the
-:doc:`how-to guides </how-to/wire-teensy>`.
+:doc:`/adding-device-support`; to wrap a driver from another project see
+:doc:`/how-to/port-from-third-party`.
+
+**Vendor libraries.**  The ``hardware`` extra (``pip install -e
+".[hardware]"``, see :doc:`../installation`) installs ``pylablib``
+(Kinesis), ``nidaqmx`` and ``pyvisa`` / ``pyvisa-py`` (RS-232 devices).
+``thorlabs_apt_device``, which ``BSC203StageManager`` and
+``KDC101PositionerManager`` need, is in no extra: install it with ``pip
+install thorlabs_apt_device``.  The PI wrapper is bundled; the SmarACT
+``MCSControl`` library comes from the vendor's installer.
 
 
 How positioners are configured
 ==============================
 
 Positioners live under the top-level ``"positioners"`` dict in your
-setup JSON.  Each entry extends the generic
-:class:`~imswitch.imcontrol.model.SetupInfo.DeviceInfo` shape with the
-:class:`~imswitch.imcontrol.model.SetupInfo.PositionerInfo` fields
+setup JSON.  Each entry extends the generic ``DeviceInfo`` shape with
+the ``PositionerInfo`` fields (both in ``imswitch.imcontrol.model.SetupInfo``)
 ``axes`` (required), ``isPositiveDirection``, ``forPositioning``,
-``forScanning``, ``resetOnClose``, ``joystick`` and ``liveUpdate``.
+``forScanning``, ``resetOnClose``, ``joystick``, ``liveUpdate``, ``hide``,
+``shortcutModifier`` and ``physicalActuator``.
 The abstract base requires that at least one of ``forPositioning`` or
 ``forScanning`` be ``true``; otherwise construction raises
-``ValueError``.
+``ValueError``.  Some of the fields need a word:
+
+* ``resetOnClose`` defaults to ``true``: on shutdown every axis of the
+  positioner is driven to position 0.  Set it to ``false`` for stages
+  where that is unwanted, such as motorised XY stages and focus drives.
+* ``hide`` keeps the positioner out of the manual Positioner widget.
+* ``shortcutModifier`` picks the keyboard jog set in the Positioner
+  widget: ``"ctrl"`` (Ctrl+Arrow) or ``"ctrl-shift"`` (Ctrl+Shift+Arrow).
+  With ``null`` (the default) the first positioner that declares an axis
+  claims Ctrl+Arrow.
+* ``physicalActuator`` declares that two entries drive one piece of
+  hardware, such as a piezo reached both as an analog scanner and over
+  RS-232.  Entries with the same non-null value are treated as one device
+  (the focus lock uses this to avoid driving it during a scan).  Left
+  unset, entries that share an axis name are assumed to be the same
+  device, so give two same-axis stages different values to declare them
+  independent.
 
 .. code-block:: json
 
@@ -53,8 +79,8 @@ Piezoconcept Z-piezo over RS-232 using the identical command set
 only behavioural differences in the source are at construction time:
 ``PiezoconceptZManager2`` reads an additional ``range_um``
 ``managerProperty`` and centers the stage to ``range_um // 2`` on
-startup; ``PiezoconceptZManager`` does not.  Its docstring describes
-it as "Adapted to new Firmware as of 2026."
+startup; ``PiezoconceptZManager`` does not.  ``PiezoconceptZManager2``'s
+docstring describes it as "Adapted to new Firmware as of 2026."
 
 
 BSC203StageManager
@@ -110,7 +136,7 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
 
 **Movement model**
 
-Both absolute (:meth:`setPosition`) and relative (:meth:`move`) moves are
+Both absolute (``setPosition``) and relative (``move``) moves are
 issued as a bounded **jog**: a positive step size of ``|target - current|``
 encoder counts plus a direction flag.  ``move_absolute`` / ``move_relative``
 are **never** used.
@@ -146,9 +172,9 @@ are matched by string against ``"X"``, ``"Y"``, ``"Z"``.
 
 **Jog API**
 
-Not supported by the abstract base.  The class does expose a
-non-standard ``jog(sign, axis)`` helper used internally to implement
-relative moves, but no ``jog_start`` / ``jog_stop`` methods.
+Not supported: no ``jog_start`` / ``jog_stop``.  Absolute and relative
+moves both go through the private ``_jogToSteps(targetSteps, channel,
+axis)`` described above; ``stopAxis(axis)`` and ``stopAll()`` are public.
 
 **Low-level dependencies**
 
@@ -166,7 +192,7 @@ mock fallback — calls into the manager will fail if ``self.dev`` is
 
 **Source**
 
-`BSC203StageManager.py <../../imswitch/imcontrol/model/managers/positioners/BSC203StageManager.py>`_
+`BSC203StageManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/BSC203StageManager.py>`_
 
 
 JenaPiezoZManager
@@ -256,7 +282,7 @@ RS-232 manager.  No mock fallback in this manager.
 
 **Source**
 
-`JenaPiezoZManager.py <../../imswitch/imcontrol/model/managers/positioners/JenaPiezoZManager.py>`_
+`JenaPiezoZManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/JenaPiezoZManager.py>`_
 
 
 KDC101PositionerManager
@@ -335,6 +361,12 @@ rotator.
   when true, the Positioner controller periodically refreshes the
   displayed position.
 
+**Jog API**
+
+Supported.  ``jog_start(axis, sign)`` starts a continuous move in the
+direction of ``sign``; ``jog_stop(axis)`` stops it and refreshes the
+cached position.
+
 **Vendor library**
 
 ``thorlabs_apt_device.devices.kdc101.KDC101`` from
@@ -343,13 +375,19 @@ the manager logs an error and leaves the device disabled.
 
 **Source**
 
-`KDC101PositionerManager.py <../../imswitch/imcontrol/model/managers/positioners/KDC101PositionerManager.py>`_
+`KDC101PositionerManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/KDC101PositionerManager.py>`_
 
 
 KinesisStageManager
 ===================
 
 Thorlabs MLS203 two-axis motorized stage driven via the Kinesis stack.
+
+The ``imswitch-device-thorlabs`` example plugin ships this manager too, as
+``thorlabs.kinesis-stage`` with the alias ``KinesisStageManager``.  When
+that plugin is installed, a setup naming ``KinesisStageManager`` loads the
+plugin's class instead of this one, and a warning in the log says so; see
+:doc:`plugins`.
 
 **Setup JSON**
 
@@ -447,7 +485,7 @@ On any exception the manager logs a warning and substitutes
 
 **Source**
 
-`KinesisStageManager.py <../../imswitch/imcontrol/model/managers/positioners/KinesisStageManager.py>`_
+`KinesisStageManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/KinesisStageManager.py>`_
 
 
 LeicaDMIZPositionerManager
@@ -536,7 +574,7 @@ drive to zero.
 
 **Source**
 
-`LeicaDMIZPositionerManager.py <../../imswitch/imcontrol/model/managers/positioners/LeicaDMIZPositionerManager.py>`_
+`LeicaDMIZPositionerManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/LeicaDMIZPositionerManager.py>`_
 
 
 MHXYStageManager
@@ -601,7 +639,7 @@ None — plain-text protocol over RS-232.
 
 **Source**
 
-`MHXYStageManager.py <../../imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py>`_
+`MHXYStageManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py>`_
 
 
 MockPositionerManager
@@ -650,7 +688,7 @@ None.
 
 **Source**
 
-`MockPositionerManager.py <../../imswitch/imcontrol/model/managers/positioners/MockPositionerManager.py>`_
+`MockPositionerManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/MockPositionerManager.py>`_
 
 
 NidaqPositionerManager
@@ -697,7 +735,10 @@ Analog-controlled positioner driven via NI-DAQ analog out.
      - float
      - Maximum allowed analog voltage.
 
-All three are **required** (subscripted, no defaults).
+All three are **required** (subscripted, no defaults).  The Galvo and
+Beta scan designers also read ``minVolt`` / ``maxVolt`` of each scanned
+positioner and refuse a scan whose signal would leave that range
+(*Signal voltages outside scanner ranges*).
 
 **PositionerInfo fields used**
 
@@ -725,7 +766,7 @@ None directly; all hardware access goes through the NI-DAQ manager.
 
 **Source**
 
-`NidaqPositionerManager.py <../../imswitch/imcontrol/model/managers/positioners/NidaqPositionerManager.py>`_
+`NidaqPositionerManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/NidaqPositionerManager.py>`_
 
 
 PIStageManager
@@ -805,15 +846,15 @@ None.
 **Vendor library**
 
 ``imswitch.imcontrol.model.interfaces.pipython.pidevice.GCSDevice``
-and ``pidevice.gcs2.gcs2pitools`` (ImSwitch-bundled PI Python
-wrapper), imported at module top.  No mock fallback — if USB
+and ``pidevice.gcs2.gcs2pitools`` (PI Python wrapper bundled with
+ImSwitch2), imported at module top.  No mock fallback — if USB
 enumeration or connection fails the manager logs a warning and sets
 ``self.device = None``; subsequent ``move`` / ``setPosition`` calls
 return without doing anything.
 
 **Source**
 
-`PIStageManager.py <../../imswitch/imcontrol/model/managers/positioners/PIStageManager.py>`_
+`PIStageManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/PIStageManager.py>`_
 
 
 PiezoconceptZManager
@@ -867,7 +908,8 @@ Not supported.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — used for all device I/O via
-  ``query()``.
+  ``query()``.  If the lookup fails, the manager logs a warning and
+  continues on a ``MockRS232Driver``.
 
 **Vendor library**
 
@@ -876,7 +918,7 @@ RS-232.
 
 **Source**
 
-`PiezoconceptZManager.py <../../imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py>`_
+`PiezoconceptZManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py>`_
 
 
 PiezoconceptZManager2
@@ -939,7 +981,8 @@ Not supported.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — used for all device I/O via
-  ``query()``.
+  ``query()``.  If the lookup fails, the manager logs a warning and
+  continues on a ``MockRS232Driver``.
 
 **Vendor library**
 
@@ -947,7 +990,7 @@ None — plain-text protocol over RS-232.
 
 **Source**
 
-`PiezoconceptZManager2.py <../../imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager2.py>`_
+`PiezoconceptZManager2.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager2.py>`_
 
 
 SQUIDStageManager
@@ -1016,7 +1059,7 @@ manager.
 
 **Source**
 
-`SQUIDStageManager.py <../../imswitch/imcontrol/model/managers/positioners/SQUIDStageManager.py>`_
+`SQUIDStageManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/SQUIDStageManager.py>`_
 
 
 SmarACTPositionerManager
@@ -1090,7 +1133,10 @@ None.
 ``imswitch.imcontrol.model.interfaces.SmarACT`` (ctypes wrapper
 around the vendor MCS DLL), imported at module top inside
 ``try/except ImportError: raise`` — meaning the manager module
-itself fails to import if the wrapper is unavailable.  No mock
+itself fails to import if the wrapper is unavailable.  The wrapper calls
+``ctypes.cdll.LoadLibrary("MCSControl")`` as it is imported; when the
+library is not found that raises ``OSError``, which the manager loader
+does not catch, so a setup naming this manager fails to start.  No mock
 fallback.
 
 **Gotchas**
@@ -1100,4 +1146,4 @@ when resetOnClose is set to True."*
 
 **Source**
 
-`SmarACTPositionerManager.py <../../imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py>`_
+`SmarACTPositionerManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py>`_

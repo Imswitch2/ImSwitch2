@@ -2,14 +2,26 @@
 Detectors — reference
 ***********************
 
-This page documents every ``DetectorManager`` implementation in
-ImSwitch.  For each manager you get the setup-file JSON it expects,
+This page documents every ``DetectorManager`` implementation that ships
+with ImSwitch2.  For each manager you get the setup-file JSON it expects,
 field-by-field, plus any required low-level managers and vendor
-libraries.
+libraries.  Detectors that come from plugin packages — the Zurich
+Instruments lock-in (``zhinst.lockin-demod``), the Thorlabs TSI camera
+(``thorlabs.tsi-camera``) and The Imaging Source IC4 camera
+(``tis.camera-ic4``) — are described in :doc:`plugins`.
 
 For the manager-writing-side perspective see
-:doc:`/adding-device-support`; for end-to-end recipes see the
-:doc:`how-to guides </how-to/wire-teensy>`.
+:doc:`/adding-device-support`; to wrap a driver from another project see
+:doc:`/how-to/port-from-third-party`.
+
+**Vendor libraries.**  The ``hardware`` extra (``pip install -e
+".[hardware]"``, see :doc:`../installation`) installs ``nidaqmx``,
+``pylablib``, ``pyvisa`` / ``pyvisa-py`` and ``microscope``.  No camera SDK
+is in it: ``pyvcam`` (Photometrics), the Swabian ``TimeTagger`` package,
+``thorlabs_tsi_sdk`` and the Hamamatsu DCAM and TIS drivers come from the
+vendors' installers (see *Vendor SDKs (not installed by pip)* in
+:doc:`../installation`).  What a manager does when its library is missing
+is given in its **Vendor library** section.
 
 
 How detectors are configured
@@ -17,7 +29,7 @@ How detectors are configured
 
 Detectors live under the top-level ``"detectors"`` dict in your setup
 JSON.  Each entry uses the
-:class:`~imswitch.imcontrol.model.SetupInfo.DetectorInfo` shape, which
+``DetectorInfo`` shape (``imswitch.imcontrol.model.SetupInfo``), which
 extends the generic ``DeviceInfo`` with two role flags.  Across every
 manager in this category the consumed ``DetectorInfo`` fields are:
 
@@ -25,8 +37,9 @@ manager in this category the consumed ``DetectorInfo`` fields are:
 * ``managerProperties`` — the per-manager kwargs documented below.
 * ``forAcquisition`` (default ``false``) — read by the base
   ``DetectorManager`` and used by controllers (Image, Recording,
-  Settings, Tiling, EtMonalisa, EtSTED, BFTimelapse) to decide whether
-  this detector participates in normal acquisition / recording.
+  Settings, View, Tiling, BFTimelapse and the event-triggered EtMonalisa,
+  EtSTED and EtSnouty) to decide whether this detector participates in
+  normal acquisition / recording.
 * ``forFocusLock`` (default ``false``) — read by the base
   ``DetectorManager``; flags the detector as the focus-lock camera.
 
@@ -66,9 +79,13 @@ derive their pixel size from the scan step instead.
 
     "managerProperties": { "cameraPixelSizeUm": 0.082 }
 
-Omitting the key falls back to 0.15 µm.  A misspelled key
+Omitting the key falls back to 0.15 µm, and a warning at startup says
+that this placeholder will go into recordings.  A misspelled key
 (``camerapixelsizeum``) or an unparseable value (``"0,082"`` — a decimal
-comma) also falls back to 0.15 µm, but logs a warning naming the mistake.
+comma) also falls back to 0.15 µm, with a warning naming the mistake.  A
+read-only ``Camera pixel size source`` parameter next to the pixel size
+records where the value came from: ``setup file``, ``assumed default``, or
+``user`` once the value has been edited at runtime.
 
 **The setup file wins over saved widget state.**  When
 ``cameraPixelSizeUm`` is set, the parameter is treated as instrument
@@ -157,8 +174,8 @@ When the Advanced scanning widget runs a scan with more than one line step,
 each physical line is scanned once per step and the manager keeps the steps
 as a separate axis: the frame handed to the recording is
 ``(1, S, Ny, Nx)`` — saved as ``(T, C, Y, X)``, one channel per line step.
-``PMTManager`` instead sums the line steps into a single 2D image before
-publishing.
+``PMTManager`` records line steps the same way; only its live view sums
+them.
 
 **Vendor library**
 
@@ -168,7 +185,7 @@ top for the debug-plot path.
 
 **Source**
 
-`APDManager.py <../../imswitch/imcontrol/model/managers/detectors/APDManager.py>`_
+`APDManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/APDManager.py>`_
 
 
 AVManager
@@ -227,7 +244,7 @@ is the only camera this manager can construct.
 
 **Source**
 
-`AVManager.py <../../imswitch/imcontrol/model/managers/detectors/AVManager.py>`_
+`AVManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/AVManager.py>`_
 
 
 HamamatsuManager
@@ -284,7 +301,7 @@ substitutes ``MockHamamatsu`` from
 
 **Source**
 
-`HamamatsuManager.py <../../imswitch/imcontrol/model/managers/detectors/HamamatsuManager.py>`_
+`HamamatsuManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/HamamatsuManager.py>`_
 
 
 PMTManager
@@ -376,9 +393,11 @@ card.  Image is built during a scan driven by ``NidaqManager``.
 
 **Line-step scans**
 
-Unlike ``APDManager``, which keeps the line steps as separate channels, this
-manager **sums** them into one 2D image before publishing, so a multi-line-step
-scan yields a single ``(1, Ny, Nx)`` frame.
+As with ``APDManager``, the line steps stay a separate axis in what the
+manager hands to a recording: the raw frame is the unsummed
+``(1, S, Ny, Nx)`` volume, published once the scan is complete and saved
+with one channel per line step.  Only the live view differs: it shows the
+steps **summed** into one 2D image.
 
 **Vendor library**
 
@@ -388,7 +407,7 @@ top for the debug-plot path.
 
 **Source**
 
-`PMTManager.py <../../imswitch/imcontrol/model/managers/detectors/PMTManager.py>`_
+`PMTManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/PMTManager.py>`_
 
 
 PhotometricsManager
@@ -425,6 +444,7 @@ Photometrics cameras driven via the ``pyvcam`` (PVCAM) SDK.
    * - ``cameraListIndex``
      - int
      - Index of the camera in the PVCAM enumeration (read but not used to address the device — the manager opens the first detected camera).
+       The string ``"mock"`` selects ``MockPhotometrics`` without trying the SDK.
    * - ``Photometrics``
      - dict (optional)
      - Dictionary of detector-parameter names (e.g. ``"Set exposure time"``) → values applied via ``setParameter`` after the camera is opened.  If the key is absent no defaults are pushed.
@@ -440,12 +460,14 @@ None.
 **Vendor library**
 
 ``pyvcam.pvc`` and ``pyvcam.camera.Camera`` are lazy-imported inside
-``_getCameraObj``.  On failure the manager substitutes ``MockHamamatsu``
-from ``imswitch.imcontrol.model.interfaces.hamamatsu_mock``.
+``_getCameraObj``.  On failure the manager logs a warning and substitutes
+``MockPhotometrics`` from
+``imswitch.imcontrol.model.interfaces.photometrics_mock``;
+``"cameraListIndex": "mock"`` selects that mock directly.
 
 **Source**
 
-`PhotometricsManager.py <../../imswitch/imcontrol/model/managers/detectors/PhotometricsManager.py>`_
+`PhotometricsManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/PhotometricsManager.py>`_
 
 
 PiCamManager
@@ -506,7 +528,7 @@ substitutes ``MockCameraTIS`` from
 
 **Source**
 
-`PiCamManager.py <../../imswitch/imcontrol/model/managers/detectors/PiCamManager.py>`_
+`PiCamManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/PiCamManager.py>`_
 
 
 SwabianTimeTaggerManager
@@ -686,23 +708,29 @@ multidimensional output support is implemented.
 
 The Swabian ``TimeTagger`` Python package is imported at module top
 inside a ``try/except ImportError`` (``TimeTagger.Flim`` and
-``TimeTagger.createTimeTagger`` are pulled in the same block).  If the
-import fails ``_TIMETAGGER_AVAILABLE`` is set to ``False`` and the
-manager logs an error and refuses to drive scans.  If the import
-succeeds but ``createTimeTagger()`` raises at runtime, ``_isMock`` is
-set to ``True`` and the manager runs in a degraded "no FLIM data"
-mode.  There is no separate mock-camera class — this manager has no
-vendor wrapper layer.
+``TimeTagger.createTimeTagger`` are pulled in the same block), so the
+manager is still constructed without it and logs an error.  There is no
+mock.  With ``enabled: true``, preparing a scan raises ``RuntimeError``
+when the library is missing or when ``createTimeTagger()`` fails; the
+failure is reported to the NI-DAQ manager and the whole scan is rolled
+back before it starts.  To keep the detector in a setup that has no FLIM
+hardware, set ``"enabled": false``.
 
 **Source**
 
-`SwabianTimeTaggerManager.py <../../imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py>`_
+`SwabianTimeTaggerManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py>`_
 
 
 ThorCamTSIManager
 =================
 
 Thorlabs Scientific Cameras (TSI SDK) — Zelux, Kiralux, Quantalux.
+
+The ``imswitch-device-thorlabs`` example plugin ships this manager too, as
+``thorlabs.tsi-camera`` with the alias ``ThorCamTSIManager``.  When that
+plugin is installed, a setup naming ``ThorCamTSIManager`` loads the
+plugin's class instead of this one, and a warning in the log says so; see
+:doc:`plugins`.
 
 **Setup JSON**
 
@@ -803,14 +831,21 @@ same interface module.
 
 **Source**
 
-`ThorCamTSIManager.py <../../imswitch/imcontrol/model/managers/detectors/ThorCamTSIManager.py>`_
+`ThorCamTSIManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/ThorCamTSIManager.py>`_
 
 
 TISManager
 ==========
 
-The Imaging Source (TIS) cameras driven via the bundled TIS interface
-wrapper.
+The Imaging Source (TIS) cameras through IC Imaging Control 3.  The
+bundled ``pyicic`` wrapper loads the TISGrabber C DLL
+(``tisgrabber_x64.dll``) with ``ctypes.windll``, so the real camera works
+on Windows only; elsewhere the manager falls back to the mock.  Installing
+the driver and the DLL is described in :doc:`../TISCamera`.
+
+For IC Imaging Control 4 (Linux and Windows) there is a separate plugin
+manager, ``tis.camera-ic4``; see :doc:`plugins`.  It has a different id, so
+setups naming ``TISManager`` keep using this manager.
 
 **Setup JSON**
 
@@ -854,11 +889,12 @@ None.
 
 **Vendor library**
 
-``imswitch.imcontrol.model.interfaces.tiscamera.CameraTIS`` is
-lazy-imported inside ``_getTISObj``.  On failure the manager substitutes
+``imswitch.imcontrol.model.interfaces.tiscamera.CameraTIS`` (built on
+the bundled ``pyicic`` wrapper) is lazy-imported inside ``_getTISObj``.
+On failure the manager substitutes
 ``MockCameraTIS`` from
 ``imswitch.imcontrol.model.interfaces.tiscamera_mock``.
 
 **Source**
 
-`TISManager.py <../../imswitch/imcontrol/model/managers/detectors/TISManager.py>`_
+`TISManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/TISManager.py>`_

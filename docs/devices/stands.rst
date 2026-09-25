@@ -15,8 +15,8 @@ For the complete top-level setup shape, see
 How stands are configured
 =========================
 
-``microscopeStand`` deserialises into
-:class:`~imswitch.imcontrol.model.SetupInfo.MicroscopeStandInfo`.  Its
+``microscopeStand`` deserialises into ``MicroscopeStandInfo``
+(``imswitch.imcontrol.model.SetupInfo``).  Its
 top-level ``rs232device`` field names the RS-232 connection used by the stand
 manager; manager-specific fields stay under ``managerProperties``.
 
@@ -27,6 +27,28 @@ manager; manager-specific fields stay under ``managerProperties``.
         "rs232device": "LeicaStand",
         "managerProperties": { "...": "..." }
     }
+
+``managerName`` is resolved like the other device kinds: first through the
+device plugin registry (see :doc:`plugins`), then as a module of the same
+name in ``imswitch.imcontrol.model.managers.stands``.  When neither finds
+it, the loader tries a mock counterpart before giving up: the registry
+name ``<managerName>_mock``, then a module ``<managerName>_mock`` with a
+class ``Mock<managerName>``.  It logs a warning when it loads one.  In
+the current tree only the legacy name ``LeicaDMIManager`` has such a
+counterpart, so a setup naming it loads the mock stand described below.
+
+
+Mock stand
+==========
+
+``LeicaDMIStandMockManager`` is a built-in stand for setups without Leica
+hardware; the config editor offers it as the default ``managerName`` for a
+new ``microscopeStand`` section.  It is also registered under the aliases
+``LeicaDMIManager_mock``, ``MockLeicaDMIManager`` and
+``builtin.leica-dmi-stand-mock``.  It reads no ``managerProperties``.  It
+writes plain numeric commands to the ``rs232devices`` entry that
+``rs232device`` names; when that entry does not exist it logs an error
+and uses an in-process mock port instead.
 
 
 LeicaDMIStandManager
@@ -99,4 +121,4 @@ connection.
 
 **Source**
 
-`LeicaDMIStandManager.py <../../imswitch/imcontrol/model/managers/stands/LeicaDMIStandManager.py>`_
+`LeicaDMIStandManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/stands/LeicaDMIStandManager.py>`_

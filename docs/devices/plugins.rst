@@ -4,11 +4,12 @@ Device plugins
 
 ImSwitch2 can load device managers from **external plugin packages**. A plugin
 is an ordinary Python package that advertises one or more device managers
-through package metadata and a JSON manifest. ImSwitch discovers installed
-plugins, and imports a plugin's manager code only when a configured device
-actually selects it.
+through package metadata and a JSON manifest. ImSwitch2 discovers installed
+plugins at startup and imports a plugin's manager code only when a configured
+device actually selects it. Reading the manifest does import the plugin's
+top-level package (its ``__init__``), so keep vendor SDK imports out of it.
 
-This lets new device support live and evolve **outside** the ImSwitch core
+This lets new device support live and evolve **outside** the ImSwitch2 core
 repository, while existing in-tree managers and setup files keep working
 unchanged.
 
@@ -20,7 +21,7 @@ unchanged.
 How resolution works
 ====================
 
-When a setup file declares a device, ImSwitch resolves its ``managerName`` to a
+When a setup file declares a device, ImSwitch2 resolves its ``managerName`` to a
 manager class in this order:
 
 1. The **device plugin registry** — built-in managers plus contributions
@@ -31,19 +32,21 @@ manager class in this order:
    ``imswitch.imcontrol.model.managers`` — so existing setup files that name an
    in-tree manager class continue to work.
 
-If neither resolves a registry-backed device kind, ImSwitch raises an actionable
+If neither resolves a registry-backed device kind, ImSwitch2 raises an actionable
 error listing the installed managers for that kind.
 
 The seven device kinds loaded through ``MultiManager`` are
 ``detector``, ``laser``, ``positioner``, ``rotator``, ``rs232``,
-``flip_mirror`` and ``slm``. (``stand`` and ``pulse_generator`` use bespoke
-loaders and are not plugin-resolved yet.)
+``flip_mirror`` and ``slm``. ``stand`` (the ``microscopeStand`` section) has a
+loader of its own that resolves through the registry in the same order; see
+:doc:`stands`. ``pulse_generator`` is not plugin-resolved yet: a manifest that
+declares that kind is rejected.
 
 
 Using an installed plugin
 =========================
 
-Install the plugin into the same Python environment as ImSwitch, then reference
+Install the plugin into the same Python environment as ImSwitch2, then reference
 its manager ``id`` in your setup file exactly like a built-in manager:
 
 .. code-block:: json
@@ -70,7 +73,7 @@ file against them:
 
 .. code-block:: bash
 
-   # List every registered manager (built-ins + installed plugins)
+   # List the registered managers (registry built-ins + installed plugins)
    python -m imswitch.imcontrol.model.plugins list
    python -m imswitch.imcontrol.model.plugins list --kind detector
 
@@ -80,6 +83,11 @@ file against them:
    # Check that every device in a setup file resolves, and (when a plugin
    # ships a schema) validate its managerProperties
    python -m imswitch.imcontrol.model.plugins validate-setup my_setup.json
+
+``list`` shows registry entries only: the few built-in contributions in
+``imswitch/imcontrol/model/plugins/builtins.py`` and the installed plugins.
+The other in-tree managers resolve through the legacy import path and do not
+appear in it.
 
 ``validate-setup`` never imports hardware: it resolves names through the
 registry and verifies legacy modules exist via ``importlib.util.find_spec``.
@@ -103,9 +111,15 @@ from deep internal ``imswitch.imcontrol...`` paths:
    )
 
 A manager subclasses the matching base class and implements its abstract
-methods. ImSwitch constructs managers as
+methods. ImSwitch2 constructs managers as
 ``ManagerClass(deviceInfo, name, **lowLevelManagers)`` — the same contract as
-in-tree managers (see :doc:`../adding-device-support`).
+in-tree managers (see :doc:`../adding-device-support`). A stand manager is
+constructed without the name, as ``ManagerClass(deviceInfo, **lowLevelManagers)``.
+
+``imswitch.pluginapi`` has base classes for detectors, lasers, positioners and
+rotators only. There is none yet for the ``rs232``, ``flip_mirror``, ``slm``
+and ``stand`` kinds; a plugin for one of those follows the shape of the
+in-tree managers of that kind.
 
 Manifest
 --------
@@ -161,7 +175,7 @@ Generating the managerProperties schema
 You do not have to write ``manager_properties_schema`` by hand. The same
 extractor that produces the core managers' schemas
 (``imswitch/imcontrol/model/configeditor/schemas/``) runs over an installed
-plugin, from an ImSwitch checkout:
+plugin, from an ImSwitch2 checkout:
 
 .. code-block:: bash
 
@@ -205,26 +219,37 @@ Point each contribution at its file and ship the directory as package data:
    [tool.setuptools.package-data]
    imswitch_my_plugin = ["imswitch.json", "schemas/**/*.json", "setup_templates/*.json"]
 
-ImSwitch then validates setup files against it (``validate-setup``) and the
+ImSwitch2 then validates setup files against it (``validate-setup``) and the
 config editor shows a typed field per property, without a hand-written
 template. Where the code cannot prove a constraint you know (an accepted
 set of values, a numeric range), put a hand-written
 ``schemas/overrides/<id>.json`` beside the generated files; it is merged
-last and never overwritten. See
-``imswitch/imcontrol/model/configeditor/schemas/overrides/README.md`` for
-the format, and ``docs/design/plans/config-editor-schema-extraction.md``
-for the extraction rules and what they can and cannot see (a dict handed
-whole to a vendor driver is an open pass-through, a key computed at runtime
-is reported as an unresolved read rather than guessed).
+last and never overwritten. The format is described in
+``imswitch/imcontrol/model/configeditor/schemas/overrides/README.md`` in the
+repository. The extraction rules, and what they can and cannot see, are in
+the design note ``docs/design/plans/config-editor-schema-extraction.md``,
+which is a working note in the repository rather than part of this
+documentation. In short: a dict handed whole to a vendor driver is an open
+pass-through, and a key computed at runtime is reported as an unresolved read
+rather than guessed.
 
 Mock selection
 --------------
 
-ImSwitch never substitutes a mock silently. A plugin may declare
-``mock_python_name``; the mock is loaded only when mock selection is explicit
-(a global mock/dev mode, or a per-device ``managerProperties.useMockOnFailure``
-that the manager itself honors). For safety-critical devices, prefer an explicit
-opt-in over silent fallback.
+ImSwitch2 has no global mock mode, and the registry never loads a
+contribution's ``mock_python_name``: the field is recorded (``inspect`` shows
+it) but not used when a device is loaded. Whether a device falls back to a
+mock is decided by each manager, and several do so by default. The in-tree
+``AAAOTFLaserManager``, ``Cobolt0601NewLaserManager`` and ``MPBLaserManager``,
+and the Zurich Instruments plugin's lock-in detector, read a
+``useMockOnFailure`` property that defaults to ``true``; most camera managers
+substitute a mock camera whenever the SDK or the camera cannot be opened. In
+each case the fallback is logged as a warning.
+
+A plugin should make its choice visible in the same way: a manager property
+such as ``useMockOnFailure`` or ``useMock``, and a warning when the mock is
+used. For a safety-critical device, default to failing at startup rather than
+continuing on a mock.
 
 
 Examples and template
@@ -232,7 +257,9 @@ Examples and template
 
 * **Plugin template** — a minimal, hardware-free demo detector and laser, with a
   manifest, schema, setup templates, tests and CI:
-  ``imswitch-plugin-template`` (a standalone, copy-to-start repository).
+  ``imswitch-plugin-template`` (a standalone, copy-to-start repository). It is
+  a private repository of the Imswitch2 organisation for now, so it is not yet
+  available to outside plugin authors.
 * **First real plugin** — a Zurich Instruments lock-in detector, bundled in this
   repository under ``examples/plugins/imswitch-zhinst-devices/``. It exercises
   optional hardware extras (``zhinst-toolkit``), lazy hardware imports, a mock
@@ -244,10 +271,20 @@ Examples and template
   (``ThorCamTSIManager``, detector) and the Kinesis MLS203 XY stage
   (``KinesisStageManager``, positioner) — showing that a single plugin can
   contribute managers across kinds. During the transition the in-tree copies
-  stay; the install hints become active once they are removed.
+  also stay. They are not registry built-ins, so once the plugin is installed
+  its aliases take precedence: a setup naming ``ThorCamTSIManager`` or
+  ``KinesisStageManager`` loads the plugin's class, and ImSwitch2 logs a
+  warning that the plugin is shadowing the in-tree manager. The install hints
+  only come into play once the in-tree copies are removed.
+* **New SDK under a new id** — ``examples/plugins/imswitch-device-tis/``
+  supports The Imaging Source cameras on IC Imaging Control 4 as
+  ``tis.camera-ic4`` (Linux and Windows; the IC4 GenTL producer is installed
+  separately). It is a rewrite rather than an extraction and declares no
+  aliases, so a setup naming ``TISManager`` keeps loading the in-tree manager,
+  which uses the older IC Imaging Control 3 library (see :doc:`detectors`).
 
 These are verified to be discovered and loaded by the registry with no changes
-to the ImSwitch core.
+to the ImSwitch2 core.
 
 
 Extracting an in-tree manager into a plugin
@@ -270,11 +307,15 @@ Checklist for moving a manager out of the core tree:
 #. **Register an install hint.** Add the old ``(kind, managerName)`` (id, legacy
    class name, and aliases) to
    ``imswitch.imcontrol.model.plugins.external.KNOWN_EXTERNAL_MANAGERS`` pointing
-   at the new package. ImSwitch then tells users to ``pip install`` it instead of
+   at the new package. ImSwitch2 then tells users to ``pip install`` it instead of
    raising an opaque import error.
 #. **Remove from core only after the plugin is published**, and keep the install
    hint for at least two minor releases. Until then, the in-tree manager and the
-   plugin can coexist (built-ins win on id collision).
+   plugin can coexist. A contribution registered in ``builtins.py`` cannot be
+   overridden: a plugin that reuses one of its ids or aliases is refused that
+   name, with a warning. An in-tree manager found only through the legacy
+   import path is the other way round: a plugin id or alias of the same name
+   shadows it, also with a warning.
 #. **Verify.** The plugin installs and is discovered; ``validate-setup`` passes
    for an existing setup; the core still boots and its tests pass.
 
@@ -294,11 +335,13 @@ Compatibility
 =============
 
 * Manifest ``schema_version`` (currently ``"0.1"``) and
-  ``imswitch_min_version`` gate plugin/host compatibility.
+  ``imswitch_min_version`` are reserved for plugin/host compatibility checks.
+  Neither is read or enforced yet.
 * The ``imswitch.pluginapi`` import surface is the compatibility promise for
   plugin authors; deep internal paths may change without notice.
 * Built-in legacy ``managerName`` class names remain valid until a documented
   removal release.
 
-The full design and rationale live in
-``docs/design/DEVICE_PLUGINS.md``.
+The design notes behind the plugin system are kept in the repository at
+``docs/design/DEVICE_PLUGINS.md``; they are working notes, not part of this
+documentation.
