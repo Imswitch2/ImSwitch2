@@ -75,9 +75,11 @@ def runTutorial(setup, script, timeout=120.0):
     app = prepareApp()
     moduleCommChannel = ModuleCommunicationChannel()
     moduleCommChannel.register(imcontrol)
+    setupInfo = ViewSetupInfo.from_json(setupPath.read_text(encoding='utf-8'),
+                                        infer_missing=True)
     view, controller = imcontrol.getMainViewAndController(
         moduleCommChannel,
-        overrideSetupInfo=ViewSetupInfo.from_json(setupPath.read_text(), infer_missing=True),
+        overrideSetupInfo=setupInfo,
         overrideOptions=Options(setupFileName=setupPath.name),
     )
     app.processEvents()
@@ -90,7 +92,7 @@ def runTutorial(setup, script, timeout=120.0):
     }
     executor = ScriptExecutor(scope)
     started = time.monotonic()
-    result = executor.execute(str(scriptPath), scriptPath.read_text())
+    result = executor.execute(str(scriptPath), scriptPath.read_text(encoding='utf-8'))
     while result.status.value == 'running' and time.monotonic() - started < timeout:
         app.processEvents()
         time.sleep(0.01)
