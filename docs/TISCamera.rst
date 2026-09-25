@@ -28,8 +28,9 @@ source repository.  Device plugins in general are described in
 The IC4 plugin (``tis.camera-ic4``)
 -----------------------------------
 
-The plugin is bundled in the source repository.  From a source checkout,
-install it together with the vendor SDK:
+The plugin is bundled in the source repository and is not published on PyPI,
+so ``pip install imswitch-device-tis`` does not find it.  From a source
+checkout, install it together with the vendor SDK:
 
 .. code-block:: bash
 

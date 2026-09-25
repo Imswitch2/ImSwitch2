@@ -1899,8 +1899,9 @@ Installing from the online store
 --------------------------------
 
 **Plugins → Browse online plugins...** opens a store that lists
-plugins from the ImProcess plugin registry.  The registry is not public yet,
-so until it is, the store cannot fetch its list.  Each entry can be
+plugins from the ImProcess plugin registry, the public
+`Improcess-plugins <https://github.com/Imswitch2/Improcess-plugins>`_
+repository (its ``index.json``).  Each entry can be
 installed, updated (when the registry offers a newer version) or uninstalled;
 installing downloads the plugin's ``.py`` into the plugins folder and records
 the version in a hidden ``.installed.json`` sidecar.  A one-time confirmation

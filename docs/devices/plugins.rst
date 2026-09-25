@@ -257,9 +257,8 @@ Examples and template
 
 * **Plugin template** — a minimal, hardware-free demo detector and laser, with a
   manifest, schema, setup templates, tests and CI:
-  ``imswitch-plugin-template`` (a standalone, copy-to-start repository). It is
-  a private repository of the Imswitch2 organisation for now, so it is not yet
-  available to outside plugin authors.
+  `imswitch-plugin-template <https://github.com/Imswitch2/imswitch-plugin-template>`_,
+  a standalone, copy-to-start repository.
 * **First real plugin** — a Zurich Instruments lock-in detector, bundled in this
   repository under ``examples/plugins/imswitch-zhinst-devices/``. It exercises
   optional hardware extras (``zhinst-toolkit``), lazy hardware imports, a mock
@@ -284,7 +283,10 @@ Examples and template
   which uses the older IC Imaging Control 3 library (see :doc:`detectors`).
 
 These are verified to be discovered and loaded by the registry with no changes
-to the ImSwitch2 core.
+to the ImSwitch2 core.  None of the three is published on PyPI: install one
+from a source checkout, for example
+``pip install "./examples/plugins/imswitch-device-tis[hardware]"``.  The error
+for a setup that names one of their managers says so and gives that command.
 
 
 Extracting an in-tree manager into a plugin
@@ -307,8 +309,10 @@ Checklist for moving a manager out of the core tree:
 #. **Register an install hint.** Add the old ``(kind, managerName)`` (id, legacy
    class name, and aliases) to
    ``imswitch.imcontrol.model.plugins.external.KNOWN_EXTERNAL_MANAGERS`` pointing
-   at the new package. ImSwitch2 then tells users to ``pip install`` it instead of
-   raising an opaque import error.
+   at the new package. ImSwitch2 then tells users how to install it instead of
+   raising an opaque import error (``pip install <package>`` once it is on PyPI;
+   until then give the hint a ``source`` folder, and the message shows the
+   install from a source checkout).
 #. **Remove from core only after the plugin is published**, and keep the install
    hint for at least two minor releases. Until then, the in-tree manager and the
    plugin can coexist. A contribution registered in ``builtins.py`` cannot be

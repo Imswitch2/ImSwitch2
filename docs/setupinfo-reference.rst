@@ -207,9 +207,9 @@ Optional:
 
 * ``managerProperties``: Manager-specific parameters (see :doc:`devices/positioners`); empty when omitted
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable (default ``null``)
-* ``resetOnClose`` (default ``true``): when ImSwitch2 closes with the
-  **Positioner** panel loaded, this positioner is moved to ``0`` on every
-  axis.  Set it to ``false`` for any stage that must stay where it is on exit.
+* ``resetOnClose`` (default ``false``): set it to ``true`` to have this
+  positioner moved to ``0`` on every axis when ImSwitch2 closes with the
+  **Positioner** panel loaded.  Otherwise a stage stays where it is on exit.
 * ``isPositiveDirection`` (default ``true``): the positioner's direction
   sign.  Scans record it in their metadata so the data can be oriented.
 * ``joystick`` (default ``false``): the positioner has a joystick; the

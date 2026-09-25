@@ -35,9 +35,9 @@ The abstract base requires that at least one of ``forPositioning`` or
 ``forScanning`` be ``true``; otherwise construction raises
 ``ValueError``.  Some of the fields need a word:
 
-* ``resetOnClose`` defaults to ``true``: on shutdown every axis of the
-  positioner is driven to position 0.  Set it to ``false`` for stages
-  where that is unwanted, such as motorised XY stages and focus drives.
+* ``resetOnClose`` defaults to ``false``.  Set it to ``true`` to have every
+  axis of the positioner driven to position 0 on shutdown; leave it off for
+  motorised XY stages and focus drives, which must not move on their own.
 * ``hide`` keeps the positioner out of the manual Positioner widget.
 * ``shortcutModifier`` picks the keyboard jog set in the Positioner
   widget: ``"ctrl"`` (Ctrl+Arrow) or ``"ctrl-shift"`` (Ctrl+Shift+Arrow).
@@ -466,9 +466,9 @@ both delegate to the pylablib continuous-jog API.
 
 **Shutdown behavior**
 
-Set ``resetOnClose`` to ``false`` for Kinesis stages unless the setup
+Leave ``resetOnClose`` off (the default) for Kinesis stages unless the setup
 explicitly requires returning both axes to zero during shutdown. The generic
-positioner controller resets all positioners with ``resetOnClose=true`` by
+positioner controller resets the positioners with ``resetOnClose=true`` by
 calling ``setPosition(0, axis)`` for every axis before the manager connection
 is closed.
 
