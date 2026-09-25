@@ -17,6 +17,27 @@ def test_install_command_with_and_without_extra():
     ).install_command() == "pip install imswitch-device-x[hardware]"
 
 
+def test_a_plugin_that_is_not_on_pypi_installs_from_its_source_folder():
+    hint = ExternalManagerHint(
+        "imswitch-device-x", extra="hardware", source="examples/plugins/imswitch-device-x"
+    )
+    assert hint.install_command() == 'pip install "./examples/plugins/imswitch-device-x[hardware]"'
+    assert ExternalManagerHint(
+        "imswitch-device-x", source="examples/plugins/imswitch-device-x"
+    ).install_command() == 'pip install "./examples/plugins/imswitch-device-x"'
+
+
+def test_every_bundled_plugin_hint_points_at_a_folder_that_exists():
+    from pathlib import Path
+
+    from imswitch.imcontrol.model.plugins.external import KNOWN_EXTERNAL_MANAGERS
+
+    repo = Path(__file__).resolve().parents[4]
+    for hint in set(KNOWN_EXTERNAL_MANAGERS.values()):
+        assert hint.source, f"{hint.package} is not on PyPI; give it a source folder"
+        assert (repo / hint.source / "pyproject.toml").is_file(), hint.source
+
+
 def test_lookup_known_and_unknown():
     hint = lookup_external_hint("detector", "zhinst.lockin-demod")
     assert hint is not None
@@ -46,13 +67,14 @@ def test_resolution_error_includes_install_hint_for_known_external():
     registry = build_default_registry(discover=False)
     message = registry.format_resolution_error("detector", "zhinst.lockin-demod")
     assert "imswitch-zhinst-devices" in message
-    assert "pip install imswitch-zhinst-devices[hardware]" in message
+    assert "not published on PyPI" in message
+    assert 'pip install "./examples/plugins/imswitch-zhinst-devices[hardware]"' in message
 
 
 def test_resolution_error_includes_install_hint_for_extracted_positioner():
     registry = build_default_registry(discover=False)
     message = registry.format_resolution_error("positioner", "KinesisStageManager")
-    assert "pip install imswitch-device-thorlabs[hardware]" in message
+    assert 'pip install "./examples/plugins/imswitch-device-thorlabs[hardware]"' in message
 
 
 def test_resolution_error_has_no_hint_for_unknown_manager():
