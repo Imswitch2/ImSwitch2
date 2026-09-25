@@ -304,6 +304,17 @@ class RecordingWidget(Widget):
     def getSaveSnapFormat(self):
         return self.saveSnapFormatList.currentIndex() + 1
 
+    def setSaveSnapFormat(self, formatName):
+        """ Selects the snap file format by name, ignoring case ('tiff' finds
+        'TIFF'). Returns False, changing nothing, for an unknown name. """
+        index = self.saveSnapFormatList.findText(
+            str(formatName), QtCore.Qt.MatchFixedString
+        )
+        if index < 0:
+            return False
+        self.saveSnapFormatList.setCurrentIndex(index)
+        return True
+
     def getSnapSaveMode(self):
         return self.snapSaveModeList.currentIndex() + 1
 

@@ -3134,8 +3134,13 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.specifyfile.setChecked(enable)
     
     @APIExport(runOnUIThread=True)
-    def setSnapModeSave(self,mode="tiff") -> None:
-        self._widget.saveSnapFormatList.setCurrentText(mode)
+    def setSnapModeSave(self, mode="tiff") -> None:
+        """ Sets the file format snaps are saved in: 'HDF5', 'TIFF' or 'ZARR'
+        (any case). Raises ValueError for any other name. """
+        if not self._widget.setSaveSnapFormat(mode):
+            raise ValueError(
+                f'Unknown snap format {mode!r}; use HDF5, TIFF or ZARR.'
+            )
     
     @APIExport(runOnUIThread=True)
     def getRecFolder(self) -> str:
