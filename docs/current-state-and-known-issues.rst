@@ -81,8 +81,8 @@ Start/Stop buttons.
 Help menu
 ~~~~~~~~~
 
-*Help → Documentation* and *Help → Check for updates…* still point at the
-original ImSwitch project's documentation and releases, not ImSwitch2's.
+*Help → Documentation* still opens the original ImSwitch project's
+documentation, not ImSwitch2's.
 
 Rules for New Work
 ------------------
