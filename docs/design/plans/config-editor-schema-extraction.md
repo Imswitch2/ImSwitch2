@@ -610,7 +610,7 @@ imswitch/imcontrol/model/configeditor/schemas/
   kinds/<kind>.json               shared top-level fields from SetupInfo (generated)
   roles/<role>.json               role diagnostic rules, with their predicate (generated)
   overrides/<ManagerName>.json    hand-curated, merged last (never generated)
-  index.json                      generator version, source hashes, coverage table
+  index.json                      generator version, per-manager counts, coverage table
 ```
 
 Package data (`MANIFEST.in` graft), loaded with `importlib.resources` — the
@@ -929,7 +929,7 @@ extraction over an installed plugin and writes into its package. Document in
 | Python's `==` hides a type change in the round-trip test | `assert_json_identical` compares kinds and key presence; it has its own tests (`1` vs `1.0` vs `True`, `None` vs `{}`). |
 | A read of *another* device's properties inside a manager is attributed to this manager | Only reads whose receiver traces to the constructor's `*Info` parameter (or its aliases) count. The report lists discarded reads. |
 | Docs *Type* column is free text | Fixed vocabulary; unparsed text is ignored; docs are rank 5 and never constrain. |
-| Non-deterministic output makes every regeneration a noisy diff | Sorted keys, fixed formatting, no timestamps; `index.json` carries source hashes. |
+| Non-deterministic output makes every regeneration a noisy diff | Sorted keys, fixed formatting, no timestamps, nothing that depends on the checkout (see decision 7). |
 | `jsonschema` skips leave validation untested in CI | Added to the `test` extra; the validation tests assert the validator is present rather than skipping. |
 
 ## Decisions (recorded 2026-09-21)
@@ -942,6 +942,16 @@ extraction over an installed plugin and writes into its package. Document in
 4. **Overrides live beside the generated files.**
 5. **One PR for all phases.** See [Delivery](#delivery).
 6. **`uncertain` requiredness ships as optional**, listed in the report.
+7. **No source hashes in `index.json`** (2026-09-25). Each manager's entry
+   used to carry a SHA-256 of its source files. The drift check already
+   compares every generated file with a fresh regeneration, so the hash only
+   added failures for edits that change no output -- a comment, a refactor, a
+   base-class tweak -- and for CRLF checkouts on Windows, which hashed
+   different bytes. It never covered the other inputs (docs cards, example
+   setups, templates, overrides) and nothing read it. The check guarantees
+   that the committed files match what the extractor produces from the
+   committed inputs; neither it nor the hash proves that the extractor sees a
+   manager's whole contract. `GENERATOR_VERSION` 2.
 
 ## Delivery
 

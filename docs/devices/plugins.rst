@@ -191,8 +191,8 @@ package:
   ``type`` is emitted only where the code proves one (``Path(...)``,
   ``.items()``, a nested subscript);
 * ``schemas/fixtures/<id>.json`` -- a synthetic device the schema accepts;
-* ``schemas/index.json`` -- source hashes and coverage, so ``--check`` can say
-  *why* a schema moved.
+* ``schemas/index.json`` -- the generator version, each manager's property
+  counts and the coverage totals.
 
 Point each contribution at its file and ship the directory as package data:
 

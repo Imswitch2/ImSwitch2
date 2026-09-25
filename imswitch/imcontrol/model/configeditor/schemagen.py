@@ -9,8 +9,8 @@ can regenerate it and diff. Three kinds of file come out:
   every manager exercises the editor's form path without a hand-written setup;
 * ``schemas/kinds/<kind>.json`` -- the top-level keys of a device entry of
   that kind, read from the ``SetupInfo`` dataclass (:mod:`kinds`);
-* ``schemas/index.json`` -- generator version, per-manager source hashes and
-  the coverage totals, so a diff says *why* a schema moved.
+* ``schemas/index.json`` -- generator version, each manager's category,
+  classes and property counts, and the coverage totals.
 
 ``schemas/overrides/<Manager>.json`` and ``schemas/roles/<role>.json`` are the
 directories written by people and never by this module: an override is
@@ -26,7 +26,6 @@ changes nothing changes no bytes.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -37,7 +36,9 @@ from . import extraction as ex
 from . import kinds as kinds_module
 
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
-GENERATOR_VERSION = 1
+# Bumped when the shape of the generated files changes. 2: index.json no
+# longer carries per-manager source hashes.
+GENERATOR_VERSION = 2
 
 MANAGERS_DIR = "managers"
 FIXTURES_DIR = "fixtures"
@@ -472,27 +473,8 @@ def _validate_fixture(name: str, schema: dict, props: dict) -> None:
 # Index and the whole set
 # =============================================================================
 
-def source_hash(manager: ex.ManagerExtraction, classes: dict[str, ex.ClassExtraction]) -> str:
-    """SHA-256 over the source files of the manager's classes, in resolution order.
-
-    Line endings are normalised to LF first: ``* text=auto`` checks sources
-    out with CRLF on Windows, and an index regenerated there must match the
-    one CI regenerates on Linux.
-    """
-    digest = hashlib.sha256()
-    for cls_id in (manager.class_ids or manager.classes):
-        module = classes[cls_id].module
-        try:
-            digest.update(Path(module).read_bytes().replace(b"\r\n", b"\n"))
-        except OSError:
-            digest.update(module.encode("utf-8"))
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
 def build_index(
     extractions: dict[str, ex.ManagerExtraction],
-    classes: dict[str, ex.ClassExtraction],
     *,
     categories: dict[str, str],
     overrides: dict[str, dict],
@@ -508,7 +490,6 @@ def build_index(
             "properties": len(manager.properties),
             "required": sum(1 for p in manager.properties.values() if p.required == ex.REQUIRED),
             "overridden": name in overrides,
-            "source_sha256": source_hash(manager, classes),
         }
     index = {
         "generator_version": GENERATOR_VERSION,
@@ -533,7 +514,6 @@ def build_index(
 @dataclass
 class GenerationInputs:
     extractions: dict[str, ex.ManagerExtraction]
-    classes: dict[str, ex.ClassExtraction]
     categories: dict[str, str]
     overrides: dict[str, dict]
     report: ex.CoverageReport
@@ -554,7 +534,7 @@ def generate_all(inputs: GenerationInputs) -> dict[str, str]:
             files[f"{KINDS_DIR}/{kind}.json"] = render(
                 kinds_module.build_kind_schema(kind, inputs.info_classes, SCHEMA_DIALECT))
     files[INDEX_FILE] = render(build_index(
-        inputs.extractions, inputs.classes,
+        inputs.extractions,
         categories=inputs.categories, overrides=inputs.overrides,
         report=inputs.report, unresolved=inputs.unresolved, info_classes=inputs.info_classes,
     ))
