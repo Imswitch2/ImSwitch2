@@ -21,7 +21,6 @@ https://github.com/user-attachments/assets/5744edc2-409e-4802-b06e-1972b8335a37
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 <!-- TODO: once CI is public, add:
 [![CI](https://github.com/<org>/<repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<org>/<repo>/actions/workflows/ci.yml)
-[![Docs](https://readthedocs.org/projects/imswitch/badge/?version=latest)](https://imswitch.readthedocs.io)
 [![codecov](https://codecov.io/gh/<org>/<repo>/branch/main/graph/badge.svg)](https://codecov.io/gh/<org>/<repo>)
 -->
 
