@@ -13,8 +13,8 @@ functions is documented :doc:`here <api/_actions>`.
 The API modules may provide signals – events that can be bound to via
 e.g. the global ``getWaitForSignal`` scripting function.
 
-There are example scripts under the scripting module to see how the
-scripting functionality works in action.
+Step-by-step tutorials ship with the scripting module; see
+:ref:`scripting-tutorials` below.
 
 Threading model and waiting for events
 ======================================
@@ -74,8 +74,51 @@ recording was active, so cleanup can decide whether to wait for
         if api.imcontrol.stopRecording():
             waitForRecordingToEnd()
 
-``example_scan_power_series.py`` under the scripting module is this
-pattern in full.
+``tutorial/scanning/05_laser_power_series.py`` is this pattern in full,
+runnable on a mock setup.
+
+.. _scripting-tutorials:
+
+Tutorials
+=========
+
+ImSwitch copies its scripts into ``~/ImSwitchConfig/scripts``
+(``Documents\ImSwitchConfig\scripts`` on Windows) on first start. The
+``tutorial`` folder there is a sequence of short scripts that build on each
+other, each written for a *mock setup* -- a hardware configuration of
+simulated devices that ships with ImSwitch -- so they run without a
+microscope. The header of every tutorial says what it teaches, which mock
+setup to load (**Tools > Pick hardware setup…** in the Hardware Control
+tab), and what a real setup needs to run it.
+
+``tutorial/basic``
+    One camera (``example_mock.json``) and then two cameras and stages
+    (``example_no_hardware.json``): snapping into numpy and to files, camera
+    settings and the live view, recording a number of frames and reading the
+    file back, recording several cameras, moving stages and waiting for
+    them, clean-up that survives the Stop button, and sharing code between
+    scripts with ``importScript()``.
+
+``tutorial/scanning``
+    Scans that trigger a camera (``hamamatsu_mock_scan_setup.json``), a
+    camera and an APD in one scan
+    (``mixed_hamamatsu_apd_mock_scan_setup.json``), scan timelapses, and a
+    laser power series in one recording (``galvo_apd_mock_scan_setup.json``).
+    Scan settings are loaded from files in ``scanning/scan_params``; make
+    your own in the Scan widget and save them with
+    ``api.imcontrol.saveScanParamsToFile()``.
+
+``workflows``
+    Complete acquisitions for real rigs -- see the cookbooks below. These
+    need the hardware they name.
+
+``tutorial/README.md`` lists every step. The test suite runs each tutorial
+on its mock setup (``imswitch/imscripting/_test/test_shipped_tutorials.py``),
+so they are kept working.
+
+Only missing files are copied, so an existing ``scripts`` folder keeps its
+own copies: after an update, the tutorials are added next to them, and
+scripts that were removed from ImSwitch stay until you delete them.
 
 Workflow Scripting Cookbooks
 =============================
