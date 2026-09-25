@@ -56,8 +56,8 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
 
             self._widget.setSeqTimePar(self._digitalParameterDict['sequence_time'])
         finally:
+            # No plotSignalGraph() here: the Base widget has no signal graph.
             self.settingParameters = False
-            self.plotSignalGraph()
 
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted):
