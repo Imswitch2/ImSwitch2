@@ -21,13 +21,25 @@ from imswitch.imcommon.algorithms.bead_recognition import (
     append_roi_means,
     create_reconstruction_buffer,
     fit_bead,
+    mean_intensity_in_roi,
     normalize_roi_bounds,
     reconstruction_image,
     rescale_reconstruction_to_pixel_size,
 )
 from imswitch.imcommon.algorithms.bead_fits import FIT_MODELS
+from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.acquisition_layout import (
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    AcquisitionLayout,
+    UnconsumedLoopError,
+    iter_physical_coordinates,
+    select_loops,
+)
 from imswitch.improcess.model.array_result import ArrayProcessingResult
-from imswitch.improcess.reconstructors.base import Reconstructor
+from imswitch.improcess.reconstructors.base import (
+    AcquisitionRequirements,
+    Reconstructor,
+)
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -44,7 +56,14 @@ def _as_frame_stack(data) -> np.ndarray:
 
 
 def infer_scan_dims(n_frames, scan_x=0, scan_y=0):
-    """Resolve ``(x_pixels, y_pixels)``; 0 means auto (square, or n/other)."""
+    """Resolve ``(x_pixels, y_pixels)`` from the two manual entries.
+
+    Either entry alone determines the other exactly. With neither, the raster
+    is genuinely unknown: guessing ``sqrt(n_frames)`` silently turned a
+    648-frame 18x18x2 line-step scan into a 25x25 raster and dropped the last
+    23 frames, so an unknown raster is now an error the caller must report
+    rather than a shape this function invents.
+    """
     scan_x, scan_y = int(scan_x), int(scan_y)
     if scan_x > 0 and scan_y > 0:
         return scan_x, scan_y
@@ -52,16 +71,101 @@ def infer_scan_dims(n_frames, scan_x=0, scan_y=0):
         return scan_x, max(1, n_frames // scan_x)
     if scan_y > 0:
         return max(1, n_frames // scan_y), scan_y
-    side = int(round(np.sqrt(n_frames)))
-    return max(1, side), max(1, side)
+    return None
 
 
-def reconstruct_bead_image(frames, scan_dims, roi_bounds=None, step_sizes=None):
+#: BeadRec builds one raster image per condition from X and Y. Every other
+#: loop -- a Z axis, a time lapse, a repeat -- is a dimension it has no image
+#: for, and is refused rather than folded into the same raster.
+_BEADREC_ROLES = {"fast": "scan_x", "slow": "scan_y", "condition": "condition"}
+
+
+def _select_raster_loops(layout: AcquisitionLayout, *, authoritative: bool = True):
+    """The X/Y/condition loops, or ``None`` when this is not a raster.
+
+    A declared layout with a loop BeadRec cannot place is an error; an
+    inferred one is declined so the manual entries stay in charge.
+    """
+    try:
+        return select_loops(
+            layout,
+            consumer="BeadRec",
+            roles=_BEADREC_ROLES,
+            required=("fast", "slow"),
+        )
+    except UnconsumedLoopError as error:
+        if authoritative:
+            raise ValueError(str(error)) from error
+        return None
+
+
+def raster_geometry_from_layout(
+    layout: AcquisitionLayout | None, *, authoritative: bool = True
+):
+    """Return ``(scan_dims, step_sizes, condition_loop)`` recorded by a scan.
+
+    ``None`` when the layout does not describe a two-dimensional raster, which
+    leaves the manual entries authoritative.
+    """
+    if layout is None or layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
+        return None
+    selected = _select_raster_loops(layout, authoritative=authoritative)
+    if selected is None:
+        return None
+    fast, slow = selected["fast"], selected["slow"]
+    steps = tuple(
+        float(loop.step) if loop.step else 0.0 for loop in (fast, slow)
+    )
+    return (fast.count, slow.count), steps, selected["condition"]
+
+
+def _condition_labels(loop) -> tuple[str, ...]:
+    if loop is None:
+        return ()
+    if loop.labels:
+        return tuple(loop.labels)
+    return tuple(f"condition_{index}" for index in range(loop.count))
+
+
+def raster_positions_from_layout(
+    layout: AcquisitionLayout, scan_dims
+) -> list[tuple[int, int]]:
+    """Map each stored frame to its ``(condition, raster index)`` slot.
+
+    Placement follows the resolved coordinates rather than arrival order, so
+    serpentine traversal, a detector recorded for only some conditions, and
+    per-expanded-line enable masks all land in the right pixel without this
+    plugin repeating the index arithmetic. Coordinates are physically
+    oriented -- a negative stage direction mirrors that axis -- by the one
+    imcommon helper every image-building consumer shares, so this plugin and
+    MoNaLISA cannot disagree about the same file.
+    """
+    selected = _select_raster_loops(layout, authoritative=True)
+    if selected is None:
+        raise ValueError("BeadRec raster positions need scan_x and scan_y loops")
+    fast, slow, condition = selected["fast"], selected["slow"], selected["condition"]
+    x_pixels = scan_dims[0]
+    positions = []
+    for coordinates in iter_physical_coordinates(layout):
+        positions.append(
+            (
+                coordinates[condition.id] if condition is not None else 0,
+                coordinates[slow.id] * x_pixels + coordinates[fast.id],
+            )
+        )
+    return positions
+
+
+def reconstruct_bead_image(
+    frames, scan_dims, roi_bounds=None, step_sizes=None, raster_indices=None
+):
     """Raster-reconstruct a bead image from a frame stack.
 
     ``frames``: ``(N, Y, X)``; ``scan_dims``: ``(x_pixels, y_pixels)``;
     ``roi_bounds``: ``(x0, y0, x1, y1)`` detection ROI or ``None`` (full frame);
-    ``step_sizes``: ``(x_step, y_step)`` for anisotropic-pixel rescale or ``None``.
+    ``step_sizes``: ``(x_step, y_step)`` for anisotropic-pixel rescale or ``None``;
+    ``raster_indices``: flat destination pixel per frame, from the resolved
+    acquisition layout, or ``None`` to fill the raster in arrival order.
     """
     frames = np.asarray(frames)
     if frames.ndim != 3:
@@ -71,8 +175,25 @@ def reconstruct_bead_image(frames, scan_dims, roi_bounds=None, step_sizes=None):
            else normalize_roi_bounds(roi_bounds, (height, width)))
 
     buffer = create_reconstruction_buffer(scan_dims)
-    update = append_roi_means(buffer, 0, list(frames), roi, wrap=False)
-    image = reconstruction_image(update.buffer, scan_dims)
+    if raster_indices is None:
+        # append_roi_means stops at the end of the buffer, so an over-long
+        # stack would be silently discarded. The caller checks the count.
+        if frames.shape[0] != buffer.size:
+            raise ValueError(
+                f"BeadRec needs exactly {buffer.size} frames for a "
+                f"{scan_dims[0]}x{scan_dims[1]} raster, got {frames.shape[0]}"
+            )
+        update = append_roi_means(buffer, 0, list(frames), roi, wrap=False)
+        buffer = update.buffer
+    else:
+        if len(raster_indices) != frames.shape[0]:
+            raise ValueError(
+                f"BeadRec received {len(raster_indices)} raster positions for "
+                f"{frames.shape[0]} frames"
+            )
+        for frame, index in zip(frames, raster_indices):
+            buffer[index] = mean_intensity_in_roi(np.asarray(frame), roi)
+    image = reconstruction_image(buffer, scan_dims)
 
     if step_sizes and len(step_sizes) >= 2 and step_sizes[0] > 0 and step_sizes[1] > 0:
         image = rescale_reconstruction_to_pixel_size(image, step_sizes)
@@ -132,27 +253,196 @@ class BeadRecReconstructor(Reconstructor):
     description = "Raster-reconstruct a recorded bead scan (+ optional fit)"
     default_save_subdir = "beadrec"
 
+    #: A raster of camera frames. Extra loops are kept rather than rejected:
+    #: a condition loop is reconstructed per condition instead of being mixed
+    #: into one raster. ``allow_ambiguous`` is on because the manual Scan X/Y
+    #: entries are a legitimate override for a recording without a layout.
+    # The scan loops' physical steps ARE the bead fit's pixel size; a layout
+    # whose loop has no step was read as 0.0 and the fit reported nonsense in
+    # calibrated units. Declaring them here makes the preflight's
+    # UNCALIBRATED_ACQUISITION_LOOP refusal live where it matters.
+    acquisition_requirements = AcquisitionRequirements(
+        payload_kinds=frozenset({PAYLOAD_DETECTOR_FRAME_STREAM}),
+        allowed_extra_loops="split",
+        allow_ambiguous=True,
+        requires_calibrated_loops=frozenset({"scan_x", "scan_y"}),
+    )
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'scan_x': 0,
+        'scan_y': 0,
+        'roi': None,
+        'step_x': 1.0,
+        'step_y': 1.0,
+        'fit_model': 'none'}
+
     def make_param_widget(self, parent):
         return _BeadRecParamWidget(parent)
 
     def make_metadata_dialog(self, parent):
         return None
 
+    @staticmethod
+    def _resolved_layout(data_obj):
+        """The resolved layout, or ``None`` when the source cannot supply one."""
+        try:
+            resolved = data_obj.acquisition_layout
+        except Exception:
+            return None
+        if resolved is None or not resolved.is_usable:
+            return None
+        return resolved
+
     def process(
         self, data_obj: "DataObj", params: dict, context=None
     ) -> ArrayProcessingResult:
+        self.validate_source(data_obj)
         frames = _as_frame_stack(data_obj.data)
-        scan_dims = infer_scan_dims(frames.shape[0],
-                                    params.get("scan_x", 0), params.get("scan_y", 0))
-        roi = params.get("roi")
-        steps = (params.get("step_x", 1.0), params.get("step_y", 1.0))
-        image = reconstruct_bead_image(frames, scan_dims, roi, steps)
+        n_frames = int(frames.shape[0])
 
-        metadata = {"scan_dims": scan_dims, "n_frames": int(frames.shape[0])}
+        resolved = self._resolved_layout(data_obj)
+        layout = resolved.layout if resolved is not None else None
+        recorded = raster_geometry_from_layout(
+            layout,
+            authoritative=bool(resolved is not None and resolved.is_authoritative),
+        )
+        manual_dims = infer_scan_dims(
+            n_frames, params.get("scan_x", 0), params.get("scan_y", 0)
+        )
+        authoritative = bool(resolved is not None and resolved.is_authoritative)
+        if recorded is not None and not authoritative and manual_dims is not None:
+            # An inferred layout is a reading of the file, not a statement by
+            # the acquisition, so it may not overrule what the user typed. It
+            # used to: a legacy 4x3 inference refused a valid manual 6x2 on the
+            # same twelve frames, which is exactly the "inference must never
+            # refuse previously usable data" rule the contract sets out.
+            if tuple(manual_dims) != tuple(recorded[0]):
+                initLogger(self).info(
+                    f"Using the manual {manual_dims[0]}x{manual_dims[1]} raster "
+                    f"over the {recorded[0][0]}x{recorded[0][1]} inferred from "
+                    f"legacy metadata; nothing in this file declares its scan."
+                )
+                recorded = None
+
+        if recorded is not None:
+            # The recording is authoritative. A stale spinbox must not quietly
+            # reshape a scan whose geometry was recorded; the supported way to
+            # correct a wrong layout is a persisted layout override.
+            scan_dims, steps, condition = recorded
+            geometry_source = "layout"
+            if manual_dims is not None and tuple(manual_dims) != tuple(scan_dims):
+                raise ValueError(
+                    f"Scan X/Y is set to {manual_dims[0]}x{manual_dims[1]}, but "
+                    f"this recording declares {scan_dims[0]}x{scan_dims[1]}. "
+                    f"Clear the manual entries to use the recorded geometry, or "
+                    f"persist a layout override if the recording is wrong."
+                )
+        elif manual_dims is not None:
+            scan_dims, steps, condition = manual_dims, None, None
+            geometry_source = "manual"
+        else:
+            raise ValueError(
+                "BeadRec cannot determine the raster: this source carries no "
+                "acquisition layout and neither Scan X nor Scan Y pixels were "
+                "set. Enter the scan size, or open a recording that carries "
+                "its acquisition layout."
+            )
+
+        roi = params.get("roi")
+        if steps and steps[0] > 0 and steps[1] > 0:
+            step_sizes = steps
+        else:
+            step_sizes = (params.get("step_x", 1.0), params.get("step_y", 1.0))
+
+        pixels = scan_dims[0] * scan_dims[1]
+        metadata = {
+            "scan_dims": scan_dims,
+            "n_frames": n_frames,
+            "geometry_source": geometry_source,
+        }
+
+        if geometry_source == "layout":
+            slots = raster_positions_from_layout(layout, scan_dims)
+            if n_frames != len(slots):
+                if not resolved.is_authoritative:
+                    # An inferred layout that disagrees with the data is a bad
+                    # inference, not bad data. Refusing on it would fail a file
+                    # that used to open, so fall back to the manual entries.
+                    raise ValueError(
+                        f"The acquisition layout inferred for this source "
+                        f"describes {len(slots)} frames but it has {n_frames}. "
+                        f"Set Scan X/Y pixels to reconstruct it anyway, or "
+                        f"persist a layout override."
+                    )
+                raise ValueError(
+                    f"BeadRec needs exactly {len(slots)} frames for the "
+                    f"recorded layout, but this source has {n_frames}. Frames "
+                    f"are never padded or discarded to force a fit."
+                )
+            # Which conditions this detector actually recorded, not which ones
+            # the producer ran: a detector gated to one line step reconstructs
+            # that one condition from all of its frames.
+            grouped: dict[int, tuple[list, list]] = {}
+            for frame, (condition_index, raster_index) in zip(frames, slots):
+                indices, condition_frames = grouped.setdefault(
+                    condition_index, ([], [])
+                )
+                indices.append(raster_index)
+                condition_frames.append(frame)
+            recorded = sorted(grouped)
+            incomplete = [
+                index for index in recorded if len(grouped[index][0]) != pixels
+            ]
+            if incomplete:
+                raise ValueError(
+                    f"BeadRec needs a complete {scan_dims[0]}x{scan_dims[1]} "
+                    f"raster per condition, but condition(s) "
+                    f"{incomplete} cover only part of the scan. A row-dependent "
+                    f"detector gate is not a dense raster."
+                )
+            images = [
+                reconstruct_bead_image(
+                    np.asarray(grouped[index][1]),
+                    scan_dims,
+                    roi,
+                    step_sizes,
+                    raster_indices=grouped[index][0],
+                )
+                for index in recorded
+            ]
+            labels = _condition_labels(condition)
+            metadata["condition_labels"] = tuple(
+                labels[index] if index < len(labels) else f"condition_{index}"
+                for index in recorded
+            )
+        else:
+            if n_frames != pixels:
+                raise ValueError(
+                    f"BeadRec needs exactly {pixels} frames for a "
+                    f"{scan_dims[0]}x{scan_dims[1]} raster, but this source "
+                    f"has {n_frames}. Frames are never padded or discarded to "
+                    f"force a fit."
+                )
+            images = [reconstruct_bead_image(frames, scan_dims, roi, step_sizes)]
+            recorded = [0]
+
+        if len(images) > 1:
+            # Conditions stay a separate axis; mixing them into one raster
+            # averages two different illumination states into each pixel.
+            image = np.stack(images)
+            axis_labels = ["Condition", "Y", "X"]
+            fit_target = images[0]
+        else:
+            # One image, but the label still says which condition it is.
+            image = images[0]
+            axis_labels = ["Y", "X"]
+            fit_target = image
+
         fit_model = params.get("fit_model", "none")
         if fit_model and fit_model != "none":
             try:
-                fit = fit_bead(image, fit_model)
+                fit = fit_bead(fit_target, fit_model)
                 metadata["fit"] = {
                     "model": fit.model, "r_squared": fit.r_squared,
                     "center_px": tuple(fit.center_px), **fit.params,
@@ -164,6 +454,6 @@ class BeadRecReconstructor(Reconstructor):
         return ArrayProcessingResult(
             name=f"{name} (beadrec)",
             data=image,
-            axis_labels=["Y", "X"],
+            axis_labels=axis_labels,
             metadata=metadata,
         )

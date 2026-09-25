@@ -8,6 +8,7 @@ import numpy as np
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.scan_parameters import (
+    seed_scan_delays_from_setup,
     AdvancedScanParameterSerializer,
     pixels_for_length_step,
 )
@@ -15,7 +16,15 @@ from ..basecontrollers import SuperScanController
 
 # Optional: only if you want wavelength-based colors like MoNaLISA
 from imswitch.imcommon.view.guitools import colorutils
-from ...model import SignalDesignerFactory
+from ...model import ScanDesignRefusedError, SignalDesignerFactory
+from ._acquisition_layout_source import (
+    build_advanced_scan_layouts,
+    physical_kind_overrides,
+    scan_devices,
+    scan_directions,
+    scan_driven_detector_names,
+    validate_detector_edge_counts,
+)
 
 
 class ScanControllerAdvanced(SuperScanController):
@@ -38,6 +47,7 @@ class ScanControllerAdvanced(SuperScanController):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        seed_scan_delays_from_setup(self._widget, self._setupInfo)
 
         # Snapshot of the parameters that produced the cached signalDict, so
         # repeated scan frames can skip regenerating an identical signal.
@@ -110,6 +120,8 @@ class ScanControllerAdvanced(SuperScanController):
         Returns:
           signalDict = {'scanSignalsDict': ..., 'TTLCycleSignalsDict': ...}
           scanInfoDict
+        Raises ScanDesignRefusedError, with the reason, when the scan designer
+        refuses the scan (too long, voltages outside a scanner's range).
         """
         scan_des = self._get_scan_designer()
         ttl_des = self._get_ttl_designer()
@@ -121,14 +133,26 @@ class ScanControllerAdvanced(SuperScanController):
         self._copy_positioner_line_program_to_stage_params(stage_param, TTLParameters)
 
         # optional guard (like PointScan)
-        if hasattr(scan_des, "checkSignalLength"):
-            if not scan_des.checkSignalLength(scanParameters, self._setupInfo):
-                self._logger.error(
-                    "Signal too long: try scanning a smaller ROI, faster, or with a larger pixel size."
-                )
-                return None, None
+        if hasattr(scan_des, "signalLengthRefusal"):
+            refusal = scan_des.signalLengthRefusal(scanParameters, self._setupInfo)
+            if refusal:
+                raise ScanDesignRefusedError(refusal)
 
         scanSignalsDict, positions, scanInfoDict = scan_des.make_signal(stage_param, self._setupInfo)
+
+        # Voltage compliance, like PointScan's makeFullScan: refuse waveforms
+        # outside a scanner's configured minVolt/maxVolt. Without this the
+        # only remaining bound is the NI-DAQ task's generic +-10 V range, so
+        # e.g. a Z scan centered at 0 um on a 0..10 V piezo would reach the
+        # hardware.
+        if hasattr(scan_des, "checkSignalComp"):
+            if not scan_des.checkSignalComp(
+                scanParameters, self._setupInfo, scanInfoDict
+            ):
+                raise ScanDesignRefusedError(
+                    "Signal voltages outside scanner ranges: try scanning a "
+                    "smaller ROI or a slower scan."
+                )
 
         # --- TTL / digital ---
         ttl_param = copy.deepcopy(getattr(self._setupInfo.scan, "TTLCycleDesignerParams", {}))
@@ -329,10 +353,12 @@ class ScanControllerAdvanced(SuperScanController):
 
             ttlSignalsDict = None
             if include_ttl:
-                signalDict, scanInfoDict = self._make_full_scan(
-                    self._analogParameterDict, self._digitalParameterDict
-                )
-                if signalDict is None:
+                try:
+                    signalDict, scanInfoDict = self._make_full_scan(
+                        self._analogParameterDict, self._digitalParameterDict
+                    )
+                except ScanDesignRefusedError as error:
+                    self._logger.warning(f"Nothing to plot: {error}")
                     return
                 scanSignalsDict = signalDict.get("scanSignalsDict", {})
                 ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
@@ -503,6 +529,113 @@ class ScanControllerAdvanced(SuperScanController):
             result.append(0.0)
         return result
 
+    def _layoutPulseCounts(self, detectorNames, conditionCount):
+        """Count actual per-condition detector edges for one generated pixel."""
+        parameters = self._ttl_parameters_without_positioners(
+            self._digitalParameterDict
+        )
+        targets = set(parameters.get("target_device", ()))
+        requested = targets.intersection(str(name) for name in detectorNames)
+        if not requested:
+            return {}
+
+        forced = copy.deepcopy(parameters)
+        masks = forced.setdefault("linestep_enable", {})
+        for detector in requested:
+            masks[detector] = [True] * conditionCount
+        signals = self._get_ttl_designer().make_single_pixel_signal(
+            forced, self._setupInfo
+        )
+        samplesPerPixel = max(
+            1,
+            int(
+                round(
+                    float(parameters["sequence_time"])
+                    * float(self._setupInfo.scan.sampleRate)
+                )
+            ),
+        )
+        counts = {}
+        for detector in requested:
+            signal = signals.get(detector)
+            if signal is None:
+                continue
+            counts[detector] = tuple(
+                self._countRisingEdges(
+                    signal[
+                        condition * samplesPerPixel:
+                        (condition + 1) * samplesPerPixel
+                    ]
+                )
+                for condition in range(conditionCount)
+            )
+        return counts
+
+    def getNumCamTTL(self):
+        """Return the exact uniform detector-frame multiplier when expressible."""
+        self.getParameters()
+        conditionCount = max(
+            1, int(self._digitalParameterDict.get("n_linesteps", 1))
+        )
+        detectorNames = tuple(self._setupInfo.detectors)
+        pulseCounts = self._layoutPulseCounts(
+            detectorNames, conditionCount
+        )
+        masks = self._digitalParameterDict.get("linestep_enable", {})
+        yCount = max(1, int(self.getDimsScan()[1]))
+        result = {}
+        for detector, counts in pulseCounts.items():
+            mask = tuple(bool(value) for value in masks.get(detector, ()))
+            if len(mask) == conditionCount:
+                result[detector] = sum(
+                    count for count, enabled in zip(counts, mask) if enabled
+                )
+                continue
+            if len(mask) == conditionCount * yCount:
+                total = sum(
+                    counts[index % conditionCount]
+                    for index, enabled in enumerate(mask)
+                    if enabled
+                )
+                if total % yCount == 0:
+                    result[detector] = total // yCount
+        return result
+
+    def getAcquisitionLayouts(self, detectorNames):
+        """Return line-step-aware layouts from the generated scan signals."""
+        self.getParameters()
+        signalDict, scanInfo = self._make_full_scan(
+            self._analogParameterDict,
+            self._digitalParameterDict,
+        )
+        if signalDict is None or scanInfo is None:
+            raise RuntimeError(
+                "Advanced scan signal generation did not produce layout metadata"
+            )
+        conditionCount = max(1, int(scanInfo.get("n_linesteps", 1)))
+        layouts = build_advanced_scan_layouts(
+            scanInfo,
+            detectorNames,
+            scan_source=type(self).__name__,
+            detector_masks=self._digitalParameterDict.get(
+                "linestep_enable", {}
+            ),
+            pulse_counts_by_condition=self._layoutPulseCounts(
+                detectorNames, conditionCount
+            ),
+            scan_driven_detectors=scan_driven_detector_names(
+                self, detectorNames
+            ),
+            directions=scan_directions(self, scanInfo),
+            devices=scan_devices(self, scanInfo),
+            kind_overrides=physical_kind_overrides(self, scanInfo),
+        )
+        validate_detector_edge_counts(
+            layouts,
+            signalDict.get("TTLCycleSignalsDict", {}),
+        )
+        return layouts
+
     # ---------------------------------------------------------------------
     # Parameters: UI -> dicts
     # ---------------------------------------------------------------------
@@ -576,41 +709,12 @@ class ScanControllerAdvanced(SuperScanController):
     ):
         """Runs a scan with current parameters."""
         try:
-            if self._beginScanRun(
-                sigScanStartingEmitted=sigScanStartingEmitted
+            if self._beginScanRunWithDesign(
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                recalculateSignals=recalculateSignals,
             ) is None:
                 return
             self._widget.setScanButtonChecked(True)
-
-            if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
-                self.getParameters()
-
-                # Only rebuild the (expensive) scan signal if the parameters
-                # actually changed since the last build. Repeated scan frames
-                # reuse identical parameters, so this avoids regenerating a
-                # byte-identical galvo/TTL signal — and the per-frame stall it
-                # causes — on every repeat. Live parameter edits still trigger
-                # a rebuild because the snapshot then differs.
-                paramsSnapshot = (
-                    copy.deepcopy(self._analogParameterDict),
-                    copy.deepcopy(self._digitalParameterDict),
-                )
-                signalsCached = (
-                    self.signalDict is not None
-                    and self.scanInfoDict is not None
-                    and paramsSnapshot == self._lastBuiltParams
-                )
-                if not signalsCached:
-                    # TTL cycle (linestep_enable) is the sole authority for per-laser emission
-                    self.signalDict, self.scanInfoDict = self._make_full_scan(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
-
-                    if self.signalDict is None:
-                        self.scanFailed()
-                        return
-
-                    self._lastBuiltParams = paramsSnapshot
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
@@ -629,6 +733,32 @@ class ScanControllerAdvanced(SuperScanController):
         except Exception:
             self._logger.error(traceback.format_exc())
             self.scanFailed()
+
+    def _buildScanSignals(self):
+        self.getParameters()
+
+        # Only rebuild the (expensive) scan signal if the parameters
+        # actually changed since the last build. Repeated scan frames
+        # reuse identical parameters, so this avoids regenerating a
+        # byte-identical galvo/TTL signal — and the per-frame stall it
+        # causes — on every repeat. Live parameter edits still trigger
+        # a rebuild because the snapshot then differs.
+        paramsSnapshot = (
+            copy.deepcopy(self._analogParameterDict),
+            copy.deepcopy(self._digitalParameterDict),
+        )
+        if (
+            self.signalDict is not None
+            and self.scanInfoDict is not None
+            and paramsSnapshot == self._lastBuiltParams
+        ):
+            return self.signalDict, self.scanInfoDict
+        # TTL cycle (linestep_enable) is the sole authority for per-laser emission
+        signalDict, scanInfoDict = self._make_full_scan(
+            self._analogParameterDict, self._digitalParameterDict
+        )
+        self._lastBuiltParams = paramsSnapshot
+        return signalDict, scanInfoDict
 
     def scanDone(self):
         """Called by the system when nidaq finishes."""
@@ -742,6 +872,7 @@ class ScanControllerAdvanced(SuperScanController):
         - aligned using the generated line_clock (most robust across axis configs)
         """
         powers = (TTLParameters or {}).get("linestep_power_percent", {}) or {}
+        power_enabled = (TTLParameters or {}).get("linestep_power_enabled", {}) or {}
         if not powers:
             return
 
@@ -776,6 +907,11 @@ class ScanControllerAdvanced(SuperScanController):
             line_starts = rises.astype(int)
 
         for laserName, vec in powers.items():
+            # Missing flag means enabled for backward compatibility with scans
+            # saved before power modulation became optional.
+            if not bool(power_enabled.get(laserName, True)):
+                continue
+
             laserInfo = getattr(self._setupInfo, "lasers", {}).get(laserName, None)
             if laserInfo is None:
                 continue

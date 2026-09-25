@@ -15,6 +15,8 @@ testable.
 
 from __future__ import annotations
 
+import json
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -39,6 +41,7 @@ _RECMODE_TO_MODE = {
 }
 
 from imswitch.imcommon.model.ome_metadata import _SPACE_UNIT, _TIME_UNIT  # noqa: E402
+
 
 
 def normalize_mode(rec_mode_name: Optional[str], *, is_snap: bool = False) -> str:
@@ -89,6 +92,8 @@ def axes_for_recording(mode: str, n_frames: int,
 # would be a file that cannot be compared with its own source. Re-exported here
 # so every existing importer of this module keeps working unchanged.
 from imswitch.imcommon.model.ome_metadata import (  # noqa: F401
+    ANNOTATION_NAMESPACE,
+    NOTE_KEY,
     OmeAxis,
     OmeImageMeta,
     build_ome_xml,

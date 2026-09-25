@@ -22,6 +22,14 @@ class SmlmRenderProcessor(Processor):
     category = "Localization"
     kinds = ("localization",)
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'render_type': 'histogram',
+        'pixel_size_nm': 10.0,
+        'fwhm_nm': 20.0,
+        'render_3d': False,
+        'z_pixel_size_nm': 20.0}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: isinstance(result, LocalizationResult)

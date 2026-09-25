@@ -40,6 +40,10 @@ class FilterProcessor(Processor):
     accepts_roi = True
     roi_modes = ('mask', 'crop')
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'method': 'gaussian', 'radius': 2.0, 'amount': 0.6}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2

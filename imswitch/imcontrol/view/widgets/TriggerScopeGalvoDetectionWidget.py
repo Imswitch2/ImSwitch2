@@ -15,7 +15,13 @@ class TriggerScopeGalvoDetectionWidget(Widget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.setMinimumHeight(200)
+        # No minimum height of its own: docks stack vertically and a
+        # splitter's minimum is the sum of its children's, so a panel that
+        # insists on 200 px makes the window that much taller to open --
+        # and a few of them together make it taller than the screen, at
+        # which point Qt keeps the window at its minimum and the bottom is
+        # cut off. The parameter form below scrolls instead.
+        self.setMinimumSize(0, 0)
 
         self.scannerLabel = QtWidgets.QLabel('pLS-RESOLFT scanner galvo detection')
         self.scannerLabel.setStyleSheet('font-size: 14pt; font-weight: bold')
@@ -171,6 +177,12 @@ class TriggerScopeGalvoDetectionWidget(Widget):
         self.cycleScanDeviceEdit = guitools.BetterComboBox(allowScrollChanges=False)
         self.cycleScanDeviceEdit.setEnabled(False)
 
+        # The firmware gates the camera on its own line in this mode; the
+        # software cannot choose the line, but it must declare WHICH detector
+        # is on it, or a scan recording cannot tie frames to positions.
+        CameraTTLLabel = QtWidgets.QLabel('Camera used for detection')
+        self.CameraTTLEdit = guitools.BetterComboBox(allowScrollChanges=False)
+
         currentRow = 0
 
         self.grid.addItem(
@@ -273,6 +285,9 @@ class TriggerScopeGalvoDetectionWidget(Widget):
         self.grid.addWidget(self.galvoSecondPositionEdit, currentRow, 1)
         self.grid.addWidget(galvoThirdPositionLabel, currentRow, 2)
         self.grid.addWidget(self.galvoThirdPositionEdit, currentRow, 3)
+        currentRow += 1
+        self.grid.addWidget(CameraTTLLabel, currentRow, 0)
+        self.grid.addWidget(self.CameraTTLEdit, currentRow, 1)
 
         self.saveScanBtn.clicked.connect(self.sigSaveScanClicked)
         self.loadScanBtn.clicked.connect(self.sigLoadScanClicked)
@@ -409,6 +424,12 @@ class TriggerScopeGalvoDetectionWidget(Widget):
 
     def setGalvoScanDevice(self, value):
         self.galvoScanDeviceEdit.setCurrentIndex(self.galvoScanDeviceEdit.findText(value))
+
+    def getCameraTTL(self):
+        return self.CameraTTLEdit.currentText()
+
+    def setCameraTTL(self, value):
+        self.CameraTTLEdit.setCurrentIndex(self.CameraTTLEdit.findText(value))
 
     def getCycleScanDevice(self):
         return self.cycleScanDeviceEdit.currentText()

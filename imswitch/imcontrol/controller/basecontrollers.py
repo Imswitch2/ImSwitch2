@@ -14,9 +14,13 @@ from imswitch.imcommon.controller.basecontrollers import (
     WidgetController,
     WidgetControllerFactory,
 )
-from imswitch.imcontrol.model import InvalidChildClassError
+from imswitch.imcontrol.model import (
+    InvalidChildClassError, ScanDesignRefusedError,
+)
+from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
 from imswitch.imcontrol.model.managers._scan_execution import (
     FINISH_ABORT, FINISH_GRACEFUL, getSharedScanExecutionCoordinator,
+    ScanBusyError,
 )
 from imswitch.imcontrol.controller.WorkflowServices import (
     ScanRequestCompletion,
@@ -260,6 +264,30 @@ class ScanLifecycleMixin:
 
     # Class-level default so the getter works before __init__ assigns it
     _isRunningFlag = False
+    #: Why the last scan start request was refused (None when it was not).
+    _lastScanStartRejection = None
+
+    def _recordScanStartRejection(self, reason):
+        """ Make a refused start observable (plan A-05).
+
+        Every scan-controller family used to refuse duplicate/busy starts
+        with a log line only, so an API caller waiting for ``scanEnded``
+        waited forever. The reason is recorded for the API entry point and
+        published on ``sigScanRequestRejected``; no other lifecycle signal
+        is emitted for a refusal, on purpose (a running scan must not be
+        ended on behalf of a request that never started). """
+        self._lastScanStartRejection = str(reason)
+        channel = self.__dict__.get('_commChannel')  # safe on uninitialised QObject shells
+        signal = getattr(channel, 'sigScanRequestRejected', None)
+        if signal is None:
+            return
+        # Emitted directly, not through emitScanSignal: some families gate
+        # lifecycle emissions on widget state (continuous-laser mode), and a
+        # refusal must be observable unconditionally.
+        try:
+            signal.emit(self._lastScanStartRejection)
+        except Exception:
+            self._logger.error('A scan-rejection listener failed', exc_info=True)
 
     @property
     def isRunning(self) -> bool:
@@ -462,6 +490,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
         """ Run scan from external non-scan-widget trigger. """
         requestCompletion = ScanRequestCompletion(self)
+        self._lastScanStartRejection = None
         self._externalScanRequestInProgress = True
         self._externalScanRequestAccepted = False
         self._externalScanRequestFailed = False
@@ -516,8 +545,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             )
             message = self._externalScanRequestFailureMessage
             if not accepted and not message:
+                # A refusal recorded by _beginScanRun (busy, duplicate, a
+                # refused scan design) says why better than the fallback.
                 message = (
-                    'Scan controller refused the request or failed to arm.'
+                    getattr(self, '_lastScanStartRejection', None)
+                    or 'Scan controller refused the request or failed to arm.'
                 )
             reportResult = getattr(
                 self._commChannel.scanWorkflow,
@@ -938,16 +970,49 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def abortScan(self):
         """ Abort scan. """
+        # Decided before the flags below are cleared (a repeat gap is only
+        # visible through _repeatPending until then).
+        idle = not self.isRunning and not self._holdsScanRunBetweenIterations()
         # An abort can arrive while an iteration is still running.  Remember
         # it at run scope so the eventual NI-DAQ completion cannot re-arm a
         # repeat/continuous/sequence continuation.
         self._scanStopRequested = True
         self._repeatPending = False  # Cancel any pending repeat re-arm
         self.doingNonFinalPartOfSequence = False  # So that sigScanEnded is emitted
-        if not self.isRunning:
-            self.scanFailed()
+        if self.isRunning:
+            return
+        if idle:
+            # Nothing to fail: the usual state at shutdown (closeEvent aborts
+            # unconditionally) and for every non-owner of a broadcast
+            # sigAbortScan. scanFailed() would log an error for a scan that
+            # never ran.
+            self._scanStopRequested = False
+            try:
+                self._widget.setScanButtonChecked(False)
+            except Exception:
+                self._logger.error(
+                    'Failed to reset the scan widget after an idle abort',
+                    exc_info=True,
+                )
+            return
+        # A run retained between iterations -- repeat gap, non-final sequence
+        # part, MoNaLISA axial follow-up -- or a request still arming has no
+        # NI-DAQ completion left to end it, so terminalize it here.
+        self.scanFailed()
 
-    def _beginScanRun(self, *, sigScanStartingEmitted):
+    def _holdsScanRunBetweenIterations(self) -> bool:
+        """Whether an abort outside an iteration still has a run to fail.
+
+        Fails closed: ``shutdownComplete`` reports ownership it cannot verify
+        as held.
+        """
+        return (
+            getattr(self, '_scanRunToken', None) is not None
+            or bool(getattr(self, '_externalScanRequestInProgress', False))
+            or not self.shutdownComplete()
+        )
+
+    def _beginScanRun(self, *, sigScanStartingEmitted, prepareNewRun=None):
         """Reserve one complete run, or reject a duplicate from this owner.
 
         ``sigScanStartingEmitted=True`` identifies an internal continuation
@@ -955,13 +1020,23 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         controller already owns a run is a no-op; it must never fall through
         to ``arm()``, be refused, and then call ``scanFailed()`` on the
         original still-running scan.
+
+        ``prepareNewRun()`` runs once a *new* run has been granted and before
+        anything about it is published or bound to a request. If it raises
+        ScanDesignRefusedError the start is refused exactly like a busy
+        coordinator refuses it: the reservation is given back, the reason is
+        recorded and published on ``sigScanRequestRejected``, and no lifecycle
+        signal fires.
         """
+        self._lastScanStartRejection = None
         if getattr(self, '_scanCompletionPublishing', False):
-            self._logger.warning(
+            reason = (
                 'Ignoring a re-entrant scan start while the previous '
                 'completion is still being published.'
             )
+            self._logger.warning(reason)
             self.isRunning = False
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
             return None
 
         localToken = getattr(self, '_scanRunToken', None)
@@ -976,22 +1051,24 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 or bool(getattr(activeRun, 'releaseRequested', False))
             )
         ):
-            self._logger.warning(
+            reason = (
                 'Ignoring a scan continuation while the current run is '
                 'failed, stopped, or still releasing.'
             )
+            self._logger.warning(reason)
             self.isRunning = activeIteration is not None
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
             return None
         if localToken is not None and activeRun is localToken:
             if activeIteration is not None or not sigScanStartingEmitted:
-                self._logger.warning(
-                    'Ignoring duplicate scan start from the active owner.'
-                )
+                reason = 'Ignoring duplicate scan start from the active owner.'
+                self._logger.warning(reason)
                 # Callers historically mark isRunning before entering this
                 # helper.  Restore the real iteration state so a duplicate
                 # during a repeat/axial gap cannot suppress the legitimate
                 # deferred continuation.
                 self.isRunning = activeIteration is not None
+                ScanLifecycleMixin._recordScanStartRejection(self, reason)
                 return None
         elif localToken is not None:
             # A released token retained by a stale UI path must not be reused.
@@ -999,7 +1076,34 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self._scanRunStartingPublished = False
 
         isNewRun = activeRun is None
-        token = self._scanCoordinator.reserveRun(self)
+        try:
+            token = self._scanCoordinator.reserveRun(self)
+        except ScanBusyError as error:
+            # Another controller's run still owns the coordinator. This is
+            # contention, not a failure of this controller: refuse without
+            # touching the scan button or run state (the TriggerScope family
+            # has always done the same).
+            reason = f'Scan start refused: {error}'
+            self._logger.warning(reason)
+            self.isRunning = activeIteration is not None
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
+            return None
+        if isNewRun and prepareNewRun is not None:
+            try:
+                prepareNewRun()
+            except ScanDesignRefusedError as error:
+                reason = str(error)
+                self._logger.error(f'Scan not started: {reason}')
+                SuperScanController._giveBackUnpublishedRun(self, token)
+                self.isRunning = activeIteration is not None
+                ScanLifecycleMixin._recordScanStartRejection(self, reason)
+                return None
+            except BaseException:
+                # Nothing was published for this run yet, so the caller's
+                # failure path has no lifecycle to pair; only the
+                # reservation needs giving back.
+                SuperScanController._giveBackUnpublishedRun(self, token)
+                raise
         if getattr(self, '_externalScanRequestInProgress', False):
             self._externalScanRequestAccepted = True
             self._externalScanRequestRunToken = token
@@ -1030,6 +1134,75 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             # failure path.
             self._scanRunStartingPublished = True
             self.emitScanSignal(self._commChannel.sigScanStarting)
+        return token
+
+    def _giveBackUnpublishedRun(self, token):
+        """Release a run this start reserved but never published.
+
+        No iteration was armed and no request was bound to it, so the release
+        is immediate and there is no end to publish.
+        """
+        try:
+            self._scanCoordinator.releaseRun(token)
+        except Exception:
+            self._logger.error(
+                'Failed to give back a refused scan-run reservation',
+                exc_info=True,
+            )
+
+    def _buildScanSignals(self):
+        """Read the scan parameters and build ``(signalDict, scanInfoDict)``.
+
+        Raises ScanDesignRefusedError, with the reason, when the scan manager
+        refuses the design.
+        """
+        self.getParameters()
+        return self._master.scanManager.makeFullScan(
+            self._analogParameterDict, self._digitalParameterDict
+        )
+
+    def _beginScanRunWithDesign(self, *, sigScanStartingEmitted,
+                                recalculateSignals):
+        """``_beginScanRun`` plus the run's scan signals.
+
+        The signals are (re)built by ``_buildScanSignals`` when
+        ``recalculateSignals`` asks for it or none exist yet. For a new run
+        that happens after the run is granted but before anything about it is
+        published, so a design the scan manager refuses -- too long for
+        ``scan.maxScanTimeMin``, voltages outside a scanner's range -- refuses
+        the start: the reason goes out on ``sigScanRequestRejected`` and to the
+        request, which an API caller receives as ScanRequestRejectedError. A
+        continuation of a run already underway (a repeat frame, a sequence
+        part, an axial follow-up) can no longer be refused; its refused design
+        fails the run, with the reason as the request's failure message.
+
+        Returns the run token, or None when nothing may be armed.
+        """
+        needsSignals = (
+            recalculateSignals
+            or self.signalDict is None
+            or self.scanInfoDict is None
+        )
+        builtForNewRun = False
+
+        def buildForNewRun():
+            nonlocal builtForNewRun
+            if needsSignals:
+                self.signalDict, self.scanInfoDict = self._buildScanSignals()
+                builtForNewRun = True
+
+        token = self._beginScanRun(
+            sigScanStartingEmitted=sigScanStartingEmitted,
+            prepareNewRun=buildForNewRun,
+        )
+        if token is None or not needsSignals or builtForNewRun:
+            return token
+        try:
+            self.signalDict, self.scanInfoDict = self._buildScanSignals()
+        except ScanDesignRefusedError as error:
+            self._logger.error(f'Scan stopped: {error}')
+            self.scanFailed(message=str(error))
+            return None
         return token
 
     def _scanRunReleaseProven(self, token) -> bool:
@@ -1247,14 +1420,17 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         return True
 
     def scanFailed(
-        self, *, _terminalRunToken=None, _terminalCompletions=None,
-        _forceFinalizeDuringPublication=False,
+        self, *, message=None, _terminalRunToken=None,
+        _terminalCompletions=None, _forceFinalizeDuringPublication=False,
     ):
-        """ Called when scan failed. """
+        """ Called when scan failed. ``message`` is why, for the requests
+        waiting on this run. """
         publicationAlreadyInProgress = bool(
             getattr(self, '_scanCompletionPublishing', False)
         )
         self._scanRunFailed = True
+        if message:
+            self._externalScanRequestFailureMessage = str(message)
         if getattr(self, '_externalScanRequestInProgress', False):
             self._externalScanRequestFailed = True
             if not self._externalScanRequestFailureMessage:
@@ -1567,7 +1743,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 if logger is not None:
                     try:
                         logger.error(
-                            'Unable to verify scan ownership during shutdown',
+                            'Unable to verify scan ownership',
                             exc_info=True,
                         )
                     except Exception:
@@ -1627,6 +1803,31 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
         self.setSharedAttr(_attrCategoryStage, 'positive_direction', positiveDirections)
 
+        # Write-only recording provenance: which devices scan which dims and
+        # their physical stage axes. Recordings store compatibility YX even
+        # for a 1-axis scan, so without this a Z-only profile's file would
+        # say PhysicalSizeX = Z step with nothing preserving that physical Z
+        # was scanned. Follows the positive_direction precedent above; every
+        # storer persists shared attrs; nothing in ImSwitch reads these back.
+        # Derived from the analog dict (device/length/step aligned) so an
+        # assigned axis the designer collapses to one step is not claimed.
+        analogParameterDict = getattr(self, '_analogParameterDict', None) or {}
+        targetDevices = analogParameterDict.get('target_device')
+        if targetDevices:
+            devices, physical = scan_axis_provenance(
+                targetDevices,
+                self._setupInfo.positioners,
+                axis_lengths=analogParameterDict.get('axis_length'),
+                axis_step_sizes=analogParameterDict.get('axis_step_size'),
+            )
+        else:
+            devices, physical = scan_axis_provenance(
+                getattr(self, '_positionersScan', []) or [],
+                self._setupInfo.positioners,
+            )
+        self.setSharedAttr(_attrCategoryStage, 'scan_axis_devices', devices)
+        self.setSharedAttr(_attrCategoryStage, 'scan_axis_physical', physical)
+
     def updateScanTTLAttrs(self):
         self.getParameters()
 
@@ -1634,9 +1835,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self.setSharedAttr(_attrCategoryTTL, key, value)
 
 
-    @APIExport(runOnUIThread=True)
     def runScan(self) -> None:
-        """ Runs a scan with the set scanning parameters. """
+        """ Runs a scan with the set scanning parameters (GUI Scan button).
+        The API entry point is WorkflowFacadeController.runScan, exported once
+        so rigs with several scanners do not collide on the name. """
         self.runScanAdvanced(sigScanStartingEmitted=False)
         
     def sendScanParameters(self):

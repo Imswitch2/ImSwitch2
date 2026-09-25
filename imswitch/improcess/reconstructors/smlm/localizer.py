@@ -15,6 +15,10 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.acquisition_layout import (
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    iter_recorded_coordinates,
+)
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.localization_schema import localizations_from_columns
 from imswitch.improcess.reconstructors.base import StreamingReconstructor
@@ -23,6 +27,94 @@ from .detection import detect_spots
 from .fitting import fit_spots
 from .params_widget import SmlmParamsWidget
 from .precision import localization_precision_nm
+
+#: Loop kinds that advance a chronological frame stream, which is what SMLM
+#: localizes. Every other kind is a second physical dimension, and flattening
+#: it into the frame index mixes unrelated states into one blinking trace.
+FRAME_LOOP_KINDS = frozenset({"time", "repeat", "frame"})
+
+_UNIT_TO_NM = {"nm": 1.0, "um": 1000.0, "µm": 1000.0, "micron": 1000.0, "mm": 1e6}
+
+
+class AnisotropicPixelSize(ValueError):
+    """The source declares a different pitch along Y than along X."""
+
+    def __init__(self, y_nm: float, x_nm: float):
+        self.y_nm = float(y_nm)
+        self.x_nm = float(x_nm)
+        super().__init__(
+            f"This recording is calibrated {self.y_nm:g} nm along Y and "
+            f"{self.x_nm:g} nm along X. SMLM localizes in one pixel pitch, so "
+            f"applying either would scale the other axis wrongly -- every Y "
+            f"coordinate and sigma would be reported in X's units. Enter a "
+            f"pixel size explicitly if one of them is right, or resample the "
+            f"stack to square pixels."
+        )
+
+
+def source_pixel_sizes_nm(data_obj: Any) -> tuple[float, float] | None:
+    """``(y, x)`` pixel pitch in nm from the source's calibration, or ``None``."""
+    labels = list(getattr(data_obj, "axis_labels", None) or [])
+    scales = list(getattr(data_obj, "axis_scales", None) or [])
+    factor = _UNIT_TO_NM.get(str(getattr(data_obj, "scale_unit", "") or "").lower())
+    if factor is None:
+        return None
+
+    def pitch(axis: str) -> float | None:
+        if axis not in labels:
+            return None
+        index = labels.index(axis)
+        if index >= len(scales):
+            return None
+        try:
+            value = float(scales[index])
+        except (TypeError, ValueError):
+            return None
+        return value * factor if value > 0 else None
+
+    x_nm = pitch("X")
+    if x_nm is None:
+        return None
+    # An absent Y calibration is not evidence of a square pixel, but it is the
+    # only reading available, so X stands for both and the caller is none the
+    # wiser -- which is what the source itself says.
+    return (pitch("Y") or x_nm), x_nm
+
+
+def source_pixel_size_nm(data_obj: Any) -> float | None:
+    """The camera's pixel pitch in nm, when one number describes both axes.
+
+    Reading X alone and using it for both axes reported every Y coordinate and
+    every Y sigma in X's units on an anisotropically calibrated recording --
+    silently, since the number looked perfectly ordinary. Anisotropy is
+    refused rather than averaged or picked from: which axis is right is a
+    question about the microscope, not about this file.
+    """
+    sizes = source_pixel_sizes_nm(data_obj)
+    if sizes is None:
+        return None
+    y_nm, x_nm = sizes
+    if abs(y_nm - x_nm) > 1e-6 * max(y_nm, x_nm):
+        raise AnisotropicPixelSize(y_nm, x_nm)
+    return x_nm
+
+
+def non_frame_loops(layout: Any) -> tuple:
+    """Acquisition loops that are not a chronological frame axis."""
+    if layout is None or layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
+        return ()
+    return tuple(
+        loop for loop in layout.event_loops if loop.kind not in FRAME_LOOP_KINDS
+    )
+
+
+def frame_indices_for_selection(layout: Any, selection: dict) -> list[int]:
+    """Stored-frame indices whose coordinates match ``selection``."""
+    return [
+        index
+        for index, coordinates in enumerate(iter_recorded_coordinates(layout))
+        if all(coordinates.get(loop_id) == value for loop_id, value in selection.items())
+    ]
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -125,6 +217,16 @@ class SmlmLocalizer(StreamingReconstructor):
     description = "Single-molecule localization (net-gradient detect + fit)"
     default_save_subdir = "smlm"
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'threshold': 500.0,
+        'sigma': 1.0,
+        'roi': 7,
+        'method': 'gausslq',
+        # None: the recording's own calibration answers (the widget's
+        # 'From the recording'); a number overrides it.
+        'pixel_size_nm': None}
+
     def __init__(self):
         self._logger = initLogger('SmlmLocalizer')
 
@@ -143,7 +245,8 @@ class SmlmLocalizer(StreamingReconstructor):
         self, data_obj: "DataObj", params: dict, context=None
     ) -> LocalizationResult:
         data, source_shape = self._load_frames(data_obj)
-        pixel_size_nm = float(params.get("pixel_size_nm", 1.0) or 1.0)
+        data, selection = self._select_frame_stream(data_obj, data, params)
+        pixel_size_nm, calibration = self._pixel_size_nm(data_obj, params)
         locs = localize_stack(
             data,
             threshold=float(params.get("threshold", 500.0)),
@@ -168,8 +271,90 @@ class SmlmLocalizer(StreamingReconstructor):
                 "threshold": float(params.get("threshold", 500.0)),
                 "roi": int(params.get("roi", 7)),
                 "fit_method": str(params.get("method", "gausslq")),
+                **calibration,
+                **({"loop_selection": selection} if selection else {}),
             },
         )
+
+    def _select_frame_stream(
+        self, data_obj: "DataObj", data: np.ndarray, params: dict
+    ) -> tuple[np.ndarray, dict]:
+        """Reduce a recorded multi-loop acquisition to one frame stream.
+
+        SMLM treats every leading axis as chronological. When a recording says
+        an axis is a condition, a channel or a scan coordinate, flattening it
+        into the frame index mixes unrelated states into one blinking trace, so
+        the caller has to say which one to localize.
+        """
+        resolved = getattr(data_obj, "acquisition_layout", None)
+        # Refusing the user's data needs a statement, not an inference.
+        if resolved is None or not resolved.is_authoritative:
+            return data, {}
+        layout = resolved.layout
+        extra = non_frame_loops(layout)
+        if not extra:
+            return data, {}
+
+        selection = dict(params.get("loop_selection") or {})
+        unresolved = [loop for loop in extra if loop.id not in selection]
+        if unresolved:
+            names = ", ".join(f"{loop.id!r} ({loop.kind}, {loop.count})" for loop in extra)
+            raise ValueError(
+                f"This recording is not a plain frame stream: it also has "
+                f"{names}. Localizing it as-is would flatten those into time "
+                f"and mix unrelated states into one trace. Choose one index "
+                f"per loop (loop_selection), or use a reconstructor that "
+                f"understands them."
+            )
+        for loop in extra:
+            index = int(selection[loop.id])
+            if not 0 <= index < loop.count:
+                raise ValueError(
+                    f"Selection {index} for loop {loop.id!r} is outside "
+                    f"0..{loop.count - 1}"
+                )
+        indices = frame_indices_for_selection(layout, selection)
+        if not indices:
+            raise ValueError(f"No frames match the selection {selection}")
+        flat = np.asarray(data)
+        flat = flat.reshape(-1, *flat.shape[-2:])
+        # The range check above is against the layout, which describes the scan
+        # that was *planned*. A recording stopped early holds fewer frames than
+        # that, so a selection its own validator accepts can still point past
+        # the end of the array -- and did, as a bare numpy IndexError naming an
+        # axis, with nothing to say the position was never acquired.
+        beyond = [index for index in indices if index >= len(flat)]
+        if beyond:
+            raise ValueError(
+                f"The selection {selection} names scan position(s) this "
+                f"recording does not contain: the layout plans "
+                f"{len(indices)} frame(s) at indices up to {max(indices)}, "
+                f"but only {len(flat)} were recorded. The acquisition was "
+                f"stopped before reaching them."
+            )
+        return flat[indices], selection
+
+    @staticmethod
+    def _pixel_size_nm(data_obj: "DataObj", params: dict) -> tuple[float, dict]:
+        """Prefer the source's own calibration; record which one was used."""
+        manual = params.get("pixel_size_nm")
+        manual = float(manual) if manual else None
+        try:
+            recorded = source_pixel_size_nm(data_obj)
+        except AnisotropicPixelSize:
+            # A pixel size the user typed is a deliberate answer to exactly
+            # this question, so it settles it. Without one there is nothing to
+            # localize with, and guessing an axis would be the silent wrong
+            # answer this refusal exists to prevent.
+            if manual is None:
+                raise
+            return manual, {"pixel_size_source": "manual-anisotropic-source"}
+        if recorded is not None:
+            calibration = {"pixel_size_source": "source"}
+            if manual is not None and abs(manual - recorded) > 1e-9:
+                calibration["pixel_size_nm_manual"] = manual
+            return recorded, calibration
+        return (manual or 1.0), {"pixel_size_source": "manual"}
 
     @staticmethod
     def _load_frames(data_obj: "DataObj") -> tuple[np.ndarray, tuple[int, int] | None]:

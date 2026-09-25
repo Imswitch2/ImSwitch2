@@ -1,10 +1,7 @@
 """Result wrapper for multicolor-aligned sample data."""
 
-from pathlib import Path
 
-import h5py
 import numpy as np
-import tifffile
 
 from imswitch.improcess.analysis.multicolor import alignment_summary
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
@@ -53,5 +50,5 @@ class MulticolorApplyResult(ProcessingResult):
             scale_unit=scale_unit,
         )
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        save_image_result(self, path, fmt, extra={"summary": self.summary})
+    def write_files(self, plan, document) -> None:
+        save_image_result(self, plan.primary, plan.fmt, extra={"summary": self.summary}, document=document)

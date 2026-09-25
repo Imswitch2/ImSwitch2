@@ -1,0 +1,683 @@
+{
+  "coverage": {
+    "alias_spellings": 9,
+    "constrained": 46,
+    "docs_agree": 136,
+    "docs_documented": 136,
+    "keys": 215,
+    "managers": 62,
+    "none_default_only": 29,
+    "none_only": 18,
+    "optional": 153,
+    "reads_any": 57,
+    "refs": 15,
+    "required": 62,
+    "typed_by_code": 96,
+    "typed_with_docs": 157,
+    "typed_with_examples": 128,
+    "uncertain": 0,
+    "unresolved_reads": 3,
+    "with_keys": 57,
+    "writes": 0
+  },
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "generator_version": 2,
+  "kinds": {
+    "detector": {
+      "class": "DetectorInfo",
+      "fields": 6,
+      "required": 1
+    },
+    "flip_mirror": {
+      "class": "FlipMirrorInfo",
+      "fields": 6,
+      "required": 1
+    },
+    "laser": {
+      "class": "LaserInfo",
+      "fields": 12,
+      "required": 4
+    },
+    "positioner": {
+      "class": "PositionerInfo",
+      "fields": 14,
+      "required": 2
+    },
+    "rotator": {
+      "class": "DeviceInfo",
+      "fields": 4,
+      "required": 1
+    },
+    "rs232": {
+      "class": "RS232Info",
+      "fields": 2,
+      "required": 2
+    },
+    "slm": {
+      "class": "SLMsInfo",
+      "fields": 14,
+      "required": 8
+    },
+    "stand": {
+      "class": "MicroscopeStandInfo",
+      "fields": 3,
+      "required": 3
+    }
+  },
+  "managers": {
+    "AAAOTFLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "AAAOTFLaserManager",
+        "LaserManager"
+      ],
+      "overridden": true,
+      "properties": 8,
+      "required": 2
+    },
+    "APDManager": {
+      "category": "detectors",
+      "classes": [
+        "APDManager",
+        "DetectorManager"
+      ],
+      "overridden": false,
+      "properties": 9,
+      "required": 2
+    },
+    "AVManager": {
+      "category": "detectors",
+      "classes": [
+        "AVManager",
+        "DetectorManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 2
+    },
+    "BSC203StageManager": {
+      "category": "positioners",
+      "classes": [
+        "BSC203StageManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 0
+    },
+    "Cobolt0601LaserManager": {
+      "category": "lasers",
+      "classes": [
+        "Cobolt0601LaserManager",
+        "LantzLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 1
+    },
+    "Cobolt0601NewLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "Cobolt0601NewLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 10,
+      "required": 1
+    },
+    "CoboltLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "CoboltLaserManager",
+        "Cobolt0601LaserManager",
+        "LantzLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 1
+    },
+    "CoolLEDLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "CoolLEDLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 0
+    },
+    "ESP32LEDLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "ESP32LEDLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 0
+    },
+    "ESP32LEDMatrixManager": {
+      "category": "lasers",
+      "classes": [
+        "ESP32LEDMatrixManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 1
+    },
+    "ESP32LightSheetManager": {
+      "category": "lasers",
+      "classes": [
+        "ESP32LightSheetManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 2
+    },
+    "ESP32Manager": {
+      "category": "rs232devices",
+      "classes": [
+        "ESP32Manager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 0
+    },
+    "ESP32StageManager": {
+      "category": "positioners",
+      "classes": [
+        "ESP32StageManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 1
+    },
+    "ElliptecManager": {
+      "category": "rs232devices",
+      "classes": [
+        "ElliptecManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 2
+    },
+    "ElliptecRotatorManager": {
+      "category": "rotators",
+      "classes": [
+        "ElliptecRotatorManager",
+        "RotatorManager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 2
+    },
+    "GRBLLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "GRBLLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 2
+    },
+    "GRBLManager": {
+      "category": "rs232devices",
+      "classes": [
+        "GRBLManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 1
+    },
+    "GRBLStageManager": {
+      "category": "positioners",
+      "classes": [
+        "GRBLStageManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 1
+    },
+    "HamamatsuManager": {
+      "category": "detectors",
+      "classes": [
+        "HamamatsuManager",
+        "DetectorManager"
+      ],
+      "overridden": true,
+      "properties": 3,
+      "required": 2
+    },
+    "HamamatsuSLMdviManager": {
+      "category": "slms",
+      "classes": [
+        "HamamatsuSLMdviManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "HamamatsuSLMusbManager": {
+      "category": "slms",
+      "classes": [
+        "HamamatsuSLMusbManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 0
+    },
+    "JenaPiezoZManager": {
+      "category": "positioners",
+      "classes": [
+        "JenaPiezoZManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 5,
+      "required": 1
+    },
+    "KDC101Manager": {
+      "category": "rs232devices",
+      "classes": [
+        "KDC101Manager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 4
+    },
+    "KDC101PositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "KDC101PositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 6,
+      "required": 4
+    },
+    "KinesisRotatorManager": {
+      "category": "rotators",
+      "classes": [
+        "KinesisRotatorManager",
+        "RotatorManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 1
+    },
+    "KinesisStageManager": {
+      "category": "positioners",
+      "classes": [
+        "KinesisStageManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 6,
+      "required": 1
+    },
+    "LEDMatrixManager": {
+      "category": "lasers",
+      "classes": [
+        "LEDMatrixManager"
+      ],
+      "overridden": false,
+      "properties": 0,
+      "required": 0
+    },
+    "LantzLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "LantzLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 1
+    },
+    "LeicaDMIStandManager": {
+      "category": "stands",
+      "classes": [
+        "LeicaDMIStandManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "LeicaDMIStandMockManager": {
+      "category": "stands",
+      "classes": [
+        "MockLeicaDMIStandManager"
+      ],
+      "overridden": false,
+      "properties": 0,
+      "required": 0
+    },
+    "LeicaDMIZPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "LeicaDMIZPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 1
+    },
+    "MHXYStageManager": {
+      "category": "positioners",
+      "classes": [
+        "MHXYStageManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "MPBLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "MPBLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 7,
+      "required": 0
+    },
+    "MockPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "MockPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 0,
+      "required": 0
+    },
+    "NidaqLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "NidaqLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "NidaqPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "NidaqPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 3
+    },
+    "OxxiusCombinerLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "OxxiusCombinerLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 2
+    },
+    "OxxiusLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "OxxiusLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 1
+    },
+    "PIStageManager": {
+      "category": "positioners",
+      "classes": [
+        "PIStageManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 0
+    },
+    "PMTManager": {
+      "category": "detectors",
+      "classes": [
+        "PMTManager",
+        "DetectorManager"
+      ],
+      "overridden": false,
+      "properties": 13,
+      "required": 0
+    },
+    "PhotometricsManager": {
+      "category": "detectors",
+      "classes": [
+        "PhotometricsManager",
+        "DetectorManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 1
+    },
+    "PiCamManager": {
+      "category": "detectors",
+      "classes": [
+        "PiCamManager",
+        "DetectorManager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 3
+    },
+    "PiezoconceptZManager": {
+      "category": "positioners",
+      "classes": [
+        "PiezoconceptZManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "PiezoconceptZManager2": {
+      "category": "positioners",
+      "classes": [
+        "PiezoconceptZManager2",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 0
+    },
+    "PulseGeneratorLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "PulseGeneratorLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "PulseStreamerLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "PulseStreamerLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "PulseStreamerManager": {
+      "category": "pulsegen",
+      "classes": [
+        "PulseStreamerManager",
+        "PulseGeneratorManager"
+      ],
+      "overridden": false,
+      "properties": 0,
+      "required": 0
+    },
+    "PyMicroscopeLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "PyMicroscopeLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 0
+    },
+    "RS232Manager": {
+      "category": "rs232devices",
+      "classes": [
+        "RS232Manager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 2
+    },
+    "SQUIDManager": {
+      "category": "rs232devices",
+      "classes": [
+        "SQUIDManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "SQUIDStageManager": {
+      "category": "positioners",
+      "classes": [
+        "SQUIDStageManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 1,
+      "required": 0
+    },
+    "SerialDacZManager": {
+      "category": "positioners",
+      "classes": [
+        "SerialDacZManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 13,
+      "required": 0
+    },
+    "SmarACTPositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "SmarACTPositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 0
+    },
+    "StandaRotatorManager": {
+      "category": "rotators",
+      "classes": [
+        "StandaRotatorManager",
+        "RotatorManager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 4
+    },
+    "SwabianTimeTaggerManager": {
+      "category": "detectors",
+      "classes": [
+        "SwabianTimeTaggerManager",
+        "DetectorManager"
+      ],
+      "overridden": false,
+      "properties": 15,
+      "required": 3
+    },
+    "TISManager": {
+      "category": "detectors",
+      "classes": [
+        "TISManager",
+        "DetectorManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 2
+    },
+    "TeensyPulseManager": {
+      "category": "pulsegen",
+      "classes": [
+        "TeensyPulseManager",
+        "PulseGeneratorManager"
+      ],
+      "overridden": false,
+      "properties": 0,
+      "required": 0
+    },
+    "ThorCamTSIManager": {
+      "category": "detectors",
+      "classes": [
+        "ThorCamTSIManager",
+        "DetectorManager"
+      ],
+      "overridden": false,
+      "properties": 6,
+      "required": 0
+    },
+    "ThorlabsMFFManager": {
+      "category": "flipMirrors",
+      "classes": [
+        "ThorlabsMFFManager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 0
+    },
+    "ThorlabsMFFMockManager": {
+      "category": "flipMirrors",
+      "classes": [
+        "MockThorlabsMFFManager"
+      ],
+      "overridden": false,
+      "properties": 2,
+      "required": 0
+    },
+    "TriggerScopeLaserManager": {
+      "category": "lasers",
+      "classes": [
+        "TriggerScopeLaserManager",
+        "LaserManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 2
+    },
+    "TriggerScopePositionerManager": {
+      "category": "positioners",
+      "classes": [
+        "TriggerScopePositionerManager",
+        "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 3,
+      "required": 3
+    }
+  },
+  "regenerate": "python tools/extract_manager_schemas.py --write",
+  "unresolved": [
+    "PyCoboltManager"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "axis": {
+      "x-imswitch-source": [
+        "code:required"
+      ]
+    },
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "rs232device": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:ref",
+        "code:required"
+      ],
+      "x-imswitch-widget": "ref"
+    }
+  },
+  "required": [
+    "axis",
+    "rs232device"
+  ],
+  "title": "ESP32LightSheetManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ESP32LightSheetManager",
+    "LaserManager"
+  ]
+}

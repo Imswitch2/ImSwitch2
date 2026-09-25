@@ -78,6 +78,9 @@ class CommunicationChannel(SignalInterface):
     Listeners: DataFrameController
     """
 
+    sigStatusMessage = Signal(str)  # a transient line for the status bar (see ImProcessMainView.showStatusMessage)
+
+    sigAddToMultiData = Signal(str, str)  # (path, datasetName)
     sigPatternVisibilityChanged = Signal(bool)
     """The pattern overlay was shown or hidden. Payload: ``(visible,)``.
 

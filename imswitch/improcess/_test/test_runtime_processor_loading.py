@@ -176,12 +176,17 @@ def test_plugins_menu_actions_and_reload_signal(qapp):
 
     ImProcessMainView._buildPluginsMenu(view)
 
-    assert set(view._pluginMenuActions) == {"browse-online", "open-folder", "reload"}
+    assert set(view._pluginMenuActions) == {
+        "browse-online", "open-folder", "add-file", "reload",
+    }
     assert view._pluginMenuActions["open-folder"].text() == "Open plugins folder..."
+    assert view._pluginMenuActions["add-file"].text() == "Add plugin file..."
     assert view._pluginMenuActions["browse-online"].text() == "Browse online plugins..."
-    # Store and reload live on the Plugins toolbar too (folder is menu-only).
+    # Store, add-file and reload live on the Plugins toolbar too (folder is
+    # menu-only).
     toolbar_actions = view._pluginsToolbar.actions()
     assert view._pluginMenuActions["browse-online"] in toolbar_actions
+    assert view._pluginMenuActions["add-file"] in toolbar_actions
     assert view._pluginMenuActions["reload"] in toolbar_actions
     assert view._pluginMenuActions["open-folder"] not in toolbar_actions
 

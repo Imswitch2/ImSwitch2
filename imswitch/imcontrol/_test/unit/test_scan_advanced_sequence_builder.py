@@ -42,6 +42,7 @@ def test_sequence_builder_state_keys_are_saved_and_restored():
     source = SERIALIZER_PATH.read_text()
 
     for key in (
+        "linestep_power_enabled",
         "advanced_program_mode",
         "advanced_sequence_rows",
         "line_program_devices_enabled",
@@ -93,3 +94,12 @@ def test_advanced_ttl_targets_filter_scanning_positioners():
     assert AdvancedScanTTLCycleDesigner._ttl_targets(
         ["laser", "x_stage", "filter_wheel"], setup_info
     ) == ["laser", "filter_wheel"]
+
+
+def test_disabled_power_modulation_skips_scan_ao_injection():
+    source = CONTROLLER_PATH.read_text()
+    body = _method_body(source, "_inject_linestep_power_ao")
+
+    assert 'power_enabled = (TTLParameters or {}).get("linestep_power_enabled", {}) or {}' in body
+    assert 'if not bool(power_enabled.get(laserName, True)):' in body
+    assert 'continue' in body

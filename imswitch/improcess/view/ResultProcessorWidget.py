@@ -48,6 +48,14 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         self.runButton.setEnabled(False)
 
         self.paramWidget = processor.make_param_widget(self)
+        # The widget exists now, on the GUI thread: the one safe place to
+        # compare it with the plugin's headless declaration. A mismatch is
+        # remembered on the class, so results made here record why they
+        # cannot be replayed.
+        from imswitch.imcommon.model import initLogger
+        from imswitch.improcess.model.plugin_contract import warn_contract_problems
+
+        warn_contract_problems(initLogger(self, tryInheritParent=False), processor, self.paramWidget)
 
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)

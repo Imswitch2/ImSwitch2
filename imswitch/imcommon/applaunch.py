@@ -5,7 +5,7 @@ import traceback
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from .model import dirtools, pythontools, initLogger
+from .model import dirtools, ostools, pythontools, initLogger, shutdownState
 from .view.guitools import getBaseStyleSheet
 
 
@@ -54,8 +54,45 @@ def prepareApp(scale=None):
     return app
 
 
+def shutdownModules(moduleMainControllers, logger=None):
+    """ Shut the modules down in two phases.
+
+    1. ``prepareShutdown()`` on every module that has one, in **reverse**
+       creation order (imscripting is created last so that its API scope can
+       see every other module; it must therefore stop first). This is where
+       threads able to reach hardware are drained and the API gate closes.
+    2. ``closeEvent()`` on every module in creation order, as before.
+
+    Exceptions in either phase are logged and do not stop the others. """
+    if logger is None:
+        logger = initLogger('launchApp')
+    controllers = list(moduleMainControllers)
+
+    for controller in reversed(controllers):
+        prepare = getattr(controller, 'prepareShutdown', None)
+        if not callable(prepare):
+            continue
+        try:
+            prepare()
+        except Exception:
+            logger.error(f'Error preparing shutdown of {type(controller).__name__}')
+            logger.error(traceback.format_exc())
+
+    for controller in controllers:
+        try:
+            controller.closeEvent()
+        except Exception:
+            logger.error(f'Error closing {type(controller).__name__}')
+            logger.error(traceback.format_exc())
+
+
 def launchApp(app, mainView, moduleMainControllers):
-    """ Launches the app. The program will exit when the app is exited. """
+    """ Launches the app. The program will exit when the app is exited.
+
+    If something asked for a restart while the app was running (see
+    ``ostools.requestRestart``), the restart happens here rather than at the
+    point of the request -- after the modules have shut down, so that hardware
+    is left in a known state instead of whatever it happened to be doing. """
 
     logger = initLogger('launchApp')
 
@@ -65,15 +102,46 @@ def launchApp(app, mainView, moduleMainControllers):
     exitCode = app.exec_()
 
     # Clean up
-    for controller in moduleMainControllers:
-        try:
-            controller.closeEvent()
-        except Exception:
-            logger.error(f'Error closing {type(controller).__name__}')
-            logger.error(traceback.format_exc())
+    shutdownModules(moduleMainControllers, logger)
+
+    restartModule = ostools.restartRequested()
+
+    if not shutdownState.hardwareFinalizationAllowed():
+        # A script thread is still alive: hardware managers were deliberately
+        # not finalized (fail closed). Destroying that running QThread during
+        # interpreter finalization would make Qt abort the process, so leave
+        # without running finalizers at all.
+        logger.error(
+            'Exiting without finalizers because a script did not stop: '
+            + '; '.join(shutdownState.reasons)
+        )
+        logging.shutdown()
+        if restartModule is not None:
+            # execv replaces this process image, which drops the stuck thread
+            # just as _exit would -- the restart is no less safe than leaving.
+            _restart(restartModule, logger)
+        os._exit(exitCode or 1)
+
+    if restartModule is not None:
+        logger.info('Restarting ImSwitch')
+        logging.shutdown()
+        _restart(restartModule, logger)
 
     # Exit
     sys.exit(exitCode)
+
+
+def _restart(module, logger):
+    """ Re-exec, or -- if the interpreter cannot be exec'd -- say so and let the
+    caller exit normally. A failed execv used to escape as an uncaught
+    exception, so ImSwitch neither restarted nor exited cleanly. """
+    try:
+        ostools.restartSoftware(module)
+    except OSError as err:
+        logger.error(
+            f'Could not restart ImSwitch ({err}); exiting instead. '
+            f'Start it again by hand.'
+        )
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

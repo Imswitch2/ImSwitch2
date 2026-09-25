@@ -31,6 +31,24 @@ the generic ``DeviceInfo`` with laser-specific fields:
 Which of these a manager actually consumes depends on the manager —
 each section below lists its "LaserInfo fields used".
 
+Power calibration file
+----------------------
+
+Every laser manager accepts ``calibCsvPath`` in its ``managerProperties``
+(the base class reads it through ``hasProperty``).  When the key is
+present the laser widget becomes a 0–100 % setpoint instead of the raw
+``valueRangeMin``–``valueRangeMax`` range: ``LaserController`` asks
+``usesCalibrationLookup()``, which is true whenever the key is set.
+``AAAOTFLaserManager`` and ``NidaqLaserManager`` read the file itself — a
+two-column CSV of ``raw, measured`` power — and map the percentage onto
+the raw range through it.  A manager that does not read the file still
+switches its widget to percent when the key is set, so only set it for a
+manager that implements the lookup.
+
+.. code-block:: json
+
+    "managerProperties": { "calibCsvPath": "C:/calib/561_aotf.csv" }
+
 .. code-block:: json
 
     "lasers": {
@@ -137,6 +155,14 @@ filter, controlled over RS232.
      - *(unset)*
      - Optional path to a 2-column CSV (raw, measured).  If present, a
        LUT is built and ``valueUnits`` switches from ``"arb"`` to ``"%"``.
+   * - ``useMockOnFailure``
+     - bool
+     - ``true``
+     - When the controller does not answer the startup commands (a pyvisa
+       timeout, say), send a best-effort channel OFF and continue with this
+       channel in mock mode instead of aborting ImSwitch. Set to ``false``
+       when a missing AOTF must be a startup error. Configuration errors
+       abort startup either way.
 
 **LaserInfo fields used**
 
@@ -152,8 +178,9 @@ filter, controlled over RS232.
 **Vendor library**
 
 None — commands are sent as plain ASCII over the shared RS232 manager.
-No mock fallback in this manager itself; mocking comes from the RS232
-sub-manager.
+Two mock paths: the RS232 sub-manager substitutes a mock port when the port
+cannot be opened at all, and this manager enters mock mode (see
+``useMockOnFailure``) when the port opens but the controller does not answer.
 
 **Source**
 
@@ -266,6 +293,12 @@ mock fallback.
        with ``MockCobolt06`` instead of aborting ImSwitch startup. Set it to
        ``false`` for a hardware-required setup where a missing laser must be
        reported as an error.
+   * - ``simulation``
+     - bool
+     - Defaults to ``false``. When ``true`` the real serial transport is never
+       opened and ``MockCobolt06`` is used from the start, whether or not the
+       port exists -- for a deliberately simulated laser, as opposed to the
+       ``useMockOnFailure`` fallback.
    * - ``emissionControl``
      - str
      - ``"master"`` uses ``l0``/``l1`` and is the default fail-safe off path.
@@ -294,6 +327,11 @@ mock fallback.
      - Unit used by SCPI power setpoint commands.  Defaults to ``"mW"``, which
        matches Cobolt's current ``pycobolt`` ``Cobolt06`` wrapper.  Use ``"W"``
        only for firmware/configurations that expose SCPI setpoints in watts.
+   * - ``scanResumeSettleMs``
+     - float
+     - Extra delay, in milliseconds, after a successful pause-mode scan resume
+       before returning control to the scan.  Defaults to ``0`` and is only
+       relevant with ``emissionControl: "pause"``.
 
 **LaserInfo fields used**
 
@@ -346,7 +384,18 @@ Identical to ``Cobolt0601LaserManager`` (see above) — just substitute
 
 **managerProperties**
 
-Inherited verbatim from ``Cobolt0601LaserManager`` (``digitalPorts``).
+Inherited verbatim from ``Cobolt0601LaserManager``:
+
+.. list-table::
+   :widths: 25 15 60
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``digitalPorts``
+     - list[str]
+     - COM ports to connect to; only the first is used.  **Required**.
 
 **LaserInfo fields used**
 

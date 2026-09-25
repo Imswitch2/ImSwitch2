@@ -23,11 +23,28 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import json
+
 import numpy as np
 
 #: OME UnitsLength for micrometer, and UnitsTime for second.
 _SPACE_UNIT = '\u00b5m'
+_OME_NAMESPACE = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
+#: Namespace of the one MapAnnotation ImSwitch attaches to an image: the
+#: acquisition layout, recording outcome and any other key/value metadata
+#: that OME's standard image fields have no place for.
+_IMSWITCH_ANNOTATION_NAMESPACE = "https://imswitch.org/ns/acquisition-metadata/1"
 _TIME_UNIT = 's'
+
+#: Namespace for ImSwitch's own OME StructuredAnnotations.
+ANNOTATION_NAMESPACE = 'https://imswitch.readthedocs.io/ome/annotations'
+
+#: The one annotation key that is free text rather than a key/value pair: what
+#: the operator typed about this session ("BFP power was 10 mW at 405 nm").
+NOTE_KEY = 'note'
+#: The shared-attribute category notes are stored under; a raw attribute with
+#: this prefix is a note the recording manager has already mapped.
+_RAW_NOTE_PREFIX = 'notes:'
 
 @dataclass(frozen=True)
 class OmeAxis:
@@ -104,6 +121,45 @@ class OmeImageMeta:
 
     # ---- serializers -------------------------------------------------------
 
+    def annotation_metadata(self) -> Dict[str, Any]:
+        """OME annotation entries for :attr:`annotations`.
+
+        The ``note`` entry is free text a human wrote, so it becomes the OME
+        ``Description`` -- the field Fiji's image properties and OMERO both
+        show as the image's own description, and the only place in OME-TIFF
+        where a sentence like "BFP power was 10 mW" belongs. Everything else
+        is a key/value pair, which is what ``MapAnnotation`` is for.
+
+        Empty values are dropped rather than written as empty elements: a note
+        the operator cleared is not a note.
+        """
+        if not self.annotations:
+            return {}
+
+        md: Dict[str, Any] = {}
+        note = self.annotations.get(NOTE_KEY)
+        if note is not None and str(note).strip():
+            md['Description'] = str(note)
+
+        # Everything else is a key/value pair: the acquisition layout and
+        # recording outcome the storers curate, the scan-axis provenance the
+        # TIFF storer merges from the shared attributes, and any further
+        # note. Values that are not text go as JSON, so a list of device
+        # names comes back as a list. A raw ``notes:*`` attribute is the same
+        # note ``annotationsFromAttrs`` already mapped, so it is not repeated.
+        pairs = {}
+        for key, value in self.annotations.items():
+            key = str(key)
+            if key == NOTE_KEY or key.startswith(_RAW_NOTE_PREFIX) or value is None:
+                continue
+            text = _annotation_text(value)
+            if text == '':
+                continue
+            pairs[key] = text
+        if pairs:
+            md['MapAnnotation'] = {'Namespace': ANNOTATION_NAMESPACE, **pairs}
+        return md
+
     def tiff_metadata(self, shape: Optional[Sequence[int]] = None) -> Dict[str, Any]:
         """``metadata=`` dict for ``tifffile.imwrite(..., ome=True, metadata=...)``.
 
@@ -124,6 +180,7 @@ class OmeImageMeta:
                 md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
         if self.channels:
             md['Channel'] = {'Name': [c.get('name', self.name) for c in self.channels]}
+        md.update(self.annotation_metadata())
         md.update(self.plane_position_metadata(shape))
         return md
 
@@ -250,12 +307,70 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
         elif axis.name == 't':
             md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
 
+    # Same channel serialization as tiff_metadata(): this XML REPLACES the
+    # description tifffile wrote natively (stream finalize always; snap
+    # always), so dropping channels here would strip e.g. the laser name.
+    # tifffile requires exactly SizeC names, and SizeC comes from the FINAL
+    # axes/shape, not from the channel list: a retained line-step scan is
+    # stored TCYX with SizeC = n_linesteps while meta.channels has one entry
+    # per detector. Those extra C planes are line-steps of the SAME physical
+    # channel, so a single name is replicated across them; any other
+    # mismatch omits the Channel mapping (names that don't describe every C
+    # plane must not fail the finalize -- that lost the whole OME-XML).
+    if meta.channels:
+        names = [c.get('name', meta.name) for c in meta.channels]
+        size_c = 1
+        for axis, size in zip(meta.axes, shp):
+            if axis.name == 'c':
+                size_c = int(size)
+        if len(names) == 1 and size_c > 1:
+            names = names * size_c
+        if len(names) == size_c:
+            md['Channel'] = {'Name': names}
+
+    md.update(meta.annotation_metadata())
     md.update(meta.plane_position_metadata(shp))
 
     dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
     xml = tifffile.OmeXml()
     xml.addimage(dtype, shp, stored, axes=meta.axes_string, **md)
+    # Annotations went in through addimage (Description, MapAnnotation), so
+    # the document tifffile produced is the document.
     return xml.tostring().encode('ascii', 'xmlcharrefreplace').decode('ascii')
 
 
-__all__ = ['OmeAxis', 'OmeImageMeta', 'build_ome_xml', '_SPACE_UNIT', '_TIME_UNIT']
+def _annotation_json_default(value: Any):
+    """Normalize values ``json`` can't encode natively, at ANY nesting depth.
+
+    Shared attributes carry raw detector/scan parameter values -- NumPy
+    arrays and scalars, possibly nested in lists or dicts -- and a recording
+    must never fail over its metadata, so the last resort is ``str``.
+    """
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def _annotation_text(value: Any) -> str:
+    """One MapAnnotation value as text: strings as they are, the rest as JSON.
+
+    tifffile writes every ``<M>`` value through its XML escaper, which wants
+    a string, and a reader wants the scan-axis provenance (lists of device
+    names) back as data rather than as a Python repr.
+    """
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, np.generic):
+        value = value.item()
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"),
+                      sort_keys=True, default=_annotation_json_default)
+
+
+__all__ = ['OmeAxis', 'OmeImageMeta', 'build_ome_xml', 'ANNOTATION_NAMESPACE',
+           'NOTE_KEY', '_SPACE_UNIT', '_TIME_UNIT']

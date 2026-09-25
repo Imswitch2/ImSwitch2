@@ -2,10 +2,12 @@ import importlib.util
 import logging
 import os
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from imswitch.imcommon.framework import Signal, FrameworkUtils
-from imswitch.imcommon.model import APIExport, generateAPI, initLogger
+from imswitch.imcommon.model import (
+    APIExport, cancellableSleep, checkpoint, generateAPI, initLogger,
+)
 
 
 class _Actions:
@@ -52,28 +54,137 @@ class _Actions:
 
     @APIExport()
     def getWaitForSignal(self, signal: Signal,
-                         pollIntervalSeconds: float = 1.0) -> Callable[[], None]:
+                         pollIntervalSeconds: float = 0.05,
+                         timeout: Optional[float] = None) -> Callable[[], None]:
         """ Returns a function that will wait for the specified signal to emit.
-        The returned function will continuously check whether the signal has
-        been emitted since its creation. The polling interval defaults to one
-        second, and can be customized. """
+        The returned function will wait until the signal has been emitted
+        since its creation, so **create it before triggering the action** that
+        emits the signal (e.g. before ``api.imcontrol.runScan()``); an
+        emission that happened before creation is not seen.
+
+        The returned function raises ``TimeoutError`` if ``timeout`` seconds
+        pass without an emission (``None`` waits indefinitely) and
+        ``OperationCancelled`` if the script is stopped. It accepts an
+        optional ``timeout`` argument of its own that overrides the one given
+        here. The polling interval defaults to 50 ms. """
 
         emitted = False
 
-        def setEmitted():
+        def setEmitted(*_args, **_kwargs):
             nonlocal emitted
             emitted = True
 
         signal.connect(setEmitted)
+        connected = True
 
-        def wait():
-            while not emitted:
-                FrameworkUtils.processPendingEventsCurrThread()
-                time.sleep(pollIntervalSeconds)
+        def wait(timeout: Optional[float] = timeout) -> None:
+            nonlocal connected
+            deadline = None if timeout is None else time.monotonic() + float(timeout)
+            try:
+                while not emitted:
+                    checkpoint()
+                    FrameworkUtils.processPendingEventsCurrThread()
+                    if emitted:
+                        break
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError(
+                                f'Timed out after {timeout:g} s waiting for the '
+                                f'signal to be emitted'
+                            )
+                        time.sleep(min(pollIntervalSeconds, remaining))
+                    else:
+                        time.sleep(pollIntervalSeconds)
+            finally:
+                close()
 
-            signal.disconnect(setEmitted)
+        def close() -> None:
+            """ Stops listening without waiting. """
+            nonlocal connected
+            if connected:
+                connected = False
+                try:
+                    signal.disconnect(setEmitted)
+                except (TypeError, RuntimeError):
+                    pass  # Already disconnected or the emitter is gone
 
+        wait.close = close
         return wait
+
+    @APIExport()
+    def callAndWaitForSignal(self, signal: Signal, func: Callable, *args,
+                             timeout: Optional[float] = None, **kwargs) -> Any:
+        """ Creates a waiter for ``signal``, then calls ``func(*args,
+        **kwargs)``, then waits for the signal. Returns what ``func``
+        returned. This is the safe way to call an API function and wait for
+        the event it causes, because the waiter exists before the call: a
+        signal emitted synchronously inside the call is caught too.
+
+        Example: ``callAndWaitForSignal(api.imcontrol.signals().recordingEnded,
+        api.imcontrol.stopRecording, timeout=60)``. Raises ``TimeoutError``
+        after ``timeout`` seconds and ``OperationCancelled`` if the script is
+        stopped. """
+        wait = self.getWaitForSignal(signal, timeout=timeout)
+        try:
+            result = func(*args, **kwargs)
+        except BaseException:
+            wait.close()
+            raise
+        wait()
+        return result
+
+    @APIExport()
+    def runScanAndWait(self, timeout: Optional[float] = None,
+                       source: Optional[str] = None) -> None:
+        """ Starts one scan through ``api.imcontrol.runScan`` and waits for
+        exactly that scan to end, whatever the timing of its signals. Raises
+        ``RuntimeError`` if the start was refused (``ScanRequestRejectedError``)
+        or the scan ended unsuccessfully, ``TimeoutError`` after ``timeout``
+        seconds, and ``OperationCancelled`` immediately when the script is
+        stopped (the running scan then finishes on its own). ``source`` picks
+        the scan controller on rigs with several. """
+        api = self._scriptScope.get('api')
+        imcontrol = getattr(api, 'imcontrol', None)
+        if imcontrol is None:
+            raise RuntimeError('runScanAndWait requires the imcontrol module')
+        handle = imcontrol.runScan(source) if source is not None else imcontrol.runScan()
+        if not handle.wait(timeout):
+            raise TimeoutError(
+                f'Timed out after {timeout:g} s waiting for scan {handle.requestId} '
+                'to end'
+            )
+        if not handle.successful:
+            raise RuntimeError(f'Scan {handle.requestId} failed: {handle.message}')
+
+    @APIExport()
+    def sleep(self, seconds: float) -> None:
+        """ Sleeps for the specified number of seconds. Unlike ``time.sleep``,
+        this returns immediately (raising ``OperationCancelled``) when the
+        script is stopped. """
+        cancellableSleep(seconds)
+
+    @APIExport()
+    def waitUntil(self, predicate: Callable[[], bool],
+                  timeout: Optional[float] = None,
+                  pollIntervalSeconds: float = 0.05) -> None:
+        """ Waits until ``predicate()`` returns a true value. Raises
+        ``TimeoutError`` after ``timeout`` seconds (``None`` waits
+        indefinitely) and ``OperationCancelled`` if the script is stopped. """
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        while True:
+            checkpoint()
+            if predicate():
+                return
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f'Timed out after {timeout:g} s waiting for the condition'
+                    )
+                time.sleep(min(pollIntervalSeconds, remaining))
+            else:
+                time.sleep(pollIntervalSeconds)
 
 
 def getActionsScope(otherScope, scriptPath=None):

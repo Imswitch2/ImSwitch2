@@ -197,6 +197,40 @@ STED imaging.
    :width: 600px
    :align: center
 
+The output folder is not remembered between sessions.  With
+``recording.includeDateInOutputFolder`` on (the default) it is rebuilt from
+today's date every time ImSwitch starts, and it is created on demand when a
+recording or snapshot is saved, so it does not have to exist beforehand.
+
+
+Session notes
+-------------
+
+**Tools → Session notes…** opens a free-text editor whose contents are
+written into the metadata of every recording and snapshot saved from then
+until ImSwitch is closed.  It is the place for what no widget captures —
+"measured 10 mW in the BFP for the 405 laser", which coverslip batch is on
+the stage, that the 561 line was misbehaving after lunch.
+
+The note applies to recordings *started after* it was written: a recording
+snapshots the shared attributes when it begins.  The editor is modeless, so
+it can stay open while an experiment runs, and every keystroke takes effect
+immediately — there is no Apply button to forget.  Scripts can set the same
+text with ``api.imcontrol.setSessionNote(...)``.
+
+Where the note ends up depends on the format:
+
+* **HDF5** and **Zarr** — ``metadata/notes/session`` beside the rest of the
+  recording's attributes, and in the embedded OME-XML for HDF5.
+* **OME-TIFF** — the OME ``Description`` of the image, which is what Fiji
+  shows under *Image ▸ Show Info* and what OMERO imports as the image
+  description.  TIFF carries no shared attributes, so this is the note's
+  only route into it.
+
+"Session" means until ImSwitch is closed: the note is deliberately not saved
+with the rest of the widget state, because a note about this morning's
+alignment would be a lie tomorrow.
+
 
 Data visualization
 ==================

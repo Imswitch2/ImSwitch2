@@ -1,0 +1,37 @@
+{
+  "processing": {
+    "napariEndpoints": [
+      {
+        "id": "napari-skimage:threshold",
+        "label": "napari-skimage: Automated threshold",
+        "lane": "dock",
+        "plugin": "napari-skimage",
+        "widget": "Automated Threshold",
+        "kinds": ["image"],
+        "outputMappings": [
+          {"pattern": "*", "layerType": "labels", "kind": "labels", "preservesGrid": true,
+           "label": "threshold mask"}
+        ]
+      },
+      {
+        "id": "napari-storm:reader",
+        "label": "napari-storm (open exported Picasso file)",
+        "lane": "reader",
+        "plugin": "napari-storm",
+        "reader": "napari-storm",
+        "export": "picasso-hdf5",
+        "kinds": ["localization"]
+      },
+      {
+        "id": "my-lab:viewer",
+        "label": "Our lab's 3D viewer (own window)",
+        "lane": "detached",
+        "plugin": "my-lab-viewer",
+        "reader": "my-lab-viewer",
+        "export": "ome-tiff",
+        "kinds": ["image", "composite"],
+        "description": "Example of a plugin that insists on its own napari window"
+      }
+    ]
+  }
+}

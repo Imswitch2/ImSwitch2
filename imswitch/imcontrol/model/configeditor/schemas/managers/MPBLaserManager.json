@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "rampDownDurationS": {
+      "description": "Approximate duration of the descending software ramp. Defaults to",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "rampDownDwellS": {
+      "description": "Optional dwell at minimum power before diode disable. Defaults to zero.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "rampDownEnabled": {
+      "description": "Ramp a live APC output to the device-reported minimum before normal",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "rampDownSteps": {
+      "description": "Number of descending ``SETPOWER`` commands. Defaults to ``20``.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "rs232device": {
+      "description": "RS232 channel name resolved via",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:optional(try/except Exception)",
+        "docs:string"
+      ]
+    },
+    "useMockOnFailure": {
+      "description": "Continue in mock mode after an initialization failure. A best-effort",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "MPBLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "MPBLaserManager",
+    "LaserManager"
+  ]
+}

@@ -16,6 +16,12 @@ inside a folder is the ``LiveSource``'s job.
 
 import collections
 import os
+import re
+from collections import deque
+from typing import Any
+
+import h5py
+import zarr
 
 from qtpy import QtCore
 
@@ -25,6 +31,19 @@ from imswitch.improcess.live.discovery import DirectoryWatcher, JobQueue
 from imswitch.improcess.live.source_type import probe_source_type
 from .basecontrollers import ImProcessWidgetController
 from .LiveReconstructionController import LiveReconstructionController
+
+# How deep below the selected folder to look for recording stores. Measurement
+# folders are created one level under the watched root; depth 2 covers
+# "select the parent folder" without scanning the whole tree.
+_DISCOVERY_MAX_DEPTH = 2
+# Output subdirectories (reconstructions/logs) that must never be ingested.
+_DISCOVERY_EXCLUDE_DIRS = {"rec", "deskew", "Mini_Recon_Results", "__pycache__"}
+_LIVE_EXTENSION_SUFFIXES = {
+    "zarr": {".zarr"},
+    "hdf5": {".hdf5", ".h5", ".hdf"},
+    "h5": {".hdf5", ".h5", ".hdf"},
+    "hdf": {".hdf5", ".h5", ".hdf"},
+}
 
 
 class LiveModeController(ImProcessWidgetController):

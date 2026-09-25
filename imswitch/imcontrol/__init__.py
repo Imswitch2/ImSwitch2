@@ -4,7 +4,7 @@ __title__ = 'Hardware Control'
 
 def getMainViewAndController(moduleCommChannel, *_args,
                              overrideSetupInfo=None, overrideOptions=None, **_kwargs):
-    from imswitch.imcommon.model import initLogger
+    from imswitch.imcommon.model import initLogger, memory_limits
     from .controller.ImConMainController import ImConMainController
     from .model import configfiletools
     from .view import ViewSetupInfo, ImConMainView
@@ -48,7 +48,13 @@ def getMainViewAndController(moduleCommChannel, *_args,
         setupInfo = overrideSetupInfo
 
     logger.info(f'Setup used: {options.setupFileName}')
-    
+
+    # The queue and working-set limits are per machine and read from these
+    # options by every manager that bounds a buffer; adopt them before any
+    # manager exists. A value that cannot be honoured is reported by name and
+    # the built-in literal stands.
+    memory_limits.configure(getattr(options, 'memory', None), logger=logger)
+
     view = ImConMainView(options, setupInfo)
     try:
         controller = ImConMainController(options, setupInfo, view, moduleCommChannel)

@@ -1,0 +1,21 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "PMTManager",
+    "managerProperties": {
+      "aiVoltageMax": 1.5,
+      "aiVoltageMin": 1.5,
+      "analogInputLine": 1,
+      "cameraPixelSizeUm": null,
+      "deviceName": "example",
+      "liveUpdateIntervalMs": 1.5,
+      "mockRandomSeed": 1,
+      "mockVoltageMax": 1.5,
+      "mockVoltageMean": 1.5,
+      "mockVoltageMin": 1.5,
+      "mockVoltageNoiseStd": 1.5,
+      "offset_v": 1.5,
+      "simulation_mode": true
+    }
+  }
+}

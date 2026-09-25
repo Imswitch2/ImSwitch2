@@ -1,0 +1,10 @@
+{
+  "category": "rs232devices",
+  "device": {
+    "managerName": "GRBLManager",
+    "managerProperties": {
+      "is_home": "example",
+      "port": "example"
+    }
+  }
+}

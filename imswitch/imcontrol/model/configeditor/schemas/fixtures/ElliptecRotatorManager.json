@@ -1,0 +1,12 @@
+{
+  "category": "rotators",
+  "device": {
+    "managerName": "ElliptecRotatorManager",
+    "managerProperties": {
+      "address": 1,
+      "homeOnInit": true,
+      "port": "example",
+      "scale": "example"
+    }
+  }
+}

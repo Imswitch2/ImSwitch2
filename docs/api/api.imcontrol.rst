@@ -9,7 +9,35 @@ api.imcontrol
    .. method:: getDetectorNames() -> List[str]
 
       Returns the device names of all detectors. These device names can
-      be passed to other detector-related functions. 
+      be passed to other detector-related functions.
+
+   .. method:: getDetectorParameter(detectorName: str, parameterName: str) -> Any
+
+      Returns the value of the specified detector-specific parameter, in
+      the parameter's own units -- the value the Settings widget shows.
+      Parameter names and units differ from detector to detector;
+      getDetectorParameters lists them. Raises AttributeError for a name
+      the detector does not have.
+
+   .. method:: getDetectorParameters(detectorName: str) -> Dict[str, Dict[str, Any]]
+
+      Returns all detector-specific parameters of the specified detector
+      as {parameter name: {'value', 'units', 'editable', 'options'}}. 'units'
+      is None for a parameter that picks from a list of 'options', and
+      'options' is None for a numerical one. Only an editable parameter can
+      be changed with setDetectorParameter.
+
+      The exposure time, for example, is ``'exposure'`` in ms on the
+      simulated camera of the mock setups, ``'Exposure'`` in µs on a
+      Thorlabs camera and ``'Set exposure time'`` in s on a Hamamatsu
+      camera. To change a parameter and put it back afterwards::
+
+         before = api.imcontrol.getDetectorParameter(camera, 'exposure')
+         try:
+             api.imcontrol.setDetectorParameter(camera, 'exposure', 10)
+             ...
+         finally:
+             api.imcontrol.setDetectorParameter(camera, 'exposure', before)
 
    .. method:: getLaserNames() -> List[str]
 
@@ -37,6 +65,12 @@ api.imcontrol
 
       set the d3Stepdelay parameter (additional parameter rom the pointscan widget, mostly relevant for the polarization during scan)
 
+   .. method:: changeScanPower(laserName: str, laserValue: Union[int, float]) -> None
+
+      Sets the value of the specified laser, in the units that the laser
+      uses (alias of setLaserValue kept for existing scripts). Runs on the
+      UI thread because it updates the laser widget. 
+
    .. method:: changeScanSize(positionerName: str, size: float) -> None
 
       change scan size of positioner
@@ -46,10 +80,49 @@ api.imcontrol
       Moves the specified positioner axis by the specified number of
       micrometers. 
 
-   .. method:: runScan() -> None
+   .. method:: getRecFileFormat() -> str
 
-      Runs a scan with the set scanning parameters. 
-   
+      Returns the file format recordings are saved in: 'HDF5', 'TIFF' or
+      'ZARR'. 
+
+   .. method:: getRecFolder() -> str
+
+      Returns the folder recordings and snaps are saved in. 
+
+   .. method:: getScanRequestStatus(requestId: str) -> dict
+
+      Status of a scan started with runScan, as ``{requestId, source,
+      state, message, exact}`` with state ``pending``, ``succeeded`` or
+      ``failed``. Raises KeyError for an unknown or evicted request id. 
+
+   .. method:: getScanSourceNames() -> List[str]
+
+      Widget keys of every scan controller that runScan(source=...) can
+      target on this setup. 
+
+   .. method:: isRecording() -> bool
+
+      Whether a recording is currently active. 
+
+   .. method:: runScan(source: Optional[str] = None) -> ScanRunHandle
+
+      Starts one scan with the parameters set in the scan widget and
+      returns a handle for its completion.
+      
+      The request is pre-flighted before any lifecycle signal is published;
+      a refused start (a scan is already running, the previous one is still
+      finishing, ...) raises ``ScanRequestRejectedError`` (a RuntimeError)
+      and nothing else happens. On rigs with several scanners ``source``
+      selects one by its widget key (see getScanSourceNames); without it the
+      canonical Scan controller or a lone capable controller is used, and
+      ambiguity raises. Repeat is switched off for the scan.
+      
+      The returned handle resolves for exactly this scan whatever the order
+      of any waiter: ``handle.wait(timeout)`` (from a script), ``handle.done``
+      / ``handle.successful`` / ``handle.message``, or
+      ``getScanRequestStatus(handle.requestId)`` (remote clients receive the
+      handle as ``{requestId, source, state, message}``). 
+
    .. method:: saveScanParamsToFile(filePath: str) -> None
 
       Saves the set scanning parameters to the specified file. 
@@ -104,6 +177,13 @@ api.imcontrol
       Sets the step size of the specified positioner to the specified
       number of micrometers. 
 
+   .. method:: setRecFileFormat(fileFormat: str) -> None
+
+      Sets the file format recordings are saved in: 'HDF5', 'TIFF' or
+      'ZARR' (any case) -- the Recording widget's "File format". Raises
+      ValueError for any other name, and RuntimeError while snaps are set
+      to go to the image display, which fixes the format to TIFF. 
+
    .. method:: setRecFilename(filename: Optional[str]) -> None
 
       Sets the name of the file to record to. This only sets the name of
@@ -144,15 +224,30 @@ api.imcontrol
       - acquisitionStarted
       - acquisitionStopped
       - recordingStarted
-      - recordingEnded
-      - scanEnded
+      - recordingEnded (the recording is finished and its files are
+        written; for a scan-once or scan-timelapse recording, once after
+        the last scan)
+      - recordingFailed
+      - scanStarting (the run-level start, before hardware arms)
+      - scanStarted (the execution backend started the iteration)
+      - scanDone (an iteration finished)
+      - scanEnded (the run is over, on every terminal path)
+      - scanRejected(reason) (a start request was refused; no scanEnded
+        will follow for it)
       
       They can be accessed like this: api.imcontrol.signals().scanEnded
       
 
-   .. method:: snapImage() -> None
+   .. method:: snapImage(output: bool = False) -> Optional[Dict[str, numpy.ndarray]]
 
-      Take a snap and save it as the selected file format at the set file path. 
+      Take a snap. With output=True, return it as {detector name: image}
+      without saving; otherwise save it in the snap format at the set file
+      path. 
+
+   .. method:: setSnapModeSave(mode: str = 'tiff') -> None
+
+      Sets the file format snaps are saved in: 'HDF5', 'TIFF' or 'ZARR'
+      (any case). Raises ValueError for any other name. 
 
    .. method:: startRecording() -> None
 
@@ -168,9 +263,12 @@ api.imcontrol
       Moves the specified positioner axis in positive direction by its
       set step size. 
 
-   .. method:: stopRecording() -> None
+   .. method:: stopRecording() -> bool
 
-      Stops recording. 
+      Stops recording. Idempotent: returns True if a recording was
+      active and its stop was requested (``recordingEnded`` or
+      ``recordingFailed`` will follow), False if nothing was recording (no
+      signal will follow, so do not wait for one). 
    
    .. method:: setMask(maskMode: str) -> None 
       

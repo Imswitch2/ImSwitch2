@@ -1,0 +1,21 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "SerialDacZManager",
+    "managerProperties": {
+      "baudrate": 1,
+      "clamp_voltage": true,
+      "command_timeout": 1.5,
+      "dac_command": "example",
+      "initial_position": 1.5,
+      "max_voltage": 1.5,
+      "min_voltage": 1.5,
+      "offset_voltage": 1.5,
+      "port": "example",
+      "prompt": "example",
+      "safe_voltage_on_close": null,
+      "timeout": 1.5,
+      "volts_per_um": 1.5
+    }
+  }
+}

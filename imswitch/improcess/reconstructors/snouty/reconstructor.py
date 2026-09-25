@@ -34,6 +34,20 @@ class SnoutyReconstructor(Reconstructor):
     file_extensions = ["hdf5", "h5", "tiff"]
     description = "Lightsheet deskew for SNOUTY/OPM/MS-RESOLFT data"
     
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'device': 'CPU',
+        'n_timepoints': 1,
+        'c_px': 100.0,
+        'alpha_deg': 30.0,
+        'dy': 210.0,
+        'sample_vx_size': 200.0,
+        'camera_offset': 100.0,
+        'flip_data': False,
+        'cycles': 1,
+        'planes_in_cycle': 1,
+        'restack': True}
+
     def __init__(self):
         self._logger = initLogger('SnoutyReconstructor')
     
@@ -82,7 +96,9 @@ class SnoutyReconstructor(Reconstructor):
             logger=self._logger,
         )
 
-        if params.get('n_timepoints', 1) > 1:
+        # The pipeline may take the timepoint count from the recording rather
+        # than the widget, so what was actually reconstructed decides the rank.
+        if len(deskewed_timepoints) > 1:
             # Stack into 4D: (T, Z, Y, X)
             result_data = np.stack(deskewed_timepoints, axis=0)
         else:

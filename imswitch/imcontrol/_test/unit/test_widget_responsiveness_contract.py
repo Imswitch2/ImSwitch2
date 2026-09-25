@@ -9,6 +9,10 @@ SCAN_ADVANCED_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'Sca
 SCAN_ADVANCED_CONTROLLER_PATH = (
     ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'ScanControllerAdvanced.py'
 )
+BASE_WIDGETS_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'basewidgets.py'
+MAIN_CONTROLLER_PATH = (
+    ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'ImConMainController.py'
+)
 LASER_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'LaserWidget.py'
 LASER_CONTROLLER_PATH = (
     ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'LaserController.py'
@@ -27,6 +31,105 @@ def test_main_view_keeps_direct_dock_widget_insertion():
     assert 'self._addScrollableWidgetToDock(self.docks[widgetKey], self.widgets[widgetKey])' not in source
     assert 'self.docks[widgetKey].addWidget(self.widgets[widgetKey])' in source
     assert "self.docks['Image'].addWidget(self.widgets['Image'])" in source
+
+
+def test_panels_are_wrapped_in_their_own_scroll_area_by_the_factory():
+    """Every docked panel shrinks, and does so without ImConMainView's help.
+
+    Wrapping the dock's contents from ImConMainView was tried and rejected
+    (see test_main_view_keeps_direct_dock_widget_insertion); the wrapper
+    belongs inside the panel, where one place -- the factory -- can apply it
+    to all of them and a panel can still opt out.
+    """
+    source = BASE_WIDGETS_PATH.read_text()
+
+    assert 'scrollablePanel = True' in source
+    assert 'def makeScrollable(self, horizontal=True):' in source
+    assert 'if widget.scrollablePanel and QtWidgets.QWidget.layout(widget) is not None:' in source
+    assert 'widget.makeScrollable()' in source
+    assert 'scrollArea.setWidgetResizable(True)' in source
+    assert 'scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)' in source
+    assert 'self.setMinimumSize(0, 0)' in source
+    # self.layout is shadowed by a plain attribute in SettingsWidget and
+    # LaserWidget, so the method has to be reached explicitly.
+    assert 'innerLayout = QtWidgets.QWidget.layout(self)' in source
+
+
+def test_dock_space_is_shared_out_by_panel_height():
+    """Docks are sized from their content, not from equal stretch factors.
+
+    pyqtgraph hands every dock the same slice unless the stretch factors say
+    otherwise, and recomputes that share from scratch whenever a dock is
+    dragged. What used to hide it was panels refusing to shrink -- which is
+    exactly what made the window taller than the screen.
+    """
+    view_source = MAIN_VIEW_PATH.read_text()
+    controller_source = MAIN_CONTROLLER_PATH.read_text()
+
+    assert 'def applyContentAwareDockSizing(self):' in view_source
+    assert 'def scheduleInitialDockLayout(self):' in view_source
+    assert 'def panelContentSizeHint' in BASE_WIDGETS_PATH.read_text()
+    # No hard-coded per-dock stretch left over.
+    assert "self.docks['Settings'].setStretch(1, 5)" not in view_source
+    assert 'rightDocks[-1].setStretch(1, 5)' not in view_source
+    # Both passes are wired up: one once the panels are populated, one once
+    # the window is on screen and has its real size.
+    assert 'self.__mainView.applyContentAwareDockSizing()' in controller_source
+    assert 'self.__mainView.scheduleInitialDockLayout()' in controller_source
+    # A restored layout is the user's own and wins over content-derived sizes.
+    assert 'self._layoutRestored = True' in view_source
+    assert 'if self._layoutRestored:' in view_source
+
+
+def test_there_is_a_way_back_from_a_shuffled_layout():
+    """Dragging one dock resizes every other one; users need an undo."""
+    view_source = MAIN_VIEW_PATH.read_text()
+
+    assert 'def resetDockLayout(self):' in view_source
+    assert 'self._defaultDockState = self.dockArea.saveState()' in view_source
+    assert "QtWidgets.QAction('Reset panel layout', self)" in view_source
+    assert 'self.resetLayoutAction.triggered.connect(self.resetDockLayout)' in view_source
+
+
+def test_window_minimum_never_exceeds_the_screen():
+    """The window must always be able to fit the space it is given.
+
+    This view is a page of MultiModuleWindow's tab widget, so its minimum
+    becomes the application window's minimum -- and a window that cannot be
+    made as small as the screen opens with its bottom edge below it.
+    """
+    view_source = MAIN_VIEW_PATH.read_text()
+
+    assert 'def minimumSizeHint(self):' in view_source
+    assert 'availableGeometry()' in view_source
+    assert '_MAX_MINIMUM_SCREEN_FRACTION' in view_source
+
+
+def test_dock_widgets_do_not_pin_their_own_minimum_height():
+    """A docked panel must not decide how tall the window has to open.
+
+    Docks stack vertically and a splitter's minimum is the sum of its
+    children's, so a panel insisting on 320 px adds 320 px to the smallest
+    size the window can take -- and a few of them together push it past the
+    screen, at which point Qt holds the window at its minimum and the bottom
+    is cut off. That is what the maximize / restore / maximize cycle works
+    around.
+
+    Panels scroll their own contents instead (the same treatment their widths
+    already had), so the minimum belongs on what is inside the scroll area,
+    never on the panel itself.
+    """
+    offenders = []
+    for widgetFile in sorted(WIDGETS_DIR.glob('*.py')):
+        source = widgetFile.read_text()
+        for match in re.finditer(r'self\.setMinimumHeight\s*\(', source):
+            line = source[:match.start()].count('\n') + 1
+            offenders.append(f'{widgetFile.name}:{line}')
+
+    assert offenders == [], (
+        'These widgets pin their own minimum height, which propagates into '
+        'the window minimum: ' + ', '.join(offenders)
+    )
 
 
 def test_scan_widget_base_does_not_force_minimum_width_or_hide_horizontal_scrollbar():
@@ -57,8 +160,14 @@ def test_laser_scan_uses_current_setpoints_not_scan_default_presets():
     assert 'presetBeforeScan' not in controller_source
     assert 'defaultLaserPresetForScan' not in controller_source
     assert 'scanDefaultPreset' not in controller_source
-    assert 'def changeScanPower(self, laserName, laserValue):' in controller_source
-    assert 'self.setLaserValue(laserName, laserValue)' in controller_source
+    assert (
+        'def changeScanPower(self, laserName: str, laserValue: Union[int, float]) -> None:'
+        in controller_source
+    )
+    # Runs on the UI thread and goes straight to the current-setpoint path.
+    assert 'self._setLaserValue(laserName, laserValue)' in controller_source
+    from imswitch.imcontrol.controller.controllers.LaserController import LaserController
+    assert LaserController.changeScanPower._APIRunOnUIThread is True
 
 
 def test_recording_widget_uses_internal_scroll_area():
@@ -146,6 +255,10 @@ def test_widget_sizing_audit():
     problematic_patterns = [
         (r'scrollArea\.setMinimumWidth\s*\(', 'scrollArea.setMinimumWidth('),
         (r'ScrollBarAlwaysOff', 'ScrollBarAlwaysOff'),
+        # A minimum height on the panel itself, as opposed to on something
+        # inside its scroll area, adds itself to the window's own minimum --
+        # see test_dock_widgets_do_not_pin_their_own_minimum_height.
+        (r'self\.setMinimumHeight\s*\(', 'self.setMinimumHeight('),
     ]
 
     # Files with known, reviewed exceptions (allowlist)

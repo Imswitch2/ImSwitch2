@@ -46,6 +46,8 @@ config files).
     gui
     advanced-scanning
     improcess
+    improcess-napari-plugins
+    improcess-workflows
     tiling
     zstack-workflow
     use-cases
@@ -64,6 +66,7 @@ config files).
     devices/lasers
     devices/positioners
     devices/rotators
+    devices/stands
     Hdf5datafile
 
 .. toctree::

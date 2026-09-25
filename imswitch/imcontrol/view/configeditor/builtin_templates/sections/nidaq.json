@@ -1,0 +1,12 @@
+{
+  "section": true,
+  "key": "nidaq",
+  "group": "system",
+  "display": "NI-DAQ",
+  "summary": "NI-DAQ card behavior. NidaqManager is always constructed (even with no DAQ — use simulation=true).",
+  "fields": [
+    {"key": "timerCounterChannel", "label": "Timer counter channel", "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "Counter generating the 1 MHz pulse train the point detectors (APD/PMT) sample on, e.g. Dev1/ctr2 -- one no detector ctrInputLine uses. Integer N is also accepted and translated to Dev1/ctr{N}. Required on rigs with a point detector.", "opts": []},
+    {"key": "startTrigger",        "label": "Start trigger",         "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "Enable start-trigger sync between AO/AI/DO/counter tasks.", "opts": []},
+    {"key": "simulation",          "label": "Simulation mode",       "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "Allow NI-DAQ commands without physical hardware (no-op).", "opts": []}
+  ]
+}

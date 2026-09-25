@@ -20,6 +20,10 @@ class SmlmGroupProcessor(Processor):
     category = "Localization"
     kinds = ("localization",)
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'radius_nm': 50.0, 'max_dark_frames': 0}
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: isinstance(result, LocalizationResult)

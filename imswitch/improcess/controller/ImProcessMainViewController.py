@@ -125,7 +125,14 @@ class ImProcessMainViewController(ImProcessWidgetController):
             and hasattr(self._widget.parTree, "load_from_attrs")
         ):
             try:
-                self._widget.parTree.load_from_attrs(dataObj.attrs or {})
+                # Pass the source too: a widget that can read the resolved
+                # acquisition layout should not re-parse the same attributes.
+                try:
+                    self._widget.parTree.load_from_attrs(
+                        dataObj.attrs or {}, dataObj
+                    )
+                except TypeError:
+                    self._widget.parTree.load_from_attrs(dataObj.attrs or {})
             except Exception as exc:
                 self._logger.warning(f"Could not load reconstructor params from metadata: {exc}")
 

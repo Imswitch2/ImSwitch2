@@ -35,9 +35,20 @@ class SmlmParamsWidget(QtWidgets.QWidget):
                  "tip": "gausslq: centroid + moments; mle: Poisson Gaussian MLE"},
             ]},
             {"name": "Calibration", "type": "group", "children": [
+                # The value alone could not say whether it was a choice or a
+                # default: it was always sent, so the recording's own
+                # calibration was never consulted, and a stack calibrated
+                # differently along Y than along X was localized as if it
+                # were square without anyone deciding that.
+                {"name": "Pixel size", "type": "list",
+                 "values": ["From the recording", "Enter below"],
+                 "value": "From the recording",
+                 "tip": "Where the pixel size comes from. The recording's own "
+                        "calibration is used unless you override it here"},
                 {"name": "Pixel size (nm)", "type": "float", "value": 100.0,
                  "limits": (0.0, 1e6),
-                 "tip": "Camera pixel size; localizations are stored in nm"},
+                 "tip": "Used when 'Pixel size' is set to 'Enter below'; "
+                        "localizations are stored in nm"},
             ]},
         ]
 
@@ -86,12 +97,18 @@ class SmlmParamsWidget(QtWidgets.QWidget):
         detection = self.p.param("Detection")
         fitting = self.p.param("Fitting")
         calibration = self.p.param("Calibration")
+        manual = str(calibration.param("Pixel size").value()) == "Enter below"
         return {
             "threshold": float(detection.param("Net-gradient threshold").value()),
             "sigma": float(detection.param("Smoothing sigma").value()),
             "roi": int(detection.param("ROI size").value()),
             "method": str(fitting.param("Method").value()),
-            "pixel_size_nm": float(calibration.param("Pixel size (nm)").value()),
+            # Absent unless it was chosen, so the recording's calibration is
+            # what answers -- and an anisotropic one can say so.
+            "pixel_size_nm": (
+                float(calibration.param("Pixel size (nm)").value())
+                if manual else None
+            ),
         }
 
     def get_detection_values(self) -> dict:

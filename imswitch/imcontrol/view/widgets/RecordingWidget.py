@@ -304,6 +304,17 @@ class RecordingWidget(Widget):
     def getSaveSnapFormat(self):
         return self.saveSnapFormatList.currentIndex() + 1
 
+    def setSaveSnapFormat(self, formatName):
+        """ Selects the snap file format by name, ignoring case ('tiff' finds
+        'TIFF'). Returns False, changing nothing, for an unknown name. """
+        index = self.saveSnapFormatList.findText(
+            str(formatName), QtCore.Qt.MatchFixedString
+        )
+        if index < 0:
+            return False
+        self.saveSnapFormatList.setCurrentIndex(index)
+        return True
+
     def getSnapSaveMode(self):
         return self.snapSaveModeList.currentIndex() + 1
 
@@ -418,6 +429,20 @@ class RecordingWidget(Widget):
     def setsaveFormatEnabled(self, value):
         self.saveFormatList.setEnabled(value)
 
+    def setSaveFormatByName(self, formatName):
+        """ Selects the recording file format by name, ignoring case. Returns
+        False, changing nothing, for an unknown name. """
+        index = self.saveFormatList.findText(
+            str(formatName), QtCore.Qt.MatchFixedString
+        )
+        if index < 0:
+            return False
+        self.saveFormatList.setCurrentIndex(index)
+        return True
+
+    def isSaveFormatEditable(self):
+        return self.saveFormatList.isEnabled()
+
     def setSnapSaveMode(self, saveMode):
         self.snapSaveModeList.setCurrentIndex(saveMode - 1)
 
@@ -438,8 +463,16 @@ class RecordingWidget(Widget):
         self.filenameEdit.setText('Filename' if enabled else 'Current time')
 
     def setCustomFilename(self, filename):
+        """ Names the next recordings ``filename``. Ticks "Specify file name"
+        too: getCustomFilename() reads the name only while it is ticked. """
+        self.specifyfile.setChecked(True)
         self.setCustomFilenameEnabled(True)
         self.filenameEdit.setText(filename)
+
+    def clearCustomFilename(self):
+        """ Goes back to time-based filenames. """
+        self.specifyfile.setChecked(False)
+        self.setCustomFilenameEnabled(False)
 
     def setRecFolder(self, folderPath):
         self.folderEdit.setText(folderPath)

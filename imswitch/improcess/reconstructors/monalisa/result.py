@@ -9,7 +9,40 @@ import tifffile as tiff
 from imswitch.imcommon.model import initLogger
 
 from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
-from .coeffs_to_image import output_pixel_size_nm, reconstruct_images_from_coeffs
+from .coeffs_to_image import (
+    LayoutPlacement,
+    output_pixel_size_nm,
+    reconstruct_images_from_coeffs,
+)
+
+
+def _projection_metadata(placement: LayoutPlacement | None) -> dict | None:
+    """Describe how acquisition loops were projected onto the 6D result axes.
+
+    The result keeps six dimensions so viewers, exporters and saved projects
+    stay compatible, which means line-step conditions have to share the T axis
+    with real elapsed time. Recording the projection is what makes that
+    acceptable: nothing downstream may read a condition index as a timepoint
+    just because it arrived on the axis historically called T.
+    """
+    if placement is None:
+        return None
+    folded = placement.folds_condition_into_time
+    if not folded:
+        display_name = "Time"
+    elif placement.n_time == 1:
+        display_name = "Condition"
+    else:
+        display_name = "Time x Condition"
+    return {
+        "axis": "T",
+        "display_name": display_name,
+        "components": ("time", "condition") if folded else ("time",),
+        "order": "time-major",
+        "n_time": placement.n_time,
+        "n_conditions": placement.n_conditions,
+        "condition_labels": placement.condition_labels,
+    }
 
 # ImageJ's hyperstack layout addresses data with 32-bit offsets, so it caps
 # out below 4 GB. Past that only BigTIFF can hold the file -- and BigTIFF
@@ -51,6 +84,7 @@ class MonalisaProcessingResult(ProcessingResult):
         output_pixel_size_nm: tuple[float, float] | None = None,
         coeffs: np.ndarray | None = None,
         axis_label_map: dict[str, str] | None = None,
+        placement: "LayoutPlacement | None" = None,
     ):
         """
         Args:
@@ -130,6 +164,8 @@ class MonalisaProcessingResult(ProcessingResult):
         self.output_pixel_size_nm = output_pixel_size_nm
         self.coeffs = coeffs
         self.axis_label_map = axis_label_map
+        self.placement = placement
+        self.acquisition_projection = _projection_metadata(placement)
 
     @classmethod
     def from_coeffs(
@@ -139,6 +175,7 @@ class MonalisaProcessingResult(ProcessingResult):
         scan_params: dict,
         axis_label_map: dict[str, str],
         display_levels: tuple[float, float] | None = None,
+        placement: LayoutPlacement | None = None,
     ) -> "MonalisaProcessingResult":
         """Build a result by reassembling images from per-base coefficients.
 
@@ -150,8 +187,13 @@ class MonalisaProcessingResult(ProcessingResult):
                 ``scan_params['dimensions']``.
             display_levels: Optional (min, max); auto-computed from the 1st /
                 99.9th percentile when omitted.
+            placement: Optional recorded per-frame output coordinates. When
+                given it is authoritative and the scan-parameter arithmetic is
+                never consulted.
         """
-        data = reconstruct_images_from_coeffs(coeffs, scan_params, axis_label_map)
+        data = reconstruct_images_from_coeffs(
+            coeffs, scan_params, axis_label_map, placement=placement
+        )
         out_px = output_pixel_size_nm(scan_params, axis_label_map)
         if display_levels is None:
             display_levels = (
@@ -166,6 +208,7 @@ class MonalisaProcessingResult(ProcessingResult):
             output_pixel_size_nm=out_px,
             coeffs=coeffs,
             axis_label_map=axis_label_map,
+            placement=placement,
         )
 
     def getCoeffs(self) -> np.ndarray | None:
@@ -308,26 +351,57 @@ class MonalisaProcessingResult(ProcessingResult):
         # Compute ImageJ metadata. Dimension names are resolved through the
         # result's axis-label map so both reconstructor-produced ("Right-Left")
         # and legacy controller-produced ("Right/Left") scan params save.
+
+
+    supported_formats = ("tiff", "imagej")
+
+    def _fold_for_disk(self):
+        """(Dataset, Base, T, Z, Y, X) -> (T, Z, C, Y, X), C = Dataset x Base,
+        the hyperstack layout every MoNaLISA file has had, with the step sizes
+        and channel names that describe it."""
         dims = self.scan_params['dimensions']
         step_sizes = self.scan_params['step_sizes']
-        vxsizec = int(float(step_sizes[dims.index(self.axis_label_map['r_l_text'])]))
-        vxsizer = int(float(step_sizes[dims.index(self.axis_label_map['u_d_text'])]))
-        vxsizez = int(float(step_sizes[dims.index(self.axis_label_map['b_f_text'])]))
-        
-        # ImageJ hyperstack dimensions. The reconstruction is
-        # (Dataset, Base, T, Z, Y, X); ImageJ wants the canonical (T, Z, C, Y, X)
-        # ordering, so the Dataset and Base axes are folded into the channel
-        # axis (C = Dataset*Base, e.g. ds0-signal, ds0-background, ds1-signal …).
-        numDatasets = self.data.shape[0]
-        numBases = self.data.shape[1]
-        numTimepoints = self.data.shape[2]
-        numSlices = self.data.shape[3]
-        numRows = self.data.shape[4]
-        numCols = self.data.shape[5]
+        vxsizec = float(step_sizes[dims.index(self.axis_label_map['r_l_text'])])
+        vxsizer = float(step_sizes[dims.index(self.axis_label_map['u_d_text'])])
+        vxsizez = float(step_sizes[dims.index(self.axis_label_map['b_f_text'])])
+        data = np.asarray(self.data)
+        numDatasets, numBases, numTimepoints, numSlices, numRows, numCols = data.shape
+        folded = np.moveaxis(data, [0, 1, 2, 3, 4, 5], [2, 3, 0, 1, 4, 5])
+        folded = np.ascontiguousarray(folded).reshape(
+            numTimepoints, numSlices, numDatasets * numBases, numRows, numCols
+        )
+        channel_names = [
+            f"ds{dataset}-{self._base_component_name(base)}"
+            for dataset in range(numDatasets) for base in range(numBases)
+        ]
+        return folded, (vxsizec, vxsizer, vxsizez), channel_names
 
-        ijmetadata = {'axes': 'TZCYX'}
+    def serialization_view(self):
+        """The on-disk layout (see :meth:`_fold_for_disk`), in nanometres."""
+        from imswitch.improcess.model.result import SerializationView
 
-        # Resolution metadata
+        folded, (vxsizec, vxsizer, vxsizez), channel_names = self._fold_for_disk()
+        return SerializationView(
+            data=folded,
+            axis_labels=["T", "Z", "C", "Y", "X"],
+            axis_scales=[1.0, vxsizez, 1.0, vxsizer, vxsizec],
+            scale_unit="nm",
+            channel_names=channel_names,
+            extra={"scan_params": copy.deepcopy(self.scan_params)},
+        )
+
+    def write_files(self, plan, document) -> None:
+        """OME-TIFF through the shared writer (the default), or the ImageJ
+        hyperstack writer of old under ``fmt="imagej"`` for one release."""
+        if plan.fmt == "tiff":
+            from imswitch.improcess.model.result_io import save_image_result
+
+            save_image_result(self, plan.primary, "tiff", document=document)
+            return
+        if plan.fmt != "imagej":
+            raise ValueError(f"MoNaLISA result supports 'tiff' or 'imagej', got {plan.fmt!r}")
+        folded, (vxsizec, vxsizer, _vxsizez), _names = self._fold_for_disk()
+        ijmetadata = {'axes': 'TZCYX', 'provenance': document.to_json()}
         resolution = (10000.0 / vxsizec, 10000.0 / vxsizer)
 
         # (Dataset, Base, T, Z, Y, X) -> (T, Z, Dataset, Base, Y, X) -> (T, Z, C, Y, X)
@@ -361,7 +435,14 @@ class MonalisaProcessingResult(ProcessingResult):
                 data_to_save,
                 resolution=resolution,
                 photometric='minisblack',
+        with tiff.TiffWriter(str(plan.primary), bigtiff=True, imagej=True) as tif:
+            tif.write(
+                folded,
+                resolution=resolution,
+                metadata=ijmetadata,
+                photometric='minisblack'
             )
+
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -1,0 +1,23 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "SwabianTimeTaggerManager",
+    "managerProperties": {
+      "binwidth_ps": 1,
+      "cameraPixelSizeUm": null,
+      "click_channel": 1,
+      "click_trigger": 1.5,
+      "enabled": true,
+      "fit_method": "example",
+      "laser_rep_rate_mhz": 1.5,
+      "line_channel": 1,
+      "line_trigger": 1.5,
+      "min_counts_per_pixel": 1,
+      "n_bins": 1,
+      "start_channel": 1,
+      "start_trigger": 1.5,
+      "t0_ps": 1,
+      "trigger_levels": {}
+    }
+  }
+}

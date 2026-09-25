@@ -283,8 +283,13 @@ class LiveStreamWorker(QtCore.QObject):
                     elapsed = time.monotonic() - self._last_progress
                     if elapsed > self._stall_timeout_s:
                         self._logger.warning(
-                            f"No new frames and no completion marker for {elapsed:.0f}s — "
-                            f"assuming the writer crashed; finalizing with the frames received so far"
+                            f"No new frames and no completion marker for "
+                            f"{elapsed:.0f}s; finalizing with the frames "
+                            f"received so far. The recording was either "
+                            f"stopped between timepoints or its writer "
+                            f"failed — this cannot be told apart from here, "
+                            f"so check the file's completion outcome before "
+                            f"treating the result as short."
                         )
                         self.sigStalled.emit(elapsed)
                         self.sigStackComplete.emit()
@@ -455,6 +460,51 @@ class LiveProcessWorker(QtCore.QObject):
         self._init_obj = None
         self._init_params: dict = {}
         self._logger = initLogger(self, tryInheritParent=False)
+        # Provenance context: set once the controller has begun the session,
+        # so every snapshot and the final result record where they came from.
+        self._provenance = None
+        self._frames_committed = 0
+        self._stalled = False
+        self._failed_chunks: list[tuple[int, int, str]] = []
+
+    def setProvenance(self, reconstructor, params: dict, source, expected_frames=None,
+                      initial_frames: int | None = None) -> None:
+        """Tell the worker what it is reconstructing, for the provenance record.
+
+        ``initial_frames`` is how many frames ``session.begin()`` already
+        consumed from the first stack: they never arrive as chunks, so
+        without this the count would start at zero and a complete
+        acquisition with no further chunks would be recorded as partial.
+        """
+        self._provenance = (reconstructor, dict(params or {}), source, expected_frames)
+        if initial_frames is None:
+            data = getattr(source, "data", None)
+            shape = getattr(data, "shape", None)
+            initial_frames = int(shape[0]) if shape else 0
+        self._frames_committed = max(self._frames_committed, int(initial_frames or 0))
+
+    @QtCore.Slot(float)
+    def markStalled(self, _seconds_waited: float = 0.0) -> None:
+        """The stream worker gave up waiting for frames; the final result is partial."""
+        self._stalled = True
+
+    def _record(self, result, status: str) -> None:
+        """Attach the provenance record to ``result``; raises when it cannot.
+
+        A result that leaves this worker without provenance would be the one
+        producing path that records nothing, so a recording failure is a
+        failure of the result, not a debug line.
+        """
+        if self._provenance is None or result is None:
+            return
+        reconstructor, params, source, expected = self._provenance
+        from imswitch.improcess.reconstructors.run import record_snapshot
+
+        record_snapshot(
+            result, reconstructor, params, source,
+            session=self._session, status=status,
+            frames_committed=self._frames_committed, expected_frames=expected,
+        )
 
     def set_init(self, init_obj, params: dict | None) -> None:
         """Stash the first-stack payload for :meth:`begin_session` (call before
@@ -578,6 +628,16 @@ class LiveProcessWorker(QtCore.QObject):
         except Exception as e:
             self._logger.error(f"Error finalizing session: {e}")
             self.sigFailed.emit(str(e))
+            return
+        try:
+            self._record(final_result, self._final_status())
+        except Exception as e:
+            # Fail closed: a final result without its provenance record is
+            # a failed stream, never a finished one.
+            self._logger.error(f"Could not record the live result's provenance: {e}")
+            self.sigFailed.emit(f"provenance could not be recorded: {e}")
+            return
+        self.sigStackFinished.emit(final_result)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -2,7 +2,7 @@ import copy
 from abc import ABC, abstractmethod
 
 from imswitch.imcommon.model import initLogger
-from ..errors import IncompatibilityError
+from ..errors import IncompatibilityError, ScanDesignRefusedError
 from ..signaldesigners import SignalDesignerFactory
 
 
@@ -69,6 +69,27 @@ class SuperScanManager(ABC):
         parameterDict.update(scanParameters)
         return self._scanDesigner.make_signal(parameterDict, self._setupInfo)
 
+    def _designScanSignals(self, scanParameters):
+        """ Scan signals and ScanInfo for ``scanParameters``.
+
+        Raises ScanDesignRefusedError, carrying the reason, when the designer
+        refuses the scan: too long (``scan.maxScanTimeMin`` and similar
+        limits) or voltages outside a scanner's range. """
+        refusal = self._scanDesigner.signalLengthRefusal(
+            scanParameters, self._setupInfo
+        )
+        if refusal:
+            raise ScanDesignRefusedError(refusal)
+        scanSignalsDict, positions, scanInfoDict = self.getScanSignalsDict(scanParameters)
+        if not self._scanDesigner.checkSignalComp(
+                scanParameters, self._setupInfo, scanInfoDict
+        ):
+            raise ScanDesignRefusedError(
+                'Signal voltages outside scanner ranges: try scanning a smaller'
+                ' ROI or a slower scan.'
+            )
+        return scanSignalsDict, scanInfoDict
+
     def getTTLCycleSignalsDict(self, TTLParameters, scanInfoDict=None):
         """ Generates TTL cycle signals. """
         self._checkScanDefined()
@@ -117,20 +138,12 @@ class ScanManagerBase(SuperScanManager):
         return self._TTLCycleDesigner.timeUnits
 
     def makeFullScan(self, scanParameters, TTLParameters, staticPositioner=False):
-        """ Generates stage and TTL scan signals. """
+        """ Generates stage and TTL scan signals. Raises
+        ScanDesignRefusedError when the designer refuses the scan. """
         self._checkScanDefined()
 
         if not staticPositioner:
-            scanSignalsDict, positions, scanInfoDict = self.getScanSignalsDict(scanParameters)
-            if not self._scanDesigner.checkSignalComp(
-                    scanParameters, self._setupInfo, scanInfoDict
-            ):
-                self._logger.error(
-                    'Signal voltages outside scanner ranges: try scanning a smaller ROI or a slower'
-                    ' scan.'
-                )
-                return
-
+            scanSignalsDict, scanInfoDict = self._designScanSignals(scanParameters)
             TTLCycleSignalsDict = self.getTTLCycleSignalsDict(TTLParameters, scanInfoDict)
         else:
             TTLCycleSignalsDict = self.getTTLCycleSignalsDict(TTLParameters)

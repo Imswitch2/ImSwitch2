@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -62,11 +61,11 @@ class ArrayProcessingResult(ProcessingResult):
             duplicate.setDisplayColormap(source.getDisplayColormap())
         return duplicate
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
+    def write_files(self, plan, document) -> None:
         """Written through the shared image writer, which carries the
-        calibration, the metadata and the processing footprint into whichever
-        container the filename asks for."""
-        save_image_result(self, path, fmt)
+        calibration, the metadata and the provenance into whichever
+        container the plan asks for."""
+        save_image_result(self, plan.primary, plan.fmt, document=document)
 
 
 __all__ = ["ArrayProcessingResult"]

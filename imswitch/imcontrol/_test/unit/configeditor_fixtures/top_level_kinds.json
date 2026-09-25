@@ -1,0 +1,13 @@
+{
+  "why": "SetupInfo.getAnalogChannel() builds Dev1/ao3 only for an int; integers under the template's float fields (valueRangeMin: 0) are how every shipped setup writes them.",
+  "setup": {
+    "lasers": {
+      "640": {
+        "analogChannel": 3, "digitalLine": "Dev1/port0/line5",
+        "managerName": "NidaqLaserManager",
+        "managerProperties": {},
+        "wavelength": 640, "valueRangeMin": 0, "valueRangeMax": 1, "valueRangeStep": 0.1
+      }
+    }
+  }
+}

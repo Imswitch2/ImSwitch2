@@ -10,10 +10,12 @@ from imswitch.imcommon.framework import Signal, Timer
 from imswitch.imcommon.model import ostools, APIExport
 from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat, getWidgetStatePersistence
 from imswitch.imcontrol.model.managers.RecordingManager import (
-    RECORDING_ARM_TIMEOUT, FailureKind,
+    DETECTOR_ARM_TIMEOUT_S, RECORDING_ARM_TIMEOUT, WRITER_OPEN_TIMEOUT_S,
+    FailureKind,
 )
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
+from ._acquisition_layout_source import with_time_partition
 
 # Poll interval used to wait out a still-finalizing recording before starting
 # the next timelapse timepoint (see nextLapse). Small so a Freq=0 lapse advances
@@ -108,6 +110,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         # terminal checks need this to tell "no scan was ever expected" from
         # "a scan was expected and somebody else published its start".
         self._scanStartOwnedByScanSource = False
+        self._producerAcquisitionLayouts = None
 
         self._widget.setsaveFormat(SaveFormat.HDF5.value)
         self._widget.setSnapSaveMode(SaveMode.Disk.value)
@@ -279,6 +282,20 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             # endRecording() and truncate a scan recording that is still draining
             # toward its frame target (the worker ends itself via should_stop).
             return
+        if checked and self.recording:
+            # REC-off no longer waits for the writer: the previous recording
+            # is still being finalized in the background. Refuse quietly and
+            # keep the button honest; recordingEnded will reset the state.
+            self.__logger.info(
+                'The previous recording is still being finalized; wait for '
+                'it to end before starting a new one.'
+            )
+            self._finalizingRecCycle = True
+            try:
+                self._widget.setRecButtonChecked(False)
+            finally:
+                self._finalizingRecCycle = False
+            return
         if checked and not self.recording:
             self.stopRequested = False
             # Open a fresh two-terminal window before the writer can arm. A
@@ -293,6 +310,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._exactScanCompletionHandled = False
             self._scanLifecycleEndedObserved = False
             self._recordingScanSource = None
+            self._producerAcquisitionLayouts = None
             self._awaitingScanSourceArm = False
             self._scanStartOwnedByScanSource = False
             self._recordingOperationActive = True
@@ -357,6 +375,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         and self._widget.getMultiDetectorSingleFile()
                     ),
                 }
+                self._producerAcquisitionLayouts = None
             except Exception as error:
                 self._handleRecordingFailure(
                     str(error),
@@ -598,9 +617,18 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         # begin recording with REC switched off.
                         self._cancelPendingScanSourceArm()
                         return
-                    self._master.recordingManager.endRecording()
+                    self._stopManagerRecordingInBackground()
                     return
-            self._master.recordingManager.endRecording()
+            self._stopManagerRecordingInBackground()
+
+    def _stopManagerRecordingInBackground(self):
+        """ Ask the manager to end the recording without waiting for the
+        writer to drain and finalize. The worker publishes recordingEnded (or
+        recordingFailed) itself once the file is complete, which is what
+        resets this controller; waiting here blocked the GUI thread for up to
+        30 s on a large backlog and consumed a stopping script's cleanup
+        budget. """
+        self._master.recordingManager.endRecording(emitSignal=False, wait=False)
 
     def _validateCameraLapse(
         self,
@@ -965,6 +993,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             # Set lapse metadata for this timepoint
             self.recordingArgs['recLapseTotal'] = self.lapseTotal
             self.recordingArgs['recLapseIndex'] = self.lapseCurrent
+            RecordingController._applyAcquisitionLayoutPartitions(self)
         except Exception as error:
             self._handleRecordingFailure(
                 str(error),
@@ -1170,8 +1199,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if armed:
             return True
         self._handleRecordingFailure(
-            f'Detectors did not report armed within '
-            f'{RECORDING_ARM_TIMEOUT:.1f}s; scan was not started.',
+            f'Recording did not report armed within '
+            f'{RECORDING_ARM_TIMEOUT:.0f}s (the writer has '
+            f'{WRITER_OPEN_TIMEOUT_S:.0f}s of that to create the file, the '
+            f'detectors {DETECTOR_ARM_TIMEOUT_S:.0f}s to arm); scan was not '
+            f'started.',
             abortManager=True,
         )
         return False
@@ -1203,10 +1235,55 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self.recordingArgs['scanStepSizes'] = (
                 self._scanStepSizesForRecording()
             )
+            RecordingController._applyProducerAcquisitionLayouts(self)
         except Exception as error:
             self._handleRecordingFailure(str(error), abortManager=False)
             return False
         return True
+
+    def _applyProducerAcquisitionLayouts(self) -> None:
+        """Read layouts from the pinned producer, when it declares support."""
+        accessor = self._scanAccessor('getAcquisitionLayouts')
+        if accessor is None:
+            self._producerAcquisitionLayouts = None
+            self.recordingArgs.pop('acquisitionLayouts', None)
+            return
+
+        detectorNames = tuple(self.recordingArgs['detectorNames'])
+        layouts = dict(accessor(detectorNames))
+        requested = set(detectorNames)
+        supplied = set(layouts)
+        if supplied != requested:
+            missing = sorted(requested - supplied)
+            extra = sorted(supplied - requested)
+            raise ValueError(
+                'Scan source returned an incomplete acquisition-layout mapping; '
+                f'missing={missing}, extra={extra}'
+            )
+        self._producerAcquisitionLayouts = layouts
+        RecordingController._applyAcquisitionLayoutPartitions(self)
+
+    def _applyAcquisitionLayoutPartitions(self) -> None:
+        """Apply the current partition-local lapse identity to cached layouts."""
+        layouts = self.__dict__.get('_producerAcquisitionLayouts')
+        if layouts is None:
+            return
+        if self.recMode != RecMode.ScanLapse:
+            self.recordingArgs['acquisitionLayouts'] = dict(layouts)
+            return
+        self.recordingArgs['acquisitionLayouts'] = {
+            detectorName: with_time_partition(
+                layout,
+                index=max(0, int(self.lapseCurrent)),
+                planned_count=(
+                    int(self.lapseTotal) if self.lapseTotal else None
+                ),
+                single_file=bool(
+                    self.recordingArgs.get('singleLapseFile', False)
+                ),
+            )
+            for detectorName, layout in layouts.items()
+        }
 
     def _scanRunTokenFor(self, source):
         """The coordinator's run reservation held by ``source``, or None."""
@@ -2380,9 +2457,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 )
             return
 
+        # A scan recording's public recordingEnded is published here, once,
+        # when the writer has drained and the scan has ended. The worker
+        # publishes only the detailed terminal in the scan modes: it has held
+        # the legacy signal back since 48a6ae31 (2022), when this controller
+        # still ended its cycle on it and a scan cycle has to end on the scan.
+        # The controller now listens to the detailed terminal instead, so
+        # nothing else published it -- scripts waiting for it after a scan
+        # recording hung, and the joystick stayed disabled.
         emitRecordingEnded = (
-            self.recMode == RecMode.ScanLapse
-            and self.stopRequested
+            self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse)
             and not self.__dict__.get(
                 '_recordingFailedCurrent', False
             )
@@ -2402,6 +2486,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._exactScanCompletionHandled = False
         self._scanLifecycleEndedObserved = False
         self._recordingScanSource = None
+        self._producerAcquisitionLayouts = None
         self._awaitingScanSourceArm = False
         self._scanStartOwnedByScanSource = False
         self._recordingOperationActive = False
@@ -2478,12 +2563,13 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         if emitRecordingEnded:
             try:
-                # Emit manually only for a soft ScanLapse stop, because that
-                # path never calls recordingManager.endRecording().
+                # See emitRecordingEnded above: the scan modes' only public
+                # terminal. (A soft ScanLapse stop also never reaches
+                # recordingManager.endRecording(), so it needs this as well.)
                 self._commChannel.sigRecordingEnded.emit()
             except Exception:
                 self.__logger.error(
-                    'Failed to publish the recording-lapse stop terminal',
+                    'Failed to publish the scan-recording end terminal',
                     exc_info=True,
                 )
 
@@ -2953,9 +3039,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.setRecButtonChecked(True)
 
     @APIExport(runOnUIThread=True)
-    def stopRecording(self) -> None:
-        """ Stops recording. """
+    def isRecording(self) -> bool:
+        """ Whether a recording is currently active. """
+        return bool(self.recording)
+
+    @APIExport(runOnUIThread=True)
+    def stopRecording(self) -> bool:
+        """ Stops recording. Idempotent: returns True if a recording was
+        active and its stop was requested (``recordingEnded`` or
+        ``recordingFailed`` will follow), False if nothing was recording (no
+        signal will follow, so do not wait for one). """
+        wasRecording = bool(self.recording)
         self._widget.setRecButtonChecked(False)
+        return wasRecording
 
     @APIExport(runOnUIThread=True)
     def setRecModeSpecFrames(self, numFrames: int) -> None:
@@ -3026,7 +3122,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if filename is not None:
             self._widget.setCustomFilename(filename)
         else:
-            self._widget.setCustomFilenameEnabled(False)
+            self._widget.clearCustomFilename()
 
     @APIExport(runOnUIThread=True)
     def setRecFolder(self, folderPath: str) -> None:
@@ -3038,8 +3134,35 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.specifyfile.setChecked(enable)
     
     @APIExport(runOnUIThread=True)
-    def setSnapModeSave(self,mode="tiff") -> None:
-        self._widget.saveSnapFormatList.setCurrentText(mode)
+    def setRecFileFormat(self, fileFormat: str) -> None:
+        """ Sets the file format recordings are saved in: 'HDF5', 'TIFF' or
+        'ZARR' (any case) -- the Recording widget's "File format". Raises
+        ValueError for any other name, and RuntimeError while snaps are set
+        to go to the image display, which fixes the format to TIFF. """
+        if not self._widget.isSaveFormatEditable():
+            raise RuntimeError(
+                'The recording file format is fixed to TIFF while the snap '
+                'save mode sends snaps to the image display.'
+            )
+        if not self._widget.setSaveFormatByName(fileFormat):
+            raise ValueError(
+                f'Unknown recording format {fileFormat!r}; use HDF5, TIFF or ZARR.'
+            )
+
+    @APIExport(runOnUIThread=True)
+    def getRecFileFormat(self) -> str:
+        """ Returns the file format recordings are saved in: 'HDF5', 'TIFF'
+        or 'ZARR'. """
+        return SaveFormat(self._widget.getSaveFormat()).name
+
+    @APIExport(runOnUIThread=True)
+    def setSnapModeSave(self, mode="tiff") -> None:
+        """ Sets the file format snaps are saved in: 'HDF5', 'TIFF' or 'ZARR'
+        (any case). Raises ValueError for any other name. """
+        if not self._widget.setSaveSnapFormat(mode):
+            raise ValueError(
+                f'Unknown snap format {mode!r}; use HDF5, TIFF or ZARR.'
+            )
     
     @APIExport(runOnUIThread=True)
     def getRecFolder(self) -> str:
@@ -3053,12 +3176,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         Returns recording output settings.
         Does NOT include filename, recording status, or detector/laser selections.
         
+        The output folder is deliberately absent: it defaults to today's date
+        (options.recording.includeDateInOutputFolder), so persisting it would
+        pin every later session to the day this snapshot was taken.
+        
         Returns:
             {
                 'saveFormat': int,
                 'snapSaveMode': int,
                 'recSaveMode': int,
-                'recFolder': str,
                 'recMode': str (enum name),
                 'numFrames': int,
                 'timeToRec': float,
@@ -3072,7 +3198,6 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             'saveFormat': self._widget.getSaveFormat(),
             'snapSaveMode': self._widget.getSnapSaveMode(),
             'recSaveMode': self._widget.getRecSaveMode(),
-            'recFolder': self._widget.getRecFolder(),
             'recMode': self.recMode.name if hasattr(self, 'recMode') else 'UntilStop',
             'numFrames': self._widget.getNumExpositions(),
             'timeToRec': self._widget.getTimeToRec(),
@@ -3095,9 +3220,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         
         IDENTICAL behavior in both STARTUP_RESTORE and SETUP_MODE_APPLY:
         - Restore save format and save mode settings
-        - Restore recording folder (only if it exists)
         - Restore recording mode (frames vs time)
         - Restore frame count and time values
+        
+        The output folder is never restored: the widget derives it from the
+        options (today's date by default), and a snapshot taken yesterday
+        would otherwise keep sending today's recordings to yesterday's folder.
         
         NEVER (in either mode):
         - Start recording
@@ -3133,15 +3261,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         except Exception as e:
             warnings.append(f'Failed to restore rec save mode: {e}')
         
-        recFolder = state.get('recFolder')
-        if recFolder:
-            if os.path.exists(recFolder):
-                try:
-                    self._widget.setRecFolder(recFolder)
-                except Exception as e:
-                    warnings.append(f'Failed to restore rec folder: {e}')
-            else:
-                warnings.append(f'Recording folder "{recFolder}" does not exist; skipped.')
+        # 'recFolder' is ignored, including in states written by older
+        # versions that still recorded it. The folder is session-scoped and is
+        # created on demand when a recording starts, so neither restoring it
+        # nor warning that it is missing would help anyone.
         
         numFrames = state.get('numFrames', 100)
         try:
@@ -3243,10 +3366,6 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             interval = state.get('cameraLapseInterval', 0)
             summaries.append(f'    timepoints: {frames}')
             summaries.append(f'    interval: {interval} s')
-        
-        recFolder = state.get('recFolder')
-        if recFolder:
-            summaries.append(f'  folder: {recFolder}')
         
         return summaries or ['  no recording settings saved']
     

@@ -200,6 +200,18 @@ generic parameter panel for the active result. This runs one processor at a
 time and publishes its output back to the reconstruction list. It is not yet a
 saved, automatically executed multi-step processing chain.
 
+Reconstructors have the same runtime path.  The reconstructor picker at the
+top of the Parameters dock offers only the reconstructors that are registered,
+and the setup file's ``processing.reconstructors`` list decides which
+built-ins those are — so a setup that names only MoNaLISA never shows the
+others.  **Tools → Load reconstructor** lists every reconstructor ImProcess
+knows about but has not loaded (the built-ins the setup file did not name,
+plus any drop-in that is discovered but not registered) with a one-line
+description; picking one registers it for the session, adds it to the picker
+and makes it active.  Nothing is written to the setup file: to keep a
+reconstructor across sessions, add it to ``processing.reconstructors`` (the
+config editor offers every known id, drop-ins included).
+
 Toolbar icons are selected through ImProcess semantic action IDs and rendered
 with QtAwesome when available, with Qt standard icons as a fallback.  This
 keeps icon choices centralized while allowing each action to retain its
@@ -340,6 +352,7 @@ smlm-render             Processor      Render a localization table into a super-
 smlm-filter             Processor      Filter localizations by photons, lateral sigma and frame range
 smlm-drift              Processor      Segment cross-correlation drift correction with drift trace plots
 smlm-group              Processor      Link blinking repeats into photon-weighted merged localizations
+table-to-localizations  Processor      Promote a points table to localizations with an explicit column mapping
 ======================= ============== ====================================================
 
 Processor categories and compatibility
@@ -541,6 +554,15 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - ``LocalizationResult`` with blinking repeats within the link radius
        merged: photon-weighted mean position/sigmas, summed photons, first
        frame; optional dark-frame gap tolerance.
+   * - ``table-to-localizations``
+     - SMLM
+     - Any ``table`` result with named columns (a ``PointsTableResult``
+       imported from a napari Points layer, a CSV). The x/y (optionally
+       z, frame, photons, sigma) columns and their unit are given
+       explicitly; a missing column is an error, never a guess.
+     - ``LocalizationResult`` in nanometres, per-axis converted (``px``:
+       lateral pixel size and Z step; ``table``: the table's own per-axis
+       scale and unit). The only path from a points table to emitters.
 
 Remaining follow-ups
 --------------------
@@ -610,14 +632,15 @@ threshold curve and cutoff marker.  The same graph contract is intended for
 future processing units such as batch summaries, FLIM traces and line-profile
 tools.
 
-File metadata panel
-===================
+Metadata panel
+==============
 
-Set ``"metadataPanel": true`` in the ``processing`` block to show the file
+Set ``"metadataPanel": true`` in the ``processing`` block to show the
 metadata panel, or open it at any time from the **Tools** toolbar / menu
 (``panel.metadata``, unbound by default).  It shows the complete metadata
-hierarchy of a measurement file as a collapsible tree with *Name*, *Value* and
-*Type* columns.
+hierarchy of a measurement file — or of the result selected in the
+reconstruction list, provenance included — as a collapsible tree with
+*Name*, *Value* and *Type* columns.
 
 The reader is deliberately **layout-agnostic**: it walks whatever hierarchy the
 container actually has and reports every attribute it finds on the way down.
@@ -640,7 +663,12 @@ nested dicts and lists become subtrees, and string attributes that actually
 carry a JSON document or an XML document (OME-XML, for example) are parsed and
 expanded, with the raw string kept on the parent node.
 
-The panel follows the current data item, so loading a file shows its metadata.
+The panel follows the current data item, so loading a file shows its metadata,
+and it follows the selection in the reconstruction list: a result made in the
+session (a duplicate, a crop, a processor's output) shows its identity, its
+metadata and its provenance -- every step done to it so far, and the source
+file it came from -- in the same tree.  *Reload* rebuilds that view after
+further processing.
 *Open file...* reads the metadata of any supported file without loading its
 pixels, and *Reload* re-reads the current one — useful while a recording is
 still being written.  The filter box matches names, values and types, keeping
@@ -1003,7 +1031,7 @@ localization results instead as GPU-rendered summed Gaussians through the
 optional `napari-storm <https://pypi.org/project/napari-storm/>`_ package,
 which is installed by the ``storm`` extra::
 
-    pip install "imswitch[storm]"
+    pip install "imswitch2[storm]"
 
 Everything about this backend is best-effort.  Without the package, on a GL
 session without instancing support, or for a table napari-storm refuses, the
@@ -1135,6 +1163,68 @@ shared filter field searches the visible batch tables and unmatched paths, and
 the widget can open the selected output folder directly.  When the graph panel
 is enabled, completed batches also publish aggregate plots for region
 anisotropy, area-vs-anisotropy and per-sample summaries.
+
+.. _improcess-memory-limits:
+
+Memory limits
+=============
+
+How much RAM ImSwitch may spend on buffering and on automatic work is a
+property of the computer, so it lives in the per-machine options file
+``imcontrol_options.json`` (under the user config directory) rather than in
+the setup file, which travels between machines. The ``memory`` group holds
+three limits in MiB, each named for the one thing it bounds; the values
+shown are the defaults. Edit them in ImControl under **Tools → Memory
+limits…**, which saves this file and applies the new limits at once, or edit
+the file by hand and restart::
+
+    {
+        "setupFileName": "example_sted.json",
+        "memory": {
+            "writerQueueMB": 512,
+            "perDetectorQueueMB": 256,
+            "processingWorkingSetMB": 1024
+        }
+    }
+
+``writerQueueMB``
+    The backlog the recording writer may hold before the acquisition loop
+    blocks. Blocking is graceful backpressure: frames wait in the detector's
+    chunk queue meanwhile, and the log says the moment it starts.
+
+``perDetectorQueueMB``
+    The backlog any one *(detector, consumer)* chunk queue may hold before
+    that consumer's stream is declared incomplete -- for a recording, the
+    point at which it fails. It is per queue: a rig with several detectors
+    and several consumers (the recording, BeadRec, a workflow) can hold this
+    much in each. A recording's stall tolerance is roughly the two numbers
+    added: a smaller writer queue backed by a larger detector queue absorbs a
+    short stall as well, but only the writer's share is graceful.
+
+    One delivery larger than this -- a scan-driven detector's whole volume,
+    or a burst of camera frames after a late poll -- is still admitted when
+    the queue is empty, and warned about once, because refusing it would
+    refuse the measurement rather than bound a backlog; nothing further fits
+    behind it until it is read.
+
+``processingWorkingSetMB``
+    The working set ImProcess may spend on work nobody asked for: contrast
+    sampling (the sample size follows it) and the mean preview computed when
+    data is loaded. It defaults to 1 GiB, a transient working set sized for
+    a typical workstation; lower it on a small machine. Above it, the current-data panel shows the first plane
+    instead of the mean and says so; *Show mean* still computes the mean on
+    request. Opening a dataset whose decoded size exceeds it is announced in
+    the status bar before decoding starts, naming the size and whether
+    *Open virtual* offers a lazy path for that source. Nothing is refused.
+
+None of these is a process limit and ImSwitch claims none: camera drivers
+allocate their own buffers, datasets and results are as large as the data.
+A value that is not a positive whole number is reported at startup and the
+default stands; the dialog shows such a value as the default in force and
+replaces it when saved. Every message that quotes a limit names the setting
+that moves it, so the line in the log is the line to act on. Saving is
+refused while a recording runs: every queue check reads the limit in force,
+so a smaller queue would fail the recording in progress.
 
 Config schema
 =============
@@ -1390,32 +1480,124 @@ Writing a new plugin
 A minimal ``Reconstructor`` looks like this::
 
     from imswitch.improcess.reconstructors.base import Reconstructor
-    from imswitch.improcess.model.result import ProcessingResult, ViewMode
-
-    class MyResult(ProcessingResult):
-        def save(self, path, fmt="tiff"):
-            ...  # write self.data to path
+    from imswitch.improcess.model.array_result import ArrayProcessingResult
 
     class MyReconstructor(Reconstructor):
         name = "My modality"
         id = "my-modality"
         file_extensions = ["hdf5", "tiff"]
 
+        @classmethod
+        def default_params(cls):
+            return {"iterations": 10}   # what a fresh widget hands process()
+
         def make_param_widget(self, parent):
-            ...  # return a QWidget exposing get_values() -> dict
+            ...  # return a QWidget exposing get_values() -> dict (same keys/defaults)
 
         def make_metadata_dialog(self, parent):
             return None  # or a QDialog for acquisition metadata
 
-        def process(self, data_obj, params):
+        def process(self, data_obj, params, context=None):
             data_obj.checkAndLoadData()
             ...
-            return MyResult(name=data_obj.name, data=..., axis_labels=[...])
+            return ArrayProcessingResult(name=data_obj.name, data=..., axis_labels=[...])
 
-Register it by adding the class to ``_AVAILABLE_RECONSTRUCTOR_CLASSES`` in
-``imswitch/improcess/reconstructors/__init__.py``.  Processors use the
+Return one of the existing result classes (``ArrayProcessingResult``,
+``LabelsResult``, ``LocalizationResult``, …) unless the modality really
+needs its own on-disk layout; the existing classes come with saving,
+provenance embedding and napari conversion already done.  Register the
+reconstructor by adding the class to ``_AVAILABLE_RECONSTRUCTOR_CLASSES``
+in ``imswitch/improcess/reconstructors/__init__.py``.  Processors use the
 analogous ``_AVAILABLE_PROCESSOR_CLASSES`` map in
-``imswitch/improcess/processors/__init__.py``.
+``imswitch/improcess/processors/__init__.py``.  Or skip the source tree
+altogether: a ``.py`` file in the plugins folder defining the class is a
+drop-in plugin (below), for reconstructors and processors alike.
+
+.. _improcess-headless-contract:
+
+What a plugin gets for free, and what it must declare
+-----------------------------------------------------
+
+Every plugin that goes through the shared run path — the GUI, a workflow, a
+batch, live streaming — gets without any hook of its own: a provenance graph
+on each result it produces, a version stamp (the ImSwitch version for
+built-ins, a digest of the file for drop-ins), the staged save protocol with
+the provenance carried in the file, napari endpoints for every layerable
+result kind, batch runs, the command line, and replay.  Those live in the
+run path and the result classes, not in the plugin.
+
+What the run path cannot invent is the plugin's **parameter contract**:
+
+``default_params()`` (required)
+    A class method returning exactly what a freshly opened parameter widget
+    hands ``apply``/``process``: the same keys, the same defaults.  It is the
+    root of everything headless — the keys a workflow may set, the values a
+    headless run starts from, and what the provenance records as the
+    effective parameters.  Declare it even when it returns ``{}``: a plugin
+    that only *inherits* the empty framework default has declared nothing
+    and is treated as **GUI-only** — workflow validation refuses it,
+    ``python -m imswitch.improcess.workflows list`` marks it, and the
+    provenance of results made with it in the GUI says the step cannot be
+    replayed and why.  Declaring it on an intermediate base class of your
+    own is fine; any override above the framework base counts.
+    A fallback ``apply`` reads (``params.get("tail", 500)``) *is* a
+    parameter: put it in the defaults (and return it from ``get_values``),
+    or the recorded parameters are not the effective ones.
+
+Widget agreement (checked)
+    When the GUI builds the widget it compares ``get_values()`` with
+    ``default_params()`` — identical key sets, identical non-volatile
+    values, and a lossless codec round trip.  A mismatch is logged as a
+    warning and remembered on the class: results made with the plugin from
+    then on are recorded non-replayable with the reason, and workflows
+    refuse it.  Built-ins and the shipped examples are pinned by a test; for
+    your own plugin's tests use the helper::
+
+        from imswitch.improcess.model.plugin_contract import check_plugin_contract
+
+        def test_contract(qapp):
+            assert check_plugin_contract(MyProcessor) == []
+
+    Machine-dependent widget defaults (a model path found at import time)
+    go in ``default_params_volatile`` so the value comparison skips them.
+
+``extra_param_keys`` (optional)
+    Keys a workflow may set beyond the defaults, for a setting no widget
+    default names (MoNaLISA's ``scan_params``).  It only *permits* a key; it
+    injects and records nothing.
+
+``output_spec()`` (optional)
+    One port ``out`` unless you say otherwise: named ports when ``apply``
+    returns a ``ProcessorOutput`` with ``keys``, a pattern when the ports
+    depend on the data.
+
+``params_version`` / ``migrate_params`` / ``encode_params`` / ``decode_params`` (optional)
+    Only when the parameter schema changes over time, or parameters carry
+    objects rather than JSON scalars.
+
+``prepare_params(data_obj, params)`` (reconstructors, optional)
+    Complete parameters from the file before a headless run, as the GUI does
+    behind the user's back.
+
+Beyond parameters, the checklist an author should walk through:
+
+* **Inputs**: ``min_inputs``/``max_inputs`` and ``check_inputs`` for a
+  processor that consumes several results (see the next section).
+* **ROIs are opt-in**: ``accepts_roi = True`` (and ``roi_modes``) lets the
+  region chooser restrict a run; ``preserves_grid = True`` says the output is
+  pixel-aligned with its input, which is what lets ROIs and imported napari
+  layers share its coordinate space.
+* **Custom result types**: never override ``save()`` — that is the protocol
+  itself, and overriding it skips staging, the provenance companion and the
+  receipt.  Set ``kind``, ``supported_formats``, and implement ``plan_save``
+  (name every file, companions included) and ``write_files`` (write them
+  into the staging paths given, embedding the document where the container
+  allows).  The photophysics example does this for a CSV curve with a
+  ``.provenance.json`` companion.  napari conversion is automatic only for
+  the known layerable kinds (``image``, ``composite``, ``rgb``, ``labels``,
+  ``localization``); a new kind needs its own adapter.
+* **Registration**: built-ins go in the class maps above; drop-ins
+  (processors and reconstructors) are discovered from the plugins folder.
 
 Two optional class attributes refine the UX without any extra method:
 
@@ -1445,11 +1627,14 @@ returned ``ProcessingResult`` and return ``PlotPayload`` objects from
 Drop-in analysis plugins
 ========================
 
-Adding a processor by editing the ImProcess source tree is fine for built-ins,
+Adding a plugin by editing the ImProcess source tree is fine for built-ins,
 but ImProcess also supports **Picasso-style drop-in plugins**: a single ``.py``
 file dropped into a user folder is discovered at startup and becomes a fully
-integrated analysis tool — parameter panel, result-kind gating and
-results-table / graph integration — with no packaging and no UI code.
+integrated plugin with no packaging and no UI code.  A ``Processor`` in the
+file becomes an analysis tool — parameter panel, result-kind gating and
+results-table / graph integration; a ``Reconstructor`` appears in the
+reconstructor picker of the Parameters dock, with its parameter widget, the
+file watcher, multidata runs and workflows behind it.
 
 This is deliberately separate from the *device* plugin system
 (:doc:`devices/plugins`), which uses pip-installed packages and entry points for
@@ -1459,26 +1644,37 @@ path.
 Using a plugin
 --------------
 
-#. In any ImProcess window, choose **Analyze → Drop-in plugins → Open plugins
-   folder…**.  The folder is ``~/.imswitch/improcess_plugins/`` and is created
-   on first use with an inert ``_example_plugin.py`` template (underscore-
-   prefixed files are ignored by discovery).
-#. Drop a ``.py`` file that defines one or more ``Processor`` subclasses into
-   that folder.  Ready-to-copy examples live in
-   ``examples/improcess_plugins/`` (``invert.py``, ``gaussian_blur.py``).
-#. Choose **Analyze → Drop-in plugins → Reload plugins** (or restart ImProcess).
-   The processor appears in the **Load tool** dropdown in the analysis toolbar;
-   load it, select a compatible result and run it.
+#. In any ImProcess window, choose **Plugins → Add plugin file…** and pick
+   the ``.py`` file: it is copied into the plugins folder and the plugins are
+   reloaded in one step.  Or choose **Plugins → Open plugins folder…** and
+   drop the file in yourself.  The folder is ``~/.imswitch/improcess_plugins/``
+   and is created on first use with an inert ``_example_plugin.py`` template
+   (underscore-prefixed files are ignored by discovery).  Ready-to-copy
+   examples live in ``examples/improcess_plugins/`` (``invert.py``,
+   ``gaussian_blur.py``, and the reconstructor ``frame_average.py``).
+#. If you copied the file by hand, choose **Plugins → Reload plugins** (or
+   restart ImProcess).
+#. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
+   load it, select a compatible result and run it.  A reconstructor appears in
+   the reconstructor picker at the top of the Parameters dock; pick it and use
+   *Reconstruct current* (or the multidata actions, or the file watcher) as
+   with any built-in.
 
 Reloading re-scans the folder, so newly added or removed plugins take effect
-immediately.  An edited plugin's new code is used the next time its panel is
-opened (an already-open panel keeps the version it was built with until it is
-closed and reopened).
+immediately.  An edited processor's new code is used the next time its panel
+is opened (an already-open panel keeps the version it was built with until it
+is closed and reopened).  An edited reconstructor takes effect at once: if it
+is the active one it is swapped in and its parameter widget rebuilt; a plugin
+whose file did not change keeps its instance and its widget state; a removed
+active reconstructor hands over to the first registered one.  While a
+reconstruction is running the reconstructors are left untouched and the
+status bar says so — reload again when it has finished — so a running job
+never straddles two versions of one plugin.
 
 Installing from the online store
 --------------------------------
 
-**Analyze → Drop-in plugins → Browse online plugins…** opens a store that lists
+**Plugins → Browse online plugins…** opens a store that lists
 plugins from the `Improcess-plugins
 <https://github.com/Imswitch2/Improcess-plugins>`_ registry.  Each entry can be
 installed, updated (when the registry offers a newer version) or uninstalled;
@@ -1507,6 +1703,10 @@ A plugin file defines an ordinary ``Processor`` subclass:
         category = "User"
         kinds = ("image",)           # result kinds this accepts
 
+        @classmethod
+        def default_params(cls):
+            return {}                # what a fresh widget hands apply(); see below
+
         @property
         def applies_to(self):
             return lambda result: getattr(result.data, "ndim", 0) >= 2
@@ -1519,7 +1719,7 @@ A plugin file defines an ordinary ``Processor`` subclass:
             return widget
 
         def apply(self, result, params):
-            data = result.data
+            data = np.asarray(result.data)       # may be a lazy view over the file
             return ArrayProcessingResult(
                 name=f"{result.name} (inverted)",
                 data=data.max() - data,
@@ -1529,9 +1729,19 @@ A plugin file defines an ordinary ``Processor`` subclass:
 The contract is the same as a built-in processor: a unique dotted ``id``,
 ``kinds`` (one or more of ``image``, ``labels``, ``table``, ``curve``,
 ``localization``, ``rgb``, ``composite``), an ``applies_to`` shape/axis gate,
-``make_param_widget`` returning a widget with ``get_values() -> dict``, and a
-pure ``apply(result, params)`` returning a new ``ProcessingResult``.  Built-in
-ids always win a collision, so a stray file cannot shadow a core processor.
+``make_param_widget`` returning a widget with ``get_values() -> dict``, a
+pure ``apply(result, params)`` returning a new ``ProcessingResult``, and
+``default_params()`` declaring the parameters (see
+:ref:`improcess-headless-contract`).  Built-in ids always win a collision,
+so a stray file cannot shadow a core processor.
+
+A drop-in reconstructor is the same file shape around a ``Reconstructor``
+subclass, with the contract of *Writing a new plugin* above: ``name``, ``id``,
+``file_extensions``, ``default_params()``, ``make_param_widget``,
+``make_metadata_dialog`` (``None`` when there is no acquisition metadata to
+ask for) and ``process(data_obj, params, context=None)`` turning the raw
+``DataObj`` into a result.  ``examples/improcess_plugins/frame_average.py``
+is a complete one, with a parameter.  One file may define both kinds.
 
 Processors that consume several results
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1580,5 +1790,9 @@ See also
 
 * ``docs/design/plans/imreconstruct-2-0.md`` — unified Milestone 12 design
   and per-layer audits
+* :doc:`improcess-napari-plugins` — sending results to installed napari
+  plugins (dock widgets and readers), and taking layers back
+* :doc:`improcess-workflows` — reconstructing and processing without the
+  GUI: batch workflows, ports, saves, binding, replay
 * :doc:`gui` — main GUI overview (Imcontrol)
 * :doc:`modules` — list of Imswitch2 modules

@@ -1,8 +1,23 @@
 """Controller for generic result-based processor panels."""
 
 from .basecontrollers import ImProcessWidgetController
-from imswitch.improcess.processors.base import normalize_processor_output
+from imswitch.improcess.processors.run import (
+    restriction_for,
+    run_batch,
+    run_multi,
+    run_processor,
+    run_restricted,
+    summarize,
+)
 from imswitch.improcess.view.bulk_confirm import confirm_bulk_publish
+
+# The run helpers moved to ``processors.run`` so headless callers share them.
+# The old private names stay importable from here for one release.
+_run_multi = run_multi
+_run_batch = run_batch
+_run_restricted = run_restricted
+_restriction_for = restriction_for
+_summary = summarize
 
 
 class ResultProcessorController(ImProcessWidgetController):
@@ -39,10 +54,7 @@ class ResultProcessorController(ImProcessWidgetController):
             self._widget.setStatusText("No processor input selected.")
             return
 
-        if getattr(processor, "max_inputs", 1) != 1:
-            results, failures = _run_multi(processor, inputs, params, self._logger)
-        else:
-            results, failures = _run_batch(processor, inputs, params, self._logger)
+        results, failures = run_processor(processor, inputs, params, self._logger)
 
         if not results:
             self._widget.setStatusText(
@@ -70,120 +82,21 @@ class ResultProcessorController(ImProcessWidgetController):
         if last_result is not None:
             self._commChannel.sigCurrentResultChanged.emit(last_result)
             self._widget.setCurrentResult(last_result)
-        self._widget.setStatusText(_summary(results, failures))
+        self._widget.setStatusText(summarize(results, failures))
 
 
-def _run_multi(processor, inputs, params: dict, logger):
-    """One run consuming every input; the arity contract puts them in params."""
-    try:
-        output = processor.apply(inputs[0], {**params, "results": inputs})
-        # inputs[0] is the primary source for a multi-input run — it is what
-        # apply() is handed. Merges of several results keep only that lineage.
-        return list(
-            normalize_processor_output(
-                output, inputs[0], processor, params, inputs
-            )
-        ), []
-    except Exception as exc:
-        logger.exception(
-            "Failed to run processor %s on %d inputs",
-            getattr(processor, "id", type(processor).__name__),
-            len(inputs),
-        )
-        return [], [(inputs[0], str(exc))]
-
-
-def _restriction_for(processor, params: dict):
-    """The ROI restriction this run was asked for, or None (P-R).
-
-    Read from one well-known parameter key and honoured only by processors
-    that declared they accept one, so a processor that ignores ROIs cannot be
-    handed a cropped input by a UI that guessed.
-    """
-    from imswitch.improcess.analysis.roi_restriction import (
-        ROI_PARAM,
-        ROIRestriction,
-    )
-
-    restriction = params.get(ROI_PARAM)
-    if not isinstance(restriction, ROIRestriction) or not restriction.active:
-        return None
-    if not getattr(processor, "accepts_roi", False):
-        return None
-    return restriction
-
-
-def _run_restricted(processor, input_result, params: dict, restriction):
-    """Narrow the input, run, then tell the outputs what they were narrowed to.
-
-    Around the processor rather than inside it: `apply` receives an ordinary
-    result and needs to know nothing about ROIs, which is what lets every
-    existing processor become ROI-aware by declaring one attribute.
-    """
-    from imswitch.improcess.analysis.roi_restriction import (
-        ROI_PARAM,
-        apply_provenance,
-        restrict_result,
-    )
-
-    narrowed, applied = restrict_result(input_result, restriction)
-    # The restriction is consumed here, so it does not travel into `apply`.
-    # Leaving it in would hand every ROI-aware processor a parameter it has no
-    # use for — and one holding the ROIs themselves, so a processor that keeps
-    # its params (segmentation does) would retain their mask payloads and put
-    # a non-serialisable object anywhere params are later written out.
-    inner = {key: value for key, value in params.items() if key != ROI_PARAM}
-    output = processor.apply(narrowed, inner)
-    # Provenance is attached against the *original* input, not the narrowed
-    # copy: the narrowed one is an implementation detail that never existed
-    # outside this call, and lineage pointing at it would dangle.
-    #
-    # The footprint gets the region alongside the processor's own settings.
-    # "Filtered with radius 3" is only half of what happened when it was
-    # filtered inside an ROI, and the region is the half that cannot be
-    # guessed from the output.
-    footprint_params = {**inner, "region": applied.provenance()}
-    results = list(
-        normalize_processor_output(output, input_result, processor, footprint_params)
-    )
-    apply_provenance(results, applied)
-    return results
-
-
-def _run_batch(processor, inputs, params: dict, logger):
-    """One run per input. A failure is reported, not fatal: one bad result
-    part-way through a sweep must not throw away the ones that worked."""
-    results = []
-    failures = []
-    restriction = _restriction_for(processor, params)
-    for input_result in inputs:
-        try:
-            if restriction is not None:
-                results.extend(
-                    _run_restricted(processor, input_result, params, restriction)
-                )
-                continue
-            output = processor.apply(input_result, params)
-            results.extend(
-                normalize_processor_output(output, input_result, processor, params)
-            )
-        except Exception as exc:
-            logger.exception(
-                "Failed to run processor %s on %s",
-                getattr(processor, "id", type(processor).__name__),
-                getattr(input_result, "name", type(input_result).__name__),
-            )
-            failures.append((input_result, str(exc)))
-    return results, failures
-
-
-def _summary(results, failures) -> str:
-    created = (
-        f"Created {getattr(results[0], 'name', 'result')}."
-        if len(results) == 1
-        else f"Created {len(results)} results."
-    )
-    if not failures:
-        return created
-    name = getattr(failures[0][0], "name", "one input")
-    return f"{created} {len(failures)} failed — '{name}': {failures[0][1]}"
+# Copyright (C) 2020-2026 ImSwitch developers
+# This file is part of ImSwitch.
+#
+# ImSwitch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ImSwitch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

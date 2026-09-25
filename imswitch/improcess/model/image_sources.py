@@ -7,6 +7,7 @@ opening so HDF5, legacy Zarr, and OME-NGFF Zarr can share one dataset contract.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -16,6 +17,16 @@ import tifffile as tiff
 import zarr
 
 from imswitch.imcommon.model.zarr_compat import install_zarr_create_array_compat
+from imswitch.imcommon.model.acquisition_layout import (
+    AcquisitionLayout,
+    decode_acquisition_layout,
+)
+from imswitch.imcommon.model.acquisition_metadata import (
+    RecordingLifecycle,
+    RecordingLifecycleMarkers,
+    flatten_acquisition_metadata,
+    normalize_recording_lifecycle,
+)
 
 
 install_zarr_create_array_compat()
@@ -66,6 +77,84 @@ class ResolvedImage:
     axis_labels: list[str] | None = None
     axis_scales: list[float] | None = None
     scale_unit: str | None = None
+    acquisition_layout: AcquisitionLayout | None = None
+    recording_lifecycle: RecordingLifecycle | None = None
+
+
+def decode_layout_attrs(attrs: dict[str, Any]) -> AcquisitionLayout | None:
+    encoded = attrs.get("AcquisitionLayout:json")
+    declared_schema = attrs.get("AcquisitionLayout:schema")
+    if encoded is None:
+        if declared_schema is not None:
+            raise ValueError("AcquisitionLayout:schema is present without AcquisitionLayout:json")
+        return None
+    layout = decode_acquisition_layout(encoded)
+    if declared_schema is not None:
+        if isinstance(declared_schema, bytes):
+            declared_schema = declared_schema.decode("utf-8", "replace")
+        if str(declared_schema) != layout.schema:
+            raise ValueError("AcquisitionLayout:schema disagrees with the encoded layout")
+    return layout
+
+
+def _marker_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+    return bool(value)
+
+
+def _marker_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _side_dataset_scalar(parent: Any, name: str) -> Any:
+    if parent is None or name not in parent:
+        return None
+    node = parent[name]
+    if not isinstance(node, h5py.Dataset) or node.size != 1:
+        return None
+    try:
+        return node[0]
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def _hdf5_lifecycle(array: h5py.Dataset, attrs: dict[str, Any]) -> RecordingLifecycle:
+    parent = array.parent if isinstance(array.parent, h5py.Group) else None
+    markers = RecordingLifecycleMarkers(
+        writing=_marker_bool(attrs.get("writing")),
+        frames_committed=_marker_int(_side_dataset_scalar(parent, "frames_committed")),
+        stream_complete=_marker_bool(_side_dataset_scalar(parent, "stream_complete")),
+    )
+    return normalize_recording_lifecycle(attrs, markers)
+
+
+def _zarr_lifecycle(attrs: dict[str, Any]) -> RecordingLifecycle:
+    return normalize_recording_lifecycle(
+        attrs,
+        RecordingLifecycleMarkers(
+            writing=_marker_bool(attrs.get("writing")),
+            frames_committed=_marker_int(attrs.get("recording:frames_committed")),
+        ),
+    )
 
 
 def is_zarr_group(obj: Any) -> bool:
@@ -105,35 +194,132 @@ def dataset_names(container: Any) -> list[str]:
     raise ValueError(f'Unsupported image container "{type(container).__name__}"')
 
 
-def resolve_image(container: Any, dataset_name: str | None) -> ResolvedImage:
+def resolve_image(
+    container: Any,
+    dataset_name: str | None,
+    *,
+    validate_layout_metadata: bool = True,
+) -> ResolvedImage:
     if is_zarr_group(container):
-        return _resolve_zarr_image(container, dataset_name)
+        return _resolve_zarr_image(
+            container,
+            dataset_name,
+            validate_layout_metadata=validate_layout_metadata,
+        )
     if isinstance(container, h5py.Group):
-        return _resolve_hdf5_image(container, dataset_name)
+        return _resolve_hdf5_image(
+            container,
+            dataset_name,
+            validate_layout_metadata=validate_layout_metadata,
+        )
     if isinstance(container, tiff.TiffFile):
-        return _resolve_tiff_image(container, dataset_name)
+        return _resolve_tiff_image(
+            container,
+            dataset_name,
+            validate_layout_metadata=validate_layout_metadata,
+        )
     raise ValueError(f'Unsupported image container "{type(container).__name__}"')
 
 
 def tiff_dataset_names(file: tiff.TiffFile) -> list[str]:
+    """Series names, or nothing at all for a file that holds no image.
+
+    Stopping a recording before its first frame leaves a header-only TIFF. The
+    invented ``"default"`` name this used to return made the two halves of the
+    reader contradict each other: discovery offered a dataset, and opening it
+    failed with *Dataset "default" was not found in TIFF series ['default']* --
+    naming the dataset in the list it claims not to contain. An empty list
+    gives the same accurate refusal HDF5 and Zarr already give, and the
+    operator learns the file holds nothing rather than that the reader is
+    confused.
+    """
     names = []
     series_count = len(file.series)
     for index, series in enumerate(file.series):
         name = _tiff_series_name(series, index, series_count)
         names.append(name)
-    return names or ["default"]
+    if names:
+        return names
+    return ["default"] if file.pages else []
 
 
-def _hdf5_dataset_names(group: h5py.Group) -> list[str]:
+#: Prefix of the per-timepoint groups a single-file lapse recording writes.
+_LAPSE_ITEM_PREFIX = "scan"
+
+
+def _lapse_item_order(name: str) -> tuple[int, int, str]:
+    """Sort key putting ``scan2`` before ``scan10``.
+
+    The groups are numbered, so ordering them as text reads a twelve-point
+    lapse back as 0, 1, 10, 11, 2, ... The picker shows that order and the
+    multi-data list is built in it, while the live readers sort the same groups
+    numerically -- two layers disagreeing about the order of one file.
+    """
+    ordinal = name[len(_LAPSE_ITEM_PREFIX):]
+    if name.startswith(_LAPSE_ITEM_PREFIX) and ordinal.isdigit():
+        return (0, int(ordinal), "")
+    return (1, 0, name)
+
+
+def _lapse_item_dataset_names(node: Any) -> list[str]:
+    """Detector names one level inside a single-file lapse item group.
+
+    A lapse recorded as one file writes each timepoint into its own group --
+    ``scan0/Camera/data``, ``scan1/Camera/data`` -- so the detector groups the
+    readers look for sit one level deeper than in every other recording. A
+    reader that only looks at the root finds no datasets at all and reports the
+    file as empty, which is what made single-file lapse recordings unopenable.
+
+    Exactly one extra level is descended, and only through a plain group that
+    holds detector groups, so this recognizes the lapse layout without turning
+    the discovery into a general tree walk that would surface arrays the
+    storers never meant as datasets.
+
+    This is the first code in the open path that dereferences nodes it did not
+    write, so a child that cannot be resolved -- a dangling link, a group whose
+    backing file is gone -- is skipped rather than allowed to fail the whole
+    container. Discovery answers "what can be opened here"; one unreadable
+    neighbour is not an answer of "nothing".
+    """
+    if not (isinstance(node, h5py.Group) or is_zarr_group(node)):
+        return []
+    if is_structured_detector_group(node):
+        return []
     names = []
-    for name in group.keys():
-        node = group[name]
-        if is_array_node(node) or is_structured_detector_group(node):
+    for name in sorted(node.keys()):
+        try:
+            child = node[name]
+        except Exception:
+            continue
+        if is_structured_detector_group(child):
             names.append(name)
     return names
 
 
-def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> ResolvedImage:
+def _hdf5_dataset_names(group: h5py.Group) -> list[str]:
+    names = []
+    nested = []
+    for name in group.keys():
+        try:
+            node = group[name]
+        except Exception:
+            continue
+        if is_array_node(node) or is_structured_detector_group(node):
+            names.append(name)
+            continue
+        nested.extend(
+            (name, child) for child in _lapse_item_dataset_names(node)
+        )
+    nested.sort(key=lambda item: (_lapse_item_order(item[0]), item[1]))
+    return names + [f"{item}/{child}" for item, child in nested]
+
+
+def _resolve_hdf5_image(
+    group: h5py.Group,
+    dataset_name: str | None,
+    *,
+    validate_layout_metadata: bool,
+) -> ResolvedImage:
     if dataset_name is None:
         raise ValueError("datasetName is required")
 
@@ -153,6 +339,10 @@ def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> Resolved
             axis_scales=None,
             scale_unit=None,
             source_format="hdf5",
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
+            recording_lifecycle=_hdf5_lifecycle(array, attrs),
         )
 
     if is_array_node(node):
@@ -164,12 +354,21 @@ def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> Resolved
             array_path=dataset_name,
             axis_labels=_axis_labels_from_hdf5_attrs(attrs, node.ndim),
             source_format="hdf5",
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
+            recording_lifecycle=_hdf5_lifecycle(node, attrs),
         )
 
     raise ValueError(f'Dataset "{dataset_name}" is not an array or structured detector group')
 
 
-def _resolve_tiff_image(file: tiff.TiffFile, dataset_name: str | None) -> ResolvedImage:
+def _resolve_tiff_image(
+    file: tiff.TiffFile,
+    dataset_name: str | None,
+    *,
+    validate_layout_metadata: bool,
+) -> ResolvedImage:
     series_names = tiff_dataset_names(file)
     if dataset_name is None:
         if len(series_names) != 1:
@@ -186,6 +385,14 @@ def _resolve_tiff_image(file: tiff.TiffFile, dataset_name: str | None) -> Resolv
         if axis_labels is not None and len(axis_labels) != len(series.shape):
             axis_labels = None
         axis_scales, scale_unit = _axis_scales_from_tiff_attrs(attrs, axis_labels, len(series.shape))
+        observed_frames = 1 if len(series.shape) <= 2 else int(series.shape[0])
+        lifecycle = normalize_recording_lifecycle(
+            attrs,
+            RecordingLifecycleMarkers(
+                writing=False,
+                frames_committed=observed_frames,
+            ),
+        )
         return ResolvedImage(
             name=name,
             array=series,
@@ -195,6 +402,10 @@ def _resolve_tiff_image(file: tiff.TiffFile, dataset_name: str | None) -> Resolv
             axis_labels=axis_labels,
             axis_scales=axis_scales,
             scale_unit=scale_unit,
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
+            recording_lifecycle=lifecycle,
         )
 
     raise ValueError(f'Dataset "{dataset_name}" was not found in TIFF series {series_names}')
@@ -215,6 +426,7 @@ def _tiff_series_attrs(file: tiff.TiffFile, series_index: int, series: Any) -> d
         "tiff:axes": getattr(series, "axes", None),
     }
     attrs.update(_ome_pixels_attrs(file, series_index))
+    attrs.update(_ome_map_annotation_attrs(file, series_index))
     return attrs
 
 
@@ -258,29 +470,100 @@ def _ome_pixels_attrs(file: tiff.TiffFile, image_index: int) -> dict[str, Any]:
     return attrs
 
 
+def _ome_map_annotation_attrs(file: tiff.TiffFile, image_index: int) -> dict[str, Any]:
+    metadata = getattr(file, "ome_metadata", None)
+    if not metadata:
+        return {}
+    try:
+        root = ET.fromstring(metadata)
+    except ET.ParseError:
+        return {}
+
+    images = root.findall("{*}Image")
+    if image_index >= len(images):
+        return {}
+    annotation_ids = {
+        reference.get("ID")
+        for reference in images[image_index].findall("{*}AnnotationRef")
+        if reference.get("ID")
+    }
+    if not annotation_ids:
+        return {}
+    annotations: dict[str, Any] = {}
+    for annotation in root.findall(".//{*}MapAnnotation"):
+        if annotation.get("ID") not in annotation_ids:
+            continue
+        for item in annotation.findall("./{*}Value/{*}M"):
+            key = item.get("K")
+            if not key:
+                continue
+            value = item.text or ""
+            if key in {
+                "recording:planned_frames",
+                "recording:actual_frames",
+                "recording:planned_partitions",
+                "recording:actual_partitions",
+                # Left out, this came back as text and the strict count parser
+                # rejected the very field that says frames were thrown away.
+                "recording:discarded_frames",
+            }:
+                try:
+                    annotations[key] = int(value)
+                    continue
+                except ValueError:
+                    pass
+            annotations[key] = value
+    return annotations
+
+
 def _zarr_dataset_names(group: Any) -> list[str]:
-    root_image = _ngff_image(group)
+    root_image = _ngff_image(group, validate_layout_metadata=False)
     if root_image is not None:
         return [root_image.name]
 
     names = []
+    nested = []
     for name in sorted(group.keys()):
-        node = group[name]
-        if is_array_node(node) or is_structured_detector_group(node) or _ngff_image(node, name) is not None:
+        try:
+            node = group[name]
+        except Exception:
+            continue
+        if (
+            is_array_node(node)
+            or is_structured_detector_group(node)
+            or _ngff_image(node, name, validate_layout_metadata=False) is not None
+        ):
             names.append(name)
-    return names
+            continue
+        nested.extend(
+            (name, child) for child in _lapse_item_dataset_names(node)
+        )
+    nested.sort(key=lambda item: (_lapse_item_order(item[0]), item[1]))
+    return names + [f"{item}/{child}" for item, child in nested]
 
 
-def _resolve_zarr_image(group: Any, dataset_name: str | None) -> ResolvedImage:
+def _resolve_zarr_image(
+    group: Any,
+    dataset_name: str | None,
+    *,
+    validate_layout_metadata: bool,
+) -> ResolvedImage:
     if dataset_name is None:
         raise ValueError("datasetName is required")
 
-    root_image = _ngff_image(group)
+    root_image = _ngff_image(
+        group,
+        validate_layout_metadata=validate_layout_metadata,
+    )
     if root_image is not None and dataset_name == root_image.name:
         return root_image
 
     node = group[dataset_name]
-    ngff_image = _ngff_image(node, dataset_name)
+    ngff_image = _ngff_image(
+        node,
+        dataset_name,
+        validate_layout_metadata=validate_layout_metadata,
+    )
     if ngff_image is not None:
         # _ngff_image resolves array_path relative to ``node``; rebase it onto
         # ``group`` (the store root) so callers that re-traverse from the root —
@@ -303,21 +586,35 @@ def _resolve_zarr_image(group: Any, dataset_name: str | None) -> ResolvedImage:
             attrs=attrs,
             array_path=f"{dataset_name}/data",
             source_format="zarr",
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
+            recording_lifecycle=_zarr_lifecycle(attrs),
         )
 
     if is_array_node(node):
+        attrs = dict(node.attrs)
         return ResolvedImage(
             name=dataset_name,
             array=node,
-            attrs=dict(node.attrs),
+            attrs=attrs,
             array_path=dataset_name,
             source_format="zarr",
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
+            recording_lifecycle=_zarr_lifecycle(attrs),
         )
 
     raise ValueError(f'Dataset "{dataset_name}" is not an array or structured detector group')
 
 
-def _ngff_image(group: Any, fallback_name: str | None = None) -> ResolvedImage | None:
+def _ngff_image(
+    group: Any,
+    fallback_name: str | None = None,
+    *,
+    validate_layout_metadata: bool = True,
+) -> ResolvedImage | None:
     multiscale = _ngff_multiscale(group)
     dataset = _ngff_dataset_entry(multiscale)
     if multiscale is None or dataset is None:
@@ -337,6 +634,9 @@ def _ngff_image(group: Any, fallback_name: str | None = None) -> ResolvedImage |
     axis_labels, axis_scales, scale_unit = _ngff_axis_metadata(multiscale, dataset, array)
     attrs = dict(group.attrs)
     attrs.update(dict(array.attrs))
+    metadata = group.get("metadata")
+    if metadata is not None:
+        attrs.update(flatten_metadata_attrs(metadata))
     axes = multiscale.get("axes")
     if axes is not None:
         attrs["ngff:axes"] = axes
@@ -353,6 +653,10 @@ def _ngff_image(group: Any, fallback_name: str | None = None) -> ResolvedImage |
         axis_labels=axis_labels,
         axis_scales=axis_scales,
         scale_unit=scale_unit,
+        acquisition_layout=(
+            decode_layout_attrs(attrs) if validate_layout_metadata else None
+        ),
+        recording_lifecycle=_zarr_lifecycle(attrs),
     )
 
 
@@ -592,15 +896,17 @@ def _normalize_unit(unit: str) -> str:
 
 
 def flatten_metadata_attrs(metadata_group: Any, prefix: list[str] | None = None) -> dict[str, Any]:
-    prefix = [] if prefix is None else prefix
-    attrs = {}
+    """Extract a native metadata tree, then use the shared mapping flattener."""
 
-    for key, value in dict(metadata_group.attrs).items():
-        attrs[":".join([*prefix, key])] = value
+    def nested_mapping(group: Any) -> dict[str, Any]:
+        nested: dict[str, Any] = dict(group.attrs)
+        for name in group.keys():
+            child = group[name]
+            if isinstance(child, h5py.Group) or is_zarr_group(child):
+                nested[name] = nested_mapping(child)
+        return nested
 
-    for name in metadata_group.keys():
-        child = metadata_group[name]
-        if isinstance(child, h5py.Group) or is_zarr_group(child):
-            attrs.update(flatten_metadata_attrs(child, [*prefix, name]))
-
-    return attrs
+    nested: dict[str, Any] = nested_mapping(metadata_group)
+    for component in reversed(prefix or []):
+        nested = {component: nested}
+    return flatten_acquisition_metadata(nested)

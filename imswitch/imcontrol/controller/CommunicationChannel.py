@@ -134,6 +134,9 @@ class CommunicationChannel(SignalInterface):
     sigScanStarted = Signal()
     sigScanDone = Signal()
     sigScanEnded = Signal()
+    # A scan start request was refused before any lifecycle signal was
+    # published (reason text). Emitted by every scan-controller family.
+    sigScanRequestRejected = Signal(str)
     sigToggleBlockScanWidget = Signal(bool)
     sigRequestScanParameters = Signal()
     sigSendScanParameters = Signal(dict, dict, object)  # (analogParams, digitalParams, scannerList)
@@ -702,6 +705,21 @@ class CommunicationChannel(SignalInterface):
     def isExecuting(self):
         return self._scriptExecution
 
+    @APIExport(runOnUIThread=True)
+    def setSessionNote(self, note: str) -> None:
+        """ Set the free-text note attached to recordings made from now on.
+
+        The same text the Tools -> Session notes... dialog edits. Recordings
+        snapshot the shared attributes when they start, so this reaches every
+        file saved after the call and none saved before it. Pass '' to clear.
+        """
+        self.__sharedAttrs.setSessionNote(note)
+
+    @APIExport()
+    def getSessionNote(self) -> str:
+        """ Return the free-text note attached to new recordings ('' if none). """
+        return self.__sharedAttrs.getSessionNote()
+
     @APIExport()
     def signals(self) -> Mapping[str, Signal]:
         """ Returns signals that can be used with e.g. the getWaitForSignal
@@ -712,7 +730,12 @@ class CommunicationChannel(SignalInterface):
          - recordingStarted
          - recordingEnded
          - recordingFailed
-         - scanEnded
+         - scanStarting (the run-level start, before hardware arms)
+         - scanStarted (the execution backend started the iteration)
+         - scanDone (an iteration finished)
+         - scanEnded (the run is over, on every terminal path)
+         - scanRejected(reason) (a start request was refused and its scan
+           never runs; reason says why)
 
         They can be accessed like this: api.imcontrol.signals().scanEnded
         """
@@ -723,7 +746,11 @@ class CommunicationChannel(SignalInterface):
             'recordingStarted': self.sigRecordingStarted,
             'recordingEnded': self.sigRecordingEnded,
             'recordingFailed': self.sigRecordingFailed,
+            'scanStarting': self.sigScanStarting,
+            'scanStarted': self.sigScanStarted,
+            'scanDone': self.sigScanDone,
             'scanEnded': self.sigScanEnded,
+            'scanRejected': self.sigScanRequestRejected,
             'saveFocus': self.sigSaveFocus
         })
 

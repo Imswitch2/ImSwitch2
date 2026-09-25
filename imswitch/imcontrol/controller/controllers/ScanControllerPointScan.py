@@ -8,11 +8,13 @@ from typing import Dict, Any
 from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
-from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step
+from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step, seed_scan_delays_from_setup
+from ._acquisition_layout_source import build_controller_point_scan_layouts
 
 class ScanControllerPointScan(SuperScanController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        seed_scan_delays_from_setup(self._widget, self._setupInfo)
 
         self._widget.initControls(
             self.positioners.keys(),
@@ -53,6 +55,8 @@ class ScanControllerPointScan(SuperScanController):
 
             self._widget.setSeqTimePar(self._digitalParameterDict['sequence_time'])
             self._widget.setPhaseDelayPar(self._analogParameterDict['phase_delay'])
+            if 'd3step_delay' in self._analogParameterDict:
+                self._widget.setd3StepDelayPar(self._analogParameterDict['d3step_delay'])
         finally:
             self.settingParameters = False
     
@@ -60,22 +64,12 @@ class ScanControllerPointScan(SuperScanController):
                         sigScanStartingEmitted):
         """ Runs a scan with the set scanning parameters. """
         try:
-            if self._beginScanRun(
-                sigScanStartingEmitted=sigScanStartingEmitted
+            if self._beginScanRunWithDesign(
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                recalculateSignals=recalculateSignals,
             ) is None:
                 return
             self._widget.setScanButtonChecked(True)
-
-            if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
-                self.getParameters()
-                try:
-                    self.signalDict, self.scanInfoDict = self._master.scanManager.makeFullScan(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
-                except TypeError:
-                    self._logger.error(traceback.format_exc())
-                    self.scanFailed()
-                    return
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
@@ -136,6 +130,10 @@ class ScanControllerPointScan(SuperScanController):
         while len(result) < 3:
             result.append(0.0)
         return result
+
+    def getAcquisitionLayouts(self, detectorNames):
+        """Return the detector-local event layout authored by this scan."""
+        return build_controller_point_scan_layouts(self, detectorNames)
 
     def getParameters(self):
         if self.settingParameters:

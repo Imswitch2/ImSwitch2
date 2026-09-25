@@ -1,4 +1,5 @@
 import dataclasses
+from pathlib import Path
 from typing import Any, Dict
 
 import h5py
@@ -8,7 +9,9 @@ import zarr
 from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
     ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes,
-    isCriticalRestoreWarning
+    isCriticalRestoreWarning,
+    memory_limits,
+    shutdownState,
 )
 from imswitch.imcommon.framework import Thread
 from .server.ImSwitchServer import ImSwitchServer
@@ -25,6 +28,20 @@ from .basecontrollers import ImConWidgetControllerFactory
 
 
 _SERVER_THREAD_STOP_TIMEOUT_MS = 5000
+
+
+def _activeSetupPath(options):
+    """ Where this session's setup file lives, resolved, or None.
+
+    Resolved because it is compared against paths the config editor wrote, and
+    the same file can be spelled several ways. None rather than raising: this
+    is bookkeeping for a menu item, and nothing about it is worth stopping
+    imcontrol from starting over.
+    """
+    try:
+        return str(Path(configfiletools.getSetupFilePath(options.setupFileName)).resolve())
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class ImConMainController(MainController):
@@ -45,6 +62,20 @@ class ImConMainController(MainController):
         self.__mainView.sigSaveWidgetState.connect(self.saveWidgetState)
         self.__mainView.sigLoadWidgetState.connect(self.loadWidgetState)
         self.__mainView.sigOpenShortcutEditor.connect(self.openShortcutEditor)
+        self.__mainView.sigOpenSessionNotes.connect(self.openSessionNotes)
+        self.__mainView.sigOpenConfigEditor.connect(self.openConfigEditor)
+        self.__mainView.sigOpenMemoryLimits.connect(self.openMemoryLimits)
+        self.__mainView.memoryLimitsDialog.sigSaveRequested.connect(self.saveMemoryLimits)
+        self.__mainView.sessionNotesDialog.sigNotesChanged.connect(self.setSessionNote)
+
+        # The Config Studio, while it is open. One window at a time: a second
+        # copy of the same file in a second editor is how edits get lost.
+        self.__configEditor = None
+        # The setup file this session is running on, resolved once here. What
+        # the options file says can change underneath us -- the editor itself
+        # can change it -- but this process keeps running what it loaded at
+        # startup, and that is what the restart prompt has to reason about.
+        self.__activeSetupPath = _activeSetupPath(options)
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel(self, self.__setupInfo)
@@ -186,6 +217,30 @@ class ImConMainController(MainController):
         
         # Register per-positioner axis jog actions (Phase 3c migration)
         self._registerPositionerJogActions()
+
+        # Positioner-wide actions live in the same global shortcut catalog as jog actions.
+        if 'Positioner' in self.controllers:
+            positionerController = self.controllers['Positioner']
+            positionerWidget = positionerController._widget
+            self.__shortcutManager.registerAction(
+                actionId='positioner.toggleCoarseFine',
+                displayName='Positioner: toggle coarse/fine',
+                callback=positionerController.toggleStepMode,
+                defaultKeySequence=None,
+                scope=ShortcutScope.Application,
+                owner=positionerWidget,
+                initiallyBound=False,
+            )
+            if positionerController._getJoystickPositionerName() is not None:
+                self.__shortcutManager.registerAction(
+                    actionId='positioner.toggleJoystick',
+                    displayName='Positioner: toggle joystick',
+                    callback=positionerController.toggleJoystick,
+                    defaultKeySequence=None,
+                    scope=ShortcutScope.Application,
+                    owner=positionerWidget,
+                    initiallyBound=False,
+                )
         
         self.__shortcutManager.loadConfigOverrides(self.__setupInfo.shortcuts)
         self.__shortcutManager.computeEffectiveBindings()
@@ -211,6 +266,12 @@ class ImConMainController(MainController):
                 self.__mainView
             )
 
+        # The panels only got their rows once their controllers ran, so the
+        # dock proportions the view guessed while they were still empty are
+        # re-derived here.  Before the saved layout is restored: a saved
+        # layout wins over content-derived sizes.
+        self.__mainView.applyContentAwareDockSizing()
+
         self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
         getWidgetStatePersistence().register('GuiLayout', self.__guiLayoutStateAdapter)
 
@@ -226,6 +287,10 @@ class ImConMainController(MainController):
                 )
         except Exception as e:
             self.__logger.warning(f'Failed to auto-restore widget states: {e}')
+
+        # Everything is built and any saved layout has been applied: settle the
+        # dock proportions once the window is actually on screen.
+        self.__mainView.scheduleInitialDockLayout()
 
         if setupInfo.pyroServerInfo.active:
             self._serverWorker = ImSwitchServer(self.__api, setupInfo)
@@ -327,7 +392,7 @@ class ImConMainController(MainController):
 
         options = dataclasses.replace(options, setupFileName=setupFileName)
         configfiletools.saveOptions(options)
-        ostools.restartSoftware()
+        self._restartAfterShutdown()
 
     def saveWidgetState(self):
         """Save widget states to a JSON file selected by the user."""
@@ -435,6 +500,146 @@ class ImConMainController(MainController):
         dialog = ShortcutEditorDialog(self.__mainView, self.__shortcutManager, self.__setupInfo)
         dialog.exec_()
 
+    def openSessionNotes(self):
+        """Show the session-notes editor, seeded with the current note.
+
+        Seeded rather than trusted to remember: the note lives in the shared
+        attributes, which the rest of the application can also write -- loading
+        parameters from a saved file brings that file's note along with
+        everything else it restores.
+        """
+        dialog = self.__mainView.sessionNotesDialog
+        dialog.setNotes(self.__commChannel.getSessionNote())
+        self.__mainView.showSessionNotesDialog()
+
+    def openMemoryLimits(self):
+        """Show the memory-limits editor, seeded with what the options file holds."""
+        options, _ = configfiletools.loadOptions()
+        dialog = self.__mainView.memoryLimitsDialog
+        dialog.setValues(getattr(options, 'memory', None))
+        self.__mainView.showMemoryLimitsDialog()
+
+    def saveMemoryLimits(self, values):
+        """Save the memory limits to the options file and adopt them now.
+
+        Refused while a recording runs: every queue check reads the limit in
+        force, so lowering a queue below what it holds would fail the
+        recording in progress. The dialog stays open with the reason.
+        """
+        dialog = self.__mainView.memoryLimitsDialog
+        master = self.__masterController
+        recordingManager = getattr(master, 'recordingManager', None)
+        if recordingManager is not None and getattr(recordingManager, 'record', False):
+            dialog.setStatus(
+                'A recording is running. Stop it first: a smaller queue '
+                'would fail the recording in progress.'
+            )
+            return
+
+        from imswitch.imcontrol.model.Options import MemoryOptions
+        try:
+            memory = MemoryOptions(**{field: int(value) for field, value in values.items()})
+            options, _ = configfiletools.loadOptions()
+            configfiletools.saveOptions(dataclasses.replace(options, memory=memory))
+        except Exception as e:
+            self.__logger.error(f'Could not save the memory limits: {e}', exc_info=True)
+            dialog.setStatus(f'Could not save the memory limits: {e}')
+            return
+        memory_limits.configure(memory, logger=self.__logger)
+        dialog.setStatus('')
+        dialog.accept()
+
+    def openConfigEditor(self):
+        """ Open the Config Studio on this microscope's setup files.
+
+        Not modal: editing a setup file changes nothing about the running
+        microscope, so there is no reason to lock the operator out of it while
+        they work. Reused rather than reopened, so that two windows can never
+        hold different edits of the same file.
+        """
+        if self.__configEditor is not None:
+            self.__configEditor.show()
+            self.__configEditor.raise_()
+            self.__configEditor.activateWindow()
+            return
+
+        try:
+            from imswitch.imcontrol.view.configeditor import MainWindow as ConfigEditor
+            editor = ConfigEditor(
+                start_folder=configfiletools.getSetupFilesDir(),
+                parent=self.__mainView,
+            )
+        except Exception as e:
+            self.__logger.error(f'Failed to open the config editor: {e}', exc_info=True)
+            QtWidgets.QMessageBox.critical(
+                self.__mainView,
+                'Could not open the config editor',
+                f'The hardware configuration editor failed to start:\n{e}',
+            )
+            return
+
+        editor.sig_closed.connect(self._onConfigEditorClosed)
+        self.__configEditor = editor
+        editor.show()
+
+    def _onConfigEditorClosed(self):
+        """ Offer a restart if the editor changed what this session is running.
+
+        Only if: a setup file ImSwitch is not using can be edited all day
+        without any of it mattering, and a prompt that appears every time the
+        editor closes is one the operator learns to dismiss unread.
+        """
+        editor = self.__configEditor
+        if editor is None:
+            return
+        self.__configEditor = None
+
+        needsRestart = (
+            editor.active_config_changed
+            or (self.__activeSetupPath is not None
+                and self.__activeSetupPath in editor.saved_files())
+        )
+        editor.deleteLater()
+
+        if not needsRestart:
+            return
+
+        # Off the editor's own closeEvent before touching the main window: the
+        # answer may be to close the application, and doing that from inside a
+        # widget that is still closing is asking for trouble.
+        QtCore.QTimer.singleShot(0, self._promptRestartAfterConfigEdit)
+
+    def _promptRestartAfterConfigEdit(self):
+        proceed = guitools.askYesNoQuestion(
+            self.__mainView,
+            'Restart ImSwitch?',
+            'ImSwitch reads the hardware configuration once, at startup, so the'
+            ' changes you just saved are not in effect yet.\n\n'
+            'Restart ImSwitch now?'
+        )
+        if not proceed:
+            return
+        self._restartAfterShutdown()
+
+    def _restartAfterShutdown(self):
+        """ Close the application, then come back up.
+
+        Deliberately not ``ostools.restartSoftware()``: that replaces the
+        process there and then, so detectors, stages and lasers are never
+        finalized and the new process inherits whatever they were doing. Asking
+        for the restart and closing the window runs the ordinary shutdown
+        first, and ``launchApp`` re-execs once it is done.
+        """
+        ostools.restartAfterShutdown(self.__mainView.window().close)
+
+    def setSessionNote(self, note: str) -> None:
+        """Publish the operator's free-text note for this session.
+
+        Recordings snapshot the shared attributes when they start, so this
+        reaches every file saved after it and none saved before.
+        """
+        self.__commChannel.setSessionNote(note)
+
     def _registerPositionerJogActions(self):
         """Register dynamic per-positioner axis jog actions with shortcutModifier alias expansion.
         
@@ -460,9 +665,22 @@ class ImConMainController(MainController):
         from imswitch.imcommon.model import ShortcutScope
         from imswitch.imcontrol.controller.ShortcutManager import computePositionerJogDefaults
 
-        jogDefaults = computePositionerJogDefaults(self.__setupInfo.positioners)
-
+        visiblePositioners = {}
         for positionerName, positionerInfo in self.__setupInfo.positioners.items():
+            if not positionerInfo.forPositioning or getattr(positionerInfo, 'hide', False):
+                continue
+            try:
+                self.__masterController.positionersManager[positionerName]
+            except Exception:
+                continue
+            # Keep shortcuts registered for configured/visible positioners even
+            # when hardware is unavailable at startup. Runtime reconnect can then
+            # make the existing widget + actions usable without rebuilding them.
+            visiblePositioners[positionerName] = positionerInfo
+
+        jogDefaults = computePositionerJogDefaults(visiblePositioners)
+
+        for positionerName, positionerInfo in visiblePositioners.items():
             for axis in positionerInfo.axes:
                 for direction, label in (('plus', '+'), ('minus', '-')):
                     actionId = f'positioner.{positionerName}.{axis}.{direction}'
@@ -543,6 +761,19 @@ class ImConMainController(MainController):
             self.__logger.error(
                 'Skipping hardware-manager finalization because the server '
                 'thread did not drain within the shutdown deadline.'
+            )
+            return False
+        if (
+            self.__masterController is not None
+            and not shutdownState.hardwareFinalizationAllowed()
+        ):
+            # Same fail-closed rule as for the server thread and controller
+            # workers: a script thread that did not drain may still be inside
+            # a manager call.
+            self.__logger.error(
+                'Skipping hardware-manager finalization because a script did '
+                'not stop within the shutdown deadline: '
+                + '; '.join(shutdownState.reasons)
             )
             return False
         if self.__masterController is not None and controllersClosed is not False:

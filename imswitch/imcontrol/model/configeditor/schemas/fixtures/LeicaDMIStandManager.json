@@ -1,0 +1,9 @@
+{
+  "category": "stands",
+  "device": {
+    "managerName": "LeicaDMIStandManager",
+    "managerProperties": {
+      "availableCubes": {}
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "MHXYStageManager",
+    "managerProperties": {
+      "rs232device": "example"
+    }
+  }
+}

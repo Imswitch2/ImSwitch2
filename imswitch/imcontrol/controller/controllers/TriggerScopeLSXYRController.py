@@ -7,7 +7,8 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin, check_firmware_scan_dac_ranges
+from ._acquisition_layout_source import resolft_counter, resolft_position_count
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
@@ -18,6 +19,33 @@ class TriggerScopeLSXYRController(
     ImConWidgetController,
 ):
     """Linked to TriggerScopeLSXYRWidget."""
+
+    #: LS-XY-RESOLFT steps the RESOLFT counters inside an X/Y raster. How the
+    #: firmware nests the two is not established by a trace (rig-validation
+    #: §3.1), so this controller declares NO acquisition layout: a recording
+    #: from it is layout-less rather than stamped with a guessed order. The
+    #: frame *count* is order-independent and is declared correctly below.
+    getAcquisitionLayouts = None
+
+    #: Raster counters the firmware steps in addition to the RESOLFT ones.
+    _RASTER_COUNT_KEYS = ('rasterXSteps', 'rasterYSteps')
+
+    def getNumScanPositions(self) -> int:
+        """Camera frames per run: the RESOLFT counters times the X/Y raster.
+
+        The raster counters were in neither the frame expectation nor the
+        layout, so an LS-XY-RESOLFT recording armed for one raster position.
+        """
+        scanParameters, _ = self._triggerScopeGeometryParameters()
+        positions = resolft_position_count(scanParameters)
+        for key in self._RASTER_COUNT_KEYS:
+            positions *= resolft_counter(scanParameters, key)
+        self._logger.warning(
+            'LS-XY-RESOLFT: the firmware frame order is not established, so '
+            'this recording carries no acquisition layout; only its frame '
+            f'count ({positions}) is declared. See rig-validation §3.1.'
+        )
+        return positions
 
     componentName = 'Scan'
     stateSchemaVersion = 1
@@ -218,13 +246,15 @@ class TriggerScopeLSXYRController(
         scanParameterDict['rasterYStepSizeV'] = self._scanParameterDict['rasterYStepSizeUm'] / rasterYConvFactor
         scanParameterDict['rasterYSteps'] = int(self._scanParameterDict['rasterYSteps'])
 
+        check_firmware_scan_dac_ranges(
+            self.positioners, deviceParameterDict, scanParameterDict, what='LSXYR scan',
+        )
         return {'deviceParameters': deviceParameterDict, 'scanParameters': scanParameterDict}
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
-        self._widget.setRepeatEnabled(False)
-        self.runScanAdvanced(recalculateSignals=recalculateSignals,
-                             isNonFinalPartOfSequence=isNonFinalPartOfSequence,
-                             sigScanStartingEmitted=True)
+        return self._runTriggerScopeScanExternal(
+            recalculateSignals, isNonFinalPartOfSequence
+        )
 
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted):
@@ -312,9 +342,9 @@ class TriggerScopeLSXYRController(
                 devices.append(device)
         return devices
 
-    @APIExport(runOnUIThread=True)
     def runScan(self) -> None:
-        """Runs a scan with the set scanning parameters."""
+        """Runs a scan with the set scanning parameters (GUI Scan button; the
+        API entry point is WorkflowFacadeController.runScan)."""
         self.runScanAdvanced(sigScanStartingEmitted=False)
 
     def setSharedAttr(self, category, attr, value):

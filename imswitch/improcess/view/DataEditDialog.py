@@ -99,7 +99,11 @@ class DataEditDialog(QtWidgets.QDialog):
         self.dataName.setText(f'File: {dataName}')
         self.datasetName.setText(f'Dataset: {datasetName}')
         self.numFrames.setText(str(numFrames))
-        self.slider.setMaximum(numFrames - 1 if numFrames else 0)
+        # Silently, as in DataFrameWidget.setNumFrames: a clamp is not a
+        # request for a plane.
+        with QtCore.QSignalBlocker(self.slider), QtCore.QSignalBlocker(self.frameNum):
+            self.slider.setMaximum(numFrames - 1 if numFrames else 0)
+            self.frameNum.setText(str(self.slider.value()))
 
 
 class DataEditActions(QtWidgets.QFrame):

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "address": {
+      "description": "Elliptec bus address.  Each device on the same ``port`` MUST have a unique address.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer"
+      ]
+    },
+    "homeOnInit": {
+      "description": "If true, home this rotator at startup (uses the bus lock; safe to set on multiple devices).",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "port": {
+      "description": "Serial port (e.g. ``\"COM20\"`` on Windows, ``\"/dev/ttyUSB0\"`` on Linux).",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    },
+    "scale": {
+      "description": "``pylablib`` scale parameter.  Leave at ``\"stage\"`` unless you're driving a non-standard device.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "address",
+    "port"
+  ],
+  "title": "ElliptecRotatorManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ElliptecRotatorManager",
+    "RotatorManager"
+  ]
+}

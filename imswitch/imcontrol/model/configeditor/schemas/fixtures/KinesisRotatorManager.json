@@ -1,0 +1,11 @@
+{
+  "category": "rotators",
+  "device": {
+    "managerName": "KinesisRotatorManager",
+    "managerProperties": {
+      "homeOnInit": true,
+      "snr": "example",
+      "unitsPerDegree": 1.5
+    }
+  }
+}

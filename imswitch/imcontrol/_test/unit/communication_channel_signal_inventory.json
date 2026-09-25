@@ -159,6 +159,12 @@
     "args": []
   },
   {
+    "name": "sigScanRequestRejected",
+    "args": [
+      "str"
+    ]
+  },
+  {
     "name": "sigToggleBlockScanWidget",
     "args": [
       "bool"

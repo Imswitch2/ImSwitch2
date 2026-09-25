@@ -108,7 +108,10 @@ class PositionerInfo(DeviceInfo):
     """ Whether the positioner is connected to a joystick. """
 
     liveUpdate: bool = False
-    """ Whether the positioner position should be updated live. """
+    """ Whether live position updates are available for this positioner. """
+
+    hide: bool = False
+    """ Whether the positioner is hidden from the manual Positioner widget. """
 
     shortcutModifier: Optional[str] = None
     """ Keyboard-shortcut group used to jog this positioner from the Positioner
@@ -221,7 +224,11 @@ class FocusLockInfo:
     """ Positioner name. """
 
     updateFreq: int
-    """ Update frequency, in milliseconds. """
+    """ Focus-estimate update rate, in hertz: the camera is read and the
+    correction computed ``updateFreq`` times per second. (It was documented
+    in milliseconds while being consumed as a rate, so ``100`` meant 100 Hz,
+    not every 100 ms, and anything above 1000 asked for a sub-millisecond
+    timer.) Must be positive; rates above 1000 Hz are floored to a 1 ms timer. """
 
     frameCropx: int
     """ Starting X position of camera frame crop. """
@@ -249,8 +256,12 @@ class FocusLockInfo:
     available on the configured positioner, otherwise ``0``. """
 
     reacquireTimeoutS: float = 1.0
-    """ How long to wait for the focus signal to come back after a scan
-    released the actuator, before giving up, in seconds.
+    """ Settle allowance for the actuator after a scan released it, in
+    seconds. The reacquisition deadline is this plus the time the barrier's
+    sample window takes, ``reacquireSamples / updateFreq``, so it cannot be
+    structurally shorter than the window it waits for -- which it was: at
+    5 Hz a five-sample window needs a second on its own, and the lock gave up
+    on every tile of a tiling run.
 
     The lock is suspended for the duration of any scan that can reach its axis
     and does not resume the instant the scan ends -- it first waits for the
@@ -275,6 +286,21 @@ class FocusLockInfo:
     """ Number of consecutive focus estimates the reacquisition barrier
     averages before deciding the signal has settled. """
 
+    def __post_init__(self):
+        if not self.updateFreq or self.updateFreq <= 0:
+            raise ValueError(
+                f'focusLock.updateFreq must be a positive rate in hertz, got '
+                f'{self.updateFreq!r}'
+            )
+        if self.reacquireTimeoutS < 0:
+            raise ValueError('focusLock.reacquireTimeoutS must not be negative')
+        if self.reacquireSamples < 2:
+            raise ValueError('focusLock.reacquireSamples must be at least 2')
+
+    def reacquireDeadlineS(self) -> float:
+        """Seconds the reacquisition barrier is given after a scan ends."""
+        return float(self.reacquireTimeoutS) + max(2, int(self.reacquireSamples)) / float(self.updateFreq)
+
 @dataclass(frozen=True)
 class AutofocusInfo:
     camera: str
@@ -284,7 +310,7 @@ class AutofocusInfo:
     """ Positioner name. """
 
     updateFreq: int
-    """ Update frequency, in milliseconds. """
+    """ Update rate of the autofocus plot, in hertz. """
 
     frameCropx: int
     """ Starting X position of frame crop. """
@@ -297,6 +323,12 @@ class AutofocusInfo:
 
     frameCroph: int
     """ Height of frame crop. """
+
+    settleTimeMs: float = 150.0
+    """ Wait after each Z move before the focus metric's frame is taken, in
+    milliseconds. The frame itself is taken through the same fresh-frame
+    handshake tiling uses, so a camera slower than this wait still yields a
+    frame that started exposing after the move. """
 
 
 @dataclass(frozen=True)

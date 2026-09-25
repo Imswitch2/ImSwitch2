@@ -5,7 +5,7 @@ from typing import Callable
 from qtpy import QtWidgets
 
 from imswitch.improcess.model.result import ProcessingResult
-from imswitch.improcess.processors._axis_split import resolve_axis, split_result
+from imswitch.improcess.processors._axis_split import resolve_axis, split_port_keys, split_result
 from imswitch.improcess.processors.base import Processor, ProcessorOutput
 
 
@@ -16,6 +16,10 @@ class StackSplitProcessor(Processor):
     id = "stack-split"
     category = "Dimensions and channels"
     kinds = ("image", "composite")
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'axis': 'Auto'}
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -42,4 +46,12 @@ class StackSplitProcessor(Processor):
             params.get("axis", "Auto"),
             preferred_labels=("Z", "T", "C", "Base", "Dataset", "projection"),
         )
-        return ProcessorOutput(split_result(result, axis, operation=self.id))
+        outputs = split_result(result, axis, operation=self.id)
+        return ProcessorOutput(outputs, keys=split_port_keys(outputs))
+
+    def output_spec(self, params: dict | None = None, input_specs=None):
+        """One port per slice, named ``<axis label><index>`` (``Z0, Z1, …``);
+        how many depends on the data."""
+        from imswitch.improcess.processors.base import OutputSpec
+
+        return OutputSpec(ports=None, pattern=r"[A-Za-z]+\d+")

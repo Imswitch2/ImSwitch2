@@ -30,8 +30,8 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
         # --- Scan timing params ---
         self.seqTimePar = QtWidgets.QLineEdit("0.02")  # ms
-        self.phaseDelayPar = QtWidgets.QLineEdit("0")  # samples
-        self.d3StepDelayPar = QtWidgets.QLineEdit("0")  # samples
+        self.phaseDelayPar = QtWidgets.QLineEdit("0")  # µs (see ScanWidgetPointScan)
+        self.d3StepDelayPar = QtWidgets.QLineEdit("0")  # µs
 
 
         self.scanPar = {
@@ -213,6 +213,9 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self._advancedProgramMode = "timing"
         # Devices (laser lines) that support per-linestep analog power programming
         self._linestep_power_capable_devices = set()
+        # Per-device opt-out. Missing entries intentionally mean enabled so that
+        # existing scans retain the historical power-modulation behaviour.
+        self._linestep_power_enabled = {}
 
     # -----------------------------
     # UI layout
@@ -422,7 +425,9 @@ class ScanWidgetAdvanced(SuperScanWidget):
         advLayout.addWidget(self._positionerStepUmLabel, 4, 0, 1, 2)
         advLayout.addWidget(self._positionerStepUmEdit, 4, 2, 1, 2)
 
-        self._analogLevelLabel = QtWidgets.QLabel("Power Level (%)")
+        self._analogLevelLabel = QtWidgets.QCheckBox("Power Level (%)")
+        self._analogLevelLabel.setChecked(True)
+        self._analogLevelLabel.toggled.connect(self._onLinestepPowerEnabledChanged)
         advLayout.addWidget(self._analogLevelLabel, 5, 0, 1, 2)
         advLayout.addWidget(self._analogLevelEdit, 5, 2, 1, 2)
 
@@ -620,6 +625,14 @@ class ScanWidgetAdvanced(SuperScanWidget):
         pe = self._getPulseEditor(deviceName, stepIdx)
         pe.power_percent = float(value)
 
+    def isLinestepPowerEnabled(self, deviceName: str) -> bool:
+        return bool(self._linestep_power_enabled.get(deviceName, True))
+
+    def setLinestepPowerEnabled(self, deviceName: str, enabled: bool) -> None:
+        self._linestep_power_enabled[deviceName] = bool(enabled)
+        if self._pulseSelectDevice.currentText() == deviceName:
+            self._syncPulseEditsFromModel()
+
     def getLineStepPositionerStepUm(self, deviceName: str, stepIdx: int):
         pe = self._getPulseEditor(deviceName, stepIdx)
         return self._coerce_positioner_step_list(getattr(pe, "positioner_step_um", [0.1]))
@@ -683,6 +696,8 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
     def setLinestepPowerCapableDevices(self, deviceNames):
         self._linestep_power_capable_devices = set(deviceNames or [])
+        for deviceName in self._linestep_power_capable_devices:
+            self._linestep_power_enabled.setdefault(deviceName, True)
         # refresh visibility + value when device changes
         self._syncPulseEditsFromModel()
 
@@ -1779,10 +1794,14 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self._pulseStartEdit.setEnabled(not is_locked_follower)
         self._pulseEndEdit.setEnabled(not is_locked_follower)
         self._positionerStepUmEdit.setEnabled(is_positioner and not is_locked_follower)
-        self._analogLevelEdit.setEnabled(power_ok)
 
         self._updatingPulseEdits = True
         try:
+            self._analogLevelLabel.blockSignals(True)
+            try:
+                self._analogLevelLabel.setChecked(self.isLinestepPowerEnabled(dev))
+            finally:
+                self._analogLevelLabel.blockSignals(False)
             # show in ms
             self._pulseStartEdit.setText(", ".join([str(round(s * 1000.0, 4)) for s in pe.starts_s]))
             self._pulseEndEdit.setText(", ".join([str(round(s * 1000.0, 4)) for s in pe.ends_s]))
@@ -1794,7 +1813,33 @@ class ScanWidgetAdvanced(SuperScanWidget):
             self._analogLevelEdit.setValue(int(round(float(getattr(pe, "power_percent", 100.0)))))
         finally:
             self._updatingPulseEdits = False
+        self._refreshAnalogPowerControlState(power_ok)
         self._refreshDwellDeadTimeLabel()
+
+    def _refreshAnalogPowerControlState(self, power_ok=None):
+        dev = self._pulseSelectDevice.currentText()
+        if power_ok is None:
+            power_ok = (
+                dev not in self._positioner_device_names
+                and dev in self._linestep_power_capable_devices
+            )
+        modulation_enabled = bool(power_ok and self.isLinestepPowerEnabled(dev))
+        self._analogLevelEdit.setEnabled(modulation_enabled)
+        # Keep the checkbox clickable while making its text read visually like
+        # a disabled label when modulation is opted out.
+        self._analogLevelLabel.setStyleSheet(
+            "" if modulation_enabled else "QCheckBox { color: palette(mid); }"
+        )
+
+    def _onLinestepPowerEnabledChanged(self, checked):
+        if self._updatingPulseEdits:
+            return
+        dev = self._pulseSelectDevice.currentText()
+        if not dev or dev not in self._linestep_power_capable_devices:
+            return
+        self._linestep_power_enabled[dev] = bool(checked)
+        self._refreshAnalogPowerControlState(power_ok=True)
+        self.sigSignalParChanged.emit()
 
     def _onPulseEditsChanged(self):
         if self._updatingPulseEdits:

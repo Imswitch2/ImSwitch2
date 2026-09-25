@@ -83,12 +83,30 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
 
 **managerProperties**
 
-* ``port`` — serial port of the BSC203 controller (default ``"COM9"``).
-* ``home`` — when ``true``, perform an APT homing operation on startup
-  (default ``false``).  Homing parks each axis at its end-stop (position 0).
-* ``travelRangeUm`` — full travel per axis in µm (default ``8000``, for
-  DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm`` and
-  every move is clamped to that range.
+.. list-table::
+   :widths: 22 12 18 48
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Default
+     - Meaning
+   * - ``port``
+     - str
+     - ``"COM9"``
+     - Serial port of the BSC203 controller.
+   * - ``home``
+     - bool
+     - ``false``
+     - When ``true``, perform an APT homing operation on startup.  Homing parks each axis at its end-stop (position 0).
+   * - ``travelRangeUm``
+     - int or float
+     - ``8000``
+     - Full travel per axis in µm (``8000`` for DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm`` and every move is clamped to that range.
+   * - ``invertJogAxes``
+     - list[str]
+     - ``[]``
+     - Axis labels whose jog direction should be flipped; see **Movement model** below.
 
 **Movement model**
 
@@ -386,6 +404,11 @@ Thorlabs MLS203 two-axis motorized stage driven via the Kinesis stack.
        accepted/reported by the pylablib driver. Keep at ``1.0`` when pylablib
        recognizes the stage scale. Set only when pylablib falls back to raw
        internal units.
+   * - ``unitsPerUm``
+     - float
+     - ``1.0``
+     - **Deprecated** spelling of ``driverUnitsPerPositionUnit``; still read
+       when the new key is absent, with a warning at startup.
 
 **PositionerInfo fields used**
 
@@ -427,19 +450,20 @@ On any exception the manager logs a warning and substitutes
 `KinesisStageManager.py <../../imswitch/imcontrol/model/managers/positioners/KinesisStageManager.py>`_
 
 
-LeicaDMIManager
-===============
+LeicaDMIZPositionerManager
+==========================
 
-Leica DMI microscope stand (Z focus drive and accessory control) over
-RS-232.
+Leica DMI objective Z focus drive exposed as a single-axis positioner over
+the shared Leica DMI RS-232 hardware interface.  Stand and accessory controls
+use ``LeicaDMIStandManager`` through the ``microscopeStand`` setup section.
 
 **Setup JSON**
 
 .. code-block:: json
 
     "positioners": {
-        "LeicaDMI": {
-            "managerName": "LeicaDMIManager",
+        "LeicaDMI-Z": {
+            "managerName": "LeicaDMIZPositionerManager",
             "managerProperties": {
                 "rs232device": "LeicaCOM",
                 "calibCsvPath": "C:/calib/leica_z.csv"
@@ -468,24 +492,23 @@ RS-232.
    * - ``calibCsvPath``
      - str
      - *(optional)*
-     - Path to a calibration CSV used to build look-up tables between
-       device units and nanometres.  If missing or malformed, the
-       LUTs remain ``None`` and the manager reports positions in
-       arbitrary device units.
+     - Path to a calibration CSV used by the shared Leica DMI hardware
+       interface to build look-up tables.  The positioner requires a usable
+       micrometre conversion, either from calibration or from the stand's
+       hardware-reported conversion factor.
 
 **PositionerInfo fields used**
 
 * ``managerProperties['rs232device']`` and (optionally)
-  ``managerProperties['calibCsvPath']``.  This manager does **not**
-  call ``super().__init__`` and therefore does not initialise the
-  standard ``axes``/``forPositioning``/``forScanning`` properties on
-  ``PositionerManager``; in particular, the abstract base's
-  "at least one of forPositioning/forScanning" check is bypassed.
+  ``managerProperties['calibCsvPath']``.
+* ``axes`` must contain exactly one axis.  The example uses ``"Z"``.
+* Standard ``PositionerManager`` fields such as ``forPositioning`` and
+  ``forScanning`` are initialised by the base class.
 
 **Axes**
 
-Effectively single-axis (Z drive).  No validation of
-``positionerInfo.axes`` is performed.
+Exactly one axis.  ``move``, ``setPosition`` and ``get_abs`` accept
+``None``, axis index ``0`` or the configured axis label.
 
 **Jog API**
 
@@ -493,26 +516,27 @@ Not supported.
 
 **Low-level dependencies**
 
-* ``rs232sManager[<rs232device>]`` — used for all stand
-  communication.  On ``KeyError`` the manager falls back to
-  ``MockRS232Driver`` and logs an error.
+* ``rs232sManager[<rs232device>]`` - used to create or reuse the shared
+  Leica DMI hardware interface.
+* ``imswitch.imcontrol.model.interfaces.LeicaDMIHardware_private`` - private
+  hardware implementation loaded by ``createLeicaDMIHardware``.  If the
+  private implementation, RS-232 channel or Z conversion is unavailable, the
+  manager remains unavailable and reports ``connectionError``.
 
 **Vendor library**
 
-None — communication is plain text over RS-232.  ``numpy`` and
-``scipy.interpolate.interp1d`` are used for the calibration LUT.
+None in the public manager.  Leica DMI transport details live behind the
+shared hardware interface.
 
 **Gotchas**
 
-The class skips ``super().__init__``; properties such as
-``self.axes`` and ``self.position`` from the abstract base are
-therefore not populated in the usual way.  ``setPosition`` assigns a
-scalar to ``self._position`` rather than the ``{axis: value}`` dict
-used by other managers.
+The manager reports positions in micrometres and deliberately leaves
+``resetOnClose`` disabled, so shutdown does not return the microscope focus
+drive to zero.
 
 **Source**
 
-`LeicaDMIManager.py <../../imswitch/imcontrol/model/managers/positioners/LeicaDMIManager.py>`_
+`LeicaDMIZPositionerManager.py <../../imswitch/imcontrol/model/managers/positioners/LeicaDMIZPositionerManager.py>`_
 
 
 MHXYStageManager
@@ -719,7 +743,8 @@ optional analog joystick (e.g. C-819.20).
             "managerName": "PIStageManager",
             "managerProperties": {
                 "device": "C-663.11",
-                "usb_description": null
+                "usb_description": null,
+                "runtime_timeout_ms": 500
             },
             "axes": ["X", "Y"],
             "forPositioning": true,
@@ -750,6 +775,11 @@ optional analog joystick (e.g. C-819.20).
        manager calls ``EnumerateUSB`` and picks the first device
        whose description matches ``device`` (or its prefix before
        the dot).
+   * - ``runtime_timeout_ms``
+     - int
+     - ``500``
+     - Positive runtime command timeout in milliseconds, applied to both
+       daisy-chain axes after PI startup completes.
 
 **PositionerInfo fields used**
 
