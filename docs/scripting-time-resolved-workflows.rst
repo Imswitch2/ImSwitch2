@@ -74,7 +74,7 @@ The facade entry
 ================
 
 Time-resolved workflows need a facade with a ``time_resolved`` detector.
-When scripts are run from the ImSwitch Scripting widget,
+When scripts are run from the ImSwitch2 Scripting widget,
 ``api.imcontrol.buildWorkflowFacade(...)`` also attaches ``facade.scan``;
 the workflow can then trigger the currently configured ScanWidget scan
 and wait for completion.
@@ -95,8 +95,12 @@ and wait for completion.
     ``TypeError`` naming the missing methods.
 
 ``facade.scan.run_once()``
-    Triggers the current scan workflow using the existing ScanWidget
-    configuration and waits for ``sigScanDone``. The time-resolved
+    Triggers one scan with the existing ScanWidget configuration and, by
+    default, waits until that scan has ended: a coordinated Scan
+    controller reports the end of exactly this request, and a refused or
+    failed scan raises. A blocking ``run_once()`` refuses to run on the
+    GUI thread, and needs exactly one scan source that can report such an
+    exact completion; otherwise pass ``wait=False``. The time-resolved
     workflows call this automatically when no explicit acquisition
     callable is passed.
 

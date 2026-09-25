@@ -11,14 +11,17 @@ microscope modality — the examples throughout use WidefieldSTARSS (WFS)
 as the worked example, but the same structure applies to confocal, STED,
 light-sheet, or any custom microscope.
 
-A scripted acquisition workflow is a **headless, testable, composable
-unit** that encapsulates a multi-step routine: parameter setup, hardware
+A scripted acquisition workflow is a **testable, composable unit** that
+encapsulates a multi-step routine: parameter setup, hardware
 orchestration, data acquisition, and optional post-processing. Unlike
-widget-bound ``api.imcontrol`` scripting, workflows run independently
-of the GUI. They take a hardware facade and parameter dataclass as input,
-execute the routine, and return results or write to disk. This makes
-them testable with mock facades, composable into higher-level sequences,
-and suitable for batch automation from scripts or external processes.
+widget-bound ``api.imcontrol`` scripting, a workflow never touches a
+widget. It takes a hardware facade and parameter dataclass as input,
+executes the routine, and returns results or writes to disk. On the
+microscope it runs from an ImScripting script, against a facade built
+from the running ImSwitch2 and its loaded setup; anywhere else (a unit
+test, a dry run) it runs against the mock facade from
+``build_mock_facade()``. This makes workflows testable with mock facades
+and composable into higher-level sequences.
 
 **Why use this pattern?**
 
@@ -29,12 +32,14 @@ and suitable for batch automation from scripts or external processes.
   ``MicroscopeFacade`` or a mock in unit tests via ``MockMicroscopeFacade``.
 * **Composability**: Simple workflows (e.g., Z-stack, single tile) become
   building blocks for complex sequences (multi-well plates, tiled mosaics).
-* **Batch-friendly**: Run headless from external scripts, scheduled jobs,
-  or continuous integration pipelines.
+* **Runs without hardware**: Against the mock facade a workflow needs
+  neither a microscope nor a running ImSwitch2, so it can be checked in
+  unit tests and continuous integration. Against real hardware it runs
+  from ImScripting with the live setup.
 
 **Worked example: WidefieldSTARSS (WFS)**
 
-The ImSwitch model layer includes a collection of workflow primitives
+The ImSwitch2 model layer includes a collection of workflow primitives
 ported from the Widefield-Starss microscopy project: polarisation-resolved
 image stacks, Z-stacks with autofocus, tiling, multi-well plate scanning,
 and photoselection sequences. The rest of this guide uses these workflows
@@ -121,19 +126,20 @@ with the WidefieldSTARSS workflow:
 
 ``api``
     The global scripting API object, available in every script executed
-    from the ImSwitch Scripting widget. ``api.imcontrol`` is the main
+    from the ImSwitch2 Scripting widget. ``api.imcontrol`` is the main
     microscope control API; ``api.imcontrol.buildWorkflowFacade(...)``
     is the helper for assembling a workflow facade from the running setup.
 
 ``api.imcontrol.buildWorkflowFacade(...)``
-    Wraps ImSwitch managers in a ``MicroscopeFacade`` object. Accepts
+    Wraps ImSwitch2 managers in a ``MicroscopeFacade`` object. Accepts
     keyword arguments for device names (``detector_name``,
     ``xy_positioner_name``, ``z_positioner_name``, etc.) and optional
     mappings (``laser_aliases``, rotator presets). Resolves managers by
     name from the running setup and returns a facade with sub-facades for
     the devices you requested. Under the hood this calls
-    ``build_facade_from_master`` (also importable directly for headless
-    test code).
+    ``build_facade_from_master`` with the running master controller; code
+    that runs without ImSwitch2 uses ``build_mock_facade()`` instead (see
+    **Running Headlessly in Tests** below).
     
     **Extending the facade**: If your workflow needs access to a manager
     not yet exposed by the facade, extend the ``build_facade_from_master``
@@ -153,11 +159,17 @@ with the WidefieldSTARSS workflow:
     ``WidefieldStarssParams``, ``ZStackParams``). This holds all
     acquisition settings: exposure times, laser powers, step sizes,
     frame counts, file paths, and any workflow-specific options. All
-    fields have type hints and defaults; you override what you need.
+    fields have type hints. The core settings of each workflow are
+    required (``WidefieldStarssParams`` has twelve, ``ZStackParams`` needs
+    ``n_planes`` and ``step_um``); the rest have defaults you override as
+    needed.
 
 ``*Workflow`` class
     The workflow object. Constructed with the facade and params; calling
-    ``.run()`` executes the multi-step routine and returns a result object.
+    ``.run()`` executes the multi-step routine. What it returns depends on
+    the workflow: most WFS workflows write to disk and return ``None``,
+    ``ZStackWorkflow.run()`` returns ``(stack, z_positions)``, and the
+    time-resolved workflows return a ``TimeResolvedWorkflowResult``.
     Some workflows also expose utility methods like ``.run_autofocus()``
     (Z-stack) or ``.run_cell_targeting()`` (tiling).
 
@@ -239,7 +251,7 @@ The Facade Pattern
 **Why facades?**
 
 Workflows talk to hardware through a **facade** — a thin abstraction layer
-that wraps ImSwitch managers and exposes only the methods the workflow needs.
+that wraps ImSwitch2 managers and exposes only the methods the workflow needs.
 This design has several benefits:
 
 * **Testability**: Swap the real facade (``MicroscopeFacade``) for a mock
@@ -260,7 +272,7 @@ Each sub-facade wraps one or more managers and exposes a focused API.
 **Available sub-facades (WFS example)**
 
 The WFS workflows use the following sub-facades. Each wraps one or more
-ImSwitch managers:
+ImSwitch2 managers:
 
 .. list-table::
    :header-rows: 1
@@ -302,17 +314,19 @@ ImSwitch managers:
        ``chained_move_to_h(callable)``, ``chained_move_to_v(callable)``
 
 Not all workflows require all sub-facades. For example, ``ZStackWorkflow``
-only uses ``cam``, ``z_stage_con``, and ``laser_con``; attempting to use
-``trig`` when no pulse generator is configured will raise an error (see
-**Troubleshooting** below).
+uses ``cam``, ``z_stage_con`` and ``laser_con``, and ``trig`` only when
+``pulsed=True``; a pulsed run without a configured pulse generator raises
+an error (see **Troubleshooting** below).
 
 **Extending for your workflow**
 
 If your workflow needs hardware not yet exposed by the facade (e.g., an SLM,
 filter wheel, or deformable mirror), extend ``build_facade_from_master`` in
 ``imswitch/imcontrol/model/workflows/facade.py``. Add a new sub-facade class
-that wraps your manager, then add corresponding parameters to
-``buildWorkflowFacade`` so scripts can pass the device name. Follow the
+that wraps your manager, and a keyword argument for its device name to
+``build_facade_from_master``. ``api.imcontrol.buildWorkflowFacade(...)``
+forwards its keyword arguments unchanged, so scripts can pass the new
+name without any further change. Follow the
 existing sub-facades as examples — each is typically 20-50 lines of wrapper
 code that translates workflow-level method calls into manager-level calls.
 
@@ -425,8 +439,10 @@ Now when a workflow calls ``facade.laser_con.set_constant_power(["488"], [5.0])`
 the facade resolves ``"488"`` to ``"488 (EXC) sn27311"`` and calls the
 correct laser manager.
 
-If your setup JSON already uses the logical names the workflow expects, you
-can omit ``laser_aliases`` or pass an identity mapping:
+If your setup JSON already uses the logical names the workflow expects,
+pass an identity mapping. Do not leave ``laser_aliases`` out: the facade
+only has the lasers listed there, and without it ``facade.laser_con`` is
+``None``, so the first laser call fails.
 
 .. code-block:: python
 
@@ -481,6 +497,15 @@ copied into the Scripting widget and edited for your active microscope setup:
 ``09_AutoWidefieldSTARSS_example.py``
     Automated overview tiling, cell segmentation, stage movement to each
     detected cell, and per-cell WidefieldStarss acquisition.
+
+``10_photoswitching_kinetics.py``
+    Repeated dark, readout, switch and recovery phases, saved with
+    per-frame CSV summaries for estimating switching, bleaching and
+    recovery kinetics.
+
+``11_scmos_dark_current_calibration.py``
+    Dark stacks at several exposure times, with pixel-wise fits of the
+    camera's offset, dark current, read noise and thermal noise.
 
 All examples use ``api.imcontrol.buildWorkflowFacade(...)`` and the hardware
 names from ``example_kiralux_teensy.json``. Update those names, pin numbers,
@@ -538,9 +563,11 @@ Example from the test suite:
    # run() will call mock methods, no hardware involved
    wf.run(save_stack=False)
 
-The mock facade records all method calls in internal counters. Tests
-then assert that the expected number of frames were acquired, that the
-Z stage moved to the correct positions, etc. See the workflow tests in
+The mock facade records every method call in ``facade.calls`` as a
+``(name, args, kwargs)`` tuple; ``facade.call_names()`` lists just the
+names. Tests then assert that the expected number of frames were
+acquired, that the Z stage moved to the correct positions, etc. See the
+workflow tests in
 ``imswitch/imcontrol/_test/unit/test_*_workflow.py`` for complete examples.
 
 Composite Workflows
@@ -582,9 +609,14 @@ The single-device WFS workflows are:
 The composite workflows reuse the singles:
 
 **TilingWorkflow**
-    Acquires a spiral grid of tiles and stitches them into a large mosaic.
-    Internally uses ``WidefieldStarssWorkflow`` or a custom tile callback to
-    acquire individual tiles.
+    Moves the XY stage along a spiral and snaps one camera frame per tile
+    (hardware-triggered when ``pulsed=True`` and a trigger is configured),
+    saving the tiles and a ``Tiling_measurement.h5`` file with the tile
+    positions. The optional ``tile_callback`` passed to ``run()`` is called
+    after each tile, for a live preview; it does not acquire anything. A
+    stitched overview (``tiling_wf.stitched_image``) is built only with
+    ``build_stitched_overview=True`` and ``pixel_size_um`` set in
+    ``TilingParams``.
 
     Cell targeting is split by use case. In the main GUI, the tiling widget's
     ``Detect cells`` action segments the stitched overview and displays target
@@ -610,9 +642,10 @@ The composite workflows reuse the singles:
     focal plane, then calls ``TilingWorkflow.run()`` to tile the well.
 
 **DefocusScanWorkflow**
-    Executes a series of Z-stack recordings at multiple defocus offsets
-    to calibrate phase retrieval algorithms. Uses ``ZStackWorkflow`` and
-    ``WidefieldStarssWorkflow`` internally.
+    Runs a full ``WidefieldStarssWorkflow`` acquisition at each of N Z
+    planes around a centre position (in random order with
+    ``scramble=True``), to characterise how defocus affects the
+    polarisation-resolved measurement. Returns the Z positions it visited.
 
 **SerialCWSTARSSWorkflow**
     Performs CWSTARSS power-sweep experiments with automated stage positioning.
@@ -670,7 +703,6 @@ then pass them to the parent:
        well_pitch_y_units=9000.0,
        autofocus_n_planes=20,
        autofocus_step_um=2.0,
-       tiling_n_tiles=16,
        measurements_root="~/Data/plate_scan",
    )
 
@@ -678,6 +710,10 @@ then pass them to the parent:
    multi_wf = MultiWellTilingWorkflow(facade, tiling_wf, zstack_wf, multi_well_params)
    multi_wf.run()
    getLogger().info("Multi-well scan complete")
+
+The number of tiles per well is the tiling workflow's ``TilingParams.n_tiles``
+(25 here). ``MultiWellTilingParams.tiling_n_tiles`` is only written to the
+log.
 
 The parent workflow calls ``.run()`` or ``.run_autofocus()`` on the
 sub-workflows at the appropriate points in its execution. Each sub-workflow
@@ -723,13 +759,14 @@ this checklist:
    ``imswitch/_data/user_defaults/scripts/<your_modality>/``. Include a
    README with setup instructions and parameter explanations.
 
-6. **Extend buildWorkflowFacade if needed**
+6. **Expose new device names to scripts**
 
-   If your facade extension requires new device-name parameters, add them
-   to ``buildWorkflowFacade`` in ``WorkflowFacadeController`` so scripts
-   can pass device names via ``api.imcontrol.buildWorkflowFacade(...)``.
+   If your facade extension needs a new device-name parameter, add it as
+   a keyword argument of ``build_facade_from_master``.
+   ``api.imcontrol.buildWorkflowFacade(...)`` forwards every keyword
+   argument to it, so ``WorkflowFacadeController`` needs no change.
 
-See the WFS workflows (``imswitch/imcontrol/model/workflows/recording.py``,
+See the WFS workflows (``imswitch/imcontrol/model/workflows/widefield_starss.py``,
 ``imswitch/imcontrol/model/workflows/z_stack.py``, etc.) and time-resolved
 workflows (``imswitch/imcontrol/model/workflows/time_resolved.py``) as
 complete worked examples.
@@ -760,15 +797,22 @@ Fix:
        )
 
     If your setup JSON already uses the logical name the workflow expects,
-    pass it directly without an alias.
+    map it to itself (``{"488": "488"}``): the facade only has the lasers
+    listed in ``laser_aliases``.
 
 **Symptom: Workflow raises an exception, but hardware stays in an unsafe state (laser on, stage moving, etc.)**
 
 Cause:
-    Every workflow wraps its ``run()`` body in ``try/finally`` to ensure
-    hardware cleanup. However, if you forcibly terminate the script (e.g.,
-    by closing the Scripting widget tab or killing the process), the finally
-    clause may not execute.
+    Most workflows wrap their ``run()`` body in ``try/finally`` for
+    hardware cleanup, and pressing *Stop* raises ``OperationCancelled`` in
+    the script, so those ``finally`` blocks do run. But a workflow never
+    checks for a stop request itself, and its facade calls go straight to
+    the device managers rather than through ``api.*``, so *Stop* reaches
+    it only by interrupting the script after 2 seconds, and only once the
+    current blocking call (a camera wait, a stage move, a ``time.sleep``)
+    has returned; until then a laser that is on stays on. If ImSwitch2 is
+    closed while a workflow runs and the script has not ended within 10
+    seconds, the application exits without running the remaining cleanup.
 
 Fix:
     Manually disable hardware from the GUI, or issue cleanup commands from
