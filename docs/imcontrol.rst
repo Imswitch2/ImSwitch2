@@ -17,9 +17,9 @@ settings, acquisition selection and recording on the left, the napari
 image display in the middle, positioners and viewer tools along the
 bottom.
 
-The pages below cover that interface panel by panel, the scanning and
-tiling acquisitions ImControl can run, and the headless workflows that
-drive the same hardware from a script.
+The pages below cover that interface panel by panel, and the scanning,
+tiling and z-stack acquisitions ImControl can run.  Driving the same
+hardware from a script is covered under :doc:`scripting`.
 
 .. toctree::
     :maxdepth: 1
@@ -28,6 +28,3 @@ drive the same hardware from a script.
     advanced-scanning
     tiling
     zstack-workflow
-    use-cases
-    scripting-wfs-workflows
-    scripting-time-resolved-workflows
