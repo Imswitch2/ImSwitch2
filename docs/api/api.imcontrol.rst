@@ -9,7 +9,35 @@ api.imcontrol
    .. method:: getDetectorNames() -> List[str]
 
       Returns the device names of all detectors. These device names can
-      be passed to other detector-related functions. 
+      be passed to other detector-related functions.
+
+   .. method:: getDetectorParameter(detectorName: str, parameterName: str) -> Any
+
+      Returns the value of the specified detector-specific parameter, in
+      the parameter's own units -- the value the Settings widget shows.
+      Parameter names and units differ from detector to detector;
+      getDetectorParameters lists them. Raises AttributeError for a name
+      the detector does not have.
+
+   .. method:: getDetectorParameters(detectorName: str) -> Dict[str, Dict[str, Any]]
+
+      Returns all detector-specific parameters of the specified detector
+      as {parameter name: {'value', 'units', 'editable', 'options'}}. 'units'
+      is None for a parameter that picks from a list of 'options', and
+      'options' is None for a numerical one. Only an editable parameter can
+      be changed with setDetectorParameter.
+
+      The exposure time, for example, is ``'exposure'`` in ms on the
+      simulated camera of the mock setups, ``'Exposure'`` in µs on a
+      Thorlabs camera and ``'Set exposure time'`` in s on a Hamamatsu
+      camera. To change a parameter and put it back afterwards::
+
+         before = api.imcontrol.getDetectorParameter(camera, 'exposure')
+         try:
+             api.imcontrol.setDetectorParameter(camera, 'exposure', 10)
+             ...
+         finally:
+             api.imcontrol.setDetectorParameter(camera, 'exposure', before)
 
    .. method:: getLaserNames() -> List[str]
 
@@ -51,6 +79,15 @@ api.imcontrol
 
       Moves the specified positioner axis by the specified number of
       micrometers. 
+
+   .. method:: getRecFileFormat() -> str
+
+      Returns the file format recordings are saved in: 'HDF5', 'TIFF' or
+      'ZARR'. 
+
+   .. method:: getRecFolder() -> str
+
+      Returns the folder recordings and snaps are saved in. 
 
    .. method:: getScanRequestStatus(requestId: str) -> dict
 
@@ -140,6 +177,13 @@ api.imcontrol
       Sets the step size of the specified positioner to the specified
       number of micrometers. 
 
+   .. method:: setRecFileFormat(fileFormat: str) -> None
+
+      Sets the file format recordings are saved in: 'HDF5', 'TIFF' or
+      'ZARR' (any case) -- the Recording widget's "File format". Raises
+      ValueError for any other name, and RuntimeError while snaps are set
+      to go to the image display, which fixes the format to TIFF. 
+
    .. method:: setRecFilename(filename: Optional[str]) -> None
 
       Sets the name of the file to record to. This only sets the name of
@@ -180,7 +224,9 @@ api.imcontrol
       - acquisitionStarted
       - acquisitionStopped
       - recordingStarted
-      - recordingEnded
+      - recordingEnded (the recording is finished and its files are
+        written; for a scan-once or scan-timelapse recording, once after
+        the last scan)
       - recordingFailed
       - scanStarting (the run-level start, before hardware arms)
       - scanStarted (the execution backend started the iteration)
@@ -192,9 +238,16 @@ api.imcontrol
       They can be accessed like this: api.imcontrol.signals().scanEnded
       
 
-   .. method:: snapImage() -> None
+   .. method:: snapImage(output: bool = False) -> Optional[Dict[str, numpy.ndarray]]
 
-      Take a snap and save it as the selected file format at the set file path. 
+      Take a snap. With output=True, return it as {detector name: image}
+      without saving; otherwise save it in the snap format at the set file
+      path. 
+
+   .. method:: setSnapModeSave(mode: str = 'tiff') -> None
+
+      Sets the file format snaps are saved in: 'HDF5', 'TIFF' or 'ZARR'
+      (any case). Raises ValueError for any other name. 
 
    .. method:: startRecording() -> None
 

@@ -1,60 +1,64 @@
-"""Controller for live reconstruction mode in the watcher UI."""
+"""Controller for live reconstruction mode in the watcher UI.
 
+Watches a chosen root folder for new *timelapse* sub-folders and drives one
+``LiveReconstructionController`` run at a time. Discovery is two units from
+``improcess/live/discovery.py``:
+
+* ``DirectoryWatcher`` -- root folder -> ``sigEntryFound(entry)`` for each
+  new immediate sub-directory;
+* ``JobQueue`` -- a folder -> a :class:`DiscoveredJob` (its timepoint-0
+  ``.zarr`` store) once one appears.
+
+Store *readiness* ("safe to open now") is **not** decided here -- the stream
+worker opens the source with bounded retry. Following the later timepoint files
+inside a folder is the ``LiveSource``'s job.
+"""
+
+import collections
 import os
-import re
-from collections import deque
-from typing import Any
-
-import h5py
-import zarr
 
 from qtpy import QtCore
 
 from imswitch.imcommon.model.logging import initLogger
-from imswitch.improcess.live import Hdf5MultiFileLapseSource, ZarrMultiFileLapseSource, make_live_source
-from imswitch.improcess.live.sources import (
-    _is_zarr_array,
-    _is_zarr_group,
-    _lapse_index_template,
-)
+from imswitch.improcess.live.source_factory import make_live_source
+from imswitch.improcess.live.discovery import DirectoryWatcher, JobQueue
+from imswitch.improcess.live.source_type import probe_source_type
 from .basecontrollers import ImProcessWidgetController
 from .LiveReconstructionController import LiveReconstructionController
 
-# How deep below the selected folder to look for recording stores. Measurement
-# folders are created one level under the watched root; depth 2 covers
-# "select the parent folder" without scanning the whole tree.
-_DISCOVERY_MAX_DEPTH = 2
-# Output subdirectories (reconstructions/logs) that must never be ingested.
-_DISCOVERY_EXCLUDE_DIRS = {"rec", "deskew", "Mini_Recon_Results", "__pycache__"}
-_LIVE_EXTENSION_SUFFIXES = {
-    "zarr": {".zarr"},
-    "hdf5": {".hdf5", ".h5", ".hdf"},
-    "h5": {".hdf5", ".h5", ".hdf"},
-    "hdf": {".hdf5", ".h5", ".hdf"},
-}
-
 
 class LiveModeController(ImProcessWidgetController):
-    """Manages live reconstruction mode: lifecycle, source selection, and result routing.
-    
-    Subscribes to the watcher UI's live toggle, selects the appropriate LiveSource
-    based on file format, drives LiveReconstructionController, and routes results
-    to the existing ReconstructionView.
-    """
+    """Live reconstruction mode: watch -> queue -> one run at a time."""
 
-    def __init__(self, *args, mainController=None, **kwargs):
+    def __init__(self, *args, main_controller=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self._mainController = mainController
+        self._main_controller = main_controller
         self._logger = initLogger(self, tryInheritParent=False)
-        
-        self._liveController = None
-        self._scanTimer = None
-        self._storeQueue = deque()
-        self._seenKeys = set()
-        self._currentlyProcessing = False
-        self._watchedFolder = None
-        self._extension = "zarr"
-        self._widget.sigLiveChanged.connect(self._onLiveToggled)
+
+        # All four collaborators live only while live mode is running; they are
+        # built in _start_live and are None until then.
+        self._live_rec_ctr = None
+        self._directory_watcher = None
+        self._job_queue = None
+        self._tick_timer = None
+
+        self._currently_processing = False
+        self._watched_folder = None
+        # Name of the run in flight, so its finished data object can be
+        # matched when saving. Cleared once the run ends.
+        self._current_job_name = None
+        self._current_save_stem = None
+        # How many entries each folder name has already produced. Kept for the
+        # controller's whole life, not per watched root: the viewer keys a run's
+        # data object on its name, so a name reused after a reset would write
+        # into the earlier run's object instead of starting its own.
+        self._job_name_counts: collections.Counter[str] = collections.Counter()
+
+        # The widget corresponds to the DirectoryWatcherFrame (view), where
+        # the LiveModeController controls this view.
+        self._widget.sigLiveChanged.connect(self._on_live_toggled)
+        self._widget.sigResetClicked.connect(self._on_reset_clicked)
+        self._widget.sigSkipClicked.connect(self._on_skip_clicked)
 
     def isLiveReconstructionRunning(self) -> bool:
         """Whether the live reconstruction controller is mid-stack.
@@ -63,600 +67,309 @@ class LiveModeController(ImProcessWidgetController):
         the reconstructor it started with, and must not be pulled onto a new
         version half way through a stack.
         """
-        live = getattr(self, '_liveController', None)
-        return bool(getattr(live, 'is_running', False))
+        return bool(getattr(self._live_rec_ctr, 'is_running', False))
 
-    def _onLiveToggled(self, enabled: bool) -> None:
-        """Handle live reconstruction toggle."""
+    def _on_live_toggled(self, enabled: bool) -> None:
+        """Handle the watcher UI's live toggle."""
         if enabled:
-            self._startLive()
+            self._start_live()
         else:
-            self._stopLive()
+            self._stop_live()
 
-    def _startLive(self) -> None:
-        """Start folder watching for new recording stores."""
+    # ------------------------------------------------------------- lifecycle
+    def _start_live(self) -> None:
+        """Validate the selection, then start watching + the queue tick."""
         folder_path = self._widget.path
-        if not folder_path or not os.path.exists(folder_path):
-            self._logger.error("No valid path selected for live reconstruction")
+        if not folder_path or not os.path.isdir(folder_path):
+            self._logger.error(f"Not a valid folder for live mode: {folder_path!r}")
             self._widget.liveCheck.setChecked(False)
             return
 
-        if not os.path.isdir(folder_path):
-            self._logger.error(f"Path must be a directory for live mode: {folder_path}")
-            self._widget.liveCheck.setChecked(False)
-            return
-
-        reconstructor = self._getActiveReconstructor()
-        if reconstructor is None:
+        if self._get_active_reconstructor() is None:
             self._logger.error("No active reconstructor available")
             self._widget.liveCheck.setChecked(False)
             return
 
-        # Get the extension from the comm channel
-        extension = self._commChannel.extension.value() if hasattr(self._commChannel, 'extension') else 'zarr'
-        self._extension = extension or 'zarr'
+        # A new root folder gets fresh discovery state; the same folder keeps its
+        # seen-set, so toggling live off/on does not reprocess everything.
+        if folder_path != self._watched_folder:
+            self._teardown_watcher()
+            self._watched_folder = folder_path
+            self._job_queue = JobQueue()
+            self._directory_watcher = DirectoryWatcher(folder_path, parent=self)
+            self._directory_watcher.sigEntryFound.connect(self._on_entry_found)
+        self._currently_processing = False
 
-        self._watchedFolder = folder_path
-        self._storeQueue.clear()
-        self._seenKeys.clear()
-        self._currentlyProcessing = False
-
-        # Create the live controller if needed and ensure signal is connected
-        if self._liveController is None:
-            self._liveController = LiveReconstructionController(self._commChannel)
+        if self._live_rec_ctr is None:
+            self._live_rec_ctr = LiveReconstructionController(self._commChannel)
         try:
-            self._liveController.sigFinished.disconnect(self._onStoreFinished)
+            self._live_rec_ctr.sigFinished.disconnect(self._on_job_finished)
         except TypeError:
-            pass  # Signal wasn't connected yet
-        self._liveController.sigFinished.connect(self._onStoreFinished)
+            pass
+        self._live_rec_ctr.sigFinished.connect(self._on_job_finished)
 
-        # Poll the folder tree (the selected folder and its measurement
-        # sub-folders) for new recording stores. Recursive so the user can
-        # select the parent folder and have new measurement folders picked up.
-        self._scanTimer = QtCore.QTimer(self)
-        self._scanTimer.setInterval(1000)
-        self._scanTimer.timeout.connect(self._scanForStores)
-        self._scanTimer.start()
+        # Retry pending folders (a folder can appear before its first store).
+        self._tick_timer = QtCore.QTimer(self)
+        self._tick_timer.setInterval(1000)
+        self._tick_timer.timeout.connect(self._process_next_job)
+        self._tick_timer.start()
 
-        self._logger.info(
-            f"Live mode started: watching {folder_path} (recursively) for "
-            f"{self._format_suffixes_for_log(self._active_live_suffixes())} stores"
-        )
-        self._scanForStores()
+        self._directory_watcher.start()
+        self._logger.info(f"Live mode started: watching {folder_path}")
 
-    def _stopLive(self) -> None:
-        """Stop folder watching and live reconstruction."""
-        if self._scanTimer is not None:
-            self._scanTimer.stop()
-            self._scanTimer.deleteLater()
-            self._scanTimer = None
+    def _stop_live(self) -> None:
+        """Stop watching and the current run; keep the seen-set for a re-toggle."""
+        if self._directory_watcher is not None:
+            self._directory_watcher.stop()
 
-        if self._liveController is not None:
-            self._liveController.stop()
+        if self._tick_timer is not None:
+            self._tick_timer.stop()
+            self._tick_timer.deleteLater()
+            self._tick_timer = None
 
-        self._storeQueue.clear()
-        self._seenKeys.clear()
-        self._currentlyProcessing = False
-        self._watchedFolder = None
+        if self._live_rec_ctr is not None:
+            self._live_rec_ctr.stop()
 
+        self._currently_processing = False
         self._logger.info("Live mode stopped")
 
-    def _scanForStores(self) -> None:
-        """Discover new recording stores under the watched folder.
+    @QtCore.Slot()
+    def _on_skip_clicked(self) -> None:
+        """Give up on the rest of this timelapse and move to the next job.
 
-        Groups per-file timelapse stores (``..._scan__NN__...``) into a single
-        job so the whole lapse accumulates into one multi-timepoint result;
-        non-lapse stores are queued individually. Each lapse / store is enqueued
-        only once (keyed by its index-independent name).
+        Live mode keeps running: only the current run ends. Whatever it has
+        reconstructed stays in the viewer -- the data object and its timepoints
+        belong to the viewer, not the run -- and the timepoint in progress is
+        finished first, so the last one in the object is whole rather than cut
+        off part-way.
+
+        ``notify_finished`` is what advances the queue. A graceful stop returns
+        immediately and tears down asynchronously, so the slot must stay taken
+        until ``sigFinished`` confirms the run is gone; freeing it here would let
+        the next job start and force-kill the run still draining.
         """
-        if not self._watchedFolder:
+        if not self._currently_processing:
+            self._logger.info("Skip ignored: no timelapse is being processed")
+            return
+        self._logger.info("Skipping the rest of the current timelapse")
+        self._live_rec_ctr.stop(notify_finished=True)
+
+    @QtCore.Slot()
+    def _on_reset_clicked(self) -> None:
+        """Shut live mode down and forget what has been processed.
+
+        A full stop, not just an abort: the run in flight is ended, the watcher
+        and queue tick stop, and the live toggle is unchecked so the UI shows
+        what actually happened. The watcher's seen-set and the pending queue are
+        then cleared, so ticking the box again reconstructs the whole folder
+        from the start.
+
+        Whatever the aborted run had already reconstructed stays in the viewer --
+        the data object and its timepoints belong to the viewer, not the run. A
+        later re-run lands in its own object named ``<folder>.1``, ``<folder>.2``,
+        ... (see :meth:`_unique_job_name`), so the two sit side by side.
+        """
+        self._stop_live()
+        # Reflect the shutdown in the UI. Already-unchecked emits nothing, and a
+        # re-entrant _stop_live via sigLiveChanged is harmless (it is idempotent).
+        self._widget.liveCheck.setChecked(False)
+
+        if self._directory_watcher is not None:
+            self._directory_watcher.reset()
+        if self._job_queue is not None:
+            self._job_queue.reset()
+        self._logger.info(
+            f"Reset: live mode stopped; {self._watched_folder!r} will be "
+            f"reconstructed from the start when re-enabled"
+        )
+
+    def _next_run_names(self, base: str) -> tuple[str, str]:
+        """Names for one run: the viewer entry, and the stem of its saved file.
+
+        Reset re-runs a folder, so both need a run index -- but they spell it
+        differently. The entry keeps the folder name with a ``.1`` / ``.2``
+        suffix, matching how the reconstruction list already reads; the file
+        puts the index last, after ``_recon``, which reads better as a
+        filename::
+
+            run 0:  timelapse_00      ->  timelapse_00_recon.tif
+            run 1:  timelapse_00.1    ->  timelapse_00_recon_1.tif
+
+        Computed from the base name and index together rather than derived from
+        one another, so neither spelling has to be parsed back apart.
+        """
+        index = self._job_name_counts[base]
+        self._job_name_counts[base] += 1
+        name = base if index == 0 else f"{base}.{index}"
+        stem = f"{base}_recon" if index == 0 else f"{base}_recon_{index}"
+        return name, stem
+
+    def _teardown_watcher(self) -> None:
+        if self._directory_watcher is not None:
+            self._directory_watcher.stop()
+            self._directory_watcher.deleteLater()
+            self._directory_watcher = None
+
+    # -------------------------------------------------------------- queueing
+
+    @QtCore.Slot(str)
+    def _on_entry_found(self, entry: str) -> None:
+        """Queue a newly-discovered root entry and try to start it.
+
+        An entry, not a timelapse folder: the watcher also reports single
+        recordings sitting in the root, and what each one turns out to be is
+        settled later, by probing it.
+        """
+        self._job_queue.add(entry)
+        self._logger.info(f"Discovered entry: {entry}")
+        self._process_next_job()
+
+    def _process_next_job(self) -> None:
+        """Start the next resolvable job, unless a run is already in flight."""
+        if self._currently_processing:
             return
 
-        new_jobs = 0
-        for store_path in self._discoverStores(self._watchedFolder):
-            key, is_lapse = self._lapse_key(store_path)
-            if key in self._seenKeys:
-                continue
-            self._seenKeys.add(key)
-            self._storeQueue.append((store_path, is_lapse))
-            new_jobs += 1
-            self._logger.info(
-                f"Discovered {'timelapse' if is_lapse else 'store'}: {store_path}"
-            )
-
-        # Always check the queue (even if no new jobs) to re-evaluate pending
-        # stores that may have become complete since the last tick.
-        self._processNextStore()
-
-    def _discoverStores(self, root: str) -> list:
-        """Return sorted recording-store paths under ``root`` (depth-limited)."""
-        suffixes = self._active_live_suffixes()
-        found = []
-        root = os.path.abspath(root)
-        for dirpath, dirnames, filenames in os.walk(root):
-            # Prune output/cache dirs and respect the depth limit.
-            dirnames[:] = [d for d in dirnames if d not in _DISCOVERY_EXCLUDE_DIRS]
-            depth = dirpath[len(root):].count(os.sep)
-            if depth >= _DISCOVERY_MAX_DEPTH:
-                dirnames[:] = []
-            # Zarr stores are directories; HDF5 are files. Check both.
-            for name in list(dirnames) + filenames:
-                if self._matches_live_suffix(name, suffixes):
-                    found.append(os.path.join(dirpath, name))
-        return sorted(found)
-
-    def _active_live_suffixes(self) -> set[str]:
-        """Return file suffixes the live watcher should ingest."""
-        reconstructor = self._getActiveReconstructor()
-        if reconstructor is not None:
-            suffixes = self._live_suffixes_for_reconstructor(reconstructor)
-            if suffixes:
-                return suffixes
-        return self._live_suffixes_for_extension(self._extension)
-
-    @staticmethod
-    def _live_suffixes_for_reconstructor(reconstructor) -> set[str]:
-        suffixes: set[str] = set()
-        for extension in getattr(reconstructor, "file_extensions", []) or []:
-            extension = (extension or "").lower().strip().lstrip(".")
-            if extension in _LIVE_EXTENSION_SUFFIXES:
-                suffixes.update(_LIVE_EXTENSION_SUFFIXES[extension])
-        return suffixes
-
-    @staticmethod
-    def _live_suffixes_for_extension(extension: str | None) -> set[str]:
-        extension = (extension or "").lower().strip().lstrip(".")
-        if not extension:
-            return {".zarr"}
-        if extension in _LIVE_EXTENSION_SUFFIXES:
-            return set(_LIVE_EXTENSION_SUFFIXES[extension])
-        return {f".{extension}"}
-
-    @staticmethod
-    def _matches_live_suffix(name: str, suffixes: set[str]) -> bool:
-        lowered = name.lower()
-        return any(lowered.endswith(suffix) for suffix in suffixes)
-
-    @staticmethod
-    def _format_suffixes_for_log(suffixes: set[str]) -> str:
-        return "/".join(sorted(suffixes))
-
-    def _lapse_key(self, store_path: str):
-        """Return ``(dedup_key, is_lapse)`` for a discovered store.
-
-        A per-file lapse member maps to an index-independent key so all its
-        timepoint files dedup to one job; other stores key on their own path.
-        
-        A store is a per-file lapse member if EITHER:
-        - Its name carries an explicit ``scan<NN>`` index (ImSwitch2 ``_scanNN_``
-          or legacy ``_scan__NN__``), or
-        - Its own metadata confirms a multi-file lapse
-          (``recording:single_lapse_file=False`` with
-          ``recording:num_timepoints>1``).
-
-        A bare trailing integer is NOT treated as a lapse on its own: a single
-        recording whose name merely ends in a number (e.g. ``..._rec_1.zarr``)
-        must not be mis-grouped into a timelapse job (Finding 4 in
-        docs/live_reconstruction_audit.md).
-        """
-        # 1. Explicit scan<NN> index template.
-        template = _lapse_index_template(store_path)
-        if template is not None:
-            folder, prefix, width, suffix, _ = template
-            return (folder, prefix, suffix), True
-
-        # 2. Metadata-confirmed multi-file lapse. Only here do we trust a
-        #    trailing-integer run to group siblings, because the store's own
-        #    metadata vouches that it is a per-file lapse member.
-        if self._is_multifile_lapse_from_metadata(store_path):
-            folder = os.path.dirname(store_path)
-            name = os.path.basename(store_path)
-            match = re.search(r'[_\-.](\d+)(\.[a-zA-Z0-9]+)?$', name)
-            if match:
-                return (folder, name[:match.start(1)], name[match.end(1):]), True
-            return (folder, name, ''), True
-
-        # 3. Not a per-file lapse: key the single store on its own path.
-        return store_path, False
-
-    def _is_multifile_lapse_from_metadata(self, store_path: str) -> bool:
-        """Check if metadata confirms this is a multi-file lapse member."""
-        try:
-            suffix = os.path.splitext(store_path)[1].lower()
-            
-            if suffix == '.zarr':
-                import zarr
-                root = zarr.open(store_path, mode='r')
-                single_lapse = root.attrs.get('recording:single_lapse_file')
-                num_tp = root.attrs.get('recording:num_timepoints')
-                
-                # Multi-file if explicitly marked as not single-file AND has
-                # multiple timepoints. Use a falsy check (not ``is False``): h5py
-                # and zarr read the attribute back as numpy.bool_/int, so the
-                # identity test was always False and this path was dead.
-                if (single_lapse is not None and not bool(single_lapse)
-                        and num_tp and int(num_tp) > 1):
-                    return True
-            
-            elif suffix in {'.h5', '.hdf5', '.hdf'}:
-                with h5py.File(store_path, 'r') as f:
-                    single_lapse = f.attrs.get('recording:single_lapse_file')
-                    num_tp = f.attrs.get('recording:num_timepoints')
-                    
-                    # Falsy check (not ``is False``) — see the Zarr branch.
-                    if (single_lapse is not None and not bool(single_lapse)
-                            and num_tp and int(num_tp) > 1):
-                        return True
-        
-        except (OSError, PermissionError, Exception):
-            # If we can't read the file (e.g., being written), fall back to filename
-            pass
-        
-        return False
-
-    @staticmethod
-    def _coerce_bool(value: Any, *, default: bool) -> bool:
-        """Coerce a value to bool, matching the logic used by LiveSources."""
-        if value is None:
-            return default
-        if isinstance(value, str):
-            return value.strip().lower() not in {'0', 'false', 'no', 'off'}
-        return bool(value)
-
-    def _is_store_ready(self, store_path: str, is_lapse: bool) -> bool:
-        """Whether a store can be handed to the reconstruction pipeline now.
-
-        Ready means complete (writing done) OR still being written but
-        carrying the recording:frames_committed barrier — with the barrier the
-        live sources only ever read flushed data, so a streaming reconstructor
-        can follow the recording as it grows. Batch reconstructors read a
-        store exactly once, so for them only a complete store is ready.
-        """
-        if self._is_store_complete(store_path, is_lapse):
-            return True
-
-        reconstructor = self._getActiveReconstructor()
-        if not getattr(reconstructor, 'supports_streaming', False):
-            return False
-        return self._has_streaming_barrier(store_path)
-
-    def _is_store_complete(self, store_path: str, is_lapse: bool) -> bool:
-        """Check if a recording store is complete (ready for reconstruction).
-
-        A store is complete when its 'writing' attribute is absent or False.
-        For multi-file lapses, all timepoint files must exist and the last one
-        must be complete.
-
-        Returns False on any error (store still being created/written).
-        """
-        if is_lapse:
-            return self._is_lapse_complete(store_path)
-        return self._is_single_file_complete(store_path)
-
-    def _has_streaming_barrier(self, store_path: str) -> bool:
-        """Whether a (possibly mid-write) store carries the committed barrier.
-
-        True once at least one frame batch is committed. Single-file lapse
-        stores (scan{N} layout) are never barrier-admitted: the recorder
-        reopens that file in append mode for every next timepoint, so a
-        reader holding it open would race the recording.
-        """
-        suffix = os.path.splitext(store_path)[1].lower()
-        try:
-            if suffix == '.zarr':
-                root = zarr.open(store_path, mode='r')
-                if self._scan_group_names(root.keys()):
-                    return False
-                for key in root.keys():
-                    child = root[key]
-                    if _is_zarr_group(child) and 'data' in child and _is_zarr_array(child['data']):
-                        committed = child['data'].attrs.get('recording:frames_committed')
-                        return committed is not None and int(committed) >= 1
-                return False
-            if suffix in {'.h5', '.hdf5', '.hdf'}:
-                with h5py.File(store_path, 'r', libver='latest', swmr=True) as f:
-                    if self._scan_group_names(f.keys()):
-                        return False
-                    for key in f.keys():
-                        item = f[key]
-                        if isinstance(item, h5py.Group) and 'data' in item:
-                            committed = item.get('frames_committed')
-                            return committed is not None and int(committed[0]) >= 1
-                return False
-        except Exception as e:
-            # Mid-creation (e.g. HDF5 before SWMR is enabled) -> retry next tick.
-            self._logger.debug(f"Barrier check failed for {store_path}: {e}")
-        return False
-
-    def _writing_attr_complete(self, writing: Any) -> bool:
-        """Interpret a dataset ``writing`` attribute as a completeness flag.
-
-        Absent ⇒ complete (legacy/external store, matching upstream
-        ``DataObj.checkLock``); otherwise complete iff the flag is falsy.
-        """
-        if writing is None:
-            return True
-        return not self._coerce_bool(writing, default=True)
-
-    def _is_single_file_complete(self, store_path: str) -> bool:
-        """Check if a single-file store is complete."""
-        suffix = os.path.splitext(store_path)[1].lower()
-        if suffix == '.zarr':
-            return self._check_zarr_complete(store_path)
-        if suffix in {'.h5', '.hdf5', '.hdf'}:
-            return self._check_hdf5_complete(store_path)
-        return False
-
-    def _check_zarr_complete(self, store_path: str) -> bool:
-        """Check if a Zarr store is complete.
-
-        Uses the version-tolerant ``_is_zarr_array``/``_is_zarr_group`` helpers
-        (not direct ``zarr.Array``/``zarr.Group``) so a zarr build that does not
-        expose those types at the top level cannot make every store look
-        forever-incomplete.
-        """
-        try:
-            root = zarr.open(store_path, mode='r')
-
-            if _is_zarr_array(root):
-                return self._writing_attr_complete(root.attrs.get('writing'))
-
-            # Single-file timelapse layout: scan{N}/{detector}/data groups
-            # appended one per timepoint. Complete only when the full lapse is
-            # in the file — see _scan_groups_complete for why partial reads
-            # are not safe here.
-            scan_groups = self._scan_group_names(root.keys())
-            if scan_groups:
-                return self._scan_groups_complete(
-                    root, scan_groups,
-                    is_group=_is_zarr_group,
-                    is_dataset=_is_zarr_array,
-                    store_path=store_path,
-                )
-
-            # Structured layout: the first detector's ``data`` array (or a bare
-            # detector array) carries the ``writing`` flag.
-            for key in root.keys():
-                child = root[key]
-                if _is_zarr_group(child):
-                    if 'data' in child and _is_zarr_array(child['data']):
-                        return self._writing_attr_complete(child['data'].attrs.get('writing'))
-                elif _is_zarr_array(child):
-                    return self._writing_attr_complete(child.attrs.get('writing'))
-
-            return False  # no dataset created yet
-        except Exception as e:
-            # Lenient by design (retry next tick), but log so a real failure
-            # — e.g. an unexpected zarr API change — is not silently invisible.
-            self._logger.debug(f"Zarr completeness check failed for {store_path}: {e}")
-            return False
-
-    def _check_hdf5_complete(self, store_path: str) -> bool:
-        """Check if an HDF5 store is complete.
-
-        Complete when writing=False/absent OR the stream_complete marker is
-        set: the recorder writes the marker while its SWMR handle is still
-        open, and the post-close writing=False attr rewrite can fail when a
-        live reader holds the file - the marker is then the only completion
-        evidence in the file.
-        """
-        try:
-            with h5py.File(store_path, 'r') as f:
-                # Single-file timelapse layout: scan{N}/{detector}/data.
-                scan_groups = self._scan_group_names(f.keys())
-                if scan_groups:
-                    return self._scan_groups_complete(
-                        f, scan_groups,
-                        is_group=lambda item: isinstance(item, h5py.Group),
-                        is_dataset=lambda item: isinstance(item, h5py.Dataset),
-                        store_path=store_path,
-                    )
-
-                for key in f.keys():
-                    item = f[key]
-                    if isinstance(item, h5py.Group):
-                        if 'data' in item:
-                            if self._writing_attr_complete(item['data'].attrs.get('writing')):
-                                return True
-                            marker = item.get('stream_complete')
-                            return marker is not None and bool(marker[0])
-                    elif isinstance(item, h5py.Dataset):
-                        return self._writing_attr_complete(item.attrs.get('writing'))
-                return False  # no dataset created yet
-        except Exception as e:
-            self._logger.debug(f"HDF5 completeness check failed for {store_path}: {e}")
-            return False
-
-    @staticmethod
-    def _scan_group_names(keys) -> list:
-        """Return the scan{N} group names of a single-file lapse, else []."""
-        return [key for key in keys if re.fullmatch(r'scan\d+', key)]
-
-    def _scan_groups_complete(self, root, scan_groups, *, is_group, is_dataset,
-                              store_path: str) -> bool:
-        """Completeness of a single-file timelapse (scan{N}/{detector}/data).
-
-        Complete only when ALL expected timepoints are in the file: every
-        present scan group's data must be write-complete AND the group count
-        must reach recording:num_timepoints (read from the detector metadata,
-        where the recorder actually writes it). Between lapse cycles every
-        PRESENT group is momentarily complete, so without the expected count
-        we cannot tell "between cycles" from "done" — and opening the file
-        early would race the recorder, which reopens it in append mode for
-        each next timepoint. Unknown count => conservatively incomplete.
-        """
-        num_timepoints = None
-        for group_name in scan_groups:
-            scan_group = root[group_name]
-            if not is_group(scan_group):
-                return False
-            dataset = None
-            owner_group = None
-            for det_key in scan_group.keys():
-                det_group = scan_group[det_key]
-                if is_group(det_group) and 'data' in det_group and is_dataset(det_group['data']):
-                    dataset = det_group['data']
-                    owner_group = det_group
-                    if num_timepoints is None:
-                        num_timepoints = self._nested_num_timepoints(det_group, dataset)
-                    break
-            if dataset is None:
-                return False  # timepoint group without data yet
-            if not self._writing_attr_complete(dataset.attrs.get('writing')):
-                # The writing=False rewrite happens through a post-close r+
-                # reopen that can fail while a live reader holds the file;
-                # the stream_complete marker (written pre-close) then carries
-                # the completion evidence.
-                marker = None
-                try:
-                    marker = owner_group.get('stream_complete')
-                except Exception:
-                    marker = None
-                if marker is None or not bool(marker[0]):
-                    return False
-
-        if num_timepoints is None:
-            self._logger.debug(
-                f"Single-file lapse {store_path}: recording:num_timepoints not "
-                f"found in detector metadata; cannot tell whether the lapse is "
-                f"finished, treating as incomplete."
-            )
-            return False
-        return len(scan_groups) >= int(num_timepoints)
-
-    @staticmethod
-    def _nested_num_timepoints(det_group, dataset) -> int | None:
-        """Read recording:num_timepoints from a detector group.
-
-        The streaming HDF5/Zarr storers write ``recording:*`` attrs directly on
-        the data dataset; the snapshot Zarr path groups them under
-        ``metadata/recording`` instead, so check both.
-        """
-        try:
-            value = dataset.attrs.get('recording:num_timepoints')
-            if value is not None:
-                return int(value)
-            metadata = det_group['metadata'] if 'metadata' in det_group else None
-            if metadata is not None and 'recording' in metadata:
-                value = metadata['recording'].attrs.get('num_timepoints')
-                if value is not None:
-                    return int(value)
-        except Exception:
-            pass
-        return None
-
-    def _is_lapse_complete(self, store_path: str) -> bool:
-        """A multi-file lapse job is ready to START when its seed file is done.
-
-        Do NOT wait for all timepoint files: the multi-file sources are
-        designed to tail-follow — they stream each timepoint as its file
-        lands (Zarr advances only onto write-complete stores; HDF5 can follow
-        a mid-write file safely via SWMR flush ordering) and their
-        ``is_complete()`` decides when the whole lapse is done. Gating the job
-        on the full file set would delay the first reconstruction until the
-        lapse ends, showing nothing for its entire duration.
-        """
-        return self._is_single_file_complete(store_path)
-
-    def _processNextStore(self) -> None:
-        """Process the next complete store in the queue if not currently processing.
-        
-        Iterates the queue to find the FIRST complete store, enabling later
-        already-complete stores to bypass earlier still-recording ones (no
-        head-of-line blocking).
-        """
-        if self._currentlyProcessing:
+        reconstructor = self._get_active_reconstructor()
+        if reconstructor is None:
             return
-        
-        if not self._storeQueue:
-            self._logger.debug("No stores in queue to process")
-            return
-        
-        # Find the first ready store in the queue
-        store_path = None
-        is_lapse = False
-        queue_index = None
 
-        for idx, (path, lapse) in enumerate(self._storeQueue):
-            if self._is_store_ready(path, lapse):
-                store_path = path
-                is_lapse = lapse
-                queue_index = idx
+        # Pick the first job this reconstructor can actually work on. Each
+        # candidate is probed for what its raw data *is*, and there are three
+        # outcomes, only one of which means "not for us":
+        #   * unreadable yet -- a store still being written, a file the
+        #     recorder still holds. Put back, because that is the normal
+        #     state of a recording that has only just started;
+        #   * readable but not something this plugin can reconstruct --
+        #     skipped with a warning naming the shape it turned out to be;
+        #   * startable -- taken.
+        # Iterative rather than re-entering: a root of many entries would
+        # otherwise recurse once per entry.
+        job = None
+        source_type = None
+        deferred = []
+        while True:
+            candidate = self._job_queue.next_ready()
+            if candidate is None:
                 break
 
-        # No ready store found yet, will retry on next tick
-        if store_path is None:
-            self._logger.debug("No ready stores in queue yet, waiting...")
-            return
-        
-        # Remove the complete store from the queue
-        del self._storeQueue[queue_index]
-        self._currentlyProcessing = True
+            candidate_type = probe_source_type(candidate.seed_path)
+            if candidate_type is None:
+                # Defer only what is still there: an entry since deleted
+                # would otherwise be re-queued and re-probed forever.
+                if os.path.exists(candidate.seed_path):
+                    deferred.append(candidate)
+                break
 
-        self._logger.info(f"Processing {'timelapse' if is_lapse else 'store'}: {store_path}")
-
-        reconstructor = self._getActiveReconstructor()
-        if reconstructor is None:
-            self._logger.error("No active reconstructor available, skipping store")
-            self._currentlyProcessing = False
-            self._processNextStore()
-            return
-
-        # Per-file timelapses stream all their timepoint files into one
-        # accumulated multi-timepoint result; other stores use the format-based
-        # source (single growing array, single-file scan{N} lapse, HDF5, ...).
-        try:
-            if is_lapse:
-                # Select multi-file source based on extension
-                suffix = os.path.splitext(store_path)[1].lower()
-                if suffix == '.zarr':
-                    source = ZarrMultiFileLapseSource(store_path, detector_name=None)
-                elif suffix in {'.h5', '.hdf5', '.hdf'}:
-                    source = Hdf5MultiFileLapseSource(store_path, detector_name=None)
-                else:
-                    raise ValueError(f"Unsupported lapse format: {suffix}")
+            # Read like every other plugin capability, so an out-of-tree
+            # reconstructor predating this one accepts whatever it is given
+            # rather than failing to start at all.
+            accepts = getattr(reconstructor, "accepts_raw_source", None)
+            if callable(accepts) and not accepts(candidate_type):
+                self._logger.warning(
+                    f"Skipping {candidate.seed_path}: {reconstructor.name} "
+                    f"cannot reconstruct a {candidate_type.format_id} "
+                    f"{candidate_type.layout} recording of "
+                    f"{candidate_type.frames_per_stack} frame(s) per timepoint"
+                )
             else:
-                source = make_live_source(store_path, detector_name=None)
-        except (NotImplementedError, ValueError) as exc:
-            self._logger.warning(
-                f"Skipping unsupported store {store_path}: {exc}"
-            )
-            self._currentlyProcessing = False
-            self._processNextStore()
-            return
-        
-        params = self._getReconstructorParams()
+                job, source_type = candidate, candidate_type
+                break
 
+        # Hand back the not-yet-readable ones whatever the outcome: dequeuing
+        # is how they were inspected, and dropping one loses its recording.
+        for entry in deferred:
+            self._job_queue.add(entry.job_path)
+
+        if job is None:
+            return
+
+        self._currently_processing = True
+        self._logger.info(
+            f"Processing {job.job_path} (seed {job.seed_path}, "
+            f"{source_type.layout})"
+        )
+
+        # The job's name becomes the run's result name, and so the name of the
+        # viewer entry it creates -- one data object per job. After a reset the
+        # same job runs again, so the name is made unique.
+        job_name, save_stem = self._next_run_names(
+            os.path.basename(os.path.normpath(job.job_path))
+        )
+        # Built from what the probe already established, so the store is not
+        # reopened to answer a question that has been answered.
+        source = make_live_source(job.seed_path, source_type, detector_name=None)
+        params = self._get_reconstructor_params()
         try:
-            started = self._liveController.start(
-                reconstructor, source, params, source_arg=store_path
+            self._current_job_name = job_name
+            self._current_save_stem = save_stem
+            started = self._live_rec_ctr.start(
+                reconstructor, source, params,
+                source_arg=job.seed_path, name=job_name,
             )
         except Exception as e:
-            self._logger.error(f"Failed to start reconstruction for {store_path}: {e}")
+            self._logger.error(f"Failed to start reconstruction for {job.seed_path}: {e}")
             started = False
 
-        # start() returns False when the store had no readable frames yet (or
-        # failed to open) — no sigFinished will arrive, so advance the queue
-        # here to avoid a permanent stall.
+        # start() returning False means no sigFinished will arrive -- advance now.
         if not started:
-            self._currentlyProcessing = False
-            self._processNextStore()
+            self._currently_processing = False
+            self._process_next_job()
 
-    def _onStoreFinished(self) -> None:
-        """Handle completion of a store reconstruction."""
-        self._logger.debug("Store reconstruction finished")
-        self._currentlyProcessing = False
-        self._processNextStore()
+    @QtCore.Slot()
+    def _on_job_finished(self) -> None:
+        """A run ended -- optionally save it, free the slot, take the next job.
 
-    def _getActiveReconstructor(self):
+        Every ending arrives here: normal completion, "Skip directory" (which
+        asks for ``sigFinished`` precisely so it does), and a run that failed to
+        start. Saving is therefore requested in one place rather than per path.
+        """
+        finished_name, self._current_job_name = self._current_job_name, None
+        save_stem, self._current_save_stem = self._current_save_stem, None
+        self._request_save(finished_name, save_stem)
+        self._currently_processing = False
+        self._process_next_job()
+
+    def _request_save(self, job_name: str | None, save_stem: str | None) -> None:
+        """Ask the viewer to write this run's data object, if saving is on.
+
+        Output lives beside the watched folder rather than inside it, so a
+        re-run does not rediscover its own reconstructions as new timelapses::
+
+            <parent>/<root>/timelapse_00  ->  <parent>/<root>_recon/timelapse_00_recon.tif
+
+        The viewer owns the accumulated buffer, so it does the writing; this
+        only decides *where*. A run that produced nothing (failed startup) is
+        skipped there, by name, rather than guessed at here.
+        """
+        if not job_name or not save_stem or not self._watched_folder:
+            return
+        if not getattr(self._widget, "saveCheck", None) or not self._widget.saveCheck.isChecked():
+            return
+
+        root = os.path.normpath(self._watched_folder)
+        save_dir = os.path.join(
+            os.path.dirname(root), f"{os.path.basename(root)}_recon"
+        )
+        try:
+            os.makedirs(save_dir, exist_ok=True)
+        except OSError as exc:
+            self._logger.error(f"Cannot create save folder {save_dir!r}: {exc}")
+            return
+
+        path = os.path.join(save_dir, f"{save_stem}.tif")
+        self._logger.info(f"Saving {job_name} to {path}")
+        self._commChannel.sigSaveLiveResult.emit(job_name, path)
+
+    # -------------------------------------------------------------- helpers
+    def _get_active_reconstructor(self):
         """Get the active reconstructor from the main view controller."""
-        if self._mainController is None:
+        if self._main_controller is None:
             return None
-        return getattr(self._mainController, '_activeReconstructor', None)
+        return getattr(self._main_controller, '_activeReconstructor', None)
 
-    def _getReconstructorParams(self) -> dict:
+    def _get_reconstructor_params(self) -> dict:
         """Get the current reconstructor parameters from the view."""
-        widget = getattr(self._mainController, '_widget', None)
+        widget = getattr(self._main_controller, '_widget', None)
         if widget is None:
             return {}
 

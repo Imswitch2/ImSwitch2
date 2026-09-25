@@ -170,8 +170,11 @@ Additional scan-focused hardware-free setup files are available in
   `nidaq.simulation = true`.
 - `hamamatsu_mock_scan_setup.json`: pure software scan setup with a
   `HamamatsuManager` mock camera in external frame-trigger mode. The simulated
-  NI-DAQ scan coordinator generates virtual camera triggers; all device
-  `analogChannel` and `digitalLine` fields are `null`.
+  NI-DAQ scan coordinator generates virtual camera triggers. Every
+  `analogChannel` is `null`; the camera's `digitalLine` is a simulated
+  `Dev1/port0/line0`, only there so the Scan widget can gate it (a scan
+  recording needs one camera TTL per position to know how many frames to
+  expect). The same applies to the camera in the mixed setup below.
 - `mixed_hamamatsu_apd_mock_scan_setup.json`: mixed mock detector setup with a
   trigger-gated mock Hamamatsu camera and synthetic APD scan data. The APD
   `ctrInputLine` and `terminal` entries are fake simulated input identifiers

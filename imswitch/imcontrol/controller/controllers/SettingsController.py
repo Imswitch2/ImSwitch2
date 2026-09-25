@@ -627,6 +627,43 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         return self._master.detectorsManager.getAllDeviceNames()
 
     @APIExport(runOnUIThread=True)
+    def getDetectorParameter(self, detectorName: str, parameterName: str) -> Any:
+        """ Returns the value of the specified detector-specific parameter, in
+        the parameter's own units -- the value the Settings widget shows.
+        Parameter names and units differ from detector to detector;
+        getDetectorParameters lists them. Raises AttributeError for a name
+        the detector does not have. """
+        return self._getDetectorParameterObj(detectorName, parameterName).value
+
+    @APIExport(runOnUIThread=True)
+    def getDetectorParameters(self, detectorName: str) -> Dict[str, Dict[str, Any]]:
+        """ Returns all detector-specific parameters of the specified detector
+        as {parameter name: {'value', 'units', 'editable', 'options'}}. 'units'
+        is None for a parameter that picks from a list of 'options', and
+        'options' is None for a numerical one. Only an editable parameter can
+        be changed with setDetectorParameter. """
+        return {
+            name: {
+                'value': parameter.value,
+                'units': getattr(parameter, 'valueUnits', None),
+                'editable': parameter.editable,
+                'options': (list(parameter.options) if hasattr(parameter, 'options')
+                            else None),
+            }
+            for name, parameter in self._master.detectorsManager.getDevice(
+                detectorName).parameters.items()
+        }
+
+    def _getDetectorParameterObj(self, detectorName, parameterName):
+        parameters = self._master.detectorsManager.getDevice(detectorName).parameters
+        if parameterName not in parameters:
+            raise AttributeError(
+                f'Detector "{detectorName}" has no parameter "{parameterName}";'
+                f' its parameters are {", ".join(repr(name) for name in parameters)}'
+            )
+        return parameters[parameterName]
+
+    @APIExport(runOnUIThread=True)
     def setDetectorBinning(self, detectorName: str, binning: int) -> None:
         """ Sets binning value for the specified detector. """
         self.allParams[detectorName].binning.setValue(binning)

@@ -547,7 +547,7 @@ XYZ stage scanning.
 - ⬜ Auto cell-detection inside the tiling workflow drives navigation
   correctly, using the same shared segmentation kernel as ImProcess and WFS.
 - ⬜ Scripted unattended runs from
-  `imswitch/_data/user_defaults/scripts/wfs/`.
+  `imswitch/_data/user_defaults/scripts/workflows/wfs/`.
 
 ### 13.E — SNOUTY lightsheet setup
 
@@ -677,7 +677,7 @@ Major UI / workflow modernization. Headline items:
   software gated-STED and tau-STED, with `SwabianTimeTaggerManager` as the
   first backend via
   `api.imcontrol.buildWorkflowFacade(time_resolved_detector_name=...)`.
-  Mock facade + unit tests, example scripts under `scripts/timeresolved/`,
+  Mock facade + unit tests, example scripts under `scripts/workflows/timeresolved/`,
   and docs
   ([plan](docs/design/plans/time-resolved-detector-workflows.md),
   `docs/scripting-time-resolved-workflows.rst`). Software foundation
@@ -708,7 +708,7 @@ and are covered by `test_microscope_facade.py`. Workflows ported with
 no-hardware tests: `WidefieldStarss`, `ZStack`, `CWSTARSS`,
 `Calibration`, plus the composite workflows `Tiling`, `DefocusScan`,
 `SerialCWSTARSS`, `MultiWellTiling`. Scripting examples ship under
-`imswitch/_data/user_defaults/scripts/wfs/`. A scripting-cookbook page
+`imswitch/_data/user_defaults/scripts/workflows/wfs/`. A scripting-cookbook page
 will land alongside Milestone 13.D's hardware revalidation.
 
 ---

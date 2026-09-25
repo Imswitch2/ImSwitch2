@@ -1,5 +1,4 @@
 from .DataFrameController import DataFrameController
-from .WatcherFrameController import WatcherFrameController
 from .LiveModeController import LiveModeController
 from .MemoryLiveController import MemoryLiveController
 from .ReconstructionViewController import ReconstructionViewController
@@ -17,7 +16,6 @@ from .basecontrollers import ImProcessWidgetController
 class ImProcessMainViewController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._commChannel.extension = self._widget.extension
 
         self.dataFrameController = self._factory.createController(
             DataFrameController, self._widget.dataFrame
@@ -25,14 +23,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.reconstructionController = self._factory.createController(
             ReconstructionViewController, self._widget.reconstructionWidget
         )
-        self.watcherFrameController = self._factory.createController(
-            WatcherFrameController, self._widget.watcherFrame
-        )
         self.liveModeController = self._factory.createController(
-            LiveModeController, self._widget.watcherFrame, mainController=self
+            LiveModeController, self._widget.directoryWatcherFrame, main_controller=self
         )
         self.memoryLiveController = self._factory.createController(
-            MemoryLiveController, self._widget.watcherFrame, mainController=self
+            MemoryLiveController, self._widget.directoryWatcherFrame, mainController=self
         )
         self.wfsBatchController = self._factory.createController(
             WidefieldStarssBatchController, self._widget, mainController=self
@@ -75,7 +70,6 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._commChannel.sigSaveFolderChanged.connect(self.fileIOController.saveFolderChanged)
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
         self._commChannel.sigScanParamsUpdated.connect(self.monalisaController.scanParamsUpdated)
-        self._commChannel.sigReconstruct.connect(self.reconstructorManager.reconstruct)
 
         self._widget.sigSaveReconstruction.connect(lambda: self.fileIOController.saveCurrent('reconstruction'))
         self._widget.sigSaveReconstructionAll.connect(lambda: self.fileIOController.saveAll('reconstruction'))

@@ -294,7 +294,7 @@ Example scripts
 ===============
 
 Default scripts are installed under
-``imswitch/_data/user_defaults/scripts/timeresolved/``:
+``imswitch/_data/user_defaults/scripts/workflows/timeresolved/``:
 
 * ``01_binned_photon_arrivals.py``
 * ``02_gated_sted.py``
