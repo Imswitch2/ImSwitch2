@@ -440,7 +440,7 @@ coordinator iteration:
 
 TriggerScope firmware has no mid-iteration abort command.  A board
 ``sigScanDone`` therefore means that the autonomous iteration physically
-completed, even when an ImSwitch stop is pending.  Participants finish in
+completed, even when an ImSwitch2 stop is pending.  Participants finish in
 ``graceful`` mode so APD/PMT/TimeTagger managers can publish the final read;
 the pending stop instead prevents repeat or sequence continuation.  A stop
 received re-entrantly while ``sigScanDone`` is being published is retained

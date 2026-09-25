@@ -39,7 +39,7 @@ Then launch:
    The PyPI name is ``imswitch2``.  ``ImSwitch`` on PyPI is the original
    project, and it installs the same ``imswitch`` package, so asking pip
    for ``imswitch`` -- or installing a device plugin that requires it --
-   replaces Imswitch2 with it.  Only the distribution is renamed: the
+   replaces ImSwitch2 with it.  Only the distribution is renamed: the
    command is still ``imswitch`` and scripts still ``import imswitch``.
 
 

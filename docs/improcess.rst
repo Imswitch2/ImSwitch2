@@ -903,7 +903,7 @@ it to its image.
   a newer ImSwitch2 is refused.
 * **Import ImageJ ROIs…** and **Export ImageJ ROIs…** read and write
   ImageJ/Fiji ``.roi`` and ``RoiSet.zip`` files.  They need the optional
-  ``roifile`` package (``pip install "imswitch[imagej]"``); without it both
+  ``roifile`` package (``pip install "imswitch2[imagej]"``); without it both
   entries are disabled.  Each conversion reports what it could not carry
   across (styles, extra properties, positions on axes other than C/Z/T), and
   imported names that collide are renamed.
@@ -1454,7 +1454,7 @@ anisotropy, area-vs-anisotropy and per-sample summaries.
 Memory limits
 =============
 
-How much RAM ImSwitch may spend on buffering and on automatic work is a
+How much RAM ImSwitch2 may spend on buffering and on automatic work is a
 property of the computer, so it lives in the per-machine options file
 ``imcontrol_options.json`` (under the user config directory) rather than in
 the setup file, which travels between machines. The ``memory`` group holds
@@ -1502,7 +1502,7 @@ the file by hand and restart::
     the status bar before decoding starts, naming the size and whether
     *Open virtual* offers a lazy path for that source. Nothing is refused.
 
-None of these is a process limit and ImSwitch claims none: camera drivers
+None of these is a process limit and ImSwitch2 claims none: camera drivers
 allocate their own buffers, datasets and results are as large as the data.
 A value that is not a positive whole number is reported at startup and the
 default stands; the dialog shows such a value as the default in force and
