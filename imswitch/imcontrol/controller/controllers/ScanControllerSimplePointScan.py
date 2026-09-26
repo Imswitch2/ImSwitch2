@@ -9,6 +9,10 @@ Two modes (docs/simple-point-scan-plan.md):
   typed), with the pixel size and dwell chosen on two sliders and a live
   estimate of the scan time.
 
+The rectangle lives in scanner coordinates: it is converted with the scan
+geometry of the image the reference detector's layer shows (plan D1, §5.5),
+and drawn again whenever that image or the region changes.
+
 The controller owns the model (:mod:`imswitch.imcontrol.model.simple_scan`)
 and fills the Advanced controller's two parameter dicts from it, so the run
 lifecycle, recording layouts and refusal handling are Advanced's own. Where
@@ -46,6 +50,7 @@ from imswitch.imcontrol.model.simple_scan import (
     quantize_step_um,
     snap_length_um,
 )
+from ..scan_region_mapping import extents_to_rectangle, rectangle_to_extents
 from .ScanControllerAdvanced import ScanControllerAdvanced
 
 OVERVIEW = 'overview'
@@ -62,6 +67,13 @@ _POINT_DETECTOR_KINDS = {
 }
 
 
+def _placement(shown):
+    """Where a shown image's pixels are, without which run it came from."""
+    if shown is None:
+        return None
+    return shown.geometry.axes, shown.display_transform, tuple(shown.raw_shape)
+
+
 class ScanControllerSimplePointScan(ScanControllerAdvanced):
 
     def __init__(self, *args, **kwargs):
@@ -73,12 +85,18 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
                    for g in state['limits'].gates],
             overviewAxes=state['limits'].overview_axes,
             detectorNote=self._detectorNote(),
+            detectors=self._pointDetectorNames(),
         )
+        if state['reference'] is not None:
+            self._widget.setReferenceDetector(state['reference'])
         self._widget.sigModeRequested.connect(self.setSimpleScanMode)
         self._widget.sigAcquisitionEdited.connect(self._onAcquisitionEdited)
         self._widget.sigOverviewChannelChanged.connect(self._onOverviewChannelChanged)
         self._widget.sigStopClicked.connect(self._onStopClicked)
+        self._widget.sigRegionDrawn.connect(self._onRegionDrawn)
+        self._widget.sigReferenceDetectorChanged.connect(self.setReferenceDetector)
         self._commChannel.sigScanRequestRejected.connect(self._onScanRejected)
+        self._commChannel.sigScanGeometryShown.connect(self._onScanGeometryShown)
 
         self._estimateTimer = QtCore.QTimer()
         self._estimateTimer.setSingleShot(True)
@@ -111,6 +129,10 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
                 'framesDone': 0,
                 'lastFrameEnd': None,
                 'periods': [],
+                # The layer the rectangle is drawn on, and the scan geometry
+                # each detector's layer shows (plan D1 point 6).
+                'reference': next(iter(self._pointDetectorNames()), None),
+                'shown': {},
             }
             state['overview'] = self._planOverview()
             state['acquisition'] = self._defaultAcquisition()
@@ -120,6 +142,12 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         # A method, not a property: generateAPI reads every attribute of a
         # controller, and this builds the panel's model on first use.
         return self._simple()['limits']
+
+    def _pointDetectorNames(self) -> list:
+        return [
+            name for name, info in self._setupInfo.detectors.items()
+            if getattr(info, 'managerName', '') in _POINT_DETECTOR_KINDS
+        ]
 
     def _defaultAcquisition(self) -> SimpleScanPlan:
         state = self._simple()
@@ -488,10 +516,14 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
     # Panel edits
     # ------------------------------------------------------------------
 
+    def _isBusy(self) -> bool:
+        return bool(getattr(self, 'isRunning', False)
+                    or self.__dict__.get('_scanRunToken') is not None)
+
     def setSimpleScanMode(self, mode: str):
         if mode not in (OVERVIEW, ACQUISITION):
             raise ValueError(f'Unknown mode {mode!r}')
-        if getattr(self, 'isRunning', False) or self.__dict__.get('_scanRunToken') is not None:
+        if self._isBusy():
             self._widget.showMessage('Stop the scan before switching modes.', error=True)
             self._pushToWidget()
             return
@@ -530,6 +562,103 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
             self.updateScanTTLAttrs()
         except Exception:
             self._logger.debug('Updating shared scan attributes failed', exc_info=True)
+
+    # ------------------------------------------------------------------
+    # The rectangle in the viewer (plan §5.5)
+    # ------------------------------------------------------------------
+
+    def setReferenceDetector(self, name: str):
+        """Draw and show the rectangle on this detector's live image."""
+        if name not in self._pointDetectorNames():
+            raise ValueError(f'{name!r} is not a point detector of this setup')
+        self._simple()['reference'] = name
+        self._widget.setReferenceDetector(name)
+        self._pushRegion()
+
+    def _onScanGeometryShown(self, detectorName, shown):
+        state = self._simple()
+        previous = state['shown'].get(detectorName)
+        state['shown'][detectorName] = shown
+        # Every Live frame is a new iteration; the rectangle moves only when
+        # the pixels land somewhere else.
+        if detectorName == state['reference'] and _placement(shown) != _placement(previous):
+            self._pushRegion()
+
+    def _shownReference(self):
+        state = self._simple()
+        return state['shown'].get(state['reference'])
+
+    def _regionExtents(self, shown) -> dict:
+        """The acquisition's (low, high) per axis the shown image spans; a
+        parked axis is a zero-width extent. None if one of them is neither."""
+        plan = self._withCurrentPark(self._simple()['acquisition'])
+        extents = {}
+        for axis in shown.geometry.axes:
+            if axis.device in plan.dims:
+                region = plan.regions[axis.device]
+                half = region.length_um / 2.0
+                extents[axis.device] = (region.center_um - half, region.center_um + half)
+            elif axis.device in plan.park:
+                extents[axis.device] = (plan.park[axis.device],) * 2
+            else:
+                return None
+        return extents
+
+    def _pushRegion(self):
+        state = self._simple()
+        reference = state['reference']
+        shown = self._shownReference()
+        if not self._widget.hasViewer():
+            self._widget.setDrawing(False, 'This setup has no image viewer.')
+        elif reference is None:
+            self._widget.setDrawing(False, 'No point detector is configured.')
+        elif shown is None:
+            self._widget.setDrawing(
+                False, f'{reference} shows no scanned image yet: start the overview first.')
+        else:
+            self._widget.setDrawing(True)
+        extents = self._regionExtents(shown) if shown is not None else None
+        self._widget.showRegion(
+            extents_to_rectangle(extents, shown) if extents is not None else None)
+
+    def _onRegionDrawn(self, vertices):
+        """A rectangle drawn, moved or resized on the reference layer.
+
+        Every shown axis the acquisition scans takes the rectangle's extent,
+        snapped to whole steps; a shown axis it does not scan is parked at
+        the rectangle's centre (an XZ scan drawn on an XY image, plan §5.4).
+        """
+        state = self._simple()
+        limits = state['limits']
+        shown = self._shownReference()
+        if shown is None:
+            self._widget.showMessage(
+                'The live image has no scan geometry to draw on: start the overview '
+                'first.', error=True)
+            self._pushRegion()
+            return
+        plan = state['acquisition']
+        regions = dict(plan.regions)
+        park = dict(plan.park)
+        for device, (low, high) in rectangle_to_extents(vertices, shown).items():
+            if device not in limits.axis_names:
+                continue
+            reach = limits.axis(device).range_um
+            if reach is not None:
+                low, high = (min(max(v, reach[0]), reach[1]) for v in (low, high))
+            centre = (low + high) / 2.0
+            if device in plan.dims:
+                step = regions[device].step_um
+                regions[device] = AxisRegion(centre, snap_length_um(high - low, step), step)
+            else:
+                park[device] = centre
+        self._onAcquisitionEdited(dataclasses.replace(plan, regions=regions, park=park))
+        if self._isBusy():
+            self._widget.showMessage(
+                'Region set. Stop the overview, then Start to acquire it.')
+        else:
+            self.setSimpleScanMode(ACQUISITION)
+            self._widget.showMessage('Region set.')
 
     # ------------------------------------------------------------------
     # Readouts
@@ -579,6 +708,7 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
             pixelRange=(coarse, fine),
             dwellRange=(limits.min_dwell_s(fast, step), limits.max_dwell_s),
         )
+        self._pushRegion()
 
     def _detectorNote(self) -> str:
         kinds = {}
@@ -609,6 +739,7 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         state['simplePlan'] = {
             'mode': simple['mode'],
             'overviewChannel': simple['overviewChannel'],
+            'reference': simple['reference'],
             'acquisition': simple['acquisition'].to_dict(),
         }
         return state
@@ -636,6 +767,9 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
                 stored['overviewChannel'] = int(simple.get('overviewChannel', 0))
                 if simple.get('mode') in (OVERVIEW, ACQUISITION):
                     stored['mode'] = simple['mode']
+                if simple.get('reference') in self._pointDetectorNames():
+                    stored['reference'] = simple['reference']
+                    self._widget.setReferenceDetector(stored['reference'])
                 stored['overview'] = self._planOverview()
                 self._pushToWidget()
                 self._scheduleEstimate()

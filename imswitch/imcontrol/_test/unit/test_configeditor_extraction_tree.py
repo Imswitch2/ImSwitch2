@@ -77,14 +77,14 @@ def test_the_coverage_the_plan_is_built_on(report):
     # camera managers took 12 keys, the PMT's aiVoltageMin/aiVoltageMax and
     # the Thorlabs camera's frameBufferDepth added 3. 210: AAAOTF's
     # useMockOnFailure. 213: LeicaDMIZPositionerManager's shared-hardware
-    # calibCsvPath boundary read.
-    assert report.keys == 213
+    # calibCsvPath boundary read. 214: the APD's mockSample.
+    assert report.keys == 214
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 151
+    assert report.optional == 152
     assert report.refs == 14
-    assert report.none_default_only == 29  # 31 with the removed camera managers
+    assert report.none_default_only == 30  # 31 with the removed camera managers; +1 mockSample
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -92,8 +92,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # the PMT's aiVoltageMax, which shared a row with aiVoltageMin and so was
     # never counted as documented. 131: AAAOTF's useMockOnFailure. 134:
     # Cobolt scanResumeSettleMs, PI runtime_timeout_ms, and Leica stand
-    # availableCubes are now documented by their cards.
-    assert (report.docs_agree, report.docs_documented) == (134, 134)
+    # availableCubes are now documented by their cards. 135: the APD's mockSample.
+    assert (report.docs_agree, report.docs_documented) == (135, 135)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):

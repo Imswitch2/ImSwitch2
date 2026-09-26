@@ -144,6 +144,10 @@ scan driven by ``NidaqManager``.
      - int or null
      - ``None``
      - Seed of the mock counter's random generator, for reproducible mock scans.  Also read as ``mock_random_seed``.
+   * - ``mockSample``
+     - object or null
+     - ``None``
+     - Simulation only: image a synthetic sample (cells and beads) instead of uniform noise. ``{"axes": {"<x device>": <µm per V>, "<y device>": <µm per V>}, "seed": 0}`` names the scanners whose waveforms move the beam across the sample's x and y, each with its positioner's ``conversionFactor``. The mean count is ``mockPhotonCountMean`` times the brightness under the beam. An axis the scan does not sweep reads as 0 µm.
 
 **Low-level dependencies**
 

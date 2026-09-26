@@ -81,7 +81,10 @@ Detectors
 
 APD synthetic data is modeled as a monotonic cumulative counter that
 reconstructs to bounded non-negative integer photon counts
-(``mockPhotonCountMean``, ``mockPhotonCountMax``, ``mockRandomSeed``). PMT
+(``mockPhotonCountMean``, ``mockPhotonCountMax``, ``mockRandomSeed``). With
+``mockSample`` the mean follows a synthetic sample (cells and beads) at the
+position the scan waveforms put the beam at each sample, so images follow the
+scanners (``_mock_sample.py``; see :doc:`devices/detectors`). PMT
 synthetic data is bounded ``float32`` voltage samples averaged per pixel
 (``mockVoltageMin``/``mockVoltageMax``/``mockVoltageMean``/``mockVoltageNoiseStd``,
 default range ``-5.0..5.0`` V).

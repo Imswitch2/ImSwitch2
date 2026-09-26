@@ -25,6 +25,7 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
 
         self.__logger = initLogger(self, tryInheritParent=True)
         getWidgetStatePersistence().register('Image', self)
+        self._shownScanGeometry = {}   # detector -> DisplayedScanGeometry or None
 
         if hasattr(self._commChannel, 'sigSetVisibleLayers'):
             self._commChannel.sigSetVisibleLayers.connect(self.setVisibleLayers)
@@ -91,13 +92,18 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             if not init:
                 self.autoLevels([detectorName], display_im)
 
-            self._widget.setImage(
-                detectorName, display_im, display_scale,
-                scanGeometry=(
-                    DisplayedScanGeometry(geometry, transform, tuple(im.shape))
-                    if geometry is not None else None
-                ),
+            shown = (
+                DisplayedScanGeometry(geometry, transform, tuple(im.shape))
+                if geometry is not None else None
             )
+            self._widget.setImage(
+                detectorName, display_im, display_scale, scanGeometry=shown,
+            )
+            # Told once per change, after the layer shows it: a panel that maps
+            # viewer points to scanner positions re-projects on this.
+            if shown != self._shownScanGeometry.get(detectorName):
+                self._shownScanGeometry[detectorName] = shown
+                self._commChannel.sigScanGeometryShown.emit(detectorName, shown)
 
             # Keep overlay ROIs aligned to the current detector's pixel scale
             # (and orientation, already baked into display_scale by the swap in

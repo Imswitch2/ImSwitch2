@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import dataclasses
 
+import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.view.guitools import colorutils
+from imswitch.imcommon.view.guitools.naparitools import worldEdgeWidth
 from imswitch.imcontrol.model.simple_scan import (
     AxisRegion,
     SimpleScanPlan,
@@ -44,15 +46,133 @@ def _formatTime(seconds) -> str:
     return f'{seconds / 3600:.1f} h'
 
 
+class ScanRegionOverlay:
+    """The panel's rectangle in the napari viewer (plan F6, §5.3).
+
+    Its own Shapes layer: the shared "Viewer Tools" layer is cleared on every
+    tool click and read by other panels. The layer sits at scale 1, in world
+    coordinates, which for a live point-scan layer (no translate) are the
+    micrometres :mod:`~imswitch.imcontrol.controller.scan_region_mapping`
+    converts. One rectangle at a time; what it means is the controller's.
+    """
+
+    LAYER_NAME = 'Scan region'
+    _EDGE = '#00e5ff'
+    _FACE = (0.0, 0.9, 1.0, 0.06)
+    _SCREEN_PIXELS = 2
+
+    def __init__(self, viewer, onDrawn):
+        self._viewer = viewer
+        self._onDrawn = onDrawn
+        self._layer = None
+        self._corners = None
+        self._updating = False
+        self._pending = False
+        try:
+            viewer.camera.events.zoom.connect(self._onZoom)
+        except Exception:
+            pass
+
+    @property
+    def layer(self):
+        return self._layer
+
+    def _edgeWidth(self):
+        return worldEdgeWidth(self._viewer, self._SCREEN_PIXELS)
+
+    def _ensureLayer(self):
+        layers = self._viewer.layers
+        if self._layer is not None and self._layer in layers:
+            return self._layer
+        active = layers.selection.active
+        self._layer = self._viewer.add_shapes(
+            name=self.LAYER_NAME, edge_color=self._EDGE, face_color=list(self._FACE),
+            edge_width=self._edgeWidth(),
+        )
+        self._layer.events.data.connect(self._onData)
+        if active is not None and active in layers:
+            layers.selection.active = active   # showing it must not take the selection
+        return self._layer
+
+    def show(self, corners):
+        """Show the rectangle with these world corners [row, col], or none."""
+        corners = None if corners is None else np.asarray(corners, dtype=float)
+        if corners is None and self._layer is None:
+            return
+        layer = self._ensureLayer()
+        if (corners is not None and self._corners is not None and len(layer.data) == 1
+                and corners.shape == self._corners.shape
+                and np.allclose(corners, self._corners)):
+            return
+        self._corners = corners
+        self._updating = True
+        try:
+            layer.data = []
+            if corners is not None:
+                layer.add_rectangles(
+                    [corners], edge_color=self._EDGE, face_color=list(self._FACE),
+                    edge_width=self._edgeWidth(),
+                )
+                layers = self._viewer.layers
+                index = layers.index(layer)
+                if index != len(layers) - 1:
+                    layers.move(index, len(layers))    # above the live layers
+        finally:
+            self._updating = False
+
+    def startDrawing(self):
+        layer = self._ensureLayer()
+        self._viewer.layers.selection.active = layer
+        layer.mode = 'add_rectangle'
+
+    def _onData(self, event):
+        if self._updating:
+            return
+        action = getattr(event, 'action', None)
+        if getattr(action, 'value', action) not in ('added', 'changed'):
+            return
+        # After napari has finished its own handling of the mouse release.
+        if not self._pending:
+            self._pending = True
+            QtCore.QTimer.singleShot(0, self._emitDrawn)
+
+    def _emitDrawn(self):
+        self._pending = False
+        layer = self._layer
+        if layer is None or layer not in self._viewer.layers or not len(layer.data):
+            return
+        vertices = np.asarray(layer.data[-1], dtype=float)[:, -2:]
+        if str(layer.mode).startswith('add'):
+            layer.mode = 'select'          # move or resize it next, not draw another
+        self._corners = None               # whatever the controller answers is new
+        self._onDrawn(vertices.tolist())
+
+    def _onZoom(self, _event=None):
+        layer = self._layer
+        if layer is None or layer not in self._viewer.layers or not len(layer.data):
+            return
+        self._updating = True
+        try:
+            layer.edge_width = [self._edgeWidth()] * len(layer.data)
+        finally:
+            self._updating = False
+
+
 class ScanWidgetSimplePointScan(SuperScanWidget):
     sigModeRequested = QtCore.Signal(str)
     sigAcquisitionEdited = QtCore.Signal(object)       # SimpleScanPlan
     sigOverviewChannelChanged = QtCore.Signal(int)
     sigStopClicked = QtCore.Signal()
     sigDrawRegionClicked = QtCore.Signal()
+    sigRegionDrawn = QtCore.Signal(object)             # world vertices [[row, col], ...]
+    sigReferenceDetectorChanged = QtCore.Signal(str)
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, napariViewer=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self._regionOverlay = (
+            ScanRegionOverlay(napariViewer, self.sigRegionDrawn.emit)
+            if napariViewer is not None else None
+        )
         self._axes = []            # (name, label, smooth)
         self._gates = []           # (name, wavelength_nm, power_capable)
         self._overviewAxes = ()
@@ -125,14 +245,21 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         self.drawButton = QtWidgets.QPushButton('Draw in viewer')
         self.drawButton.setToolTip('Draw the acquisition region on the live image.')
         self.drawButton.setEnabled(False)
-        self.drawButton.clicked.connect(self.sigDrawRegionClicked)
+        self.drawButton.clicked.connect(self._startDrawing)
+        self.referenceLabel = QtWidgets.QLabel('on')
+        self.referenceCombo = QtWidgets.QComboBox()
+        self.referenceCombo.setToolTip(
+            'The detector whose live image the rectangle is drawn on.')
+        self.referenceCombo.currentIndexChanged.connect(self._onReferenceChosen)
         self.dimsSpin = QtWidgets.QSpinBox()
         self.dimsSpin.setRange(1, _MAX_DIMS)
         self.dimsSpin.setToolTip('How many axes to scan, fast axis first.')
         self.dimsSpin.valueChanged.connect(self._onDimsCount)
         layout.addWidget(QtWidgets.QLabel('Dimensions'), 0, 0)
         layout.addWidget(self.dimsSpin, 0, 1)
-        layout.addWidget(self.drawButton, 0, 3, 1, 2)
+        layout.addWidget(self.drawButton, 0, 2)
+        layout.addWidget(self.referenceLabel, 0, 3, QtCore.Qt.AlignRight)
+        layout.addWidget(self.referenceCombo, 0, 4)
         for column, title in enumerate(('Axis', 'Centre (µm)', 'Size (µm)', 'Step (µm)', 'Pixels')):
             layout.addWidget(QtWidgets.QLabel(title), 1, column)
         self._dimRows = []
@@ -317,7 +444,8 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
     # From the controller
     # ------------------------------------------------------------------
 
-    def configureSimpleScan(self, *, axes, gates, overviewAxes, detectorNote):
+    def configureSimpleScan(self, *, axes, gates, overviewAxes, detectorNote,
+                            detectors=()):
         self._axes = list(axes)
         self._gates = list(gates)
         self._overviewAxes = tuple(overviewAxes)
@@ -328,9 +456,52 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
                 for name, label, _smooth in self._axes:
                     combo.addItem(label if label == name else f'{label} ({name})', name)
             self._buildPalette()
+            self.referenceCombo.clear()
+            for name in detectors:
+                self.referenceCombo.addItem(name, name)
         finally:
             self._updating = False
+        # A choice only when there is one to make.
+        self.referenceLabel.setVisible(len(detectors) > 1)
+        self.referenceCombo.setVisible(len(detectors) > 1)
         self.detectorNote.setText(detectorNote)
+
+    # ------------------------------------------------------------------
+    # The rectangle in the viewer
+    # ------------------------------------------------------------------
+
+    def hasViewer(self) -> bool:
+        return self._regionOverlay is not None
+
+    def setReferenceDetector(self, name):
+        self._updating = True
+        try:
+            self.referenceCombo.setCurrentIndex(max(0, self.referenceCombo.findData(name)))
+        finally:
+            self._updating = False
+
+    def setDrawing(self, available: bool, reason: str = ''):
+        """Whether a rectangle can be drawn now; ``reason`` says why not."""
+        available = bool(available) and self.hasViewer()
+        self.drawButton.setEnabled(available)
+        self.drawButton.setToolTip(
+            'Draw the acquisition region on the live image.' if available else reason)
+
+    def showRegion(self, corners):
+        """The rectangle at these world corners [row, col], or none."""
+        if self._regionOverlay is not None:
+            self._regionOverlay.show(corners)
+
+    def _startDrawing(self):
+        if self._regionOverlay is None:
+            return
+        self._regionOverlay.startDrawing()
+        self.showMessage('Drag a rectangle on the live image.')
+        self.sigDrawRegionClicked.emit()
+
+    def _onReferenceChosen(self, index):
+        if not self._updating and index >= 0:
+            self.sigReferenceDetectorChanged.emit(self.referenceCombo.itemData(index))
 
     def setSimpleScanState(self, *, mode, overview, overviewChannel, acquisition,
                            pixelRange, dwellRange):

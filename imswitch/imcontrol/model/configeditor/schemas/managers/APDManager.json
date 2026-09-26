@@ -84,6 +84,15 @@
         "docs:integer"
       ]
     },
+    "mockSample": {
+      "description": "Simulation only: image a synthetic sample (cells and beads) instead of uniform noise. ``{\"axes\": {\"<x device>\": <µm per V>, \"<y device>\": <µm per V>}, \"seed\": 0}`` names the scanners whose waveforms move the beam across the sample's x and y, each with its positioner's ``conversionFactor``. The mean count is ``mockPhotonCountMean`` times the brightness under the beam. An axis the scan does not sweep reads as 0 µm.",
+      "x-imswitch-kind": "object",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:object"
+      ]
+    },
     "mock_photon_count_max": {
       "description": "Upper clip of the mock photon count per sample (at least 1).  Also read as ``mock_photon_count_max``.",
       "type": [

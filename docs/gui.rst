@@ -370,10 +370,16 @@ beginner's point-scan panel on the Advanced scan path:
   frame rate.
 - **Acquisition** scans a chosen region, with sliders for pixel size
   (overview to Nyquist) and dwell, and an estimate of the scan time.
+- **Draw in viewer** draws the region as a rectangle on the live image (on
+  the ``Scan region`` layer). Moving or resizing it changes the region;
+  editing the numbers moves it. Drawing needs an image the scanners made,
+  so start the overview first.
 - **Lasers and channels:** lasers placed in the same channel fire together;
   each channel is its own line pass.
 
-``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware.
+``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware; its
+simulated APDs image a synthetic sample, so the region drawn on the overview
+is visibly the region acquired.
 
 Advanced scanning: line steps
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -109,6 +109,8 @@ def _controller(widget, managerProperties):
             'APD': SimpleNamespace(managerProperties=managerProperties),
         }),
         _shouldResetView=False,
+        _shownScanGeometry={},
+        _commChannel=Mock(),
     )
     controller.autoLevels = Mock()
     controller.adjustFrame = Mock()
@@ -142,6 +144,41 @@ def test_the_controller_passes_no_geometry_for_a_plain_array():
     args, kwargs = widget.setImage.call_args
     assert args[1] is image
     assert kwargs['scanGeometry'] is None
+
+
+def test_the_shown_geometry_is_announced_once_per_change_after_the_layer_has_it():
+    """What a panel mapping viewer points to the scanner re-projects on."""
+    widget = Mock()
+    controller = _controller(widget, {'displayRotation': 90})
+    announce = controller._commChannel.sigScanGeometryShown.emit
+    order = []
+    widget.setImage.side_effect = lambda *a, **k: order.append('shown')
+    announce.side_effect = lambda *a: order.append('announced')
+    frame = with_frame_geometry(np.arange(12.0).reshape(3, 4), GEOMETRY)
+
+    for _ in range(3):
+        controller.update('APD', frame, True, [0.5, 0.5], False)
+
+    shown = DisplayedScanGeometry(GEOMETRY, DisplayTransform(rotation=90), (3, 4))
+    announce.assert_called_once_with('APD', shown)
+    assert order[:2] == ['shown', 'announced']
+
+    other = FrameGeometry(axes=GEOMETRY.axes, run=2, iteration=0)
+    controller.update('APD', with_frame_geometry(np.zeros((3, 4)), other), True,
+                      [0.5, 0.5], False)
+    controller.update('APD', np.zeros((3, 4)), True, [0.5, 0.5], False)
+    assert [c.args[1] for c in announce.call_args_list[1:]] == [
+        DisplayedScanGeometry(other, DisplayTransform(rotation=90), (3, 4)), None,
+    ]
+
+
+def test_frames_without_geometry_announce_nothing():
+    """A camera at video rate: no signal per frame."""
+    widget = Mock()
+    controller = _controller(widget, {})
+    for _ in range(5):
+        controller.update('APD', np.zeros((3, 4)), True, [0.5, 0.5], False)
+    controller._commChannel.sigScanGeometryShown.emit.assert_not_called()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

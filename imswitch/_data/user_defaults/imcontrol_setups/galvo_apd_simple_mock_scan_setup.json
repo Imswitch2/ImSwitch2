@@ -8,7 +8,13 @@
         "terminal": "PFI0",
         "displayRotation": "0",
         "displayFlipX": "False",
-        "displayFlipY": "False"
+        "displayFlipY": "False",
+        "mockSample": {
+          "axes": {
+            "X": 1.75,
+            "Y": 1.75
+          }
+        }
       },
       "analogChannel": null,
       "digitalLine": null,
@@ -22,7 +28,13 @@
         "terminal": "PFI12",
         "displayRotation": "0",
         "displayFlipX": "False",
-        "displayFlipY": "False"
+        "displayFlipY": "False",
+        "mockSample": {
+          "axes": {
+            "X": 1.75,
+            "Y": 1.75
+          }
+        }
       },
       "analogChannel": null,
       "digitalLine": null,

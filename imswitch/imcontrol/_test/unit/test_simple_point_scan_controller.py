@@ -48,7 +48,7 @@ class _Main:
 
 
 class Rig:
-    def __init__(self, setupText=None):
+    def __init__(self, setupText=None, viewer=None):
         self.setup = ViewSetupInfo.from_json(setupText or open(SETUP).read())
         self.main = _Main()
         self.channel = CommunicationChannel(self.main, self.setup)
@@ -56,7 +56,7 @@ class Rig:
         self.factory = ImConWidgetControllerFactory(
             self.setup, self.master, self.channel, self.main._moduleCommChannel
         )
-        self.widget = ScanWidgetSimplePointScan(optionsBasic)
+        self.widget = ScanWidgetSimplePointScan(optionsBasic, napariViewer=viewer)
         self.scan = self.factory.createController(ScanControllerSimplePointScan, self.widget)
         self.main.controllers['Scan'] = self.scan
         self.events = []

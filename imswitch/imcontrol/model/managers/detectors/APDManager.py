@@ -20,6 +20,7 @@ from .DetectorManager import (
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
+from ._mock_sample import MockSample
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
@@ -135,6 +136,8 @@ class APDManager(DetectorManager):
             manager_props.get("mock_random_seed", None),
         )
         self._warned_mock_count_clip = False
+        # A synthetic sample imaged from the scan waveforms (simulation only).
+        self._mock_sample = MockSample.from_property(manager_props.get("mockSample"))
 
         self._frameCount = 0
         self._scanWorker = None
@@ -186,6 +189,10 @@ class APDManager(DetectorManager):
             manager_props.get("simulation_mode", False)
             or getattr(nidaqManager, 'isSimulated', False)
         )
+        if self._mock_sample is not None and self._simulation_mode:
+            # Built once per process (about a second); not on the first scan.
+            threading.Thread(target=self._mock_sample.texture, daemon=True,
+                             name='mock-sample').start()
 
         # Prepare detector manager parameters and signal connections
         parameters = {}
@@ -1111,6 +1118,19 @@ class ScanWorker(Worker):
             int(round(self._manager._detection_samplerate * scanInfoDict['scan_time_step'])),
         )
         self._rng = np.random.default_rng(self._manager._mock_random_seed)
+        # Beam position per scan sample (µm, the sample's x and y) when the
+        # simulated detector images a mock sample; None for plain noise.
+        self._mock_positions = None
+        sample = self._manager._mock_sample
+        if self._manager._simulation_mode and sample is not None:
+            signals = signalDict.get('scanSignalsDict', {}) or {}
+            positions = [
+                None if signals.get(device) is None
+                else np.asarray(signals[device], dtype=float) * umPerVolt
+                for device, umPerVolt in sample.axes
+            ]
+            if any(p is not None for p in positions):
+                self._mock_positions = positions
 
         # extract APD signals from signalDict
         self._seq_signal = None  # set only if ttlmultiplying AND this device found in signalDict
@@ -1514,9 +1534,25 @@ class ScanWorker(Worker):
         frac = max(1, int(self._frac_det_dwell))
         mean_per_sample = max(0.0, self._manager._mock_photon_count_mean / frac)
         max_per_sample = max(1, int(np.ceil(self._manager._mock_photon_count_max / frac)))
+        if self._mock_positions is not None:
+            mean_per_sample = mean_per_sample * self._mock_brightness(datalen)
         increments = self._rng.poisson(mean_per_sample, size=datalen).astype(np.int64)
         increments = np.clip(increments, 0, max_per_sample)
         return np.cumsum(increments, dtype=np.int64) + int(self._last_value)
+
+    def _mock_brightness(self, datalen):
+        """The mock sample under the beam for the next ``datalen`` samples."""
+        start = int(self._samples_read)
+        scan_index = np.arange(start, start + datalen) // self._frac_scan_det_rate
+        coords = []
+        for positions in self._mock_positions:
+            if positions is None or not len(positions):
+                coords.append(np.zeros(datalen))
+            else:
+                coords.append(positions[np.minimum(scan_index, len(positions) - 1)])
+        if len(coords) == 1:
+            coords.append(np.zeros(datalen))
+        return self._manager._mock_sample.brightness(coords[0], coords[1])
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
