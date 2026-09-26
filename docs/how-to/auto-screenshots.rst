@@ -8,10 +8,11 @@ widget, either on its own or inside a running window built from a mock
 setup.  This keeps the GUI documentation in sync with the code without
 anyone having to remember to take fresh screenshots.
 
-Two images in that folder are not made by the script:
-``imswitch2-main-window.png`` (the whole application window) and
-``improcess-main-window.png`` (the ImProcess window).  They were captured
-separately, and running the script leaves them untouched.
+The full-window screenshots at the top of the module pages
+(``docs/images/imcontrol-window.png`` and ``improcess-window.png``) show real
+data on a real microscope, which no mock setup can produce.  They are taken
+by hand and kept outside ``images/auto/``, so the script never touches
+them.
 
 Run it
 ======

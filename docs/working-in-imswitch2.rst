@@ -14,13 +14,13 @@ ImSwitch2 presents its modules in one window, listed down the left-hand
 side; the shell loads whichever are enabled in ``modules.json`` (see
 :doc:`modules`).  Which one you want depends on what you are doing.
 
-.. image:: ./images/auto/imswitch2-main-window.png
-   :alt: The ImSwitch2 window on launch, with the module tabs — Hardware
-         Control, Image Processing and Scripting — running down the left
-         edge, and the Hardware Control module open.
+.. image:: ./images/imcontrol-window.png
+   :alt: The ImSwitch2 window with the module tabs — Hardware Control,
+         Image Processing and Scripting — running down the left edge, and
+         the Hardware Control module open on a point-scanning microscope.
    :align: center
 
-ImSwitch2 on launch, with a mock setup loaded.  The tabs down the left edge
+ImSwitch2 running a point-scanning microscope.  The tabs down the left edge
 switch between modules — **Hardware Control** (ImControl), **Image
 Processing** (ImProcess) and **Scripting** (ImScripting) — and the module
 that is open fills the rest of the window.  Here that is ImControl.

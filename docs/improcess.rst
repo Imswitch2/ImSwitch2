@@ -10,13 +10,15 @@ ImSwitch2 can produce — MoNaLISA, STED, FLIM, confocal, widefield,
 WidefieldSTARSS, SNOUTY lightsheet — can be opened, viewed and
 post-processed with the same shell.
 
-.. image:: ./images/auto/improcess-main-window.png
-   :alt: The ImProcess module of ImSwitch2
+.. image:: ./images/improcess-window.png
+   :alt: The ImProcess module of ImSwitch2 showing a reassembled tiling
+         mosaic
    :align: center
 
-The ImProcess window: the reconstructor's parameters and the raw-data
-pane on the left, the napari viewer holding the produced results in the
-middle, and the results list on the right.
+The ImProcess window after reassembling a tiling run: the active
+reconstructor's parameters (here *Tiling mosaic*), the actions and the
+current data on the left, and the napari viewer with the result and its
+layer controls in the middle.
 
 .. toctree::
     :hidden:
