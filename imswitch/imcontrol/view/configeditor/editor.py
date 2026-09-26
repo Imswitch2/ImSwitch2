@@ -277,6 +277,7 @@ IMPROCESS_RECONSTRUCTOR_FALLBACK = [
     "snouty",
     "snouty-projections",
     "tiling-mosaic",
+    "time-lapse",
     "view-only",
     "widefield-starss",
 ]

@@ -23,14 +23,18 @@ def test_non_tiling_reconstructors_keep_image_only_inline_defaults():
     ('image',)", which was the same thing only while tiling was the sole
     non-image source kind. The SMLM localizer also declares "localizations" —
     a table that opens straight to a result and never reaches a reconstructor —
-    and that must not weaken this contract.
+    and that must not weaken this contract. The time-lapse reconstructor runs
+    on the worker too (it opens every file of a lapse for its header), but
+    takes lapses, never manifests.
     """
+    worker_plugins = {"tiling-mosaic", "time-lapse"}
     for plugin_id, plugin_class in _AVAILABLE_RECONSTRUCTOR_CLASSES.items():
         if plugin_id == "tiling-mosaic":
             continue
         assert "image" in plugin_class.accepted_source_kinds
         assert "tiling-manifest" not in plugin_class.accepted_source_kinds
-        assert plugin_class.execution_policy == "inline"
+        expected = "worker" if plugin_id in worker_plugins else "inline"
+        assert plugin_class.execution_policy == expected
 
 
 def test_ordinary_image_data_obj_and_view_only_result_are_unchanged(tmp_path):

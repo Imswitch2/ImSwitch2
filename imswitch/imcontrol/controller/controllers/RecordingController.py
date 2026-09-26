@@ -15,7 +15,7 @@ from imswitch.imcontrol.model.managers.RecordingManager import (
 )
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
-from ._acquisition_layout_source import with_time_partition
+from ._acquisition_layout_source import with_lapse_partition
 
 # Poll interval used to wait out a still-finalizing recording before starting
 # the next timelapse timepoint (see nextLapse). Small so a Freq=0 lapse advances
@@ -984,6 +984,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         self._commChannel.sharedAttrs.getHDF5Attributes()
                     for detectorName in self.recordingArgs['detectorNames']
                 }
+                # What every point's attributes start from; a positioned
+                # point adds its own on top (_applyPositionedAttributes).
+                self._lapseBaseAttrs = None
                 # Read through the pinned source, never the global accessors:
                 # nothing is scanning yet, so a rig with several capable
                 # controllers cannot be resolved by the channel.
@@ -1020,6 +1023,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             positioning = await_positioning()
             if positioning is not True:
                 return positioning
+            apply_attributes = getattr(self, '_applyPositionedAttributes', None)
+            if callable(apply_attributes):
+                apply_attributes()
 
         # Every timepoint, not just the first. Each one runs its own scan and
         # publishes its own ``sigScanEnded``, so a start published once for the
@@ -1050,7 +1056,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             return False
         return True
 
-    def setPositioningProvider(self, provider) -> None:
+    def setPositioningProvider(self, provider, *, partitionKind='position') -> None:
         """Let a workflow place the sample before each timepoint.
 
         ``provider(index)`` returns a :class:`PositioningRequest` that it
@@ -1059,16 +1065,46 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         terminals end the session with the reason they carry.
 
         This is what makes a tiling run a lapse: the points differ by where
-        the stage is rather than by when the timer fires, and nothing else
-        about the session changes.
+        the stage is rather than by when the timer fires. That difference is
+        what ``partitionKind`` records -- ``tile`` for a tiling grid,
+        ``position`` otherwise -- in every item's acquisition layout, which
+        used to call each tile a timepoint.
         """
         self._positioningProvider = provider
+        self._positioningPartitionKind = str(partitionKind)
         self._pendingPositioning = None
+        self._positionedAttributes = {}
 
     def clearPositioningProvider(self) -> None:
         self._positioningProvider = None
+        self._positioningPartitionKind = None
         self._pendingPositioning = None
+        self._positionedAttributes = {}
         self._cycleTerminalCallback = None
+
+    def _lapsePartitionKind(self) -> str:
+        """What one lapse item is: a timepoint, unless a workflow positions it."""
+        if self.__dict__.get('_positioningProvider') is None:
+            return 'time'
+        return self.__dict__.get('_positioningPartitionKind') or 'position'
+
+    def _applyPositionedAttributes(self) -> None:
+        """Merge this point's own attributes into every detector's, for this point only.
+
+        Rebuilt from the lapse's base attributes each time, so a key one point
+        set can never leak into the next.
+        """
+        attrs = self.recordingArgs.get('attrs')
+        if not isinstance(attrs, dict):
+            return
+        base = self.__dict__.get('_lapseBaseAttrs')
+        if base is None:
+            base = {name: dict(values or {}) for name, values in attrs.items()}
+            self._lapseBaseAttrs = base
+        extra = dict(self.__dict__.get('_positionedAttributes') or {})
+        self.recordingArgs['attrs'] = {
+            name: {**base.get(name, {}), **extra} for name in attrs
+        }
 
     def setCycleTerminalCallback(self, callback) -> None:
         """Called when a point is wholly finished -- writer *and* scan.
@@ -1120,6 +1156,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         self._pendingPositioning = None
         if outcome.mayProceed:
+            self._positionedAttributes = dict(
+                getattr(request, 'attributes', None) or {}
+            )
             return True
 
         # Cancelled, failed or timed out: all three mean this point cannot be
@@ -1271,9 +1310,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if self.recMode != RecMode.ScanLapse:
             self.recordingArgs['acquisitionLayouts'] = dict(layouts)
             return
+        kind_of = getattr(self, '_lapsePartitionKind', None)
+        kind = kind_of() if callable(kind_of) else 'time'
         self.recordingArgs['acquisitionLayouts'] = {
-            detectorName: with_time_partition(
+            detectorName: with_lapse_partition(
                 layout,
+                kind=kind,
                 index=max(0, int(self.lapseCurrent)),
                 planned_count=(
                     int(self.lapseTotal) if self.lapseTotal else None
