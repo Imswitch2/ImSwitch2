@@ -100,7 +100,9 @@ Recording modes:
 
 Both timelapse modes save each timepoint to its own file unless **Save all
 timepoints in a single file** is ticked.  A single-file timelapse needs HDF5
-or Zarr; with TIFF it is refused.
+or Zarr; with TIFF it is refused.  Either way ImProcess's **Time lapse**
+reconstructor opens the whole lapse as one stack from any one of its files
+(see :ref:`improcess-time-lapse`).
 
 How **REC** relates to the scan depends on the setup:
 
@@ -476,8 +478,11 @@ at every scan step and builds an image with one pixel per step, typically
 of a bead, to see the scanned beam's profile.  Tick **Run** to reconstruct during scans.
 **Scale** resamples the result to the scan's pixel size, and **Rotate** (in
 90° steps) with **Flip H** / **Flip V** corrects its orientation for the scan
-direction.  **Save Rec** saves the displayed reconstruction as TIFF and
-**Load** opens TIFF images into the list beside it (**Add Current**,
+direction.  **Save Rec** saves the displayed reconstruction as OME-TIFF
+with its pixel size (one scan step, or the finer step once rescaled to
+square pixels) and what BeadRec knew about the scan; **Load** opens TIFF
+images into the list beside it, keeping the pixel size of a file BeadRec
+saved (**Add Current**,
 **Remove**, **Clear All**, **Save All**).  **Run fit** fits the model chosen
 next to it (Gaussian, donut, exponential, sine, …) to the displayed image;
 **Analysis Parameters** sets the fit options.

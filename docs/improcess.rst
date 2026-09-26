@@ -72,6 +72,9 @@ There are three ways to open data:
   (CSV/TSV, see `Importing localization tables`_) and tiling manifests open
   only through *Quick load data…*, not by drag and drop.
 
+With the **Time lapse** reconstructor active, opening any one file or group
+of a time lapse opens the whole lapse as one stack (see `Time lapses`_).
+
 When a recording is opened, ImProcess works out its **acquisition layout**
 — which frame belongs to which scan position, time point or condition.  A
 user override stored beside the file as ``<file>.imswitch-layout.json``
@@ -1138,7 +1141,7 @@ records each point's state, planned and actual time in the result
 annotations.
 
 The discovery, the header pass and the lazy stack live in the data layer
-(:py:mod:`imswitch.improcess.model.lapse_source`), not in the reconstructor.
+(``imswitch.improcess.model.lapse_source``), not in the reconstructor.
 A reconstructor that wants to process a lapse one point at a time --
 MoNaLISA or BeadRec per timepoint -- can accept the ``time-lapse`` source kind
 and read ``open_time_lapse(...).timepoint(t)`` without redoing any of it.

@@ -50,11 +50,11 @@ process data — on a laptop, away from the microscope.
 
 It works in two stages.  A **reconstructor** turns a raw recording into a
 result: MoNaLISA, SMLM localization, SNOUTY, WidefieldSTARSS, BeadRec, a
-tiled mosaic, or simply view-only to look at what was acquired.  **Processors** then stack on top
-of a result — drift correction, projections, FRC, segmentation,
-colocalization and the rest — each producing a new result rather than
-overwriting the old one, so the chain that produced an image stays
-inspectable.
+tiled mosaic, a whole time lapse as one stack, or simply view-only to look
+at what was acquired.  **Processors** then stack on top of a result —
+drift correction, projections, FRC, segmentation, colocalization and the
+rest — each producing a new result rather than overwriting the old one, so
+the chain that produced an image stays inspectable.
 
 See :doc:`improcess` for the panels, the plugins and the batch workflows.
 

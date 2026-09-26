@@ -173,7 +173,8 @@ acquisition itself:
 * ``discarded_frames``: frames the detector delivered beyond the plan
   (a free-running camera, extra trigger pulses) that were not written
 * ``num_timepoints``, ``lapse_index``, ``single_lapse_file`` and, where
-  set, ``lapse_interval_s`` and ``planned_start_time``, for lapses
+  set, ``lapse_interval_s`` and ``planned_start_time``, for lapses; ImProcess
+  uses them to put a lapse back together (:ref:`improcess-time-lapse`)
 
 A detector that delivered no frame at all leaves a file or store without
 ``data``; its root then carries ``recording:detector_name``,
