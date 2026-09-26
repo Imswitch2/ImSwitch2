@@ -88,3 +88,62 @@ def apply_display_transform(
         display_image = np.flip(display_image, axis=-2)
 
     return np.ascontiguousarray(display_image), display_scale
+
+
+def raw_to_display_point(
+    row: float,
+    col: float,
+    raw_shape: Sequence[int],
+    transform: DisplayTransform,
+) -> tuple[float, float]:
+    """Where raw pixel ``(row, col)`` lands in the displayed image.
+
+    Coordinates are continuous over the last two axes, with pixel centres at
+    integers, so a point anywhere inside a pixel maps consistently. The steps
+    are those of :func:`apply_display_transform`: rotate (``np.rot90``, one
+    quarter turn sends ``(r, c)`` of an ``H x W`` image to ``(W-1-c, r)``),
+    then flip X, then flip Y.
+    """
+    height, width = int(raw_shape[-2]), int(raw_shape[-1])
+    r, c = float(row), float(col)
+    for _ in range(transform.rotation // 90):
+        r, c = width - 1 - c, r
+        height, width = width, height
+    if transform.flip_x:
+        c = width - 1 - c
+    if transform.flip_y:
+        r = height - 1 - r
+    return r, c
+
+
+def display_to_raw_point(
+    row: float,
+    col: float,
+    raw_shape: Sequence[int],
+    transform: DisplayTransform,
+) -> tuple[float, float]:
+    """The raw pixel coordinate shown at displayed ``(row, col)``.
+
+    The inverse of :func:`raw_to_display_point`, for the same ``raw_shape``
+    (the image's shape *before* the transform).
+    """
+    height, width = int(raw_shape[-2]), int(raw_shape[-1])
+    turns = transform.rotation // 90
+    display_height, display_width = (
+        (width, height) if turns % 2 else (height, width)
+    )
+    r, c = float(row), float(col)
+    if transform.flip_y:
+        r = display_height - 1 - r
+    if transform.flip_x:
+        c = display_width - 1 - c
+    # Undo the quarter turns, last first: (r', c') of the turned image came
+    # from (c', w - 1 - r') of the (h, w) image before that turn.
+    shapes = []
+    h, w = height, width
+    for _ in range(turns):
+        shapes.append((h, w))
+        h, w = w, h
+    for h, w in reversed(shapes):
+        r, c = c, w - 1 - r
+    return r, c

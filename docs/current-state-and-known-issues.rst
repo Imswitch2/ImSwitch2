@@ -143,6 +143,23 @@ galvo trajectory magic numbers. These must be addressed with narrow
 no-hardware tests first and physical hardware verification before enabling
 behavior changes.
 
+Two related ``GalvoScanDesigner`` defects were measured on 2026-09-25, by
+comparing the generated waveform at each pixel's read time with the nominal
+pixel grid:
+
+- **Pixel pitch.** The swept fast axis realizes a pitch about 0.6 % (40 µs
+  dwell) to 1 % (20 µs) larger than the requested step. The line is centred
+  correctly, so pixels drift from the nominal grid towards both ends. Images
+  are therefore slightly larger in reality than their recorded OME pixel size
+  says.
+- **Read offset.** For a line length that is not a whole number of steps
+  (10 µm at 0.3 µm), the first pixel is read about 0.7 pixel before the sweep
+  reaches its start, while the mirror is still accelerating.
+
+Both are pinned as strict expected failures in
+``imswitch/imcontrol/_test/unit/test_scan_frame_geometry.py``. Fixing them
+changes the waveforms of every galvo scan, so it is separate work.
+
 Recording manager upgrade
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

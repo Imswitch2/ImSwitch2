@@ -3,6 +3,10 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import shortcut
 from imswitch.imcommon.view.guitools import naparitools
+from imswitch.imcontrol.model.scan_frame import (
+    SCAN_GEOMETRY_METADATA_KEY,
+    ScanFrame,
+)
 
 
 class ImageWidget(QtWidgets.QWidget):
@@ -191,9 +195,31 @@ class ImageWidget(QtWidgets.QWidget):
     def getImage(self, name):
         return self.imgLayers[name].data
 
-    def setImage(self, name, im, scale):
+    def getScanGeometry(self, name):
+        """Geometry of the scan pixels the live layer ``name`` shows, if any
+        (a :class:`~imswitch.imcontrol.model.scan_frame.DisplayedScanGeometry`)."""
+        layer = self.imgLayers.get(name)
+        if layer is None:
+            return None
+        return layer.metadata.get(SCAN_GEOMETRY_METADATA_KEY)
+
+    def _setScanGeometry(self, name, scanGeometry):
+        # Filed in the same call that set the layer's pixels, so the layer's
+        # geometry is always that of what it shows. A frame without one clears
+        # it: the pixels on screen no longer belong to any scan geometry.
+        metadata = self.imgLayers[name].metadata
+        if scanGeometry is None:
+            metadata.pop(SCAN_GEOMETRY_METADATA_KEY, None)
+        else:
+            metadata[SCAN_GEOMETRY_METADATA_KEY] = scanGeometry
+
+    def setImage(self, name, im, scale, scanGeometry=None):
         layer = self.imgLayers[name]
         scale = tuple(scale)
+        if isinstance(im, ScanFrame):
+            # napari gets a plain view of the same pixels; the geometry is
+            # filed on the layer below.
+            im = im.view(np.ndarray)
 
         # Normalise scale length to match im.ndim.
         if len(scale) < im.ndim:
@@ -226,6 +252,7 @@ class ImageWidget(QtWidgets.QWidget):
         # scratch.  Only hits on the first frame of an ndim transition.
         if layer.data.ndim != im.ndim:
             self._recreateLiveLayer(name, im, scale)
+            self._setScanGeometry(name, scanGeometry)
             return
 
         # Same-ndim update: scale-before-data is safe because the scale setter
@@ -234,6 +261,7 @@ class ImageWidget(QtWidgets.QWidget):
         # transform.
         layer.scale = scale
         layer.data = im
+        self._setScanGeometry(name, scanGeometry)
 
     def clearImage(self, name):
         self.setImage(name, np.zeros((1, 1)))

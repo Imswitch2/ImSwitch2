@@ -12,7 +12,10 @@ written in P4.*
   answered in D5, D3, D1 and D4. Review 3 added two D5 fixes. Decisions
   2026-09-25: T as proposed in D3; no mid-iteration Stop; Advanced's
   behaviour stays unchanged, except P0's `vel_max` refusal, which is kept.
-  The design phase is settled; next is implementing phase D. P1 not started.
+  The design phase is settled. Phase D in progress: D4's load hook and D1
+  done (2026-09-26); D2's `recordScanSeries` next. The Simple-side contracts
+  (D3 policy, D5 checks, D4 equality, D6) are tested with P1, where their
+  code lives. P1 not started.
 - **Branch:** `feat/simple-point-scan`, worktree `../Imswitch2-simple-point-scan`.
 - **Base:** stacked on PR #49 (`claude/quizzical-hofstadter-88bff6`, "a refused
   scan design ends the request with its reason"). P0 reports its new refusal
@@ -622,6 +625,30 @@ Contract:
    - A layer without geometry (a camera, or a detector that has not scanned
      yet) disables drawing, and says why.
 
+**Implemented 2026-09-26** (`scan_frame.py`, `_frame_publication.py`, APD /
+PMT / Time Tagger managers, `ImageController`, `ImageWidget`,
+`display_transform.py`). What the implementation settled:
+
+- **The geometry is the nominal grid**, the one the scan parameters declare
+  and a recording writes as its OME pixel size. Testing it against the
+  generated waveform found two `GalvoScanDesigner` defects:
+  - the swept fast axis realizes a pitch 0.6–1 % larger than the step;
+  - for non-integral lengths the first pixel is read about 0.7 pixel before
+    the sweep starts.
+
+  Both are pinned as strict expected failures and listed in
+  `current-state-and-known-issues.rst`. Fixing them changes Advanced's
+  waveforms and is separate work. On a 10 µm line the pitch error puts the
+  line ends ±0.03–0.05 µm from the nominal grid, which is irrelevant for
+  choosing a region.
+- **Geometry and storage are paired**, so a reader on another thread can tell
+  whether both came from the same swap. The recording path's chunk and the
+  display latch carry the geometry (`ChunkPayload.display_geometry`); the
+  latch used to reduce every frame to a plain array.
+- **Time Tagger accumulate mode** mixes earlier scans' lifetimes into the
+  displayed frame; the geometry is the current scan's. Simple should switch
+  accumulation off, or warn, when the region changes (P3).
+
 Tests:
 
 - a delayed frame of scan k arriving after scan k+1 was built keeps k's
@@ -867,6 +894,9 @@ Simple → Advanced:
   load it, with the reason, instead of loading one frame.
 - Model gains the fields the review found missing: per-axis steps, phase
   delay, slice delay.
+
+The load-refusal hook is **implemented** (2026-09-26, `b3172881`): a state's
+`requiredFeatures` against the controller's `supportedStateFeatures`.
 
 Tests: executable equality for each representable feature, including an
 imported non-integral length (10 µm at 0.3 µm) and imported inactive power;

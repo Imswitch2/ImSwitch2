@@ -6,6 +6,15 @@ import time
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger, memory_limits
 from .._scan_execution import PARTICIPANTS_KEY
+from ._frame_publication import (
+    begin_frame_storage,
+    commit_frame_storage,
+    current_frame_geometry,
+    display_frame,
+    pending_scan_geometry,
+    read_with_frame_geometry,
+    remember_scan_geometry,
+)
 from .DetectorManager import (
     _queueBudgetBytes,
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
@@ -206,6 +215,7 @@ class APDManager(DetectorManager):
             super().__del__()
 
     def initiateScan(self, scanInfoDict, signalDict):
+        remember_scan_geometry(self, scanInfoDict)
         participants = scanInfoDict.get(PARTICIPANTS_KEY)
         self._scanParticipating = (
             participants is None or self.name in participants
@@ -649,11 +659,19 @@ class APDManager(DetectorManager):
 
     def getLatestFrame(self, is_save=True):
         S = int(getattr(self, "_linestep", 1))
-        if is_save or S > 1:
+        if is_save:
             return self._image  # raw stack (1,S,Ny,Nx)
-        return self._image_display  # always (1,Ny,Nx)
+        # For display, a scan carrying a geometry publishes it with the frame
+        # (scan_frame.ScanFrame); any other scan gets exactly the array below.
+        frame, geometry = read_with_frame_geometry(
+            self,
+            lambda: self._image if S > 1 else self._image_display,
+        )
+        return display_frame(self, frame, geometry)
 
     def _renewImage(self):
+        # Axes are removed here, so no scan geometry describes the result.
+        begin_frame_storage(self)
         im_squeezed, ax_rem = self.remove_nans(self._image)
         self.setShape(np.shape(im_squeezed))
         self._image = im_squeezed
@@ -731,7 +749,13 @@ class APDManager(DetectorManager):
             # Time-throttled live preview: bound the redraw rate deterministically
             # instead of gating on image size with a random draw per line.
             if self._liveThrottle.due():
-                self.sigImageUpdated.emit(self._image, True, self.scale)
+                self.sigImageUpdated.emit(
+                    display_frame(
+                        self, self._image, current_frame_geometry(self)
+                    ),
+                    True,
+                    self.scale,
+                )
             return
 
         if np.squeeze(self._image).ndim >= 3:
@@ -772,8 +796,18 @@ class APDManager(DetectorManager):
         # (still ImageJ-compatible, half the memory of float64).
         image_dtype = np.float32 if self._ttlmultiplying else np.uint16
 
-        if (np.shape(self._image) != img_dims_extra
-                or self._image.dtype != image_dtype):
+        # A scan carrying a geometry always gets fresh storage: frames already
+        # published for the previous scan share the old buffer (napari's layer
+        # shows it directly), and rewriting it would change pixels on screen
+        # that still claim the old geometry. Scans without one keep reusing a
+        # same-shape buffer, as before.
+        geometry = pending_scan_geometry(self)
+        begin_frame_storage(self)
+        shapeChanged = (np.shape(self._image) != img_dims_extra
+                        or self._image.dtype != image_dtype)
+        if geometry is not None and not shapeChanged:
+            self._image = np.zeros(img_dims_extra, dtype=image_dtype)
+        if shapeChanged:
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)
             self.setShape(img_dims_extra)
             # The recording's raw frame is this whole volume, delivered once
@@ -794,6 +828,7 @@ class APDManager(DetectorManager):
             tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]),
             dtype=image_dtype,
         )
+        commit_frame_storage(self, geometry)
 
     def setParameter(self, name, value):
         pass
@@ -874,7 +909,9 @@ class APDManager(DetectorManager):
         Exactly once: a recording that received the same volume twice would be
         as wrong as one that received it half-written.
         """
-        display = self.getChunk()
+        display, displayGeometry = read_with_frame_geometry(
+            self, self.getChunk
+        )
 
         raw = _EMPTY_CHUNK
         if (self.__dict__.get('_rawReady', False)
@@ -888,7 +925,9 @@ class APDManager(DetectorManager):
             # separate frames.
             raw = np.expand_dims(np.array(self._image, copy=True), axis=0)
 
-        return ChunkPayload(display=display, raw=raw)
+        return ChunkPayload(
+            display=display, raw=raw, display_geometry=displayGeometry
+        )
 
     def flushBuffers(self):
         self.__newFrameReady = False

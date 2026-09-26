@@ -6,6 +6,15 @@ import time
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger, memory_limits
 from .._scan_execution import PARTICIPANTS_KEY
+from ._frame_publication import (
+    begin_frame_storage,
+    commit_frame_storage,
+    current_frame_geometry,
+    display_frame,
+    pending_scan_geometry,
+    read_with_frame_geometry,
+    remember_scan_geometry,
+)
 from .DetectorManager import (
     _queueBudgetBytes,
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
@@ -246,6 +255,7 @@ class PMTManager(DetectorManager):
         return np.dtype(np.float32)
 
     def initiateScan(self, scanInfoDict, signalDict):
+        remember_scan_geometry(self, scanInfoDict)
         participants = scanInfoDict.get(PARTICIPANTS_KEY)
         self._scanParticipating = (
             participants is None or self.name in participants
@@ -696,8 +706,16 @@ class PMTManager(DetectorManager):
         # preserved for the TTL-multiplying "no-data" marker.
         image_dtype = np.float32
 
-        if (np.shape(self._image) != img_dims_extra
-                or self._image.dtype != image_dtype):
+        # See APDManager.initiateImage: a scan carrying a geometry always gets
+        # fresh storage, so published frames of the previous scan keep their
+        # pixels. Scans without one keep reusing a same-shape buffer.
+        geometry = pending_scan_geometry(self)
+        begin_frame_storage(self)
+        shapeChanged = (np.shape(self._image) != img_dims_extra
+                        or self._image.dtype != image_dtype)
+        if geometry is not None and not shapeChanged:
+            self._image = np.zeros(img_dims_extra, dtype=image_dtype)
+        if shapeChanged:
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)
             self.setShape(img_dims_extra)
             # See APDManager.initiateImage: the raw frame is this whole volume,
@@ -716,6 +734,7 @@ class PMTManager(DetectorManager):
             tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]),
             dtype=image_dtype,
         )
+        commit_frame_storage(self, geometry)
 
 
     def updateImage(self, pixels, pos: tuple):
@@ -763,7 +782,13 @@ class PMTManager(DetectorManager):
             # Time-throttled live preview: bound the redraw rate deterministically
             # instead of gating on image size with a random draw per line.
             if self._liveThrottle.due():
-                self.sigImageUpdated.emit(self._image, True, self.scale)
+                self.sigImageUpdated.emit(
+                    display_frame(
+                        self, self._image, current_frame_geometry(self)
+                    ),
+                    True,
+                    self.scale,
+                )
             return
 
         if np.squeeze(self._image).ndim >= 3:
@@ -868,9 +893,14 @@ class PMTManager(DetectorManager):
         - otherwise return display plane
         """
         S = int(getattr(self, "_linestep", 1))
-        if is_save or S > 1:
+        if is_save:
             return self._image
-        return self._image_display
+        # See APDManager.getLatestFrame.
+        frame, geometry = read_with_frame_geometry(
+            self,
+            lambda: self._image if S > 1 else self._image_display,
+        )
+        return display_frame(self, frame, geometry)
 
     def getChunk(self):
         if not self.__newFrameReady:
@@ -929,7 +959,9 @@ class PMTManager(DetectorManager):
         channels for the screen also summed them for every recording. The raw
         half is the unsummed measurement.
         """
-        display = self.getChunk()
+        display, displayGeometry = read_with_frame_geometry(
+            self, self.getChunk
+        )
 
         raw = _EMPTY_CHUNK
         if (self.__dict__.get('_rawReady', False)
@@ -940,7 +972,9 @@ class PMTManager(DetectorManager):
             # broker fans out on axis 0, which `_image` does not carry.
             raw = np.expand_dims(np.array(self._image, copy=True), axis=0)
 
-        return ChunkPayload(display=display, raw=raw)
+        return ChunkPayload(
+            display=display, raw=raw, display_geometry=displayGeometry
+        )
 
     def flushBuffers(self):
         self.__newFrameReady = False

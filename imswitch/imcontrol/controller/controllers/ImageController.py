@@ -6,6 +6,7 @@ from ..basecontrollers import (
     StatefulComponentMixin,
 )
 from ..display_transform import apply_display_transform, display_transform_from_properties
+from imswitch.imcontrol.model.scan_frame import DisplayedScanGeometry, frame_geometry_of
 from imswitch.imcommon.model import initLogger
 import numpy as np
 import re
@@ -76,16 +77,27 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
     def update(self, detectorName, im, init, scale, isCurrentDetector):
         """ Update new image in the viewbox. """
         if np.prod(im.shape)>1:
+            # Read before the display transform: a transformed view carries no
+            # geometry (scan_frame.ScanFrame), and the geometry describes the
+            # untransformed pixels anyway.
+            geometry = frame_geometry_of(im)
+            transform = self._getDisplayTransform(detectorName)
             display_im, display_scale = apply_display_transform(
                 im,
                 scale,
-                self._getDisplayTransform(detectorName),
+                transform,
             )
 
             if not init:
                 self.autoLevels([detectorName], display_im)
 
-            self._widget.setImage(detectorName, display_im, display_scale)
+            self._widget.setImage(
+                detectorName, display_im, display_scale,
+                scanGeometry=(
+                    DisplayedScanGeometry(geometry, transform, tuple(im.shape))
+                    if geometry is not None else None
+                ),
+            )
 
             # Keep overlay ROIs aligned to the current detector's pixel scale
             # (and orientation, already baked into display_scale by the swap in
