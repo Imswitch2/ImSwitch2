@@ -20,7 +20,7 @@ html_css_files = ['css/custom.css']
 html_logo = 'images/imswitch2_logo.png'
 html_favicon = 'images/imswitch2_icon.png'
 
-project = 'Imswitch2'
+project = 'ImSwitch2'
 copyright = '2020-2026, ImSwitch developers'
 
 

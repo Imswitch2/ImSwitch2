@@ -1,14 +1,15 @@
-****************************************
-ImProcess Workflows (Cookbook)
-****************************************
+*******************
+ImProcess workflows
+*******************
 
 Overview
 ========
 
 An ImProcess **workflow** reconstructs and processes data without the GUI:
 a batch of recordings through the same reconstructor and the same
-processing steps, from a script, a terminal, or a scheduled job. It is the
-processing counterpart of :doc:`scripting-wfs-workflows`.
+processing steps, from a terminal, a scheduled job, or any Python
+process, including an ImScripting script (:doc:`scripting`). The GUI runs
+the same workflow files (see :ref:`workflows-replay`).
 
 A workflow is an ordered list of **steps**:
 
@@ -96,14 +97,16 @@ Steps and references
      - ``id``, ``reconstructor``, ``inputs`` (reconstructions by that reconstructor); no ``params`` — consolidation merges what the reconstructions already are
      - ``out``
    * - ``Process``
-     - ``id``, ``processor`` (plugin id), ``params``, ``inputs`` (ordered)
+     - ``id``, ``processor`` (plugin id), ``params``, ``inputs`` (ordered), ``restriction`` (optional ROI restriction in the form the provenance records it; the run is narrowed to those regions, as the GUI's "apply within ROI" does)
      - what the processor declares (see below)
    * - ``Save``
      - ``id``, ``input`` (one reference), ``fmt``, ``path_template``
      - none
 
 A reference is ``"step"`` (the step's only, or first, port) or
-``"step.port"``. Step ids use letters, digits, ``_`` and ``-``.
+``"step.port"``. Step ids use letters, digits, ``_`` and ``-``. In a
+workflow file each step names its type with ``step:`` (``kind:`` is
+accepted as well).
 
 Parameters and defaults
 -----------------------
@@ -137,8 +140,9 @@ A processor declares its output ports through ``output_spec(params)``:
 * named ports when there are several (``subtract-background`` with
   ``output_background: true`` yields ``signal`` and ``background``);
 * a **pattern** when the ports depend on the data (``stack-split`` and
-  ``channel-split`` yield ``C0, C1, …`` — one per slice, as many as the
-  input has).
+  ``channel-split`` yield one port per slice, as many as the input has,
+  named after the split axis and the index along it: ``C0, C1, …`` for
+  channels, ``Z0, Z1, …`` for a Z split).
 
 ``validate`` checks every reference against the declared ports or pattern
 before anything runs, and the runner checks the ports actually produced
@@ -162,8 +166,10 @@ is given ``overwrite=True`` (``--overwrite``).
 source's file name without suffixes), ``{step}`` (the save step's id),
 ``{input_step}``, ``{name}`` (the result's display name), ``{fmt}``,
 ``{ext}`` (the format's default suffix: ``.ome.tif``, ``.h5``, ``.ome.zarr``,
-``.csv``, ``.hdf5``). The default is
-``{out_dir}/{source_stem}_{step}{ext}``.
+``.csv``, ``.hdf5`` for ``picasso``, ``.tif`` for ``imagej``, ``.json``).
+The default is ``{out_dir}/{source_stem}_{step}{ext}``. A template that
+resolves outside the output directory (through ``..`` or an absolute
+path elsewhere) is refused.
 
 Formats are what the result type supports (``tiff``, ``hdf5``, ``zarr``;
 ``csv`` / ``picasso`` for localizations; ``imagej`` for MoNaLISA's classic
@@ -227,7 +233,7 @@ are released.
 ``bootstrap_registry()`` builds a **fresh** plugin registry for the run —
 every built-in unless a setup's ``processing`` block (or explicit id lists)
 narrows it, plus the drop-in plugins from the user plugins folder — and
-stamps each plugin's version (the ImSwitch distribution version for
+stamps each plugin's version (the ImSwitch2 version for
 built-ins, a digest of the file for drop-ins). Every call returns a new
 registry; two runs share plugin instances only if you pass the same
 registry object to both. The command line never does: each batch row gets
@@ -384,7 +390,7 @@ two branches and a merge comes back as exactly that) and their ROI
 restriction; and finally a ``Save`` with a **parameterised** destination —
 never the original path. Parameters recorded under an older
 ``params_version`` are migrated by the plugin; a newer one is refused.
-Version drift (ImSwitch, a plugin) and a streaming origin are warnings.
+Version drift (ImSwitch2, a plugin) and a streaming origin are warnings.
 
 Replay refuses, listing every reason, when the graph contains a step that
 cannot be run again:
@@ -421,7 +427,10 @@ the steps and most of the settings, and a language model can turn it into a
 workflow draft for you to check. Give it three things:
 
 1. **the provenance** — ``python -m imswitch.improcess.workflows
-   show-provenance FILE --json`` (or the Metadata panel's copy action);
+   show-provenance FILE --json`` (or, in the GUI, select the result,
+   right-click its *Provenance* group in the Metadata panel and choose
+   **Copy subtree as JSON**; the panel is hidden by default, see
+   :doc:`improcess`, "Metadata panel");
 2. **the plugin catalogue** — ``python -m imswitch.improcess.workflows list
    --json``: every plugin id, its default parameters and its ports;
 3. **this page**, which is the schema.
@@ -430,7 +439,7 @@ A prompt that works:
 
 .. code-block:: text
 
-   You are writing an ImSwitch ImProcess workflow file (YAML, schema 1) as
+   You are writing an ImSwitch2 ImProcess workflow file (YAML, schema 1) as
    described in the attached documentation page. Attached are (a) the
    provenance document of a result file and (b) the catalogue of installed
    plugins with their default parameters and output ports.
@@ -464,9 +473,46 @@ and wrong arity; what it cannot check is whether a guessed parameter value
 is the one that was used, which is why summarised parameters must stay
 marked.
 
+Command-line reference
+======================
+
+``python -m imswitch.improcess.workflows [--no-user-plugins] COMMAND …``;
+``--no-user-plugins`` goes before the command and leaves out the drop-in
+plugins from the user plugins folder.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Command
+     - Options
+   * - ``validate WORKFLOW``
+     - Prints every issue that can be known before running.
+   * - ``list``
+     - ``--json`` for the machine-readable catalogue.
+   * - ``run WORKFLOW --out DIR``
+     - ``--input PATH[::DATASET] …`` (one run per input, bound to the only
+       source, or to the source named with ``--source ID``);
+       ``--manifest CSV``; ``--bind SOURCE=PATH[::DATASET]`` (repeatable);
+       ``--source-root DIR``; ``--overwrite``; ``--mode run|replay``
+       (default ``run``); ``--allow-drift``; ``--hash-sources``;
+       ``--verify-hash``; ``--summary NAME`` (the summary CSV inside
+       ``--out``, default ``<workflow name>_summary.csv``).
+   * - ``replay FILE``
+     - ``--out-workflow PATH`` (``.yaml`` or ``.json``; default: print the
+       YAML); ``--fmt FMT`` (format of the replayed save, default the
+       file's own); ``--run`` with ``--out DIR``; ``--overwrite``;
+       ``--allow-drift``; ``--verify-hash``.
+   * - ``show-provenance FILE``
+     - ``--json`` for the full document; ``--no-validate`` skips the
+       graph's consistency check, to inspect a document that fails it.
+
 Related documentation
 =====================
 
 * :doc:`improcess` — the ImProcess module, its plugins and result flow
 * :doc:`improcess-napari-plugins` — sending results to napari plugins
-* :doc:`scripting-wfs-workflows` — the acquisition-side cookbook this one mirrors
+* :doc:`scripting` — ImScripting; a script can run a workflow on the data
+  it has just recorded
+* :doc:`scripting-wfs-workflows` — scripting acquisition workflows on the
+  microscope

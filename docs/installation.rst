@@ -2,9 +2,9 @@
 Installation
 ************
 
-Imswitch2 is a Python application.  There is no Windows ``.exe`` bundle —
+ImSwitch2 is a Python application.  There is no Windows ``.exe`` bundle —
 the original ImSwitch project shipped one, but it is **no longer
-maintained** in Imswitch2.  Install from source or PyPI instead.
+maintained** in ImSwitch2.  Install from source or PyPI instead.
 
 Requirements
 ============
@@ -39,7 +39,7 @@ Then launch:
    The PyPI name is ``imswitch2``.  ``ImSwitch`` on PyPI is the original
    project, and it installs the same ``imswitch`` package, so asking pip
    for ``imswitch`` -- or installing a device plugin that requires it --
-   replaces Imswitch2 with it.  Only the distribution is renamed: the
+   replaces ImSwitch2 with it.  Only the distribution is renamed: the
    command is still ``imswitch`` and scripts still ``import imswitch``.
 
 
@@ -48,17 +48,19 @@ Option B: Install from source (recommended for developers)
 
 .. code-block:: bash
 
-   git clone https://github.com/Imswitch2/Imswitch2.git
-   cd Imswitch2
+   git clone https://github.com/Imswitch2/ImSwitch2.git
+   cd ImSwitch2
    pip install -e .
 
    # Optional extras
    pip install -e ".[hardware]"   # NI-DAQ, pyVISA, vendor drivers
-   pip install -e ".[full]"       # also napari, OpenCV, vispy
+   pip install -e ".[imagej]"     # ImageJ/Fiji .roi and RoiSet.zip import/export in the ROI manager
+   pip install -e ".[full]"       # OpenCV, plus what [imagej] installs
    pip install -e ".[storm]"      # napari-storm GPU point-cloud viewer for SMLM results
 
-   # Developer toolchain (tests, lint, docs)
-   pip install -r requirements-dev.txt
+   # Developer toolchain: the test suite as CI runs it, the linter, the docs build
+   pip install -e ".[test]" ruff
+   pip install -r docs/requirements-readthedocs.txt
 
 Launch:
 
@@ -66,7 +68,11 @@ Launch:
 
    python -m imswitch
 
-On first launch Imswitch2 creates ``~/ImSwitchConfig/`` (or
+``--debug`` turns on DEBUG-level logging from every manager, and
+``--scale 0.8`` draws the whole interface at 80 % (the
+``IMSWITCH_UI_SCALE`` environment variable does the same; the flag wins).
+
+On first launch ImSwitch2 creates ``~/ImSwitchConfig/`` (or
 ``%USERPROFILE%\Documents\ImSwitchConfig\`` on Windows) and opens a
 setup-picker dialog.  Pick ``example_no_hardware.json`` to explore the
 UI without any device connected.
@@ -78,8 +84,10 @@ Vendor SDKs (not installed by pip)
 Some device managers depend on vendor-supplied Python packages that are
 **not on PyPI**.  They are not declared as project dependencies — if a
 manager needs one, install it manually following the vendor's procedure.
-When the SDK is missing, the manager logs a warning and falls back to a
-mock device, so ImSwitch will still start.
+When the SDK is missing, most managers log a warning and fall back to a
+mock device, so ImSwitch2 will still start; a few refuse instead (the
+Swabian Time Tagger stops the scan that needs it, for example).  Each
+device's page under *Hardware reference* says which it does.
 
 The pattern below is illustrative; the same approach applies to other
 vendor SDKs (Hamamatsu DCAM, Andor SDK3, Basler pylon, etc.).
@@ -91,7 +99,7 @@ Thorlabs Scientific Cameras (Kiralux / Zelux / Quantalux)
 Used by :class:`~imswitch.imcontrol.model.managers.detectors.ThorCamTSIManager.ThorCamTSIManager`.
 
 **1. Download the SDK.**  Get *ThorCam* from
-https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=ThorCam
+https://www.thorlabs.com/software-pages/ThorCam
 and install it.  Inside the install folder, find
 ``Scientific Camera Interfaces.zip`` and unzip it somewhere writable
 (not inside ``Program Files`` — see troubleshooting below).
@@ -99,12 +107,12 @@ and install it.  Inside the install folder, find
 **2. Install the Python package.**  Recent SDK releases ship as a source
 tree (no ``.whl``).  From a writable copy of the Python Toolkit folder:
 
-.. code-block:: bash
+.. code-block:: text
 
    cd C:\dev\thorlabs_tsi_sdk_src    # your writable copy
    pip install .
 
-Verify the import works in your ImSwitch env:
+Verify the import works in your ImSwitch2 env:
 
 .. code-block:: bash
 
@@ -130,7 +138,7 @@ a folder of your choice, then point the manager at it via the detector's
    }
 
 Use an absolute path with forward slashes — relative paths are resolved
-against ImSwitch's current working directory at launch time, which is
+against ImSwitch2's current working directory at launch time, which is
 easy to get wrong.
 
 **4. Test without hardware.**  Set ``cameraSerial`` to any string starting

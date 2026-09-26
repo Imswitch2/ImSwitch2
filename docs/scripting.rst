@@ -2,13 +2,15 @@
 Scripting
 *********
 
-Imswitch2 provides a scripting module that can be used to automate
+ImSwitch2 provides a scripting module that can be used to automate
 tasks in the software.  This scripting module lets you write Python
-code that interacts with Imswitch2 at runtime.
+code that interacts with ImSwitch2 at runtime.
 
-See the scripting API reference for the available API modules and
-methods.  In addition to the module APIs, a set of global helper
-functions is documented :doc:`here <api/_actions>`.
+The scripting API reference lists the available modules and methods:
+:doc:`api/api.imcontrol` for microscope control and
+:doc:`api/mainWindow` for the main window.  In addition to the module
+APIs, a set of global helper functions is documented
+:doc:`here <api/_actions>`.
 
 The API modules may provide signals – events that can be bound to via
 e.g. the global ``getWaitForSignal`` scripting function.
@@ -22,8 +24,9 @@ Threading model and waiting for events
 A script runs on its own thread. Every ``api.*`` call that touches the
 GUI runs on the GUI thread and **blocks the script until it has run**,
 returning the function's value or raising its exception in the script.
-Statements therefore execute in order, and ``x =
-api.imcontrol.snapImage(output=True)`` really yields an array.
+Statements therefore execute in order, and ``images =
+api.imcontrol.snapImage(output=True)`` really holds the frames when it
+returns: a dict that maps each captured detector's name to its array.
 
 **Create the waiter before the trigger.** ``getWaitForSignal`` only
 listens from the moment it is created; an emission that happened earlier
@@ -52,18 +55,28 @@ voltage range. A refused start never runs, so there is no end to wait for.
 On rigs with several scanners, ``getScanSourceNames()`` lists the choices
 for ``runScan(source=...)``.
 
-**Stopping a script.** Pressing *Stop* (or *Run* while a script runs, or
-closing ImSwitch) delivers ``OperationCancelled`` **once**, at the script's
+**Stopping a script.** Pressing *Stop* (or *Run* while a script runs)
+delivers ``OperationCancelled`` **once**, at the script's
 next wait (``getWaitForSignal``, ``sleep``, ``waitUntil``,
 ``runScanAndWait``, ``handle.wait`` or any API call). Do not catch it. Your
 ``finally`` blocks then run inside a *cleanup window* of 30 seconds in
 which waits and API calls work normally, so a recording can still be
 stopped and a stage parked; when the window expires, cancellation re-arms.
-A script that never reaches a wait (``while True: pass``, or a long
-``time.sleep``) is interrupted after 2 seconds — use ``sleep()`` rather
-than ``time.sleep`` to stop promptly. ``stopRecording()`` returns whether a
-recording was active, so cleanup can decide whether to wait for
-``recordingEnded``::
+A script that never reaches a wait (``while True: pass``) is interrupted
+after 2 seconds. The interruption lands between two Python statements, so
+it cannot cut a blocking call short: a long ``time.sleep`` still runs to
+its end. Use ``sleep()`` rather than ``time.sleep`` to stop promptly.
+
+Closing ImSwitch2 while a script runs is stricter: the API is shut
+first, so ``api.*`` calls in ``finally`` blocks raise ``RuntimeError``
+("API call refused: ImSwitch is shutting down"), and the script has
+10 seconds to end. If it is still running then, ImSwitch2 exits without
+shutting down the hardware managers. Stop a script, and let its cleanup
+finish, before closing the application.
+
+``stopRecording()`` returns whether a recording was active, so cleanup
+can decide whether to wait for the end of the recording
+(``recordingEnded``, or ``recordingFailed`` if it failed)::
 
     api.imcontrol.setRecModeUntilStop()
     try:
@@ -85,11 +98,11 @@ runnable on a mock setup.
 Tutorials
 =========
 
-ImSwitch copies its scripts into ``~/ImSwitchConfig/scripts``
+ImSwitch2 copies its scripts into ``~/ImSwitchConfig/scripts``
 (``Documents\ImSwitchConfig\scripts`` on Windows) on first start. The
 ``tutorial`` folder there is a sequence of short scripts that build on each
 other. Each is written for a *simulated setup*: a setup file, shipped with
-ImSwitch, whose cameras, stages, scanners and lasers are all mock devices,
+ImSwitch2, whose cameras, stages, scanners and lasers are all mock devices,
 so the tutorials run without a microscope. The header of every tutorial
 says what it teaches, which setup file to load (``Mock setup:``; choose it
 with **Tools > Pick hardware setup…** in the Hardware Control tab), what
@@ -123,18 +136,18 @@ what it will do, and only then press **Run all**.
 on its mock setup (``imswitch/imscripting/_test/test_shipped_tutorials.py``),
 so they are kept working.
 
-The copies are yours to edit. When you install a new ImSwitch version, a
+The copies are yours to edit. When you install a new ImSwitch2 version, a
 copy you have not edited is updated to the new version at the next start,
-and an untouched script ImSwitch no longer ships is moved to the trash; a
+and an untouched script ImSwitch2 no longer ships is moved to the trash; a
 file you edited is never changed or removed (the log names the ones that
-differ from the current version -- delete one and restart ImSwitch to get
+differ from the current version -- delete one and restart ImSwitch2 to get
 it back).
 
 Workflow Scripting Cookbooks
 =============================
 
-For headless, testable acquisition workflows that run independently of
-the GUI, see:
+For acquisition workflows that run from a script without touching
+widgets, and can be unit-tested against a mock facade, see:
 
 * :doc:`scripting-wfs-workflows` — General pattern for scripting
   acquisition workflows, with WidefieldSTARSS as the worked example.
@@ -145,3 +158,13 @@ the GUI, see:
   workflows for photon-counting products (TCSPC cubes, gated STED,
   tau-STED). Explains the generic time-resolved detector contract with
   Swabian TimeTagger as the worked example.
+
+To reconstruct or process data from a script, import
+``imswitch.improcess.workflows`` and run an ImProcess workflow; see
+:doc:`improcess-workflows`.
+
+.. toctree::
+    :hidden:
+
+    scripting-wfs-workflows
+    scripting-time-resolved-workflows

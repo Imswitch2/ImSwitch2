@@ -2,75 +2,103 @@
 ImProcess
 *********
 
-``ImProcess`` is Imswitch2's post-acquisition processing module.  It is the
+``ImProcess`` is ImSwitch2's post-acquisition processing module.  It is the
 generalized successor of the older ``ImReconstruct`` module: where
 ``ImReconstruct`` was hard-wired to MoNaLISA SIM reconstruction,
 ``ImProcess`` exposes a small plugin system so that every acquisition
-Imswitch2 can produce — MoNaLISA, STED, FLIM, confocal, widefield,
+ImSwitch2 can produce — MoNaLISA, STED, FLIM, confocal, widefield,
 WidefieldSTARSS, SNOUTY lightsheet — can be opened, viewed and
 post-processed with the same shell.
 
-Why the rename
-==============
+.. image:: ./images/improcess-window.png
+   :alt: The ImProcess module of ImSwitch2 showing a reassembled tiling
+         mosaic
+   :align: center
 
-The audit that opened Milestone 12 (see
-``docs/design/plans/imreconstruct-2-0.md`` and the per-layer audit
-appendices alongside it) showed that ~70 % of the old ``imreconstruct``
-code was already modality-agnostic.  The MoNaLISA-specific bits were concentrated in a
-handful of files.  The rename signals the new scope: this module is
-about *processing in general*, not just SIM reconstruction.  The
-MoNaLISA pipeline lives on as one plugin
-(:py:mod:`imswitch.improcess.reconstructors.monalisa`).
+The ImProcess window after reassembling a tiling run: the active
+reconstructor's parameters (here *Tiling mosaic*), the actions and the
+current data on the left, and the napari viewer with the result and its
+layer controls in the middle.
+
+.. toctree::
+    :hidden:
+
+    improcess-workflows
+    improcess-napari-plugins
 
 Launching ImProcess
 ===================
 
 ImProcess can run in three modes:
 
-1. **As an Imswitch2 module** — alongside ``imcontrol``, started by the
-   main Imswitch2 launcher.  This is the default when ``modules.json``
+1. **As an ImSwitch2 module** — alongside ``imcontrol``, started by the
+   main ImSwitch2 launcher.  This is the default when ``modules.json``
    lists ``"improcess"`` in the ``enabled`` array.
-2. **Stand-alone with no setup** — direct entry point, useful when you
-   only want a viewer / post-processor on your laptop with no
-   microscope attached::
+2. **Stand-alone** — direct entry point, useful when you only want a
+   viewer / post-processor on your laptop with no microscope attached::
 
        python -m imswitch.improcess
 
-   In this mode the registry falls back to the ``view-only``
-   reconstructor + the ``drift-correct`` processor.
-3. **Stand-alone with a minimal setup** — same launcher, but a
-   processing-only setup file selects the plugins you want enabled
-   (e.g. MoNaLISA). See :ref:`improcess-processing-presets` below.
+   It still reads the ``processing`` block of the setup file selected in
+   ``imcontrol_options.json``, so the same setup decides which plugins are
+   loaded.  Only when no setup file can be read, or the block lists no
+   ``reconstructors``/``processors``, does the registry fall back to the
+   ``view-only`` reconstructor + the ``drift-correct`` processor.
+3. **With a processing-only setup** — either way, selecting one of the
+   processing-only setup files in ``imcontrol_options.json`` makes ImProcess
+   load exactly the plugins you want (e.g. MoNaLISA).  See
+   :ref:`improcess-processing-presets` below.
 
 Data ingest
 ===========
 
-Any file Imswitch2 / Imcontrol can write is native to ImProcess:
+Any file ImSwitch2 / ImControl can write is native to ImProcess:
 
-* **HDF5** (``.h5``, ``.hdf5``) — the default Imswitch2 recording format
+* **HDF5** (``.h5``, ``.hdf5``) — the default ImSwitch2 recording format
 * **Zarr** (``.zarr`` directories)
 * **TIFF** (``.tif``, ``.tiff``)
 
 There are three ways to open data:
 
-* **Drag and drop.** Drag one or more files onto the main window.
-  Files with multiple datasets prompt a dataset picker.
-* **Folder watcher.** Point the watcher pane at a directory and tick
-  *"Watch and run"* — newly arrived files are loaded automatically and
-  optionally reconstructed.
-* **Manual load.** Use the *Load data* button or *File* menu.
+* **Drag and drop.** Drag one or more ``.h5``/``.hdf5``/``.hdf``,
+  ``.tif``/``.tiff`` or ``.zarr`` files onto the main window; other files
+  are rejected with a status-bar message.  Files with multiple datasets
+  prompt a dataset picker.
+* **Directory watcher.** Point the watcher pane at a root folder and
+  tick *"Start monitoring"* — new timelapse sub-folders are picked up as
+  they appear and streamed through the active reconstructor.
+* **Manual load.** *File → Quick load data…* (also on the File toolbar and
+  as the *Quick load data* button in the Actions dock) opens a file as the
+  current data; *Virtual load data…* opens it lazily.  *Add data* in the
+  Multidata dock adds files to the multidata list.  Localization tables
+  (CSV/TSV, see `Importing localization tables`_) and tiling manifests open
+  only through *Quick load data…*, not by drag and drop.
+
+With the **Time lapse** reconstructor active, opening any one file or group
+of a time lapse opens the whole lapse as one stack (see `Time lapses`_).
+
+When a recording is opened, ImProcess works out its **acquisition layout**
+— which frame belongs to which scan position, time point or condition.  A
+user override stored beside the file as ``<file>.imswitch-layout.json``
+wins (it is tied to the file's fingerprint, and there is no GUI to write
+one yet); otherwise the layout the recording itself declares is used, and an
+invalid declared layout is an error rather than a reason to guess.  Only a
+file that declares none falls back to reading older metadata (advanced scan,
+SNOUTY, MoNaLISA, TriggerScope raster, stage positions), then OME axis
+labels, then the array shape.  Whatever the active reconstructor finds
+wrong with the source — a scan stopped early, a loop it cannot place — is
+shown as a warning in the Parameters dock.
 
 Plugin architecture
 ===================
 
 ImProcess defines two plugin shapes:
 
-* :py:class:`~imswitch.improcess.reconstructors.base.Reconstructor`
-  Turns a raw :py:class:`~imswitch.improcess.model.DataObj` into a
-  :py:class:`~imswitch.improcess.model.result.ProcessingResult`.  One per
+* ``Reconstructor`` (``imswitch.improcess.reconstructors.base``)
+  Turns a raw ``DataObj`` into a ``ProcessingResult``.  One per
   dataset.  Examples: ``monalisa``, ``view-only`` (the no-op
   pass-through), ``widefield-starss`` and the SNOUTY reconstructors.
-* :py:class:`~imswitch.improcess.processors.base.Processor`
+* ``Processor`` (``imswitch.improcess.processors.base``)
   Operates on a ``ProcessingResult`` and returns one or more new results.
   Stackable.
   Modality-agnostic by design — a single ``drift-correct`` works for
@@ -82,23 +110,32 @@ ImProcess defines two plugin shapes:
   2D plane and extracts connected regions.  Future processors include lifetime
   overlays.
 
-Both shapes are registered with a :py:class:`PluginRegistry`.  The
+Both shapes are registered with a ``PluginRegistry``.  The
 registry is populated at startup, either from a config block or from
 standalone defaults.
 
-File and image toolbars
-=======================
+Menus and toolbars
+==================
 
-The main window includes always-visible *File*, *Image* and *Analysis tools*
-toolbars for common operations that should be available regardless of the
-active reconstructor.  The *File* toolbar exposes quick data loading, virtual
-data loading and saving the active reconstruction.  *Virtual load data* opens
-the selected TIFF/OME-TIFF, HDF5 or Zarr dataset as a lazy current-data source
-so the raw-data panel can show the mean image and individual frames without
-materializing the whole stack first.  Normal *Quick load data* keeps the legacy
-eager behavior.
+The main window has the menus **File**, **Image**, **Operations**,
+**Tools**, **Plugins**, **Shortcuts** and **View**, and five always-visible
+toolbars — *File tools*, *Image*, *Image operations*, *Tools* and
+*Plugins* — for operations that should be available regardless of the
+active reconstructor.
 
-The *Image* toolbar and matching *Image* menu provide viewer-level operations:
+The **File** menu loads data (*Quick load data…*, *Virtual load data…*),
+saves results (see :ref:`improcess-saving`), sets the default data and save
+folders, and exports and runs workflows (*Export workflow of current
+result…*, *Run workflow…*, *Run workflow on selected results…*, *Run
+workflow over files…*; see :doc:`improcess-workflows`).  The *File tools*
+toolbar carries quick load, virtual load and *Save reconstruction…*.
+*Virtual load data* opens the selected TIFF/OME-TIFF, HDF5 or Zarr dataset
+as a lazy current-data source so the raw-data panel can show the mean image
+and individual frames without materializing the whole stack first.  Normal
+*Quick load data* keeps the eager behaviour.
+
+The *Image* toolbar and the matching **Image** menu change only how the
+active result is displayed:
 
 * *Auto contrast* — percentile-based display-level stretch on the active image
   layer.
@@ -110,9 +147,17 @@ The *Image* toolbar and matching *Image* menu provide viewer-level operations:
   persist it on the active result or display-layer component.
 * *Channels...* — show display-layer channel controls with per-layer
   visibility and LUT settings.
+* *Reset view* — restore the reconstruction viewer camera.
+
+The *Image operations* toolbar and the matching **Operations** menu publish
+new results:
+
 * *Duplicate* — create a new array-backed result from each selected result.
 * *Crop/Substack...* — create a ranged subset with first/last/step controls for
-  every result axis.
+  every result axis.  *Crop from* fills the Y and X ranges from the bounding
+  box of an area ROI in the ROI manager (clipped to the image); the ranges
+  stay editable, and editing one returns the chooser to *Manual*.  The same
+  table appears in the ``stack-subset`` processor panel.
 * *Max projection* — create a max projection using the projection processor's
   default stack-axis choice.  The **Projection** panel exposes the rest of
   ImageJ's *Z Project*: the axis, the statistic (max / mean / sum / median /
@@ -133,27 +178,84 @@ The *Image* toolbar and matching *Image* menu provide viewer-level operations:
   channels of one multi-layer result can be merged among themselves; the
   planes of a plain stack are not listed individually — split it first with
   *Split stack*, which the dialog says when a single stack is checked.
-* *Stack/Combine…* — stack same-shaped selected results along a new axis, or
+* *Stack/Combine...* — stack same-shaped selected results along a new axis, or
   concatenate compatible results along an existing axis. Axis labels, pixel
   scales and scale units must agree.
-* *Image calculator…* — combine exactly two compatible selected results with
-  pixel-wise add, subtract, multiply, divide, minimum, maximum, average or
-  absolute difference operations.
+* *Image calculator...* — combine exactly two loaded results with pixel-wise
+  add, subtract, multiply, divide, minimum, maximum, average or absolute
+  difference operations.  A label mask published by the ROI manager's
+  *Create Mask* can be one of the two, so a mask can be applied to the image
+  it was drawn on.
 * *Make composite* — create a composite result that renders a channel-like axis
   as independently-scaled colored display layers.
 * *Make RGB* — bake a channel-like axis into a channel-last RGB visualization
   result for display/export.
-* *Reset view* — restore the reconstruction viewer camera.
 
 The contrast, LUT and channel-visibility operations are display-only: they
-update the Napari image layer and the active
-:py:class:`~imswitch.improcess.model.result.ProcessingResult` display settings,
-including per-display-layer settings for composite outputs, but do not alter
-pixel data.  Duplicate, crop/substack, max projection, merge channels,
-stack/combine, image calculator, make composite and make RGB publish new
-``ProcessingResult`` objects into the reconstruction list. Split stack and
-split channels publish multiple ``ProcessingResult`` objects and make the final
-split result current.
+update the Napari image layer and the active ``ProcessingResult`` display
+settings, including per-display-layer settings for composite outputs, but do
+not alter pixel data.  Duplicate, crop/substack, max projection, merge
+channels, stack/combine, image calculator, make composite and make RGB
+publish new ``ProcessingResult`` objects into the reconstruction list. Split
+stack and split channels publish multiple ``ProcessingResult`` objects and
+make the final split result current.
+
+The *Tools* toolbar and **Tools** menu hold Fiji-like panel buttons for
+Graph, Profile, ROI manager, ROI stats, Projection, Segmentation, Metadata
+and Results.  The toolbar's *Load tool* list offers every built-in analysis
+tool that is not open yet — FRC, PSF resolution, Colocalization,
+Multicolor, Drift correction, Denoise and a generic parameter panel for each
+remaining processor — and *Loaded processors* shows what is registered.
+Opening a panel registers its processor when needed, raises the dock when it
+already exists and keeps the panel in the saved dock layout.  **Every
+analysis panel described on this page can be opened this way at any time**
+(the SMLM render controls excepted); the ``…Panel`` keys of the setup file
+(see `Config schema`_) only decide which ones are open at startup.
+
+Each *Load tool* entry runs one processor at a time and publishes its output
+back to the reconstruction list.  To keep a sequence of steps and run it
+again — on the same data or on other files — export it with *File → Export
+workflow of current result…* and run it from the File menu or with
+``python -m imswitch.improcess.workflows`` (see :doc:`improcess-workflows`).
+
+Reconstructors have the same runtime path.  The reconstructor picker at the
+top of the Parameters dock offers only the reconstructors that are registered,
+and the setup file's ``processing.reconstructors`` list decides which
+built-ins those are — so a setup that names only MoNaLISA never shows the
+others.  **Tools → Load reconstructor** lists every reconstructor ImProcess
+knows about but has not loaded (in practice the built-ins the setup file did
+not name, since drop-ins are registered whenever they are present) with a
+one-line description; picking one registers it for the session, adds it to
+the picker and makes it active.  Nothing is written to the setup file: to
+keep a reconstructor across sessions, add it to ``processing.reconstructors``
+(the config editor offers every known id, drop-ins included).
+
+The *Plugins* toolbar's *Load plugin* list does for drop-in processors what
+*Load tool* does for built-ins (see `Drop-in analysis plugins`_).  The
+**Plugins** menu has *Browse online plugins...*, *Open plugins folder...*,
+*Add plugin file...*, *Reload plugins* and a *napari plugins* submenu, which
+sends the current result to installed napari plugins and takes their layers
+back (see :doc:`improcess-napari-plugins`).
+
+The **View** menu shows or hides each dock, shows or hides the
+*Reconstructions list* pane, and *Reset layout* restores the default dock
+arrangement.
+
+The **Shortcuts** menu lists the current key bindings and opens the editor
+(*Configure shortcuts…*).  The defaults follow Fiji: ``Ctrl+O`` quick load,
+``Ctrl+Shift+O`` virtual load, ``Ctrl+S`` save reconstruction,
+``Ctrl+Shift+S`` save all reconstructions, ``Ctrl+Shift+C``
+brightness/contrast, ``Ctrl+Shift+Z`` channels, ``Ctrl+Shift+D`` duplicate,
+``Ctrl+Shift+X`` crop/substack, ``Ctrl+H`` graph, ``Ctrl+K`` profile,
+``Ctrl+T`` ROI manager and ``Ctrl+M`` ROI stats; the ROI manager adds its
+own (see `ROI manager panel`_).  Every other action is unbound but can be
+bound.  Changes are saved to ``improcess_shortcuts.json`` in the
+``ImSwitchConfig`` folder; see :doc:`working-in-imswitch2` for the editor.
+
+Toolbar icons are selected through ImProcess semantic action IDs and rendered
+with QtAwesome when available, with Qt standard icons as a fallback.  This
+keeps icon choices centralized while allowing each action to retain its
+existing text, tooltip and menu entry.
 
 .. _improcess-multi-result-operations:
 
@@ -185,37 +287,35 @@ both:
 Both paths publish through the usual result pipeline, so the bulk-publish
 confirmation still guards against flooding napari with layers.
 
-The *Analysis tools* toolbar keeps Fiji-like panel shortcuts visible for Graph,
-Profile, ROI manager, ROI statistics, Projection, Segmentation, Metadata and
-Results.
-Runtime-backed buttons use the same loading path as the *Load tool* combo, so
-opening a panel registers its processor when needed, raises an existing dock
-when it already exists and preserves the runtime-loaded panel in the
-dock-layout state.  The Results button raises the built-in results-table dock
-directly.
+.. _improcess-saving:
 
-Every registered built-in or drop-in processor is also available through
-*Load tool*. Processors with a dedicated panel open that panel; the rest open a
-generic parameter panel for the active result. This runs one processor at a
-time and publishes its output back to the reconstruction list. It is not yet a
-saved, automatically executed multi-step processing chain.
+Saving results
+==============
 
-Reconstructors have the same runtime path.  The reconstructor picker at the
-top of the Parameters dock offers only the reconstructors that are registered,
-and the setup file's ``processing.reconstructors`` list decides which
-built-ins those are — so a setup that names only MoNaLISA never shows the
-others.  **Tools → Load reconstructor** lists every reconstructor ImProcess
-knows about but has not loaded (the built-ins the setup file did not name,
-plus any drop-in that is discovered but not registered) with a one-line
-description; picking one registers it for the session, adds it to the picker
-and makes it active.  Nothing is written to the setup file: to keep a
-reconstructor across sessions, add it to ``processing.reconstructors`` (the
-config editor offers every known id, drop-ins included).
+*File → Save reconstruction…* (``Ctrl+S``) saves the active result.  The file
+suffix picks the format, and the dialog offers OME-TIFF (``.ome.tif``) first,
+then HDF5 (``.h5``) and OME-Zarr (``.ome.zarr``); pixel size, axis labels and
+units are written with the pixels.  *Save all reconstructions…* writes every
+result in the list into one chosen folder as ``<name>.reconstruction.tiff``,
+numbering a name that already exists.  *Save coefficients of
+reconstruction…* and *Save all coefficients…* apply to MoNaLISA results
+only.  *Set default data folder…* and *Set default save folder…* choose
+where the open and save dialogs start.
 
-Toolbar icons are selected through ImProcess semantic action IDs and rendered
-with QtAwesome when available, with Qt standard icons as a fallback.  This
-keeps icon choices centralized while allowing each action to retain its
-existing text, tooltip and menu entry.
+A save is planned before anything is written: every file is written beside
+the target first and then moved into place, the main file last, so a failed
+save leaves the folder as it was.
+
+Every result carries its **provenance**: the source file and its
+fingerprint, the reconstruction and every processing step with their
+parameters, and the ROI set (and its revision) of a run restricted to a
+region.  A saved file keeps it — in the OME-XML description of an OME-TIFF,
+in the attributes of an HDF5 file or Zarr group, and in a
+``<name>.provenance.json`` companion for formats with no metadata slot, such
+as CSV.  The Metadata panel shows it for the selected result, including the
+step list recorded as ``processing_history``, and ``python -m
+imswitch.improcess.workflows replay`` turns a saved file's record back into
+a workflow (see :doc:`improcess-workflows`).
 
 Results list vs. napari layers
 ===============================
@@ -279,6 +379,14 @@ single Gaussian, two independent Gaussians with center-distance reporting,
 and a single exponential decay/rise model.  Fit metrics are included when the
 profile is pushed to the results table or saved as CSV.
 
+The *Source* list chooses between the shape drawn in the panel (*Drawn*) and
+a named ROI from the ROI manager, which is re-plotted when the selected
+result changes, so one region can be compared across reconstructions.  A
+line ROI plots along the line; an ROI with an interior offers *Outline*
+(intensity round its edge), *Mean along X* or *Mean along Y*, taken over the
+ROI's own pixels.  An ROI that misses the image is reported rather than
+plotted as zeros.
+
 *Z profile* answers the other question a stack raises — how intensity varies
 *through* it rather than across the field, ImageJ's *Plot Z-axis Profile*.  It
 plots mean intensity over a drawn rectangle against the stack axis, or over
@@ -316,7 +424,8 @@ Built-in plugins
 ======================= ============== ====================================================
 ID                      Type           Purpose
 ======================= ============== ====================================================
-monalisa                Reconstructor  MoNaLISA point-scanning SIM (Windows + CUDA DLL)
+monalisa                Reconstructor  MoNaLISA point-scanning SIM (the full method needs Windows + CUDA DLL)
+monalisa-legacy         Reconstructor  Internal adapter behind MoNaLISA's full method; not for direct use
 view-only               Reconstructor  Pass-through; raw frames wrapped as a result
 widefield-starss        Reconstructor  H/V WidefieldSTARSS anisotropy maps and region metrics
 snouty                  Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
@@ -356,6 +465,11 @@ smlm-group              Processor      Link blinking repeats into photon-weighte
 table-to-localizations  Processor      Promote a points table to localizations with an explicit column mapping
 ======================= ============== ====================================================
 
+*Tools → Load reconstructor* also lists ``monalisa-legacy``, as *MoNaLISA
+(classic)*.  It has no parameter panel of its own: it is what ``monalisa``
+runs when its *Reconstruction method* is ``MoNaLISA``, so pick ``monalisa``
+instead.
+
 Processor categories and compatibility
 ======================================
 
@@ -385,7 +499,9 @@ accept kind ``image`` unless noted; ``stack-subset``, ``projection``,
 ``colocalization`` also accept ``composite`` (composite data is the source
 intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
 ``smlm-drift``, ``smlm-group``) accept only ``localization``.
-``label-morphology`` accepts only ``labels``.
+``label-morphology`` accepts only ``labels``, ``image-calculator`` accepts
+``image`` and ``labels``, and ``table-to-localizations`` accepts only
+``table``.
 
 .. list-table::
    :header-rows: 1
@@ -402,7 +518,8 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        sources stay lazy when possible; stepped axes get scaled axis spacing.
    * - ``projection``
      - Dimensions and channels
-     - Any rank >= 2 result.  Auto prefers ``Z``, then ``T``, then ``C``.
+     - A stack: rank >= 3, as ImageJ's *Z Project* requires.  Auto prefers
+       ``Z``, then ``T``, then ``C``.
      - ``ProjectionResult`` with the projected axis removed and a histogram
        plot payload.
    * - ``stack-split``
@@ -476,7 +593,10 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        divide/gamma or invert/log/exp/square-root.
    * - ``image-calculator``
      - Math
-     - Exactly two results with matching shape, axes, pixel scales and unit.
+     - Exactly two ``image`` or ``labels`` results that line up element-wise
+       (numpy broadcasting, as long as the output has the shape of one of the
+       inputs).  Axis labels and pixel scales must agree on the axes both
+       have; a ``px`` result combines with a calibrated one.
      - ``ArrayProcessingResult`` from pixel-wise arithmetic; division by zero
        yields zero. The toolbar dialog is the normal two-input entry point.
    * - ``drift-correct``
@@ -565,34 +685,21 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        lateral pixel size and Z step; ``table``: the table's own per-axis
        scale and unit). The only path from a points table to emitters.
 
-Remaining follow-ups
---------------------
+Kinds the axis processors do not take
+-------------------------------------
 
-Semantic result kinds are implemented: results declare ``kind``, processors
-declare ``kinds``, ``accepts()`` combines the kind and shape gates, and
-``test_result_kind_matrix.py`` pins every built-in processor against
-representative image, labels, table, curve, localization, RGB and composite
-results.  Still open:
-
-* Populate parameter widgets from the active result's real axis labels instead
-  of hard-coded choices such as ``T``, ``Z``, ``C`` and ``D0``.
-* Kind propagation through generic axis processors: cropping or splitting a
-  ``labels`` or ``rgb`` result would currently come out as a plain ``image``
-  ``ArrayProcessingResult``, so those kinds are simply not offered to the
-  axis processors yet.  Propagating the input kind to the output would let
-  label stacks be cropped/split without mislabeling.
-* Keep multicolor registration/apply deliberately strict until their input
-  assumptions are generalized beyond deskewed ``ZYX``/``TZYX`` strip data.
-* RGB outputs are visualization/export artifacts (autoscaled ``uint8`` display
-  values, not calibrated intensities); the ``rgb`` kind now enforces this by
-  matching no analysis processor.
+Cropping or splitting a result does not carry its kind over, so a ``labels``
+or ``rgb`` result would come out as a plain ``image``.  The axis processors
+are therefore not offered for those two kinds.  RGB results are
+visualization and export artifacts (autoscaled ``uint8`` display values, not
+calibrated intensities), so no analysis processor accepts them either.
 
 Result graph panel
 ==================
 
-ImProcess can show a generic graph panel below the reconstruction viewer.  The
-panel is controlled by the setup JSON and is hidden unless
-``"graphPanel": true`` is set.  When enabled, it renders optional plot payloads
+ImProcess can show a generic graph panel below the reconstruction viewer.  It
+opens from **Tools → Graph** (``Ctrl+H``), or at startup when
+``"graphPanel": true`` is set.  It renders optional plot payloads
 exposed by the currently selected ``ProcessingResult``.
 
 Use *Measure Δx* to place a draggable horizontal interval between two graph
@@ -645,7 +752,7 @@ reconstruction list, provenance included — as a collapsible tree with
 
 The reader is deliberately **layout-agnostic**: it walks whatever hierarchy the
 container actually has and reports every attribute it finds on the way down.
-Nothing in it encodes the ImSwitch recording layout, so files written by a
+Nothing in it encodes the ImSwitch2 recording layout, so files written by a
 future storer — or by another program entirely — display without any code
 change:
 
@@ -695,9 +802,10 @@ the reconstruction list.  The panel supports projection along ``T``, ``Z``, ``C`
 or another selected axis using max, mean, sum, median or standard-deviation modes.
 The projection panel uses the generic result-processor infrastructure — committed
 projections are published as ``ProcessingResult`` entries in the reconstruction
-list, not floating napari layers.  If the panel is enabled at startup, ImProcess
-auto-registers the ``projection`` processor when it is not already listed under
-``processing.processors``.
+list, not floating napari layers.  Like ImageJ's *Z Project*, it needs a
+stack: a 2D image is not offered.  If the panel is enabled at startup,
+ImProcess auto-registers the ``projection`` processor when it is not already
+listed under ``processing.processors``.
 
 FRC panel
 =========
@@ -718,38 +826,142 @@ ROI statistics panel
 ====================
 
 Set ``"roiStatsPanel": true`` in the ``processing`` block to show a compact
-ROI statistics panel.  It reports area, finite-pixel count, mean, median,
+ROI statistics panel at startup, or open it with **Tools → ROI stats**
+(``Ctrl+M``).  It reports area, finite-pixel count, mean, median,
 standard deviation, min, max and sum for either the full active image layer or
-a rectangle ROI drawn in the reconstruction viewer.
+a rectangle ROI drawn in the reconstruction viewer.  The standard deviation
+here and in the ROI manager is the sample standard deviation (``n - 1``), as
+in ImageJ, so a single-pixel ROI reports ``NaN``.
 
 ROI manager panel
 =================
 
-Set ``"roiManagerPanel": true`` in the ``processing`` block to show an
-ImageJ-like ROI manager.  It stores multiple rectangular ROIs, supports
-rename/duplicate/delete/show-hide operations, computes per-ROI statistics on
-the active image plane and exports ROI/statistics tables as CSV or JSON.  The
-simple ``roiStatsPanel`` remains available as a single-ROI quick view.
+The ROI manager follows ImageJ's ROI Manager: ROIs are drawn in the viewer,
+kept in a named list, measured on the image on screen and saved between
+sessions.  Open it with **Tools → ROI manager** (``Ctrl+T``), or at startup
+with ``"roiManagerPanel": true``.  The ROI statistics panel above remains a
+single-rectangle quick view.
+
+Captured ROIs are drawn in a read-only overlay, and clicking one there
+selects its row.  Actions apply to the selected ROIs; with nothing selected,
+*Measure* and *Create Mask* use every visible ROI.
+
+**Drawing and editing**
+
+* Pick a shape — Rectangle, Ellipse, Polygon, Freehand, Line or Points — and
+  press **Draw**; **Add Shape** (``T``) adds everything drawn on the layer.
+  Points drawn together become one multipoint ROI.
+* **Update** replaces the selected ROI's geometry with the shape now drawn,
+  keeping its identity; **Specify…** creates an ROI at exact coordinates,
+  optionally centred; **Properties…** sets name, group and style for one ROI
+  or a whole selection, and has no geometry fields.
+* **Rename** (``F2``), **Duplicate**, **Delete** (``Del``), **Clear**,
+  **Sort** (by name), **Deselect** (``Ctrl+D``) and the name filter work as in
+  ImageJ.  The right-click menu offers Rename…, Properties…, Duplicate,
+  Delete, Measure and Deselect.
+* **Undo** and **Redo** (``Ctrl+Z``, ``Ctrl+Y``) cover every edit; an import
+  counts as one step.  Switching to another set clears the history.
+* **Show All** draws every visible ROI, **Labels** names them.  **Associate
+  with slices** records the slice each new ROI is drawn on (off by default,
+  so an ROI applies to every slice, as in ImageJ); **Remove Slice Info**
+  detaches them again.
+
+**Measuring**
+
+* The table shows the measurements chosen in **Measurements…** (ImageJ's *Set
+  Measurements*) for each ROI on the plane on screen, and follows slice and
+  result changes; **Refresh Stats** recomputes it.  Point ROIs report count,
+  coordinates and nearest-neighbour distances; the intensity at a point is
+  the pixel it lands in, and area-like values are left blank.
+* **Measure** pushes rows to the Results dock.  **Multi Measure** measures
+  every ROI on every slice of a stack axis, and **Multi Plot** draws that run
+  as one curve per ROI in the Graph panel.
+* **Across Results** measures the set on every loaded result.  An ROI is
+  measured on another result only when that result's pixel grid matches the
+  one it was drawn on; an ROI that would be clipped is measured only after
+  you confirm it, and everything else is refused.  **More → Rescale to this
+  result…** maps ROIs into the result on screen first.  Long runs show
+  progress and can be cancelled.
+* **Export CSV** and **Export JSON** write the ROI and statistics table.
+
+**Sets** (the set chooser and the **Sets** menu)
+
+A panel holds several named ROI sets, each with its own image frames and
+measurement choices, so regions drawn on two results do not mix.  The menu
+offers **New set…**, **Duplicate set** (the copy keeps ROI identities, so the
+two can be compared), **Rename set…**, **Delete set**, **Merge from…** (asks
+for a policy only when the same ROI was edited two ways), **Compare with…**
+and **Default appearance…**, the style for ROIs that have none of their own.
+
+**Shape operations** (the **More** menu)
+
+AND (intersection), OR (union), XOR, Subtract, Split, Enlarge…, Make Band…,
+To Bounding Box, Convex Hull, Make Inverse, Translate… and Rescale to this
+result… act on the selected ROIs.  **Create Selection from labels** turns the
+label image on screen into ROIs; **Create Mask** publishes the ROIs as a
+label result in the reconstruction list, where the Image calculator can apply
+it to its image.
+
+**Files** (the **File** menu)
+
+* **Save ROI set…** and **Open ROI set…** write and read the manager's own
+  versioned JSON format; an opened file becomes a new set.  A file written by
+  a newer ImSwitch2 is refused.
+* **Import ImageJ ROIs…** and **Export ImageJ ROIs…** read and write
+  ImageJ/Fiji ``.roi`` and ``RoiSet.zip`` files.  They need the optional
+  ``roifile`` package (``pip install "imswitch2[imagej]"``); without it both
+  entries are disabled.  Each conversion reports what it could not carry
+  across (styles, extra properties, positions on axes other than C/Z/T), and
+  imported names that collide are renamed.
+
+The sets are kept between sessions and autosaved a few seconds after each
+edit.  They live in the saved widget state; very large sets (over about
+2000 ROIs or 1 MB) are written to ``improcess_roi_sets.json`` in the
+``ImSwitchConfig`` folder instead.
+
+.. _improcess-region:
+
+Restricting a processor to a region
+===================================
+
+The Filter, Denoise, Subtract background, Math and Segmentation panels have
+a *Region* chooser fed by the ROI manager's active set: *Whole image*, all
+ROIs, or one named ROI.  **Crop to the region** gives a smaller result on a
+pixel grid of its own; **Mask outside the region** keeps the frame, so the
+output stays pixel-aligned with the input, and sets the pixels outside to
+*not a number* rather than zero.  The result records which ROI set, at which
+revision, it was restricted to.  PSF resolution and Colocalization take ROIs
+their own way (below).
 
 Segmentation panel
 ==================
 
 Set ``"segmentationPanel": true`` in the ``processing`` block to show a
-threshold and connected-component segmentation panel.  It operates on the
-currently selected reconstruction result and produces a new ``SegmentationResult``
-in the reconstruction list when you click **Segment**.  The panel supports manual
-and Otsu thresholding, minimum-area filtering, optional Gaussian smoothing,
-morphological operations, and watershed segmentation.  Region tables can be
-exported as CSV/JSON, and exact segmented component masks can be pushed into the
-ROI manager.
+threshold and connected-component segmentation panel at startup, or open it
+from **Tools → Segmentation**.  It operates on the currently selected
+reconstruction result and produces a new ``SegmentationResult`` in the
+reconstruction list when you click **Segment**.  The *Method* list offers
+``otsu``, ``manual``, ``triangle``, ``yen``, ``local`` and ``watershed``,
+with minimum-area filtering, optional Gaussian smoothing, a top-hat
+background radius, morphological opening/closing, hole filling and border
+clearing.  Region tables can be exported as CSV/JSON, and **Add ROIs** pushes
+the exact segmented component masks into the ROI manager.
 
-Enable the **Preview** checkbox to see a live, ephemeral preview layer that
-updates when parameters change or when the viewer slice changes, making it easier
-to tune segmentation settings before committing.  The preview layer is shown at
-50% opacity and remains a transient tuning overlay.  Clicking **Segment** commits
-the final segmentation as a reconstruction-list result (not a floating napari
-layer), allowing you to save, reload, and reprocess segmentations alongside other
-processing results.
+*Region* restricts the run to an ROI from the ROI manager (see
+:ref:`improcess-region`); the threshold is then computed from that region's
+pixels alone, so a bright structure elsewhere cannot set the level.
+
+**Preview** segments the active layer with the current settings and shows
+the result as an ephemeral layer, either as *Segmentation labels* (at 50 %
+opacity) or as a green *Binarization mask* (*Preview mode*), next to an
+intensity histogram of the pixels it considered with a marker at the
+threshold found.  Nothing recomputes until **Preview** is pressed again;
+changing the slice or the active layer removes the preview with a note
+instead of leaving it over the wrong image, and **Hide preview** removes it
+by hand.  Clicking **Segment** commits the final segmentation as a
+reconstruction-list result (not a floating napari layer), allowing you to
+save, reload, and reprocess segmentations alongside other processing
+results.
 
 PSF resolution panel
 ====================
@@ -808,18 +1020,20 @@ The same functionality is available as registered processors:
 Active reconstructor
 ====================
 
-A combo box at the top of the Parameters dock lists every registered
-reconstructor and shows which one will run when *Reconstruct current* fires.
-Picking a different entry swaps the parameter widget below the picker (with
-the dock title following along: ``Parameters — WidefieldSTARSS analysis``),
-re-wires the watcher's output subfolder (see below), and — for pass-through
-plugins — re-renders the currently loaded ``DataObj`` in the viewer
-immediately.
+A combo box at the top of the Parameters dock lists the registered
+reconstructors that can open the current data, and shows which one will run
+when *Reconstruct current* fires (a tiling manifest, for instance, is not
+image data, and only ``tiling-mosaic`` reads it).  Picking a different
+entry swaps the parameter widget below the picker (with the dock title
+following along: ``Parameters — WidefieldSTARSS analysis``) and — for
+pass-through plugins — re-renders the currently loaded ``DataObj`` in the
+viewer immediately.
 
-The picker's choices come from the ``processing:`` config block at startup;
-if you list ``["view-only", "widefield-starss"]`` under ``reconstructors``,
-those are the two entries the combo offers.  Plugins not in the list are
-not registered and therefore not pickable.
+Which built-ins are registered comes from the ``processing:`` config block
+at startup; if you list ``["view-only", "widefield-starss"]`` under
+``reconstructors``, those are the two built-ins the combo can offer.
+Drop-in reconstructors from the plugins folder are always registered, and
+*Tools → Load reconstructor* adds any other built-in for the session.
 
 Bead-scan reconstruction
 ========================
@@ -829,18 +1043,25 @@ raster image. Each input frame represents one scan position; the reconstructed
 pixel value is the mean intensity inside the selected camera ROI. It accepts
 HDF5, TIFF/OME-TIFF and Zarr input.
 
-Set **Scan X pixels** and **Scan Y pixels** to the real raster dimensions. A
-value of ``0`` asks the reconstructor to infer the missing dimension from the
-frame count; when both are ``0`` it assumes a square scan. Enter explicit
-dimensions for non-square scans. **Full frame** uses the entire camera image as
-the detection ROI; untick it to enter ``x0, y0, x1, y1`` bounds. **Step X** and
-**Step Y** correct anisotropic scan sampling by rescaling the reconstructed
-image to equal pixel spacing.
+A recording that carries its acquisition layout (see `Data ingest`_)
+defines the raster: its scan size and step sizes are used, and a scan with
+condition loops (line steps, for example) gives one image per condition.
+Leave **Scan X pixels (0=auto)** and **Scan Y pixels (0=auto)** at ``0`` for
+such a file; a manual size that disagrees with the recorded one is refused
+rather than applied.  For a source without a recorded layout, enter the
+raster size: one of the two is enough, the other is derived from the frame
+count, but with both at ``0`` BeadRec refuses instead of guessing.
+**Full frame** uses the entire camera image as the detection ROI; untick it
+to enter ``x0, y0, x1, y1`` bounds. **Step X** and **Step Y** (used when the
+recording declares no steps) correct anisotropic scan sampling by rescaling
+the reconstructed image to equal pixel spacing.
 
-**Fit model** can be left at ``none`` or set to one of the available Gaussian/
-donut bead models. A successful fit is stored in the result metadata with the
-model, centre, fitted parameters and :math:`R^2`; a fit failure is reported in
-the metadata without discarding the reconstructed image.
+**Fit model** can be left at ``none`` or set to one of ``gaussian2d``,
+``donut_r2_gaussian``, ``exponential2d`` (an isotropic 2D exponential
+decay), ``sine1d`` (a one-dimensional sine with fitted wavelength, phase and
+angle) and ``sine2d``. A successful fit is stored in the result metadata with
+the model, centre, fitted parameters and :math:`R^2`; a fit failure is
+reported in the metadata without discarding the reconstructed image.
 
 For saved tiling folders, use the separate ``tiling-mosaic`` reconstructor
 described in :doc:`tiling`.
@@ -922,7 +1143,7 @@ records each point's state, planned and actual time in the result
 annotations.
 
 The discovery, the header pass and the lazy stack live in the data layer
-(:py:mod:`imswitch.improcess.model.lapse_source`), not in the reconstructor.
+(``imswitch.improcess.model.lapse_source``), not in the reconstructor.
 A reconstructor that wants to process a lapse one point at a time --
 MoNaLISA or BeadRec per timepoint -- can accept the ``time-lapse`` source kind
 and read ``open_time_lapse(...).timepoint(t)`` without redoing any of it.
@@ -932,14 +1153,15 @@ MoNaLISA fast-Gauss mode
 
 The public config-editor and setup-file ID for MoNaLISA is still
 ``monalisa``. There is no separate ``gauss-monalisa`` plugin ID to list in
-``processing.reconstructors``. The same registered
-:py:class:`~imswitch.improcess.reconstructors.monalisa.reconstructor.MonalisaReconstructor`
-handles both paths:
+``processing.reconstructors``. The same registered ``MonalisaReconstructor``
+(``imswitch.improcess.reconstructors.monalisa.reconstructor``) handles both
+paths:
 
 * *Reconstruct current* uses the parameter widget's ``Reconstruction method``
-  selector. ``MoNaLISA`` is the default full post-acquisition pipeline;
-  ``Fast Gauss MoNaLISA`` runs the same low-latency Gaussian reassignment
-  algorithm on the loaded stack.
+  selector. ``Fast Gauss MoNaLISA``, the default, runs the low-latency
+  Gaussian reassignment algorithm of the live path on the loaded stack;
+  ``MoNaLISA`` runs the full coefficient-based post-acquisition pipeline,
+  which is the one that needs Windows and the CUDA DLL.
 * Live reconstruction always calls ``MonalisaReconstructor.make_session()``
   and uses the fast-Gauss streaming session under
   ``imswitch/improcess/reconstructors/monalisa/live_session.py`` regardless
@@ -947,19 +1169,19 @@ handles both paths:
 
 The MoNaLISA parameter widget's ``Bleaching correction`` checkbox applies to
 the full offline path, the fast-Gauss offline path, and live fast-Gauss. When
-enabled, raw frames are normalized with the same 4th-power frame-energy
-correction, ``(E_0 / E_i) ** 4``, before reconstruction. The option is off by
-default.
+enabled, each raw frame is scaled by the frame-energy ratio ``E_0 / E_i`` (the
+first frame's total intensity over this frame's) before reconstruction. The
+option is off by default.
 
-Fast-Gauss uses the Mini_Recon-style Gaussian footprint: concentric
-rectangular shells around each localized focus, followed by a least-squares
+Fast-Gauss uses a Gaussian footprint: concentric rectangular shells
+around each localized focus, followed by a least-squares
 fit of Gaussian amplitude plus optional constant background. The parameter
 widget exposes the fit and footprint options that used to be hard-coded:
 ``Fast Gauss options -> Footprint rectangles`` defaults to ``3`` shells,
 ``Fast Gauss options -> Gaussian sigma`` defaults to ``2.0`` pixels, and
 ``Fast Gauss options -> Pinhole radius`` defaults to ``1.5`` times sigma.
 ``Fast Gauss options -> Footprint mode`` controls which footprint is active:
-``Rectangular shells`` keeps the Mini_Recon footprint, while
+``Rectangular shells`` keeps the shell footprint described above, while
 ``Circular pinhole`` replaces it with a circular detection footprint using the
 pinhole radius.
 The shared ``BG modelling`` option controls whether the fast path fits a
@@ -971,14 +1193,29 @@ one with the lowest total variation.
 
 The fast-Gauss offline mode intentionally has the same geometry scope as the
 live path: a 2D Right-Left / Up-Down scan, one Z slice, and optional
-timepoints. Use the default ``MoNaLISA`` method for the full coefficient-based
+timepoints. Use the ``MoNaLISA`` method for the full coefficient-based
 pipeline.
+
+.. admonition:: Documentation TODO — scrub the remaining external references
+   :class: danger
+
+   These pages no longer name the private post-processing program that the
+   fast-Gauss footprint and the SNOUTY deskew were originally ported from, but
+   the application still does.  Two parameter tooltips of the MoNaLISA
+   parameter panel name it — *Footprint mode* under *Fast Gauss options*
+   (in both copies of the panel) and *Auto-detect scan orientation* — and so
+   do attribution headers in the SNOUTY deskew and restack modules, a handful
+   of source comments, and one test name.  The tooltips are the urgent ones:
+   users read those.
+
+   The name is deliberately not repeated here, since keeping it out of the
+   published pages is the point.  ``git grep`` in the repository finds it.
 
 Pass-through reconstructors
 ===========================
 
 Some reconstructors don't actually run any signal processing — they wrap raw
-frames as a :py:class:`~imswitch.improcess.model.result.ProcessingResult` so
+frames as a ``ProcessingResult`` so
 the viewer and the analysis panels can work with the data uniformly.  These
 plugins set ``is_pass_through = True`` on the class (``view-only`` is the
 canonical example).
@@ -1020,8 +1257,14 @@ The SMLM parameter widget exposes:
   spot detection algorithm.
 * **Fitting** method — ``gausslq`` (centroid + Gaussian moments) or ``mle``
   (Poisson Gaussian maximum-likelihood).
-* **Pixel size** in nanometers for converting pixel coordinates to physical
-  units.
+* **Calibration → Pixel size**, which converts pixel coordinates to
+  nanometres.  The default, *From the recording*, uses the recording's own
+  calibration; *Enter below* with **Pixel size (nm)** supplies a value.  An
+  offline run uses the recording's calibration whenever it has one, even over
+  an entered value (which is then only noted in the result's metadata); the
+  entered value applies when the recording has no calibration (with neither,
+  1 nm pixels are assumed), and is required when it is calibrated
+  differently along Y and X.
 * **Preview detection** toggle — when enabled, candidate spots from the
   detection step (before fitting) appear as a live scatter overlay on the
   raw-data frame viewer. The overlay updates automatically whenever detection
@@ -1041,11 +1284,13 @@ warning message directs users to enable the preview checkbox to visualize
 which pixels meet the detection criteria before running the full processing
 pipeline.
 
-The SMLM localizer is **streaming-capable**: during a live recording, 
-localizations accumulate incrementally as frames arrive, and the preview 
-histogram in the viewer updates in real time to show the growing point cloud. 
-The output from a live reconstruction is identical to running the batch 
-reconstruction on the saved data afterwards, ensuring reproducibility.
+The SMLM localizer is **streaming-capable**: during a live recording,
+localizations accumulate incrementally as frames arrive, and the preview
+histogram in the viewer updates in real time to show the growing point cloud.
+Live localization does not read the recording's calibration: it uses the
+value entered under *Enter below*, and with *From the recording* it works in
+1 nm pixels.  Enter the pixel size for live runs, or re-run the batch
+reconstruction on the saved data afterwards.
 
 Importing localization tables
 =============================
@@ -1120,7 +1365,7 @@ Everything about this backend is best-effort.  Without the package, on a GL
 session without instancing support, or for a table napari-storm refuses, the
 flag does nothing and the result keeps its preview; nothing else in the viewer
 changes.  napari-storm pins ``zarr<3`` for its own MINFLUX reader, so
-resolving the extra moves an environment onto zarr 2.x.  ImSwitch runs on
+resolving the extra moves an environment onto zarr 2.x.  ImSwitch2 runs on
 either zarr major; to stay on zarr 3, install the package itself with
 ``pip install --no-deps napari-storm`` instead of the extra.
 
@@ -1162,36 +1407,81 @@ only useful together with ``napariStormViewer``.
 Until a control is touched the renderer decides from the data, so an untouched
 panel never overrides what a result would draw on its own.
 
-File watcher save folder
-========================
+Directory watcher
+=================
 
-When the *Watch and run* checkbox is on, the watcher writes each
-reconstructed output under ``{watched_dir}/{default_save_subdir}/``.  The
-subdirectory name comes from the active reconstructor's class attribute::
+The watcher pane reconstructs timelapse folders as they appear on disk.
+Point it at a **root folder** — one level above the ``.zarr`` stores
+themselves — and tick **Start monitoring**.  Each new immediate
+sub-directory is treated as one timelapse and streamed through the active
+reconstructor, one run at a time.
 
-    class SnoutyReconstructor(Reconstructor):
-        id = "snouty"
-        default_save_subdir = "deskew"
+The panel is offered only while the active reconstructor can stream (a
+``StreamingReconstructor``, which MoNaLISA is).  Switching to one that
+cannot hides the panel and stops a watch that is running;
+``"fileWatcherPanel": false`` in the setup file hides it for every
+reconstructor.
 
-The default is ``"rec"``.  Switching reconstructors in the active-reconstructor
-picker also retargets the watcher, so two watchers running back-to-back on the
-same folder with different plugins won't overwrite each other's outputs.
+Discovery is two steps (``improcess/live/discovery.py``):
+``DirectoryWatcher`` reports each new sub-directory of the root, and
+``JobQueue`` waits until that folder's timepoint-0 store appears before
+queueing it.  Whether a store is ready to open is not decided in advance —
+the stream worker opens it with bounded retry, and following the later
+timepoints inside a folder is the ``LiveSource``'s job.
+
+Before a reader is built the recording is classified
+(``improcess/live/source_type.py``): its container format, on-disk layout
+and shape decide which ``LiveSource`` to use, and whether the selected
+reconstructor can work on that shape at all.  MoNaLISA needs stacks of
+frames per timepoint; a pass-through viewer does not.  Classification is
+deliberately separate from construction, so the compatibility gate can be
+consulted without building a reader first.
+
+Controls
+--------
+
+**Save reconstruction(s) (.tif)**
+    Off by default.  When on, a finished or skipped timelapse is written to
+    ``<watched folder>_recon/<name>_recon.tif`` — a *sibling* of the
+    watched folder, not a subdirectory of it.
+
+**Skip directory**
+    Stop reconstructing the current timelapse and move on to the next.
+    What has already been reconstructed is kept, and the timepoint in
+    progress is finished first.
+
+**Reset**
+    Forget which folders have been processed, so the root is reconstructed
+    again from the start.  Re-runs are indexed, and the two spellings
+    differ deliberately::
+
+        run 0:  timelapse_00      ->  timelapse_00_recon.tif
+        run 1:  timelapse_00.1    ->  timelapse_00_recon_1.tif
+
+    The results list keeps the folder name with a ``.1`` suffix; the file
+    puts the index last, which reads better as a filename.
+
+Turning monitoring off and on again for the *same* root keeps its seen-set,
+so nothing is reprocessed.  Choosing a different root starts fresh.
+
+.. note::
+
+   The panel is called **Directory watcher** in the interface, but the
+   setup-file key that shows or hides it is still ``fileWatcherPanel``.
 
 Result flow
 ===========
 
-Producers of processing results — the legacy MoNaLISA reconstruct path, the
-plugin reconstruct path, and any future processor-chain runner — publish
-their output via the ``sigResultProduced(result, displayName)`` signal on
-:py:class:`~imswitch.improcess.controller.CommunicationChannel`.  The
-canonical listener
-(:py:meth:`~imswitch.improcess.controller.ReconstructionViewController.resultProduced`)
-folds the result into the reconstruction list and updates the napari layer.
+Producers of processing results — the classic MoNaLISA reconstruct path,
+the plugin reconstruct path, the processor panels and workflows run from the
+File menu — publish their output via the
+``sigResultProduced(result, displayName)`` signal on ImProcess's
+``CommunicationChannel`` (``imswitch.improcess.controller``).  The canonical
+listener, ``ReconstructionViewController.resultProduced``, folds the result
+into the reconstruction list and updates the napari layer.
 
 Producers therefore don't need to know which widget holds the napari list;
-emit the signal and forget.  Writing a CLI batch processor or a future
-processor-chain UI is as simple as instantiating the comm channel and
-emitting the signal whenever a new result is ready.
+emit the signal and forget.
 
 WidefieldSTARSS pairing
 =======================
@@ -1252,7 +1542,7 @@ anisotropy, area-vs-anisotropy and per-sample summaries.
 Memory limits
 =============
 
-How much RAM ImSwitch may spend on buffering and on automatic work is a
+How much RAM ImSwitch2 may spend on buffering and on automatic work is a
 property of the computer, so it lives in the per-machine options file
 ``imcontrol_options.json`` (under the user config directory) rather than in
 the setup file, which travels between machines. The ``memory`` group holds
@@ -1300,7 +1590,7 @@ the file by hand and restart::
     the status bar before decoding starts, naming the size and whether
     *Open virtual* offers a lazy path for that source. Nothing is refused.
 
-None of these is a process limit and ImSwitch claims none: camera drivers
+None of these is a process limit and ImSwitch2 claims none: camera drivers
 allocate their own buffers, datasets and results are as large as the data.
 A value that is not a positive whole number is reported at startup and the
 default stands; the dialog shows such a value as the default in force and
@@ -1313,7 +1603,7 @@ Config schema
 =============
 
 To configure which plugins ImProcess loads, add a ``processing`` block
-to your Imcontrol setup file (the same JSON you select via
+to your ImControl setup file (the same JSON you select via
 ``imcontrol_options.json``)::
 
     {
@@ -1327,6 +1617,7 @@ to your Imcontrol setup file (the same JSON you select via
             "currentDataPanel": true,
             "resultsPanel": true,
             "graphPanel": true,
+            "profilePanel": true,
             "metadataPanel": true,
             "projectionPanel": true,
             "segmentationPanel": true,
@@ -1343,8 +1634,9 @@ to your Imcontrol setup file (the same JSON you select via
         }
     }
 
-The block is optional.  When it is absent (or the setup file cannot be
-read at all, e.g. in standalone mode) the registry falls back to::
+The block is optional.  When it is absent, names neither ``reconstructors``
+nor ``processors``, or no setup file can be read at all, the registry falls
+back to::
 
     reconstructors: ["view-only"]
     processors:     ["drift-correct"]
@@ -1355,14 +1647,22 @@ an omitted ``reconstructors`` key defaults to ``["monalisa"]`` and an omitted
 ``processors`` key defaults to ``["drift-correct"]``. Use an explicit empty
 list when that side should load nothing.
 
-Only the plugin IDs you list are instantiated during initial registry setup.
-Runtime-loaded tools, and registry-backed startup panels such as
-``projectionPanel`` and ``frcPanel``, may register their required processors
-later.  List processor IDs explicitly when you want them preloaded without
-opening the corresponding panel.
+Of the built-ins, only the IDs you list are instantiated during initial
+registry setup; drop-in plugins from the plugins folder are always
+registered.  An ID ImProcess does not know stops it from starting: its tab
+shows the ``KeyError``, which lists the valid IDs.  Runtime-loaded tools, and
+registry-backed startup panels such as ``projectionPanel`` and ``frcPanel``,
+may register their required processors later.  List processor IDs explicitly
+when you want them preloaded without opening the corresponding panel.
 
-Set ``"graphPanel": true`` in the ``processing`` block to show the optional
-graph panel.  When the key is absent, ImProcess keeps the panel hidden.
+The analysis-panel keys — ``graphPanel``, ``profilePanel``,
+``metadataPanel``, ``projectionPanel``, ``segmentationPanel``,
+``psfResolutionPanel``, ``colocalizationPanel``, ``multicolorPanel``,
+``frcPanel``, ``roiManagerPanel`` and ``roiStatsPanel`` — default to
+``false`` and only decide which panels are open at startup; each panel can
+still be opened later from the Tools menu or toolbar (see `Menus and
+toolbars`_).  ``smlmRenderPanel`` is the exception: that panel exists only
+when the key is set.
 
 The core GUI layout can also be made more minimal from the same block.
 ``"parameterPanel": false``, ``"actionsPanel": false``,
@@ -1395,27 +1695,18 @@ Ready-to-use minimal configs ship under
    * - ``widefieldstarss_processor.json``
      - WidefieldSTARSS H/V-pair analysis
    * - ``general_image_processing.json``
-     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC, ROI and multicolor tools
+     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC and ROI tools, with the multicolor processors registered (the Multicolor panel opens from *Load tool*)
 
 The Fiji preset is intentionally sparse: it starts with ``view-only`` and no
-registered processors, then lets the Image and Analysis toolbars register
+registered processors, then lets the *Image operations* and *Tools* toolbars register
 processor-backed tools only when the user opens them.
 
-The MoNaLISA preset has the same shape as the others::
+The MoNaLISA preset's block, as shipped in ``monalisa_processor.json``::
 
     {
         "processing": {
-            "parameterPanel": true,
-            "napariLayerControls": true,
-            "reconstructionPanel": true,
-            "actionsPanel": true,
-            "fileWatcherPanel": true,
-            "multiDataPanel": true,
-            "currentDataPanel": true,
-            "resultsPanel": true,
             "graphPanel": true,
             "profilePanel": true,
-            "metadataPanel": true,
             "projectionPanel": true,
             "segmentationPanel": true,
             "psfResolutionPanel": true,
@@ -1423,11 +1714,8 @@ The MoNaLISA preset has the same shape as the others::
             "frcPanel": true,
             "roiManagerPanel": true,
             "roiStatsPanel": true,
-            "smlmRenderPanel": true,
-            "napariStormViewer": true,
-            "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
-            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"],
-            "liveStallTimeoutS": 300
+            "reconstructors": ["monalisa", "view-only"],
+            "processors": ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
         }
     }
 
@@ -1452,7 +1740,7 @@ The ``processing:`` block also accepts:
   the point-cloud renderer (Gaussian width, colour by depth, render range,
   appearance).  Only useful together with ``napariStormViewer``.
 
-To launch Imswitch2 with *only* ImProcess (no Imcontrol GUI) and *only*
+To launch ImSwitch2 with *only* ImProcess (no ImControl GUI) and *only*
 the plugins from one of these setup presets:
 
 1. Set ``modules.json`` to::
@@ -1476,86 +1764,9 @@ the plugins from one of these setup presets:
    above. The ``processing:`` block continues to control which plugins are
    *registered and offered in the picker*.
 
-These are the recommended setups for users who treat Imswitch2 as a
+These are the recommended setups for users who treat ImSwitch2 as a
 post-processing tool only — e.g. opening acquisitions taken on a different
 machine for reconstruction, preview, or quantitative analysis.
-
-Status (Milestone 12)
-=====================
-
-ImProcess is delivered in phases, tracked in ``ROADMAP.md`` Milestone 12.
-
-Done:
-
-* Rename ``imreconstruct`` → ``improcess`` (Phase A)
-* Plugin contracts + registry, MoNaLISA / view-only reconstructors,
-  drift-correct processor, drag-and-drop ingest, standalone launch,
-  config-driven plugin loading (Phase B.1)
-* Optional result graph panel + ``PlotPayload`` contract, with drift-correct
-  publishing Y/X drift traces
-* ``widefield-starss`` reconstructor first slice: H/V TIFF pairing, standard
-  mosaic and split-detection analysis kernels, anisotropy maps, region table,
-  HDF5/TIFF save, and graph payloads
-* ``frc`` processor and optional FRC panel: two-image FRC, single-image FRC,
-  checkerboard / odd-even splitting, 1/7 threshold and resolution estimates
-* ``projection`` processor and optional projection panel: max, mean, sum,
-  median and standard-deviation projections along selected axes
-* ``stack-subset``, ``stack-split``, ``channel-split``, ``channel-merge``,
-  ``make-composite`` and ``make-rgb`` processors plus image-toolbar actions:
-  one source result can emit cropped substacks, multiple per-plane/per-channel
-  results, composite display-layer results, or explicit RGB visualization
-  results through the shared processor contracts
-* ``segmentation`` processor and optional segmentation panel: manual/Otsu
-  thresholding, connected components, label-layer display and ROI Manager
-  mask export, plus region-table export
-* ``psf-resolution`` processor and optional PSF resolution panel: 2D Gaussian
-  bead/PSF fits on full images or ROI Manager entries, FWHM/sigma table export
-* ``colocalization`` processor and optional colocalization panel: Pearson,
-  Manders M1/M2, overlap coefficient, ROI Manager batching and CSV/JSON export
-* ``multicolor-registration`` and ``multicolor-apply`` processors plus the
-  optional multicolor panel: SNOUTY-style three-color X-strip calibration,
-  HDF5 transform persistence and aligned ``CZYX`` / ``TCZYX`` output
-* Optional ROI manager panel for multiple rectangular ROIs, per-ROI
-  statistics, visibility toggles, duplication and CSV/JSON export
-* Optional ROI statistics panel for full-image or rectangle-ROI area, mean,
-  median, standard deviation, min, max and sum
-* Cleanup: duplicate file removal, shared U-Net helpers extracted,
-  ``PatternFinder.findBestPeak`` arithmetic fix
-* ``denoise`` processor wrapping the existing UNet / UNet+RCAN model with
-  lazy torch import, auto model-type selection and DenoisedResult save
-* Pass-through reconstructor contract (``is_pass_through``): drag-drop or
-  *Set as current data* on ``view-only`` renders to the viewer in one
-  action instead of three
-* Active-reconstructor picker in the Parameters dock header — flip
-  between registered plugins on the fly, with the param widget and dock
-  title following the choice
-* File watcher's output subfolder driven by the active reconstructor's
-  ``default_save_subdir`` instead of a hardcoded ``rec/``
-* ``sigResultProduced`` decouples producers from the napari list widget,
-  so future processor-chain runners and CLI batch processors can publish
-  results without reaching into the main view
-* Registry-backed offline reconstruction for every reconstructor except the
-  legacy full MoNaLISA method; Fast Gauss MoNaLISA uses the plugin path too
-* Registry-backed live reconstruction through ``make_session()`` for streaming
-  reconstructors, with a batch ``process()`` fallback for other plugins
-* Runtime *Load tool* panels for every registered processor, including generic
-  parameter panels for processors without a dedicated dock
-* SMLM localization, BeadRec and tiling-mosaic reconstructors, plus the full
-  built-in processor inventory listed above
-* WidefieldSTARSS batch folder processing, consolidated table display and
-  CSV/HDF5 export
-
-Pending:
-
-* **Saved processor chains** — individual processors are available now through
-  dedicated or generic runtime panels, but the application cannot yet define,
-  save and automatically execute a multi-step chain.
-* **Legacy full MoNaLISA path** — the coefficient-based offline method still
-  delegates to ``MoNaLISAController``. Fast Gauss offline and all live
-  reconstruction already use the registry-backed plugin path.
-* **Per-modality follow-up** — STED/confocal averaging, FLIM overlays, richer
-  WidefieldSTARSS layer presentation, deconvolution and physical SNOUTY setup
-  validation.
 
 Writing a new plugin
 ====================
@@ -1603,7 +1814,7 @@ What a plugin gets for free, and what it must declare
 
 Every plugin that goes through the shared run path — the GUI, a workflow, a
 batch, live streaming — gets without any hook of its own: a provenance graph
-on each result it produces, a version stamp (the ImSwitch version for
+on each result it produces, a version stamp (the ImSwitch2 version for
 built-ins, a digest of the file for drop-ins), the staged save protocol with
 the provenance carried in the file, napari endpoints for every layerable
 result kind, batch runs, the command line, and replay.  Those live in the
@@ -1667,7 +1878,8 @@ Beyond parameters, the checklist an author should walk through:
 * **Inputs**: ``min_inputs``/``max_inputs`` and ``check_inputs`` for a
   processor that consumes several results (see the next section).
 * **ROIs are opt-in**: ``accepts_roi = True`` (and ``roi_modes``) lets the
-  region chooser restrict a run; ``preserves_grid = True`` says the output is
+  region chooser restrict a run (:ref:`improcess-region`);
+  ``preserves_grid = True`` says the output is
   pixel-aligned with its input, which is what lets ROIs and imported napari
   layers share its coordinate space.
 * **Custom result types**: never override ``save()`` — that is the protocol
@@ -1688,13 +1900,26 @@ Two optional class attributes refine the UX without any extra method:
   (see *Pass-through reconstructors* above).  Use only when
   ``process()`` performs no real signal processing — otherwise every
   dataset load would silently trigger your compute step.
-* ``default_save_subdir = "deskew"`` (or another short folder name)
-  changes the subdirectory under which the file watcher writes outputs
-  for this plugin.  Defaults to ``"rec"``.
+* ``default_save_subdir = "deskew"`` (or another short folder name) is
+  declared by ``Reconstructor`` and overridden by a few built-ins, but see
+  the note below before relying on it.
+
+.. admonition:: Documentation TODO — ``default_save_subdir`` is unused
+   :class: danger
+
+   Nothing reads ``default_save_subdir``.  It is declared on
+   ``Reconstructor`` (default ``"rec"``) and overridden by ``beadrec``,
+   ``smlm-localizer`` (``smlm``) and ``tiling-mosaic`` (``mosaic``), and
+   contract tests pin those values — but no controller consults it.  The
+   directory watcher writes to ``<watched folder>_recon/`` regardless of
+   which reconstructor ran.
+
+   Either the save path should honour it again or the attribute and its
+   tests should go.  Until then, setting it in a new plugin has no effect.
 
 A ``Processor`` follows the same pattern but its ``apply(result, params)``
 takes a ``ProcessingResult`` and returns a new one — see
-:py:mod:`imswitch.improcess.processors.drift_correct` as a reference.
+``imswitch.improcess.processors.drift_correct`` as a reference.
 Declare the semantic result kinds your processor handles with the ``kinds``
 class attribute (default ``("image",)``), and keep ``applies_to()`` about
 shapes and axis labels — UI compatibility is decided by ``accepts()``, which
@@ -1716,8 +1941,9 @@ file dropped into a user folder is discovered at startup and becomes a fully
 integrated plugin with no packaging and no UI code.  A ``Processor`` in the
 file becomes an analysis tool — parameter panel, result-kind gating and
 results-table / graph integration; a ``Reconstructor`` appears in the
-reconstructor picker of the Parameters dock, with its parameter widget, the
-file watcher, multidata runs and workflows behind it.
+reconstructor picker of the Parameters dock, with its parameter widget,
+multidata runs and workflows behind it (and the Directory watcher, if it
+is a ``StreamingReconstructor``).
 
 This is deliberately separate from the *device* plugin system
 (:doc:`devices/plugins`), which uses pip-installed packages and entry points for
@@ -1727,21 +1953,24 @@ path.
 Using a plugin
 --------------
 
-#. In any ImProcess window, choose **Plugins → Add plugin file…** and pick
+#. In any ImProcess window, choose **Plugins → Add plugin file...** and pick
    the ``.py`` file: it is copied into the plugins folder and the plugins are
-   reloaded in one step.  Or choose **Plugins → Open plugins folder…** and
-   drop the file in yourself.  The folder is ``~/.imswitch/improcess_plugins/``
-   and is created on first use with an inert ``_example_plugin.py`` template
-   (underscore-prefixed files are ignored by discovery).  Ready-to-copy
-   examples live in ``examples/improcess_plugins/`` (``invert.py``,
-   ``gaussian_blur.py``, and the reconstructor ``frame_average.py``).
+   reloaded in one step.  Or choose **Plugins → Open plugins folder...** and
+   drop the file in yourself.  The folder is ``improcess_plugins`` in the
+   ``ImSwitchConfig`` folder — ``~/ImSwitchConfig/improcess_plugins/`` on
+   macOS and Linux, ``Documents\ImSwitchConfig\improcess_plugins`` on
+   Windows — and is created on first use with an inert
+   ``_example_plugin.py`` template (underscore-prefixed files are ignored by
+   discovery).  Ready-to-copy examples live in
+   ``examples/improcess_plugins/`` (``invert.py``, ``gaussian_blur.py``, the
+   photophysics analysis ``photophysics_suite.py``, and the reconstructor
+   ``frame_average.py``).
 #. If you copied the file by hand, choose **Plugins → Reload plugins** (or
    restart ImProcess).
 #. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
    load it, select a compatible result and run it.  A reconstructor appears in
    the reconstructor picker at the top of the Parameters dock; pick it and use
-   *Reconstruct current* (or the multidata actions, or the file watcher) as
-   with any built-in.
+   *Reconstruct current* (or the multidata actions) as with any built-in.
 
 Reloading re-scans the folder, so newly added or removed plugins take effect
 immediately.  An edited processor's new code is used the next time its panel
@@ -1757,9 +1986,10 @@ never straddles two versions of one plugin.
 Installing from the online store
 --------------------------------
 
-**Plugins → Browse online plugins…** opens a store that lists
-plugins from the `Improcess-plugins
-<https://github.com/Imswitch2/Improcess-plugins>`_ registry.  Each entry can be
+**Plugins → Browse online plugins...** opens a store that lists
+plugins from the ImProcess plugin registry, the public
+`Improcess-plugins <https://github.com/Imswitch2/Improcess-plugins>`_
+repository (its ``index.json``).  Each entry can be
 installed, updated (when the registry offers a newer version) or uninstalled;
 installing downloads the plugin's ``.py`` into the plugins folder and records
 the version in a hidden ``.installed.json`` sidecar.  A one-time confirmation
@@ -1775,6 +2005,8 @@ Writing a plugin
 A plugin file defines an ordinary ``Processor`` subclass:
 
 .. code-block:: python
+
+    import numpy as np
 
     from imswitch.improcess.processors.base import Processor
     from imswitch.improcess.model.array_result import ArrayProcessingResult
@@ -1871,11 +2103,9 @@ scope simply calls it once per result.
 See also
 ========
 
-* ``docs/design/plans/imreconstruct-2-0.md`` — unified Milestone 12 design
-  and per-layer audits
 * :doc:`improcess-napari-plugins` — sending results to installed napari
   plugins (dock widgets and readers), and taking layers back
 * :doc:`improcess-workflows` — reconstructing and processing without the
   GUI: batch workflows, ports, saves, binding, replay
-* :doc:`gui` — main GUI overview (Imcontrol)
-* :doc:`modules` — list of Imswitch2 modules
+* :doc:`imcontrol` — the ImControl module (hardware control)
+* :doc:`modules` — list of ImSwitch2 modules
