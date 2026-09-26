@@ -33,7 +33,7 @@ from __future__ import annotations
 import enum
 import threading
 import time
-from typing import Optional
+from typing import Any, Dict, Mapping, Optional
 
 
 class PositioningOutcome(enum.Enum):
@@ -68,9 +68,15 @@ class PositioningRequest:
     a late resolve after a cancel cannot revive a run the operator stopped.
     """
 
-    def __init__(self, index: int, timeout_s: float = 60.0):
+    def __init__(self, index: int, timeout_s: float = 60.0, *,
+                 attributes: Optional[Mapping[str, Any]] = None):
         self.index = int(index)
         self.timeout_s = float(timeout_s)
+        #: What the recording made at this point should say about where it
+        #: was -- a tile's grid index and stage position, say. Merged into
+        #: every detector's shared attributes for this point only, so the
+        #: file identifies itself without a sidecar.
+        self.attributes: Dict[str, Any] = dict(attributes or {})
         self._event = threading.Event()
         self._lock = threading.Lock()
         self._outcome = PositioningOutcome.PENDING

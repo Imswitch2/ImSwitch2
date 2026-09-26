@@ -742,19 +742,38 @@ def build_triggerscope_resolft_layouts(
     return layouts
 
 
-def with_time_partition(
+#: Partition kinds a lapse item can be. A lapse's points differ by when the
+#: timer fired (``time``) -- unless a workflow positions the sample before each
+#: one, in which case they differ by where the stage is: ``tile`` for a tiling
+#: grid, ``position`` for anything else. The reader side already models a
+#: tiling run this way (``adapt_tiling_manifest``).
+LAPSE_PARTITION_KINDS = frozenset({"time", "tile", "position"})
+
+
+def with_lapse_partition(
     layout: AcquisitionLayout,
     *,
+    kind: str,
     index: int,
     planned_count: int | None,
     single_file: bool,
 ) -> AcquisitionLayout:
-    """Scope a reusable per-scan layout to one external lapse partition."""
+    """Scope a reusable per-scan layout to one item of an external lapse.
+
+    Replaces any lapse partition already present, of whatever kind, so a
+    cached layout reused for the next item can never carry two.
+    """
+    if kind not in LAPSE_PARTITION_KINDS:
+        raise ValueError(
+            f"A lapse item is a {'/'.join(sorted(LAPSE_PARTITION_KINDS))} "
+            f"partition, not {kind!r}"
+        )
     partitions = tuple(
-        partition for partition in layout.partitions if partition.kind != "time"
+        partition for partition in layout.partitions
+        if partition.kind not in LAPSE_PARTITION_KINDS
     ) + (
         AcquisitionPartition(
-            "time",
+            kind,
             index=int(index),
             planned_count=(
                 int(planned_count) if planned_count is not None else None
@@ -765,3 +784,17 @@ def with_time_partition(
         ),
     )
     return _validated(replace(layout, partitions=partitions))
+
+
+def with_time_partition(
+    layout: AcquisitionLayout,
+    *,
+    index: int,
+    planned_count: int | None,
+    single_file: bool,
+) -> AcquisitionLayout:
+    """Scope a reusable per-scan layout to one timepoint of a lapse."""
+    return with_lapse_partition(
+        layout, kind="time", index=index, planned_count=planned_count,
+        single_file=single_file,
+    )

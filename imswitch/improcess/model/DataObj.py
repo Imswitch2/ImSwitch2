@@ -8,6 +8,7 @@ import time
 
 from imswitch.imcommon.model import initLogger, memory_limits
 from imswitch.improcess.model.dataset_sources import resolve_dataset_source
+from imswitch.improcess.model.lapse_source import TIME_LAPSE_SOURCE_KIND
 from imswitch.improcess.model.acquisition_layout_resolver import (
     ResolvedAcquisitionLayout,
     adapt_tiling_manifest,
@@ -193,6 +194,18 @@ class DataObj:
     def acquisition_layout(self) -> ResolvedAcquisitionLayout:
         """Resolve acquisition semantics without materializing image pixels."""
         if self._acquisitionLayoutResolution is not None:
+            return self._acquisitionLayoutResolution
+        if self.sourceKind == TIME_LAPSE_SOURCE_KIND:
+            # Every point of a lapse records the same layout, apart from which
+            # point it is; the one the user opened speaks for the lapse.
+            index = self.sourceMetadata
+            self._acquisitionLayoutResolution = resolve_acquisition_layout(
+                dict(index.anchor_attrs),
+                shape=tuple(index.anchor_shape),
+                detector=str(index.anchor_detector),
+                source_path=str(index.anchor.path),
+                dataset_path=index.anchor.dataset,
+            )
             return self._acquisitionLayoutResolution
         if self.sourceKind != "image":
             self._acquisitionLayoutResolution = adapt_tiling_manifest(
