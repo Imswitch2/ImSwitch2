@@ -814,8 +814,10 @@ built-in tiling workflow.
 etSTED
 ------
 
-Optional :class:`EtSTEDInfo` object.
-**Required if you use the EtSTED widget** for event-triggered STED microscopy.
+Optional :class:`EtSTEDInfo` object for the EtSTED widget (event-triggered
+STED, see :doc:`gui`): it flips or swaps the coordinates of a detected event
+before they are transformed into scan coordinates.  Without it, no flip or
+swap is applied; the fast detector and laser are chosen in the widget.
 
 Key fields:
 
