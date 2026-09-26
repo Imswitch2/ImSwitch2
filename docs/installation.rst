@@ -99,7 +99,7 @@ Thorlabs Scientific Cameras (Kiralux / Zelux / Quantalux)
 Used by :class:`~imswitch.imcontrol.model.managers.detectors.ThorCamTSIManager.ThorCamTSIManager`.
 
 **1. Download the SDK.**  Get *ThorCam* from
-https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=ThorCam
+https://www.thorlabs.com/software-pages/ThorCam
 and install it.  Inside the install folder, find
 ``Scientific Camera Interfaces.zip`` and unzip it somewhere writable
 (not inside ``Program Files`` — see troubleshooting below).
