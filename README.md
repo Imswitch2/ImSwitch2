@@ -105,6 +105,10 @@ pip install -e ".[full]"       # also napari, OpenCV, vispy
 
 ## Documentation
 
+### [Offical Documentation on readthedocs](https://imswitch2.readthedocs.io/en/latest/)
+
+---
+
 The full documentation lives under [`docs/`](docs/) and is rendered with [Sphinx](https://www.sphinx-doc.org/).
 
 | Where | What you'll find |
