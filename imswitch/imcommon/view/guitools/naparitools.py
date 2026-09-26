@@ -101,8 +101,9 @@ def addNapariGrayclipColormap():
         napari.utils.colormaps.AVAILABLE_COLORMAPS['grayclip'] = napari.utils.Colormap(
             name='grayclip', colors=grayclip
         )
-    except (AttributeError, TypeError):
-        # AVAILABLE_COLORMAPS API changed or is not a dict - skip silently
+    except (AttributeError, TypeError, KeyError):
+        # AVAILABLE_COLORMAPS API changed / not a dict / already registered by a
+        # concurrent caller - skip silently.
         pass
 
 

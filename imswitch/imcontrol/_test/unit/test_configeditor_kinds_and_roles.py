@@ -287,7 +287,8 @@ class TestRoleDiagnostics:
                 if device.get("managerName") == "MockPositionerManager" and device.get("forScanning"):
                     mocks += 1
             assert _codes(validate_setup_data(setup, registry), "role.") == [], name
-        assert mocks == 13
+        # 13, plus mock_scan_monalisa_live.json's three.
+        assert mocks == 16
 
 
 class TestKindDiagnostics:

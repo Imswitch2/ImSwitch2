@@ -970,14 +970,47 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def abortScan(self):
         """ Abort scan. """
+        # Decided before the flags below are cleared (a repeat gap is only
+        # visible through _repeatPending until then).
+        idle = not self.isRunning and not self._holdsScanRunBetweenIterations()
         # An abort can arrive while an iteration is still running.  Remember
         # it at run scope so the eventual NI-DAQ completion cannot re-arm a
         # repeat/continuous/sequence continuation.
         self._scanStopRequested = True
         self._repeatPending = False  # Cancel any pending repeat re-arm
         self.doingNonFinalPartOfSequence = False  # So that sigScanEnded is emitted
-        if not self.isRunning:
-            self.scanFailed()
+        if self.isRunning:
+            return
+        if idle:
+            # Nothing to fail: the usual state at shutdown (closeEvent aborts
+            # unconditionally) and for every non-owner of a broadcast
+            # sigAbortScan. scanFailed() would log an error for a scan that
+            # never ran.
+            self._scanStopRequested = False
+            try:
+                self._widget.setScanButtonChecked(False)
+            except Exception:
+                self._logger.error(
+                    'Failed to reset the scan widget after an idle abort',
+                    exc_info=True,
+                )
+            return
+        # A run retained between iterations -- repeat gap, non-final sequence
+        # part, MoNaLISA axial follow-up -- or a request still arming has no
+        # NI-DAQ completion left to end it, so terminalize it here.
+        self.scanFailed()
+
+    def _holdsScanRunBetweenIterations(self) -> bool:
+        """Whether an abort outside an iteration still has a run to fail.
+
+        Fails closed: ``shutdownComplete`` reports ownership it cannot verify
+        as held.
+        """
+        return (
+            getattr(self, '_scanRunToken', None) is not None
+            or bool(getattr(self, '_externalScanRequestInProgress', False))
+            or not self.shutdownComplete()
+        )
 
     def _beginScanRun(self, *, sigScanStartingEmitted, prepareNewRun=None):
         """Reserve one complete run, or reject a duplicate from this owner.
@@ -1710,7 +1743,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 if logger is not None:
                     try:
                         logger.error(
-                            'Unable to verify scan ownership during shutdown',
+                            'Unable to verify scan ownership',
                             exc_info=True,
                         )
                     except Exception:

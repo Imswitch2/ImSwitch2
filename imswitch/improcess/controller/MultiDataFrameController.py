@@ -24,7 +24,6 @@ class MultiDataFrameController(ImProcessWidgetController):
         )
         self._commChannel.sigDataFolderChanged.connect(self.dataFolderChanged)
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
-        self._commChannel.sigAddToMultiData.connect(self._addPathToMultiData)
 
         self._widget.sigAddDataClicked.connect(self.addDataClicked)
         self._widget.sigLoadCurrentDataClicked.connect(self.loadCurrData)
@@ -99,10 +98,6 @@ class MultiDataFrameController(ImProcessWidgetController):
         source = resolve_dataset_source(path)
         normalized = str(source.path)
         return normalized, os.path.basename(normalized) or normalized
-
-    def _addPathToMultiData(self, path, datasetName):
-        normalized, name = self._normalizedPathAndName(path)
-        self.makeAndAddDataObj(name, datasetName, path=normalized)
 
     def addDataClicked(self):
         paths = self._widget.requestFilePathsFromUser(self._dataFolder)

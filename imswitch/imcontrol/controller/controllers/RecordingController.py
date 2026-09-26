@@ -15,7 +15,7 @@ from imswitch.imcontrol.model.managers.RecordingManager import (
 )
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
-from ._acquisition_layout_source import with_time_partition
+from ._acquisition_layout_source import with_lapse_partition
 
 # Poll interval used to wait out a still-finalizing recording before starting
 # the next timelapse timepoint (see nextLapse). Small so a Freq=0 lapse advances
@@ -984,6 +984,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         self._commChannel.sharedAttrs.getHDF5Attributes()
                     for detectorName in self.recordingArgs['detectorNames']
                 }
+                # What every point's attributes start from; a positioned
+                # point adds its own on top (_applyPositionedAttributes).
+                self._lapseBaseAttrs = None
                 # Read through the pinned source, never the global accessors:
                 # nothing is scanning yet, so a rig with several capable
                 # controllers cannot be resolved by the channel.
@@ -1020,6 +1023,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             positioning = await_positioning()
             if positioning is not True:
                 return positioning
+            apply_attributes = getattr(self, '_applyPositionedAttributes', None)
+            if callable(apply_attributes):
+                apply_attributes()
 
         # Every timepoint, not just the first. Each one runs its own scan and
         # publishes its own ``sigScanEnded``, so a start published once for the
@@ -1050,7 +1056,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             return False
         return True
 
-    def setPositioningProvider(self, provider) -> None:
+    def setPositioningProvider(self, provider, *, partitionKind='position') -> None:
         """Let a workflow place the sample before each timepoint.
 
         ``provider(index)`` returns a :class:`PositioningRequest` that it
@@ -1059,16 +1065,46 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         terminals end the session with the reason they carry.
 
         This is what makes a tiling run a lapse: the points differ by where
-        the stage is rather than by when the timer fires, and nothing else
-        about the session changes.
+        the stage is rather than by when the timer fires. That difference is
+        what ``partitionKind`` records -- ``tile`` for a tiling grid,
+        ``position`` otherwise -- in every item's acquisition layout, which
+        used to call each tile a timepoint.
         """
         self._positioningProvider = provider
+        self._positioningPartitionKind = str(partitionKind)
         self._pendingPositioning = None
+        self._positionedAttributes = {}
 
     def clearPositioningProvider(self) -> None:
         self._positioningProvider = None
+        self._positioningPartitionKind = None
         self._pendingPositioning = None
+        self._positionedAttributes = {}
         self._cycleTerminalCallback = None
+
+    def _lapsePartitionKind(self) -> str:
+        """What one lapse item is: a timepoint, unless a workflow positions it."""
+        if self.__dict__.get('_positioningProvider') is None:
+            return 'time'
+        return self.__dict__.get('_positioningPartitionKind') or 'position'
+
+    def _applyPositionedAttributes(self) -> None:
+        """Merge this point's own attributes into every detector's, for this point only.
+
+        Rebuilt from the lapse's base attributes each time, so a key one point
+        set can never leak into the next.
+        """
+        attrs = self.recordingArgs.get('attrs')
+        if not isinstance(attrs, dict):
+            return
+        base = self.__dict__.get('_lapseBaseAttrs')
+        if base is None:
+            base = {name: dict(values or {}) for name, values in attrs.items()}
+            self._lapseBaseAttrs = base
+        extra = dict(self.__dict__.get('_positionedAttributes') or {})
+        self.recordingArgs['attrs'] = {
+            name: {**base.get(name, {}), **extra} for name in attrs
+        }
 
     def setCycleTerminalCallback(self, callback) -> None:
         """Called when a point is wholly finished -- writer *and* scan.
@@ -1120,6 +1156,9 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         self._pendingPositioning = None
         if outcome.mayProceed:
+            self._positionedAttributes = dict(
+                getattr(request, 'attributes', None) or {}
+            )
             return True
 
         # Cancelled, failed or timed out: all three mean this point cannot be
@@ -1271,9 +1310,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if self.recMode != RecMode.ScanLapse:
             self.recordingArgs['acquisitionLayouts'] = dict(layouts)
             return
+        kind_of = getattr(self, '_lapsePartitionKind', None)
+        kind = kind_of() if callable(kind_of) else 'time'
         self.recordingArgs['acquisitionLayouts'] = {
-            detectorName: with_time_partition(
+            detectorName: with_lapse_partition(
                 layout,
+                kind=kind,
                 index=max(0, int(self.lapseCurrent)),
                 planned_count=(
                     int(self.lapseTotal) if self.lapseTotal else None
@@ -2457,9 +2499,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 )
             return
 
+        # A scan recording's public recordingEnded is published here, once,
+        # when the writer has drained and the scan has ended. The worker
+        # publishes only the detailed terminal in the scan modes: it has held
+        # the legacy signal back since 48a6ae31 (2022), when this controller
+        # still ended its cycle on it and a scan cycle has to end on the scan.
+        # The controller now listens to the detailed terminal instead, so
+        # nothing else published it -- scripts waiting for it after a scan
+        # recording hung, and the joystick stayed disabled.
         emitRecordingEnded = (
-            self.recMode == RecMode.ScanLapse
-            and self.stopRequested
+            self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse)
             and not self.__dict__.get(
                 '_recordingFailedCurrent', False
             )
@@ -2556,12 +2605,13 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         if emitRecordingEnded:
             try:
-                # Emit manually only for a soft ScanLapse stop, because that
-                # path never calls recordingManager.endRecording().
+                # See emitRecordingEnded above: the scan modes' only public
+                # terminal. (A soft ScanLapse stop also never reaches
+                # recordingManager.endRecording(), so it needs this as well.)
                 self._commChannel.sigRecordingEnded.emit()
             except Exception:
                 self.__logger.error(
-                    'Failed to publish the recording-lapse stop terminal',
+                    'Failed to publish the scan-recording end terminal',
                     exc_info=True,
                 )
 
@@ -3114,7 +3164,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         if filename is not None:
             self._widget.setCustomFilename(filename)
         else:
-            self._widget.setCustomFilenameEnabled(False)
+            self._widget.clearCustomFilename()
 
     @APIExport(runOnUIThread=True)
     def setRecFolder(self, folderPath: str) -> None:
@@ -3126,8 +3176,35 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._widget.specifyfile.setChecked(enable)
     
     @APIExport(runOnUIThread=True)
-    def setSnapModeSave(self,mode="tiff") -> None:
-        self._widget.saveSnapFormatList.setCurrentText(mode)
+    def setRecFileFormat(self, fileFormat: str) -> None:
+        """ Sets the file format recordings are saved in: 'HDF5', 'TIFF' or
+        'ZARR' (any case) -- the Recording widget's "File format". Raises
+        ValueError for any other name, and RuntimeError while snaps are set
+        to go to the image display, which fixes the format to TIFF. """
+        if not self._widget.isSaveFormatEditable():
+            raise RuntimeError(
+                'The recording file format is fixed to TIFF while the snap '
+                'save mode sends snaps to the image display.'
+            )
+        if not self._widget.setSaveFormatByName(fileFormat):
+            raise ValueError(
+                f'Unknown recording format {fileFormat!r}; use HDF5, TIFF or ZARR.'
+            )
+
+    @APIExport(runOnUIThread=True)
+    def getRecFileFormat(self) -> str:
+        """ Returns the file format recordings are saved in: 'HDF5', 'TIFF'
+        or 'ZARR'. """
+        return SaveFormat(self._widget.getSaveFormat()).name
+
+    @APIExport(runOnUIThread=True)
+    def setSnapModeSave(self, mode="tiff") -> None:
+        """ Sets the file format snaps are saved in: 'HDF5', 'TIFF' or 'ZARR'
+        (any case). Raises ValueError for any other name. """
+        if not self._widget.setSaveSnapFormat(mode):
+            raise ValueError(
+                f'Unknown snap format {mode!r}; use HDF5, TIFF or ZARR.'
+            )
     
     @APIExport(runOnUIThread=True)
     def getRecFolder(self) -> str:

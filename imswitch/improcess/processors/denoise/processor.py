@@ -54,8 +54,14 @@ class DenoiseProcessor(Processor):
         """Accept any result with at least a 2D image plane (the last two
         axes are treated as spatial)."""
         def _gate(result: ProcessingResult) -> bool:
+            # Evaluated whenever a result becomes current, so it must not read
+            # a lazy result's pixels just to learn how many axes it has.
             try:
-                return np.asarray(result.data).ndim >= 2
+                data = result.data
+                ndim = getattr(data, "ndim", None)
+                if ndim is None:
+                    ndim = np.asarray(data).ndim
+                return int(ndim) >= 2
             except Exception:
                 return False
         return _gate
