@@ -12,10 +12,11 @@ written in P4.*
   answered in D5, D3, D1 and D4. Review 3 added two D5 fixes. Decisions
   2026-09-25: T as proposed in D3; no mid-iteration Stop; Advanced's
   behaviour stays unchanged, except P0's `vel_max` refusal, which is kept.
-  The design phase is settled. Phase D in progress: D4's load hook and D1
-  done (2026-09-26); D2's `recordScanSeries` next. The Simple-side contracts
-  (D3 policy, D5 checks, D4 equality, D6) are tested with P1, where their
-  code lives. P1 not started.
+  The design phase is settled. Phase D's shared-code part is done
+  (2026-09-26): D4's load hook, D1's frame geometry, D2's `recordScanSeries`.
+  The Simple-side contracts (D3 policy, D5 checks, D4 equality, D6), and D2/D3's
+  end-to-end series test (N iterations, N partitions, one run end), are
+  tested with P1–P3, where their code lives. P1 not started.
 - **Branch:** `feat/simple-point-scan`, worktree `../Imswitch2-simple-point-scan`.
 - **Base:** stacked on PR #49 (`claude/quizzical-hofstadter-88bff6`, "a refused
   scan design ends the request with its reason"). P0 reports its new refusal
@@ -736,6 +737,17 @@ Contract:
 - **Double start.** Acquire is disabled from the click until the request
   resolves, and `recordScanSeries` refuses while a request is pending. Both
   layers are tested.
+
+**Implemented 2026-09-26** as `RecordingController.recordScanSeries(source,
+detectorNames, frames)`. A request object is alive only while its recording
+runs. The REC flow's read sites consult it before the widget: detectors, the
+Scan-once source, the lapse source, the point count, single file, and a
+zero interval. The recording starts by pressing REC, so the button, Stop and
+every existing path behave as for a user. The failure reason is captured in
+`_handleRecordingFailure`. The terminal reset clears the request and
+restores the controller's mode. Unit tests cover the refusals, what the REC
+press sees, the returned reason and the cleanup (`test_record_scan_series.py`).
+"Missing Recording" is the panel's check (P3).
 
 Tests: missing Recording; writer arm failure (no scan starts); refused design
 (nothing left armed); refused scan start (writer rolled back); double click;
