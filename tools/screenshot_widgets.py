@@ -21,6 +21,9 @@ when you want to capture a tooltip, menu, or other transient UI).
 
 Captures use ImSwitch2's own dark style sheet, so they look like the
 running application; ``--light`` captures in the plain Qt style instead.
+Offscreen captures are rendered at twice the pixel density (``--scale 2``, the
+default), so they stay sharp on high-resolution screens; the docs show them at
+half their pixel width. With ``--show`` the density is the screen's own.
 ``--out DIR`` writes somewhere other than ``docs/images/auto`` (to compare
 a run before replacing the committed images).
 
@@ -411,6 +414,9 @@ def _get_options():
     dict won't do.  ``optionsBasic`` is a fully populated test fixture.
     """
     from imswitch.imcontrol._test import optionsBasic
+    # WatcherWidget lists this folder when it is built; in a fresh HOME it
+    # does not exist yet.
+    os.makedirs(optionsBasic.watcher.outputFolder, exist_ok=True)
     return optionsBasic
 
 
@@ -451,11 +457,14 @@ def _grab(widget, path: Path) -> None:
     )
     pixmap = widget.grab()
     widget.hide()
-    if pixmap.width() < 32 or pixmap.height() < 32:
+    # Logical size: at --scale 2 an empty 22x22 frame is 44x44 pixels.
+    ratio = pixmap.devicePixelRatio() or 1
+    width, height = pixmap.width() / ratio, pixmap.height() / ratio
+    if width < 32 or height < 32:
         # A widget whose content its controller adds renders as an empty
         # frame of a few pixels; a blank image is worse than none.
         raise RuntimeError(
-            f"empty capture ({pixmap.width()}x{pixmap.height()}): its content is "
+            f"empty capture ({width:g}x{height:g}): its content is "
             "added by the controller; use --mock-setup for a populated one"
         )
     pixmap.save(str(path), "PNG")
@@ -631,6 +640,15 @@ def main() -> int:
         help="Skip per-widget capture; only run --mock-setup.",
     )
     parser.add_argument(
+        "--scale",
+        type=float,
+        default=2.0,
+        metavar="FACTOR",
+        help="Pixel density of offscreen captures (default 2: sharp on "
+             "high-resolution screens). Ignored with --show, which uses the "
+             "screen's own density.",
+    )
+    parser.add_argument(
         "--light",
         action="store_true",
         help="Capture in the plain Qt style instead of ImSwitch2's dark style sheet.",
@@ -644,6 +662,9 @@ def main() -> int:
 
     if args.show:
         os.environ.pop("QT_QPA_PLATFORM", None)
+    elif args.scale and args.scale != 1 and not (args.single or args.single_mock):
+        # Before any QApplication exists; the child processes inherit it.
+        os.environ["QT_SCALE_FACTOR"] = f"{args.scale:g}"
     if args.light:
         os.environ["IMSWITCH_SCREENSHOT_LIGHT"] = "1"
     if args.out:

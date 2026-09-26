@@ -66,6 +66,10 @@ Options:
    ``--mock-setup`` names another file).
 ``--no-subprocess``
    Capture every standalone widget in the script's own process.
+``--scale FACTOR``
+   Pixel density of offscreen captures; default ``2``, so they stay sharp on
+   high-resolution screens.  Ignored with ``--show``, where the screen's own
+   density applies (2 on a Retina display).
 ``--light``
    Capture the standalone widgets in Qt's plain style instead of
    ImSwitch2's dark style sheet.
@@ -73,6 +77,16 @@ Options:
    Write the images to ``DIR`` instead of ``docs/images/auto/``.
 ``--single`` / ``--single-mock``
    Internal: used by the script to start its child processes.
+
+The captures are twice the size the widget has on screen.  Show them at
+half their pixel width, so an image directive for one reads::
+
+   .. image:: ./images/auto/LaserWidget.png
+      :align: center
+      :width: 561px
+
+(``561`` being half of ``LaserWidget.png``'s 1122 pixels; cap it at ``600px``
+for wide widgets).
 
 Output goes to ``docs/images/auto/`` (or the ``--out`` folder):
 

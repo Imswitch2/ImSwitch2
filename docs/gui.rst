@@ -73,6 +73,7 @@ the corresponding ``DetectorManager``.
 
 .. image:: ./images/auto/SettingsWidget.png
    :align: center
+   :width: 399px
 
 
 Recording and data storage
@@ -135,6 +136,7 @@ STED imaging.
 
 .. image:: ./images/auto/RecordingWidget.png
    :align: center
+   :width: 454px
 
 The output folder is not remembered between sessions.  With
 ``recording.includeDateInOutputFolder`` on (the default) it is rebuilt from
@@ -201,6 +203,7 @@ images are redrawn as lines arrive, at a limited rate.
 
 .. image:: ./images/auto/mock-View.png
    :align: center
+   :width: 187px
 
 
 Choosing which detectors acquire
@@ -259,6 +262,7 @@ selected preset.
 
 .. image:: ./images/auto/LaserWidget.png
    :align: center
+   :width: 561px
 
 
 SLM widget
@@ -282,8 +286,8 @@ without a ``widgetLayout``, listing it in ``availableWidgets`` creates no
 panel.
 
 .. image:: ./images/auto/SLMWidget.png
-   :width: 600px
    :align: center
+   :width: 600px
 
 
 Focus lock widget
@@ -308,8 +312,8 @@ How a scan decides whether it conflicts with the lock is described in
 :ref:`focuslock-scan-arbitration`.
 
 .. image:: ./images/auto/FocusLockWidget.png
-   :width: 600px
    :align: center
+   :width: 600px
 
 
 Positioner widget
@@ -322,6 +326,7 @@ functions for automated routines.
 
 .. image:: ./images/auto/PositionerWidget.png
    :align: center
+   :width: 454px
 
 
 Scanning widget
@@ -337,6 +342,7 @@ derive from the abstract ``SignalDesigner``).
 
 .. image:: ./images/auto/ScanWidgetBase.png
    :align: center
+   :width: 432px
 
 Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
 ``Advanced`` — selected by ``scan.scanWidgetType`` in the setup JSON; see
@@ -406,8 +412,8 @@ single overview as the run proceeds.  The overview is live: clicking it
 drives the stage, and it is what cell targeting operates on.
 
 .. image:: ./images/auto/TilingWidget.png
-   :width: 600px
    :align: center
+   :width: 505px
 
 See :doc:`tiling` for the controls in detail, cell detection, illumination
 correction, multi-detector runs, the saved output and the controller API.
@@ -428,6 +434,7 @@ Overlays a line at a given angle on the live image.
 
 .. image:: ./images/auto/AlignmentLineWidget.png
    :align: center
+   :width: 281px
 
 
 Axial alignment tool
@@ -436,8 +443,8 @@ Axial alignment tool
 Lets the user pick a ROI and plots its mean value over time.
 
 .. image:: ./images/auto/AlignAverageWidget.png
-   :width: 600px
    :align: center
+   :width: 322px
 
 
 Rotational alignment tool
@@ -446,8 +453,8 @@ Rotational alignment tool
 Similar to the axial tool but along a single axis (x or y).
 
 .. image:: ./images/auto/AlignXYWidget.png
-   :width: 600px
    :align: center
+   :width: 322px
 
 
 uLenses tool
@@ -458,6 +465,7 @@ the image.
 
 .. image:: ./images/auto/ULensesWidget.png
    :align: center
+   :width: 322px
 
 
 FFT tool
@@ -466,8 +474,8 @@ FFT tool
 Computes the Fourier transform of incoming frames in real time.
 
 .. image:: ./images/auto/FFTWidget.png
-   :width: 600px
    :align: center
+   :width: 419px
 
 
 Bead reconstruction tool
@@ -488,5 +496,5 @@ next to it (Gaussian, donut, exponential, sine, …) to the displayed image;
 **Analysis Parameters** sets the fit options.
 
 .. image:: ./images/auto/BeadRecWidget.png
-   :width: 600px
    :align: center
+   :width: 600px
