@@ -94,6 +94,7 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         self._widget.sigOverviewChannelChanged.connect(self._onOverviewChannelChanged)
         self._widget.sigStopClicked.connect(self._onStopClicked)
         self._widget.sigRegionDrawn.connect(self._onRegionDrawn)
+        self._widget.sigDrawRegionClicked.connect(self._onDrawClicked)
         self._widget.sigReferenceDetectorChanged.connect(self.setReferenceDetector)
         self._commChannel.sigScanRequestRejected.connect(self._onScanRejected)
         self._commChannel.sigScanGeometryShown.connect(self._onScanGeometryShown)
@@ -133,6 +134,9 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
                 # each detector's layer shows (plan D1 point 6).
                 'reference': next(iter(self._pointDetectorNames()), None),
                 'shown': {},
+                # The rectangle shows in Acquisition, or in Overview once
+                # Draw was clicked; the overview alone has no region to show.
+                'regionRequested': False,
             }
             state['overview'] = self._planOverview()
             state['acquisition'] = self._defaultAcquisition()
@@ -529,6 +533,8 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
             return
         state = self._simple()
         state['mode'] = mode
+        if mode == OVERVIEW:
+            state['regionRequested'] = False
         self._widget.setRepeatEnabled(mode == OVERVIEW)
         self._pushToWidget()
         self._scheduleEstimate()
@@ -617,9 +623,14 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
                 False, f'{reference} shows no scanned image yet: start the overview first.')
         else:
             self._widget.setDrawing(True)
-        extents = self._regionExtents(shown) if shown is not None else None
+        visible = state['mode'] == ACQUISITION or state['regionRequested']
+        extents = self._regionExtents(shown) if visible and shown is not None else None
         self._widget.showRegion(
             extents_to_rectangle(extents, shown) if extents is not None else None)
+
+    def _onDrawClicked(self):
+        self._simple()['regionRequested'] = True
+        self._pushRegion()
 
     def _onRegionDrawn(self, vertices):
         """A rectangle drawn, moved or resized on the reference layer.

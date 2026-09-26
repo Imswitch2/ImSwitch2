@@ -9,9 +9,10 @@ controller and model, where they are tested without a GUI.
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import numpy as np
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.view.guitools import colorutils
 from imswitch.imcommon.view.guitools.naparitools import worldEdgeWidth
@@ -26,6 +27,8 @@ from .ScanWidgetBase import SuperScanWidget
 
 _SLIDER_TICKS = 1000
 _MAX_DIMS = 3
+_LASER_MIME = 'application/x-imswitch-laser'
+_ACQUISITION_ONLY_TIP = 'Used by the acquisition. Switch to Acquisition to change it.'
 
 
 def _formatLength(um: float) -> str:
@@ -44,6 +47,139 @@ def _formatTime(seconds) -> str:
     if seconds < 3600.0:
         return f'{seconds / 60:.1f} min'
     return f'{seconds / 3600:.1f} h'
+
+
+def _laserMime(laser, lane):
+    mime = QtCore.QMimeData()
+    mime.setData(_LASER_MIME, QtCore.QByteArray(
+        json.dumps({'laser': laser, 'lane': lane}).encode()))
+    return mime
+
+
+def _laserFromMime(mime):
+    """(laser, lane it came from or None) carried by a drag, else None."""
+    if mime is None or not mime.hasFormat(_LASER_MIME):
+        return None
+    try:
+        data = json.loads(bytes(mime.data(_LASER_MIME)).decode())
+        return str(data['laser']), data.get('lane')
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+class _LaserChip(QtWidgets.QFrame):
+    """A laser's label, dragged onto a channel.
+
+    From the palette it adds the laser to where it is dropped; from a channel
+    it moves it there. A channel's chip has a × that removes it.
+    """
+
+    def __init__(self, name, colour, *, lane=None, onRemove=None, onClick=None,
+                 onDragging=None, tooltip=''):
+        super().__init__()
+        self.laser = name
+        self.lane = lane
+        self._onClick = onClick
+        self._onDragging = onDragging
+        self._pressPos = None
+        self.setObjectName('laserChip')
+        self.setStyleSheet(
+            f'QFrame#laserChip {{ background-color: {colour}; border-radius: 4px; }}'
+            ' QFrame#laserChip QLabel, QFrame#laserChip QToolButton'
+            ' { color: #111; background: transparent; border: none; }')
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 2 if onRemove else 8, 2)
+        layout.setSpacing(2)
+        layout.addWidget(QtWidgets.QLabel(name))
+        self.removeButton = None
+        if onRemove is not None:
+            self.removeButton = QtWidgets.QToolButton()
+            self.removeButton.setText('×')
+            self.removeButton.setAutoRaise(True)
+            self.removeButton.setToolTip('Remove from this channel.')
+            self.removeButton.clicked.connect(onRemove)
+            layout.addWidget(self.removeButton)
+        self.setToolTip(tooltip)
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self._pressPos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._pressPos is None or not event.buttons() & QtCore.Qt.LeftButton:
+            return
+        if ((event.pos() - self._pressPos).manhattanLength()
+                < QtWidgets.QApplication.startDragDistance()):
+            return
+        self._pressPos = None
+        drag = QtGui.QDrag(self)
+        drag.setMimeData(_laserMime(self.laser, self.lane))
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(event.pos())
+        if self._onDragging is not None:
+            self._onDragging(True)
+        try:
+            drag.exec_(QtCore.Qt.CopyAction | QtCore.Qt.MoveAction)
+        finally:
+            # A drop lands only now, and rebuilds the channels -- this chip
+            # included -- so nothing here may touch the chip afterwards.
+            if self._onDragging is not None:
+                self._onDragging(False)
+
+    def mouseReleaseEvent(self, event):
+        clicked = self._pressPos is not None and event.button() == QtCore.Qt.LeftButton
+        self._pressPos = None
+        if clicked and self._onClick is not None:
+            self._onClick()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class _LaserDropZone(QtWidgets.QFrame):
+    """Where a dragged laser lands: a channel (its index), the new-channel
+    zone (``'new'``), or the palette (``'palette'``: out of its channel)."""
+
+    def __init__(self, target, onDrop, *, dashed=False):
+        super().__init__()
+        self.target = target
+        self._onDrop = onDrop
+        self._dashed = dashed
+        self.setObjectName('laserDropZone')
+        self.setAcceptDrops(True)
+        self._highlight(False)
+
+    def _highlight(self, on):
+        style = 'dashed' if self._dashed else 'solid'
+        colour = '#00b7eb' if on else '#808080'
+        self.setStyleSheet(
+            f'QFrame#laserDropZone {{ border: 1px {style} {colour}; border-radius: 4px; }}')
+
+    def dragEnterEvent(self, event):
+        if _laserFromMime(event.mimeData()) is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self._highlight(True)
+
+    def dragMoveEvent(self, event):
+        if _laserFromMime(event.mimeData()) is None:
+            event.ignore()
+        else:
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        self._highlight(False)
+
+    def dropEvent(self, event):
+        self._highlight(False)
+        payload = _laserFromMime(event.mimeData())
+        if payload is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self._onDrop(payload[0], payload[1], self.target)
 
 
 class ScanRegionOverlay:
@@ -177,8 +313,9 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         self._gates = []           # (name, wavelength_nm, power_capable)
         self._overviewAxes = ()
         self._plan = None          # the acquisition plan last shown
-        self._lanes = []           # [[laser, ...], ...]
-        self._selectedLane = 0
+        self._lanes = []           # [[laser, ...], ...]: a laser may be in several
+        self._dragging = False
+        self._pendingDrop = None
         self._pixelRange = (1.0, 0.1)
         self._dwellRange = (2e-5, 1e-2)
         self._running = False
@@ -224,6 +361,23 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             modeRow.addWidget(widget)
         self.grid.addLayout(modeRow, row, 0)
         row += 1
+        # What the next scan takes, for whichever mode is chosen.
+        self.estimateTitle = QtWidgets.QLabel('Frame time')
+        self.frameTimeLabel = QtWidgets.QLabel('–')
+        font = self.frameTimeLabel.font()
+        font.setPointSizeF(font.pointSizeF() * 1.4)
+        font.setBold(True)
+        self.frameTimeLabel.setFont(font)
+        self.estimateNote = QtWidgets.QLabel('')
+        self.estimateNote.setWordWrap(True)
+        estimateRow = QtWidgets.QHBoxLayout()
+        estimateRow.addWidget(self.estimateTitle)
+        estimateRow.addWidget(self.frameTimeLabel)
+        estimateRow.addStretch(1)
+        self.grid.addLayout(estimateRow, row, 0)
+        row += 1
+        self.grid.addWidget(self.estimateNote, row, 0)
+        row += 1
 
         # --- overview ---
         box, layout = self._group('Overview')
@@ -241,7 +395,8 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         row += 1
 
         # --- region and dimensions ---
-        box, layout = self._group('Region')
+        box, outer = self._group('Region')
+        self.regionBox = box
         self.drawButton = QtWidgets.QPushButton('Draw in viewer')
         self.drawButton.setToolTip('Draw the acquisition region on the live image.')
         self.drawButton.setEnabled(False)
@@ -255,11 +410,19 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         self.dimsSpin.setRange(1, _MAX_DIMS)
         self.dimsSpin.setToolTip('How many axes to scan, fast axis first.')
         self.dimsSpin.valueChanged.connect(self._onDimsCount)
+        drawRow = QtWidgets.QHBoxLayout()
+        drawRow.addWidget(self.drawButton)
+        drawRow.addStretch(1)
+        drawRow.addWidget(self.referenceLabel)
+        drawRow.addWidget(self.referenceCombo)
+        outer.addLayout(drawRow, 0, 0)
+        # The numbers: greyed in Overview, which scans its own field.
+        self.regionControls = QtWidgets.QWidget()
+        layout = QtWidgets.QGridLayout(self.regionControls)
+        layout.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.regionControls, 1, 0)
         layout.addWidget(QtWidgets.QLabel('Dimensions'), 0, 0)
         layout.addWidget(self.dimsSpin, 0, 1)
-        layout.addWidget(self.drawButton, 0, 2)
-        layout.addWidget(self.referenceLabel, 0, 3, QtCore.Qt.AlignRight)
-        layout.addWidget(self.referenceCombo, 0, 4)
         for column, title in enumerate(('Axis', 'Centre (µm)', 'Size (µm)', 'Step (µm)', 'Pixels')):
             layout.addWidget(QtWidgets.QLabel(title), 1, column)
         self._dimRows = []
@@ -284,6 +447,7 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
 
         # --- sampling ---
         box, layout = self._group('Sampling')
+        self.samplingBox = box
         self.pixelSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.dwellSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         for slider in (self.pixelSlider, self.dwellSlider):
@@ -304,36 +468,28 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         self.dwellMaxLabel = QtWidgets.QLabel('')
         layout.addWidget(self.dwellMaxLabel, 1, 3)
         layout.addWidget(self.dwellLabel, 1, 4)
-        self.frameTimeLabel = QtWidgets.QLabel('–')
-        font = self.frameTimeLabel.font()
-        font.setPointSizeF(font.pointSizeF() * 1.4)
-        font.setBold(True)
-        self.frameTimeLabel.setFont(font)
-        self.estimateNote = QtWidgets.QLabel('')
-        self.estimateNote.setWordWrap(True)
-        layout.addWidget(QtWidgets.QLabel('Scan time'), 2, 0)
-        layout.addWidget(self.frameTimeLabel, 2, 1, 1, 2)
-        layout.addWidget(self.estimateNote, 3, 0, 1, 5)
         self.grid.addWidget(box, row, 0)
         row += 1
 
         # --- channels ---
         box, layout = self._group('Lasers and channels')
-        self.paletteLayout = QtWidgets.QHBoxLayout()
-        layout.addLayout(self.paletteLayout, 0, 0, 1, 3)
+        # Dropping a channel's laser back here takes it out of that channel.
+        self.paletteZone = _LaserDropZone('palette', self._onLaserDropped)
+        self.paletteZone.setToolTip(
+            'Drag a laser onto a channel. Drag one out of a channel back here to remove it.')
+        self.paletteLayout = QtWidgets.QHBoxLayout(self.paletteZone)
+        self.paletteLayout.setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(self.paletteZone, 0, 0, 1, 3)
         self.lanesLayout = QtWidgets.QVBoxLayout()
         layout.addLayout(self.lanesLayout, 1, 0, 1, 3)
-        self.addLaneButton = QtWidgets.QPushButton('Add channel')
         self.togetherButton = QtWidgets.QPushButton('All together')
         self.separateButton = QtWidgets.QPushButton('One per laser')
-        self.addLaneButton.setToolTip('A new line pass; click a laser to put it in the selected channel.')
         self.togetherButton.setToolTip('Every laser in one line pass (fired together).')
         self.separateButton.setToolTip('Each laser in its own line pass (recorded separately).')
-        self.addLaneButton.clicked.connect(self._addLane)
         self.togetherButton.clicked.connect(self._allTogether)
         self.separateButton.clicked.connect(self._onePerLaser)
         buttons = QtWidgets.QHBoxLayout()
-        for button in (self.addLaneButton, self.togetherButton, self.separateButton):
+        for button in (self.togetherButton, self.separateButton):
             buttons.addWidget(button)
         buttons.addStretch(1)
         layout.addLayout(buttons, 2, 0, 1, 3)
@@ -513,6 +669,7 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             self.overviewButton.setChecked(mode == 'overview')
             self.acquisitionButton.setChecked(mode == 'acquisition')
             self.repeatBox.setEnabled(mode == 'acquisition' and not self._running)
+            self._showModeControls(mode)
             self._showOverview(overview)
             self.overviewChannelCombo.clear()
             for index in range(max(1, len(acquisition.channels))):
@@ -522,6 +679,19 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             self._showAcquisition(acquisition)
         finally:
             self._updating = False
+
+    def _showModeControls(self, mode):
+        """Region numbers and sampling only drive the acquisition: in
+        Overview they are greyed (drawing the region still works)."""
+        acquisition = mode == 'acquisition'
+        self.regionControls.setEnabled(acquisition)
+        self.samplingBox.setEnabled(acquisition)
+        tip = '' if acquisition else _ACQUISITION_ONLY_TIP
+        self.regionControls.setToolTip(tip)
+        self.samplingBox.setToolTip(tip)
+        self.regionBox.setTitle('Region' if acquisition else 'Region (for the acquisition)')
+        self.samplingBox.setTitle('Sampling' if acquisition else 'Sampling (for the acquisition)')
+        self.estimateTitle.setText('Scan time' if acquisition else 'Frame time')
 
     def setEstimate(self, frameS, totalS, note, refusal):
         if refusal:
@@ -596,7 +766,6 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         lanes = [list(lane) for lane in plan.channels]
         if lanes != self.__dict__.get('_shownLanes'):
             self._lanes = lanes
-            self._selectedLane = min(self._selectedLane, max(0, len(self._lanes) - 1))
             self._buildLanes()
 
     def _showSamplingReadouts(self, plan):
@@ -617,16 +786,6 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         except Exception:
             return '#dddddd'
 
-    def _chip(self, name, wavelength, onClick, tooltip):
-        chip = QtWidgets.QPushButton(name)
-        colour = self._gateColour(wavelength) if wavelength else '#dddddd'
-        chip.setStyleSheet(
-            f'QPushButton {{ background-color: {colour}; color: #111; '
-            'border-radius: 4px; padding: 2px 8px; }')
-        chip.setToolTip(tooltip)
-        chip.clicked.connect(onClick)
-        return chip
-
     def _buildPalette(self):
         while self.paletteLayout.count():
             item = self.paletteLayout.takeAt(0)
@@ -634,9 +793,12 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
                 item.widget().deleteLater()
         self.paletteLayout.addWidget(QtWidgets.QLabel('Lasers'))
         for name, wavelength, _power in self._gates:
-            self.paletteLayout.addWidget(self._chip(
-                name, wavelength, lambda _=None, n=name: self._putInSelectedLane(n),
-                'Put this laser in the selected channel.'))
+            self.paletteLayout.addWidget(_LaserChip(
+                name, self._gateColour(wavelength) if wavelength else '#dddddd',
+                onClick=lambda n=name: self._dropLaser(n, None, 'last'),
+                onDragging=self._setDragging,
+                tooltip='Drag onto a channel, or onto "new channel". '
+                        'A click adds it to the last channel.'))
         self.paletteLayout.addStretch(1)
 
     def _wavelength(self, name):
@@ -652,65 +814,93 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        self.laneZones = []
         for index, lane in enumerate(self._lanes):
-            row = QtWidgets.QFrame()
-            row.setFrameShape(QtWidgets.QFrame.StyledPanel)
-            layout = QtWidgets.QHBoxLayout(row)
-            layout.setContentsMargins(4, 2, 4, 2)
-            select = QtWidgets.QRadioButton(f'Channel {index + 1}')
-            select.setChecked(index == self._selectedLane)
-            select.toggled.connect(
-                lambda checked, i=index: checked and self._selectLane(i))
-            layout.addWidget(select)
+            zone = _LaserDropZone(index, self._onLaserDropped)
+            layout = QtWidgets.QHBoxLayout(zone)
+            layout.setContentsMargins(6, 3, 6, 3)
+            layout.addWidget(QtWidgets.QLabel(f'Channel {index + 1}'))
             for laser in lane:
-                layout.addWidget(self._chip(
-                    laser, self._wavelength(laser),
-                    lambda _=None, i=index, n=laser: self._removeFromLane(i, n),
-                    'Remove from this channel.'))
+                wavelength = self._wavelength(laser)
+                layout.addWidget(_LaserChip(
+                    laser, self._gateColour(wavelength) if wavelength else '#dddddd',
+                    lane=index,
+                    onRemove=lambda _=None, i=index, n=laser: self._dropLaser(n, i, 'palette'),
+                    onDragging=self._setDragging,
+                    tooltip='Drag to another channel to move it.'))
             layout.addStretch(1)
             layout.addWidget(QtWidgets.QLabel(
-                'fired together' if len(lane) > 1 else ('one line pass' if lane else 'empty')))
-            self.lanesLayout.addWidget(row)
+                'fired together' if len(lane) > 1 else 'one line pass'))
+            self.lanesLayout.addWidget(zone)
+            self.laneZones.append(zone)
+        self.newChannelZone = _LaserDropZone('new', self._onLaserDropped, dashed=True)
+        layout = QtWidgets.QHBoxLayout(self.newChannelZone)
+        layout.setContentsMargins(6, 6, 6, 6)
+        hint = QtWidgets.QLabel(
+            'Drop a laser here for a new channel' if self._lanes
+            else 'Drop a laser here: lasers in one channel fire together')
+        hint.setAlignment(QtCore.Qt.AlignCenter)
+        hint.setStyleSheet('color: #808080;')
+        layout.addWidget(hint)
+        self.lanesLayout.addWidget(self.newChannelZone)
 
-    def _selectLane(self, index):
-        self._selectedLane = index
+    def _setDragging(self, dragging):
+        # A drop rebuilds the channels, and the chip being dragged is one of
+        # them: the change waits until its drag has returned.
+        self._dragging = dragging
+        if not dragging and self._pendingDrop is not None:
+            pending, self._pendingDrop = self._pendingDrop, None
+            self._dropLaser(*pending)
 
-    def _putInSelectedLane(self, laser):
-        if not self._lanes:
-            self._lanes = [[]]
-            self._selectedLane = 0
-        for lane in self._lanes:
-            if laser in lane:
-                lane.remove(laser)
-        self._lanes[self._selectedLane].append(laser)
-        self._lanes = [lane for lane in self._lanes if lane] or [[]]
-        self._selectedLane = min(self._selectedLane, len(self._lanes) - 1)
+    def _onLaserDropped(self, laser, fromLane, target):
+        if self._dragging:
+            self._pendingDrop = (laser, fromLane, target)
+        else:
+            self._dropLaser(laser, fromLane, target)
+
+    def _dropLaser(self, laser, fromLane, target):
+        """``laser`` into channel ``target`` (an index, ``'new'`` or
+        ``'last'``), or with ``'palette'`` out of channel ``fromLane``.
+
+        From the palette (``fromLane`` None) it is added; from a channel it
+        moves. A channel holds a laser once; a laser may be in several
+        channels (405 with 488 in one, with 561 in the next).
+        """
+        lanes = [list(lane) for lane in self._lanes]
+        known = fromLane is not None and 0 <= fromLane < len(lanes)
+        if target == 'palette':
+            if not known or laser not in lanes[fromLane]:
+                return
+            lanes[fromLane].remove(laser)
+        else:
+            if target == 'last':
+                target = len(lanes) - 1 if lanes else 'new'
+            if target == 'new':
+                lanes.append([])
+                target = len(lanes) - 1
+            if not 0 <= target < len(lanes) or target == fromLane:
+                return
+            if laser not in lanes[target]:
+                lanes[target].append(laser)
+            if known and laser in lanes[fromLane]:
+                lanes[fromLane].remove(laser)
+        self._setLanes([lane for lane in lanes if lane])
+
+    def _setLanes(self, lanes):
+        self._lanes = lanes
         self._emitEdited()
+        if self._lanes != self.__dict__.get('_shownLanes'):
+            self._buildLanes()
 
-    def _removeFromLane(self, index, laser):
-        if laser in self._lanes[index]:
-            self._lanes[index].remove(laser)
-        if len(self._lanes) > 1:
-            self._lanes = [lane for lane in self._lanes if lane]
-        self._selectedLane = min(self._selectedLane, max(0, len(self._lanes) - 1))
-        self._emitEdited()
-
-    def _addLane(self):
-        self._lanes.append([])
-        self._selectedLane = len(self._lanes) - 1
-        self._buildLanes()
+    def _uniqueLasers(self):
+        return list(dict.fromkeys(laser for lane in self._lanes for laser in lane))
 
     def _allTogether(self):
-        lasers = [laser for lane in self._lanes for laser in lane]
-        self._lanes = [lasers]
-        self._selectedLane = 0
-        self._emitEdited()
+        lasers = self._uniqueLasers()
+        self._setLanes([lasers] if lasers else [])
 
     def _onePerLaser(self):
-        lasers = [laser for lane in self._lanes for laser in lane]
-        self._lanes = [[laser] for laser in lasers] or [[]]
-        self._selectedLane = 0
-        self._emitEdited()
+        self._setLanes([[laser] for laser in self._uniqueLasers()])
 
     # ------------------------------------------------------------------
     # Edits -> plan

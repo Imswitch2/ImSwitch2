@@ -373,9 +373,14 @@ beginner's point-scan panel on the Advanced scan path:
 - **Draw in viewer** draws the region as a rectangle on the live image (on
   the ``Scan region`` layer). Moving or resizing it changes the region;
   editing the numbers moves it. Drawing needs an image the scanners made,
-  so start the overview first.
-- **Lasers and channels:** lasers placed in the same channel fire together;
-  each channel is its own line pass.
+  so start the overview first. The rectangle shows in Acquisition, and in
+  Overview once Draw is clicked; the region numbers and sampling sliders
+  are greyed in Overview, which scans its own field.
+- **Lasers and channels:** drag a laser from the palette onto a channel,
+  onto *Drop a laser here for a new channel*, or between channels; the ×
+  or a drag back to the palette removes it. Lasers in one channel fire
+  together; each channel is its own line pass, and a laser can be in
+  several channels.
 
 ``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware; its
 simulated APDs image a synthetic sample, so the region drawn on the overview

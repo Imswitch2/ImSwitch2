@@ -63,6 +63,11 @@ def _layer(rig):
     return rig.widget._regionOverlay.layer
 
 
+def _showing(rig):
+    layer = _layer(rig)
+    return layer is not None and len(layer.data) > 0
+
+
 def _shownExtents(rig, shown):
     layer = _layer(rig)
     assert len(layer.data) == 1
@@ -113,6 +118,23 @@ def test_without_a_viewer_there_is_nothing_to_draw_on(qtbot):
         rig.close()
 
 
+def test_the_overview_shows_no_rectangle_until_draw_is_clicked(rig):
+    """The overview scans its own field: a region shows only once asked for."""
+    rig.channel.sigScanGeometryShown.emit('APD', _overviewShown(rig))
+    assert not _showing(rig)
+
+    rig.widget.drawButton.click()
+    assert _showing(rig)
+
+    rig.widget.overviewButton.click()            # back to Overview: gone again
+    assert not _showing(rig)
+
+    rig.widget.acquisitionButton.click()         # Acquisition always shows it
+    assert _showing(rig)
+    rig.widget.overviewButton.click()
+    assert not _showing(rig)
+
+
 def test_the_reference_choice_lists_the_point_detectors(rig):
     combo = rig.widget.referenceCombo
     assert [combo.itemText(i) for i in range(combo.count())] == ['APD', 'APD 2']
@@ -152,6 +174,7 @@ def test_a_drawn_rectangle_becomes_the_acquisition_region(rig, qtbot, transform)
 
 
 def test_moving_the_rectangle_moves_the_region(rig, qtbot):
+    rig.scan.setSimpleScanMode('acquisition')
     shown = _overviewShown(rig)
     rig.channel.sigScanGeometryShown.emit('APD', shown)
     before = rig.scan._simple()['acquisition']
@@ -183,6 +206,7 @@ def test_an_xz_scan_drawn_on_the_xy_overview_parks_y_at_the_rectangle(rig, qtbot
     plan = rig.scan._simple()['acquisition']
     z = AxisRegion(0.0, 2.0, 0.5)
     _edit(rig, dims=('X', 'Z'), regions={'X': plan.regions['X'], 'Z': z})
+    rig.scan.setSimpleScanMode('acquisition')
     shown = _overviewShown(rig)
     rig.channel.sigScanGeometryShown.emit('APD', shown)
     # Y is not scanned: the rectangle is a line at Y's current position.
@@ -207,6 +231,7 @@ def test_an_xz_scan_drawn_on_the_xy_overview_parks_y_at_the_rectangle(rig, qtbot
 # ---------------------------------------------------------------------------
 
 def test_editing_the_numbers_moves_the_rectangle(rig):
+    rig.scan.setSimpleScanMode('acquisition')
     shown = _overviewShown(rig)
     rig.channel.sigScanGeometryShown.emit('APD', shown)
     plan = rig.scan._simple()['acquisition']
@@ -222,6 +247,7 @@ def test_editing_the_numbers_moves_the_rectangle(rig):
 def test_the_rectangle_stays_put_when_the_image_under_it_changes(rig):
     """Overview, then the acquired region itself: other world corners, the
     same scanner positions."""
+    rig.scan.setSimpleScanMode('acquisition')
     overview = _overviewShown(rig)
     rig.channel.sigScanGeometryShown.emit('APD', overview)
     before = np.asarray(_layer(rig).data[0])
@@ -244,6 +270,7 @@ def test_the_rectangle_stays_put_when_the_image_under_it_changes(rig):
 
 
 def test_changing_the_reference_redraws_with_that_layers_geometry(rig):
+    rig.scan.setSimpleScanMode('acquisition')
     plain = _overviewShown(rig)
     turned = _overviewShown(rig, DisplayTransform(rotation=90))
     rig.channel.sigScanGeometryShown.emit('APD', plain)
