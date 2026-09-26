@@ -19,14 +19,19 @@ plugin unchanged once it is installed.
 
 ## Install
 
+The plugin is not published on PyPI. Install it from an ImSwitch2 source
+checkout, in the environment ImSwitch2 runs in:
+
 ```bash
-python -m pip install imswitch-device-thorlabs            # mock-capable, no SDK
-python -m pip install "imswitch-device-thorlabs[hardware]" # + vendor SDKs
+python -m pip install "./examples/plugins/imswitch-device-thorlabs"            # mock-capable, no SDK
+python -m pip install "./examples/plugins/imswitch-device-thorlabs[hardware]"  # + vendor SDKs
 ```
 
 The `hardware` extra pulls in `thorlabs-tsi-sdk` (camera) and `pylablib`
 (stage), which also need the corresponding Thorlabs runtimes and (on Windows)
-DLLs. The mock paths need none of that.
+DLLs. `thorlabs-tsi-sdk` is not on PyPI either: install it from the ThorCam
+download first (see the ImSwitch2 installation docs, "Vendor SDKs"), and the
+extra then finds it. The mock paths need none of that.
 
 ## Mock mode
 

@@ -79,9 +79,12 @@ migration rather than a side effect of installing a package.
 
 ## Installation
 
+The plugin is not published on PyPI. Install it from an ImSwitch2 source
+checkout, in the environment ImSwitch2 runs in:
+
 ```bash
-pip install imswitch-device-tis            # mock only
-pip install imswitch-device-tis[hardware]  # + the imagingcontrol4 SDK
+pip install "./examples/plugins/imswitch-device-tis"            # mock only
+pip install "./examples/plugins/imswitch-device-tis[hardware]"  # + the imagingcontrol4 SDK
 ```
 
 The `hardware` extra installs the Python bindings. It **cannot** install the
