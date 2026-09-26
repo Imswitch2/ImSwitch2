@@ -1,0 +1,163 @@
+{
+  "__comment__": "Hardware-free setup for the SimplePointScan panel (scan.scanWidgetType \"SimplePointScan\"): overview and acquisition point scanning on the Advanced scan path. Two APDs (counter-input detectors) and three gated lasers on a SIMULATED NIDAQ (nidaq.simulation = true), so overview, region, pixel size, dwell and laser channels can be tried with NO real hardware. X/Y are galvo-like smooth axes with the example_sted limits (vel_max 0.1 um/us, acc_max 1e-4 um/us^2, 1.75 um/V over +-10 V, so a 35 um field); Z is a piezo-like STEPPED axis. scan.simplePointScan gives the objective NA the pixel slider's Nyquist end is computed from.",
+  "detectors": {
+    "APD": {
+      "managerName": "APDManager",
+      "managerProperties": {
+        "ctrInputLine": "Dev1/ctr0",
+        "terminal": "PFI0",
+        "displayRotation": "0",
+        "displayFlipX": "False",
+        "displayFlipY": "False"
+      },
+      "analogChannel": null,
+      "digitalLine": null,
+      "forAcquisition": true,
+      "forFocusLock": false
+    },
+    "APD 2": {
+      "managerName": "APDManager",
+      "managerProperties": {
+        "ctrInputLine": "Dev1/ctr1",
+        "terminal": "PFI12",
+        "displayRotation": "0",
+        "displayFlipX": "False",
+        "displayFlipY": "False"
+      },
+      "analogChannel": null,
+      "digitalLine": null,
+      "forAcquisition": true,
+      "forFocusLock": false
+    }
+  },
+  "lasers": {
+    "405 (ON)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line2",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 405,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "488 (EXC)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line1",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 488,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    },
+    "561 (EXC)": {
+      "analogChannel": null,
+      "digitalLine": "Dev1/port0/line3",
+      "managerName": "NidaqLaserManager",
+      "managerProperties": {},
+      "wavelength": 561,
+      "valueRangeMin": 0,
+      "valueRangeMax": 200
+    }
+  },
+  "positioners": {
+    "X": {
+      "analogChannel": "Dev1/ao0",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.75,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "X"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Y": {
+      "analogChannel": "Dev1/ao1",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.75,
+        "minVolt": -10,
+        "maxVolt": 10,
+        "vel_max": 0.1,
+        "acc_max": 0.0001
+      },
+      "axes": [
+        "Y"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    },
+    "Z": {
+      "analogChannel": "Dev1/ao2",
+      "digitalLine": null,
+      "managerName": "NidaqPositionerManager",
+      "managerProperties": {
+        "conversionFactor": 1.0,
+        "minVolt": 0,
+        "maxVolt": 10,
+        "vel_max": 1000.0,
+        "acc_max": 1000.0,
+        "smoothScan": false
+      },
+      "axes": [
+        "Z"
+      ],
+      "forScanning": true,
+      "forPositioning": true
+    }
+  },
+  "scan": {
+    "scanWidgetType": "SimplePointScan",
+    "scanDesigner": "GalvoScanDesigner",
+    "scanDesignerParams": {},
+    "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
+    "TTLCycleDesignerParams": {},
+    "sampleRate": 100000,
+    "maxScanTimeMin": 0,
+    "lineClockLine": null,
+    "frameStartClockLine": null,
+    "frameEndClockLine": null,
+    "simplePointScan": {
+      "objectiveNA": 1.4,
+      "overviewFrameTimeS": 1.0
+    }
+  },
+  "nidaq": {
+    "timerCounterChannel": null,
+    "startTrigger": false,
+    "simulation": true
+  },
+  "availableWidgets": [
+    "Settings",
+    "View",
+    "Recording",
+    "Image",
+    "Laser",
+    "Positioner",
+    "Scan"
+  ],
+  "processing": {
+    "graphPanel": false,
+    "profilePanel": false,
+    "frcPanel": false,
+    "projectionPanel": false,
+    "roiStatsPanel": false,
+    "roiManagerPanel": false,
+    "segmentationPanel": false,
+    "psfResolutionPanel": false,
+    "colocalizationPanel": false,
+    "multicolorPanel": false,
+    "reconstructors": [
+      "monalisa",
+      "view-only"
+    ],
+    "processors": []
+  }
+}

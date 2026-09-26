@@ -94,7 +94,8 @@ class MasterController:
                 self.scanManager = ScanManagerBase(self.__setupInfo)
             elif self.__setupInfo.scan.scanWidgetType == "MoNaLISA":
                 self.scanManager = ScanManagerMoNaLISA(self.__setupInfo)
-            elif self.__setupInfo.scan.scanWidgetType == "Advanced":
+            elif self.__setupInfo.scan.scanWidgetType in ("Advanced", "SimplePointScan"):
+                # SimplePointScan runs on the Advanced scan path.
                 self.scanManager = ScanManagerAdvanced(self.__setupInfo)
             elif self.__setupInfo.scan.scanWidgetType == "TriggerScope":
                 self.scanManager = ScanManagerTriggerScope(self.__setupInfo,
@@ -102,7 +103,8 @@ class MasterController:
             else:
                 self.__logger.error(
                     'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the following:'
-                    ' ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"].'
+                    ' ["Base", "PointScan", "MoNaLISA", "Advanced", "SimplePointScan",'
+                    ' "TriggerScope"].'
                 )
                 return
 

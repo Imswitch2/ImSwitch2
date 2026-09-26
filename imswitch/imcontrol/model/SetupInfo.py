@@ -493,6 +493,13 @@ class ScanInfo:
     If integer, it will be translated to "Dev1/port0/line{frameEndClockLine}".
     """
 
+    simplePointScan: Optional[Dict[str, Any]] = None
+    """ Options for the ``SimplePointScan`` panel, all optional:
+    ``objectiveNA``, ``nyquistPixelSizeUm``, ``overviewAxes``,
+    ``overviewFieldUm``, ``overviewMinFieldUm``, ``overviewMinPixels``,
+    ``overviewMaxPixels``, ``overviewFrameTimeS``, ``minSamplesPerPixel``,
+    ``maxDwellMs``. Other scan panels ignore it. """
+
 
 
 @dataclass(frozen=True)

@@ -26,6 +26,22 @@ def is_smooth_scan_axis(name, props) -> bool:
     return 'mock' not in str(name).lower()
 
 
+def fast_axis_speed_limit(name, props):
+    """The fastest a device may sweep as the fast axis, in µm/µs, or ``None``.
+
+    ``None`` when it is not limited: a stepped device holds each position
+    for the dwell, and a missing ``vel_max`` is the missing-limits error's
+    business. The one rule behind both the designer's refusal
+    (:meth:`GalvoScanDesigner.scanSpeedRefusal`) and a panel's shortest
+    allowed dwell (``step / limit``).
+    """
+    props = props or {}
+    vel_max = props.get('vel_max')
+    if vel_max is None or not is_smooth_scan_axis(name, props):
+        return None
+    return float(vel_max)
+
+
 def scan_axes_missing_limits(positioners) -> list:
     """Names of scanning positioners this designer refuses to drive.
 
@@ -146,14 +162,12 @@ class GalvoScanDesigner(ScanDesigner):
         fast = active[0]
         name = scanParameters['target_device'][fast]
         props = setupInfo.positioners[name].managerProperties
-        vel_max = props.get('vel_max')
+        vel_max = fast_axis_speed_limit(name, props)
         dwell_us = float(scanParameters['sequence_time']) * 1e6
-        if (vel_max is None or dwell_us <= 0
-                or not is_smooth_scan_axis(name, props)):
+        if vel_max is None or dwell_us <= 0:
             return ''
         step_um = abs(float(scanParameters['axis_step_size'][fast]))
         speed = step_um / dwell_us  # µm/µs
-        vel_max = float(vel_max)
         # the tolerance keeps a design exactly at the limit (step / dwell ==
         # vel_max, computed with float rounding) on the accepted side
         if speed <= vel_max * (1 + 1e-9):

@@ -361,9 +361,19 @@ designers can be plugged in by subclassing those abstract bases.
    :width: 600px
    :align: center
 
-Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
-``Advanced`` — selected by ``scan.scanWidgetType`` in the setup JSON; see
-:doc:`setupinfo-reference`.
+Five widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
+``Advanced`` and ``SimplePointScan`` — selected by ``scan.scanWidgetType`` in
+the setup JSON; see :doc:`setupinfo-reference`. ``SimplePointScan`` is a
+beginner's point-scan panel on the Advanced scan path:
+
+- **Overview** scans the whole reachable field live, and shows the measured
+  frame rate.
+- **Acquisition** scans a chosen region, with sliders for pixel size
+  (overview to Nyquist) and dwell, and an estimate of the scan time.
+- **Lasers and channels:** lasers placed in the same channel fire together;
+  each channel is its own line pass.
+
+``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware.
 
 Advanced scanning: line steps
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

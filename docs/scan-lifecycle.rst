@@ -391,6 +391,10 @@ bases), registered under widget key ``'Scan'`` as
    * - ``ScanControllerAdvanced``
      - ``Advanced``
      - legacy accessors via ``'Scan'`` key
+   * - ``ScanControllerSimplePointScan`` (subclass of Advanced)
+     - ``SimplePointScan``
+     - as Advanced; an external start (recording, script) always runs one
+       iteration, whatever the panel's Live setting
    * - ``ScanControllerMoNaLISA``
      - ``MoNaLISA``
      - legacy accessors + axial workflow

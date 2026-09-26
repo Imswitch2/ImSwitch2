@@ -302,7 +302,7 @@ Required if you want to use the ``Scan`` widget.
 
 Key fields:
 
-* ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``, ``"MoNaLISA"``, or ``"Advanced"``
+* ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``, ``"MoNaLISA"``, ``"Advanced"`` or ``"SimplePointScan"``. ``SimplePointScan`` is a beginner's point-scan panel (overview and acquisition modes) that runs on the Advanced scan path; pair it with ``GalvoScanDesigner`` and ``AdvancedScanTTLCycleDesigner``.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
 * ``scanDesignerParams``: Parameters for the scan designer
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
@@ -311,6 +311,18 @@ Key fields:
 * ``maxScanTimeMin``: Optional scan-duration guard in minutes; ``null`` or omission disables this time guard. Signal generation also refuses scans above 10 million spatial positions.
 * ``lineClockLine``: NI-DAQ port line for line clock output (integer or ``"Dev1/port0/line{N}"`` string; ``null`` if not used)
 * ``frameStartClockLine`` / ``frameEndClockLine``: Frame clock outputs (same format as ``lineClockLine``)
+* ``simplePointScan``: Optional options for the ``SimplePointScan`` panel; every key is optional:
+
+  * ``objectiveNA``: sets the pixel slider's finest end to the confocal Nyquist pixel, shortest selected wavelength / (8 · NA);
+  * ``nyquistPixelSizeUm``: sets that end directly; STED setups need this;
+  * ``overviewAxes``: the two positioners the overview scans (default: the first two scanning positioners);
+  * ``overviewFieldUm`` / ``overviewMinFieldUm``: the overview's field, and the smallest it may shrink to while fitting the frame-time target;
+  * ``overviewMinPixels`` / ``overviewMaxPixels``: the overview's pixel-count range (default 64 / 512);
+  * ``overviewFrameTimeS``: the overview's frame-time target (default 1 s);
+  * ``minSamplesPerPixel``: the shortest dwell in samples (default 2);
+  * ``maxDwellMs``: the dwell slider's longest value (default 10 ms).
+
+  Other scan panels ignore the block.
 
 **Example** (minimal Base scan):
 
