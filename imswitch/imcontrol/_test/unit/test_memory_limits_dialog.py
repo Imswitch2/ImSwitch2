@@ -1,4 +1,4 @@
-"""Tools > Memory limits…: shows what is in force, saves, applies at once.
+"""Preferences > Memory limits…: shows what is in force, saves, applies at once.
 
 The limits describe the computer, so they live in imcontrol_options.json;
 this dialog is how they are changed without editing that file. Saving is
@@ -117,17 +117,18 @@ def test_saving_is_refused_while_a_recording_runs(dialog, monkeypatch):
     assert 'recording is running' in dialog.statusLabel.text()
 
 
-def test_the_tools_menu_offers_it(qapp):
-    """The real main view, on an empty setup: the entry is in Tools and asks
-    the controller to open the dialog."""
+def test_the_preferences_menu_offers_it(qapp):
+    """The real main view, on an empty setup: the entry is in Preferences and
+    asks the controller to open the dialog."""
     from imswitch.imcontrol.model.Options import Options
     from imswitch.imcontrol.view import ImConMainView, ViewSetupInfo
 
     view = ImConMainView(Options(setupFileName='x.json'),
                          ViewSetupInfo.from_dict({}, infer_missing=True))
     try:
-        [tools] = [a.menu() for a in view.menuBar().actions() if a.text() == '&Tools']
-        assert 'Memory limits…' in [a.text() for a in tools.actions()]
+        [preferences] = [a.menu() for a in view.menuBar().actions()
+                         if a.text() == '&Preferences']
+        assert 'Memory limits…' in [a.text() for a in preferences.actions()]
         opened = []
         view.sigOpenMemoryLimits.connect(lambda: opened.append(True))
         view.memoryLimitsAction.trigger()

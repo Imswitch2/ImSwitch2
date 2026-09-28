@@ -1547,7 +1547,7 @@ property of the computer, so it lives in the per-machine options file
 ``imcontrol_options.json`` (under the user config directory) rather than in
 the setup file, which travels between machines. The ``memory`` group holds
 three limits in MiB, each named for the one thing it bounds; the values
-shown are the defaults. Edit them in ImControl under **Tools → Memory
+shown are the defaults. Edit them in ImControl under **Preferences → Memory
 limits…**, which saves this file and applies the new limits at once, or edit
 the file by hand and restart::
 

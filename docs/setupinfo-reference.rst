@@ -1290,7 +1290,7 @@ ImProcess-only presets, with no hardware: ``fiji_processor.json``,
 
 Or use the **visual config editor** (Config Studio), which shows typed fields
 for every manager's ``managerProperties``.  In a running ImSwitch2 it is
-**Tools → Edit hardware configuration…**.  Without starting the microscope,
+**Hardware → Edit hardware configuration…**.  Without starting the microscope,
 run it from a source checkout with:
 
 .. code-block:: bash

@@ -7,7 +7,7 @@ Two ways in:
 
 * standalone --- ``python utility_scripts/imswitch_config_editor.py
   [/path/to/config/dir]``, which owns its own QApplication and dark theme;
-* embedded --- ``Tools > Edit hardware configuration...`` in imcontrol, which
+* embedded --- ``Hardware > Edit hardware configuration...`` in imcontrol, which
   opens :class:`MainWindow` as a window of the running application and leaves
   the application-wide palette alone.
 

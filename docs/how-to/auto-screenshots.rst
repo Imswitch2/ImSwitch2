@@ -144,7 +144,7 @@ The window is requested at 1920 × 1080 but cannot be larger than the
 screen it is shown on, so the full-window capture is roomiest on a large
 monitor; on a laptop screen the docks are as cramped as they would be in
 use.  Once the window is up, the panels are re-sized for their content, as
-**Tools → Reset panel layout** does.
+**View → Reset panel layout** does.
 
 The pass runs without anyone at the keyboard:
 

@@ -100,7 +100,7 @@ under `~/ImSwitchMeasurements/<date>/camera_dark_calibration_<time>/`.
 ## How to Run
 
 1. Open ImSwitch and load your setup configuration (e.g., `example_kiralux_teensy.json`)
-2. Open the **Scripting** widget (usually under Tools menu)
+2. Open the **Scripting** tab (on the left edge of the window)
 3. Load one of the scripts above using the "Load Script" button or paste the script content
 4. Click "Run" to execute the workflow
 5. Monitor progress in the ImSwitch status bar and console output

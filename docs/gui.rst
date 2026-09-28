@@ -97,10 +97,19 @@ STED imaging.
    :align: center
    :width: 454px
 
-The output folder is not remembered between sessions.  With
-``recording.includeDateInOutputFolder`` on (the default) it is rebuilt from
-today's date every time ImSwitch2 starts, and it is created on demand when a
-recording or snapshot is saved, so it does not have to exist beforehand.
+A folder typed into the widget is not remembered between sessions.  Every
+time ImSwitch2 starts, the output folder is rebuilt from the default
+recordings folder.  With ``recording.includeDateInOutputFolder`` on (the
+default), a subfolder named after today's date is added.  The folder is
+created on demand when a recording or snapshot is saved, so it does not
+have to exist beforehand.
+
+To change the default, use **Preferences → Recordings folder…**.  It sets
+the folder and whether to add the dated subfolder, and shows where today's
+recordings will go.  Saving writes ``imcontrol_options.json`` on this
+computer and moves the Recording widget to the new folder straight away.  A
+recording that is already running keeps its file; later recordings and
+snapshots use the new folder.
 
 When a recording cannot keep up
 -------------------------------
@@ -110,7 +119,7 @@ is armed, the log estimates for each detector how many frames that queue can
 hold.  If the disk falls behind and the queue fills, the acquisition loop
 waits; the log says so the moment it starts waiting, repeats every few
 seconds while it continues, and says when it resumes.  The queue sizes are
-set under **Tools → Memory limits…** (see :ref:`improcess-memory-limits`).
+set under **Preferences → Memory limits…** (see :ref:`improcess-memory-limits`).
 
 A detector that delivers no frame for ten seconds, or for three of its own
 frame intervals if that is longer (a camera with a 30 s exposure, say), is
@@ -125,7 +134,7 @@ count are counted in ``recording:discarded_frames``.
 Session notes
 -------------
 
-**Tools → Session notes…** opens a free-text editor whose contents are
+**File → Session notes…** opens a free-text editor whose contents are
 written into the metadata of every recording and snapshot saved from then
 until ImSwitch2 is closed.  It is the place for what no widget captures —
 "measured 10 mW in the BFP for the 405 laser", which coverslip batch is on

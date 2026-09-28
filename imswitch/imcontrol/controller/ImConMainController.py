@@ -1,4 +1,5 @@
 import dataclasses
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -66,6 +67,8 @@ class ImConMainController(MainController):
         self.__mainView.sigOpenConfigEditor.connect(self.openConfigEditor)
         self.__mainView.sigOpenMemoryLimits.connect(self.openMemoryLimits)
         self.__mainView.memoryLimitsDialog.sigSaveRequested.connect(self.saveMemoryLimits)
+        self.__mainView.sigOpenRecordingFolder.connect(self.openRecordingFolder)
+        self.__mainView.recordingFolderDialog.sigSaveRequested.connect(self.saveRecordingFolder)
         self.__mainView.sessionNotesDialog.sigNotesChanged.connect(self.setSessionNote)
 
         # The Config Studio, while it is open. One window at a time: a second
@@ -546,6 +549,59 @@ class ImConMainController(MainController):
             dialog.setStatus(f'Could not save the memory limits: {e}')
             return
         memory_limits.configure(memory, logger=self.__logger)
+        dialog.setStatus('')
+        dialog.accept()
+
+    def openRecordingFolder(self):
+        """Show the recordings-folder editor, seeded with what the options file holds."""
+        options, _ = configfiletools.loadOptions()
+        dialog = self.__mainView.recordingFolderDialog
+        dialog.setValues(getattr(options, 'recording', None))
+        self.__mainView.showRecordingFolderDialog()
+
+    def saveRecordingFolder(self, values):
+        """Save the default recordings folder and point the Recording widget at it.
+
+        Safe during a recording: a recording works out its file name when it
+        starts, so the one running keeps its file and only later recordings
+        and snapshots go to the new folder. A folder that cannot be one -- no
+        path, a relative path (which would depend on where ImSwitch was
+        started), an existing file -- keeps the dialog open with the reason.
+        """
+        from imswitch.imcontrol.model.Options import RecordingOptions
+
+        dialog = self.__mainView.recordingFolderDialog
+        folder = os.path.expanduser(str(values.get('outputFolder') or '').strip())
+        if not folder:
+            dialog.setStatus('Enter the folder recordings should be saved in.')
+            return
+        if not os.path.isabs(folder):
+            dialog.setStatus(
+                f'Enter a full path: "{folder}" would be resolved against '
+                f'whichever folder ImSwitch happened to be started from.'
+            )
+            return
+        if os.path.exists(folder) and not os.path.isdir(folder):
+            dialog.setStatus(f'"{folder}" is a file, not a folder.')
+            return
+
+        recording = RecordingOptions(
+            outputFolder=os.path.normpath(folder),
+            includeDateInOutputFolder=bool(values.get('includeDateInOutputFolder', True)),
+        )
+        try:
+            options, _ = configfiletools.loadOptions()
+            configfiletools.saveOptions(dataclasses.replace(options, recording=recording))
+        except Exception as e:
+            self.__logger.error(f'Could not save the recordings folder: {e}', exc_info=True)
+            dialog.setStatus(f'Could not save the recordings folder: {e}')
+            return
+
+        recordingController = self.controllers.get('Recording')
+        if recordingController is not None:
+            recordingController.setRecFolder(recording.folderFor())
+        self.__logger.info(f'Recordings folder set to {recording.outputFolder}'
+                           f'{" (dated subfolders)" if recording.includeDateInOutputFolder else ""}')
         dialog.setStatus('')
         dialog.accept()
 

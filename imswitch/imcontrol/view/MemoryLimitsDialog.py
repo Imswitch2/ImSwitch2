@@ -1,4 +1,4 @@
-"""Tools > Memory limits…: the per-machine memory settings, edited in place.
+"""Preferences > Memory limits…: the per-machine memory settings, edited in place.
 
 The three limits live in ``imcontrol_options.json`` (``Options.memory``)
 because they describe the computer, not the microscope; see

@@ -30,7 +30,7 @@ for name, value in CAMERA_SETTINGS.items():
     api.imcontrol.setDetectorParameter(camera, name, value)
 
 # A session note is stored in the metadata of every file recorded from now
-# on -- the same text as in Tools > Session notes... in Hardware Control.
+# on -- the same text as in File > Session notes... in Hardware Control.
 api.imcontrol.setSessionNote('Scripting tutorial 05: until-stop recording')
 # "Until stop": the recording runs until stopRecording() is called.
 api.imcontrol.setRecModeUntilStop()
