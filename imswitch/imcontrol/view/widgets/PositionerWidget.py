@@ -13,6 +13,10 @@ class PositionerWidget(Widget):
     sigSettingsClicked = QtCore.Signal()
     sigSettingsChanged = QtCore.Signal(object)
     sigStepModeChanged = QtCore.Signal(bool)
+    sigReferenceClicked = QtCore.Signal()
+    sigReferenceAxisClicked = QtCore.Signal(str, str, object)
+    sigReferenceAllClicked = QtCore.Signal()
+    sigAbortReferenceClicked = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -20,6 +24,12 @@ class PositionerWidget(Widget):
         self.pars = {}
         self._positionUnits = {}
         self._positionerAxes = {}
+        self._referenceAxes = []
+        self._referenceDialog = None
+        self._referenceDialogRows = {}
+        self._referenceDialogCloseButton = None
+        self._referenceAllButton = None
+        self._referenceAbortButton = None
         self._coarseMode = False
         self._coarseStepMultiplier = 5.0
 
@@ -87,6 +97,12 @@ class PositionerWidget(Widget):
         stepModeContainerLayout.addStretch(1)
         stepModeContainerLayout.addWidget(self.pars['StepModeWidget'], 1)
         self.grid.addWidget(self.pars['StepModeContainer'], 0, 5)
+
+        self.pars['ReferenceButton'] = guitools.BetterPushButton('Reference…')
+        self.pars['ReferenceButton'].setVisible(False)
+        self.pars['ReferenceButton'].setEnabled(False)
+        self.grid.addWidget(self.pars['ReferenceButton'], 0, 4, alignment=QtCore.Qt.AlignRight)
+        self.pars['ReferenceButton'].clicked.connect(self.sigReferenceClicked.emit)
 
         self.pars['SettingsButton'] = guitools.BetterPushButton('Settings')
         self.grid.addWidget(self.pars['SettingsButton'], 0, 6, alignment=QtCore.Qt.AlignRight)
@@ -173,6 +189,157 @@ class PositionerWidget(Widget):
         parNameSuffix = self._getParNameSuffix(positionerName, axis)
         unit = self._positionUnits.get(parNameSuffix, 'µm')
         self.pars['Position' + parNameSuffix].setText(f'<strong>{position:.2f} {unit}</strong>')
+
+    def setReferenceAxesStatus(self, referenceAxes):
+        self._referenceAxes = list(referenceAxes)
+        referenceButton = self.pars['ReferenceButton']
+        if not self._referenceAxes:
+            referenceButton.setVisible(False)
+            referenceButton.setEnabled(False)
+            return
+
+        unreferencedCount = sum(
+            1 for axisInfo in self._referenceAxes if not axisInfo.get('referenced', False)
+        )
+        if unreferencedCount:
+            referenceButton.setText(f'⚠ {unreferencedCount} unreferenced')
+        else:
+            referenceButton.setText('Reference…')
+        referenceButton.setVisible(True)
+        referenceButton.setEnabled(True)
+        self._refreshReferenceDialogRows()
+
+    def showReferenceDialog(self):
+        if not self._referenceAxes:
+            return
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('Reference positioners')
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
+        grid.addWidget(QtWidgets.QLabel('<strong>Status</strong>'), 0, 0)
+        grid.addWidget(QtWidgets.QLabel('<strong>Axis</strong>'), 0, 1)
+        grid.addWidget(QtWidgets.QLabel('<strong>Target</strong>'), 0, 2)
+
+        self._referenceDialog = dialog
+        self._referenceDialogRows = {}
+        for row, axisInfo in enumerate(self._referenceAxes, start=1):
+            positionerName = axisInfo['positionerName']
+            axis = axisInfo['axis']
+
+            indicator = QtWidgets.QLabel()
+            axisLabel = QtWidgets.QLabel(f'{positionerName} -- {axis}')
+            targetCombo = QtWidgets.QComboBox()
+            self._populateReferenceTargetCombo(targetCombo, axisInfo)
+            referenceButton = guitools.BetterPushButton('Reference')
+            referenceButton.clicked.connect(
+                lambda *args, positionerName=positionerName, axis=axis, targetCombo=targetCombo:
+                self.sigReferenceAxisClicked.emit(positionerName, axis, targetCombo.currentData())
+            )
+
+            grid.addWidget(indicator, row, 0)
+            grid.addWidget(axisLabel, row, 1)
+            grid.addWidget(targetCombo, row, 2)
+            grid.addWidget(referenceButton, row, 3)
+            self._referenceDialogRows[(positionerName, axis)] = {
+                'indicator': indicator,
+                'combo': targetCombo,
+                'button': referenceButton,
+            }
+            self._setReferenceIndicator(indicator, axisInfo.get('referenced', False))
+
+        layout.addLayout(grid)
+
+        actionLayout = QtWidgets.QHBoxLayout()
+        actionLayout.addStretch(1)
+        self._referenceAllButton = guitools.BetterPushButton('Reference all')
+        self._referenceAbortButton = guitools.BetterPushButton('Abort')
+        self._referenceAbortButton.setEnabled(False)
+        self._referenceAllButton.clicked.connect(self.sigReferenceAllClicked.emit)
+        self._referenceAbortButton.clicked.connect(self.sigAbortReferenceClicked.emit)
+        actionLayout.addWidget(self._referenceAllButton)
+        actionLayout.addWidget(self._referenceAbortButton)
+        layout.addLayout(actionLayout)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        self._referenceDialogCloseButton = buttons.button(QtWidgets.QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        dialog.finished.connect(lambda *_: self._clearReferenceDialog())
+        dialog.exec_()
+
+    def getReferenceTargetModes(self):
+        return {
+            key: row['combo'].currentData()
+            for key, row in self._referenceDialogRows.items()
+        }
+
+    def setReferenceBatchRunning(self, running):
+        running = bool(running)
+        for row in self._referenceDialogRows.values():
+            row['combo'].setEnabled(not running)
+            row['button'].setEnabled(not running)
+        if self._referenceAllButton is not None:
+            self._referenceAllButton.setEnabled(not running)
+        if self._referenceAbortButton is not None:
+            self._referenceAbortButton.setEnabled(running)
+        if self._referenceDialogCloseButton is not None:
+            self._referenceDialogCloseButton.setEnabled(not running)
+
+    def confirmReferenceBatch(self, plan):
+        lines = []
+        for index, item in enumerate(plan, start=1):
+            lines.append(
+                f"{index}. {item['positionerName']} axis {item['axis']} -> "
+                f"{item['targetDescription']} "
+                f"(wait {item['waitAfterS']:.3g} s)"
+            )
+        message = (
+            'Referencing these axes may move positioners.\n\n'
+            + '\n'.join(lines)
+            + '\n\nContinue?'
+        )
+        result = QtWidgets.QMessageBox.warning(
+            self,
+            'Reference all positioners',
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return result == QtWidgets.QMessageBox.Yes
+
+    def confirmReferencePositioner(self, positionerName, axis, targetPosition):
+        message = (
+            f'Referencing {positionerName} axis {axis} may move the positioner.\n\n'
+            f'Target position: {targetPosition}\n\n'
+            'Continue?'
+        )
+        result = QtWidgets.QMessageBox.warning(
+            self,
+            'Reference positioner',
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return result == QtWidgets.QMessageBox.Yes
+
+    def showReferenceError(self, positionerName, axis, message):
+        QtWidgets.QMessageBox.critical(
+            self,
+            'Reference positioner failed',
+            f'Could not reference {positionerName} axis {axis}:\n{message}',
+        )
+
+    def showReferenceBatchError(self, message):
+        QtWidgets.QMessageBox.critical(
+            self,
+            'Reference all positioners failed',
+            message,
+        )
 
     def setStepMode(self, coarseMode):
         self._coarseMode = bool(coarseMode)
@@ -294,6 +461,46 @@ class PositionerWidget(Widget):
     def _updateCoarseModeTooltip(self):
         if 'CoarseModeButton' in self.pars:
             self.pars['CoarseModeButton'].setToolTip(f'{self._formatStepValue(self._coarseStepMultiplier)}x')
+
+    def _refreshReferenceDialogRows(self):
+        for axisInfo in self._referenceAxes:
+            row = self._referenceDialogRows.get((axisInfo['positionerName'], axisInfo['axis']))
+            if row is None:
+                continue
+            self._setReferenceIndicator(row['indicator'], axisInfo.get('referenced', False))
+            self._populateReferenceTargetCombo(row['combo'], axisInfo)
+
+    def _populateReferenceTargetCombo(self, combo, axisInfo):
+        currentMode = combo.currentData()
+        oldBlocked = combo.blockSignals(True)
+        combo.clear()
+        defaultLabel = axisInfo.get('defaultTargetLabel')
+        if defaultLabel:
+            combo.addItem(defaultLabel, 'default')
+        combo.addItem(
+            axisInfo.get('displayedTargetLabel') or 'Displayed position',
+            'displayed',
+        )
+        if currentMode is not None:
+            index = combo.findData(currentMode)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        combo.blockSignals(oldBlocked)
+
+    def _setReferenceIndicator(self, label, referenced):
+        if referenced:
+            label.setText('✓ Referenced')
+            label.setStyleSheet('color: #2e7d32; font-weight: bold;')
+        else:
+            label.setText('⚠ Unreferenced')
+            label.setStyleSheet('color: #b26a00; font-weight: bold;')
+
+    def _clearReferenceDialog(self):
+        self._referenceDialog = None
+        self._referenceDialogRows = {}
+        self._referenceDialogCloseButton = None
+        self._referenceAllButton = None
+        self._referenceAbortButton = None
 
     def stepAxis(self, positionerName, axis, direction):
         if direction == 'plus':

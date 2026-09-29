@@ -37,6 +37,10 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         self._joystickAutoReenablePendingAxes = {}
         self._joystickAutoReenableFailureCount = {}
         self._joystickAutoReenablePollIntervalMs = 200
+        self._referenceBatchPlan = []
+        self._referenceBatchIndex = 0
+        self._referenceBatchRunning = False
+        self._referenceBatchAbortRequested = False
 
         self.__logger = initLogger(self, tryInheritParent=True)
 
@@ -91,8 +95,13 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         self._widget.sigSettingsClicked.connect(self.openSettingsDialog)
         self._widget.sigSettingsChanged.connect(self.applySettings)
         self._widget.sigStepModeChanged.connect(self.setStepMode)
+        self._widget.sigReferenceClicked.connect(self.openReferenceDialog)
+        self._widget.sigReferenceAxisClicked.connect(self._referencePositionerFromWidget)
+        self._widget.sigReferenceAllClicked.connect(self.referenceAllPositioners)
+        self._widget.sigAbortReferenceClicked.connect(self.abortReferenceBatch)
         self._widget.setCoarseStepMultiplier(self._coarseStepMultiplier)
         self._widget.setStepMode(self._isCoarseMode)
+        self._refreshReferenceStatus()
         self._updateLiveTimerState()
         self._refreshLiveUpdatedPositioners()
 
@@ -150,6 +159,301 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 'joystickAutoReenableDelayS': self._joystickAutoReenableDelayS,
             },
         )
+
+    def openReferenceDialog(self):
+        self._refreshReferenceStatus()
+        self._widget.showReferenceDialog()
+
+    def _referencePositionerFromWidget(self, positionerName, axis, targetMode):
+        if self._isReferenceBatchRunning():
+            return False
+
+        pManager = self._master.positionersManager[positionerName]
+        position = None
+        if targetMode == 'displayed':
+            try:
+                position = pManager.position[axis]
+            except Exception as e:
+                self._widget.showReferenceError(
+                    positionerName,
+                    axis,
+                    f'Could not read displayed position: {e}',
+                )
+                return False
+        elif targetMode != 'default':
+            self._widget.showReferenceError(
+                positionerName,
+                axis,
+                f'Unknown reference target: {targetMode}',
+            )
+            return False
+        elif self._getDefaultReferencePosition(pManager) is None:
+            self._widget.showReferenceError(
+                positionerName,
+                axis,
+                'No default reference value is configured for this axis.',
+            )
+            return False
+
+        targetPosition = self._formatReferenceTarget(
+            pManager, position, targetMode=targetMode
+        )
+        if not self._widget.confirmReferencePositioner(positionerName, axis, targetPosition):
+            return False
+
+        return self.referencePositioner(positionerName, axis, position=position)
+
+    def referenceAllPositioners(self):
+        if self._isReferenceBatchRunning():
+            return False
+
+        try:
+            plan = self._buildReferenceBatchPlan()
+        except Exception as e:
+            self.__logger.error(f'Could not prepare reference-all plan: {e}', exc_info=True)
+            self._widget.showReferenceBatchError(f'Could not prepare reference-all plan: {e}')
+            return False
+
+        if not plan:
+            return False
+        if not self._widget.confirmReferenceBatch(plan):
+            return False
+
+        self._referenceBatchPlan = plan
+        self._referenceBatchIndex = 0
+        self._referenceBatchAbortRequested = False
+        self._referenceBatchRunning = True
+        self._widget.setReferenceBatchRunning(True)
+        self._continueReferenceBatch()
+        return True
+
+    def abortReferenceBatch(self):
+        if not self._isReferenceBatchRunning():
+            return False
+        self._referenceBatchAbortRequested = True
+        return True
+
+    def _continueReferenceBatch(self):
+        if not self._isReferenceBatchRunning():
+            return
+
+        if self._referenceBatchAbortRequested:
+            self._finishReferenceBatch()
+            return
+
+        if self._referenceBatchIndex >= len(self._referenceBatchPlan):
+            self._finishReferenceBatch()
+            return
+
+        item = self._referenceBatchPlan[self._referenceBatchIndex]
+        self._referenceBatchIndex += 1
+        succeeded = self.referencePositioner(
+            item['positionerName'],
+            item['axis'],
+            position=item['position'],
+        )
+        if not succeeded:
+            self._finishReferenceBatch()
+            return
+
+        self._scheduleReferenceBatchContinue(item['waitAfterS'])
+
+    def _scheduleReferenceBatchContinue(self, waitAfterS):
+        QTimer.singleShot(max(0, int(waitAfterS * 1000)), self._continueReferenceBatch)
+
+    def _finishReferenceBatch(self):
+        self._referenceBatchPlan = []
+        self._referenceBatchIndex = 0
+        self._referenceBatchRunning = False
+        self._referenceBatchAbortRequested = False
+        self._widget.setReferenceBatchRunning(False)
+        self._refreshReferenceStatus()
+
+    def _isReferenceBatchRunning(self):
+        return bool(getattr(self, '_referenceBatchRunning', False))
+
+    def _buildReferenceBatchPlan(self):
+        targetModes = self._widget.getReferenceTargetModes()
+        plan = []
+        for positionerName, pManager, axis in self._iterReferenceAxes():
+            targetMode = targetModes.get((positionerName, axis))
+            if targetMode is None:
+                targetMode = (
+                    'default'
+                    if self._getDefaultReferencePosition(pManager) is not None
+                    else 'displayed'
+                )
+            position = None
+            if targetMode == 'displayed':
+                position = pManager.position[axis]
+            elif targetMode != 'default':
+                raise ValueError(
+                    f'Unknown reference target "{targetMode}" for '
+                    f'{positionerName} axis {axis}.'
+                )
+            elif self._getDefaultReferencePosition(pManager) is None:
+                raise ValueError(
+                    f'No default reference value is configured for '
+                    f'{positionerName} axis {axis}.'
+                )
+
+            plan.append({
+                'positionerName': positionerName,
+                'axis': axis,
+                'targetMode': targetMode,
+                'position': position,
+                'targetDescription': self._formatReferenceTarget(
+                    pManager, position, targetMode=targetMode
+                ),
+                'waitAfterS': self._getReferenceWaitAfterS(pManager),
+            })
+        return plan
+
+    def _getReferenceWaitAfterS(self, pManager):
+        try:
+            waitAfterS = float(getattr(pManager, 'referenceWaitAfterS', 0.3))
+        except (TypeError, ValueError):
+            waitAfterS = 0.3
+        return max(0.0, waitAfterS)
+
+    def referencePositioner(self, positionerName, axis, position=None):
+        """Reference one positioner axis and refresh the UI state."""
+        pManager = self._master.positionersManager[positionerName]
+        try:
+            pManager.reference(axis=axis, position=position)
+        except Exception as e:
+            self.__logger.error(
+                f'Could not reference {positionerName} axis {axis}: {e}',
+                exc_info=True,
+            )
+            self._widget.showReferenceError(positionerName, axis, str(e))
+            return False
+
+        refreshSucceeded = True
+        try:
+            self.updatePosition(positionerName, axis)
+        except Exception as e:
+            refreshSucceeded = False
+            self.__logger.warning(
+                f'Referenced {positionerName} axis {axis}, but could not refresh '
+                f'the displayed position: {e}',
+                exc_info=True,
+            )
+            self._widget.showReferenceError(
+                positionerName,
+                axis,
+                f'Referenced, but could not refresh displayed position: {e}',
+            )
+        self._refreshReferenceStatus()
+        return refreshSucceeded
+
+    def _refreshReferenceStatus(self):
+        self._widget.setReferenceAxesStatus(self._getReferenceAxesStatus())
+
+    def _getReferenceAxesStatus(self):
+        referenceAxes = []
+        for positionerName, pManager, axis in self._iterReferenceAxes():
+            referenceAxes.append({
+                'positionerName': positionerName,
+                'axis': axis,
+                'referenced': self._isAxisReferenced(pManager, axis),
+                'defaultTargetLabel': self._formatDefaultReferenceTarget(pManager),
+                'displayedTargetLabel': self._formatDisplayedReferenceTarget(
+                    pManager, pManager.position[axis]
+                ),
+            })
+        return referenceAxes
+
+    def _iterReferenceAxes(self):
+        for pName, pManager in self._master.positionersManager:
+            if not self._isPositionerShownInWidget(pManager):
+                continue
+            if not getattr(pManager, 'requiresReference', False):
+                continue
+            for axis in pManager.axes:
+                yield pName, pManager, axis
+
+    def _isAxisReferenced(self, pManager, axis):
+        isAxisReferenced = getattr(pManager, 'isAxisReferenced', None)
+        if callable(isAxisReferenced):
+            return bool(isAxisReferenced(axis))
+        return bool(getattr(pManager, 'isReferenced', False))
+
+    def _formatReferenceTarget(self, pManager, position, targetMode=None):
+        if targetMode == 'displayed':
+            return self._formatDisplayedReferenceTarget(pManager, position)
+        if position is None:
+            return self._formatDefaultReferenceTarget(pManager) or 'Default'
+        return self._formatReferenceValues(pManager, position)
+
+    def _formatDefaultReferenceTarget(self, pManager):
+        position = self._getDefaultReferencePosition(pManager)
+        if position is None:
+            return None
+        voltage = self._getDefaultReferenceVoltage(pManager, position)
+        return f'Default ({self._formatReferenceValues(pManager, position, voltage)})'
+
+    def _formatDisplayedReferenceTarget(self, pManager, position):
+        return f'Displayed position ({self._formatReferenceValues(pManager, position)})'
+
+    def _formatReferenceValues(self, pManager, position, voltage=None):
+        positionText = self._formatPositionValue(pManager, position)
+        if voltage is None:
+            voltage = self._getReferenceVoltage(pManager, position)
+        if voltage is None:
+            return positionText
+        return f'{positionText}, {self._formatReferenceNumber(voltage)}V'
+
+    def _formatPositionValue(self, pManager, position):
+        unit = getattr(pManager, 'positionUnit', 'µm')
+        value = self._formatReferenceNumber(position)
+        if unit:
+            return f'{value}{unit}'
+        return value
+
+    def _formatReferenceNumber(self, value):
+        try:
+            return f'{float(value):.6g}'
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _getDefaultReferencePosition(self, pManager):
+        return self._getManagerValue(pManager, 'defaultReferencePosition')
+
+    def _getDefaultReferenceVoltage(self, pManager, defaultPosition):
+        voltage = self._getManagerValue(pManager, 'defaultReferenceVoltage')
+        if voltage is not None:
+            return voltage
+        return self._getReferenceVoltage(pManager, defaultPosition)
+
+    def _getReferenceVoltage(self, pManager, position):
+        converter = getattr(pManager, 'positionToVoltage', None)
+        if callable(converter):
+            try:
+                voltage = converter(position)
+            except (TypeError, ValueError):
+                voltage = None
+            if voltage is not None:
+                return voltage
+
+        conversionFactor = getattr(pManager, '_conversionFactor', None)
+        if conversionFactor is None:
+            managerProperties = getattr(
+                getattr(pManager, '_positionerInfo', None), 'managerProperties', {}
+            ) or {}
+            conversionFactor = managerProperties.get('conversionFactor')
+        if conversionFactor in (None, 0):
+            return None
+        try:
+            return position / conversionFactor
+        except (TypeError, ValueError):
+            return None
+
+    def _getManagerValue(self, pManager, attributeName):
+        value = getattr(pManager, attributeName, None)
+        if callable(value):
+            value = value()
+        return value
 
     def applySettings(self, settings):
         self._liveUpdateIntervalMs = max(100, int(settings.get(

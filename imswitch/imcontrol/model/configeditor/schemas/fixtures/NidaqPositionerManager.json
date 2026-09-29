@@ -4,6 +4,7 @@
     "managerName": "NidaqPositionerManager",
     "managerProperties": {
       "conversionFactor": 1,
+      "defaultReferenceVoltage": null,
       "maxVolt": 1,
       "minVolt": 1
     }

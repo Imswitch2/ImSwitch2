@@ -4,11 +4,11 @@
     "constrained": 46,
     "docs_agree": 136,
     "docs_documented": 136,
-    "keys": 215,
+    "keys": 217,
     "managers": 62,
-    "none_default_only": 29,
-    "none_only": 18,
-    "optional": 153,
+    "none_default_only": 31,
+    "none_only": 20,
+    "optional": 155,
     "reads_any": 57,
     "refs": 15,
     "required": 62,
@@ -416,7 +416,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 3
     },
     "OxxiusCombinerLaserManager": {
@@ -672,7 +672,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 3
     }
   },

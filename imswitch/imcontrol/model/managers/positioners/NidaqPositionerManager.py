@@ -11,6 +11,8 @@ class NidaqPositionerManager(PositionerManager):
     - ``maxVolt`` -- maximum voltage
     """
 
+    requiresReference: bool = True
+
     def __init__(self, positionerInfo, name, **lowLevelManagers):
         if len(positionerInfo.axes) != 1:
             raise RuntimeError(f'{self.__class__.__name__} only supports one axis,'
@@ -20,20 +22,45 @@ class NidaqPositionerManager(PositionerManager):
         self._conversionFactor = positionerInfo.managerProperties['conversionFactor']
         self._minVolt = positionerInfo.managerProperties['minVolt']
         self._maxVolt = positionerInfo.managerProperties['maxVolt']
+        self._defaultReferenceVoltage = positionerInfo.managerProperties.get(
+            'defaultReferenceVoltage'
+        )
+        if self._defaultReferenceVoltage is not None:
+            if not self._minVolt <= self._defaultReferenceVoltage <= self._maxVolt:
+                raise ValueError(
+                    f'defaultReferenceVoltage {self._defaultReferenceVoltage} V for '
+                    f'"{name}" is outside [{self._minVolt}, {self._maxVolt}] V.'
+                )
+
         super().__init__(positionerInfo, name, initialPosition={
             axis: 0 for axis in positionerInfo.axes
         })
+
+    @property
+    def defaultReferenceVoltage(self):
+        return self._defaultReferenceVoltage
+
+    @property
+    def defaultReferencePosition(self):
+        if self._defaultReferenceVoltage is None:
+            return None
+        return self._defaultReferenceVoltage * self._conversionFactor
+
+    def positionToVoltage(self, position):
+        return position / self._conversionFactor
 
     def move(self, dist, axis):
         self.setPosition(self._position[axis] + dist, axis)
 
     def setPosition(self, position, axis):
-        self._position[axis] = position
         self._nidaqManager.setAnalog(target=self.name,
-                                     voltage=position / self._conversionFactor,
+                                     voltage=self.positionToVoltage(position),
                                      min_val=self._minVolt,
                                      max_val=self._maxVolt)
-    
+        # Position is updated only after so that potential hardware failure
+        # doesn't leave cached position stale.
+        self._position[axis] = position
+
     def resetToCurrent(self):
         self.setPosition(self._position[self.axes[0]], self.axes[0])
 
@@ -41,6 +68,33 @@ class NidaqPositionerManager(PositionerManager):
         if axis not in self._position:
             raise ValueError(f'Axis {axis} not available. Available axes: {list(self._position.keys())}')
         return self._position[axis]
+
+    def reference(self, axis=None, position=None):
+        if axis is None:
+            axis = self.axes[0]
+
+        if axis not in self.axes:
+            raise ValueError(
+                f'Axis {axis} not available. Available axes: {self.axes}'
+            )
+
+        if position is None:
+            if self._defaultReferenceVoltage is None:
+                raise ValueError(
+                    f'No defaultReferenceVoltage is configured for "{self.name}".'
+                )
+            position = self.defaultReferencePosition
+
+        voltage = self.positionToVoltage(position)
+
+        if not self._minVolt <= voltage <= self._maxVolt:
+            raise ValueError(
+                f'Reference position {position} maps to {voltage:.3f} V, '
+                f'outside [{self._minVolt}, {self._maxVolt}] V.'
+            )
+
+        self.setPosition(position, axis)
+        self.markReferenced(axis)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

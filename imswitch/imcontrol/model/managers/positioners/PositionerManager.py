@@ -7,6 +7,9 @@ class PositionerManager(ABC):
     """ Abstract base class for managers that control positioners. Each type of
     positioner corresponds to a manager derived from this class. """
 
+    requiresReference: bool = False
+    referenceWaitAfterS: float = 0.3
+
     @abstractmethod
     def __init__(self, positionerInfo, name: str, initialPosition: Dict[str, float]):
         """
@@ -24,6 +27,7 @@ class PositionerManager(ABC):
         self.__name = name
 
         self.__axes = positionerInfo.axes
+        self.__referencedAxes = {axis: not self.requiresReference for axis in self.__axes}
         self.__forPositioning = positionerInfo.forPositioning
         self.__forScanning = positionerInfo.forScanning
         self.__resetOnClose = positionerInfo.resetOnClose
@@ -45,6 +49,20 @@ class PositionerManager(ABC):
         """ The position of each axis. This is a dict in the format
         ``{ axis: position }``. """
         return self._position
+
+    @property
+    def defaultReferencePosition(self):
+        """Default software position used by reference(), or None if unspecified."""
+        return None
+
+    @property
+    def defaultReferenceVoltage(self):
+        """Default hardware voltage used by reference(), or None if unspecified."""
+        return None
+
+    def positionToVoltage(self, position):
+        """Return the hardware voltage for a software position, if applicable."""
+        return None
 
     def updateTrackedPosition(self, positions: Dict[str, float]) -> None:
         """ Sync the cached position from an external hardware read.
@@ -100,6 +118,19 @@ class PositionerManager(ABC):
         """ Keyboard-shortcut group used to jog this positioner from the
         Positioner widget: ``"ctrl"``, ``"ctrl-shift"``, or ``None``. """
         return self.__shortcutModifier
+    
+    @property
+    def isReferenced(self)-> bool:
+        """Wether all axes currently have a valid software reference."""
+        return all(self.__referencedAxes.values())
+
+    def isAxisReferenced(self, axis:str)->bool:
+        """Wether specific axis has a valid software reference."""
+        if axis not in self.__referencedAxes:
+            raise ValueError(
+                f'Axis {axis} not available. Available axes: {self.axes}'
+            )
+        return self.__referencedAxes[axis]
 
     @abstractmethod
     def move(self, dist: float, axis: str):
@@ -119,6 +150,43 @@ class PositionerManager(ABC):
     def finalize(self) -> None:
         """ Close/cleanup positioner. """
         pass
+
+    def markReferenced(self,axis=None) -> None:
+        self._setReferenceState(axis,True)
+    
+    def markUnreferenced(self,axis=None) -> None:
+        self._setReferenceState(axis,False)
+
+    def reference(self, axis: str = None, position=None) -> None:
+        """Establish a known position reference for the requested axis.
+
+        Positioners that require explicit referencing must override this method.
+        
+        arg:``position`` optionally specifies the position at which the axis should
+        be referenced. If omitted, the manager chooses its default reference
+        position.
+        """
+        if self.requiresReference:
+            raise NotImplementedError(
+                f'{self.__class__.__name__} requires referencing but does not '
+                'implement reference().'
+            )
+    
+    def _setReferenceState(self, axis, referenced:bool) -> None:
+        """
+        Mark axis reference state. If arg:``axis`` is None, all axes 
+        are set at the same time, so that single axis positioner 
+        does not have to specify the axis.
+        Note that a non-referenced axis will raise an error.
+        """
+        axes = self.axes if axis is None else [axis]
+
+        for ax in axes:
+            if ax not in self.__referencedAxes:
+                raise ValueError(
+                    f'Axis {ax} not available for reference. Available axis:{self.axes}'
+                )
+            self.__referencedAxes[ax] = bool(referenced)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

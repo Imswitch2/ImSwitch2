@@ -47,17 +47,29 @@ class TriggerScopePositionerManager(PositionerManager):
     - ``maxVolt`` -- maximum allowed DAC voltage
     """
 
+    requiresReference: bool = True
+
     def __init__(self, positionerInfo, name, **lowLevelManagers):
         if len(positionerInfo.axes) != 1:
             raise RuntimeError(
                 f'{self.__class__.__name__} only supports one axis,'
                 f' {len(positionerInfo.axes)} provided.'
             )
+
         self.__logger = initLogger(self, instanceName=name)
         self._triggerScopeManager = lowLevelManagers['triggerScopeManager']
         self._conversionFactor = positionerInfo.managerProperties['conversionFactor']
         self._minVolt = positionerInfo.managerProperties['minVolt']
         self._maxVolt = positionerInfo.managerProperties['maxVolt']
+        self._defaultReferenceVoltage = positionerInfo.managerProperties.get(
+            'defaultReferenceVoltage'
+        )
+        if self._defaultReferenceVoltage is not None:
+            if not self._minVolt <= self._defaultReferenceVoltage <= self._maxVolt:
+                raise ValueError(
+                    f'defaultReferenceVoltage {self._defaultReferenceVoltage} V for '
+                    f'"{name}" is outside [{self._minVolt}, {self._maxVolt}] V.'
+                )
         self._persistenceFile = os.path.join(
             dirtools.UserFileDirs.Config, _PERSISTENCE_FILENAME
         )
@@ -70,6 +82,19 @@ class TriggerScopePositionerManager(PositionerManager):
         # the software's view of the hardware rather than guessing or homing.
         self._restorePersistedPosition()
 
+    @property
+    def defaultReferenceVoltage(self):
+        return self._defaultReferenceVoltage
+
+    @property
+    def defaultReferencePosition(self):
+        if self._defaultReferenceVoltage is None:
+            return None
+        return self._defaultReferenceVoltage * self._conversionFactor
+
+    def positionToVoltage(self, position):
+        return position / self._conversionFactor
+
     def move(self, dist, axis):
         self.setPosition(self._position[self.axes[0]] + dist, axis)
 
@@ -78,7 +103,7 @@ class TriggerScopePositionerManager(PositionerManager):
         # actually commanded (not the requested one). The board has no readback,
         # so this is the only way to keep the tracked position consistent with
         # the hardware instead of drifting outside the valid range.
-        voltage = position / self._conversionFactor
+        voltage = self.positionToVoltage(position)
         clampedVoltage = min(max(voltage, self._minVolt), self._maxVolt)
         if clampedVoltage != voltage:
             self.__logger.warning(
@@ -152,6 +177,33 @@ class TriggerScopePositionerManager(PositionerManager):
                 'not survive a restart.', self.name, self._persistenceFile,
                 exc_info=True
             )
+
+    def reference(self, axis=None, position=None):
+        if axis is None:
+            axis = self.axes[0]
+
+        if axis not in self.axes:
+            raise ValueError(
+                f'Axis {axis} not available. Available axes: {self.axes}'
+            )
+
+        if position is None:
+            if self._defaultReferenceVoltage is None:
+                raise ValueError(
+                    f'No defaultReferenceVoltage is configured for "{self.name}".'
+                )
+            position = self.defaultReferencePosition
+
+        voltage = self.positionToVoltage(position)
+
+        if not self._minVolt <= voltage <= self._maxVolt:
+            raise ValueError(
+                f'Reference position {position} maps to {voltage:.3f} V, '
+                f'outside [{self._minVolt}, {self._maxVolt}] V.'
+            )
+
+        self.setPosition(position, axis)
+        self.markReferenced(axis)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
