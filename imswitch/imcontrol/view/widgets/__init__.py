@@ -4,7 +4,9 @@ Import widget classes on demand so tests for a single widget do not import
 optional Napari-backed widgets and their GUI dependencies.
 """
 
+import sys
 from importlib import import_module
+from types import ModuleType
 
 
 _WIDGET_MODULES = {
@@ -71,5 +73,23 @@ def __getattr__(name):
     globals()[name] = widget_class
     return widget_class
 
+
+class _LazyExportModule(ModuleType):
+    """Keeps like-named submodules from shadowing the lazy widget classes.
+
+    Importing a submodule binds it onto this package (``from .ScanWidgetAdvanced
+    import ScanWidgetAdvanced`` makes ``ScanWidgetAdvanced`` the module), after
+    which ``getattr(package, 'ScanWidgetAdvanced')`` would hand back the module
+    instead of the class. As in ``imswitch.imcontrol.view``: such bindings are
+    ignored, and ``__getattr__`` resolves the class.
+    """
+
+    def __setattr__(self, name, value):
+        if name in _WIDGET_MODULES and isinstance(value, ModuleType):
+            return
+        super().__setattr__(name, value)
+
+
+sys.modules[__name__].__class__ = _LazyExportModule
 
 __all__ = list(_WIDGET_MODULES)

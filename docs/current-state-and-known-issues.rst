@@ -160,6 +160,16 @@ Both are pinned as strict expected failures in
 ``imswitch/imcontrol/_test/unit/test_scan_frame_geometry.py``. Fixing them
 changes the waveforms of every galvo scan, so it is separate work.
 
+**Loading a scan into the Advanced panel merges instead of replacing**
+(found 2026-09-29). ``AdvancedScanParameterSerializer.apply`` sets line-step
+enables and pulse windows only for the TTL devices a scan names, and leaves
+every other device as it was. The Advanced panel's own saved files name only
+the lasers the scan fires. So loading a scan that fires 405 into an Advanced
+panel where 488 is ticked leaves 488 ticked, and the loaded scan fires 488
+too. The SimplePointScan panel's scans name every TTL device (the ones they
+do not fire, switched off), so they load exactly; Advanced's own files and
+the serializer are unchanged, as fixing it changes how Advanced loads.
+
 Recording manager upgrade
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

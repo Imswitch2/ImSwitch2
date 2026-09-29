@@ -78,7 +78,7 @@ def test_one_laser_in_two_channels_with_different_partners(rig):
 def test_that_scan_runs_on_the_simulated_rig(rig):
     for laser, zone in ((V488, 0), (V405, 'new'), (V561, 1)):
         _drop(rig, laser, None, zone)
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
     assert rig.waitForEnd(30)
     assert rig.rejections == []
     assert rig.count('iteration') == 1

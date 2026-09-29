@@ -364,7 +364,8 @@ designers can be plugged in by subclassing those abstract bases.
 Five widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
 ``Advanced`` and ``SimplePointScan`` — selected by ``scan.scanWidgetType`` in
 the setup JSON; see :doc:`setupinfo-reference`. ``SimplePointScan`` is a
-beginner's point-scan panel on the Advanced scan path:
+beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
+its header switches between the two, on the same scan.
 
 - **Overview** scans the whole reachable field live, and shows the measured
   frame rate.

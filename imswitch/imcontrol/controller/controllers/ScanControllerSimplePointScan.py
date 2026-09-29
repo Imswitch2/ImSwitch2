@@ -13,20 +13,20 @@ The rectangle lives in scanner coordinates: it is converted with the scan
 geometry of the image the reference detector's layer shows (plan D1, §5.5),
 and drawn again whenever that image or the region changes.
 
-The controller owns the model (:mod:`imswitch.imcontrol.model.simple_scan`)
-and fills the Advanced controller's two parameter dicts from it, so the run
-lifecycle, recording layouts and refusal handling are Advanced's own. Where
-Advanced behaves otherwise than this panel needs, this controller overrides
-it and leaves Advanced unchanged (plan §6): its own continuation policy (D3),
-its own power checks (D5). Scans carry their frame geometry (D1).
+It is a cloak over the Advanced scan panel (plan §10): the
+:class:`~._scan_cloak.ScanCloakController` mixin in front of
+``ScanControllerAdvanced`` hands Advanced its own widget, one switch away, and
+fills Advanced's two parameter dicts from this panel's plan
+(:mod:`imswitch.imcontrol.model.simple_scan`), so the run lifecycle, recording
+layouts and refusal handling are Advanced's own. What this panel adds while
+its page drives the scan: its own power checks (D5) and the frame geometry
+its scans carry (D1). On the Advanced page, Advanced runs as it always does.
 """
 
 from __future__ import annotations
 
 import copy
 import dataclasses
-import time
-import traceback
 
 from qtpy import QtCore
 
@@ -38,10 +38,9 @@ from imswitch.imcontrol.model.scan_frame import (
 from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step
 from imswitch.imcontrol.model.simple_scan import (
     AxisRegion,
-    PlanNotRepresentable,
+    PointScanCloak,
     ScanLimits,
     SimpleScanPlan,
-    dicts_to_plan,
     normalize_plan,
     plan_overview,
     plan_to_dicts,
@@ -51,14 +50,11 @@ from imswitch.imcontrol.model.simple_scan import (
     snap_length_um,
 )
 from ..scan_region_mapping import extents_to_rectangle, rectangle_to_extents
+from ._scan_cloak import ScanCloakController
 from .ScanControllerAdvanced import ScanControllerAdvanced
 
 OVERVIEW = 'overview'
 ACQUISITION = 'acquisition'
-
-# Execution modes: fixed by the entry point when a run starts (plan D3).
-SINGLE = 'single'          # one iteration; an external driver owns any series
-UNBOUNDED = 'unbounded'    # Live: until Stop or Live is unticked
 
 _POINT_DETECTOR_KINDS = {
     'APDManager': 'APD',
@@ -74,12 +70,14 @@ def _placement(shown):
     return shown.geometry.axes, shown.display_transform, tuple(shown.raw_shape)
 
 
-class ScanControllerSimplePointScan(ScanControllerAdvanced):
+class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced):
+
+    cloakClass = PointScanCloak
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         state = self._simple()
-        self._widget.configureSimpleScan(
+        self._view.configureSimpleScan(
             axes=[(a.name, a.label, a.smooth) for a in state['limits'].axes],
             gates=[(g.name, g.wavelength_nm, g.power_capable)
                    for g in state['limits'].gates],
@@ -88,15 +86,13 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
             detectors=self._pointDetectorNames(),
         )
         if state['reference'] is not None:
-            self._widget.setReferenceDetector(state['reference'])
-        self._widget.sigModeRequested.connect(self.setSimpleScanMode)
-        self._widget.sigAcquisitionEdited.connect(self._onAcquisitionEdited)
-        self._widget.sigOverviewChannelChanged.connect(self._onOverviewChannelChanged)
-        self._widget.sigStopClicked.connect(self._onStopClicked)
-        self._widget.sigRegionDrawn.connect(self._onRegionDrawn)
-        self._widget.sigDrawRegionClicked.connect(self._onDrawClicked)
-        self._widget.sigReferenceDetectorChanged.connect(self.setReferenceDetector)
-        self._commChannel.sigScanRequestRejected.connect(self._onScanRejected)
+            self._view.setReferenceDetector(state['reference'])
+        self._view.sigModeRequested.connect(self.setSimpleScanMode)
+        self._view.sigAcquisitionEdited.connect(self._onAcquisitionEdited)
+        self._view.sigOverviewChannelChanged.connect(self._onOverviewChannelChanged)
+        self._view.sigRegionDrawn.connect(self._onRegionDrawn)
+        self._view.sigDrawRegionClicked.connect(self._onDrawClicked)
+        self._view.sigReferenceDetectorChanged.connect(self.setReferenceDetector)
         self._commChannel.sigScanGeometryShown.connect(self._onScanGeometryShown)
 
         self._estimateTimer = QtCore.QTimer()
@@ -104,8 +100,12 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         self._estimateTimer.setInterval(100)
         self._estimateTimer.timeout.connect(self._refreshEstimate)
 
-        self._pushToWidget()
+        self._view.setLive(state['mode'] == OVERVIEW)
+        self._pushToView()
         self._refreshEstimate()
+        # The Advanced page shows the acquisition from the start.
+        self._mirrorToBackend(force=True)
+        self._panel.showPage(self.scanPage())
 
     # ------------------------------------------------------------------
     # State
@@ -127,9 +127,6 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
                 'overheadS': 0.0,
                 'overview': None,
                 'acquisition': None,
-                'framesDone': 0,
-                'lastFrameEnd': None,
-                'periods': [],
                 # The layer the rectangle is drawn on, and the scan geometry
                 # each detector's layer shows (plan D1 point 6).
                 'reference': next(iter(self._pointDetectorNames()), None),
@@ -247,44 +244,80 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         return self._withCurrentPark(plan)
 
     # ------------------------------------------------------------------
-    # Advanced's parameter seam (plan F2)
+    # The cloak's hooks (plan §10)
     # ------------------------------------------------------------------
 
-    def _buildAnalogParameterDict(self):
-        analog, digital = plan_to_dicts(self.currentPlan(), self._scanLimits())
-        self.__dict__['_pendingDigital'] = digital
-        return analog, list(analog['scan_dim_target_device'])
+    def cloakLimits(self) -> ScanLimits:
+        return self._scanLimits()
 
-    def _buildDigitalParameterDict(self, analogParameterDict):
-        digital = self.__dict__.pop('_pendingDigital', None)
-        if digital is None:
-            digital = plan_to_dicts(self.currentPlan(), self._scanLimits())[1]
-        return digital
+    def acquisitionPlan(self) -> SimpleScanPlan:
+        return self._withCurrentPark(self._simple()['acquisition'])
 
-    def setParameters(self):
-        """Dicts from a saved state or file -> the acquisition plan (D4)."""
-        self.settingParameters = True
-        try:
-            plan = dicts_to_plan(self._analogParameterDict,
-                                 self._digitalParameterDict, self._scanLimits())
-        except PlanNotRepresentable as refusal:
-            self._logger.warning(f'Scan not loaded: {refusal}')
-            self._widget.showMessage(str(refusal), error=True)
-            self.__dict__['_stateApplied'] = False
-            return
-        finally:
-            self.settingParameters = False
-        self._simple()['acquisition'] = plan
-        self.__dict__['_stateApplied'] = True
-        self._pushToWidget()
+    def runPlan(self) -> SimpleScanPlan:
+        return self.currentPlan()
+
+    def adoptPlan(self, plan: SimpleScanPlan):
+        """A plan read back from the Advanced widget becomes the acquisition.
+
+        The widget holds every unscanned positioner's centre; only those the
+        acquisition parked on purpose, or that were changed there, stay
+        parked -- the rest keep following the stage.
+        """
+        state = self._simple()
+        mirrored = self.lastMirroredPlan()
+        mirroredPark = dict(mirrored.park) if mirrored is not None else {}
+        intentional = state['acquisition'].park
+        park = {
+            name: value for name, value in plan.park.items()
+            if name in intentional or name not in mirroredPark
+            or abs(value - mirroredPark[name]) > 1e-9
+        }
+        plan = normalize_plan(dataclasses.replace(plan, park=park))
+        channelsChanged = plan.channels != state['acquisition'].channels
+        state['acquisition'] = plan
+        if channelsChanged:
+            state['overview'] = self._planOverview()
+        self._pushToView()
         self._scheduleEstimate()
 
-    def updatePixels(self):
-        if self.__dict__.get('_simpleState') is not None and hasattr(self, '_estimateTimer'):
-            self._scheduleEstimate()
+    def cloakWantsLive(self) -> bool:
+        return self._simple()['mode'] == OVERVIEW or self._view.liveEnabled()
 
-    def plotSignalGraph(self):
-        pass
+    def cloakFrameEstimateS(self):
+        return self._simple().get('frameEstimateS')
+
+    def cloakStateExtras(self) -> dict:
+        simple = self._simple()
+        return {
+            'mode': simple['mode'],
+            'overviewChannel': simple['overviewChannel'],
+            'reference': simple['reference'],
+            'plan': self._cloak.plan_to_dict(simple['acquisition']),
+        }
+
+    def cloakExtrasFromState(self, state):
+        # 'simplePlan' is what the panel saved before it was a cloak.
+        extras = super().cloakExtrasFromState(state)
+        if extras is None and isinstance(state, dict) and isinstance(state.get('simplePlan'), dict):
+            extras = state['simplePlan']
+        return extras
+
+    def applyCloakStateExtras(self, extras):
+        stored = self._simple()
+        planDict = extras.get('plan', extras.get('acquisition'))
+        if planDict:
+            stored['acquisition'] = self._cloak.plan_from_dict(planDict)
+        stored['overviewChannel'] = int(extras.get('overviewChannel', 0))
+        if extras.get('mode') in (OVERVIEW, ACQUISITION):
+            stored['mode'] = extras['mode']
+            self._view.setLive(stored['mode'] == OVERVIEW)
+        if extras.get('reference') in self._pointDetectorNames():
+            stored['reference'] = extras['reference']
+            self._view.setReferenceDetector(stored['reference'])
+        stored['overview'] = self._planOverview()
+        self._pushToView()
+        self._scheduleEstimate()
+        self._scheduleMirror()
 
     # ------------------------------------------------------------------
     # Building: channel power (D5) and frame geometry (D1)
@@ -294,13 +327,16 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         """A run's signals, refused first if the panel's channel power cannot
         be built (plan D5). The check reads the plan, not the dicts: the dicts
         cannot even express power for a laser without an analog channel."""
-        refusal = power_refusal(self.currentPlan(), self._scanLimits())
-        if refusal:
-            raise ScanDesignRefusedError(refusal)
+        if self._onSimplePage():
+            refusal = power_refusal(self.currentPlan(), self._scanLimits())
+            if refusal:
+                raise ScanDesignRefusedError(refusal)
         return super()._buildScanSignals()
 
     def _make_full_scan(self, scanParameters, TTLParameters):
         signalDict, scanInfoDict = super()._make_full_scan(scanParameters, TTLParameters)
+        if not self._onSimplePage():
+            return signalDict, scanInfoDict     # the Advanced page: Advanced as it is
 
         # Advanced swallows a failed power injection and scans without it;
         # this panel refuses instead (plan D5, review 3).
@@ -323,110 +359,13 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         return signalDict, scanInfoDict
 
     # ------------------------------------------------------------------
-    # Running: one iteration owner per run (D3)
-    # ------------------------------------------------------------------
-
-    def runScan(self) -> None:
-        """The panel's Start. Live runs until Stop; otherwise one frame."""
-        live = self._simple()['mode'] == OVERVIEW or bool(self._widget.repeatEnabled())
-        if self._simple()['mode'] == OVERVIEW:
-            self._widget.setRepeatEnabled(True)
-        self.__dict__['_executionMode'] = UNBOUNDED if live else SINGLE
-        self._resetFrameClock()
-        super().runScan()
-
-    def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
-        """A recording, script or workflow start: always one iteration. The
-        external driver owns any series (a recorded T series is a lapse)."""
-        self.__dict__['_executionMode'] = SINGLE
-        self._resetFrameClock()
-        return super().runScanExternal(recalculateSignals, isNonFinalPartOfSequence)
-
-    def _wantsAnotherIteration(self) -> bool:
-        if self.__dict__.get('_scanStopRequested', False):
-            return False
-        if self.__dict__.get('_executionMode', SINGLE) == UNBOUNDED:
-            return bool(self._widget.repeatEnabled())
-        return False
-
-    def _shouldContinueRepeat(self) -> bool:
-        return self._wantsAnotherIteration()
-
-    def scanDone(self):
-        """Advanced's scanDone, deciding on this panel's execution mode
-        instead of the widget's Repeat box (plan D3)."""
-        self.isRunning = False
-        self._recordFramePeriod()
-        try:
-            if not self._wantsAnotherIteration():
-                isFinalPart = not getattr(self, 'doingNonFinalPartOfSequence', False)
-                self._restoreScanPositioners()
-                if isFinalPart:
-                    try:
-                        self._widget.setScanButtonChecked(False)
-                    except Exception:
-                        self._logger.error(
-                            'Failed to reset the scan widget after completion',
-                            exc_info=True,
-                        )
-                self._publishScanDone(isFinalPart=isFinalPart)
-            else:
-                self._armRepeatScan()
-        except Exception:
-            self._logger.error(traceback.format_exc())
-            self.scanFailed()
-
-    def _onStopClicked(self):
-        """Stop: no further frame. A running frame completes (NI-DAQ cannot
-        be interrupted mid-iteration; decided 2026-09-25)."""
-        self._widget.setRepeatEnabled(False)
-        running = (
-            getattr(self, 'isRunning', False)
-            or self.__dict__.get('_repeatPending', False)
-            or self.__dict__.get('_scanRunToken') is not None
-        )
-        if running:
-            remaining = self._remainingFrameS()
-            self._widget.showMessage(
-                'Stopping after this frame'
-                + (f' (about {remaining:.0f} s)' if remaining and remaining >= 1 else '')
-                + '.'
-            )
-            self.abortScan()
-
-    def _onScanRejected(self, reason):
-        self._widget.showMessage(f'Not started: {reason}', error=True)
-
-    # ------------------------------------------------------------------
     # Measured frame rate; learning the re-arm overhead (D6)
     # ------------------------------------------------------------------
 
-    def _resetFrameClock(self):
+    def framePeriodsMeasured(self, periods):
         state = self._simple()
-        state['lastFrameEnd'] = None
-        state['periods'] = []
-        state['frameStart'] = time.monotonic()
-
-    def _remainingFrameS(self):
-        state = self._simple()
-        estimate = state.get('frameEstimateS')
-        started = state.get('frameStart')
-        if not estimate or started is None:
-            return None
-        return max(0.0, estimate - (time.monotonic() - started))
-
-    def _recordFramePeriod(self):
-        state = self._simple()
-        now = time.monotonic()
-        last = state.get('lastFrameEnd')
-        state['lastFrameEnd'] = now
-        state['frameStart'] = now
-        if last is None:
-            return
-        periods = (state['periods'] + [now - last])[-3:]
-        state['periods'] = periods
         measured = sum(periods) / len(periods)
-        self._widget.setMeasuredRate(1.0 / measured if measured > 0 else None)
+        self._view.setMeasuredRate(1.0 / measured if measured > 0 else None)
         if state['mode'] != OVERVIEW or len(periods) < 3:
             return
         target = float(state['limits'].config['overviewFrameTimeS'])
@@ -436,8 +375,8 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
             if overhead > state['overheadS'] + 0.01:
                 state['overheadS'] = overhead
                 state['overview'] = self._planOverview()
-                state['periods'] = []
-                self._pushToWidget()
+                self._clearFramePeriods()
+                self._pushToView()
 
     # ------------------------------------------------------------------
     # Overview planning (D6)
@@ -520,30 +459,26 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
     # Panel edits
     # ------------------------------------------------------------------
 
-    def _isBusy(self) -> bool:
-        return bool(getattr(self, 'isRunning', False)
-                    or self.__dict__.get('_scanRunToken') is not None)
-
     def setSimpleScanMode(self, mode: str):
         if mode not in (OVERVIEW, ACQUISITION):
             raise ValueError(f'Unknown mode {mode!r}')
         if self._isBusy():
-            self._widget.showMessage('Stop the scan before switching modes.', error=True)
-            self._pushToWidget()
+            self._view.showMessage('Stop the scan before switching modes.', error=True)
+            self._pushToView()
             return
         state = self._simple()
         state['mode'] = mode
         if mode == OVERVIEW:
             state['regionRequested'] = False
-        self._widget.setRepeatEnabled(mode == OVERVIEW)
-        self._pushToWidget()
+        self._view.setLive(mode == OVERVIEW)
+        self._pushToView()
         self._scheduleEstimate()
 
     def _onOverviewChannelChanged(self, index: int):
         state = self._simple()
         state['overviewChannel'] = max(0, int(index))
         state['overview'] = self._planOverview()
-        self._pushToWidget()
+        self._pushToView()
         self._scheduleEstimate()
 
     def _onAcquisitionEdited(self, plan: SimpleScanPlan):
@@ -561,8 +496,9 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         state['acquisition'] = plan
         if channelsChanged:
             state['overview'] = self._planOverview()
-        self._pushToWidget()
+        self._pushToView()
         self._scheduleEstimate()
+        self._scheduleMirror()
         try:
             self.updateScanStageAttrs()
             self.updateScanTTLAttrs()
@@ -578,7 +514,7 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         if name not in self._pointDetectorNames():
             raise ValueError(f'{name!r} is not a point detector of this setup')
         self._simple()['reference'] = name
-        self._widget.setReferenceDetector(name)
+        self._view.setReferenceDetector(name)
         self._pushRegion()
 
     def _onScanGeometryShown(self, detectorName, shown):
@@ -614,18 +550,18 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         state = self._simple()
         reference = state['reference']
         shown = self._shownReference()
-        if not self._widget.hasViewer():
-            self._widget.setDrawing(False, 'This setup has no image viewer.')
+        if not self._view.hasViewer():
+            self._view.setDrawing(False, 'This setup has no image viewer.')
         elif reference is None:
-            self._widget.setDrawing(False, 'No point detector is configured.')
+            self._view.setDrawing(False, 'No point detector is configured.')
         elif shown is None:
-            self._widget.setDrawing(
+            self._view.setDrawing(
                 False, f'{reference} shows no scanned image yet: start the overview first.')
         else:
-            self._widget.setDrawing(True)
+            self._view.setDrawing(True)
         visible = state['mode'] == ACQUISITION or state['regionRequested']
         extents = self._regionExtents(shown) if visible and shown is not None else None
-        self._widget.showRegion(
+        self._view.showRegion(
             extents_to_rectangle(extents, shown) if extents is not None else None)
 
     def _onDrawClicked(self):
@@ -643,7 +579,7 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         limits = state['limits']
         shown = self._shownReference()
         if shown is None:
-            self._widget.showMessage(
+            self._view.showMessage(
                 'The live image has no scan geometry to draw on: start the overview '
                 'first.', error=True)
             self._pushRegion()
@@ -665,11 +601,11 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
                 park[device] = centre
         self._onAcquisitionEdited(dataclasses.replace(plan, regions=regions, park=park))
         if self._isBusy():
-            self._widget.showMessage(
+            self._view.showMessage(
                 'Region set. Stop the overview, then Start to acquire it.')
         else:
             self.setSimpleScanMode(ACQUISITION)
-            self._widget.showMessage('Region set.')
+            self._view.showMessage('Region set.')
 
     # ------------------------------------------------------------------
     # Readouts
@@ -702,16 +638,16 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         steps = len(plan.channels)
         note = (f'{steps} line passes per line, one per channel.'
                 if steps > 1 else '')
-        self._widget.setEstimate(estimate, None, note, refusal)
+        self._view.setEstimate(estimate, None, note, refusal)
 
-    def _pushToWidget(self):
+    def _pushToView(self):
         state = self._simple()
         limits = state['limits']
         acquisition = state['acquisition']
         coarse, fine = self._pixelRange(acquisition.channels)
         fast = acquisition.dims[0] if acquisition.dims else limits.axis_names[0]
         step = acquisition.regions[fast].step_um if acquisition.dims else coarse
-        self._widget.setSimpleScanState(
+        self._view.setSimpleScanState(
             mode=state['mode'],
             overview=state['overview'],
             overviewChannel=state['overviewChannel'],
@@ -733,60 +669,6 @@ class ScanControllerSimplePointScan(ScanControllerAdvanced):
         if 'PMT' in kinds.values():
             note += '; a PMT adds the channels into one image'
         return note + '.'
-
-    # ------------------------------------------------------------------
-    # Saved state (D4)
-    # ------------------------------------------------------------------
-
-    def getComponentState(self) -> dict:
-        state = super().getComponentState()
-        simple = self._simple()
-        acquisition = self._withCurrentPark(simple['acquisition'])
-        analog, digital = plan_to_dicts(acquisition, simple['limits'])
-        # A file's executable dicts are the acquisition (plan D4).
-        state['analogParameterDict'] = analog
-        state['digitalParameterDict'] = digital
-        state['positionersScan'] = list(analog['scan_dim_target_device'])
-        state['simplePlan'] = {
-            'mode': simple['mode'],
-            'overviewChannel': simple['overviewChannel'],
-            'reference': simple['reference'],
-            'acquisition': simple['acquisition'].to_dict(),
-        }
-        return state
-
-    def applyComponentState(self, state, *, applyMode):
-        self.__dict__['_stateApplied'] = False
-        # Refuse what the panel cannot represent before anything is applied
-        # (plan D4): nothing changes, and the reason is the warning.
-        if isinstance(state, dict) and not getattr(self, 'isRunning', False):
-            analog = state.get('analogParameterDict')
-            digital = state.get('digitalParameterDict')
-            if isinstance(analog, dict) and isinstance(digital, dict) and analog:
-                try:
-                    dicts_to_plan(analog, digital, self._scanLimits())
-                except PlanNotRepresentable as refusal:
-                    return [f'{refusal} Scan state was not applied.']
-                except (KeyError, IndexError, TypeError, ValueError):
-                    pass  # malformed dicts: the base class says what is wrong
-        warnings = super().applyComponentState(state, applyMode=applyMode)
-        simple = state.get('simplePlan') if isinstance(state, dict) else None
-        if simple and self.__dict__.get('_stateApplied'):
-            try:
-                stored = self._simple()
-                stored['acquisition'] = SimpleScanPlan.from_dict(simple['acquisition'])
-                stored['overviewChannel'] = int(simple.get('overviewChannel', 0))
-                if simple.get('mode') in (OVERVIEW, ACQUISITION):
-                    stored['mode'] = simple['mode']
-                if simple.get('reference') in self._pointDetectorNames():
-                    stored['reference'] = simple['reference']
-                    self._widget.setReferenceDetector(stored['reference'])
-                stored['overview'] = self._planOverview()
-                self._pushToWidget()
-                self._scheduleEstimate()
-            except Exception as error:
-                warnings.append(f'Point-scan panel settings were not restored: {error}')
-        return warnings
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

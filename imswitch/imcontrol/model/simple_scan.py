@@ -10,6 +10,10 @@ anything the panel cannot show is refused with the reason, never normalized.
 the scanners' ranges and speed limits, the sample rate, which lasers have a
 digital gate and which of those an analog channel. :func:`plan_overview`
 chooses the overview's field, pixel count and dwell together (plan D6).
+
+:class:`PointScanCloak` is the same translation as the panel's
+:class:`~imswitch.imcontrol.model.scan_cloak.ScanCloak` over the Advanced
+scan panel (plan §10).
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
+from .scan_cloak import PlanNotRepresentable, ScanCloak
 from .scan_parameters import pixels_for_length_step
 from .signaldesigners.GalvoScanDesigner import (
     fast_axis_speed_limit,
@@ -41,10 +46,6 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
 
 #: Field an axis without a configured voltage range offers (mock axes).
 _UNBOUNDED_FIELD_UM = 100.0
-
-
-class PlanNotRepresentable(ValueError):
-    """A scan the panel cannot represent; the message says what and why."""
 
 
 # ---------------------------------------------------------------------------
@@ -326,11 +327,15 @@ def plan_to_dicts(plan: SimpleScanPlan, limits: ScanLimits) -> Tuple[dict, dict]
         'n_linesteps': steps,
         'Nx': plan.pixels(dims[0]) if dims else 1,
         'Ny': plan.pixels(dims[1]) if len(dims) > 1 else 1,
+        # Every TTL device, not only the fired ones: Advanced loads enables
+        # and windows only for the devices a scan names and leaves the others
+        # as they were, so a laser ticked there before would fire too. The
+        # TTL designer, and what gets armed, read ``target_device`` only.
         'linestep_enable': {
-            name: [name in lane for lane in plan.channels] for name in targets
+            name: [name in lane for lane in plan.channels] for name in limits.ttl_devices
         },
-        'pulse_starts_s': {name: [[] for _ in range(steps)] for name in targets},
-        'pulse_ends_s': {name: [[] for _ in range(steps)] for name in targets},
+        'pulse_starts_s': {name: [[] for _ in range(steps)] for name in limits.ttl_devices},
+        'pulse_ends_s': {name: [[] for _ in range(steps)] for name in limits.ttl_devices},
         'sequence_time': float(plan.dwell_s),
         'advanced_mode': bool(plan.channel_power_on),
         'linestep_power_percent': {
@@ -667,9 +672,31 @@ def plan_overview(
     )
 
 
+class PointScanCloak(ScanCloak):
+    """The point-scan panel's plan over the Advanced scan panel."""
+
+    def limits_from_setup(self, setupInfo) -> ScanLimits:
+        return ScanLimits.from_setup(setupInfo)
+
+    def to_backend(self, plan, limits):
+        return plan_to_dicts(plan, limits)
+
+    def from_backend(self, analog, digital, limits):
+        return dicts_to_plan(analog, digital, limits)
+
+    def normalize(self, plan):
+        return normalize_plan(plan)
+
+    def plan_to_dict(self, plan) -> dict:
+        return plan.to_dict()
+
+    def plan_from_dict(self, data):
+        return SimpleScanPlan.from_dict(data)
+
+
 __all__ = [
     'AxisLimits', 'AxisRegion', 'CONFIG_DEFAULTS', 'LaserGate', 'OverviewPlan',
-    'PlanNotRepresentable', 'ScanLimits', 'SimpleScanPlan', 'dicts_to_plan',
+    'PlanNotRepresentable', 'PointScanCloak', 'ScanLimits', 'SimpleScanPlan', 'dicts_to_plan',
     'log_position', 'log_value', 'plan_overview', 'plan_to_dicts',
     'normalize_plan', 'power_refusal', 'quantize_step_um', 'quantize_um',
     'snap_dwell_s', 'snap_length_um',

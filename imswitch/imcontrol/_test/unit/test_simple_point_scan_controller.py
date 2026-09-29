@@ -56,8 +56,10 @@ class Rig:
         self.factory = ImConWidgetControllerFactory(
             self.setup, self.master, self.channel, self.main._moduleCommChannel
         )
-        self.widget = ScanWidgetSimplePointScan(optionsBasic, napariViewer=viewer)
-        self.scan = self.factory.createController(ScanControllerSimplePointScan, self.widget)
+        # The Scan dock, and its simple page (what most tests click on).
+        self.panel = ScanWidgetSimplePointScan(optionsBasic, napariViewer=viewer)
+        self.widget = self.panel.view
+        self.scan = self.factory.createController(ScanControllerSimplePointScan, self.panel)
         self.main.controllers['Scan'] = self.scan
         self.events = []
         for name in ('sigScanStarting', 'sigScanDone', 'sigScanEnded'):
@@ -133,7 +135,7 @@ def test_the_overview_runs_live_until_stop_and_ends_once(rig):
     frames = []
     rig.master.detectorsManager['APD'].sigImageUpdated.connect(
         lambda im, init, scale: frames.append(im))
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
     QtTest.QTest.qWait(2500)
     assert rig.scan.isRunning or rig.scan.__dict__.get('_repeatPending')
     rig.widget.stopButton.click()
@@ -146,7 +148,7 @@ def test_the_overview_runs_live_until_stop_and_ends_once(rig):
 
 def test_an_acquisition_runs_one_frame(rig):
     rig.scan.setSimpleScanMode('acquisition')
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
 
     assert rig.waitForEnd()
     assert rig.count('iteration') == 1
@@ -157,14 +159,14 @@ def test_an_external_start_runs_exactly_one_iteration_even_in_live_overview(rig)
     """A recording or script owns any series (plan D3): an external start runs
     one iteration whatever the panel says -- even after a Live run left the
     panel's own mode behind, and even if Live is ticked during the run."""
-    rig.widget.scanButton.click()                 # a Live overview first
+    rig.widget.startButton.click()                 # a Live overview first
     QtTest.QTest.qWait(500)
     rig.widget.stopButton.click()
     assert rig.waitForEnd()
     rig.events.clear()
 
     rig.scan.runScanExternal(True, False)
-    rig.widget.setRepeatEnabled(True)             # Live ticked mid-run
+    rig.widget.setLive(True)                      # Live ticked mid-run
     ended = rig.waitForEnd(timeoutS=8.0)
     if not ended:                                 # clean up a looping mutant
         rig.widget.stopButton.click()
@@ -176,7 +178,7 @@ def test_an_external_start_runs_exactly_one_iteration_even_in_live_overview(rig)
 
 
 def test_modes_cannot_be_switched_while_running(rig):
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
     QtTest.QTest.qWait(300)
     rig.scan.setSimpleScanMode('acquisition')
     assert rig.scan._simple()['mode'] == 'overview'
@@ -192,7 +194,7 @@ def test_modes_cannot_be_switched_while_running(rig):
 def test_a_power_setting_that_cannot_be_built_refuses_the_start(rig):
     _edit(rig, channel_power_on=True, channel_power={'405 (ON)': (50.0,)})
     rig.scan.setSimpleScanMode('acquisition')
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
     QtTest.QTest.qWait(300)
 
     assert rig.rejections and 'no analog channel' in rig.rejections[0]
@@ -210,7 +212,7 @@ def test_a_power_waveform_that_is_not_built_refuses_the_start(rig):
         dataclasses.replace(g, power_capable=True) for g in limits.gates))
     _edit(rig, channel_power_on=True, channel_power={'405 (ON)': (50.0,)})
     rig.scan.setSimpleScanMode('acquisition')
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
     QtTest.QTest.qWait(300)
 
     assert rig.rejections and 'could not be built' in rig.rejections[0]
@@ -248,7 +250,8 @@ def test_unscanned_positioners_stay_where_they_are(rig):
 def test_the_saved_dicts_are_the_acquisition_even_in_overview_mode(rig):
     state = rig.scan.getComponentState()
     acquisition = rig.scan._simple()['acquisition']
-    assert state['simplePlan']['mode'] == 'overview'
+    assert state['cloak']['mode'] == 'overview'
+    assert state['cloak']['page'] == 'simple'
     lengths = state['analogParameterDict']['axis_length'][:2]
     assert lengths == [acquisition.regions['X'].length_um, acquisition.regions['Y'].length_um]
 
@@ -274,7 +277,9 @@ def test_a_saved_state_restores_the_panel(qtbot):
         second.close()
 
 
-def test_an_advanced_scan_it_cannot_show_is_refused_and_changes_nothing(rig):
+def test_an_advanced_scan_it_cannot_show_opens_on_the_advanced_page(rig):
+    """Plan §10: not refused any more -- restored where it can be shown, with
+    the reason, and the last simple plan kept for coming back."""
     before = rig.scan._simple()['acquisition']
     analog, digital = plan_to_dicts(before, rig.scan._scanLimits())
     digital.update(advanced_mode=True,
@@ -284,8 +289,15 @@ def test_an_advanced_scan_it_cannot_show_is_refused_and_changes_nothing(rig):
         {'analogParameterDict': analog, 'digitalParameterDict': digital},
         applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
 
-    assert len(warnings) == 1 and 'timing windows' in warnings[0]
+    assert len(warnings) == 1
+    assert 'timing windows' in warnings[0] and 'Advanced page' in warnings[0]
+    assert rig.scan.scanPage() == 'advanced'
+    assert rig.panel.page() == 'advanced'
+    assert 'timing windows' in rig.panel.noteLabel.text()
     assert rig.scan._simple()['acquisition'] == before
+    _, held = rig.scan._readBackendWidget()
+    assert held['advanced_mode'] is True
+    assert held['pulse_starts_s']['405 (ON)'][0] == pytest.approx([1e-5])
 
 
 def test_the_same_dicts_build_the_same_waveforms_in_advanced(rig, qtbot):

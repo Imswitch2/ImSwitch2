@@ -1,9 +1,13 @@
-"""The SimplePointScan panel (docs/simple-point-scan-plan.md §5.3).
+"""The SimplePointScan panel (docs/simple-point-scan-plan.md §5.3, §10).
 
-A view: it shows the controller's state and turns every edit into a
-:class:`~imswitch.imcontrol.model.simple_scan.SimpleScanPlan` it emits. The
-rules -- shortest dwell, snapping, overview planning, estimates -- live in the
-controller and model, where they are tested without a GUI.
+A cloak over the Advanced scan panel: :class:`ScanWidgetSimplePointScan` is
+the Scan dock, holding the simple page (:class:`PointScanView`) and the real
+``ScanWidgetAdvanced``, one switch apart.
+
+The simple page is a view: it shows the controller's state and turns every
+edit into a :class:`~imswitch.imcontrol.model.simple_scan.SimpleScanPlan` it
+emits. The rules -- shortest dwell, snapping, overview planning, estimates --
+live in the controller and model, where they are tested without a GUI.
 """
 
 from __future__ import annotations
@@ -23,7 +27,8 @@ from imswitch.imcontrol.model.simple_scan import (
     log_value,
     snap_length_um,
 )
-from .ScanWidgetBase import SuperScanWidget
+from .ScanCloakPanel import ScanCloakPanel, ScanCloakView
+from .ScanWidgetAdvanced import ScanWidgetAdvanced
 
 _SLIDER_TICKS = 1000
 _MAX_DIMS = 3
@@ -294,17 +299,18 @@ class ScanRegionOverlay:
             self._updating = False
 
 
-class ScanWidgetSimplePointScan(SuperScanWidget):
+class PointScanView(ScanCloakView):
+    """The point-scan panel's simple page."""
+
     sigModeRequested = QtCore.Signal(str)
     sigAcquisitionEdited = QtCore.Signal(object)       # SimpleScanPlan
     sigOverviewChannelChanged = QtCore.Signal(int)
-    sigStopClicked = QtCore.Signal()
     sigDrawRegionClicked = QtCore.Signal()
     sigRegionDrawn = QtCore.Signal(object)             # world vertices [[row, col], ...]
     sigReferenceDetectorChanged = QtCore.Signal(str)
 
-    def __init__(self, *args, napariViewer=None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, parent=None, *, napariViewer=None):
+        super().__init__(parent)
         self._regionOverlay = (
             ScanRegionOverlay(napariViewer, self.sigRegionDrawn.emit)
             if napariViewer is not None else None
@@ -318,7 +324,6 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         self._pendingDrop = None
         self._pixelRange = (1.0, 0.1)
         self._dwellRange = (2e-5, 1e-2)
-        self._running = False
         self._updating = False
         self._buildUi()
 
@@ -333,8 +338,7 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         return box, layout
 
     def _buildUi(self):
-        row = 0
-        # --- mode and start/stop ---
+        # --- mode, in front of the base's Live / Start / Stop ---
         self.overviewButton = QtWidgets.QPushButton('Overview')
         self.acquisitionButton = QtWidgets.QPushButton('Acquisition')
         for button in (self.overviewButton, self.acquisitionButton):
@@ -345,39 +349,8 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             'Take the image: the chosen region, pixel size and dwell.')
         self.overviewButton.clicked.connect(lambda: self.sigModeRequested.emit('overview'))
         self.acquisitionButton.clicked.connect(lambda: self.sigModeRequested.emit('acquisition'))
-        self.repeatBox.setText('Live')
-        self.repeatBox.setToolTip('Repeat the scan until Stop.')
-        self.scanButton.setText('Start')
-        self.stopButton = QtWidgets.QPushButton('Stop')
-        self.stopButton.setToolTip(
-            'No further frame. A frame already running completes.')
-        self.stopButton.clicked.connect(self.sigStopClicked)
-        self.stopButton.setEnabled(False)
-        modeRow = QtWidgets.QHBoxLayout()
-        for widget in (self.overviewButton, self.acquisitionButton):
-            modeRow.addWidget(widget)
-        modeRow.addStretch(1)
-        for widget in (self.repeatBox, self.scanButton, self.stopButton):
-            modeRow.addWidget(widget)
-        self.grid.addLayout(modeRow, row, 0)
-        row += 1
-        # What the next scan takes, for whichever mode is chosen.
-        self.estimateTitle = QtWidgets.QLabel('Frame time')
-        self.frameTimeLabel = QtWidgets.QLabel('–')
-        font = self.frameTimeLabel.font()
-        font.setPointSizeF(font.pointSizeF() * 1.4)
-        font.setBold(True)
-        self.frameTimeLabel.setFont(font)
-        self.estimateNote = QtWidgets.QLabel('')
-        self.estimateNote.setWordWrap(True)
-        estimateRow = QtWidgets.QHBoxLayout()
-        estimateRow.addWidget(self.estimateTitle)
-        estimateRow.addWidget(self.frameTimeLabel)
-        estimateRow.addStretch(1)
-        self.grid.addLayout(estimateRow, row, 0)
-        row += 1
-        self.grid.addWidget(self.estimateNote, row, 0)
-        row += 1
+        self.runRow.insertWidget(0, self.overviewButton)
+        self.runRow.insertWidget(1, self.acquisitionButton)
 
         # --- overview ---
         box, layout = self._group('Overview')
@@ -391,8 +364,7 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         layout.addWidget(QtWidgets.QLabel('Overview uses'), 1, 0)
         layout.addWidget(self.overviewChannelCombo, 1, 1)
         layout.addWidget(self.measuredLabel, 1, 2)
-        self.grid.addWidget(box, row, 0)
-        row += 1
+        self.content.addWidget(box)
 
         # --- region and dimensions ---
         box, outer = self._group('Region')
@@ -442,8 +414,7 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             for column, widget in enumerate((combo, centre, size, step, pixels)):
                 layout.addWidget(widget, 2 + index, column)
             self._dimRows.append((combo, centre, size, step, pixels))
-        self.grid.addWidget(box, row, 0)
-        row += 1
+        self.content.addWidget(box)
 
         # --- sampling ---
         box, layout = self._group('Sampling')
@@ -468,8 +439,7 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         self.dwellMaxLabel = QtWidgets.QLabel('')
         layout.addWidget(self.dwellMaxLabel, 1, 3)
         layout.addWidget(self.dwellLabel, 1, 4)
-        self.grid.addWidget(box, row, 0)
-        row += 1
+        self.content.addWidget(box)
 
         # --- channels ---
         box, layout = self._group('Lasers and channels')
@@ -496,105 +466,13 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
         self.detectorNote = QtWidgets.QLabel('')
         self.detectorNote.setWordWrap(True)
         layout.addWidget(self.detectorNote, 3, 0, 1, 3)
-        self.grid.addWidget(box, row, 0)
-        row += 1
+        self.content.addWidget(box)
 
-        # --- expert ---
-        self.expertToggle = QtWidgets.QToolButton()
-        self.expertToggle.setText('Expert')
-        self.expertToggle.setCheckable(True)
-        self.expertToggle.setArrowType(QtCore.Qt.RightArrow)
-        self.expertToggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        self.expertBox = QtWidgets.QWidget()
-        expert = QtWidgets.QGridLayout(self.expertBox)
-        self.phaseDelaySpin = QtWidgets.QDoubleSpinBox()
-        self.sliceDelaySpin = QtWidgets.QDoubleSpinBox()
-        for spin in (self.phaseDelaySpin, self.sliceDelaySpin):
-            spin.setRange(0.0, 1e7)
-            spin.setDecimals(1)
-            spin.setSuffix(' µs')
-            spin.setKeyboardTracking(False)
-            spin.valueChanged.connect(self._emitEdited)
-        expert.addWidget(QtWidgets.QLabel('Phase delay'), 0, 0)
-        expert.addWidget(self.phaseDelaySpin, 0, 1)
-        expert.addWidget(QtWidgets.QLabel('Slice delay'), 1, 0)
-        expert.addWidget(self.sliceDelaySpin, 1, 1)
-        expert.addWidget(self.saveScanBtn, 2, 0)
-        expert.addWidget(self.loadScanBtn, 2, 1)
-        self.expertBox.setVisible(False)
-        self.expertToggle.toggled.connect(self._onExpertToggled)
-        self.grid.addWidget(self.expertToggle, row, 0)
-        row += 1
-        self.grid.addWidget(self.expertBox, row, 0)
-        row += 1
-
-        self.messageLabel = QtWidgets.QLabel('')
-        self.messageLabel.setWordWrap(True)
-        self.grid.addWidget(self.messageLabel, row, 0)
-        row += 1
-        self.grid.setRowStretch(row, 1)
-
-    def _onExpertToggled(self, shown):
-        self.expertBox.setVisible(shown)
-        self.expertToggle.setArrowType(QtCore.Qt.DownArrow if shown else QtCore.Qt.RightArrow)
-
-    # ------------------------------------------------------------------
-    # SuperScanWidget contract
-    # ------------------------------------------------------------------
-
-    def initControls(self, positionerNames, TTLDeviceNames, TTLTimeUnits=None):
-        """Names only; the controller configures the panel with more."""
-        self._positionerNames = list(positionerNames)
-
-    def getTTLIncluded(self, deviceName):
-        return bool(self._plan) and deviceName in self._plan.lasers()
-
-    def setScanMode(self):
-        pass
-
-    def isScanMode(self):
-        return True
-
-    def isContLaserMode(self):
-        return False
-
-    def setContLaserMode(self):
-        pass
-
-    def getSeqTimePar(self):
-        return self._plan.dwell_s if self._plan else self._dwellRange[0]
-
-    def setSeqTimePar(self, seqTimePar):
-        pass
-
-    def unsetTTL(self, deviceName):
-        pass
-
-    def setScanButtonChecked(self, checked):
-        super().setScanButtonChecked(checked)
-        self._running = bool(checked)
-        self.stopButton.setEnabled(self._running)
+    def _runningChanged(self, running):
         for button in (self.overviewButton, self.acquisitionButton):
-            button.setEnabled(not self._running)
-        if not self._running:
+            button.setEnabled(not running)
+        if not running:
             self.measuredLabel.setText('')
-
-    def getScanCenterPos(self, positionerName):
-        region = (self._plan.regions.get(positionerName) if self._plan else None)
-        return region.center_um if region else 0.0
-
-    def setScanCenterPos(self, positionerName, centerPos):
-        self._editRegion(positionerName, center_um=float(centerPos))
-
-    def setScanSize(self, positionerName, size):
-        self._editRegion(positionerName, length_um=float(size))
-
-    def _editRegion(self, positionerName, **changes):
-        if not self._plan or positionerName not in self._plan.regions:
-            return
-        regions = dict(self._plan.regions)
-        regions[positionerName] = dataclasses.replace(regions[positionerName], **changes)
-        self.sigAcquisitionEdited.emit(dataclasses.replace(self._plan, regions=regions))
 
     # ------------------------------------------------------------------
     # From the controller
@@ -668,7 +546,7 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             self._dwellRange = tuple(dwellRange)
             self.overviewButton.setChecked(mode == 'overview')
             self.acquisitionButton.setChecked(mode == 'acquisition')
-            self.repeatBox.setEnabled(mode == 'acquisition' and not self._running)
+            self.liveBox.setEnabled(mode == 'acquisition' and not self.isRunning())
             self._showModeControls(mode)
             self._showOverview(overview)
             self.overviewChannelCombo.clear()
@@ -761,8 +639,6 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             log_position(min(max(plan.dwell_s, low), high), low, high) * _SLIDER_TICKS))
         self.dwellMaxLabel.setText(_formatTime(high))
         self._showSamplingReadouts(plan)
-        self.phaseDelaySpin.setValue(plan.phase_delay_us)
-        self.sliceDelaySpin.setValue(plan.d3step_delay_us)
         lanes = [list(lane) for lane in plan.channels]
         if lanes != self.__dict__.get('_shownLanes'):
             self._lanes = lanes
@@ -984,9 +860,16 @@ class ScanWidgetSimplePointScan(SuperScanWidget):
             regions=regions,
             dwell_s=dwell,
             channels=tuple(tuple(lane) for lane in self._lanes if lane),
-            phase_delay_us=self.phaseDelaySpin.value(),
-            d3step_delay_us=self.sliceDelaySpin.value(),
         )
+
+
+
+class ScanWidgetSimplePointScan(ScanCloakPanel):
+    """The Scan dock: the point-scan page and the Advanced scan panel."""
+
+    backendWidgetClass = ScanWidgetAdvanced
+    viewClass = PointScanView
+    title = 'Point scan'
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -17,10 +17,11 @@ written in P4.*
   The Simple-side contracts (D3 policy, D5 checks, D4 equality, D6), and D2/D3's
   end-to-end series test (N iterations, N partitions, one run end), are
   tested with P1–P3, where their code lives. **P1 and P2 done 2026-09-26**
-  (see the P1 and P2 notes in §8). **Proposed 2026-09-29 (§10):** restructure
-  the panel as a *cloak* over the real Advanced panel, with a Simple/Advanced
-  switch and abstract bases for other microscopes, before P3. Awaiting
-  Lenny's decisions (§10.9).
+  (see the P1 and P2 notes in §8). **Restructured 2026-09-29 (§10):** the panel
+  is a *cloak* over the real Advanced panel, with a Simple/Advanced switch and
+  abstract bases for other microscopes. Lenny accepted the proposal and its
+  recommended decisions the same day; R1–R3 are implemented (see the R note in
+  §8). P3 next, on the new structure.
 - **Branch:** `feat/simple-point-scan`, worktree `../Imswitch2-simple-point-scan`.
 - **Base:** stacked on PR #49 (`claude/quizzical-hofstadter-88bff6`, "a refused
   scan design ends the request with its reason"). P0 reports its new refusal
@@ -1066,6 +1067,8 @@ A new `scanWidgetType` must be registered in all of these places:
 | | **P1 note (2026-09-26).** Implemented: `simple_scan.py`, `ScanControllerSimplePointScan` (Advanced subclass), `ScanWidgetSimplePointScan`, `galvo_apd_simple_mock_scan_setup.json`, registration, and `Scan.simplePointScan` in SetupInfo and the config editor. What building it settled: (1) **D4 needs a grid.** Advanced stores positions, lengths and steps to 1 nm and delays in whole µs, so a slider step like 0.0720577 µm built a different scan once loaded there; plans are normalised to that grid, and imported values already on it stay verbatim. (2) **D5's refusal reads the plan, not the dicts.** The dicts cannot express power for a laser without an analog channel, so it is checked in `_buildScanSignals` (#49's build hook); the post-build waveform check stays on the dicts. (3) In Live, the channel's `sigScanDone` fires once per run, not per frame; iterations are NI-DAQ completions. (4) On the mock, the overview plans a 28 µm field (35 µm overshoots ±10 V) at 195 px and 0.995 s estimated, measured 0.9 frames/s: about 0.1 s re-arm per frame. Tests: `test_simple_scan_model.py` (29), `test_simple_point_scan_controller.py` (15, real MasterController on the simulated NI-DAQ); mutation-checked. | |
 | **P2** | The panel's own napari rectangle layer, drawn over the current detector's layer, converted with D1's geometry; the inverse display transform. | D1's tests pass, plus drawing is disabled on a layer without geometry. |
 | | **P2 note (2026-09-26).** Implemented: `scan_region_mapping.py` (viewer point ↔ scanner position, rectangle ↔ per-device extents, through D1's `DisplayedScanGeometry` and the inverse display transform), the panel's `Scan region` Shapes layer (`ScanRegionOverlay`, the `NapariROISetOverlay` lifecycle), the reference-detector choice, and the controller's drawn-rectangle → region and region → rectangle paths. What building it settled: (1) **The trigger is a view event.** `ImageController` announces `sigScanGeometryShown(detector, shown)` once per change, after `setImage`; the controller keeps the last one per detector and re-projects only when the placement (axes, transform, raw shape) changes, since every Live frame is a new iteration. (2) **Snapping and reach.** A drawn extent is cut to the axis's reach and snapped to whole steps of that axis's current step; the rectangle is then drawn again as the region really is. (3) **Drawing while the overview runs** sets the region and says to stop the overview; the mode switches only when idle (modes cannot switch mid-run). (4) **The mock images a sample.** P4's optional synthetic sample was pulled forward so the mock test is meaningful: `mockSample` on the simulated APD counts photons from cells and beads at the position the scan's waveforms give each sample. On the mock the overview correlates 0.97 with the sample and a drawn-region acquisition 0.99, at zero pixel shift. Tests: `test_scan_region_mapping.py` (65, including napari's own `Image.data_to_world` for all 16 transforms), `test_simple_point_scan_region.py` (17, napari `ViewerModel`, no OpenGL, including the end-to-end overview → rectangle → acquisition on the synthetic sample), `test_mock_sample.py`, ImageController announcement tests. | |
+| **R** | The cloak structure of §10: `ScanCloak` (model), `ScanCloakPanel` + `ScanCloakView` (view), the `ScanCloakController` mixin; the Simple/Advanced switch, the mirror, the saved page; the contract suite; `SCAN_CLOAKS`. | The contract suite passes for every cloak; the point-scan tests pass unchanged in meaning. |
+| | **R note (2026-09-29).** Implemented as proposed, with the recommended answers to §10.9. What building it settled: (1) **The run policy drives the backend's own controls.** Live is Advanced's Repeat box and Stop unticks it, so Advanced's unchanged `scanDone` and deferred repeat carry D3; the copy of Advanced's `scanDone` is gone, and the mixin needs no backend-specific run code. (2) **Advanced loads a scan by merging, not replacing.** Its serializer sets enables and pulse windows only for the devices a scan names and leaves the rest as they were, and its own saved files name only the fired lasers; so loading a 405-only scan into an Advanced panel with 488 ticked fires 488 too (pre-existing, Advanced's own files included). The first contract run caught it on the mirror. The point-scan dicts now name every TTL device (unfired ones all-off, no windows) while `target_device`, which is what fires and is armed, stays the fired set; Advanced itself is unchanged and the defect is recorded in the known issues. (3) **Lazy class maps.** Importing a sibling submodule bound the module over the lazily exported class of the same name (`widgets.ScanWidgetAdvanced` became a module once the cloak panel was imported). The widgets map now ignores such bindings, as `imswitch.imcontrol.view` already did; the controllers map is left as it is, because tests import controller modules through that attribute (`import …controllers.RecordingController as rc_mod`). (4) **A saved scan the cloak cannot show** now opens on the Advanced page with the reason, instead of being refused. (5) The simple page's Expert fold is gone (phase and slice delay are on the Advanced page); Load/Save sit in the header. Tests: `test_scan_cloak_contract.py` (19, parametrized over `SCAN_CLOAKS`; mutation-checked: every one of seven broken mechanisms fails it); the point-scan suites (82) on the new structure. | |
 | **P3** | Channel lanes, per-channel power (D5), PMT note, Z and T (D3), Save toggle (D2). | D2, D3 and D5 end-to-end tests on the mock setup: N time partitions recorded, one run end, Stop mid-series with and without Save, missing Recording, writer failure, double start, and each power route. |
 | **P4** | `simple-point-scan.rst`, config-editor section, scripting API plus a tutorial script. Optional: a mock APD that images a synthetic cell sample from the galvo waveform, so overview → rectangle → acquisition can be demonstrated without hardware. | Sphinx `-W` build, tutorial runner, CI lanes. |
 | **P5** | Rig check on STED/confocal. | Estimated time vs measured time per frame; overview frame rate; rectangle lands on the right cells; channel separation on APDs. |
@@ -1226,48 +1229,48 @@ become an Advanced scan restored on the Advanced page, with a note.
 
 ### 10.6 A MoNaLISA cloak (sketch, for later)
 
-**What the backend is** (survey 2026-09-29):
+*Corrected 2026-09-29.* This means a **physical MoNaLISA setup driven by the
+Advanced scan panel**, not the legacy `MoNaLISA` scan panel (which was merged
+with PointScan into Advanced and stays as it is).
 
-- **Classes.** `ScanControllerMoNaLISA(SuperScanController)` with
-  `ScanWidgetMoNaLISA` and `ScanManagerMoNaLISA`, which uses the Beta designers.
-  It is **not** an Advanced subclass.
-- **Its dicts differ from Advanced's.**
-  - Analog: `target_device`, `axis_length`, `axis_step_size`,
-    `axis_centerpos`, `axis_startpos` and `sequence_time`.
-  - Digital: `target_device`, per-device `TTL_start` and `TTL_end` lists
-    (entered in ms), and `sequence_time`.
-  - `return_time` comes from the designer parameters.
-- **Detection and reconstruction.** Cameras are TTL devices, triggered at each
-  scan position. Reconstruction belongs to ImProcess; nothing in the panel
-  starts it.
-- **Preview.** "Cont. Laser Pulses" is the only preview-like mode (no stage
-  signals, looping).
-- **Lifecycle.** It uses the same base lifecycle as Advanced: `runScan`,
-  `runScanExternal`, and the deferred repeat through `_shouldContinueRepeat`,
-  which MoNaLISA already overrides. So the mixin's run-policy seam fits it too.
-  This is why the base must sit over any `SuperScanController`, not over
-  Advanced specifically.
+**What such a setup is on Advanced:**
 
-**What a MoNaLISA cloak could show:**
+- **Detection.** A camera is the detector. It is a TTL device, triggered once
+  per scan position, and each frame is taken while the grid excitation pattern
+  sits at that position. Reconstruction happens afterwards, in ImProcess.
+- **Scanning.** The pattern is stepped through the positions within one period
+  of the grid (a stepped, not swept, scan: `BetaScanDesigner`).
+- **Timing.** Within each position, Advanced's timing program
+  (`AdvancedScanTTLCycleDesigner`) places the on-switch, off-switch and
+  read-out pulses, and the camera's exposure window.
+- **Example.** `mock_scan_setup_2cam.json` ("MoNaLISA advanced-scan setup",
+  two mock Hamamatsu cameras, Beta scan designer with the Advanced TTL
+  designer) is one.
 
-- the pattern period and steps per period for each axis (→ length and step);
+So a MoNaLISA cloak is a second cloak **over the same backend**:
+`SCAN_CLOAKS['SimpleMoNaLISA'] = 'Advanced'`, with its own `ScanCloak`, whose
+representable subset is different. It needs the timing windows the point-scan
+cloak refuses, and it has no swept fast axis.
+
+**What it could show:**
+
+- the pattern period and the steps per period, for each axis (→ Advanced's size
+  and step);
 - the exposure per step;
 - the on-switch, off-switch and read-out phases on a timeline, with lasers and
-  the camera placed on it (→ `TTL_start`/`TTL_end`, the visual version of
-  today's comma-separated ms lists);
-- a *widefield live* mode (camera live, optionally with continuous laser
-  pulses) and *Acquire*;
-- frames per scan and the total time.
+  the camera placed on it (→ Advanced's pulse windows);
+- frames per scan and the total time;
+- *widefield live* (the camera live, no scan) next to *Acquire*.
 
-The axial auto-scan stays on the Advanced page, which is the MoNaLISA panel.
+**Reuse and gaps:**
 
 - **Reuses from the base:** the switch, the mirror, saved state, run policy,
   and Save/T.
 - **Does not reuse:** region drawing (the field is the camera's, not the scan
   range), the overview planner, the Nyquist slider.
 - **Needs an estimate:** `BetaScanDesigner` has no `estimateScanTime`. The cloak
-  would compute positions × dwell plus return time, or Beta gets an estimator.
-- **To settle with Guillaume:** which sequences are standard, and their defaults.
+  computes positions × dwell plus return time, or Beta gets an estimator.
+- **To settle with Guillaume:** the standard sequences and their defaults.
 
 ### 10.7 Tests
 
@@ -1298,7 +1301,9 @@ whichever structure exists.
 Then P3 continues on the new structure. A MoNaLISA cloak is its own phase, after
 a short design with Guillaume.
 
-### 10.9 Decisions needed
+### 10.9 Decisions
+
+**Decided 2026-09-29 (Lenny): all five as recommended.**
 
 1. **What the Advanced page shows when opened from Overview.**
    - Recommended: the acquisition, as a saved file does.

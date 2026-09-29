@@ -299,7 +299,7 @@ def test_a_new_live_frame_in_the_same_place_does_not_redraw(rig, monkeypatch):
 def test_the_reference_is_saved_with_the_panel(qtbot, rig):
     rig.widget.referenceCombo.setCurrentIndex(1)
     state = rig.scan.getComponentState()
-    assert state['simplePlan']['reference'] == 'APD 2'
+    assert state['cloak']['reference'] == 'APD 2'
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +312,7 @@ def test_a_real_overview_frame_is_what_the_rectangle_is_drawn_on(rig, qtbot):
     frames = []
     rig.master.detectorsManager['APD'].sigImageUpdated.connect(
         lambda im, init, scale: frames.append(im))
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
     try:
         qtbot.waitUntil(lambda: any(frame_geometry_of(f) for f in frames), timeout=10000)
         frame = next(f for f in frames if frame_geometry_of(f) is not None)
@@ -360,7 +360,7 @@ def test_the_acquisition_images_the_region_drawn_on_the_overview(rig, qtbot):
     frames = []
     rig.master.detectorsManager['APD'].sigImageUpdated.connect(
         lambda im, init, scale: frames.append(im))
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
     qtbot.waitUntil(lambda: rig.count('iteration') >= 1, timeout=15000)
     rig.widget.stopButton.click()
     assert rig.waitForEnd()
@@ -373,7 +373,7 @@ def test_the_acquisition_images_the_region_drawn_on_the_overview(rig, qtbot):
     _draw(rig, qtbot, {'X': (-6.0, 2.0), 'Y': (-9.0, -1.0)}, shown)
     rig.events.clear()
     frames.clear()
-    rig.widget.scanButton.click()
+    rig.widget.startButton.click()
     assert rig.waitForEnd(30)
 
     acquired = _lastFrame(frames)

@@ -7,7 +7,8 @@ Unreleased
 
 **New Features**
 
-- **SimplePointScan: a beginner's point-scan panel** (``scan.scanWidgetType: "SimplePointScan"``), on the Advanced scan path.
+- **SimplePointScan: a beginner's point-scan panel** (``scan.scanWidgetType: "SimplePointScan"``), a simpler panel over the Advanced scan panel.
+  - **Simple / Advanced.** A switch in the panel's header brings back the full Advanced panel, on the same scan: the Advanced page always shows what the simple page would run, and edits made there come back to the simple page. Settings the simple page cannot show (timing windows, Sequence Builder rows, and the like) are not dropped: going back asks first, and keeps them unless you discard them. From the Advanced page, scans run exactly as in the Advanced panel.
   - **Overview** scans the whole reachable field live, aiming for about one frame per second. It picks field, pixel count and dwell together, so the galvo's turnaround stays inside its voltage range, and shows the measured frame rate.
   - **Acquisition** scans a chosen region. Two sliders set the pixel size (overview to Nyquist, from ``scan.simplePointScan.objectiveNA`` or ``nyquistPixelSizeUm``) and the dwell (shortest safe to 10 ms), with an estimate of the scan time. The dwell never goes below what the scanner's ``vel_max`` allows.
   - **Channels:** lasers in one channel fire together; each channel is its own line pass. Lasers are dragged from the palette onto a channel (or onto "new channel"), between channels, or back out; a laser can be in several channels (405 with 488 in one, 405 with 561 in the next).
@@ -15,7 +16,8 @@ Unreleased
   - **Region in the viewer:** **Draw in viewer** draws the acquisition region as a rectangle on the live image (shown in Acquisition, or in Overview once Draw is clicked); moving or resizing it changes the region, and editing the numbers moves it. It is converted with the scan geometry of the image on screen, including the detector's display rotation and flip, and stays on the same scanner positions when that image changes. An axis the acquisition does not scan (Y in an XZ scan) is parked at the rectangle's centre. With several point detectors, the panel says which one's image it is drawn on.
   - In Overview, the region numbers and the sampling sliders, which only the acquisition uses, are greyed.
   - **Stop** ends after the running frame.
-  - **Saved files:** a scan the panel saves loads in the Advanced panel and builds the same waveforms there. An Advanced scan the panel cannot show (timing windows, Sequence Builder rows, and the like) is refused with the reason.
+  - **Saved files:** a scan the panel saves loads in the Advanced panel and builds the same waveforms there, including when lasers it does not fire were ticked there before. A saved Advanced scan the simple page cannot show opens on the Advanced page, with the reason.
+  - **For other microscopes:** the panel is built on reusable bases (``ScanCloak``, ``ScanCloakPanel``, ``ScanCloakController``; ``SCAN_CLOAKS`` lists them with the panel each drives), so a simpler panel for another setup on the Advanced scan -- a MoNaLISA one, say -- reuses the switch, the Advanced page and the run behaviour.
   - **Try it:** ``galvo_apd_simple_mock_scan_setup.json`` runs it without hardware, on a synthetic sample (below).
   - **Coming next:** channel power, time series, and saving from the panel.
 - A simulated APD can image a **synthetic sample** instead of uniform noise: with ``mockSample`` in its ``managerProperties`` (the scanners that move the beam, with their µm per volt), it counts photons from cells and beads at the position the scan's own waveforms put the beam at. An overview shows cells to draw a region around, and the acquisition shows whether the scan went where it was told. Simulation only; without the property nothing changes.
