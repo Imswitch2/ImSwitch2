@@ -14,7 +14,7 @@ input parameters remain once everything derivable is derived.
 Every number quoted here is produced by
 `docs/monalisa_optimal_reconstruction_experiments.py` (NumPy + SciPy only;
 `python docs/monalisa_optimal_reconstruction_experiments.py` reprints all
-tables in about a minute). Tags E1–E6 refer to its sections. The experiments
+tables in about a minute). Tags E1–E7 refer to its sections. The experiments
 use synthetic data with known ground truth: Gaussian foci on a known lattice,
 known amplitudes and backgrounds, controlled noise. Rig validation is the
 last phase of the plan, not a substitute for it.
@@ -80,6 +80,12 @@ geometry: 11.05 px period, 2 px spot sigma, 77 nm pixels):
 - The spot width must be calibrated from the data (E6 recovers σ to 0.5%):
   the spot is `h_d ⊗ h_e`, and a matched filter with the nominal detection
   PSF under-estimates amplitudes by 10% (E5a).
+- Per-focus *geometry* matters, spot *shape* barely (E7): a 0.3 px centre
+  error biases that focus by 1–2.6% and misplaces its whole cell by 23 nm; a
+  10% width error biases it by 2–4%. Both are cell-tiling errors, and both
+  are measurable per focus from the mean frame to 0.01–0.02 px and about 1%,
+  at no runtime cost. A spline PSF instead of a Gaussian changes the noise
+  by ≤ 5% and the scale by a harmless global factor.
 
 **What remains to tweak** after the plan (section 5): pixel size; a rough
 period band; background model (constant / plus haze / none); footprint
@@ -296,7 +302,9 @@ versus 0.081 — nothing. Optional, off by default.
 fitted to the mean frame with per-focus amplitude and constant profiled out
 (variable projection: one scalar minimization; E6 recovers 1.99–2.00 px for
 2.00 px true; E5: 1.297 for 1.298). No PSF FWHM input is needed; the fitted
-value is reported as a diagnostic ("spot FWHM 226 nm").
+value is reported as a diagnostic ("spot FWHM 226 nm"). Centre and width are
+fitted per focus, with a smooth spline field over the frame as the prior and
+its residual as the distortion diagnostic (section 2.7).
 
 **Sampling.** Exact integer pixels with per-focus weights evaluated at the
 true offsets (audit F3; the branch's `build_exact_sampling`) are a
@@ -424,6 +432,65 @@ sample-space position.
 - **Bleaching.** The linear energy normalization (audit F4) is right for a
   global loss; a per-focus loss is a gain drift and belongs with `ε_f`.
 
+### 2.7 Per-focus geometry and non-parametric spot shapes
+
+Two refinements of the spot model are often proposed: a model *per position*
+(each focus with its own centre and width, or a smooth spline field of them
+over the frame) and a *non-parametric shape* (an empirical spline PSF instead
+of a Gaussian). E7 separates the two.
+
+**Per-focus geometry matters, and it is free.** A spot model centred `δ`
+away from the true focus biases that focus' amplitude (Gaussian + constant
+fit, 3 σ reach):
+
+| centre error | 0.1 px | 0.2 px | 0.3 px | 0.5 px |
+|---|---|---|---|---|
+| bias, `σ_spot` = 1.3 px | −0.3% | −1.2% | −2.6% | −7.0% |
+| bias, `σ_spot` = 2.0 px | −0.1% | −0.5% | −1.0% | −2.9% |
+| cell content misplaced by | 8 nm | 15 nm | 23 nm | 39 nm |
+
+and a width error of 5 / 10 / 20% biases it by 1–2 / 2–4 / 2–9%. Both are
+*per-focus* errors, i.e. cell-sized gain steps, and the misplacement row is
+the larger effect: with an ideal-lattice centre the whole cell's content
+lands `δ` from where it was sampled — a seam of a third of the resolution
+at 0.3 px. Real lattices carry distortion at this level (a few tenths of a
+pixel across the field is ordinary for an SLM or microlens pattern imaged
+through an objective), and off-axis aberrations change the spot width across
+the field by 5–20%. The mean frame determines each focus' centre to
+0.01–0.02 px and its width to about 1% (10⁴–10⁶ photons per focus), so
+fitting them per focus removes both errors at no runtime cost — the weights
+are per focus anyway — and the *measured* centres, not the ideal lattice,
+feed the placement (one more reason to grid rather than to scatter into
+integer cells). A smooth spline field over the frame is the regularized form:
+it pools foci, flags outliers, and its residual is the distortion map. The
+ideal lattice remains for detection and indexing.
+
+**Shape barely matters for the fast path.** An elliptical spot fitted with
+the best circular Gaussian costs 0.5% bias at 10% ellipticity and 1.6% at
+20%, with no noise penalty. Against a pixel-integrated Airy PSF (520 nm,
+NA 1.4, 77 nm pixels) convolved with a 63 nm `h_e`, the best Gaussian
+(σ = 1.08 px) differs from the exact template by a scale factor between −4%
+and +4% depending on the reach — a global constant, harmless — and by ≤ 5%
+in noise, white or Poisson. The Airy rings put 7e-4 of the peak at the
+neighbour distance, three orders more than the Gaussian tail but still
+0.2 counts for a 300-count spot: crosstalk-irrelevant. A spline PSF earns
+its place in two situations only: the full-model reference, where the shape
+enters the deconvolution directly, and strongly aberrated fields, where a
+field-interpolated empirical template captures a shape variation no Gaussian
+can. Whatever the shape model, the haze term stays a separate basis
+function: an empirical template averaged from the data would bake that
+dataset's specimen-dependent skirt into the spot, whereas the haze amplitude
+varies per frame and per focus independently of the in-focus amplitude.
+
+**The excitation pattern itself** — `h_e` per focus: confinement width,
+asymmetry when the OFF-pattern minima do not coincide with the ON-pattern
+maxima — does not enter stage 1 at all (the amplitude is whatever
+`∫ S · h_e` is) and enters stage 2 only through the optional deconvolution.
+Per-focus `h_e` differences appear as cell-dependent resolution; they are
+identifiable only from overlaps or point-like structures, and a smooth field
+of `h_e` widths would feed a spatially variant deconvolution in the reference
+method. Not a fast-path concern.
+
 ---
 
 ## 3. Findings on the branch to fix before building on it
@@ -509,8 +576,9 @@ imswitch/improcess/reconstructors/monalisa/
   scan_frame.py     NEW  ScanFrame: d_k for every frame from the layout (attrs fallback),
                     the 8 R candidates + optional rotation/scale, orientation by TV with
                     layout cross-check, sample positions q_{k,f} (eq. 1)
-  spot_model.py     NEW  SpotModel(sigma, sigma_haze | None, ellipticity | None);
-                    calibrate(mean_frame, foci) by variable projection (E6)
+  spot_model.py     NEW  SpotModel: per-focus centre and sigma (+ optional ellipticity,
+                    haze sigma) with a smooth spline-field prior; calibrate(mean_frame,
+                    foci) by variable projection (E6, E7); distortion residual map
   extraction.py     NEW  ExtractionOperator.build(lattice, spot_model, background,
                     reach, frame_shape, weighting=None) -> per-focus (rows, cols, weights),
                     joint pseudo-inverse rows, exact-pixel; apply(frames) -> amplitudes,
@@ -543,9 +611,11 @@ Once per geometry (first stack, or the loaded file):
 1. Mean frame → `detect_lattice` (spectral, guess-free, within the period
    band) → `refine_with_centroids` (index every focus, regress centroids on
    `(m, n)`; residual map = distortion diagnostic) → `Lattice`.
-2. `SpotModel.calibrate` on the mean frame at the refined foci: `σ_spot`,
-   optional ellipticity, optional `σ_haze` (enabled when the tail residual
-   justifies it).
+2. `SpotModel.calibrate` on the mean frame at the refined foci: per-focus
+   centre and `σ_spot` under a smooth spline-field prior (residual map =
+   distortion diagnostic), optional ellipticity, optional `σ_haze` (enabled
+   when the tail residual justifies it). The measured centres are the `r_f`
+   of equation (1) from here on; the ideal lattice only indexes them.
 3. `ScanFrame` from the layout: `d_k` per frame for each `R` candidate.
 4. `ExtractionOperator.build`: for each focus the in-frame pixel set within
    the reach, the joint design `[G N]` restricted to the footprint union, the
@@ -648,7 +718,7 @@ follows: reach, haze sigma, gridding lambda, deconvolution iterations and
 | Background model | constant + haze (auto-enabled by residual) | data | switch off haze on thin samples; `none` for calibration beads | no |
 | Footprint reach (× σ_spot) | 3 | — | 2–4; below 2.5 costs noise, above 4 costs nothing but memory | yes |
 | Noise weighting | off | camera gain / offset / read noise | high-signal, low-background data (≤ 20% variance) | no |
-| Spot sigma (px) | auto (calibrated) | mean frame | override for degenerate frames (few foci) | yes |
+| Spot centre and sigma | auto, per focus (smooth-field prior) | mean frame | override sigma for degenerate frames (few foci) | yes |
 | Haze sigma (px) | auto (calibrated) | mean frame | override when the haze is non-Gaussian | yes |
 | Scan orientation | auto (TV) with layout cross-check | data + layout | override when the cross-check disagrees | no |
 | Stage-to-camera rotation (°) | 0 | BeadRec calibration or overlap self-calibration | when cell seams appear on straight structures | no |
@@ -741,3 +811,4 @@ frames per timepoint).
 | E4 | exact placement when commensurate; B-spline LSQ ≤ 0.02 for a 0.3% step mismatch | `test_placement.py` |
 | E5 | joint extraction ≤ 1/3 the RMSE of the isolated fit; two-stage + RL within 25% of full-model RL | `test_pipeline_synthetic.py` (slow marker) |
 | E6 | spot sigma recovered within 1% | `test_spot_model.py` |
+| E7 | per-focus centre / width errors bias that focus by 1–4% and misplace its cell; template vs Gaussian ≤ 5% | `test_spot_model.py` (per-focus fit, distortion residual) |

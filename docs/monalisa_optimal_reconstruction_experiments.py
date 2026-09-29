@@ -31,6 +31,8 @@ The experiments:
   (extraction + placement, optionally deconvolved) against the full-model
   multi-frame maximum-likelihood (Richardson-Lucy) estimate.
 * ``e6`` -- spot-shape self-calibration from the data.
+* ``e7`` -- per-focus geometry errors (centre, width, ellipticity) and a
+  non-parametric (template / spline) spot shape against the Gaussian.
 """
 
 from __future__ import annotations
@@ -755,6 +757,116 @@ def e6_spot_calibration(mean_frame=None, foci=None, verbose=True):
     return float(res.x)
 
 
+# ================================================================ E7
+def _airy_spot(sigma_e_px, wavelength_nm=520.0, na=1.4, half=8, sub=8):
+    """Pixel-integrated Airy detection PSF convolved with a Gaussian h_e (unit peak)."""
+    from scipy.ndimage import gaussian_filter
+    from scipy.special import j1
+
+    n = (2 * half + 1) * sub
+    coords = (np.arange(n) - (n - 1) / 2) / sub            # px; pixel centres at integers
+    X, Y = np.meshgrid(coords, coords)
+    v = 2 * np.pi * na * np.hypot(X, Y) * PIXEL_NM / wavelength_nm
+    v = np.where(v == 0, 1e-12, v)
+    airy = (2 * j1(v) / v) ** 2
+    spot = gaussian_filter(airy, sigma_e_px * sub, mode="nearest")
+    spot = spot.reshape(2 * half + 1, sub, 2 * half + 1, sub).mean(axis=(1, 3))
+    return spot / spot.max()
+
+
+def _footprint(radius):
+    h = int(np.ceil(radius))
+    yy, xx = np.mgrid[-h:h + 1, -h:h + 1].astype(float)
+    inside = (xx**2 + yy**2) <= radius * radius
+    return xx[inside], yy[inside], inside
+
+
+def _best_gaussian_sigma(x, y, spot):
+    def cost(sigma):
+        D = np.stack([gaussian(x, y, sigma), np.ones(x.size)], 1)
+        coef, *_ = np.linalg.lstsq(D, spot, rcond=None)
+        return float(np.sum((D @ coef - spot) ** 2))
+    return float(minimize_scalar(cost, bounds=(0.4, 4.0), method="bounded").x)
+
+
+def e7_spot_models():
+    """Per-focus geometry errors and non-parametric spot shapes."""
+    print("## E7 -- per-focus geometry and non-parametric spot shapes\n")
+    reach = 3.0
+    print("### E7a -- amplitude bias from a centre error of the spot model\n")
+    rows = []
+    for sigma_t in (1.3, 2.0):
+        x, y, _ = _footprint(reach * sigma_t)
+        truth = gaussian(x, y, sigma_t)
+        for delta in (0.0, 0.1, 0.2, 0.3, 0.5, 0.7):
+            D = np.stack([gaussian(x - delta, y, sigma_t), np.ones(x.size)], 1)
+            w = np.linalg.pinv(D)[0]
+            rows.append((sigma_t, delta, (w @ truth - 1) * 100, delta * PIXEL_NM))
+    md_table(["spot sigma (px)", "centre error (px)", "amplitude bias (%)",
+              "cell content misplaced by (nm)"], rows)
+
+    print("### E7b -- amplitude bias from a width error of the spot model\n")
+    rows = []
+    for sigma_t in (1.3, 2.0):
+        x, y, _ = _footprint(reach * sigma_t)
+        truth = gaussian(x, y, sigma_t)
+        for ratio in (0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.2):
+            g = gaussian(x, y, ratio * sigma_t)
+            D = np.stack([g, np.ones(x.size)], 1)
+            w = np.linalg.pinv(D)[0]
+            rows.append((sigma_t, ratio, (w @ truth - 1) * 100,
+                         (g @ truth / (g @ g) - 1) * 100))
+    md_table(["spot sigma (px)", "model / true width", "bias, Gaussian+constant (%)",
+              "bias, matched filter only (%)"], rows)
+
+    print("### E7c -- elliptical spot fitted with the best circular Gaussian\n")
+    rows = []
+    sigma_t = 1.3
+    x, y, _ = _footprint(reach * sigma_t * 1.25)
+    for ell in (0.0, 0.05, 0.1, 0.2):
+        truth = np.exp(-(x**2 / (2 * (sigma_t * (1 + ell)) ** 2)
+                         + y**2 / (2 * (sigma_t / (1 + ell)) ** 2)))
+        sigma_fit = _best_gaussian_sigma(x, y, truth)
+        D = np.stack([gaussian(x, y, sigma_fit), np.ones(x.size)], 1)
+        w_circ = np.linalg.pinv(D)[0]
+        D_true = np.stack([truth, np.ones(x.size)], 1)
+        w_true = np.linalg.pinv(D_true)[0]
+        rows.append((ell, sigma_fit, (w_circ @ truth - 1) * 100,
+                     np.linalg.norm(w_circ) / np.linalg.norm(w_true)))
+    md_table(["ellipticity (sx/sy - 1)/2", "best circular sigma (px)",
+              "amplitude bias (%)", "noise vs true-shape template"], rows)
+
+    print("### E7d -- Airy detection PSF (520 nm, NA 1.4, 77 nm px) x 63 nm h_e: "
+          "Gaussian vs template\n")
+    spot = _airy_spot(0.35)
+    half = spot.shape[0] // 2
+    yy, xx = np.mgrid[-half:half + 1, -half:half + 1].astype(float)
+    rows = []
+    for reach_sigma in (1.5, 2.0, 3.0):
+        sigma_fit = _best_gaussian_sigma(xx.ravel(), yy.ravel(), spot.ravel())
+        r = reach_sigma * sigma_fit
+        inside = (xx**2 + yy**2) <= r * r
+        x, y, t = xx[inside], yy[inside], spot[inside]
+        D_g = np.stack([gaussian(x, y, sigma_fit), np.ones(x.size)], 1)
+        w_g = np.linalg.pinv(D_g)[0]
+        D_t = np.stack([t, np.ones(x.size)], 1)
+        w_t = np.linalg.pinv(D_t)[0]
+        mu = 300.0 * t + 20.0
+        var = mu + 1.6**2
+        rows.append((reach_sigma, sigma_fit, int(x.size), w_g @ t,
+                     np.linalg.norm(w_g) / np.linalg.norm(w_t),
+                     np.sqrt(np.sum(w_g**2 * var) / np.sum(w_t**2 * var))))
+    md_table(["reach (x sigma)", "best Gaussian sigma (px)", "pixels",
+              "Gaussian amplitude / template amplitude",
+              "noise ratio Gaussian / template (white)",
+              "noise ratio (Poisson + read)"], rows)
+    sigma_all = _best_gaussian_sigma(xx.ravel(), yy.ravel(), spot.ravel())
+    at_neighbour = np.interp(11.0, np.arange(half + 1), spot[half, half:])
+    print(f"Airy spot value at the neighbour distance (11 px): {spot[half, half]:.3g} "
+          f"at centre, {at_neighbour:.2e} at 11 px along x (Gaussian model there: "
+          f"{np.exp(-11.0**2 / (2 * sigma_all**2)):.1e}).\n")
+
+
 EXPERIMENTS = {
     "e1": e1_extraction,
     "e2": e2_noise_weighting,
@@ -762,6 +874,7 @@ EXPERIMENTS = {
     "e4": e4_gridding,
     "e5": e5_two_stage_vs_ml,
     "e6": e6_spot_calibration,
+    "e7": e7_spot_models,
 }
 
 
