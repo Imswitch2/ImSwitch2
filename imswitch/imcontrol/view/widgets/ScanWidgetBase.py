@@ -110,6 +110,13 @@ class SuperScanWidget(Widget):
     def _formatUnreferencedScanAxis(self, positionerName, axis):
         return f'{positionerName} — {axis}'
 
+    def showScanStartRejected(self, message):
+        QtWidgets.QMessageBox.warning(
+            self,
+            'Scan not started',
+            str(message or 'The scan request was rejected.'),
+        )
+
     @abstractmethod
     def initControls(self, positionerNames, TTLDeviceNames, TTLTimeUnits):
         pass

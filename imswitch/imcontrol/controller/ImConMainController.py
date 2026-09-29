@@ -79,6 +79,9 @@ class ImConMainController(MainController):
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel(self, self.__setupInfo)
+        self.__commChannel.sigExternalScanRequestRejectedForUi.connect(
+            self._showExternalScanRequestRejected
+        )
         self.__masterController = None
         self.__factory = None
         self.__masterController = MasterController(self.__setupInfo, self.__commChannel,
@@ -804,6 +807,18 @@ class ImConMainController(MainController):
             QtWidgets.QMessageBox.Yes,
         )
         return result == QtWidgets.QMessageBox.Yes
+
+    def _showExternalScanRequestRejected(self, message):
+        message = str(message or 'The scan request was rejected.')
+
+        def showMessage():
+            QtWidgets.QMessageBox.warning(
+                self.__mainView,
+                'Scan not started',
+                message,
+            )
+
+        QtCore.QTimer.singleShot(0, showMessage)
 
 
 class _GuiLayoutStateAdapter:

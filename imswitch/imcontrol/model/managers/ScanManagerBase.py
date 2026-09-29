@@ -81,7 +81,13 @@ class SuperScanManager(ABC):
         if refusal:
             raise ScanDesignRefusedError(refusal)
         scanSignalsDict, positions, scanInfoDict = self.getScanSignalsDict(scanParameters)
-        if not self._scanDesigner.checkSignalComp(
+        if hasattr(self._scanDesigner, 'signalCompatibilityRefusal'):
+            refusal = self._scanDesigner.signalCompatibilityRefusal(
+                scanParameters, self._setupInfo, scanInfoDict
+            )
+            if refusal:
+                raise ScanDesignRefusedError(refusal)
+        elif not self._scanDesigner.checkSignalComp(
                 scanParameters, self._setupInfo, scanInfoDict
         ):
             raise ScanDesignRefusedError(

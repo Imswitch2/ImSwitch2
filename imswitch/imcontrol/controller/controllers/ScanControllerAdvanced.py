@@ -145,7 +145,13 @@ class ScanControllerAdvanced(SuperScanController):
         # only remaining bound is the NI-DAQ task's generic +-10 V range, so
         # e.g. a Z scan centered at 0 um on a 0..10 V piezo would reach the
         # hardware.
-        if hasattr(scan_des, "checkSignalComp"):
+        if hasattr(scan_des, "signalCompatibilityRefusal"):
+            refusal = scan_des.signalCompatibilityRefusal(
+                scanParameters, self._setupInfo, scanInfoDict
+            )
+            if refusal:
+                raise ScanDesignRefusedError(refusal)
+        elif hasattr(scan_des, "checkSignalComp"):
             if not scan_des.checkSignalComp(
                 scanParameters, self._setupInfo, scanInfoDict
             ):

@@ -137,6 +137,9 @@ class CommunicationChannel(SignalInterface):
     # A scan start request was refused before any lifecycle signal was
     # published (reason text). Emitted by every scan-controller family.
     sigScanRequestRejected = Signal(str)
+    # UI-only aggregate for user-facing external scan requests. Emitted once by
+    # ScanWorkflowService after one request's controller reports have settled.
+    sigExternalScanRequestRejectedForUi = Signal(str)
     sigToggleBlockScanWidget = Signal(bool)
     sigRequestScanParameters = Signal()
     sigSendScanParameters = Signal(dict, dict, object)  # (analogParams, digitalParams, scannerList)

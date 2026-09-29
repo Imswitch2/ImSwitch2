@@ -870,6 +870,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         if proceed and suppressWarning:
             self._suppressUnreferencedScanWarning = True
         return proceed
+
+    def _showScanStartRejected(self, message) -> None:
+        show = getattr(self._widget, 'showScanStartRejected', None)
+        if callable(show):
+            show(message)
     
     def _getUnreferencedScanAxes(self):
         unreferenced = []
@@ -1928,7 +1933,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         so rigs with several scanners do not collide on the name. """
         if not self._confirmUnreferencedScanIfNeeded():
             return
+        self._lastScanStartRejection = None
         self.runScanAdvanced(sigScanStartingEmitted=False)
+        rejection = getattr(self, '_lastScanStartRejection', None)
+        if rejection:
+            self._showScanStartRejected(rejection)
         
     def sendScanParameters(self):
         self.getParameters()

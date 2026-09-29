@@ -80,8 +80,12 @@ def test_scan_rejected_when_signal_leaves_voltage_range():
                      'sequence_time': 0.005}
 
     sh = ScanManagerBase(setupInfo=setupInfoBasic)
-    with pytest.raises(ScanDesignRefusedError, match='voltages outside'):
+    with pytest.raises(ScanDesignRefusedError, match='voltages outside') as error:
         sh.makeFullScan(stageParameters, TTLParameters)
+    message = str(error.value)
+    assert 'Z (Z)' in message
+    assert 'outside configured 0...10 V range' in message
+    assert 'at least +2 um' in message
 
 
 

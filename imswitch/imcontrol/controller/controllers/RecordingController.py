@@ -27,7 +27,7 @@ _LAPSE_RECORDING_DRAIN_RETRY_MS = 25
 _MAX_LAPSE_TIMER_MS = 2_147_000_000
 
 
-def _dispatchWithoutLifecycle(dispatch, *args):
+def _dispatchWithoutLifecycle(dispatch, *args, show_rejection_popup=False):
     """Dispatch a scan without letting the dispatcher publish its start.
 
     A dispatcher predating ``notify_starting`` never published one, which
@@ -38,9 +38,20 @@ def _dispatchWithoutLifecycle(dispatch, *args):
     inside must not be silently re-dispatched, which would start the scan
     twice.
     """
+    kwargs = {'notify_starting': False}
+    if show_rejection_popup:
+        kwargs['show_rejection_popup'] = True
     try:
-        return dispatch(*args, notify_starting=False)
+        return dispatch(*args, **kwargs)
     except TypeError as error:
+        if 'show_rejection_popup' in str(error) and show_rejection_popup:
+            kwargs.pop('show_rejection_popup', None)
+            try:
+                return dispatch(*args, **kwargs)
+            except TypeError as retryError:
+                if 'notify_starting' not in str(retryError):
+                    raise
+            return dispatch(*args)
         if 'notify_starting' not in str(error):
             raise
     return dispatch(*args)
@@ -1728,12 +1739,14 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     source,
                     recalculateSignals,
                     isNonFinalPartOfSequence,
+                    show_rejection_popup=True,
                 )
             else:
                 result = _dispatchWithoutLifecycle(
                     self._commChannel.scanWorkflow.run_scan,
                     recalculateSignals,
                     isNonFinalPartOfSequence,
+                    show_rejection_popup=True,
                 )
         except Exception as error:
             # The exact targeted source may have partially started before

@@ -1,6 +1,8 @@
 import numpy as np
 
-from .basesignaldesigners import ScanDesigner, ScanInfoContract
+from .basesignaldesigners import (
+    ScanDesigner, ScanInfoContract, scan_voltage_range_refusal,
+)
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
@@ -91,22 +93,22 @@ class BetaScanDesigner(ScanDesigner):
         Positioners without ``minVolt``/``maxVolt`` are skipped rather than
         rejected, since older stage configs omit them.
         """
+        return not self.signalCompatibilityRefusal(
+            scanParameters, setupInfo, scanInfo
+        )
+
+    def signalCompatibilityRefusal(self, scanParameters, setupInfo, scanInfo):
+        """Return an actionable reason when the scan leaves voltage limits."""
         minmaxes = scanInfo.get('minmaxes') if scanInfo else None
         if not minmaxes:
-            return True
+            return ''
         targets = scanParameters['target_device']
         for i in range(min(len(targets), len(minmaxes))):
             name = targets[i]
-            if name == 'None' or 'Mock' in name:
-                continue
-            props = setupInfo.positioners[name].managerProperties
-            minv = props.get('minVolt')
-            maxv = props.get('maxVolt')
-            if minv is not None and minmaxes[i][0] < minv:
-                return False
-            if maxv is not None and minmaxes[i][1] > maxv:
-                return False
-        return True
+            refusal = scan_voltage_range_refusal(setupInfo, name, minmaxes[i])
+            if refusal:
+                return refusal
+        return ''
 
     def make_signal(self, parameterDict, setupInfo):
         n_linesteps = int(parameterDict.get("n_linesteps", 1))

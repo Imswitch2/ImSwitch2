@@ -400,6 +400,7 @@ class _TriggeredTileSource:
                 self._scanSource,
                 recalculate_signals=self._first,
                 is_non_final_part_of_sequence=False,
+                show_rejection_popup=True,
             )
         except Exception as e:
             controller._logger.error(f'Tiling: could not start scan: {e}',
