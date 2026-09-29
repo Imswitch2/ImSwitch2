@@ -86,10 +86,14 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
 
     def _buildScanSignals(self):
         self.getParameters()
-        return self._master.scanManager.makeFullScan(
-            self._analogParameterDict, self._digitalParameterDict,
-            staticPositioner=self._widget.isContLaserMode()
-        )
+        self._capturePositionersBeforeScan()
+        try:
+            return self._master.scanManager.makeFullScan(
+                self._analogParameterDict, self._digitalParameterDict,
+                staticPositioner=self._widget.isContLaserMode()
+            )
+        finally:
+            self._forgetPositionersBeforeScan()
 
     def scanDone(self):
         self.isRunning = False

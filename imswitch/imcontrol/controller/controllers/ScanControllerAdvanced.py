@@ -736,29 +736,32 @@ class ScanControllerAdvanced(SuperScanController):
 
     def _buildScanSignals(self):
         self.getParameters()
-
-        # Only rebuild the (expensive) scan signal if the parameters
-        # actually changed since the last build. Repeated scan frames
-        # reuse identical parameters, so this avoids regenerating a
-        # byte-identical galvo/TTL signal — and the per-frame stall it
-        # causes — on every repeat. Live parameter edits still trigger
-        # a rebuild because the snapshot then differs.
-        paramsSnapshot = (
-            copy.deepcopy(self._analogParameterDict),
-            copy.deepcopy(self._digitalParameterDict),
-        )
-        if (
-            self.signalDict is not None
-            and self.scanInfoDict is not None
-            and paramsSnapshot == self._lastBuiltParams
-        ):
-            return self.signalDict, self.scanInfoDict
-        # TTL cycle (linestep_enable) is the sole authority for per-laser emission
-        signalDict, scanInfoDict = self._make_full_scan(
-            self._analogParameterDict, self._digitalParameterDict
-        )
-        self._lastBuiltParams = paramsSnapshot
-        return signalDict, scanInfoDict
+        self._capturePositionersBeforeScan()
+        try:
+            # Only rebuild the (expensive) scan signal if the parameters
+            # actually changed since the last build. Repeated scan frames
+            # reuse identical parameters, so this avoids regenerating a
+            # byte-identical galvo/TTL signal — and the per-frame stall it
+            # causes — on every repeat. Live parameter edits still trigger
+            # a rebuild because the snapshot then differs.
+            paramsSnapshot = (
+                copy.deepcopy(self._analogParameterDict),
+                copy.deepcopy(self._digitalParameterDict),
+            )
+            if (
+                self.signalDict is not None
+                and self.scanInfoDict is not None
+                and paramsSnapshot == self._lastBuiltParams
+            ):
+                return self.signalDict, self.scanInfoDict
+            # TTL cycle (linestep_enable) is the sole authority for per-laser emission
+            signalDict, scanInfoDict = self._make_full_scan(
+                self._analogParameterDict, self._digitalParameterDict
+            )
+            self._lastBuiltParams = paramsSnapshot
+            return signalDict, scanInfoDict
+        finally:
+            self._forgetPositionersBeforeScan()
 
     def scanDone(self):
         """Called by the system when nidaq finishes."""

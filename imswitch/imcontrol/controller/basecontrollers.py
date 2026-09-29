@@ -477,6 +477,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._widget.sigStageParChanged.connect(self.updateScanStageAttrs)
         self._widget.sigSignalParChanged.connect(self.updateScanTTLAttrs)
 
+        # warning suppresion per-session
+        self._suppressUnreferencedScanWarning = False
+
     @property
     def parameterDict(self):
         return None
@@ -486,7 +489,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             raise InvalidChildClassError('ScanController needs to return a valid parameterDict')
         else:
             return True
-
+    
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
         """ Run scan from external non-scan-widget trigger. """
         requestCompletion = ScanRequestCompletion(self)
@@ -631,7 +634,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             except Exception:
                 return 'Unable to verify current scan-run ownership.'
         if activeRun is None:
-            return ''
+            return self._unreferencedScanStartRefusal()
 
         localToken = getattr(self, '_scanRunToken', None)
         if activeRun is not localToken:
@@ -662,6 +665,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             or bool(getattr(activeRun, 'releaseRequested', False))
         ):
             return 'The current scan run is failed, stopped, or releasing.'
+        referenceRefusal = self._unreferencedScanStartRefusal()
+        if referenceRefusal:
+            return referenceRefusal
         return ''
 
     def _detachExternalScanRequestCompletions(self, runToken):
@@ -845,6 +851,39 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 # reservation. Its exact part terminal is nevertheless ready
                 # once sigScanDone publication has returned.
                 completeRequest()
+    
+    def _unreferencedScanStartRefusal(self) -> str:
+        """Return a refusal message if scan positioners are unreferenced."""
+        if self._suppressUnreferencedScanWarning:
+            return ''
+
+        unreferenced = self._getUnreferencedScanAxes()
+        if not unreferenced:
+            return ''
+
+        axesText = ', '.join(f'{positionerName} ({axis})'for positionerName, axis in unreferenced)
+        return (
+            'This scan uses open-loop positioners that are not referenced: '
+            f'{axesText}. Reference them from the Positioner widget before '
+            'starting the scan, or deliberately allow unreferenced scanning '
+            'from the Scan widget.'
+        )
+    
+    def _getUnreferencedScanAxes(self):
+        unreferenced = []
+        for positionerName in self.positioners:
+            manager = self._master.positionersManager[positionerName]
+            if not getattr(manager, 'requiresReference', False):
+                continue
+            
+            positionerInfo = self._setupInfo.positioners[positionerName]
+            axes = list(getattr(positionerInfo, 'axes', None)or manager.axes)
+            
+            for axis in axes:
+                if not manager.isAxisReferenced(axis):
+                    unreferenced.append((positionerName, axis))
+        
+        return unreferenced
     
     @abstractmethod
     def setParameters(self):
@@ -1150,6 +1189,21 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 exc_info=True,
             )
 
+    def _capturePositionersBeforeScan(self):
+        positionsBeforeScan = []
+        for positionerName in self._analogParameterDict.get( 'target_device', []):
+            if not positionerName or positionerName == 'None':
+                positionsBeforeScan.append([])
+                continue
+            manager = self._master.positionersManager[positionerName]
+            info = self._setupInfo.positioners[positionerName]
+            axes = list(getattr(info, 'axes', None) or manager.axes)
+            positionsBeforeScan.append([manager.position[axis]for axis in axes])
+        self._analogParameterDict['axis_position_before_scan'] = positionsBeforeScan
+
+    def _forgetPositionersBeforeScan(self):
+        self._analogParameterDict.pop('axis_position_before_scan', None)
+
     def _buildScanSignals(self):
         """Read the scan parameters and build ``(signalDict, scanInfoDict)``.
 
@@ -1157,9 +1211,13 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         refuses the design.
         """
         self.getParameters()
-        return self._master.scanManager.makeFullScan(
-            self._analogParameterDict, self._digitalParameterDict
-        )
+        self._capturePositionersBeforeScan()
+        try:
+            return self._master.scanManager.makeFullScan(
+                self._analogParameterDict, self._digitalParameterDict
+            )
+        finally:
+            self._forgetPositionersBeforeScan
 
     def _beginScanRunWithDesign(self, *, sigScanStartingEmitted,
                                 recalculateSignals):
@@ -1839,6 +1897,14 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         """ Runs a scan with the set scanning parameters (GUI Scan button).
         The API entry point is WorkflowFacadeController.runScan, exported once
         so rigs with several scanners do not collide on the name. """
+        if not self._suppressUnreferencedScanWarning:
+            unreferenced = self._getUnreferencedScanAxes()
+            if unreferenced:
+                proceed,suppress_warning = self._widget.confirmUnreferencedScan(unreferenced)
+                if not proceed:
+                    return
+                if suppress_warning:
+                    self._suppressUnreferencedScanWarning = True
         self.runScanAdvanced(sigScanStartingEmitted=False)
         
     def sendScanParameters(self):

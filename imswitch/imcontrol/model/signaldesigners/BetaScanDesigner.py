@@ -145,7 +145,37 @@ class BetaScanDesigner(ScanDesigner):
             )
         convFactors = [scanningProps[dev].get('conversionFactor', 1)
                        for dev in parameterDict['target_device']]
+        
+        # Runtime position snapshot supplied by the scan controller.
+        # Values are in positioner units (typically µm), so convert them to the
+        # voltage-domain units used by the generated scan waveforms.
+        positionsBeforeScan = parameterDict.get('axis_position_before_scan')
+        hasPositionSnapshot = positionsBeforeScan is not None
 
+        if hasPositionSnapshot:
+            if len(positionsBeforeScan) != 3:
+                raise ValueError(
+                    f'{self.__class__.__name__}: axis_position_before_scan must '
+                    'contain one entry per target device'
+                )
+
+            for i in range(3):
+                if len(positionsBeforeScan[i]) != 1:
+                    raise ValueError(
+                        f'{self.__class__.__name__} does not support multi-axis '
+                        'positioners'
+                    )
+
+            fast_axis_position_before_scan = positionsBeforeScan[0][0] / convFactors[0]
+            middle_axis_position_before_scan = positionsBeforeScan[1][0] / convFactors[1]
+            slow_axis_position_before_scan = positionsBeforeScan[2][0] / convFactors[2]
+
+        else:
+            # Backward compatibility for direct/legacy callers that do not yet provide the runtime position snapshot.
+            fast_axis_position_before_scan = None
+            middle_axis_position_before_scan = None
+            slow_axis_position_before_scan = None
+        
         # Retrieve sizes
         [fast_axis_size, middle_axis_size, slow_axis_size] = \
             [(parameterDict['axis_length'][i] / convFactors[i]) for i in range(3)]
@@ -154,12 +184,22 @@ class BetaScanDesigner(ScanDesigner):
         [fast_axis_step_size, middle_axis_step_size, slow_axis_step_size] = \
             [(parameterDict['axis_step_size'][i] / convFactors[i]) for i in range(3)]
 
-        # Retrieve center positions. The scan is centered on axis_centerpos (like
-        # GalvoScanDesigner) so the ROI 'Center' actually moves stage scans;
-        # previously fast_axis_start = startpos - center = 0 made Center inert and
-        # every scan ran from 0 (see scan-beta-center-ignored).
-        [fast_axis_center, middle_axis_center, slow_axis_center] = \
-            [(parameterDict['axis_centerpos'][i] / convFactors[i]) for i in range(3)]
+        # For Beta stage scans, Center is a relative offset from the positioner
+        # position immediately before the scan.
+        fast_axis_center_offset = parameterDict['axis_centerpos'][0] / convFactors[0]
+        middle_axis_center_offset = parameterDict['axis_centerpos'][1] / convFactors[1]
+        slow_axis_center_offset = parameterDict['axis_centerpos'][2] / convFactors[2]
+
+        if hasPositionSnapshot:
+            fast_axis_center = fast_axis_position_before_scan + fast_axis_center_offset
+            middle_axis_center = middle_axis_position_before_scan + middle_axis_center_offset
+            slow_axis_center = slow_axis_position_before_scan + slow_axis_center_offset
+        else:
+            # Legacy/direct-call fallback: without a runtime position snapshot,
+            # retain the previous absolute-Center semantics.
+            fast_axis_center = fast_axis_center_offset
+            middle_axis_center = middle_axis_center_offset
+            slow_axis_center = slow_axis_center_offset
 
         # Canonical pixel count = round(size / step) via the shared helper, so the
         # number of scanned lines matches the GUI "Pixels (#)" display and the
@@ -235,7 +275,11 @@ class BetaScanDesigner(ScanDesigner):
         fullLineSignal = np.concatenate((rampSignal, returnRamp))
 
         fastAxisSignal = np.tile(fullLineSignal, middle_axis_positions * n_linesteps * slow_axis_positions)
-
+        if hasPositionSnapshot and returnSamples > 0:
+            fastAxisSignal[-returnSamples:] = self.__smoothRamp(
+                rampValues[-1],fast_axis_position_before_scan,returnSamples
+            )
+        
         # Make middle axis signal
         colValues = axis_pixel_positions(
             middle_axis_positions, middle_axis_step_size, start=middle_axis_start)
@@ -262,6 +306,12 @@ class BetaScanDesigner(ScanDesigner):
                                                                                        returnSamples)
 
         middleAxisSignal = np.tile(fullSquareSignal, slow_axis_positions)
+        # On the final line of the complete scan, return the middle axis to its
+        # pre-scan position instead of wrapping back to the first ROI position.
+        if hasPositionSnapshot and returnSamples > 0:
+            middleAxisSignal[-returnSamples:] = self.__smoothRamp(
+                colValues[-1],middle_axis_position_before_scan,returnSamples,
+            )
 
         # Make slow axis signal
         sliceSamples = slow_axis_positions * colSamples
@@ -279,6 +329,12 @@ class BetaScanDesigner(ScanDesigner):
                 fullCubeSignal[(s + 1) * colSamples - returnSamples:(s + 1) * colSamples] = \
                     self.__smoothRamp(sliceValues[s], slow_axis_start, returnSamples)
         slowAxisSignal = fullCubeSignal
+        # The final slice returns to the pre-scan position rather than wrapping
+        # back to the first slow-axis ROI position.
+        if hasPositionSnapshot and returnSamples > 0:
+            slowAxisSignal[-returnSamples:] = self.__smoothRamp(
+                sliceValues[-1],slow_axis_position_before_scan,returnSamples,
+            )
 
         if slow_axis_size > 0:
             sig_dict = {parameterDict['target_device'][0]: fastAxisSignal,
@@ -324,7 +380,7 @@ class BetaScanDesigner(ScanDesigner):
             # One [min, max] per EMITTED signal, aligned with sig_dict /
             # target_device order, so checkSignalComp checks exactly what will
             # be written to the AO channels (parked axes included -- they are
-            # driven to their center) and nothing that will not.
+            # driven to their scan position) and nothing that will not.
             minmaxes=[[float(np.min(s)), float(np.max(s))] for s in
                       ((fastAxisSignal, middleAxisSignal, slowAxisSignal)
                        if slow_axis_size > 0 else
