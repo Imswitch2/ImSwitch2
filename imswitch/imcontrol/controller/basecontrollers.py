@@ -607,7 +607,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
         coordinator = getattr(self, '_scanCoordinator', None)
         if coordinator is None:
-            return ''
+            return self._unreferencedScanStartRefusal()
         try:
             activeIteration = getattr(coordinator, 'activeToken')
         except Exception:
@@ -1204,6 +1204,33 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def _forgetPositionersBeforeScan(self):
         self._analogParameterDict.pop('axis_position_before_scan', None)
 
+    def _setNonScanPositionersToCenter(self):
+        """Preserve legacy parking for non-Beta scans only.
+
+        BetaScanDesigner interprets ``axis_centerpos`` as a relative
+        offset from the position captured immediately before the scan.
+        Pre-positioning an inactive Beta axis to that raw center value would
+        therefore move it to the wrong absolute position before the waveform
+        starts.
+        """
+        if getattr(self._setupInfo.scan, 'scanDesigner', None) == 'BetaScanDesigner':
+            return
+
+        for index, positionerName in enumerate(
+            self._analogParameterDict.get('target_device', [])
+        ):
+            if positionerName in self._positionersScan:
+                continue
+            try:
+                position = self._analogParameterDict['axis_centerpos'][index]
+                self._master.positionersManager[positionerName].setPosition(position, 0)
+            except Exception:
+                self._logger.warning(
+                    'Failed to set %s to center before scan:\n%s',
+                    positionerName,
+                    traceback.format_exc(),
+                )
+
     def _buildScanSignals(self):
         """Read the scan parameters and build ``(signalDict, scanInfoDict)``.
 
@@ -1217,7 +1244,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 self._analogParameterDict, self._digitalParameterDict
             )
         finally:
-            self._forgetPositionersBeforeScan
+            self._forgetPositionersBeforeScan()
 
     def _beginScanRunWithDesign(self, *, sigScanStartingEmitted,
                                 recalculateSignals):

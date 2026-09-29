@@ -73,12 +73,7 @@ class ScanControllerPointScan(SuperScanController):
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
-            # set positions of scanners not in scan from centerpos
-            for index, positionerName in enumerate(self._analogParameterDict['target_device']):
-                if positionerName not in self._positionersScan:
-                    position = self._analogParameterDict['axis_centerpos'][index]
-                    self._master.positionersManager[positionerName].setPosition(position, 0)
-                    #self._logger.debug(f'Set {positionerName} center to {position} before scan')
+            self._setNonScanPositionersToCenter()
             # run scan
             self._armScanIteration(self.signalDict, self.scanInfoDict)
         except Exception:
