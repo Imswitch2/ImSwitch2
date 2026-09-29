@@ -56,6 +56,14 @@ class _Positioner:
         self.positionUnit = 'um'
 
     @property
+    def isReferenceActionable(self):
+        return bool(
+            self.requiresReference
+            and self.forPositioning
+            and not self.hide
+        )
+
+    @property
     def defaultReferencePosition(self):
         if self.defaultReferenceVoltage is None:
             return None
@@ -85,6 +93,28 @@ class _Positioner:
         self._restoredAxes.discard(axis)
 
 
+class _ReferencePredicatePositioner(PositionerManager):
+    def __init__(self, *, requiresReference=True, forPositioning=True, hide=False):
+        self.requiresReference = requiresReference
+        positionerInfo = SimpleNamespace(
+            axes=['X'],
+            forPositioning=forPositioning,
+            forScanning=True,
+            resetOnClose=False,
+            joystick=False,
+            liveUpdate=False,
+            hide=hide,
+            shortcutModifier=None,
+        )
+        super().__init__(positionerInfo, 'Stage', {'X': 0.0})
+
+    def move(self, dist: float, axis: str):
+        pass
+
+    def setPosition(self, position: float, axis: str):
+        pass
+
+
 def _controller(entries, widget=None):
     ctrl = PositionerController.__new__(PositionerController)
     ctrl._master = SimpleNamespace(positionersManager=_Managers(entries))
@@ -103,6 +133,21 @@ def test_positioner_manager_default_reference_wait_after_is_significant():
     assert PositionerManager.referenceWaitAfterS == 0.3
 
 
+def test_positioner_manager_reference_actionable_predicate():
+    assert _ReferencePredicatePositioner(
+        requiresReference=True, forPositioning=True, hide=False
+    ).isReferenceActionable is True
+    assert _ReferencePredicatePositioner(
+        requiresReference=False, forPositioning=True, hide=False
+    ).isReferenceActionable is False
+    assert _ReferencePredicatePositioner(
+        requiresReference=True, forPositioning=False, hide=False
+    ).isReferenceActionable is False
+    assert _ReferencePredicatePositioner(
+        requiresReference=True, forPositioning=True, hide=True
+    ).isReferenceActionable is False
+
+
 def test_reference_button_hidden_when_no_reference_capable_positioners(qtbot):
     widget = PositionerWidget({})
     qtbot.addWidget(widget)
@@ -112,6 +157,23 @@ def test_reference_button_hidden_when_no_reference_capable_positioners(qtbot):
 
     assert widget.pars['ReferenceButton'].isHidden()
     assert not widget.pars['ReferenceButton'].isEnabled()
+
+
+def test_reference_status_uses_actionable_reference_predicate():
+    scanOnly = _Positioner(requiresReference=True)
+    scanOnly.forPositioning = False
+    hidden = _Positioner(requiresReference=True)
+    hidden.hide = True
+    manual = _Positioner(requiresReference=True)
+    ctrl = _controller([
+        ('ScanOnly', scanOnly),
+        ('Hidden', hidden),
+        ('Manual', manual),
+    ])
+
+    status = ctrl._getReferenceAxesStatus()
+
+    assert [axisInfo['positionerName'] for axisInfo in status] == ['Manual']
 
 
 def test_reference_button_counts_unreferenced_axes(qtbot):

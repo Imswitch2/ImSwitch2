@@ -117,6 +117,15 @@ class PositionerManager(ABC):
         return self.__forPositioning
 
     @property
+    def isReferenceActionable(self) -> bool:
+        """Whether this positioner can be referenced through the UI workflow."""
+        return bool(
+            self.requiresReference
+            and self.forPositioning
+            and not self.hide
+        )
+
+    @property
     def forScanning(self) -> bool:
         """ Whether the positioner is used for scanning. """
         return self.__forScanning

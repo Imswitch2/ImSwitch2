@@ -53,6 +53,16 @@ def _bare_controller():
     return ctrl
 
 
+class _ScanPositioner:
+    def __init__(self, axes=('X',), *, referenceActionable=True, referenced=None):
+        self.axes = list(axes)
+        self.isReferenceActionable = referenceActionable
+        self._referenced = dict(referenced or {axis: False for axis in self.axes})
+
+    def isAxisReferenced(self, axis):
+        return self._referenced[axis]
+
+
 def test_common_build_forgets_runtime_position_snapshot_even_on_success():
     ctrl = _bare_controller()
     ctrl.getParameters = MagicMock()
@@ -288,6 +298,40 @@ def test_external_preflight_without_coordinator_leaves_reference_to_dialog():
     ctrl._scanCoordinator = None
 
     assert ctrl._externalScanStartRefusal() == ''
+
+
+def test_scan_warning_uses_actionable_reference_predicate():
+    ctrl = _bare_controller()
+    scanOnly = _ScanPositioner(
+        axes=('X',), referenceActionable=False, referenced={'X': False}
+    )
+    manual = _ScanPositioner(
+        axes=('Y',), referenceActionable=True, referenced={'Y': False}
+    )
+    alreadyReferenced = _ScanPositioner(
+        axes=('Z',), referenceActionable=True, referenced={'Z': True}
+    )
+    ctrl.positioners = {
+        'ScanOnly': scanOnly,
+        'Manual': manual,
+        'AlreadyReferenced': alreadyReferenced,
+    }
+    ctrl._master = SimpleNamespace(
+        positionersManager={
+            'ScanOnly': scanOnly,
+            'Manual': manual,
+            'AlreadyReferenced': alreadyReferenced,
+        }
+    )
+    ctrl._setupInfo = SimpleNamespace(
+        positioners={
+            'ScanOnly': SimpleNamespace(axes=['X']),
+            'Manual': SimpleNamespace(axes=['Y']),
+            'AlreadyReferenced': SimpleNamespace(axes=['Z']),
+        }
+    )
+
+    assert ctrl._getUnreferencedScanAxes() == [('Manual', 'Y')]
 
 
 def test_unreferenced_scan_confirmation_suppresses_on_continue():

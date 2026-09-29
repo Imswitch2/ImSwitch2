@@ -413,9 +413,7 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
 
     def _iterReferenceAxes(self):
         for pName, pManager in self._master.positionersManager:
-            if not self._isPositionerShownInWidget(pManager):
-                continue
-            if not getattr(pManager, 'requiresReference', False):
+            if not pManager.isReferenceActionable:
                 continue
             for axis in pManager.axes:
                 yield pName, pManager, axis

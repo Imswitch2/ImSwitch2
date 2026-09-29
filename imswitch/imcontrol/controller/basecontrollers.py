@@ -881,7 +881,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         unreferenced = []
         for positionerName in self.positioners:
             manager = self._master.positionersManager[positionerName]
-            if not getattr(manager, 'requiresReference', False):
+            if not manager.isReferenceActionable:
                 continue
             
             positionerInfo = self._setupInfo.positioners[positionerName]
