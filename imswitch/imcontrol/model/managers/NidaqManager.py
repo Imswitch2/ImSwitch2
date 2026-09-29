@@ -1124,7 +1124,7 @@ class NidaqManager(SignalInterface):
                 f'NI-DAQ digital write failed for {target}: {error}',
             )
 
-    def setAnalog(self, target, voltage, min_val=-1, max_val=1):
+    def setAnalog(self, target, voltage, min_val=-1, max_val=1, *, raise_on_error=False):
         """Set one analog channel through a registered finite output task."""
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
@@ -1159,6 +1159,8 @@ class NidaqManager(SignalInterface):
                 ('setAnalog', target, type(error).__name__, str(error)),
                 f'NI-DAQ analog write failed for {target}: {error}',
             )
+            if raise_on_error:
+                raise
 
     def runScan(self, signalDic, scanInfoDict):
         # Serialize the complete arm transaction with finalize().  Taking only

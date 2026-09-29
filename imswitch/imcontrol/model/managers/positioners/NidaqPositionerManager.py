@@ -52,14 +52,20 @@ class NidaqPositionerManager(PositionerManager):
     def move(self, dist, axis):
         self.setPosition(self._position[axis] + dist, axis)
 
-    def setPosition(self, position, axis):
-        self._nidaqManager.setAnalog(target=self.name,
-                                     voltage=self.positionToVoltage(position),
-                                     min_val=self._minVolt,
-                                     max_val=self._maxVolt)
-        # Position is updated only after so that potential hardware failure
-        # doesn't leave cached position stale.
+    def _setPosition(self, position, axis, *, raise_on_error=False):
+        self._nidaqManager.setAnalog(
+            target=self.name,
+            voltage=self.positionToVoltage(position),
+            min_val=self._minVolt,
+            max_val=self._maxVolt,
+            raise_on_error=raise_on_error,
+        )
+        # Position is updated only after so that a propagated hardware failure
+        # cannot leave the cached position ahead of the hardware.
         self._position[axis] = position
+
+    def setPosition(self, position, axis):
+        self._setPosition(position, axis, raise_on_error=False)
 
     def resetToCurrent(self):
         self.setPosition(self._position[self.axes[0]], self.axes[0])
@@ -93,7 +99,7 @@ class NidaqPositionerManager(PositionerManager):
                 f'outside [{self._minVolt}, {self._maxVolt}] V.'
             )
 
-        self.setPosition(position, axis)
+        self._setPosition(position, axis, raise_on_error=True)
         self.markReferenced(axis)
 
 
