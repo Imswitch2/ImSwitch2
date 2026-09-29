@@ -17,7 +17,10 @@ written in P4.*
   The Simple-side contracts (D3 policy, D5 checks, D4 equality, D6), and D2/D3's
   end-to-end series test (N iterations, N partitions, one run end), are
   tested with P1–P3, where their code lives. **P1 and P2 done 2026-09-26**
-  (see the P1 and P2 notes in §8); P3 next.
+  (see the P1 and P2 notes in §8). **Proposed 2026-09-29 (§10):** restructure
+  the panel as a *cloak* over the real Advanced panel, with a Simple/Advanced
+  switch and abstract bases for other microscopes, before P3. Awaiting
+  Lenny's decisions (§10.9).
 - **Branch:** `feat/simple-point-scan`, worktree `../Imswitch2-simple-point-scan`.
 - **Base:** stacked on PR #49 (`claude/quizzical-hofstadter-88bff6`, "a refused
   scan design ends the request with its reason"). P0 reports its new refusal
@@ -1099,3 +1102,213 @@ A new `scanWidgetType` must be registered in all of these places:
    still gets an array, but code that tests `type(x) is np.ndarray`, pickles
    frames, or hands them to C extensions must be checked. The D phase audits
    the eight `sigUpdateImage` subscribers.
+
+## 10. Proposal (2026-09-29): the panel as a cloak over its backend
+
+Lenny's direction after the first mock test: the simple panel is a *cloak*, an
+easier way to drive the Advanced scan, not a scan of its own.
+
+- **(a)** A switch in the panel brings back the original Advanced GUI.
+- **(b)** The cloak derives from an abstract base, so other microscopes get
+  their own cloak over their own scan panel, a MoNaLISA one first.
+
+### 10.1 What the code does today
+
+- `ScanControllerSimplePointScan` subclasses `ScanControllerAdvanced`, and its
+  widget *stands in* for the Advanced widget. It implements about a dozen
+  `SuperScanWidget` methods only so inherited Advanced code does not break:
+  `initControls`, `getTTLIncluded`, `setScanMode`, `setScanButtonChecked`,
+  `get/setScanCenterPos`, `setScanSize`, and others. The controller overrides the
+  dict builders, `setParameters`, `updatePixels` and `plotSignalGraph`.
+- So cloak and backend are entangled, and there is no Advanced widget to
+  switch to.
+- **F1 still holds:** one `SuperScanController` per setup. The switch therefore
+  cannot load two panels. It has to be one controller with two views.
+
+### 10.2 Proposed structure
+
+```
+Scan dock
+└─ ScanCloakPanel                     generic container (view)
+   ├─ header: title · Load · Save · [ Simple | Advanced ]
+   └─ QStackedWidget
+      ├─ PointScanView                the simple page (today's panel content)
+      └─ ScanWidgetAdvanced           the real Advanced widget, unchanged
+
+ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
+   self._widget  → the real ScanWidgetAdvanced   (all inherited code talks to it)
+   self._view    → the simple page
+   self._cloak   → PointScanCloak                 (pure model)
+```
+
+There are three pieces, each with an abstract base.
+
+1. **Model: `ScanCloak`** (pure, no Qt). It declares:
+   - `limits_from_setup(setupInfo)` and `default_plan(limits)`;
+   - `to_backend(plan, limits) -> (analog, digital)`;
+   - `from_backend(analog, digital, limits) -> plan`, which raises
+     `PlanNotRepresentable(reason)`;
+   - `normalize(plan)`.
+
+   Its contract is `from_backend(to_backend(P)) == normalize(P)`, also when the
+   dicts pass through the real backend widget (written, then read back).
+   `PointScanCloak` is today's `simple_scan.py` behind this interface.
+2. **View: `ScanCloakPanel` and `ScanCloakView`.**
+   - `ScanCloakPanel` is the dock widget. It builds the real backend widget
+     unchanged and the simple page, picked by class attributes
+     (`backendWidgetClass = ScanWidgetAdvanced`, `viewClass = PointScanView`).
+   - `ScanCloakView` is the base of every simple page: the Start/Stop/Live row,
+     the time readout and the message line.
+   - `PointScanView` is today's panel without the stand-in methods and without
+     its "Expert" fold. Phase and slice delay are on the Advanced page; Load and
+     Save move to the header, where they act on the one scan both pages show.
+3. **Controller: the `ScanCloakController` mixin**, placed before the backend
+   controller in the class list.
+   - It takes the panel and passes the real backend widget to the backend's
+     constructor (`widget=panel.backend`). Everything inherited talks to the
+     widget it was written for.
+   - **While the simple page shows**, the cloak supplies the dicts and the run
+     policy: D1 geometry, D3 continuation and Stop, D5 checks.
+   - **While the Advanced page shows**, every override falls through to
+     `super()`. Start, Repeat, Stop and saved files behave exactly as in the
+     Advanced panel today.
+   - **Nothing in Advanced changes.** Only the mixin mirrors run state to the
+     simple page, from the backend widget's Start button, and blocks or unblocks
+     the whole panel (`toggleBlockWidget`).
+
+### 10.3 The switch
+
+- **Simple → Advanced** shows the Advanced page. It already shows the
+  acquisition (see *mirror* below).
+- **Advanced → Simple** reads the Advanced widget through the backend's own
+  builders, then applies `from_backend`.
+  - If the result is representable, it becomes the acquisition plan.
+  - If not, the switch is refused with D4's reason, with one way out offered:
+    **Discard the Advanced changes** (back to the last simple plan).
+- **While a scan runs**, the switch is refused, like the mode switch.
+- **Saved state:** the page is saved with the panel state and restored.
+- **The Advanced widget is a mirror, not a copy made at switch time.** The hidden
+  Advanced widget always shows the acquisition plan. It is written through the
+  backend's own `setParameters`, debounced like the estimate.
+  - **Why a mirror:** the backend has several write paths into its widget. They
+    are the `changeScanCenterPos` and `changeScanSize` exports, shared-attribute
+    updates (`attrChanged → setParameters`), and file loads
+    (`loadScanParamsFromFile → applyComponentState`).
+  - With a mirror, the mixin adopts whatever such a write leaves in the widget
+    back into the plan. If the result lies outside the cloak, it opens the
+    Advanced page with the reason. No path needs its own routing (a rule
+    enforced in one place is not enforced).
+
+### 10.4 What the base owns and what each cloak owns
+
+| Base (`ScanCloakController`, `ScanCloakPanel`, `ScanCloakView`) | Point-scan cloak (`PointScanCloak`, `PointScanView`) |
+|---|---|
+| The Simple/Advanced switch, the mirror, adoption of backend writes | Overview and Acquisition modes; the overview planner (D6) |
+| Two plans: the one the next run executes, and the acquisition, which is saved and shown on the Advanced page. How a cloak chooses between them is its own business | Pixel-size and dwell sliders, Nyquist |
+| Run policy while simple: continuation (D3), Stop after the current frame, Save through `recordScanSeries` (D2, P3), refusal messages | Channel lanes → line steps, per-channel power (D5) |
+| Saved state: the backend dicts plus `cloak: {type, plan, page}`. A state the cloak cannot show opens on the Advanced page instead of being refused | Region drawing (D1 geometry, `sigScanGeometryShown`), reusable by any point-detector cloak |
+| Run state shown on the simple page; blocking the whole panel | The frame-geometry key in the scan it builds |
+| The time readout (the backend's `estimateScanTimeS` when it has one) | `mockSample` in its mock setup |
+
+A concrete gain from the saved-state row: the warning from the first mock test
+("Line pass 1 of this scan fires no laser … Scan state was not applied") would
+become an Advanced scan restored on the Advanced page, with a note.
+
+### 10.5 Registration
+
+- `scanWidgetType` keeps selecting the panel, and a cloak names its backend.
+  `SimplePointScan` means the mixin with `ScanControllerAdvanced`,
+  `ScanWidgetAdvanced` and `ScanManagerAdvanced`.
+- **One table (`SCAN_CLOAKS`)** feeds all four registration points: the
+  controller map, the widget map, MasterController's scan-manager branch and
+  the config editor's options. A new cloak is then one entry plus its classes,
+  not the four edits of §7.
+
+### 10.6 A MoNaLISA cloak (sketch, for later)
+
+**What the backend is** (survey 2026-09-29):
+
+- **Classes.** `ScanControllerMoNaLISA(SuperScanController)` with
+  `ScanWidgetMoNaLISA` and `ScanManagerMoNaLISA`, which uses the Beta designers.
+  It is **not** an Advanced subclass.
+- **Its dicts differ from Advanced's.**
+  - Analog: `target_device`, `axis_length`, `axis_step_size`,
+    `axis_centerpos`, `axis_startpos` and `sequence_time`.
+  - Digital: `target_device`, per-device `TTL_start` and `TTL_end` lists
+    (entered in ms), and `sequence_time`.
+  - `return_time` comes from the designer parameters.
+- **Detection and reconstruction.** Cameras are TTL devices, triggered at each
+  scan position. Reconstruction belongs to ImProcess; nothing in the panel
+  starts it.
+- **Preview.** "Cont. Laser Pulses" is the only preview-like mode (no stage
+  signals, looping).
+- **Lifecycle.** It uses the same base lifecycle as Advanced: `runScan`,
+  `runScanExternal`, and the deferred repeat through `_shouldContinueRepeat`,
+  which MoNaLISA already overrides. So the mixin's run-policy seam fits it too.
+  This is why the base must sit over any `SuperScanController`, not over
+  Advanced specifically.
+
+**What a MoNaLISA cloak could show:**
+
+- the pattern period and steps per period for each axis (→ length and step);
+- the exposure per step;
+- the on-switch, off-switch and read-out phases on a timeline, with lasers and
+  the camera placed on it (→ `TTL_start`/`TTL_end`, the visual version of
+  today's comma-separated ms lists);
+- a *widefield live* mode (camera live, optionally with continuous laser
+  pulses) and *Acquire*;
+- frames per scan and the total time.
+
+The axial auto-scan stays on the Advanced page, which is the MoNaLISA panel.
+
+- **Reuses from the base:** the switch, the mirror, saved state, run policy,
+  and Save/T.
+- **Does not reuse:** region drawing (the field is the camera's, not the scan
+  range), the overview planner, the Nyquist slider.
+- **Needs an estimate:** `BetaScanDesigner` has no `estimateScanTime`. The cloak
+  would compute positions × dwell plus return time, or Beta gets an estimator.
+- **To settle with Guillaume:** which sequences are standard, and their defaults.
+
+### 10.7 Tests
+
+A contract suite, run for every entry in `SCAN_CLOAKS`:
+
+- the round trip through the real backend widget;
+- a backend state outside the cloak is refused with a reason, and nothing
+  changes;
+- a run from the Advanced page builds exactly what the plain backend builds from
+  the same dicts;
+- the switch is refused while a scan runs;
+- the page is restored;
+- every backend write path, used while the simple page shows, ends up in the
+  plan.
+
+The point-scan tests stay, split between model and view.
+
+### 10.8 Order
+
+This work comes before P3, because P3 adds the power UI, Z/T and Save on top of
+whichever structure exists.
+
+- **R1.** The bases, the container, and point scan moved onto them. The stand-in
+  methods go. Nothing visible changes except the header.
+- **R2.** The switch, the mirror, and the saved page.
+- **R3.** The contract suite and `SCAN_CLOAKS`.
+
+Then P3 continues on the new structure. A MoNaLISA cloak is its own phase, after
+a short design with Guillaume.
+
+### 10.9 Decisions needed
+
+1. **What the Advanced page shows when opened from Overview.**
+   - Recommended: the acquisition, as a saved file does.
+   - The alternative: the overview scan.
+2. **Start on the Advanced page.** Recommended: it runs exactly as the Advanced
+   panel does today (its Repeat box, Stop = abort).
+3. **Where the switch lives.** Recommended: in the panel header, remembered with
+   the panel state. Load/Save also go in the header, and the simple page's
+   "Expert" fold is dropped.
+4. **Coming back from Advanced with settings the simple page cannot show.**
+   Recommended: refuse with the reason and offer "Discard the Advanced changes".
+   No partial conversion.
+5. **Names.** "Cloak" in code (`ScanCloak…`), "Simple / Advanced" in the panel.
