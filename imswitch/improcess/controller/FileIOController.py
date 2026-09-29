@@ -8,6 +8,7 @@ from qtpy import QtWidgets
 
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
+from imswitch.imcommon.model import dirtools
 from imswitch.improcess.analysis.smlm_import import (
     read_generic_csv,
     read_localizations,
@@ -23,6 +24,11 @@ from imswitch.improcess.model.dataset_sources import (
     preferred_source_spec,
     resolve_dataset_source,
     specs_for_reconstructor,
+)
+from imswitch.improcess.model.folder_preferences import (
+    FolderPreferences,
+    load_folder_preferences,
+    save_folder_preferences,
 )
 from imswitch.improcess.model.lapse_source import (
     TIME_LAPSE_SOURCE_KIND,
@@ -86,8 +92,12 @@ class FileIOController(ImProcessWidgetController):
     def __init__(self, *args, mainController=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._main = mainController
-        self._dataFolder = None
-        self._saveFolder = None
+        # Kept between sessions in improcess_options.json (Preferences >
+        # Default folders…); None means the dialogs start where the system
+        # puts them.
+        folders = load_folder_preferences()
+        self._dataFolder = folders.dataFolder or None
+        self._saveFolder = folders.saveFolder or None
 
         # Multi-dataset controllers are only used by _loadFromPath
         self.multiDataFrameController = self._factory.createController(
@@ -96,6 +106,9 @@ class FileIOController(ImProcessWidgetController):
         self.pickDatasetsController = self._factory.createController(
             PickDatasetsController, self._widget.pickDatasetsDialog
         )
+        if self._dataFolder is not None:
+            # The add-data dialog starts in the saved folder too.
+            self._commChannel.sigDataFolderChanged.emit(self._dataFolder)
 
     def quickLoadData(self):
         dataPath = self._requestLoadPath()
@@ -507,15 +520,39 @@ class FileIOController(ImProcessWidgetController):
     def saveFolderChanged(self, saveFolder):
         self._saveFolder = saveFolder
 
-    def setDataFolder(self):
-        dataFolder = guitools.askForFolderPath(self._widget)
-        if dataFolder:
-            self._commChannel.sigDataFolderChanged.emit(dataFolder)
+    def openFolderPreferences(self):
+        """Show the default-folders editor, seeded with the folders in force."""
+        dialog = self._widget.folderPreferencesDialog
+        dialog.setValues(FolderPreferences(dataFolder=self._dataFolder or '',
+                                           saveFolder=self._saveFolder or ''))
+        self._widget.showFolderPreferencesDialog()
 
-    def setSaveFolder(self):
-        saveFolder = guitools.askForFolderPath(self._widget)
-        if saveFolder:
-            self._commChannel.sigSaveFolderChanged.emit(saveFolder)
+    def saveFolderPreferences(self, values):
+        """Save the default folders to improcess_options.json and use them now.
+
+        Either may be empty, meaning no default. A folder that cannot be one
+        (a relative path, an existing file) keeps the dialog open with the
+        reason, as does a file that cannot be written.
+        """
+        dialog = self._widget.folderPreferencesDialog
+        folders = {}
+        for field, label in (('dataFolder', 'Open data from'),
+                             ('saveFolder', 'Save results to')):
+            try:
+                folders[field] = dirtools.checkedFolderPath(values.get(field), allowEmpty=True)
+            except ValueError as error:
+                dialog.setStatus(f'{label}: {error}')
+                return
+        try:
+            save_folder_preferences(FolderPreferences(**folders))
+        except OSError as error:
+            self._logger.error(f'Could not save the default folders: {error}', exc_info=True)
+            dialog.setStatus(f'Could not save the default folders: {error}')
+            return
+        self._commChannel.sigDataFolderChanged.emit(folders['dataFolder'] or None)
+        self._commChannel.sigSaveFolderChanged.emit(folders['saveFolder'] or None)
+        dialog.setStatus('')
+        dialog.accept()
 
     def saveCurrent(self, dataType):
         """ Saves the reconstructed image or coefficients from the current

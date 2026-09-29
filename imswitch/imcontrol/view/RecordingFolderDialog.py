@@ -14,6 +14,8 @@ import os
 
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcommon.view.guitools import FolderPathEdit
+
 
 class RecordingFolderDialog(QtWidgets.QDialog):
     """Edit the default recordings folder; the controller saves and applies it."""
@@ -39,14 +41,10 @@ class RecordingFolderDialog(QtWidgets.QDialog):
         )
         intro.setWordWrap(True)
 
-        self.folderEdit = QtWidgets.QLineEdit()
+        self.folderEdit = FolderPathEdit(caption='Recordings folder',
+                                         fallback=self._defaults.outputFolder)
         self.folderEdit.setObjectName('outputFolder')
-        self.folderEdit.setMinimumWidth(360)
-        self.browseButton = QtWidgets.QPushButton('Browse…')
-        self.browseButton.clicked.connect(self._browse)
-        folderRow = QtWidgets.QHBoxLayout()
-        folderRow.addWidget(self.folderEdit, 1)
-        folderRow.addWidget(self.browseButton)
+        self.folderEdit.setMinimumWidth(420)
 
         self.dateSubfolderBox = QtWidgets.QCheckBox(
             'Put each day’s recordings in a subfolder named by date (YYYY-MM-DD)'
@@ -76,7 +74,7 @@ class RecordingFolderDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(intro)
-        layout.addLayout(folderRow)
+        layout.addWidget(self.folderEdit)
         layout.addWidget(self.dateSubfolderBox)
         layout.addWidget(self.previewLabel)
         layout.addWidget(self.statusLabel)
@@ -113,16 +111,6 @@ class RecordingFolderDialog(QtWidgets.QDialog):
         self.statusLabel.setVisible(bool(text))
 
     # -- internals ------------------------------------------------------------
-
-    def _browse(self) -> None:
-        start = os.path.expanduser(self.folderEdit.text().strip()) or self._defaults.outputFolder
-        while start and not os.path.isdir(start) and os.path.dirname(start) != start:
-            start = os.path.dirname(start)
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, 'Recordings folder', start
-        )
-        if folder:
-            self.folderEdit.setText(folder)
 
     def _updatePreview(self, *_args) -> None:
         from imswitch.imcontrol.model.Options import RecordingOptions

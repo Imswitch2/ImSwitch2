@@ -138,7 +138,7 @@ def test_a_home_relative_path_is_expanded(dialog, optionsFile):
 
 
 @pytest.mark.parametrize('folder, reason', [
-    ('', 'Enter the folder'),
+    ('', 'Enter a folder'),
     ('recordings', 'full path'),
 ])
 def test_a_folder_that_cannot_be_one_keeps_the_dialog_open_with_the_reason(

@@ -9,7 +9,7 @@ import zarr
 
 from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
-    ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes,
+    dirtools, ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes,
     isCriticalRestoreWarning,
     memory_limits,
     shutdownState,
@@ -571,22 +571,14 @@ class ImConMainController(MainController):
         from imswitch.imcontrol.model.Options import RecordingOptions
 
         dialog = self.__mainView.recordingFolderDialog
-        folder = os.path.expanduser(str(values.get('outputFolder') or '').strip())
-        if not folder:
-            dialog.setStatus('Enter the folder recordings should be saved in.')
-            return
-        if not os.path.isabs(folder):
-            dialog.setStatus(
-                f'Enter a full path: "{folder}" would be resolved against '
-                f'whichever folder ImSwitch happened to be started from.'
-            )
-            return
-        if os.path.exists(folder) and not os.path.isdir(folder):
-            dialog.setStatus(f'"{folder}" is a file, not a folder.')
+        try:
+            folder = dirtools.checkedFolderPath(values.get('outputFolder'))
+        except ValueError as e:
+            dialog.setStatus(str(e))
             return
 
         recording = RecordingOptions(
-            outputFolder=os.path.normpath(folder),
+            outputFolder=folder,
             includeDateInOutputFolder=bool(values.get('includeDateInOutputFolder', True)),
         )
         try:

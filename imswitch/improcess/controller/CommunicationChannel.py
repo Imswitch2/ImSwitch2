@@ -15,19 +15,22 @@ class CommunicationChannel(SignalInterface):
     """
 
     sigDataFolderChanged = Signal(object)
-    """The data (input) folder selection changed. Payload: ``(dataFolderPath,)``.
+    """The default data (input) folder changed. Payload: ``(dataFolderPath,)``,
+    None for no default.
 
-    Emitted when the user picks a new folder to browse raw recordings from.
+    Emitted at startup with the folder saved in ``improcess_options.json``,
+    and when it is changed under Preferences > Default folders….
     ``MultiDataFrameController`` uses it as the default location for its
     add-data dialog; ``ImProcessMainViewController`` forwards it back to
-    ``FileIOController.dataFolderChanged`` to persist the choice.
+    ``FileIOController.dataFolderChanged`` for the open dialogs.
 
     Emitters: FileIOController
     Listeners: ImProcessMainViewController, MultiDataFrameController
     """
 
     sigSaveFolderChanged = Signal(object)
-    """The save (output) folder selection changed. Payload: ``(saveFolderPath,)``.
+    """The default save (output) folder changed. Payload: ``(saveFolderPath,)``,
+    None for no default (the save dialogs then start in the data folder).
 
     Counterpart to :attr:`sigDataFolderChanged` for the destination folder.
     ``ImProcessMainViewController`` forwards it to

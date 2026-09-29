@@ -125,7 +125,9 @@ ImControl adds its own menus, each holding one kind of thing:
   window's own *Preferences* entries follow them.
 
 ImProcess has its own File, Image, Operations, Tools, Plugins, Shortcuts
-and View menus, described in :doc:`improcess`.
+and View menus, described in :doc:`improcess`.  Its **Preferences** menu
+starts with *Default folders…*, where its open and save dialogs start, kept
+between sessions.
 
 
 Keyboard shortcuts
