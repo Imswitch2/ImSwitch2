@@ -82,6 +82,64 @@ def test_scan_rejected_when_signal_leaves_voltage_range():
     with pytest.raises(ScanDesignRefusedError, match='voltages outside'):
         sh.makeFullScan(stageParameters, TTLParameters)
 
+
+
+def test_beta_scan_uses_position_before_scan_as_relative_center():
+    stageParameters = _stage_parameters(z_center=0)
+    stageParameters['axis_position_before_scan'] = [[0], [0], [25]]
+    TTLParameters = {'target_device': ['405', '488'],
+                     'TTL_start': [[0.0001, 0.004], [0, 0]],
+                     'TTL_end': [[0.0015, 0.005], [0, 0]],
+                     'sequence_time': 0.005}
+
+    sh = ScanManagerBase(setupInfo=setupInfoBasic)
+    fullsig, _ = sh.makeFullScan(stageParameters, TTLParameters)
+
+    z = fullsig['scanSignalsDict']['Z']
+    # Z conversionFactor = 10 um/V. A five-pixel 1 um-pitch scan centered at
+    # 25 um starts at 23 um (2.3 V), and the final flyback returns to 25 um.
+    assert np.isclose(z[0], 2.3)
+    assert np.isclose(z[-1], 2.5)
+    assert z.min() >= 0
+
+
+def test_beta_center_is_relative_offset_and_returns_to_previous_position():
+    stageParameters = _stage_parameters(z_center=5)
+    stageParameters['axis_position_before_scan'] = [[0], [0], [25]]
+    TTLParameters = {'target_device': ['405', '488'],
+                     'TTL_start': [[0.0001, 0.004], [0, 0]],
+                     'TTL_end': [[0.0015, 0.005], [0, 0]],
+                     'sequence_time': 0.005}
+
+    sh = ScanManagerBase(setupInfo=setupInfoBasic)
+    fullsig, _ = sh.makeFullScan(stageParameters, TTLParameters)
+
+    z = fullsig['scanSignalsDict']['Z']
+    # 25 um before scan + 5 um Center offset => 30 um effective center.
+    assert np.isclose(z[0], 2.8)
+    # Center offset never changes the position restored after the scan.
+    assert np.isclose(z[-1], 2.5)
+
+
+def test_beta_center_offsets_use_each_axis_conversion_factor():
+    stageParameters = _stage_parameters(z_center=0)
+    x_conversion = setupInfoBasic.positioners['X'].managerProperties['conversionFactor']
+    stageParameters['axis_centerpos'][0] = x_conversion  # exactly +1 V offset on X
+    stageParameters['axis_position_before_scan'] = [[0], [0], [25]]
+    TTLParameters = {'target_device': ['405', '488'],
+                     'TTL_start': [[0.0001, 0.004], [0, 0]],
+                     'TTL_end': [[0.0015, 0.005], [0, 0]],
+                     'sequence_time': 0.005}
+
+    sh = ScanManagerBase(setupInfo=setupInfoBasic)
+    fullsig, _ = sh.makeFullScan(stageParameters, TTLParameters)
+
+    x = fullsig['scanSignalsDict']['X']
+    x_step_v = stageParameters['axis_step_size'][0] / x_conversion
+    expected_first_pixel_v = 1.0 - 2 * x_step_v
+    assert np.isclose(x[0], expected_first_pixel_v)
+    assert np.isclose(x[-1], 0.0)
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #
