@@ -22,6 +22,10 @@ class BetaScanDesigner(ScanDesigner):
       the next, in seconds (default 2 ms).
     - ``settle_time`` -- how long it rests at the new pixel before the next
       dwell starts, in seconds (default 2 ms).
+    - ``position_anchor`` -- how ``Center`` is interpreted when a runtime
+      position snapshot is available. ``"center"`` (default) centers the ROI
+      on ``position_before_scan + Center``; ``"start"`` starts the ROI at
+      ``position_before_scan + Center``.
 
     The ramp and the settle occupy the end of every dwell window, so a dwell
     that is not longer than their sum leaves no stationary time at all and
@@ -152,6 +156,18 @@ class BetaScanDesigner(ScanDesigner):
         positionsBeforeScan = parameterDict.get('axis_position_before_scan')
         hasPositionSnapshot = positionsBeforeScan is not None
 
+        positionAnchor = parameterDict.get('position_anchor', 'center')
+        if positionAnchor not in ('center', 'start'):
+            raise ValueError(
+                f'{self.__class__.__name__}: invalid position_anchor '
+                f'{positionAnchor!r}; expected "center" or "start"'
+            )
+        if positionAnchor == 'start' and not hasPositionSnapshot:
+            raise ValueError(
+                f'{self.__class__.__name__}: position_anchor="start" requires '
+                'axis_position_before_scan'
+            )
+
         if hasPositionSnapshot:
             if len(positionsBeforeScan) != 3:
                 raise ValueError(
@@ -212,12 +228,17 @@ class BetaScanDesigner(ScanDesigner):
         slow_axis_positions = 1 if slow_axis_size == 0 else \
             pixels_for_length_step(slow_axis_size, slow_axis_step_size)
 
-        # First-pixel position of each axis so the N pixels (pitch = step) are
-        # centered on the axis center. Downstream ramp/flyback/wrap logic is
-        # start-anchored on these, so centering happens purely here.
-        fast_axis_start = fast_axis_center - (fast_axis_positions - 1) * fast_axis_step_size / 2.0
-        middle_axis_start = middle_axis_center - (middle_axis_positions - 1) * middle_axis_step_size / 2.0
-        slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
+        # First-pixel position of each axis. By default the ROI is centered on
+        # position_before_scan + Center. ``position_anchor="start"`` instead
+        # places the first pixel directly at position_before_scan + Center.
+        if hasPositionSnapshot and positionAnchor == 'start':
+            fast_axis_start = fast_axis_position_before_scan + fast_axis_center_offset
+            middle_axis_start = middle_axis_position_before_scan + middle_axis_center_offset
+            slow_axis_start = slow_axis_position_before_scan + slow_axis_center_offset
+        else:
+            fast_axis_start = fast_axis_center - (fast_axis_positions - 1) * fast_axis_step_size / 2.0
+            middle_axis_start = middle_axis_center - (middle_axis_positions - 1) * middle_axis_step_size / 2.0
+            slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
 
         sampleRate = setupInfo.scan.sampleRate
         moveTime = float(parameterDict.get('move_time', DEFAULT_MOVE_TIME_S))

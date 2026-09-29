@@ -1,0 +1,129 @@
+diff --git a/imswitch/imcontrol/_test/unit/test_scan.py b/imswitch/imcontrol/_test/unit/test_scan.py
+index 5809b11..4bb18c4 100644
+--- a/imswitch/imcontrol/_test/unit/test_scan.py
++++ b/imswitch/imcontrol/_test/unit/test_scan.py
+@@ -1,3 +1,4 @@
++import copy
+ import os
+ 
+ import numpy as np
+@@ -121,6 +122,61 @@ def test_beta_center_is_relative_offset_and_returns_to_previous_position():
+     assert np.isclose(z[-1], 2.5)
+ 
+ 
++def test_beta_start_anchor_starts_from_position_before_scan():
++    stageParameters = _stage_parameters(z_center=0)
++    stageParameters['axis_position_before_scan'] = [[0], [0], [0]]
++    TTLParameters = {'target_device': ['405', '488'],
++                     'TTL_start': [[0.0001, 0.004], [0, 0]],
++                     'TTL_end': [[0.0015, 0.005], [0, 0]],
++                     'sequence_time': 0.005}
++
++    setupInfo = copy.deepcopy(setupInfoBasic)
++    setupInfo.scan.scanDesignerParams = dict(setupInfo.scan.scanDesignerParams)
++    setupInfo.scan.scanDesignerParams['position_anchor'] = 'start'
++    sh = ScanManagerBase(setupInfo=setupInfo)
++    fullsig, _ = sh.makeFullScan(stageParameters, TTLParameters)
++
++    z = fullsig['scanSignalsDict']['Z']
++    # With start anchoring and Center=0, the first pixel is exactly the
++    # pre-scan position. This keeps a 0-10 V offset-controlled axis entirely
++    # on the positive side while still restoring the pre-scan position.
++    assert np.isclose(z[0], 0.0)
++    assert np.isclose(z.max(), 0.4)
++    assert np.isclose(z[-1], 0.0)
++
++
++def test_beta_start_anchor_applies_center_as_positive_start_offset():
++    stageParameters = _stage_parameters(z_center=5)
++    stageParameters['axis_position_before_scan'] = [[0], [0], [25]]
++    stageParameters['position_anchor'] = 'start'
++    TTLParameters = {'target_device': ['405', '488'],
++                     'TTL_start': [[0.0001, 0.004], [0, 0]],
++                     'TTL_end': [[0.0015, 0.005], [0, 0]],
++                     'sequence_time': 0.005}
++
++    sh = ScanManagerBase(setupInfo=setupInfoBasic)
++    fullsig, _ = sh.makeFullScan(stageParameters, TTLParameters)
++
++    z = fullsig['scanSignalsDict']['Z']
++    # 25 um before scan + 5 um Center offset => first pixel at 30 um.
++    assert np.isclose(z[0], 3.0)
++    # Both anchor modes restore the same pre-scan position after completion.
++    assert np.isclose(z[-1], 2.5)
++
++
++def test_beta_start_anchor_requires_runtime_position_snapshot():
++    stageParameters = _stage_parameters(z_center=0)
++    stageParameters['position_anchor'] = 'start'
++    TTLParameters = {'target_device': ['405', '488'],
++                     'TTL_start': [[0.0001, 0.004], [0, 0]],
++                     'TTL_end': [[0.0015, 0.005], [0, 0]],
++                     'sequence_time': 0.005}
++
++    sh = ScanManagerBase(setupInfo=setupInfoBasic)
++    with pytest.raises(ValueError, match='axis_position_before_scan'):
++        sh.makeFullScan(stageParameters, TTLParameters)
++
++
+ def test_beta_center_offsets_use_each_axis_conversion_factor():
+     stageParameters = _stage_parameters(z_center=0)
+     x_conversion = setupInfoBasic.positioners['X'].managerProperties['conversionFactor']
+diff --git a/imswitch/imcontrol/model/signaldesigners/BetaScanDesigner.py b/imswitch/imcontrol/model/signaldesigners/BetaScanDesigner.py
+index f5b54e8..0ed1ca9 100644
+--- a/imswitch/imcontrol/model/signaldesigners/BetaScanDesigner.py
++++ b/imswitch/imcontrol/model/signaldesigners/BetaScanDesigner.py
+@@ -22,6 +22,10 @@ class BetaScanDesigner(ScanDesigner):
+       the next, in seconds (default 2 ms).
+     - ``settle_time`` -- how long it rests at the new pixel before the next
+       dwell starts, in seconds (default 2 ms).
++    - ``position_anchor`` -- how ``Center`` is interpreted when a runtime
++      position snapshot is available. ``"center"`` (default) centers the ROI
++      on ``position_before_scan + Center``; ``"start"`` starts the ROI at
++      ``position_before_scan + Center``.
+ 
+     The ramp and the settle occupy the end of every dwell window, so a dwell
+     that is not longer than their sum leaves no stationary time at all and
+@@ -152,6 +156,18 @@ class BetaScanDesigner(ScanDesigner):
+         positionsBeforeScan = parameterDict.get('axis_position_before_scan')
+         hasPositionSnapshot = positionsBeforeScan is not None
+ 
++        positionAnchor = parameterDict.get('position_anchor', 'center')
++        if positionAnchor not in ('center', 'start'):
++            raise ValueError(
++                f'{self.__class__.__name__}: invalid position_anchor '
++                f'{positionAnchor!r}; expected "center" or "start"'
++            )
++        if positionAnchor == 'start' and not hasPositionSnapshot:
++            raise ValueError(
++                f'{self.__class__.__name__}: position_anchor="start" requires '
++                'axis_position_before_scan'
++            )
++
+         if hasPositionSnapshot:
+             if len(positionsBeforeScan) != 3:
+                 raise ValueError(
+@@ -212,12 +228,17 @@ class BetaScanDesigner(ScanDesigner):
+         slow_axis_positions = 1 if slow_axis_size == 0 else \
+             pixels_for_length_step(slow_axis_size, slow_axis_step_size)
+ 
+-        # First-pixel position of each axis so the N pixels (pitch = step) are
+-        # centered on the axis center. Downstream ramp/flyback/wrap logic is
+-        # start-anchored on these, so centering happens purely here.
+-        fast_axis_start = fast_axis_center - (fast_axis_positions - 1) * fast_axis_step_size / 2.0
+-        middle_axis_start = middle_axis_center - (middle_axis_positions - 1) * middle_axis_step_size / 2.0
+-        slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
++        # First-pixel position of each axis. By default the ROI is centered on
++        # position_before_scan + Center. ``position_anchor="start"`` instead
++        # places the first pixel directly at position_before_scan + Center.
++        if hasPositionSnapshot and positionAnchor == 'start':
++            fast_axis_start = fast_axis_position_before_scan + fast_axis_center_offset
++            middle_axis_start = middle_axis_position_before_scan + middle_axis_center_offset
++            slow_axis_start = slow_axis_position_before_scan + slow_axis_center_offset
++        else:
++            fast_axis_start = fast_axis_center - (fast_axis_positions - 1) * fast_axis_step_size / 2.0
++            middle_axis_start = middle_axis_center - (middle_axis_positions - 1) * middle_axis_step_size / 2.0
++            slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
+ 
+         sampleRate = setupInfo.scan.sampleRate
+         moveTime = float(parameterDict.get('move_time', DEFAULT_MOVE_TIME_S))
