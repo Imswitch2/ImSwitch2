@@ -507,6 +507,12 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             if refusalMessage:
                 self._externalScanRequestFailureMessage = refusalMessage
                 return
+            if not self._confirmUnreferencedScanIfNeeded():
+                self._externalScanRequestFailureMessage = (
+                    'Scan cancelled because unreferenced positioners were not '
+                    'accepted.'
+                )
+                return
             self._widget.setScanMode()
             self._widget.setRepeatEnabled(False)
             self.runScanAdvanced(
@@ -607,7 +613,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
         coordinator = getattr(self, '_scanCoordinator', None)
         if coordinator is None:
-            return self._unreferencedScanStartRefusal()
+            return ''
         try:
             activeIteration = getattr(coordinator, 'activeToken')
         except Exception:
@@ -634,7 +640,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             except Exception:
                 return 'Unable to verify current scan-run ownership.'
         if activeRun is None:
-            return self._unreferencedScanStartRefusal()
+            return ''
 
         localToken = getattr(self, '_scanRunToken', None)
         if activeRun is not localToken:
@@ -665,9 +671,6 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             or bool(getattr(activeRun, 'releaseRequested', False))
         ):
             return 'The current scan run is failed, stopped, or releasing.'
-        referenceRefusal = self._unreferencedScanStartRefusal()
-        if referenceRefusal:
-            return referenceRefusal
         return ''
 
     def _detachExternalScanRequestCompletions(self, runToken):
@@ -852,22 +855,21 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 # once sigScanDone publication has returned.
                 completeRequest()
     
-    def _unreferencedScanStartRefusal(self) -> str:
-        """Return a refusal message if scan positioners are unreferenced."""
+    def _confirmUnreferencedScanIfNeeded(self) -> bool:
+        """Ask the user before scanning with unreferenced open-loop axes."""
         if self._suppressUnreferencedScanWarning:
-            return ''
+            return True
 
         unreferenced = self._getUnreferencedScanAxes()
         if not unreferenced:
-            return ''
+            return True
 
-        axesText = ', '.join(f'{positionerName} ({axis})'for positionerName, axis in unreferenced)
-        return (
-            'This scan uses open-loop positioners that are not referenced: '
-            f'{axesText}. Reference them from the Positioner widget before '
-            'starting the scan, or deliberately allow unreferenced scanning '
-            'from the Scan widget.'
+        proceed, suppressWarning = self._widget.confirmUnreferencedScan(
+            unreferenced
         )
+        if proceed and suppressWarning:
+            self._suppressUnreferencedScanWarning = True
+        return proceed
     
     def _getUnreferencedScanAxes(self):
         unreferenced = []
@@ -1924,14 +1926,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         """ Runs a scan with the set scanning parameters (GUI Scan button).
         The API entry point is WorkflowFacadeController.runScan, exported once
         so rigs with several scanners do not collide on the name. """
-        if not self._suppressUnreferencedScanWarning:
-            unreferenced = self._getUnreferencedScanAxes()
-            if unreferenced:
-                proceed,suppress_warning = self._widget.confirmUnreferencedScan(unreferenced)
-                if not proceed:
-                    return
-                if suppress_warning:
-                    self._suppressUnreferencedScanWarning = True
+        if not self._confirmUnreferencedScanIfNeeded():
+            return
         self.runScanAdvanced(sigScanStartingEmitted=False)
         
     def sendScanParameters(self):

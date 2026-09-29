@@ -129,11 +129,81 @@ def test_non_beta_scan_keeps_legacy_non_scanned_center_positioning():
     stage.setPosition.assert_called_once_with(5.0, 0)
 
 
-def test_external_preflight_checks_reference_without_scan_coordinator():
+def test_external_preflight_without_coordinator_leaves_reference_to_dialog():
     ctrl = _bare_controller()
     ctrl._scanCompletionPublishing = False
-    ctrl.isRunning = False
+    ctrl._isRunningFlag = False
     ctrl._scanCoordinator = None
-    ctrl._unreferencedScanStartRefusal = MagicMock(return_value='unreferenced')
 
-    assert ctrl._externalScanStartRefusal() == 'unreferenced'
+    assert ctrl._externalScanStartRefusal() == ''
+
+
+def test_unreferenced_scan_confirmation_suppresses_on_continue():
+    ctrl = _bare_controller()
+    unreferenced = [('Stage', 'X')]
+    ctrl._suppressUnreferencedScanWarning = False
+    ctrl._getUnreferencedScanAxes = MagicMock(return_value=unreferenced)
+    ctrl._widget = SimpleNamespace(
+        confirmUnreferencedScan=MagicMock(return_value=(True, True))
+    )
+
+    assert ctrl._confirmUnreferencedScanIfNeeded() is True
+
+    ctrl._widget.confirmUnreferencedScan.assert_called_once_with(unreferenced)
+    assert ctrl._suppressUnreferencedScanWarning is True
+
+
+def test_unreferenced_scan_confirmation_cancel_leaves_warning_enabled():
+    ctrl = _bare_controller()
+    unreferenced = [('Stage', 'X')]
+    ctrl._suppressUnreferencedScanWarning = False
+    ctrl._getUnreferencedScanAxes = MagicMock(return_value=unreferenced)
+    ctrl._widget = SimpleNamespace(
+        confirmUnreferencedScan=MagicMock(return_value=(False, True))
+    )
+
+    assert ctrl._confirmUnreferencedScanIfNeeded() is False
+
+    ctrl._widget.confirmUnreferencedScan.assert_called_once_with(unreferenced)
+    assert ctrl._suppressUnreferencedScanWarning is False
+
+
+def test_run_scan_uses_shared_reference_preflight():
+    ctrl = _bare_controller()
+    ctrl._confirmUnreferencedScanIfNeeded = MagicMock(return_value=False)
+    ctrl.runScanAdvanced = MagicMock()
+
+    ctrl.runScan()
+
+    ctrl._confirmUnreferencedScanIfNeeded.assert_called_once_with()
+    ctrl.runScanAdvanced.assert_not_called()
+
+
+def test_external_scan_uses_shared_reference_preflight_before_widget_changes():
+    ctrl = _bare_controller()
+    workflowResults = []
+    ctrl._commChannel = SimpleNamespace(
+        scanWorkflow=SimpleNamespace(
+            report_scan_request_result=lambda *args: workflowResults.append(args)
+        )
+    )
+    ctrl._widget = SimpleNamespace(
+        setScanMode=MagicMock(),
+        setRepeatEnabled=MagicMock(),
+    )
+    ctrl._scanCompletionPublishing = False
+    ctrl._isRunningFlag = False
+    ctrl._scanCoordinator = None
+    ctrl._confirmUnreferencedScanIfNeeded = MagicMock(return_value=False)
+    ctrl.runScanAdvanced = MagicMock()
+
+    ctrl.runScanExternal(True, False)
+
+    ctrl._confirmUnreferencedScanIfNeeded.assert_called_once_with()
+    ctrl._widget.setScanMode.assert_not_called()
+    ctrl._widget.setRepeatEnabled.assert_not_called()
+    ctrl.runScanAdvanced.assert_not_called()
+    assert workflowResults[0][1] is False
+    assert workflowResults[0][2] == (
+        'Scan cancelled because unreferenced positioners were not accepted.'
+    )
