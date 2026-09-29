@@ -97,6 +97,14 @@ on today's widget — footprint mode, footprint rectangles, sampling mode, ISM
 shift / oversampling / patch mean / frame batch, pattern-geometry mode,
 hand-typed periods and offsets — is either derived from the data or retired.
 
+**Against the literature** (section 7): the workflow, the full-model reference,
+the vanishing reassignment shift for confined foci, the shape-based
+background separation and the regularized deconvolution are all supported by
+published work; the joint crosstalk-free extraction, the two-stage sufficiency
+argument, the commensurability criterion and the overscan self-calibration are
+new and must be validated on rig data. There is no assumption-free "the"
+solution beyond the calibrated-model optimum this plan targets.
+
 ---
 
 ## 1. Forward model
@@ -780,6 +788,168 @@ frames per timepoint).
 - Richardson WH. Bayesian-based iterative method of image restoration. *J Opt
   Soc Am* 62, 55–59 (1972); Lucy LB. An iterative technique for the
   rectification of observed distributions. *Astron J* 79, 745 (1974).
+- Chmyrov A, Leutenegger M, Grotjohann T, Schönle A, Keller-Findeisen J,
+  Kastrup L, Jakobs S, Donnert G, Sahl SJ, Hell SW. Achromatic light
+  patterning and improved image reconstruction for parallelized RESOLFT
+  nanoscopy. *Sci Rep* 7, 44619 (2017).
+- Casas Moreno X, Pennacchietti F, Minet G, Damenti M, Ollech D, Barabas F,
+  Testa I. Multi-foci parallelised RESOLFT nanoscopy in an extended
+  field-of-view. *J Microsc* (2023), doi:10.1111/jmi.13157.
+- Ströhl F, Kaminski CF. A joint Richardson–Lucy deconvolution algorithm for
+  the reconstruction of multifocal structured illumination microscopy data.
+  *Methods Appl Fluoresc* 3, 014002 (2015).
+- Sheppard CJR, Castello M, Tortarolo G, Deguchi T, Koho SV, Vicidomini G,
+  Diaspro A. Pixel reassignment in image scanning microscopy: a
+  re-evaluation. *J Opt Soc Am A* 37, 154–162 (2020); and, with Slenders E,
+  Bianchini P: Pixel reassignment in image scanning microscopy with a
+  doughnut beam: example of maximum likelihood restoration. *J Opt Soc Am A*
+  38, 1075–1084 (2021).
+- Castello M et al. A robust and versatile platform for image scanning
+  microscopy enabling super-resolution FLIM. *Nat Methods* 16, 175–178
+  (2019); Koho SV et al. Two-photon image-scanning microscopy with SPAD array
+  and blind image reconstruction. *Biomed Opt Express* 11, 2905 (2020). —
+  adaptive pixel reassignment; shift vectors versus STED power.
+- Ancora D, Zunino A, Vicidomini G, Crevenna AH. Image scanning microscopy
+  reconstruction by autocorrelation inversion. *J Phys Photonics* 6 (2024),
+  doi:10.1088/2515-7647/ad68dd.
+- Structured detection for simultaneous super-resolution and optical
+  sectioning in laser scanning microscopy. *Nat Photonics* 19 (2025),
+  doi:10.1038/s41566-025-01695-0. — s²ISM.
+- Agostoni S, Cuneo L, Daniele C, Garré G, Le L, Zunino A, Vicidomini G,
+  Calatroni L. Self-tuning regularization for image scanning microscopy.
+  arXiv:2605.31426 (2026).
+- Liu Y, Panezai S, Wang Y, Stallinga S. Noise amplification and
+  ill-convergence of Richardson–Lucy deconvolution. *Nat Commun* 16, 911
+  (2025).
+- Reconstruction algorithms in multifocal image scanning microscopy. *Laser
+  Photonics Rev* (2025), doi:10.1002/lpor.71408. — review.
+- Arigovindan M, Sühling M, Hunziker P, Unser M. Variational image
+  reconstruction from arbitrarily spaced samples: a fast multiresolution
+  spline solution. *IEEE Trans Image Process* 14, 450–460 (2005).
+- Deep-MSIM: fast image reconstruction with deep learning in multifocal
+  structured illumination microscopy (2023), PMC10520669. — learned prior.
+- ZEISS Elyra 7 Lattice SIM / SIM² product documentation. — lattice-of-spots
+  illumination reconstructed in the Fourier domain.
+
+## 7. Literature check: what is established, what is new, what is missing
+
+Checked on 2026-09-29 against the pRESOLFT / MoNaLISA and image-scanning-
+microscopy literature. Only search abstracts were reachable from this
+environment (publisher and repository sites are blocked by its proxy), so
+one paper is listed as *to read* rather than summarized.
+
+### 7.1 What the literature does today
+
+- **pRESOLFT** (Chmyrov et al. 2013): per-focus integration in small pinholes
+  placed at the minima of the OFF pattern, with the local out-of-focus level
+  taken from pinholes at the pattern maxima and subtracted. Separation of
+  in-focus and out-of-focus light by *position* is the ancestor of the haze
+  basis of section 2.3.
+- **Improved pRESOLFT reconstruction** (Chmyrov et al. 2017): more accurate
+  localization of the pattern nulls, background elimination by spatial
+  bandpass filtering, and "strategies that incorporate complete image
+  formation models". **To read before Phase 5:** it is the closest prior art
+  to the full-model reference of section 2.1, and its findings on the
+  complete model have to be compared with E5.
+- **MoNaLISA** (Masullo et al. 2018): a digital Gaussian pinhole of 250 nm
+  FWHM (about λ/2NA) per focus, photons assigned to the scan pixel,
+  explicitly without a priori conditions. **3D pRESOLFT** (Bodén et al. 2021):
+  emission re-assigned per pixel by least-squares fitting. **Extended-field
+  MoNaLISA** (Casas Moreno et al. 2023): the ImSwitch reconstruction module.
+  These are the isolated-fit estimator this document starts from.
+- **Multifocal SIM**: digital pinholing, pixel reassignment (factor 0.5 for
+  diffraction-limited foci) and deconvolution (York et al. 2012); joint
+  Richardson–Lucy on the widefield image-formation model, "particularly well
+  suited for noise corrupted data" (Ströhl & Kaminski 2015); a 2025 review of
+  multifocal-ISM reconstruction (Laser & Photonics Reviews) describes the
+  standard workflow as background and noise preprocessing → calibration of
+  the multifocal array → pixel reassignment → physics-informed
+  deconvolution, and notes that background suppression is what alleviates
+  crosstalk. Zeiss Lattice SIM reconstructs a lattice-of-spots illumination
+  scanned through its phases in the Fourier domain (generalized Wiener
+  filter, SIM²): the Fourier-domain sibling of the two-stage placement,
+  practical when the pattern has few harmonics, which a RESOLFT-confined
+  pattern does not.
+- **Image scanning microscopy**: the optimum reassignment factor is not 1/2
+  when excitation and detection PSFs differ (Sheppard et al. 2020); each
+  detector element's PSF is a probability density and reassignment is a form
+  of maximum-likelihood restoration (Sheppard et al. 2021); adaptive pixel
+  reassignment measures the shift vectors from the data and finds them
+  shrinking with STED power (Castello et al. 2019; Koho et al. 2020) — the
+  experimental counterpart of E3a's `α → 0` for confined foci. Multi-image
+  deconvolution (Zunino et al. 2023) is the maximum-likelihood formulation
+  (a multi-detector Richardson–Lucy from the Kullback–Leibler divergence); it
+  outperforms reassignment in resolution and SNR but needs the PSFs. s²ISM
+  (Nature Photonics 2025) inverts the physical model including its axial
+  content and obtains optical sectioning from a single plane. Self-tuning
+  regularization (Agostoni et al. 2026) adds ℓ1 / TV penalties to the
+  multi-frame Poisson likelihood and picks the regularization weight by
+  residual whiteness, without ground truth. Autocorrelation inversion (Ancora
+  et al. 2024) reconstructs blind, without any PSF.
+- **Richardson–Lucy without regularization is ill-convergent**: the
+  Cramér–Rao bound diverges for spatial frequencies approaching the cutoff
+  (Liu, Panezai, Wang & Stallinga 2025), so plain RL with a fixed iteration
+  count is not a defensible final step.
+
+### 7.2 What this plan says that the literature supports
+
+| claim (section) | support |
+|---|---|
+| calibrate → extract per focus → place → deconvolve (4.3) | the multifocal-ISM workflow of the 2025 review; the pRESOLFT / MoNaLISA lineage |
+| full-model Poisson ML / MAP is the reference optimum (2.1) | multi-image deconvolution (2023), jRL-MSIM (2015), s²ISM (2025) |
+| reassignment shift ≈ 0 for confined foci, 0.5 is wrong here (2.5) | Sheppard 2020; adaptive-reassignment shift vectors shrinking with STED power |
+| in-focus / out-of-focus separation by shape instead of a pinhole (2.3) | Chmyrov 2013 (by position), Focus-ISM (2022), s²ISM (2025) |
+| regularized deconvolution with a data-chosen strength, not plain RL (2.4) | Stallinga 2025; Agostoni 2026 |
+| spline least-squares reconstruction from scattered samples (2.4) | Arigovindan et al. 2005 |
+| geometry and spot model calibrated from the data, not typed in (4.1) | adaptive pixel reassignment; autocorrelation inversion; the 2017 null localization |
+
+### 7.3 What is new here, and therefore must be validated on rig data
+
+- The joint, crosstalk-free linear extraction over all foci of a frame as a
+  precomputed operator (2.3). Multi-emitter fitting in localization
+  microscopy and joint RL do the same implicitly; no pRESOLFT paper found
+  does it explicitly, and E1 / E5 are synthetic.
+- The sufficiency argument (2.2) that makes the two-stage pipeline
+  equivalent to full ML under Gaussian noise, and its measured price of
+  about 20% under Poisson noise.
+- Commensurability and coverage as the placement criteria for arbitrary
+  lattices, and B-spline least-squares gridding when they fail (1.1, 2.4).
+- Overscan-based self-calibration of per-focus gain, drift and the
+  stage-to-camera transform (2.6).
+
+### 7.4 What the plan should absorb from the literature
+
+1. Read Chmyrov et al. 2017 before Phase 5 and compare its complete-model
+   reconstruction and bandpass background elimination with E5 and the haze
+   basis.
+2. Replace "RL with early stopping" by a regularized multi-frame Poisson MAP
+   whose regularization weight is chosen by residual whiteness (Agostoni
+   et al. 2026); the `iterations` and `λ` knobs of section 5 then disappear.
+3. Treat the haze basis as the 2D proxy of an explicit axial model; s²ISM
+   shows that detector data carry the axial information to do it properly,
+   which is the route to true sectioning in the reference method.
+4. Keep a blind fallback (adaptive shift estimation, autocorrelation
+   inversion) for data whose spot model cannot be calibrated.
+5. Learned priors (Deep-MSIM 2023 and successors) sit outside the
+   assumption-free optimum: faster and cleaner images at the price of a prior
+   the MoNaLISA authors deliberately avoided; a separate decision.
+
+### 7.5 Is this "the" solution?
+
+In the estimation-theoretic sense there is exactly one optimum for a fully
+specified model — the maximum-likelihood (with a prior, MAP) estimate — and
+the literature has converged on it for ISM (multi-image deconvolution) and
+multifocal SIM (joint RL). This plan reaches that optimum's attainable part:
+the extraction sits at the Cramér–Rao bound of the linear model, the
+placement is exact or least-squares, and the full model is available as the
+reference. What no plan can claim: the model is never fully known (`h_e`,
+per-focus gains, drift, the out-of-focus physics), so the practical optimum
+is the best *calibrated* model, which is why most of the effort here goes
+into self-calibration and diagnostics; and beyond unbiased estimation, image
+quality depends on a prior, which is a scientific choice rather than a
+theorem. Within those limits the plan has the right shape, its established
+parts are established, and its new parts are the ones Phase 5 must confirm
+on data.
 
 ---
 
