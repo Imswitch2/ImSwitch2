@@ -12,6 +12,7 @@ class NidaqPositionerManager(PositionerManager):
     """
 
     requiresReference: bool = True
+    persistsLastPosition: bool = True
 
     def __init__(self, positionerInfo, name, **lowLevelManagers):
         if len(positionerInfo.axes) != 1:
@@ -53,16 +54,21 @@ class NidaqPositionerManager(PositionerManager):
         self.setPosition(self._position[axis] + dist, axis)
 
     def _setPosition(self, position, axis, *, raise_on_error=False):
-        self._nidaqManager.setAnalog(
+        succeeded = self._nidaqManager.setAnalog(
             target=self.name,
             voltage=self.positionToVoltage(position),
             min_val=self._minVolt,
             max_val=self._maxVolt,
             raise_on_error=raise_on_error,
         )
-        # Position is updated only after so that a propagated hardware failure
-        # cannot leave the cached position ahead of the hardware.
-        self._position[axis] = position
+        # Older/fake low-level managers return None on success, so only an
+        # explicit False means the write was rejected. In that case neither the
+        # tracked position nor its persisted last-command value may advance.
+        if succeeded is False:
+            return False
+
+        self._recordCommandedPosition(axis, position)
+        return True
 
     def setPosition(self, position, axis):
         self._setPosition(position, axis, raise_on_error=False)
@@ -74,6 +80,12 @@ class NidaqPositionerManager(PositionerManager):
         if axis not in self._position:
             raise ValueError(f'Axis {axis} not available. Available axes: {list(self._position.keys())}')
         return self._position[axis]
+
+    def _normalizePersistedPosition(self, axis, position):
+        """Clamp a remembered software position to the current voltage range."""
+        voltage = float(position) / self._conversionFactor
+        clampedVoltage = min(max(voltage, self._minVolt), self._maxVolt)
+        return clampedVoltage * self._conversionFactor
 
     def reference(self, axis=None, position=None):
         if axis is None:

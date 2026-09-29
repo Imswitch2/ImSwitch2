@@ -1,6 +1,16 @@
 from abc import ABC, abstractmethod
+import json
+import os
+import threading
 
 from typing import Dict, List
+
+from imswitch.imcommon.model import dirtools, initLogger
+
+
+_POSITION_PERSISTENCE_FILENAME = 'positioner_positions.json'
+_POSITION_PERSISTENCE_SCHEMA_VERSION = 1
+_POSITION_PERSISTENCE_LOCK = threading.RLock()
 
 
 class PositionerManager(ABC):
@@ -9,6 +19,7 @@ class PositionerManager(ABC):
 
     requiresReference: bool = False
     referenceWaitAfterS: float = 0.3
+    persistsLastPosition: bool = False
 
     @abstractmethod
     def __init__(self, positionerInfo, name: str, initialPosition: Dict[str, float]):
@@ -24,10 +35,13 @@ class PositionerManager(ABC):
         self._positionerInfo = positionerInfo
         self._position = initialPosition
 
+        self.__logger = initLogger(self, instanceName=name)
+
         self.__name = name
 
         self.__axes = positionerInfo.axes
         self.__referencedAxes = {axis: not self.requiresReference for axis in self.__axes}
+        self.__restoredPositionAxes = set()
         self.__forPositioning = positionerInfo.forPositioning
         self.__forScanning = positionerInfo.forScanning
         self.__resetOnClose = positionerInfo.resetOnClose
@@ -38,6 +52,9 @@ class PositionerManager(ABC):
         if not positionerInfo.forPositioning and not positionerInfo.forScanning:
             raise ValueError('At least one of forPositioning and forScanning must be set in'
                              ' PositionerInfo.')
+
+        if self.persistsLastPosition:
+            self._restorePersistedPositions()
 
     @property
     def name(self) -> str:
@@ -64,6 +81,19 @@ class PositionerManager(ABC):
         """Return the hardware voltage for a software position, if applicable."""
         return None
 
+    def isPositionRestored(self, axis: str) -> bool:
+        """Whether this axis' displayed position came from session persistence.
+
+        A restored value is only the last command remembered by ImSwitch. It is
+        deliberately not treated as a hardware-verified position and does not
+        imply that the axis is referenced.
+        """
+        if axis not in self.axes:
+            raise ValueError(
+                f'Axis {axis} not available. Available axes: {self.axes}'
+            )
+        return axis in self.__restoredPositionAxes
+
     def updateTrackedPosition(self, positions: Dict[str, float]) -> None:
         """ Sync the cached position from an external hardware read.
 
@@ -74,6 +104,7 @@ class PositionerManager(ABC):
         for axis, value in positions.items():
             if axis in self._position:
                 self._position[axis] = float(value)
+                self.__restoredPositionAxes.discard(axis)
 
     @property
     def axes(self) -> List[str]:
@@ -171,7 +202,128 @@ class PositionerManager(ABC):
                 f'{self.__class__.__name__} requires referencing but does not '
                 'implement reference().'
             )
-    
+
+    def _recordCommandedPosition(self, axis: str, position: float) -> None:
+        """Update tracked state after a command known to have reached hardware.
+
+        Persistent managers call this instead of assigning ``_position``
+        directly. The current-session command supersedes any startup-restored
+        provenance, then the value is written to the shared persistence store.
+        """
+        if axis not in self._position:
+            raise ValueError(
+                f'Axis {axis} not available. Available axes: {self.axes}'
+            )
+        self._position[axis] = float(position)
+        self.__restoredPositionAxes.discard(axis)
+        if self.persistsLastPosition:
+            self._persistPosition(axis)
+
+    def _normalizePersistedPosition(self, axis: str, position: float) -> float:
+        """Adapt a stored software position to the current setup configuration.
+
+        Subclasses may override this to clamp or otherwise validate the value
+        before it is adopted. This hook must never command hardware.
+        """
+        return float(position)
+
+    def _restorePersistedPositions(self) -> None:
+        """Restore opted-in tracked positions without commanding hardware."""
+        data = self._readPositionPersistenceData()
+        positioners = data.get('positioners', {})
+        managerTypeData = positioners.get(self.__class__.__name__, {})
+        if not isinstance(managerTypeData, dict):
+            return
+        managerData = managerTypeData.get(self.name, {})
+        if not isinstance(managerData, dict):
+            return
+
+        for axis in self.axes:
+            stored = managerData.get(axis)
+            if stored is None:
+                continue
+            if isinstance(stored, dict):
+                stored = stored.get('position')
+            if stored is None:
+                continue
+            try:
+                position = self._normalizePersistedPosition(axis, stored)
+            except (TypeError, ValueError) as error:
+                self.__logger.warning(
+                    'Ignoring invalid persisted position for "%s" axis %s: %s',
+                    self.name, axis, error,
+                )
+                continue
+            self._adoptPersistedPosition(axis, position)
+
+    def _adoptPersistedPosition(self, axis: str, position: float, *, persist=False) -> None:
+        """Adopt a persisted value without motion and mark its provenance."""
+        if axis not in self._position:
+            raise ValueError(
+                f'Axis {axis} not available. Available axes: {self.axes}'
+            )
+        self._position[axis] = float(position)
+        self.__restoredPositionAxes.add(axis)
+        if persist and self.persistsLastPosition:
+            self._persistPosition(axis)
+
+    def _persistPosition(self, axis: str) -> None:
+        """Persist one tracked axis atomically. Failures remain non-fatal."""
+        path = self._positionPersistenceFile()
+        try:
+            with _POSITION_PERSISTENCE_LOCK:
+                data = self._readPositionPersistenceData()
+                positioners = data.setdefault('positioners', {})
+                managers = positioners.get(self.__class__.__name__)
+                if not isinstance(managers, dict):
+                    managers = {}
+                    positioners[self.__class__.__name__] = managers
+                axes = managers.get(self.name)
+                if not isinstance(axes, dict):
+                    axes = {}
+                    managers[self.name] = axes
+                axes[axis] = {'position': float(self._position[axis])}
+
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                tempPath = f'{path}.tmp'
+                with open(tempPath, 'w') as file:
+                    json.dump(data, file, indent=2)
+                os.replace(tempPath, path)
+        except (OSError, TypeError, ValueError):
+            self.__logger.warning(
+                'Could not persist position for "%s" axis %s to %s; the '
+                'position will not survive a restart.',
+                self.name, axis, path, exc_info=True,
+            )
+
+    def _readPositionPersistenceData(self):
+        path = self._positionPersistenceFile()
+        with _POSITION_PERSISTENCE_LOCK:
+            try:
+                with open(path, 'r') as file:
+                    data = json.load(file)
+            except (FileNotFoundError, OSError, ValueError):
+                data = {}
+
+        if not isinstance(data, dict):
+            data = {}
+        if data.get('schema_version') != _POSITION_PERSISTENCE_SCHEMA_VERSION:
+            # There is currently only one schema. Unknown/legacy content in
+            # this generic file is ignored rather than guessed.
+            data = {
+                'schema_version': _POSITION_PERSISTENCE_SCHEMA_VERSION,
+                'positioners': {},
+            }
+        elif not isinstance(data.get('positioners'), dict):
+            data['positioners'] = {}
+        return data
+
+    def _positionPersistenceFile(self):
+        return os.path.join(
+            dirtools.UserFileDirs.Config,
+            _POSITION_PERSISTENCE_FILENAME,
+        )
+
     def _setReferenceState(self, axis, referenced:bool) -> None:
         """
         Mark axis reference state. If arg:``axis`` is None, all axes 

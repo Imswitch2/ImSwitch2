@@ -291,6 +291,12 @@ class ImConMainController(MainController):
         except Exception as e:
             self.__logger.warning(f'Failed to auto-restore widget states: {e}')
 
+        # Reference-capable open-loop axes deliberately start unreferenced.
+        # Arm the existing Positioner reference dialog now that all controllers
+        # and persisted widget state are ready, but only show it once the module
+        # itself is visible. Merely opening the dialog never commands hardware.
+        self._armStartupReferenceDialog()
+
         # Everything is built and any saved layout has been applied: settle the
         # dock proportions once the window is actually on screen.
         self.__mainView.scheduleInitialDockLayout()
@@ -303,6 +309,41 @@ class ImConMainController(MainController):
             self._thread.started.connect(self._serverWorker.run)
             self._thread.finished.connect(self._serverWorker.stop)
             self._thread.start()
+
+    def _armStartupReferenceDialog(self):
+        positionerController = self.controllers.get('Positioner')
+        if positionerController is None:
+            return
+        if not positionerController.hasUnreferencedReferenceAxes():
+            return
+
+        self.__startupReferencePromptPending = True
+        signal = getattr(self.__mainView, 'sigModuleVisibilityChanged', None)
+        if signal is None:
+            QtCore.QTimer.singleShot(0, self._showStartupReferenceDialog)
+            return
+
+        signal.connect(self._onStartupReferenceVisibilityChanged)
+        if self.__mainView.isVisible():
+            self._onStartupReferenceVisibilityChanged(True)
+
+    def _onStartupReferenceVisibilityChanged(self, visible):
+        if not visible or not getattr(self, '_ImConMainController__startupReferencePromptPending', False):
+            return
+
+        self.__startupReferencePromptPending = False
+        signal = getattr(self.__mainView, 'sigModuleVisibilityChanged', None)
+        if signal is not None:
+            try:
+                signal.disconnect(self._onStartupReferenceVisibilityChanged)
+            except (TypeError, RuntimeError):
+                pass
+        QtCore.QTimer.singleShot(0, self._showStartupReferenceDialog)
+
+    def _showStartupReferenceDialog(self):
+        positionerController = self.controllers.get('Positioner')
+        if positionerController is not None:
+            positionerController.openStartupReferenceDialogIfNeeded()
 
     @property
     def api(self):

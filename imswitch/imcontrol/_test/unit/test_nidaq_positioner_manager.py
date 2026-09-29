@@ -11,6 +11,7 @@ safety-critical: a bug can crash a stage. Tests cover:
 """
 
 import pytest
+from imswitch.imcommon.model import dirtools
 from imswitch.imcontrol.model.SetupInfo import PositionerInfo
 from imswitch.imcontrol.model.managers.positioners.NidaqPositionerManager import (
     NidaqPositionerManager,
@@ -20,16 +21,25 @@ from imswitch.imcontrol.model.managers.positioners.NidaqPositionerManager import
 class FakeNidaqManager:
     """Records every DAQ command so tests can assert what was sent."""
 
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, return_false=False):
         self.analog_calls = []  # (target, voltage, min_val, max_val)
         self.raise_on_error_calls = []
         self.fail = fail
+        self.return_false = return_false
 
     def setAnalog(self, target, voltage, min_val, max_val, *, raise_on_error=False):
         self.analog_calls.append((target, voltage, min_val, max_val))
         self.raise_on_error_calls.append(bool(raise_on_error))
         if self.fail:
             raise RuntimeError('analog write failed')
+        if self.return_false:
+            return False
+
+
+@pytest.fixture(autouse=True)
+def _isolated_persistence(tmp_path, monkeypatch):
+    monkeypatch.setattr(dirtools.UserFileDirs, 'Config', str(tmp_path))
+    return tmp_path
 
 
 def _make_positioner_info(
@@ -60,9 +70,9 @@ def _make_positioner_info(
     )
 
 
-def _make_manager(name='NidaqZ', *, fail=False, **kwargs):
+def _make_manager(name='NidaqZ', *, fail=False, return_false=False, **kwargs):
     """Build NidaqPositionerManager with a fake DAQ."""
-    nidaq = FakeNidaqManager(fail=fail)
+    nidaq = FakeNidaqManager(fail=fail, return_false=return_false)
     info = _make_positioner_info(**kwargs)
     mgr = NidaqPositionerManager(info, name, nidaqManager=nidaq)
     return mgr, nidaq
@@ -79,6 +89,34 @@ def test_construction_does_not_touch_hardware():
 def test_initial_position_is_zero():
     mgr, nidaq = _make_manager(axes=['Z'])
     assert mgr.position['Z'] == 0.0
+
+
+@pytest.mark.nohardware
+def test_position_persists_across_restart_without_moving():
+    mgr, nidaq = _make_manager(conversion_factor=2.0)
+    mgr.setPosition(6.0, 'Z')
+
+    mgr2, nidaq2 = _make_manager(conversion_factor=2.0)
+
+    assert nidaq.analog_calls == [('NidaqZ', 3.0, 0.0, 10.0)]
+    assert nidaq2.analog_calls == []
+    assert mgr2.position['Z'] == 6.0
+    assert mgr2.isPositionRestored('Z') is True
+    assert mgr2.isAxisReferenced('Z') is False
+
+
+@pytest.mark.nohardware
+def test_command_after_restore_clears_restored_provenance():
+    mgr, _ = _make_manager(conversion_factor=2.0)
+    mgr.setPosition(6.0, 'Z')
+
+    mgr2, _ = _make_manager(conversion_factor=2.0)
+    assert mgr2.isPositionRestored('Z') is True
+
+    mgr2.setPosition(8.0, 'Z')
+
+    assert mgr2.position['Z'] == 8.0
+    assert mgr2.isPositionRestored('Z') is False
 
 
 @pytest.mark.nohardware
@@ -249,6 +287,24 @@ def test_reference_outside_voltage_range_is_rejected_without_motion():
 
     assert nidaq.analog_calls == []
     assert mgr.isAxisReferenced('Z') is False
+
+
+@pytest.mark.nohardware
+def test_silent_daq_write_failure_does_not_advance_tracked_or_persisted_position():
+    mgr, _ = _make_manager(conversion_factor=2.0)
+    mgr.setPosition(6.0, 'Z')
+
+    failed, _ = _make_manager(
+        conversion_factor=2.0,
+        return_false=True,
+    )
+    assert failed.position['Z'] == 6.0
+
+    failed.setPosition(8.0, 'Z')
+    assert failed.position['Z'] == 6.0
+
+    reopened, _ = _make_manager(conversion_factor=2.0)
+    assert reopened.position['Z'] == 6.0
 
 
 @pytest.mark.nohardware

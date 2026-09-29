@@ -1125,7 +1125,11 @@ class NidaqManager(SignalInterface):
             )
 
     def setAnalog(self, target, voltage, min_val=-1, max_val=1, *, raise_on_error=False):
-        """Set one analog channel through a registered finite output task."""
+        """Set one analog channel through a registered finite output task.
+
+        Returns ``True`` on success and ``False`` when a DAQ error is handled
+        locally. With ``raise_on_error=True`` the original DAQ error is raised.
+        """
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
             channel = self.__setupInfo.getDevice(target).getAnalogChannel()
@@ -1135,7 +1139,7 @@ class NidaqManager(SignalInterface):
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
         tasklen = 10
         try:
-            return self._runOneShotOutput(
+            self._runOneShotOutput(
                 'setAnalogTask',
                 lambda: self.__createChanAOTask(
                     'setAnalogTask',
@@ -1150,6 +1154,7 @@ class NidaqManager(SignalInterface):
                 ),
                 voltage * np.ones(tasklen, dtype=float),
             )
+            return True
         except (
             nidaqmx._lib.DaqNotFoundError,
             nidaqmx._lib.DaqFunctionNotSupportedError,
@@ -1161,6 +1166,7 @@ class NidaqManager(SignalInterface):
             )
             if raise_on_error:
                 raise
+            return False
 
     def runScan(self, signalDic, scanInfoDict):
         # Serialize the complete arm transaction with finalize().  Taking only

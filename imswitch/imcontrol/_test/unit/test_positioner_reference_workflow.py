@@ -39,6 +39,7 @@ class _Positioner:
         referenceWaitAfterS=0.3,
         defaultReferenceVoltage=5.0,
         conversionFactor=10.0,
+        restoredAxes=(),
     ):
         self.axes = list(axes)
         self.position = dict(position or {axis: 0.0 for axis in self.axes})
@@ -48,6 +49,7 @@ class _Positioner:
         self.referenceWaitAfterS = referenceWaitAfterS
         self.defaultReferenceVoltage = defaultReferenceVoltage
         self._conversionFactor = conversionFactor
+        self._restoredAxes = set(restoredAxes)
         self.referenceCalls = []
         self.forPositioning = True
         self.hide = False
@@ -65,6 +67,9 @@ class _Positioner:
     def isAxisReferenced(self, axis):
         return self._referenced[axis]
 
+    def isPositionRestored(self, axis):
+        return axis in self._restoredAxes
+
     def reference(self, axis=None, position=None):
         if axis is None:
             axis = self.axes[0]
@@ -77,6 +82,7 @@ class _Positioner:
             position = self.defaultReferencePosition
         self._referenced[axis] = True
         self.position[axis] = position
+        self._restoredAxes.discard(axis)
 
 
 def _controller(entries, widget=None):
@@ -136,6 +142,43 @@ def test_reference_button_reads_reference_when_all_axes_are_referenced(qtbot):
     assert widget.pars['ReferenceButton'].isEnabled()
 
 
+def test_startup_reference_dialog_reports_unreferenced_and_restored_axes_without_moving():
+    restored = _Positioner(
+        position={'X': 20.0},
+        referenced={'X': False},
+        defaultReferenceVoltage=0.0,
+        restoredAxes=('X',),
+    )
+    plain = _Positioner(
+        position={'Y': 0.0},
+        axes=('Y',),
+        referenced={'Y': False},
+        defaultReferenceVoltage=0.0,
+    )
+    widget = MagicMock()
+    ctrl = _controller([('StageX', restored), ('StageY', plain)], widget)
+
+    assert ctrl.openStartupReferenceDialogIfNeeded() is True
+
+    widget.showReferenceDialog.assert_called_once()
+    header = widget.showReferenceDialog.call_args.kwargs['startupHeader']
+    assert '2 open-loop axes are unreferenced.' in header
+    assert '1 displayed position was restored from persisted last commands.' in header
+    assert 'have not been verified against hardware' in header
+    assert restored.referenceCalls == []
+    assert plain.referenceCalls == []
+
+
+def test_startup_reference_dialog_is_skipped_when_all_axes_are_referenced():
+    manager = _Positioner(referenced={'X': True})
+    widget = MagicMock()
+    ctrl = _controller([('Stage', manager)], widget)
+
+    assert ctrl.openStartupReferenceDialogIfNeeded() is False
+
+    widget.showReferenceDialog.assert_not_called()
+
+
 def test_reference_status_labels_include_default_and_displayed_values():
     manager = _Positioner(position={'X': 12.5}, defaultReferenceVoltage=5.0)
     ctrl = _controller([('Stage', manager)])
@@ -148,6 +191,8 @@ def test_reference_status_labels_include_default_and_displayed_values():
         'referenced': False,
         'defaultTargetLabel': 'Default (50um, 5V)',
         'displayedTargetLabel': 'Displayed position (12.5um, 1.25V)',
+        'displayedPositionRestored': False,
+        'preferredTargetMode': 'default',
     }]
 
 
@@ -162,6 +207,36 @@ def test_reference_status_omits_default_label_when_no_default_value():
 
     assert status[0]['defaultTargetLabel'] is None
     assert status[0]['displayedTargetLabel'] == 'Displayed position (12.5um, 1.25V)'
+    assert status[0]['preferredTargetMode'] == 'displayed'
+
+
+def test_restored_position_is_labeled_and_preferred_when_it_differs_from_default():
+    manager = _Positioner(
+        position={'X': 12.5},
+        defaultReferenceVoltage=5.0,
+        restoredAxes=('X',),
+    )
+    ctrl = _controller([('Stage', manager)])
+
+    status = ctrl._getReferenceAxesStatus()[0]
+
+    assert status['displayedPositionRestored'] is True
+    assert status['displayedTargetLabel'] == 'Persisted last command (12.5um, 1.25V)'
+    assert status['preferredTargetMode'] == 'displayed'
+
+
+def test_restored_position_equal_to_default_still_prefers_default():
+    manager = _Positioner(
+        position={'X': 50.0},
+        defaultReferenceVoltage=5.0,
+        restoredAxes=('X',),
+    )
+    ctrl = _controller([('Stage', manager)])
+
+    status = ctrl._getReferenceAxesStatus()[0]
+
+    assert status['displayedTargetLabel'] == 'Persisted last command (50um, 5V)'
+    assert status['preferredTargetMode'] == 'default'
 
 
 def test_reference_target_combo_hides_missing_default(qtbot):
@@ -177,6 +252,25 @@ def test_reference_target_combo_hides_missing_default(qtbot):
     assert combo.count() == 1
     assert combo.itemData(0) == 'displayed'
     assert combo.itemText(0) == 'Displayed position (12.5um, 1.25V)'
+
+
+def test_reference_target_combo_uses_preferred_mode_only_on_initial_population(qtbot):
+    widget = PositionerWidget({})
+    qtbot.addWidget(widget)
+    combo = QtWidgets.QComboBox()
+    qtbot.addWidget(combo)
+    axisInfo = {
+        'defaultTargetLabel': 'Default (0um, 0V)',
+        'displayedTargetLabel': 'Persisted last command (2um, 0.2V)',
+        'preferredTargetMode': 'displayed',
+    }
+
+    widget._populateReferenceTargetCombo(combo, axisInfo)
+    assert combo.currentData() == 'displayed'
+
+    combo.setCurrentIndex(combo.findData('default'))
+    widget._populateReferenceTargetCombo(combo, axisInfo)
+    assert combo.currentData() == 'default'
 
 
 def test_default_action_passes_position_none():
@@ -225,6 +319,8 @@ def test_successful_reference_refreshes_position_and_status():
             'referenced': True,
             'defaultTargetLabel': 'Default (50um, 5V)',
             'displayedTargetLabel': 'Displayed position (50um, 5V)',
+            'displayedPositionRestored': False,
+            'preferredTargetMode': 'default',
         }
     ])
 

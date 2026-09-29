@@ -1,4 +1,6 @@
 import pytest
+import json
+import os
 
 from imswitch.imcommon.model import dirtools
 from imswitch.imcontrol.model.SetupInfo import PositionerInfo
@@ -111,6 +113,30 @@ def test_position_persists_across_restart_without_moving():
     mgr2, ts2 = _make_manager(conversionFactor=2.0)  # "restart"
     assert mgr2.position['Z'] == 6.0      # focus survived the restart
     assert ts2.calls == []                # ...and nothing moved
+    assert mgr2.isPositionRestored('Z') is True
+
+
+@pytest.mark.nohardware
+def test_legacy_triggerscope_persistence_is_migrated_without_moving(_isolated_persistence):
+    legacyPath = os.path.join(
+        str(_isolated_persistence), 'triggerscope_positions.json'
+    )
+    with open(legacyPath, 'w') as file:
+        json.dump({'TSZ': {'Z': 6.0}}, file)
+
+    mgr, ts = _make_manager(conversionFactor=2.0)
+
+    assert ts.calls == []
+    assert mgr.position['Z'] == 6.0
+    assert mgr.isPositionRestored('Z') is True
+
+    # The migrated value is now available through the generic store even if
+    # the old TriggerScope-only file disappears.
+    os.remove(legacyPath)
+    mgr2, ts2 = _make_manager(conversionFactor=2.0)
+    assert ts2.calls == []
+    assert mgr2.position['Z'] == 6.0
+    assert mgr2.isPositionRestored('Z') is True
 
 
 @pytest.mark.nohardware

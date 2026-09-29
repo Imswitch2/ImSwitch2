@@ -209,13 +209,18 @@ class PositionerWidget(Widget):
         referenceButton.setEnabled(True)
         self._refreshReferenceDialogRows()
 
-    def showReferenceDialog(self):
+    def showReferenceDialog(self, startupHeader=None):
         if not self._referenceAxes:
             return
 
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle('Reference positioners')
         layout = QtWidgets.QVBoxLayout(dialog)
+
+        if startupHeader:
+            startupLabel = QtWidgets.QLabel(startupHeader)
+            startupLabel.setWordWrap(True)
+            layout.addWidget(startupLabel)
 
         grid = QtWidgets.QGridLayout()
         grid.setHorizontalSpacing(8)
@@ -483,6 +488,11 @@ class PositionerWidget(Widget):
         )
         if currentMode is not None:
             index = combo.findData(currentMode)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        else:
+            preferredMode = axisInfo.get('preferredTargetMode')
+            index = combo.findData(preferredMode)
             if index >= 0:
                 combo.setCurrentIndex(index)
         combo.blockSignals(oldBlocked)
