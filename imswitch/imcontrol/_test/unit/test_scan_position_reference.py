@@ -9,8 +9,14 @@ from imswitch.imcontrol.controller.WorkflowServices import (
     ScanRequestResult,
     ScanWorkflowService,
 )
+from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
+    ScanControllerAdvanced,
+)
 from imswitch.imcontrol.controller.controllers.ScanControllerMoNaLISA import (
     ScanControllerMoNaLISA,
+)
+from imswitch.imcontrol.controller.controllers._acquisition_layout_source import (
+    build_controller_point_scan_layouts,
 )
 
 pytestmark = pytest.mark.nohardware
@@ -97,6 +103,148 @@ def test_monalisa_build_forgets_runtime_position_snapshot():
     ScanControllerMoNaLISA._buildScanSignals(ctrl)
 
     assert 'axis_position_before_scan' not in ctrl._analogParameterDict
+
+
+def test_position_snapshot_context_restores_outer_snapshot_when_nested():
+    ctrl = _bare_controller()
+    captures = iter(([[1.0]], [[2.0]]))
+    ctrl._capturePositionersBeforeScan = lambda: ctrl._analogParameterDict.__setitem__(
+        'axis_position_before_scan', next(captures)
+    )
+
+    with ctrl._positionSnapshotForScanDesign():
+        assert ctrl._analogParameterDict['axis_position_before_scan'] == [[1.0]]
+
+        with ctrl._positionSnapshotForScanDesign():
+            assert ctrl._analogParameterDict['axis_position_before_scan'] == [[2.0]]
+
+        assert ctrl._analogParameterDict['axis_position_before_scan'] == [[1.0]]
+
+    assert 'axis_position_before_scan' not in ctrl._analogParameterDict
+
+
+def test_position_snapshot_context_restores_existing_value_if_capture_raises():
+    ctrl = _bare_controller()
+    ctrl._analogParameterDict['axis_position_before_scan'] = [[11.0]]
+
+    def fail_capture():
+        ctrl._analogParameterDict['axis_position_before_scan'] = [[99.0]]
+        raise RuntimeError('capture failed')
+
+    ctrl._capturePositionersBeforeScan = fail_capture
+
+    with pytest.raises(RuntimeError, match='capture failed'):
+        with ctrl._positionSnapshotForScanDesign():
+            pass
+
+    assert ctrl._analogParameterDict['axis_position_before_scan'] == [[11.0]]
+
+
+def test_advanced_acquisition_layout_design_receives_position_snapshot():
+    ctrl = ScanControllerAdvanced.__new__(ScanControllerAdvanced)
+    ctrl._analogParameterDict = {'target_device': ['Stage']}
+    ctrl._digitalParameterDict = {}
+    ctrl.getParameters = MagicMock()
+    ctrl._capturePositionersBeforeScan = lambda: ctrl._analogParameterDict.__setitem__(
+        'axis_position_before_scan', [[7.0]]
+    )
+
+    def make_full_scan(analog, _digital):
+        assert analog['axis_position_before_scan'] == [[7.0]]
+        return None, None
+
+    ctrl._make_full_scan = make_full_scan
+
+    with pytest.raises(
+        RuntimeError,
+        match='did not produce layout metadata',
+    ):
+        ctrl.getAcquisitionLayouts(('Camera',))
+
+    assert 'axis_position_before_scan' not in ctrl._analogParameterDict
+
+
+def test_advanced_scan_cache_tracks_position_snapshot():
+    ctrl = ScanControllerAdvanced.__new__(ScanControllerAdvanced)
+    ctrl._analogParameterDict = {'target_device': ['Stage']}
+    ctrl._digitalParameterDict = {}
+    ctrl.getParameters = MagicMock()
+    current_position = [3.0]
+    ctrl._capturePositionersBeforeScan = lambda: ctrl._analogParameterDict.__setitem__(
+        'axis_position_before_scan', [[current_position[0]]]
+    )
+    ctrl.signalDict = None
+    ctrl.scanInfoDict = None
+    ctrl._lastBuiltParams = None
+    builds = []
+
+    def make_full_scan(_analog, _digital):
+        builds.append(current_position[0])
+        return {'scanSignalsDict': {}}, {'position': current_position[0]}
+
+    ctrl._make_full_scan = make_full_scan
+
+    first = ctrl._buildScanSignals()
+    ctrl.signalDict, ctrl.scanInfoDict = first
+    second = ctrl._buildScanSignals()
+
+    current_position[0] = 4.0
+    third = ctrl._buildScanSignals()
+
+    assert second == first
+    assert third[1]['position'] == 4.0
+    assert builds == [3.0, 4.0]
+    assert 'axis_position_before_scan' not in ctrl._analogParameterDict
+
+
+def test_point_scan_layout_design_receives_position_snapshot():
+    ctrl = _bare_controller()
+    ctrl.getParameters = MagicMock()
+    ctrl._capturePositionersBeforeScan = lambda: ctrl._analogParameterDict.__setitem__(
+        'axis_position_before_scan', [[4.0]]
+    )
+
+    def make_full_scan(analog, _digital):
+        assert analog['axis_position_before_scan'] == [[4.0]]
+        return None, None
+
+    ctrl._master = SimpleNamespace(
+        scanManager=SimpleNamespace(makeFullScan=make_full_scan)
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match='did not produce ScanInfoContract metadata',
+    ):
+        build_controller_point_scan_layouts(ctrl, ('Camera',))
+
+    assert 'axis_position_before_scan' not in ctrl._analogParameterDict
+
+
+def test_advanced_plot_design_receives_position_snapshot():
+    ctrl = ScanControllerAdvanced.__new__(ScanControllerAdvanced)
+    ctrl._analogParameterDict = {
+        'target_device': ['Stage'],
+        'scan_dim_target_device': ['Stage'],
+    }
+    ctrl._digitalParameterDict = {}
+    ctrl.getParameters = MagicMock()
+    ctrl._capturePositionersBeforeScan = lambda: ctrl._analogParameterDict.__setitem__(
+        'axis_position_before_scan', [[9.0]]
+    )
+    ctrl._widget = SimpleNamespace(isPlotTTLIncluded=lambda: True)
+    ctrl._logger = MagicMock()
+
+    def make_full_scan(analog, _digital):
+        assert analog['axis_position_before_scan'] == [[9.0]]
+        return {'scanSignalsDict': {}, 'TTLCycleSignalsDict': {}}, {}
+
+    ctrl._make_full_scan = make_full_scan
+
+    ctrl.plotScanCurves()
+
+    assert 'axis_position_before_scan' not in ctrl._analogParameterDict
+    ctrl._logger.warning.assert_called_with('No scan curves to plot')
 
 
 def test_beta_does_not_preposition_non_scanned_axes_to_raw_center():

@@ -6,6 +6,7 @@ import threading
 import traceback
 
 from abc import abstractmethod
+from contextlib import contextmanager
 
 from qtpy import QtCore
 
@@ -1211,6 +1212,28 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def _forgetPositionersBeforeScan(self):
         self._analogParameterDict.pop('axis_position_before_scan', None)
 
+    @contextmanager
+    def _positionSnapshotForScanDesign(self):
+        """Temporarily expose current tracked positions to scan designers.
+
+        Preserve any pre-existing snapshot so nested/re-entrant design calls
+        cannot erase the caller's runtime context. The snapshot is transient:
+        it is never retained in ``_analogParameterDict`` after the outermost
+        design scope exits.
+        """
+        key = 'axis_position_before_scan'
+        missing = object()
+        previous = self._analogParameterDict.get(key, missing)
+
+        try:
+            self._capturePositionersBeforeScan()
+            yield
+        finally:
+            if previous is missing:
+                self._analogParameterDict.pop(key, None)
+            else:
+                self._analogParameterDict[key] = previous
+
     def _setNonScanPositionersToCenter(self):
         """Preserve legacy parking for non-Beta scans only.
 
@@ -1245,13 +1268,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         refuses the design.
         """
         self.getParameters()
-        self._capturePositionersBeforeScan()
-        try:
+        with self._positionSnapshotForScanDesign():
             return self._master.scanManager.makeFullScan(
                 self._analogParameterDict, self._digitalParameterDict
             )
-        finally:
-            self._forgetPositionersBeforeScan()
 
     def _beginScanRunWithDesign(self, *, sigScanStartingEmitted,
                                 recalculateSignals):

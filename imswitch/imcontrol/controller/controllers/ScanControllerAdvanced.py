@@ -358,20 +358,21 @@ class ScanControllerAdvanced(SuperScanController):
                 include_ttl = False
 
             ttlSignalsDict = None
-            if include_ttl:
-                try:
-                    signalDict, scanInfoDict = self._make_full_scan(
+            with self._positionSnapshotForScanDesign():
+                if include_ttl:
+                    try:
+                        signalDict, scanInfoDict = self._make_full_scan(
+                            self._analogParameterDict, self._digitalParameterDict
+                        )
+                    except ScanDesignRefusedError as error:
+                        self._logger.warning(f"Nothing to plot: {error}")
+                        return
+                    scanSignalsDict = signalDict.get("scanSignalsDict", {})
+                    ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
+                else:
+                    scanSignalsDict, _, scanInfoDict = self._make_scan_only(
                         self._analogParameterDict, self._digitalParameterDict
                     )
-                except ScanDesignRefusedError as error:
-                    self._logger.warning(f"Nothing to plot: {error}")
-                    return
-                scanSignalsDict = signalDict.get("scanSignalsDict", {})
-                ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
-            else:
-                scanSignalsDict, _, scanInfoDict = self._make_scan_only(
-                    self._analogParameterDict, self._digitalParameterDict
-                )
             if not scanSignalsDict:
                 self._logger.warning("No scan curves to plot")
                 return
@@ -610,10 +611,11 @@ class ScanControllerAdvanced(SuperScanController):
     def getAcquisitionLayouts(self, detectorNames):
         """Return line-step-aware layouts from the generated scan signals."""
         self.getParameters()
-        signalDict, scanInfo = self._make_full_scan(
-            self._analogParameterDict,
-            self._digitalParameterDict,
-        )
+        with self._positionSnapshotForScanDesign():
+            signalDict, scanInfo = self._make_full_scan(
+                self._analogParameterDict,
+                self._digitalParameterDict,
+            )
         if signalDict is None or scanInfo is None:
             raise RuntimeError(
                 "Advanced scan signal generation did not produce layout metadata"
@@ -734,8 +736,7 @@ class ScanControllerAdvanced(SuperScanController):
 
     def _buildScanSignals(self):
         self.getParameters()
-        self._capturePositionersBeforeScan()
-        try:
+        with self._positionSnapshotForScanDesign():
             # Only rebuild the (expensive) scan signal if the parameters
             # actually changed since the last build. Repeated scan frames
             # reuse identical parameters, so this avoids regenerating a
@@ -758,8 +759,6 @@ class ScanControllerAdvanced(SuperScanController):
             )
             self._lastBuiltParams = paramsSnapshot
             return signalDict, scanInfoDict
-        finally:
-            self._forgetPositionersBeforeScan()
 
     def scanDone(self):
         """Called by the system when nidaq finishes."""

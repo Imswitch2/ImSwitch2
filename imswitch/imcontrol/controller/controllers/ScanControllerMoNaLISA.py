@@ -139,14 +139,11 @@ class ScanControllerMoNaLISA(SuperScanController):
 
     def _buildScanSignals(self):
         self.getParameters()
-        self._capturePositionersBeforeScan()
-        try:
+        with self._positionSnapshotForScanDesign():
             return self._master.scanManager.makeFullScan(
                 self._analogParameterDict, self._digitalParameterDict,
                 staticPositioner=self._widget.isContLaserMode()
             )
-        finally:
-            self._forgetPositionersBeforeScan()
 
     def resetPositioners(self):
         """ For when 'center' is not 0: put back positioner in position before the scan.
