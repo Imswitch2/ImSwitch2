@@ -106,21 +106,28 @@ Two menus belong to the window rather than to a module:
   widget states and preferences live.
 * **Help** — *Documentation*, *Check for updates…* and *About*.
 
-ImControl adds its own:
+ImControl adds its own menus, each holding one kind of thing:
 
-* **File** — load the parameters stored in a saved HDF5 file or Zarr store
-  back into the widgets, and *Save Widget States…* / *Load Widget
-  States…* (see below).
-* **Tools** — *Pick hardware setup…* (:doc:`imcontrol-setups`), *Session
-  notes…* (:ref:`session-notes`), *Edit hardware configuration…* (the
-  config editor, :doc:`imcontrol-setups`), *Memory limits…*
-  (:ref:`improcess-memory-limits`) and *Reset panel layout*, which puts
-  every panel back where the hardware setup places it, at the sizes its
-  contents ask for.
+* **File** — what goes into saved files and what comes back out of them:
+  *Session notes…* (:ref:`session-notes`), loading the parameters stored in
+  a saved HDF5 file or Zarr store back into the widgets, and *Save Widget
+  States…* / *Load Widget States…* (see below).
+* **Hardware** — which microscope this is: *Pick hardware setup…*
+  (:doc:`imcontrol-setups`) and *Edit hardware configuration…* (the config
+  editor, :doc:`imcontrol-setups`).
+* **View** — *Reset panel layout*, which puts every panel back where the
+  hardware setup places it, at the sizes its contents ask for.
 * **Shortcuts** — *Configure Shortcuts…* and the current bindings.
+* **Preferences** — settings of this computer, stored in
+  ``imcontrol_options.json`` and applied as soon as they are saved:
+  *Recordings folder…*, where recordings and snapshots go by default (see
+  :doc:`gui`), and *Memory limits…* (:ref:`improcess-memory-limits`).  The
+  window's own *Preferences* entries follow them.
 
 ImProcess has its own File, Image, Operations, Tools, Plugins, Shortcuts
-and View menus, described in :doc:`improcess`.
+and View menus, described in :doc:`improcess`.  Its **Preferences** menu
+starts with *Default folders…*, where its open and save dialogs start, kept
+between sessions.
 
 
 Keyboard shortcuts

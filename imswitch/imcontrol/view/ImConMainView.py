@@ -12,6 +12,7 @@ from . import widgets
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
+from .RecordingFolderDialog import RecordingFolderDialog
 
 
 class _ResizeOnlyWhatMoved:
@@ -163,6 +164,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigOpenSessionNotes = QtCore.Signal()
     sigOpenConfigEditor = QtCore.Signal()
     sigOpenMemoryLimits = QtCore.Signal()
+    sigOpenRecordingFolder = QtCore.Signal()
     # Emitted on show/hide (i.e. module tab switches in the multi-module
     # window) so the ShortcutManager only keeps the visible module's set live.
     sigModuleVisibilityChanged = QtCore.Signal(bool)
@@ -182,6 +184,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.pickDatasetsDialog = PickDatasetsDialog(self, allowMultiSelect=False)
         self.sessionNotesDialog = SessionNotesDialog(self)
         self.memoryLimitsDialog = MemoryLimitsDialog(self)
+        self.recordingFolderDialog = RecordingFolderDialog(self)
 
         self.viewSetupInfo = viewSetupInfo
 
@@ -190,11 +193,32 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.docks = {}
         self.widgets = {}
 
-        # Menu Bar
+        # Menu bar. Each menu answers one question:
+        #   File        -- what goes into, or comes back out of, saved files
+        #   Hardware    -- which microscope this is, and how it is described
+        #   View        -- how the panels are arranged
+        #   Shortcuts   -- the key bindings
+        #   Preferences -- settings of this computer, kept in
+        #                  imcontrol_options.json; MultiModuleWindow appends
+        #                  the application-wide ones, and the Help menu.
         menuBar = self.menuBar()
         file = menuBar.addMenu('&File')
-        tools = menuBar.addMenu('&Tools')
+        hardware = menuBar.addMenu('&Hardware')
+        view = menuBar.addMenu('&View')
         self.shortcutsMenu = menuBar.addMenu('&Shortcuts')
+        preferences = menuBar.addMenu('&Preferences')
+        for menu in (file, hardware, view, preferences):
+            menu.setToolTipsVisible(True)
+
+        self.sessionNotesAction = QtWidgets.QAction('Session notes…', self)
+        self.sessionNotesAction.setToolTip(
+            'Free text attached to the metadata of every recording saved'
+            ' during this session'
+        )
+        self.sessionNotesAction.triggered.connect(self.sigOpenSessionNotes)
+        file.addAction(self.sessionNotesAction)
+
+        file.addSeparator()
 
         self.loadParamsAction = QtWidgets.QAction('Load parameters from saved HDF5 file…', self)
         self.loadParamsAction.triggered.connect(self.sigLoadParamsFromHDF5)
@@ -205,26 +229,21 @@ class ImConMainView(QtWidgets.QMainWindow):
         file.addAction(self.loadParamsZarrAction)
 
         file.addSeparator()
-        
+
         self.saveWidgetStateAction = QtWidgets.QAction('Save Widget States…', self)
         self.saveWidgetStateAction.triggered.connect(self.sigSaveWidgetState)
         file.addAction(self.saveWidgetStateAction)
-        
+
         self.loadWidgetStateAction = QtWidgets.QAction('Load Widget States…', self)
         self.loadWidgetStateAction.triggered.connect(self.sigLoadWidgetState)
         file.addAction(self.loadWidgetStateAction)
 
         self.pickSetupAction = QtWidgets.QAction('Pick hardware setup…', self)
-        self.pickSetupAction.triggered.connect(self.sigPickSetup)
-        tools.addAction(self.pickSetupAction)
-
-        self.sessionNotesAction = QtWidgets.QAction('Session notes…', self)
-        self.sessionNotesAction.setToolTip(
-            'Free text attached to the metadata of every recording saved'
-            ' during this session'
+        self.pickSetupAction.setToolTip(
+            'Choose which setup file this microscope runs on. ImSwitch restarts.'
         )
-        self.sessionNotesAction.triggered.connect(self.sigOpenSessionNotes)
-        tools.addAction(self.sessionNotesAction)
+        self.pickSetupAction.triggered.connect(self.sigPickSetup)
+        hardware.addAction(self.pickSetupAction)
 
         self.configEditorAction = QtWidgets.QAction('Edit hardware configuration…', self)
         self.configEditorAction.setToolTip(
@@ -232,15 +251,7 @@ class ImConMainView(QtWidgets.QMainWindow):
             ' Saved changes take effect when ImSwitch is restarted.'
         )
         self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
-        tools.addAction(self.configEditorAction)
-
-        self.memoryLimitsAction = QtWidgets.QAction('Memory limits…', self)
-        self.memoryLimitsAction.setToolTip(
-            'How much memory ImSwitch may use on this computer for recording'
-            ' buffers and automatic ImProcess work. Applied when saved.'
-        )
-        self.memoryLimitsAction.triggered.connect(self.sigOpenMemoryLimits)
-        tools.addAction(self.memoryLimitsAction)
+        hardware.addAction(self.configEditorAction)
 
         self.resetLayoutAction = QtWidgets.QAction('Reset panel layout', self)
         self.resetLayoutAction.setToolTip(
@@ -248,13 +259,29 @@ class ImConMainView(QtWidgets.QMainWindow):
             ' sizes its contents ask for.'
         )
         self.resetLayoutAction.triggered.connect(self.resetDockLayout)
-        tools.addAction(self.resetLayoutAction)
-        
+        view.addAction(self.resetLayoutAction)
+
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
         self.configureShortcutsAction.triggered.connect(self.sigOpenShortcutEditor)
         self.shortcutsMenu.addAction(self.configureShortcutsAction)
         self.shortcutsMenu.addSeparator()
+
+        self.recordingFolderAction = QtWidgets.QAction('Recordings folder…', self)
+        self.recordingFolderAction.setToolTip(
+            'Where recordings and snapshots are saved by default on this'
+            ' computer. Applied when saved.'
+        )
+        self.recordingFolderAction.triggered.connect(self.sigOpenRecordingFolder)
+        preferences.addAction(self.recordingFolderAction)
+
+        self.memoryLimitsAction = QtWidgets.QAction('Memory limits…', self)
+        self.memoryLimitsAction.setToolTip(
+            'How much memory ImSwitch may use on this computer for recording'
+            ' buffers and automatic ImProcess work. Applied when saved.'
+        )
+        self.memoryLimitsAction.triggered.connect(self.sigOpenMemoryLimits)
+        preferences.addAction(self.memoryLimitsAction)
 
         # Window
         self.setWindowTitle('ImSwitch')
@@ -318,7 +345,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         # Add dock area to layout
         layout.addWidget(self.dockArea)
 
-        # The arrangement this setup file asks for, kept for Tools > Reset
+        # The arrangement this setup file asks for, kept for View > Reset
         # panel layout.  Taken before anything has had a chance to move.
         self._defaultDockState = self.dockArea.saveState()
 
@@ -520,6 +547,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.memoryLimitsDialog.show()
         self.memoryLimitsDialog.raise_()
         self.memoryLimitsDialog.activateWindow()
+
+    def showRecordingFolderDialog(self):
+        """Raise the recordings-folder editor."""
+        self.recordingFolderDialog.show()
+        self.recordingFolderDialog.raise_()
+        self.recordingFolderDialog.activateWindow()
 
     def showSessionNotesDialog(self):
         """Raise the (modeless) session-notes editor, opening it if needed."""

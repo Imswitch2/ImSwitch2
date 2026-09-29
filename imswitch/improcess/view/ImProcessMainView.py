@@ -23,6 +23,7 @@ from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
 from .DirectoryWatcherFrame import DirectoryWatcherFrame
+from .FolderPreferencesDialog import FolderPreferencesDialog
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
@@ -49,8 +50,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigSaveReconstructionAll = QtCore.Signal()
     sigSaveCoeffs = QtCore.Signal()
     sigSaveCoeffsAll = QtCore.Signal()
-    sigSetDataFolder = QtCore.Signal()
-    sigSetSaveFolder = QtCore.Signal()
+    sigOpenFolderPreferences = QtCore.Signal()
 
     sigReconstuctCurrent = QtCore.Signal()
     sigCancelReconstruction = QtCore.Signal()
@@ -212,16 +212,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         saveCoeffsAllAction.triggered.connect(self.sigSaveCoeffsAll)
         file.addAction(saveCoeffsAllAction)
         self._shortcutActions['file.save-coeffs-all'] = saveCoeffsAllAction
-
-        file.addSeparator()
-
-        setDataFolder = QtWidgets.QAction('Set default data folder…', self)
-        setDataFolder.triggered.connect(self.sigSetDataFolder)
-        file.addAction(setDataFolder)
-
-        setSaveFolder = QtWidgets.QAction('Set default save folder…', self)
-        setSaveFolder.triggered.connect(self.sigSetSaveFolder)
-        file.addAction(setSaveFolder)
 
         file.addSeparator()
         exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
@@ -422,6 +412,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
 
         self.pickDatasetsDialog = PickDatasetsDialog(self, allowMultiSelect=True)
+        self.folderPreferencesDialog = FolderPreferencesDialog(self)
 
         # Parameter tree lives inside a host frame so setParameterWidget can
         # swap the active reconstructor's parameter widget without disturbing
@@ -593,6 +584,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         resetLayoutAction.triggered.connect(self.resetLayout)
         viewMenu.addAction(resetLayoutAction)
 
+        self._buildPreferencesMenu(menuBar)
+
         pg.setConfigOption('imageAxisOrder', 'row-major')
 
         self._connectResultPusher(self.profileWidget)
@@ -600,6 +593,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._connectResultPusher(self.roiManagerWidget)
         self._connectResultPusher(self.graphWidget)
         self._connectResultPusher(self.metadataWidget)
+
+    def _buildPreferencesMenu(self, menuBar) -> None:
+        """Add Preferences, last of ImProcess's own menus: settings of this
+        computer, kept between sessions. MultiModuleWindow appends the
+        application-wide entries to this same menu, after a separator."""
+        self._preferencesMenu = menuBar.addMenu('&Preferences')
+        self._preferencesMenu.setToolTipsVisible(True)
+        self.folderPreferencesAction = QtWidgets.QAction('Default folders…', self)
+        self.folderPreferencesAction.setToolTip(
+            'Where the open and save dialogs start on this computer. Kept'
+            ' between sessions.'
+        )
+        self.folderPreferencesAction.triggered.connect(self.sigOpenFolderPreferences)
+        self._preferencesMenu.addAction(self.folderPreferencesAction)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
@@ -2032,6 +2039,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             return result == QtWidgets.QDialog.Accepted
         else:
             self.pickDatasetsDialog.show()
+
+    def showFolderPreferencesDialog(self):
+        """Raise the default-folders editor."""
+        self.folderPreferencesDialog.show()
+        self.folderPreferencesDialog.raise_()
+        self.folderPreferencesDialog.activateWindow()
 
     def getPatternParams(self):
         if getattr(self, "findPatBtn", None) is None:

@@ -1,6 +1,3 @@
-import os
-import time
-
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model.shortcut import shortcut
@@ -51,11 +48,7 @@ class RecordingWidget(Widget):
         self.singleFileMultiDetectorBox.setVisible(False)
 
         # Folder and filename fields
-        baseOutputFolder = self._options.recording.outputFolder
-        if self._options.recording.includeDateInOutputFolder:
-            self.initialDir = os.path.join(baseOutputFolder, time.strftime('%Y-%m-%d'))
-        else:
-            self.initialDir = baseOutputFolder
+        self.initialDir = self._options.recording.folderFor()
 
         self.folderEdit = QtWidgets.QLineEdit(self.initialDir)
         self.openFolderButton = guitools.BetterPushButton('Open')

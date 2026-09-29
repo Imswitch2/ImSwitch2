@@ -1,4 +1,4 @@
-"""Tools > Edit hardware configuration..., end to end on a running imcontrol.
+"""Hardware > Edit hardware configuration..., end to end on a running imcontrol.
 
 The unit tests cover the restart policy in isolation. This one covers the part
 no mock can: that the menu entry is actually wired to a window that opens, that
@@ -39,10 +39,10 @@ def _editorWindows(app):
             if type(w).__module__.endswith('configeditor.editor')]
 
 
-def test_the_action_is_in_the_tools_menu(qapp, qtbot):
-    tools = next(action for action in mainView.menuBar().actions()
-                 if 'Tools' in action.text())
-    labels = [action.text() for action in tools.menu().actions()]
+def test_the_action_is_in_the_hardware_menu(qapp, qtbot):
+    hardware = next(action for action in mainView.menuBar().actions()
+                    if 'Hardware' in action.text())
+    labels = [action.text() for action in hardware.menu().actions()]
     assert any('hardware configuration' in label for label in labels), labels
 
 

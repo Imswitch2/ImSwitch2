@@ -118,16 +118,18 @@ Menus and toolbars
 ==================
 
 The main window has the menus **File**, **Image**, **Operations**,
-**Tools**, **Plugins**, **Shortcuts** and **View**, and five always-visible
-toolbars — *File tools*, *Image*, *Image operations*, *Tools* and
-*Plugins* — for operations that should be available regardless of the
-active reconstructor.
+**Tools**, **Plugins**, **Shortcuts**, **View** and **Preferences**, and
+five always-visible toolbars — *File tools*, *Image*, *Image operations*,
+*Tools* and *Plugins* — for operations that should be available regardless
+of the active reconstructor.
 
 The **File** menu loads data (*Quick load data…*, *Virtual load data…*),
-saves results (see :ref:`improcess-saving`), sets the default data and save
-folders, and exports and runs workflows (*Export workflow of current
-result…*, *Run workflow…*, *Run workflow on selected results…*, *Run
-workflow over files…*; see :doc:`improcess-workflows`).  The *File tools*
+saves results (see :ref:`improcess-saving`), and exports and runs workflows
+(*Export workflow of current result…*, *Run workflow…*, *Run workflow on
+selected results…*, *Run workflow over files…*; see
+:doc:`improcess-workflows`).  **Preferences → Default folders…** sets
+where the open and save dialogs start (see :ref:`improcess-saving`).  The
+*File tools*
 toolbar carries quick load, virtual load and *Save reconstruction…*.
 *Virtual load data* opens the selected TIFF/OME-TIFF, HDF5 or Zarr dataset
 as a lazy current-data source so the raw-data panel can show the mean image
@@ -299,8 +301,15 @@ units are written with the pixels.  *Save all reconstructions…* writes every
 result in the list into one chosen folder as ``<name>.reconstruction.tiff``,
 numbering a name that already exists.  *Save coefficients of
 reconstruction…* and *Save all coefficients…* apply to MoNaLISA results
-only.  *Set default data folder…* and *Set default save folder…* choose
-where the open and save dialogs start.
+only.
+
+**Preferences → Default folders…** chooses where the dialogs start.
+*Open data from* sets the folder for *Quick load*, *Virtual load* and
+adding data.  *Save results to* sets the folder for the save dialogs; left
+empty, they start in the data folder.  Either can be cleared to have no
+default.  The folders are kept between sessions in
+``improcess_options.json`` in the ``config`` folder of ``ImSwitchConfig``,
+next to ImControl's ``imcontrol_options.json``.
 
 A save is planned before anything is written: every file is written beside
 the target first and then moved into place, the main file last, so a failed
@@ -1547,7 +1556,7 @@ property of the computer, so it lives in the per-machine options file
 ``imcontrol_options.json`` (under the user config directory) rather than in
 the setup file, which travels between machines. The ``memory`` group holds
 three limits in MiB, each named for the one thing it bounds; the values
-shown are the defaults. Edit them in ImControl under **Tools → Memory
+shown are the defaults. Edit them in ImControl under **Preferences → Memory
 limits…**, which saves this file and applies the new limits at once, or edit
 the file by hand and restart::
 

@@ -17,7 +17,7 @@ The user directory is:
 
 The first time you start the hardware control module you will be
 prompted to select a setup file.  To switch later, use
-**Tools → Pick hardware setup…** in the menu bar.
+**Hardware → Pick hardware setup…** in the menu bar.
 
 .. image:: ./images/setup-picker.png
    :alt: The dialog that asks which hardware setup file to load
@@ -30,12 +30,13 @@ file holds the per-computer settings that are not part of any setup:
 
 * ``recording.outputFolder`` and ``recording.includeDateInOutputFolder``:
   where recordings are saved, and whether a dated subfolder is added
-  (default ``ImSwitchConfig/recordings``, with date)
+  (default ``ImSwitchConfig/recordings``, with date), editable with
+  **Preferences → Recordings folder…**
 * ``watcher.outputFolder``: the folder the **Watcher** panel starts on
   (default ``ImSwitchConfig/scripts``)
 * ``memory.writerQueueMB`` (512), ``memory.perDetectorQueueMB`` (256) and
   ``memory.processingWorkingSetMB`` (1024): memory limits in MiB, editable
-  with **Tools → Memory limits…** (see :ref:`improcess-memory-limits`)
+  with **Preferences → Memory limits…** (see :ref:`improcess-memory-limits`)
 
 .. tip::
 
@@ -43,7 +44,7 @@ file holds the per-computer settings that are not part of any setup:
    It shows typed fields for every manager's ``managerProperties``.
 
    From a running ImSwitch2, open it with
-   **Tools → Edit hardware configuration…**.  It opens on the setup file
+   **Hardware → Edit hardware configuration…**.  It opens on the setup file
    this session is running and does not block the rest of the GUI, so the
    microscope stays usable while you edit.
 

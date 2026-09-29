@@ -5,6 +5,7 @@ from .BetterComboBox import BetterComboBox
 from .BetterSlider import BetterSlider
 from .CheckableComboBox import CheckableComboBox
 from .FloatSlider import FloatSlider
+from .FolderPathEdit import FolderPathEdit
 from .dialogtools import (
     askYesNoQuestion, askForFilePath, askForFolderPath, askForTextInput, showWarning,
 )
