@@ -2,20 +2,40 @@
 the step inside a workflow."""
 
 import ast
+import os
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 
-from imswitch.improcess.model.array_result import ArrayProcessingResult
-from imswitch.improcess.processors.python_step import context as python_context
-from imswitch.improcess.processors.python_step.context import (
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from imswitch.improcess.model.array_result import ArrayProcessingResult  # noqa: E402
+from imswitch.improcess.model.provenance import graph_of, output_node  # noqa: E402
+from imswitch.improcess.model.save_protocol import ProvenanceDocument  # noqa: E402
+from imswitch.improcess.processors.python_step import PythonStepProcessor  # noqa: E402
+from imswitch.improcess.processors.python_step import context as python_context  # noqa: E402
+from imswitch.improcess.processors.python_step.context import (  # noqa: E402
     DEFAULT_CODE,
     DEFAULT_PORTS,
     ScriptError,
     build_namespace,
     parse_ports,
     run_script,
+)
+from imswitch.improcess.workflows.steps import Ref  # noqa: E402
+from imswitch.improcess.workflows import (  # noqa: E402
+    Process,
+    Reconstruct,
+    RunError,
+    Save,
+    Source,
+    Workflow,
+    bootstrap_registry,
+    run,
+    validate,
+    workflow_from_provenance,
 )
 
 
@@ -332,3 +352,203 @@ def test_three_slices_at_a_time_alternate_between_two_outputs():
     assert b.data[:, 0, 0].tolist() == [3, 4, 5, 9, 10, 11]
     assert a.axis_labels == b.axis_labels == ["Z", "Y", "X"]
     assert (a.name, b.name) == ("rec (a)", "rec (b)")
+
+
+# -- the processor ------------------------------------------------------------
+
+def test_the_processor_declares_what_the_brief_says():
+    processor = PythonStepProcessor()
+    assert (processor.id, processor.name, processor.category) == ("python", "Python step", "Scripting")
+    assert processor.kinds == ("image", "labels", "composite")
+    assert (processor.min_inputs, processor.max_inputs) == (1, None)
+    assert processor.preserves_grid is None and processor.accepts_roi is False
+    assert processor.params_version == 1
+    assert PythonStepProcessor.default_params() == {"code": DEFAULT_CODE, "ports": DEFAULT_PORTS}
+    fields = {field.key: field for field in PythonStepProcessor.param_spec()}
+    assert (fields["code"].type, fields["code"].label) == ("code", "Code")
+    assert (fields["ports"].type, fields["ports"].label) == ("text", "Output ports")
+    assert "outputs" in fields["ports"].help
+    assert processor.applies_to(_stack())
+
+
+def test_it_is_a_built_in_the_registry_and_catalogue_list():
+    from imswitch.improcess.processors import available_processor_ids
+
+    assert "python" in available_processor_ids()
+    registry = bootstrap_registry(user_plugins=False)
+    assert registry.get_processor("python").id == "python"
+
+
+def test_output_spec_declares_the_ports_and_none_for_unparseable_names():
+    processor = PythonStepProcessor()
+    assert processor.output_spec({"ports": "a, b"}).ports == ("a", "b")
+    assert processor.output_spec({}).ports == ("out",)
+    assert processor.output_spec(None).ports == ("out",)
+    broken = processor.output_spec({"ports": "a b, c"})
+    assert broken.ports == () and broken.pattern is None
+    assert not broken.matches("c") and not broken.matches("a b")
+
+
+def test_apply_runs_the_code_and_names_the_outputs_by_port():
+    processor = PythonStepProcessor()
+    output = processor.apply(_slice_stack(), {"code": INTERLEAVE_CODE, "ports": "a, b"})
+    assert output.keys == ("a", "b")
+    assert [r.data.shape for r in output.results] == [(6, 4, 4), (6, 4, 4)]
+    assert not any("python_step" in r.metadata for r in output.results)   # nothing printed
+
+
+def test_apply_keeps_what_was_printed_on_every_output_cut_to_4000_characters():
+    processor = PythonStepProcessor()
+    code = 'print("hello")\noutputs = {"a": data, "b": data}\n'
+    output = processor.apply(_stack(), {"code": code, "ports": "a, b"})
+    assert [r.metadata["python_step"]["stdout"] for r in output.results] == ["hello\n", "hello\n"]
+    long = processor.apply(_stack(), {"code": 'print("x" * 9000)\nout = data', "ports": "out"})
+    assert len(long.results[0].metadata["python_step"]["stdout"]) == 4000
+
+
+def test_apply_reads_a_multi_input_run_from_params_results():
+    first, second = _stack(name="one"), _stack(name="two")
+    output = PythonStepProcessor().apply(
+        first, {"code": "out = inputs[0] + inputs[1]", "ports": "out", "results": [first, second]},
+    )
+    assert np.array_equal(output.results[0].data, first.data + second.data)
+    assert output.results[0].name == "one (out)"
+    alone = PythonStepProcessor().apply(first, {"code": "out = data * len(inputs)", "ports": "out"})
+    assert np.array_equal(alone.results[0].data, first.data)        # no results key: just the one
+
+
+def test_a_bad_port_name_raises_the_real_error_from_apply():
+    with pytest.raises(ValueError, match="'a b'"):
+        PythonStepProcessor().apply(_stack(), {"code": "out = data", "ports": "a b"})
+
+
+def test_it_accepts_images_labels_and_composites_but_not_tables():
+    processor = PythonStepProcessor()
+
+    class _Kind(ArrayProcessingResult):
+        pass
+
+    for kind, expected in (("image", True), ("labels", True), ("composite", True), ("table", False), ("rgb", False)):
+        result = _Kind("r", np.zeros((4, 4), np.float32), ["Y", "X"])
+        result.kind = kind
+        assert processor.accepts(result) is expected, kind
+    assert processor.check_inputs([_stack(), _stack(), _stack()]) == (True, "")
+    assert processor.check_inputs([])[0] is False
+
+
+# -- the step in a workflow ---------------------------------------------------
+
+#: The interleave example as a workflow step writes it: axis 0 of the recording.
+INTERLEAVE_AX0 = INTERLEAVE_CODE.replace('ax = axis("Z")', "ax = 0")
+
+
+@pytest.fixture(scope="module")
+def registry():
+    return bootstrap_registry(user_plugins=False)
+
+
+def _planes_h5(path, count=12, size=8):
+    """A recording whose plane ``i`` holds the value ``i``: slices are easy to name."""
+    planes = np.broadcast_to(np.arange(count, dtype=np.float32)[:, None, None], (count, size, size))
+    with h5py.File(str(path), "w") as handle:
+        dataset = handle.create_dataset("data", data=np.array(planes))
+        dataset.attrs["element_size_um"] = [1.0, 0.1, 0.1]
+        dataset.attrs["axes"] = "CYX"
+    return path
+
+
+def _interleave_workflow(raw, code=INTERLEAVE_AX0):
+    return Workflow("interleave", [
+        Source("raw", path=str(raw)),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("split", "python", {"code": code, "ports": "a, b"}, inputs=["rec"]),
+        Process("blur", "filter", {"radius": 1.0}, inputs=["split.a"]),
+        Save("out", input="split.b", fmt="hdf5"),
+    ])
+
+
+def test_a_python_step_validates_runs_chains_and_saves(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    workflow = _interleave_workflow(raw)
+    assert validate(workflow, registry) == []
+    with run(workflow, registry=registry, out_dir=tmp_path / "out") as report:
+        assert report.ok and report.steps_run == ["raw", "rec", "split", "blur", "out"]
+        assert sorted(report.ports_of("split")) == ["a", "b"]
+        assert report.result("split.a").data[:, 0, 0].tolist() == [0, 1, 2, 6, 7, 8]
+        assert report.result("split.b").data[:, 0, 0].tolist() == [3, 4, 5, 9, 10, 11]
+        assert report.result("blur").data.shape == (6, 8, 8)
+        saved = report.receipts[0].primary
+        assert saved.exists()
+    with h5py.File(str(saved), "r") as handle:
+        assert handle["data"][:, 0, 0].tolist() == [3, 4, 5, 9, 10, 11]
+
+
+def test_a_reference_to_a_port_the_step_does_not_declare_is_refused(registry, tmp_path):
+    workflow = _interleave_workflow(tmp_path / "scan.h5")
+    workflow.step("blur").inputs = [Ref("split", "c")]
+    messages = [str(issue) for issue in validate(workflow, registry)]
+    assert messages == ["blur: port 'c' is not one 'split' produces (a, b)"]
+    # and a port list that cannot be parsed declares none at all
+    workflow = _interleave_workflow(tmp_path / "scan.h5")
+    workflow.step("split").params["ports"] = "a b"
+    assert any("blur: port 'a' is not one 'split' produces" in str(issue) for issue in validate(workflow, registry))
+
+
+def test_the_recorded_node_carries_the_code_and_is_replayable(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    with run(_interleave_workflow(raw), registry=registry, out_dir=tmp_path / "out") as report:
+        node = output_node(report.result("split.a"))
+        assert node["plugin_id"] == "python"
+        assert node["params"]["code"] == INTERLEAVE_AX0         # the whole code, not a summary
+        assert node["params"]["ports"] == "a, b"
+        assert node["replayable"] is True
+        assert node["outputs"] == ["a", "b"]
+
+
+def test_replay_from_provenance_gives_the_same_code_back(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    with run(_interleave_workflow(raw), registry=registry, out_dir=tmp_path / "first") as report:
+        graph = graph_of(report.result("blur"))
+        original = np.array(report.result("blur").data)
+    replay = workflow_from_provenance(ProvenanceDocument(graph=graph), registry=registry).workflow
+    steps = [step for step in replay.steps if isinstance(step, Process) and step.processor == "python"]
+    assert len(steps) == 1
+    assert steps[0].params["code"] == INTERLEAVE_AX0
+    assert steps[0].params["ports"] == "a, b"
+    with run(replay, registry=registry, out_dir=tmp_path / "second") as again:
+        blurred = [key for key in again.results if key.endswith(".out")][-1]
+        assert np.array_equal(again.result(blurred).data, original)
+
+
+def test_a_failing_script_names_the_step_and_the_line(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    workflow = _interleave_workflow(raw, code="x = 1\ny = x + missing\n")
+    with pytest.raises(RunError) as caught:
+        run(workflow, registry=registry, out_dir=tmp_path / "out")
+    message = str(caught.value)
+    assert message.startswith("split:") and "line 2: NameError" in message and "missing" in message
+    report = caught.value.report
+    assert report.failed_step == "split" and report.steps_run == ["raw", "rec"]
+    report.close()
+
+
+def test_outputs_that_break_the_rules_fail_the_step_with_the_rule(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    workflow = _interleave_workflow(raw, code='outputs = {"a": data}\n')
+    with pytest.raises(RunError, match="missing b") as caught:
+        run(workflow, registry=registry, out_dir=tmp_path / "out")
+    caught.value.report.close()
+
+
+def test_a_two_input_step_sees_both_inputs(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5", count=4)
+    code = "assert len(inputs) == 2 and len(results) == 2\nout = inputs[0] + inputs[1]\n"
+    workflow = Workflow("two", [
+        Source("raw", path=str(raw)),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("both", "python", {"code": code}, inputs=["rec", "rec"]),
+    ])
+    assert validate(workflow, registry) == []
+    with run(workflow, registry=registry, out_dir=tmp_path / "out") as report:
+        assert report.ports_of("both") == ["out"]          # one run over both, not one per input
+        assert report.result("both").data[:, 0, 0].tolist() == [0, 2, 4, 6]
