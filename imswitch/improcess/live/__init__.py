@@ -1,5 +1,6 @@
 """Live reconstruction source-side helpers."""
 
+from .batch_session import StackBatchSession
 from .source_factory import make_live_source
 from .sources import Hdf5LapseSource, Hdf5LiveSource, Hdf5MultiFileLapseSource, InMemoryStackWrapper, LiveSource, ZarrLapseSource, ZarrLiveSource, ZarrMultiFileLapseSource
 from .workers import LiveProcessWorker, LiveStreamWorker
@@ -12,6 +13,7 @@ __all__ = [
     "LiveSource",
     "LiveProcessWorker",
     "LiveStreamWorker",
+    "StackBatchSession",
     "ZarrLapseSource",
     "ZarrMultiFileLapseSource",
     "ZarrLiveSource",
