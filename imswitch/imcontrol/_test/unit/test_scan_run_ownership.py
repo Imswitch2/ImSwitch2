@@ -272,6 +272,7 @@ def test_external_scan_request_reports_acceptance_after_run_reservation():
         _externalScanRequestFailed=False,
         _externalScanRequestFailureMessage='',
         _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         _widget=SimpleNamespace(
             setScanMode=lambda: None,
             setRepeatEnabled=lambda _value: None,
@@ -322,6 +323,7 @@ def test_external_scan_request_reports_rejection_when_no_run_is_reserved():
         _externalScanRequestFailed=False,
         _externalScanRequestFailureMessage='',
         _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         _widget=SimpleNamespace(
             setScanMode=lambda: None,
             setRepeatEnabled=lambda _value: None,
@@ -359,6 +361,7 @@ def test_external_request_refuses_active_iteration_before_widget_mutation():
         _externalScanRequestFailed=False,
         _externalScanRequestFailureMessage='',
         _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         isRunning=True,
         _widget=SimpleNamespace(
             setScanMode=lambda: calls.append('mode'),
@@ -403,6 +406,7 @@ def test_external_request_refuses_unresolved_same_run_request_in_idle_gap():
         _externalScanRequestFailed=False,
         _externalScanRequestFailureMessage='',
         _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         isRunning=False,
         _widget=SimpleNamespace(
             setScanMode=lambda: calls.append('mode'),
@@ -450,6 +454,7 @@ def test_continuation_setup_failure_terminalizes_idle_retained_run():
         _externalScanRequestFailed=False,
         _externalScanRequestFailureMessage='',
         _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         _widget=SimpleNamespace(
             setScanMode=failSetMode,
             setRepeatEnabled=lambda _value: None,
@@ -585,6 +590,7 @@ def test_done_signal_reentrant_failure_cannot_resolve_detached_success():
         _externalScanRequestInProgress=False,
         _externalScanRequestFailureMessage='',
         _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         _pendingExternalScanRequestCompletions=[completion],
         _repeatPending=False,
         isRunning=True,
@@ -715,6 +721,7 @@ def test_unproven_release_failure_keeps_exact_terminal_pending():
         _externalScanRequestInProgress=False,
         _externalScanRequestFailureMessage='',
         _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         _pendingExternalScanRequestCompletions=[completion],
         _repeatPending=False,
         isRunning=True,
@@ -1619,6 +1626,7 @@ def test_finalize_failure_keeps_exact_terminal_pending_until_retry_releases():
         _externalScanRequestInProgress=False,
         _externalScanRequestFailureMessage='',
         _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         _pendingExternalScanRequestCompletions=[completion],
         _repeatPending=False,
         isRunning=False,
@@ -1773,6 +1781,8 @@ def test_failed_accepted_external_request_reports_exact_terminal_until_release()
         _scanCompletionPublishing=False,
         _pendingExternalScanRequestCompletions=[],
         _scanCoordinator=coordinator,
+        _suppressUnreferencedScanWarning=True,
+        _unreferencedScanStartRefusal=lambda: '',
         _widget=SimpleNamespace(
             setScanMode=lambda: None,
             setRepeatEnabled=lambda _value: None,
