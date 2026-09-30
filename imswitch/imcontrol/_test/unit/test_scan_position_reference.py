@@ -292,7 +292,7 @@ def test_external_preflight_refuses_unreferenced_axes_without_dialog():
     ctrl = _bare_controller()
     stage = _ScanPositioner(axes=('X',), referenced={'X': False})
     ctrl._scanCompletionPublishing = False
-    ctrl.isRunning = False
+    ctrl._isRunningFlag = False
     ctrl._scanCoordinator = None
     ctrl._suppressUnreferencedScanWarning = False
     ctrl.positioners = {'Stage': stage}
@@ -316,7 +316,7 @@ def test_external_preflight_refuses_unreferenced_axes_without_dialog():
 def test_external_preflight_respects_session_acceptance_of_unreferenced_axes():
     ctrl = _bare_controller()
     ctrl._scanCompletionPublishing = False
-    ctrl.isRunning = False
+    ctrl._isRunningFlag = False
     ctrl._scanCoordinator = None
     ctrl._suppressUnreferencedScanWarning = True
 
@@ -398,9 +398,13 @@ def test_run_scan_uses_shared_reference_preflight():
     ctrl.runScanAdvanced.assert_not_called()
 
 
-def test_external_scan_uses_shared_reference_preflight_before_widget_changes():
+def test_external_scan_uses_noninteractive_reference_preflight_before_widget_changes():
     ctrl = _bare_controller()
     workflowResults = []
+    refusal = (
+        'This scan uses unreferenced open-loop positioners: Stage (X). '
+        'Reference them before starting an external scan.'
+    )
     ctrl._commChannel = SimpleNamespace(
         scanWorkflow=SimpleNamespace(
             report_scan_request_result=lambda *args: workflowResults.append(args)
@@ -413,18 +417,20 @@ def test_external_scan_uses_shared_reference_preflight_before_widget_changes():
     ctrl._scanCompletionPublishing = False
     ctrl._isRunningFlag = False
     ctrl._scanCoordinator = None
-    ctrl._confirmUnreferencedScanIfNeeded = MagicMock(return_value=False)
+    ctrl._unreferencedScanStartRefusal = MagicMock(return_value=refusal)
+    ctrl._confirmUnreferencedScanIfNeeded = MagicMock(
+        side_effect=AssertionError('external scan must not open reference UI')
+    )
     ctrl.runScanAdvanced = MagicMock()
 
     ctrl.runScanExternal(True, False)
 
-    ctrl._confirmUnreferencedScanIfNeeded.assert_called_once_with()
+    ctrl._unreferencedScanStartRefusal.assert_called_once_with()
+    ctrl._confirmUnreferencedScanIfNeeded.assert_not_called()
     ctrl._widget.setScanMode.assert_not_called()
     ctrl._widget.setRepeatEnabled.assert_not_called()
     ctrl.runScanAdvanced.assert_not_called()
     assert workflowResults[0][1] is False
-    assert workflowResults[0][2] == (
-        'Scan cancelled because unreferenced positioners were not accepted.'
-    )
+    assert workflowResults[0][2] == refusal
 
 
