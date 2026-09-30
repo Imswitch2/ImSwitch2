@@ -9,11 +9,24 @@ reconstructor and processor does, so they land in the reconstruction list.
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 from qtpy import QtCore, QtWidgets
 
-from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import (
+    CancelToken, OperationCancelled, clearCurrentCancelToken, initLogger, interruptThread,
+    setCurrentCancelToken,
+)
+from imswitch.improcess.workflows.steps import Process
+
+
+#: Seconds after a cancel request before a running processor step is interrupted,
+#: and between repeated interruptions of one that catches it.
+_ESCALATE_AFTER_S = 1.5
+_REINJECT_AFTER_S = 1.0
+_CANCEL_CLEANUP_BUDGET_S = 5.0
 
 
 class _RunWorker(QtCore.QObject):
@@ -43,12 +56,34 @@ class _RunWorker(QtCore.QObject):
         #: pins the constructor keeps working.
         self.source_root = source_root
         self._cancelled = False
+        self._token = CancelToken(cleanupBudgetS=_CANCEL_CLEANUP_BUDGET_S)
+        self._ident = None
+        self._interruptible = False
 
     def cancel(self) -> None:
-        """Ask the run to stop at the next step boundary (thread-safe: a flag)."""
+        """Ask the run to stop: at the next step boundary, and inside a processor
+        step that calls ``checkpoint()`` (thread-safe: a flag and a token)."""
         self._cancelled = True
+        self._token.requestStop()
+
+    def interrupt(self) -> bool:
+        """Inject ``OperationCancelled`` into the run, while a *processor* step runs.
+
+        Only then: a processor is code that may never check, and what it makes is
+        discarded anyway. A save, a reconstruction or a source being opened is left
+        to finish, so no file is left half published and no plugin is torn down
+        mid-read; the run stops after it.
+        """
+        ident = self._ident
+        if ident is None or not self._interruptible:
+            return False
+        return interruptThread(ident)
 
     def _progress(self, index, total, step_id) -> None:
+        try:
+            self._interruptible = isinstance(self._workflow.step(str(step_id)), Process)
+        except KeyError:
+            self._interruptible = False      # "done", between steps
         self.sigProgress.emit(int(index), int(total), str(step_id))
 
     def _should_stop(self) -> bool:
@@ -59,6 +94,19 @@ class _RunWorker(QtCore.QObject):
 
     @QtCore.Slot()
     def run(self) -> None:
+        self._ident = threading.get_ident()
+        setCurrentCancelToken(self._token)
+        try:
+            self._runAll()
+        except OperationCancelled:
+            # An interruption that landed after the last run ended; Qt aborts on
+            # an exception escaping a slot, and the batch is over anyway.
+            self.sigDone.emit(0, 1)
+        finally:
+            self._interruptible = False
+            clearCurrentCancelToken()
+
+    def _runAll(self) -> None:
         from imswitch.improcess.workflows.runner import RunError, run
 
         finished = failed = 0
@@ -109,6 +157,9 @@ class WorkflowController(QtCore.QObject):
         self._registry_factory = registry_factory
         self._thread = None
         self._worker = None
+        self._cancelRequestedAt = None
+        self._lastInterruptAt = None
+        self._cancelTimer = None
         # Source handles behind published results: one entry per run,
         # ``(result uids it published, handles)``. Released when every one of
         # those results has left the reconstruction list, or at shutdown.
@@ -267,7 +318,38 @@ class WorkflowController(QtCore.QObject):
         if worker is not None:
             worker.cancel()
         thread.requestInterruption()
+        self._cancelRequestedAt = time.monotonic()
+        self._lastInterruptAt = None
+        self._cancelWatchdog().start()
         self._status("Cancelling the workflow at its next step…")
+
+    def _cancelWatchdog(self):
+        """The GUI-thread timer that interrupts a processor step that will not stop.
+
+        Created on first use. A step that never calls ``checkpoint()`` is asked
+        once (by the flag), then, after ``_ESCALATE_AFTER_S``, interrupted, and
+        again every ``_REINJECT_AFTER_S`` if the code caught it.
+        """
+        watchdog = self._cancelTimer
+        if watchdog is None:
+            watchdog = QtCore.QTimer(self)
+            watchdog.setInterval(100)
+            watchdog.timeout.connect(self._onCancelTick)
+            self._cancelTimer = watchdog
+        return watchdog
+
+    def _onCancelTick(self) -> None:
+        worker = self._worker
+        if worker is None or self._thread is None or self._cancelRequestedAt is None:
+            self._cancelWatchdog().stop()
+            return
+        now = time.monotonic()
+        if now - self._cancelRequestedAt < _ESCALATE_AFTER_S:
+            return
+        if self._lastInterruptAt is None or now - self._lastInterruptAt >= _REINJECT_AFTER_S:
+            self._lastInterruptAt = now
+            if worker.interrupt():
+                self._logger.warning("The running processor step did not stop when asked; interrupting it.")
 
     # -- run --------------------------------------------------------------------
 
@@ -662,7 +744,25 @@ class WorkflowController(QtCore.QObject):
         try:
             thread.requestInterruption()
             thread.quit()
-            if thread.isRunning() and not thread.wait(int(wait_ms)):
+            # A worker that can interrupt a processor step is waited for in slices,
+            # so that one that will not stop can be interrupted meanwhile (the GUI
+            # timer cannot fire while this blocks); a run that stops at once is
+            # waited for no longer than before. Any other worker gets the one
+            # bounded wait it always did.
+            deadline = time.monotonic() + int(wait_ms) / 1000
+            interrupt = getattr(worker, "interrupt", None)
+            remainingMs = int(wait_ms)
+            if callable(interrupt):
+                escalateAt = time.monotonic() + min(_ESCALATE_AFTER_S, int(wait_ms) / 2000)
+                lastInterrupt = None
+                while thread.isRunning() and time.monotonic() < deadline:
+                    now = time.monotonic()
+                    if now >= escalateAt and (lastInterrupt is None or now - lastInterrupt >= _REINJECT_AFTER_S):
+                        lastInterrupt = now
+                        interrupt()
+                    thread.wait(50)
+                remainingMs = max(0, int((deadline - time.monotonic()) * 1000))
+            if thread.isRunning() and not thread.wait(remainingMs):
                 # Keep both alive beyond this controller: destroying a
                 # running QThread takes the process down with it. Once is
                 # enough, however often shutdown is asked.
@@ -738,6 +838,9 @@ class WorkflowController(QtCore.QObject):
         return count
 
     def _clear(self) -> None:
+        if self._cancelTimer is not None:
+            self._cancelTimer.stop()
+        self._cancelRequestedAt = self._lastInterruptAt = None
         entry = (self._thread, self._worker)
         if entry in _ORPHANED_RUNS:
             _ORPHANED_RUNS.remove(entry)
