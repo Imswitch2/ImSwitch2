@@ -482,10 +482,9 @@ class PositionerWidget(Widget):
         defaultLabel = axisInfo.get('defaultTargetLabel')
         if defaultLabel:
             combo.addItem(defaultLabel, 'default')
-        combo.addItem(
-            axisInfo.get('displayedTargetLabel') or 'Displayed position',
-            'displayed',
-        )
+        displayedLabel = axisInfo.get('displayedTargetLabel')
+        if displayedLabel:
+            combo.addItem(displayedLabel, 'displayed')
         if currentMode is not None:
             index = combo.findData(currentMode)
             if index >= 0:

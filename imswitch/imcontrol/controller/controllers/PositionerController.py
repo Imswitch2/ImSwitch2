@@ -188,7 +188,10 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
 
         restoredCount = sum(
             1 for axisInfo in unreferenced
-            if axisInfo.get('displayedPositionRestored', False)
+            if (
+                axisInfo.get('displayedPositionRestored', False)
+                and axisInfo.get('displayedTargetLabel')
+            )
         )
         count = len(unreferenced)
         axisWord = 'axis is' if count == 1 else 'axes are'
@@ -394,15 +397,31 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         referenceAxes = []
         for positionerName, pManager, axis in self._iterReferenceAxes():
             displayedPositionRestored = self._isPositionRestored(pManager, axis)
+            displayedPosition = pManager.position[axis]
+            defaultPosition = self._getDefaultReferencePosition(pManager)
+            restoredMatchesDefault = (
+                displayedPositionRestored
+                and defaultPosition is not None
+                and self._referencePositionsEquivalent(
+                    displayedPosition, defaultPosition
+                )
+            )
             referenceAxes.append({
                 'positionerName': positionerName,
                 'axis': axis,
                 'referenced': self._isAxisReferenced(pManager, axis),
-                'defaultTargetLabel': self._formatDefaultReferenceTarget(pManager),
-                'displayedTargetLabel': self._formatDisplayedReferenceTarget(
+                'defaultTargetLabel': self._formatDefaultReferenceTarget(
                     pManager,
-                    pManager.position[axis],
-                    restored=displayedPositionRestored,
+                    matchesLastCommand=restoredMatchesDefault,
+                ),
+                'displayedTargetLabel': (
+                    None
+                    if restoredMatchesDefault
+                    else self._formatDisplayedReferenceTarget(
+                        pManager,
+                        displayedPosition,
+                        restored=displayedPositionRestored,
+                    )
                 ),
                 'displayedPositionRestored': displayedPositionRestored,
                 'preferredTargetMode': self._getPreferredReferenceTarget(
@@ -466,12 +485,17 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
             return self._formatDefaultReferenceTarget(pManager) or 'Default'
         return self._formatReferenceValues(pManager, position)
 
-    def _formatDefaultReferenceTarget(self, pManager):
+    def _formatDefaultReferenceTarget(
+        self, pManager, *, matchesLastCommand=False
+    ):
         position = self._getDefaultReferencePosition(pManager)
         if position is None:
             return None
         voltage = self._getDefaultReferenceVoltage(pManager, position)
-        return f'Default ({self._formatReferenceValues(pManager, position, voltage)})'
+        values = self._formatReferenceValues(pManager, position, voltage)
+        if matchesLastCommand:
+            return f'Default ({values}, matches last command)'
+        return f'Default ({values})'
 
     def _formatDisplayedReferenceTarget(self, pManager, position, *, restored=False):
         prefix = 'Persisted last command' if restored else 'Displayed position'

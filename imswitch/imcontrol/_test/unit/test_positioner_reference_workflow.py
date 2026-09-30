@@ -231,6 +231,24 @@ def test_startup_reference_dialog_reports_unreferenced_and_restored_axes_without
     assert plain.referenceCalls == []
 
 
+def test_startup_reference_dialog_does_not_call_out_persisted_value_matching_default():
+    manager = _Positioner(
+        position={'X': 0.0},
+        referenced={'X': False},
+        defaultReferenceVoltage=0.0,
+        restoredAxes=('X',),
+    )
+    widget = MagicMock()
+    ctrl = _controller([('Stage', manager)], widget)
+
+    assert ctrl.openStartupReferenceDialogIfNeeded() is True
+
+    header = widget.showReferenceDialog.call_args.kwargs['startupHeader']
+    assert '1 open-loop axis is unreferenced.' in header
+    assert 'restored from persisted last commands' not in header
+    assert 'Do you want to reference it now?' in header
+
+
 def test_startup_reference_dialog_is_skipped_when_all_axes_are_referenced():
     manager = _Positioner(referenced={'X': True})
     widget = MagicMock()
@@ -287,7 +305,7 @@ def test_restored_position_is_labeled_and_preferred_when_it_differs_from_default
     assert status['preferredTargetMode'] == 'displayed'
 
 
-def test_restored_position_equal_to_default_still_prefers_default():
+def test_restored_position_equal_to_default_collapses_duplicate_target():
     manager = _Positioner(
         position={'X': 50.0},
         defaultReferenceVoltage=5.0,
@@ -297,7 +315,11 @@ def test_restored_position_equal_to_default_still_prefers_default():
 
     status = ctrl._getReferenceAxesStatus()[0]
 
-    assert status['displayedTargetLabel'] == 'Persisted last command (50um, 5V)'
+    assert status['defaultTargetLabel'] == (
+        'Default (50um, 5V, matches last command)'
+    )
+    assert status['displayedTargetLabel'] is None
+    assert status['displayedPositionRestored'] is True
     assert status['preferredTargetMode'] == 'default'
 
 
@@ -314,6 +336,23 @@ def test_reference_target_combo_hides_missing_default(qtbot):
     assert combo.count() == 1
     assert combo.itemData(0) == 'displayed'
     assert combo.itemText(0) == 'Displayed position (12.5um, 1.25V)'
+
+
+def test_reference_target_combo_hides_duplicate_persisted_target(qtbot):
+    widget = PositionerWidget({})
+    qtbot.addWidget(widget)
+    combo = QtWidgets.QComboBox()
+    qtbot.addWidget(combo)
+
+    widget._populateReferenceTargetCombo(combo, {
+        'defaultTargetLabel': 'Default (0um, 0V, matches last command)',
+        'displayedTargetLabel': None,
+        'preferredTargetMode': 'default',
+    })
+
+    assert combo.count() == 1
+    assert combo.itemData(0) == 'default'
+    assert combo.itemText(0) == 'Default (0um, 0V, matches last command)'
 
 
 def test_reference_target_combo_uses_preferred_mode_only_on_initial_population(qtbot):
