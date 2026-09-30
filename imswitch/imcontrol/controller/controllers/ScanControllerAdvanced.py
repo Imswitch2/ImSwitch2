@@ -145,7 +145,13 @@ class ScanControllerAdvanced(SuperScanController):
         # only remaining bound is the NI-DAQ task's generic +-10 V range, so
         # e.g. a Z scan centered at 0 um on a 0..10 V piezo would reach the
         # hardware.
-        if hasattr(scan_des, "checkSignalComp"):
+        if hasattr(scan_des, "signalCompatibilityRefusal"):
+            refusal = scan_des.signalCompatibilityRefusal(
+                scanParameters, self._setupInfo, scanInfoDict
+            )
+            if refusal:
+                raise ScanDesignRefusedError(refusal)
+        elif hasattr(scan_des, "checkSignalComp"):
             if not scan_des.checkSignalComp(
                 scanParameters, self._setupInfo, scanInfoDict
             ):
@@ -352,20 +358,21 @@ class ScanControllerAdvanced(SuperScanController):
                 include_ttl = False
 
             ttlSignalsDict = None
-            if include_ttl:
-                try:
-                    signalDict, scanInfoDict = self._make_full_scan(
+            with self._positionSnapshotForScanDesign():
+                if include_ttl:
+                    try:
+                        signalDict, scanInfoDict = self._make_full_scan(
+                            self._analogParameterDict, self._digitalParameterDict
+                        )
+                    except ScanDesignRefusedError as error:
+                        self._logger.warning(f"Nothing to plot: {error}")
+                        return
+                    scanSignalsDict = signalDict.get("scanSignalsDict", {})
+                    ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
+                else:
+                    scanSignalsDict, _, scanInfoDict = self._make_scan_only(
                         self._analogParameterDict, self._digitalParameterDict
                     )
-                except ScanDesignRefusedError as error:
-                    self._logger.warning(f"Nothing to plot: {error}")
-                    return
-                scanSignalsDict = signalDict.get("scanSignalsDict", {})
-                ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
-            else:
-                scanSignalsDict, _, scanInfoDict = self._make_scan_only(
-                    self._analogParameterDict, self._digitalParameterDict
-                )
             if not scanSignalsDict:
                 self._logger.warning("No scan curves to plot")
                 return
@@ -604,10 +611,11 @@ class ScanControllerAdvanced(SuperScanController):
     def getAcquisitionLayouts(self, detectorNames):
         """Return line-step-aware layouts from the generated scan signals."""
         self.getParameters()
-        signalDict, scanInfo = self._make_full_scan(
-            self._analogParameterDict,
-            self._digitalParameterDict,
-        )
+        with self._positionSnapshotForScanDesign():
+            signalDict, scanInfo = self._make_full_scan(
+                self._analogParameterDict,
+                self._digitalParameterDict,
+            )
         if signalDict is None or scanInfo is None:
             raise RuntimeError(
                 "Advanced scan signal generation did not produce layout metadata"
@@ -718,15 +726,7 @@ class ScanControllerAdvanced(SuperScanController):
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
-            # Set non-scanned positioners to center (same behavior as your PointScan controller)
-            for index, positionerName in enumerate(self._analogParameterDict["target_device"]):
-                if positionerName not in self._positionersScan:
-                    try:
-                        position = self._analogParameterDict["axis_centerpos"][index]
-                        self._master.positionersManager[positionerName].setPosition(position, 0)
-                    except Exception:
-                        self._logger.warning("Failed to set %s to center:\n%s",
-                                             positionerName, traceback.format_exc())
+            self._setNonScanPositionersToCenter()
 
             self._armScanIteration(self.signalDict, self.scanInfoDict)
 
@@ -736,29 +736,29 @@ class ScanControllerAdvanced(SuperScanController):
 
     def _buildScanSignals(self):
         self.getParameters()
-
-        # Only rebuild the (expensive) scan signal if the parameters
-        # actually changed since the last build. Repeated scan frames
-        # reuse identical parameters, so this avoids regenerating a
-        # byte-identical galvo/TTL signal — and the per-frame stall it
-        # causes — on every repeat. Live parameter edits still trigger
-        # a rebuild because the snapshot then differs.
-        paramsSnapshot = (
-            copy.deepcopy(self._analogParameterDict),
-            copy.deepcopy(self._digitalParameterDict),
-        )
-        if (
-            self.signalDict is not None
-            and self.scanInfoDict is not None
-            and paramsSnapshot == self._lastBuiltParams
-        ):
-            return self.signalDict, self.scanInfoDict
-        # TTL cycle (linestep_enable) is the sole authority for per-laser emission
-        signalDict, scanInfoDict = self._make_full_scan(
-            self._analogParameterDict, self._digitalParameterDict
-        )
-        self._lastBuiltParams = paramsSnapshot
-        return signalDict, scanInfoDict
+        with self._positionSnapshotForScanDesign():
+            # Only rebuild the (expensive) scan signal if the parameters
+            # actually changed since the last build. Repeated scan frames
+            # reuse identical parameters, so this avoids regenerating a
+            # byte-identical galvo/TTL signal — and the per-frame stall it
+            # causes — on every repeat. Live parameter edits still trigger
+            # a rebuild because the snapshot then differs.
+            paramsSnapshot = (
+                copy.deepcopy(self._analogParameterDict),
+                copy.deepcopy(self._digitalParameterDict),
+            )
+            if (
+                self.signalDict is not None
+                and self.scanInfoDict is not None
+                and paramsSnapshot == self._lastBuiltParams
+            ):
+                return self.signalDict, self.scanInfoDict
+            # TTL cycle (linestep_enable) is the sole authority for per-laser emission
+            signalDict, scanInfoDict = self._make_full_scan(
+                self._analogParameterDict, self._digitalParameterDict
+            )
+            self._lastBuiltParams = paramsSnapshot
+            return signalDict, scanInfoDict
 
     def scanDone(self):
         """Called by the system when nidaq finishes."""

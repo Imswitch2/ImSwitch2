@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from contextlib import nullcontext
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 import numpy as np
@@ -189,10 +190,17 @@ def build_controller_point_scan_layouts(
 ) -> dict[str, AcquisitionLayout]:
     """Generate signals and adapt an ordinary point-scan controller."""
     controller.getParameters()
-    result = controller._master.scanManager.makeFullScan(
-        controller._analogParameterDict,
-        controller._digitalParameterDict,
+    snapshotFactory = getattr(
+        controller, '_positionSnapshotForScanDesign', None
     )
+    snapshotContext = (
+        snapshotFactory() if callable(snapshotFactory) else nullcontext()
+    )
+    with snapshotContext:
+        result = controller._master.scanManager.makeFullScan(
+            controller._analogParameterDict,
+            controller._digitalParameterDict,
+        )
     if not result or len(result) != 2 or result[1] is None:
         raise RuntimeError("Scan signal generation did not produce ScanInfoContract metadata")
     signal_dict, scan_info = result
