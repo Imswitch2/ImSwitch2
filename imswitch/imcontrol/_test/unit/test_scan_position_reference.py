@@ -234,6 +234,7 @@ def test_advanced_plot_design_receives_position_snapshot():
         'scan_dim_target_device': ['Stage'],
     }
     ctrl._digitalParameterDict = {}
+    ctrl.settingParameters = False
     ctrl.getParameters = MagicMock()
     ctrl._capturePositionersBeforeScan = lambda: ctrl._analogParameterDict.__setitem__(
         'axis_position_before_scan', [[9.0]]
