@@ -76,6 +76,20 @@ def unsupported_memory_save_mode(saveMode, saveFormat):
     )
 
 
+def memory_save_mode_problem(widget):
+    """Why the widget's selected save mode and format cannot be recorded, or ``None``.
+
+    A widget that cannot answer (a bare test double, or none at all) has no
+    selection to check and is not refused.
+    """
+    try:
+        saveMode = SaveMode(widget.getRecSaveMode())
+        saveFormat = SaveFormat(widget.getSaveFormat())
+    except Exception:
+        return None
+    return unsupported_memory_save_mode(saveMode, saveFormat)
+
+
 class RecordingController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to RecordingWidget. """
 
@@ -330,10 +344,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self._finalizingRecCycle = False
             return
         if checked and not self.recording:
-            problem = unsupported_memory_save_mode(
-                SaveMode(self._widget.getRecSaveMode()),
-                SaveFormat(self._widget.getSaveFormat()),
-            )
+            problem = memory_save_mode_problem(getattr(self, '_widget', None))
             if problem is not None:
                 # Refused before anything is armed; keep the button honest
                 # without re-entering the stop path.
