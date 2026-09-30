@@ -616,6 +616,21 @@ class VispyBaseVisual(QtCore.QObject):
     def hide(self):
         self.setVisible(False)
 
+    def _showOnlyInTwoDims(self):
+        """Hide the nodes while the viewer displays three dims; True when it shows two.
+
+        These overlays are flat scene nodes with nothing to say in 3D. They
+        used to raise from the ``ndisplay`` callback instead, which aborted
+        the callbacks queued after them -- napari's own layer update among
+        them -- so switching the viewer to 3D with a grid, crosshair or ROI
+        showing left it half-switched. Now the overlay steps aside and comes
+        back when the viewer returns to 2D.
+        """
+        flat = len(self._viewer.dims.displayed) == 2
+        for node in self._nodes:
+            node.visible = flat and self._visible
+        return flat
+
     def _get_center_line_p1(self, pos, line_length, vertical):
         if vertical:
             return [pos[0], pos[1] - line_length / 2, 0]
@@ -772,10 +787,8 @@ class VispyROIVisual(VispyBaseVisual):
         if not self._attached or not self._visible:
             return
 
-        # Actual number of displayed dims
-        ndisplay = len(self._viewer.dims.displayed)
-        if ndisplay != 2:
-            raise ValueError('ndisplay not supported')
+        if not self._showOnlyInTwoDims():
+            return
 
         self.rect_node._subvisuals[0].set_data(self._rect_line_data2D, self._rect_color)
         self.handle_node._subvisuals[0].set_data(self._handle_line_data2D, self._handle_color)
@@ -946,10 +959,8 @@ class VispyLineVisual(VispyBaseVisual):
         if not self._attached or not self._visible:
             return
 
-        # Actual number of displayed dims
-        ndisplay = len(self._viewer.dims.displayed)
-        if ndisplay != 2:
-            raise ValueError('ndisplay not supported')
+        if not self._showOnlyInTwoDims():
+            return
 
         self.node._subvisuals[0].set_data(self._line_data2D, self._color)
 
@@ -1078,10 +1089,8 @@ class VispyGridVisual(VispyBaseVisual):
         if not self._attached or not self._visible or self._line_data2D is None:
             return
 
-        # Actual number of displayed dims
-        ndisplay = len(self._viewer.dims.displayed)
-        if ndisplay != 2:
-            raise ValueError('ndisplay not supported')
+        if not self._showOnlyInTwoDims():
+            return
 
         self.node._subvisuals[0].set_data(self._line_data2D, self._color)
 
@@ -1144,10 +1153,8 @@ class VispyCrosshairVisual(VispyBaseVisual):
         if not self._attached or not self._visible or self._line_data2D is None:
             return
 
-        # Actual number of displayed dims
-        ndisplay = len(self._viewer.dims.displayed)
-        if ndisplay != 2:
-            raise ValueError('ndisplay not supported')
+        if not self._showOnlyInTwoDims():
+            return
 
         self.node._subvisuals[0].set_data(self._line_data2D, self._color)
 
@@ -1231,10 +1238,8 @@ class VispyScatterVisual(VispyBaseVisual):
         if not self._attached or not self._visible:
             return
 
-        # Actual number of displayed dims
-        ndisplay = len(self._viewer.dims.displayed)
-        if ndisplay != 2:
-            raise ValueError('ndisplay not supported')
+        if not self._showOnlyInTwoDims():
+            return
 
         self.node.set_data(self._markers_data, edge_color=self._color, face_color=self._color,
                            symbol=self._symbol)

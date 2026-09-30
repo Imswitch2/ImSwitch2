@@ -6,6 +6,7 @@ whose viewer records what a napari viewer would be asked to do, and the
 ``ImageController`` relay runs against a mocked widget.
 """
 
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -36,10 +37,16 @@ class _FakeLayer:
         object.__setattr__(self, key, value)
 
 
+class _FakeLayerList(list):
+    def move(self, source, destination):
+        self.insert(destination, self.pop(source))
+
+
 class _FakeViewer:
     def __init__(self):
-        self.layers = []
+        self.layers = _FakeLayerList()
         self.added = []
+        self.dims = SimpleNamespace(ndisplay=2)
 
     def _add(self, layerType):
         def add(data, **kwargs):
@@ -59,15 +66,23 @@ class _WidgetStub:
     setResultLayers = ImageWidget.setResultLayers
     removeResultLayers = ImageWidget.removeResultLayers
     resultLayerNames = ImageWidget.resultLayerNames
+    _on_ndisplay_changed = ImageWidget._on_ndisplay_changed
+    _padResultLayersToNdisplay = ImageWidget._padResultLayersToNdisplay
+    _carriedLayerProperties = staticmethod(ImageWidget._carriedLayerProperties)
+    _padToNdisplay = staticmethod(ImageWidget._padToNdisplay)
+    _ndisplay = ImageWidget._ndisplay
     _canUpdateInPlace = staticmethod(ImageWidget._canUpdateInPlace)
     _addResultLayer = ImageWidget._addResultLayer
     _removeResultLayer = ImageWidget._removeResultLayer
     _fitScale = staticmethod(ImageWidget._fitScale)
     _RESULT_LAYER_ADDERS = ImageWidget._RESULT_LAYER_ADDERS
+    _PADDED_RESULT_LAYER_TYPES = ImageWidget._PADDED_RESULT_LAYER_TYPES
 
     def __init__(self):
         self.napariViewer = _FakeViewer()
+        self.imgLayers = {}
         self.resultLayers = {}
+        self.resultLayerTypes = {}
 
 
 def _image(value, shape=(4, 5)):
@@ -172,6 +187,66 @@ def test_points_layers_update_in_place_when_the_dimensionality_matches():
 
     widget.setResultLayers('job', [(np.array([[5.0, 6.0, 7.0]]), {'name': 'locs'}, 'points')])
     assert widget.napariViewer.layers[0] is not layer
+
+
+def test_entering_3d_mode_pads_a_flat_result_layer_in_place_in_the_list():
+    widget = _WidgetStub()
+    viewer = widget.napariViewer
+    viewer.add_image(np.zeros((2, 2)), name='live')       # another layer below ours
+    widget.setResultLayers(
+        'job', [(_image(1), {'name': 'Recon: a', 'scale': (0.1, 0.2)}, 'image')]
+    )
+    old = widget.resultLayers['job']['Recon: a']
+    old.visible = False
+    old.contrast_limits = (3.0, 9.0)
+    old.colormap = SimpleNamespace(name='magma')
+
+    viewer.dims.ndisplay = 3
+    widget._on_ndisplay_changed()
+
+    new = widget.resultLayers['job']['Recon: a']
+    assert new is not old and old not in viewer.layers
+    assert new.data.shape == (1, 4, 5)
+    assert new.scale == (0.1, 0.1, 0.2)                    # padded with the smallest scale
+    assert viewer.layers.index(new) == 1                    # kept its place in the list
+    assert new.kwargs['visible'] is False
+    assert new.kwargs['contrast_limits'] == (3.0, 9.0)
+    assert new.kwargs['colormap'] == 'magma'
+    assert widget.resultLayerTypes['job'] == {'Recon: a': 'image'}
+
+
+def test_updates_arriving_in_3d_mode_are_padded_and_keep_updating_in_place():
+    widget = _WidgetStub()
+    widget.napariViewer.dims.ndisplay = 3
+
+    widget.setResultLayers('job', [(_image(1), {'name': 'a', 'scale': (0.1, 0.2)}, 'image')])
+    layer = widget.napariViewer.layers[0]
+    assert layer.data.shape == (1, 4, 5)
+    assert layer.scale == (0.1, 0.1, 0.2)
+
+    created = widget.setResultLayers('job', [(_image(2), {'name': 'a', 'scale': (0.1, 0.2)}, 'image')])
+
+    assert created is False
+    assert widget.napariViewer.layers == [layer]
+    assert layer.data.shape == (1, 4, 5)
+    assert float(layer.data[0, 0, 0]) == 2.0
+
+
+def test_3d_mode_leaves_points_layers_and_deep_enough_layers_alone():
+    widget = _WidgetStub()
+    viewer = widget.napariViewer
+    coords = np.array([[1.0, 2.0], [3.0, 4.0]])
+    widget.setResultLayers('job', [
+        (coords, {'name': 'locs'}, 'points'),
+        (np.zeros((3, 4, 5)), {'name': 'vol'}, 'image'),
+    ])
+    before = list(viewer.layers)
+
+    viewer.dims.ndisplay = 3
+    widget._on_ndisplay_changed()
+
+    assert list(viewer.layers) == before
+    assert len(viewer.added) == 2
 
 
 def _controller_with_mock_widget():
