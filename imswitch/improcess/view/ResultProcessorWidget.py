@@ -5,6 +5,7 @@ import weakref
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.view.ResultInputList import ResultInputListWidget
+from imswitch.improcess.view.runstate import RunState
 
 #: "Apply to" scopes offered for single-input processors.
 SCOPE_CURRENT = "current"
@@ -37,8 +38,6 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     def __init__(self, processor, parent=None):
         super().__init__(parent)
         self.processor = processor
-        self._running = False
-        self._runAllowed = False
         self._currentResult = None
         self._allResults = []
         self._selectedResults = []
@@ -51,12 +50,6 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         self.statusLabel.setWordWrap(True)
         self.runButton = QtWidgets.QPushButton(f"Run {processor.name}")
         self.runButton.setEnabled(False)
-        self.cancelButton = QtWidgets.QPushButton("Cancel")
-        self.cancelButton.setToolTip(
-            "Stop the run. Nothing is published; a processor that cannot be asked "
-            "politely is interrupted after a moment."
-        )
-        self.cancelButton.hide()
 
         self.paramWidget = processor.make_param_widget(self)
         # The widget exists now, on the GUI thread: the one safe place to
@@ -134,12 +127,12 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         layout.addWidget(self.statusLabel)
         layout.addWidget(self.runButton)
-        layout.addWidget(self.cancelButton)
+        self._runState = RunState(self.runButton, layout, self.sigCancelRequested.emit)
+        self.cancelButton = self._runState.cancelButton
         layout.addStretch()
         self.setLayout(layout)
 
         self.runButton.clicked.connect(self._run)
-        self.cancelButton.clicked.connect(self._cancel)
 
     # -- arity ------------------------------------------------------------
 
@@ -370,29 +363,14 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     # -- a run in progress --------------------------------------------------------
 
     def isRunning(self) -> bool:
-        return self._running
+        return self._runState.running
 
     def setRunning(self, running: bool) -> None:
-        """Show that a run is going (Run off, Cancel on) or that it ended.
-
-        The inputs can still change while it runs, and each change recomputes
-        whether Run may be pressed; that is remembered here and applied when the
-        run ends, never while it is going.
-        """
-        self._running = bool(running)
-        self.cancelButton.setVisible(self._running)
-        self.cancelButton.setEnabled(self._running)
-        self.cancelButton.setText("Cancel")
-        self._setRunEnabled(self._runAllowed)
+        """Show that a run is going (Run off, Cancel on) or that it ended."""
+        self._runState.setRunning(running)
 
     def _setRunEnabled(self, allowed: bool) -> None:
-        self._runAllowed = bool(allowed)
-        self.runButton.setEnabled(self._runAllowed and not self._running)
-
-    def _cancel(self) -> None:
-        self.cancelButton.setEnabled(False)
-        self.cancelButton.setText("Cancelling…")
-        self.sigCancelRequested.emit()
+        self._runState.setRunEnabled(allowed)
 
     # -- internals --------------------------------------------------------
 
@@ -424,7 +402,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
             self.statusLabel.setText(reason)
 
     def _run(self) -> None:
-        if self._running:
+        if self._runState.running:
             return
         inputs = self.selectedInputs()
         if not inputs:
