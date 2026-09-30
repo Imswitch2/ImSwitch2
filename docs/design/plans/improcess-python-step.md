@@ -2,7 +2,7 @@
 
 Date: 2026-09-30
 
-Status: Proposed (feasibility checked with a running prototype; nothing implemented)
+Status: Proposed (feasibility checked with a running prototype; nothing implemented). Implementation brief for an agent: `docs/agent_tasks/improcess_python_step.md`.
 
 ## Summary
 
