@@ -29,6 +29,7 @@ _WIDGET_MODULES = {
     "LightSheetMulticolorWidget": "LightSheetMulticolorWidget",
     "LeicaStandWidget": "LeicaStandWidget",
     "LineProfileWidget": "LineProfileWidget",
+    "LiveReconWidget": "LiveReconWidget",
     "MotCorrWidget": "MotCorrWidget",
     "PositionerWidget": "PositionerWidget",
     "RecordingWidget": "RecordingWidget",

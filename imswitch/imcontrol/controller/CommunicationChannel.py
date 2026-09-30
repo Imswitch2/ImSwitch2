@@ -97,6 +97,10 @@ class CommunicationChannel(SignalInterface):
     sigRemoveItemFromVb = Signal(object)  # (item)
     sigSetVisibleLayers = Signal(object)  # (detectorNameTuple) — Snouty setup switching
     sigSetConfig = Signal(str)  # (configName) — Snouty setup switching
+    # Result layers a controller keeps in the main viewer, updated in place:
+    # (jobName, [(data, layerKwargs, layerType), ...]) as napari LayerData.
+    sigResultLayersUpdated = Signal(str, object)
+    sigResultLayersRemoved = Signal(str)  # (jobName)
 
     # Recording events.
     sigRecordingStarted = Signal()

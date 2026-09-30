@@ -93,6 +93,9 @@ class ViewSetupInfo(SetupInfo):
     - ``Positioner`` (positioners widget)
     - ``Scan`` (scan widget; requires ``scan`` field to be defined)
     - ``BeadRec`` (bead reconstruction widget)
+    - ``LiveRecon`` (live reconstruction widget: runs an ImProcess
+      reconstructor on the acquisition stream; the reconstructors offered
+      come from the ``processing`` block)
     - ``AlignAverage`` (axial alignment tool widget)
     - ``AlignXY`` (rotation alignment tool widget)
     - ``AlignmentLine`` (line alignment tool widget)

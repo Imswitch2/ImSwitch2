@@ -71,6 +71,19 @@
     ]
   },
   {
+    "name": "sigResultLayersUpdated",
+    "args": [
+      "str",
+      "object"
+    ]
+  },
+  {
+    "name": "sigResultLayersRemoved",
+    "args": [
+      "str"
+    ]
+  },
+  {
     "name": "sigRecordingStarted",
     "args": []
   },

@@ -93,6 +93,7 @@
         "Positioner",
         "Scan",
         "BeadRec",
+    "LiveRecon",
         "FFT"
     ]
 }

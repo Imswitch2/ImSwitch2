@@ -30,6 +30,7 @@ _CONTROLLER_MODULES = {
     "LightSheetMulticolorController": "LightSheetMulticolorController",
     "LeicaStandController": "LeicaStandController",
     "LineProfileController": "LineProfileController",
+    "LiveReconController": "LiveReconController",
     "MotCorrController": "MotCorrController",
     "PositionerController": "PositionerController",
     "RecordingController": "RecordingController",
