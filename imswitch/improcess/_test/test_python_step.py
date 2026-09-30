@@ -947,3 +947,115 @@ def test_the_panel_leaves_everything_alone_when_a_dialog_is_cancelled_or_fails(q
     widget.loadButton.click()
     assert "Could not load snippet 'gone'" in widget.outputPane.toPlainText()
     assert widget.get_values() == {"code": "mine = 1\n", "ports": "a"}
+
+
+# -- the notice before a file's Python code runs ------------------------------
+
+class _Window:
+    """A real QWidget standing in for the main view, recording status messages."""
+
+    @staticmethod
+    def make():
+        from qtpy import QtWidgets
+
+        class Window(QtWidgets.QWidget):
+            def __init__(self):
+                super().__init__()
+                self.messages = []
+
+            def showStatusMessage(self, message, timeout_ms=6000):
+                self.messages.append(message)
+
+        return Window()
+
+
+def _workflow_controller(view, produced=None):
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.WorkflowController import WorkflowController
+
+    comm = SimpleNamespace(
+        sigResultProduced=SimpleNamespace(emit=lambda result, name: (produced or []).append(result)),
+        getAllResults=lambda: [],
+    )
+    return WorkflowController(
+        comm, view, SimpleNamespace(getActiveResult=lambda: None),
+        registry_factory=lambda: bootstrap_registry(user_plugins=False),
+    )
+
+
+def _ask_recorder(monkeypatch, answer):
+    from imswitch.imcommon.view import guitools
+
+    asked = []
+
+    def ask(widget, title, question):
+        asked.append((title, question))
+        return answer
+
+    monkeypatch.setattr(guitools, "askYesNoQuestion", ask)
+    return asked
+
+
+def test_a_workflow_file_with_python_steps_asks_first_and_stops_when_refused(qapp, registry, tmp_path, monkeypatch):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    path = _interleave_workflow(raw).save(tmp_path / "interleave.yaml")
+    view = _Window.make()
+    controller = _workflow_controller(view)
+    asked = _ask_recorder(monkeypatch, False)
+
+    assert controller.runWorkflow(str(path), out_dir=str(tmp_path / "out"), overwrite=True) is False
+    assert controller._thread is None and not (tmp_path / "out").exists()     # nothing started
+    assert len(asked) == 1 and asked[0][0] == "Run Python code?"
+    assert "interleave.yaml" in asked[0][1] and "split" in asked[0][1]
+    assert view.messages and "Not run" in view.messages[-1] and "Python code" in view.messages[-1]
+    assert "split" in view.messages[-1]
+
+
+def test_a_confirmed_python_workflow_runs_and_publishes(qapp, registry, tmp_path, monkeypatch):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    path = _interleave_workflow(raw).save(tmp_path / "interleave.yaml")
+    controller = _workflow_controller(_Window.make())
+    asked = _ask_recorder(monkeypatch, True)
+
+    assert controller.runWorkflow(str(path), out_dir=str(tmp_path / "out"), overwrite=True) is True
+    assert len(asked) == 1
+    assert controller.cancelRun(10000) is True
+
+
+def test_the_notice_is_asked_once_for_a_batch_over_files(qapp, registry, tmp_path, monkeypatch):
+    workflow = Workflow("interleave", [
+        Source("raw"),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("split", "python", {"code": INTERLEAVE_AX0, "ports": "a, b"}, inputs=["rec"]),
+    ])
+    path = workflow.save(tmp_path / "interleave.yaml")
+    files = [str(_planes_h5(tmp_path / f"scan{i}.h5")) for i in range(2)]
+    controller = _workflow_controller(_Window.make())
+    asked = _ask_recorder(monkeypatch, True)
+
+    assert controller.runWorkflowOverFiles(str(path), files=files, out_dir=str(tmp_path / "out"), overwrite=True) is True
+    assert len(asked) == 1
+    assert controller.cancelRun(10000) is True
+
+
+def test_no_notice_without_python_steps_without_a_file_or_without_a_window(qapp, registry, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    raw = _planes_h5(tmp_path / "scan.h5")
+    asked = _ask_recorder(monkeypatch, False)
+
+    plain = Workflow("plain", [Source("raw", path=str(raw)), Reconstruct("rec", "view-only", inputs=["raw"])])
+    plain_path = plain.save(tmp_path / "plain.yaml")
+    controller = _workflow_controller(_Window.make())
+    assert controller.runWorkflow(str(plain_path), out_dir=str(tmp_path / "out1"), overwrite=True) is True
+    assert controller.cancelRun(10000) is True
+
+    # the editor's own workflow (no file) shows its code itself, so it is not asked
+    workflow = _interleave_workflow(raw)
+    assert controller._confirmPythonSteps(workflow, None) is True
+
+    # no window to ask in: a stand-in view, as headless callers and tests use
+    headless = _workflow_controller(SimpleNamespace(showStatusMessage=lambda m, timeout_ms=6000: None))
+    assert headless._confirmPythonSteps(workflow, str(tmp_path / "interleave.yaml")) is True
+    assert asked == []

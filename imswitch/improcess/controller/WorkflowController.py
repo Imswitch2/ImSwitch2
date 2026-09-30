@@ -310,6 +310,40 @@ class WorkflowController(QtCore.QObject):
             return None
         return answer == QtWidgets.QMessageBox.Yes
 
+    def _confirmPythonSteps(self, workflow, path) -> bool:
+        """Whether a workflow *file* may run, when it carries Python code.
+
+        A Python step runs its code in-process with full access, like a drop-in
+        plugin, so a file from someone else can run their code. Asked once per
+        run, naming the steps; the editor, which shows every step's code before
+        its own Run, hands over a workflow with no ``path`` and is not asked.
+        Without a window to ask in (headless, or a test's stand-in view) there
+        is nobody to ask, and the run goes ahead.
+        """
+        if not path or not isinstance(self._mainView, QtWidgets.QWidget):
+            return True
+        from imswitch.improcess.workflows.steps import Process
+
+        python_steps = [
+            step.id for step in workflow.steps
+            if isinstance(step, Process) and step.processor == "python"
+        ]
+        if not python_steps:
+            return True
+        from imswitch.imcommon.view import guitools
+
+        name = Path(path).name
+        listed = ", ".join(python_steps)
+        if guitools.askYesNoQuestion(
+            self._mainView, "Run Python code?",
+            f"{name} contains Python code (in the step{'s' if len(python_steps) > 1 else ''} "
+            f"{listed}). It runs on this computer with the same access as ImSwitch itself.\n\n"
+            "Only run workflow files you trust. Run it?",
+        ):
+            return True
+        self._status(f"Not run: {name} contains Python code (in {listed}) and was not confirmed.")
+        return False
+
     def runWorkflow(self, path=None, out_dir=None, overwrite=None):
         """Run a workflow file on a worker thread; results are published."""
         return self._runBatch(path, [None], out_dir=out_dir, overwrite=overwrite)
@@ -432,6 +466,8 @@ class WorkflowController(QtCore.QObject):
         if issues:
             self._status(f"Workflow invalid: {issues[0]}")
             self._logger.warning("Workflow invalid:\n  %s", "\n  ".join(str(i) for i in issues))
+            return False
+        if not self._confirmPythonSteps(workflow, path):
             return False
         if out_dir is None:
             out_dir = QtWidgets.QFileDialog.getExistingDirectory(self._mainView, "Output directory for saves")
