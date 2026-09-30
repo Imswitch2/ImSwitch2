@@ -77,6 +77,17 @@ There are three ways to open data:
 With the **Time lapse** reconstructor active, opening any one file or group
 of a time lapse opens the whole lapse as one stack (see `Time lapses`_).
 
+A recording ImControl saves with **Save in memory for reconstruction** (or
+**Save on disk and keep in memory**; HDF5 only) reaches ImProcess the moment
+it is finished.  The **In-memory recordings** setting in the Multidata dock
+decides what happens then: *List only* adds a row marked ``(MEMORY)`` to
+open by hand, *Open as current data* opens it at once, and *Open and
+reconstruct* opens it and runs the active reconstructor on it, so the result
+is in the results list before you look.  The setting is kept per computer in
+``improcess_options.json``.  A recording kept in memory only is saved to its
+planned path with the dock's *Save* action; until then a result made from it
+records a source that was not persisted.
+
 When a recording is opened, ImProcess works out its **acquisition layout**
 — which frame belongs to which scan position, time point or condition.  A
 user override stored beside the file as ``<file>.imswitch-layout.json``

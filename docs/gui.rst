@@ -1434,6 +1434,47 @@ next to it (Gaussian, donut, exponential, sine, …) to the displayed image;
    :width: 600px
 
 
+Live reconstruction tool
+------------------------
+
+Runs an ImProcess reconstructor on the frames as they are acquired, with no
+recording in between, and shows the result as it forms.  The
+**Reconstructor** picker offers the reconstructors named in the setup's
+``processing`` block (**Load…** adds any other one ImProcess knows), and the
+reconstructor's own parameters appear below it, exactly as in ImProcess.
+Pick the **Detector** to reconstruct from and a **Mode**:
+
+* **During scans** reconstructs each scan while it runs.  The tool arms the
+  detector and its frame queue when the scan is about to start, so no frame
+  is missed, reads the scan's geometry and acquisition layout from the scan
+  controller, and describes the stream with the same metadata a recording
+  would carry.  A reconstructor that streams (MoNaLISA fast Gauss, the SMLM
+  localizer, View only) updates several times per scan; any other
+  reconstructs once per complete scan stack, as soon as the stack is in.
+* **Free-running** reconstructs the detector stream in chunks of **Frames
+  per update** frames until **Live** is switched off, for reconstructors
+  that do not need whole scan stacks.
+
+**Use displayed orientation** hands the reconstructor the frames as the
+viewer shows them (the detector's display rotation and flips applied)
+instead of as a recording stores them.  **Show in** puts the result in the
+main viewer as a layer named ``Recon: …`` that is updated in place (only the
+latest plane, unless **Full N-D layer** is ticked, in which case napari adds
+sliders for the other axes), or in the panel's own image view.  **Keep
+result after run** leaves the layer in the viewer once the run has ended;
+**Clear** removes it.
+
+Tick **Live** to start.  The status line reports frames received, stacks
+reconstructed and, should the reconstruction fall behind the acquisition,
+frames lost: a live preview drops frames rather than stopping the
+acquisition, and a run that lost frames is reported as incomplete.  A
+recording running at the same time is unaffected; it reads its own frame
+queue.  Recording with **Save in memory for reconstruction** alongside is
+the way to keep the full data: the live tool shows the reconstruction as it
+forms, and the finished recording reaches ImProcess the moment it ends (see
+:doc:`improcess`, *Data ingest*).
+
+
 Scripting
 =========
 

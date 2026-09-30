@@ -1,6 +1,8 @@
 # Live reconstruction inside ImControl: investigation and plan
 
-**Status:** Investigation, nothing implemented (2026-09-29).
+**Status:** Implemented on `feat/imcontrol-live-recon` (2026-09-30); see
+*Status* at the end for what landed and what remains. Written as an
+investigation on 2026-09-29; the sections below are the design as proposed.
 **Scope:** (1) a new ImControl widget that loads ImProcess reconstructors,
 subscribes to the acquisition stream the way BeadRec does, and shows the
 reconstruction live, preferably as a layer in ImControl's napari viewer;
@@ -751,3 +753,42 @@ already pin.
 | RAM save path | `RecordingManager.py:1340-1358, 1506-1611, 1974-1978, 2016-2024, 3860-3869`, `MasterController.py:124-129`, `VFileCollection.py`, `MultiDataFrameController.py:49-63, 175-186`, `MemoryLiveController.py:26-119` |
 | Memory limits | `imcommon/model/memory_limits.py`, `memory-budgets.md` |
 | Layering rules | `imcontrol/_test/unit/test_layering_boundaries.py:83-162`, `docs/design/audit-2026-06/02-layering-boundaries.md:60-84` |
+
+---
+
+## 8. Status (2026-09-30)
+
+Landed, each with tests that run without hardware:
+
+| Phase | What landed |
+|---|---|
+| 1 | `RecordingPlan`, `expected_frames_for`, `build_recording_attrs` in `recording_metadata.py`; the worker delegates. |
+| 2 | `imcontrol/model/liverecon/DetectorChunkLiveSource` (+ `build_live_stack_info`, `frame_shape_for_detector`), proven against the real `LiveStreamWorker`. |
+| 3 | `improcess/live/batch_session.py` (`StackBatchSession`); `LiveReconstructionController` wraps batch reconstructors; `LiveProcessWorker` publishes after `begin()` and skips empty or unchanged snapshots. |
+| 4 | `LiveReconWidget` / `LiveReconController` (key `LiveRecon`), registered in the widget and controller maps, dock tables, setup docstring, Config Studio groups and `mock_scan_monalisa_live.json`; `sigResultLayersUpdated` / `sigResultLayersRemoved` on the ImControl channel. |
+| 5 | `ImageWidget.setResultLayers` / `removeResultLayers` with the coalescing relay in `ImageController`; the ImProcess bridge routed through it and its scale converted to µm. |
+| 6 | Multidata *In-memory recordings* policy (`memory_recording_preferences.py`, `sigMemoryRecordingPolicyChanged`); `MemoryLiveController` follows it and reads through `DataObj`; Zarr/TIFF payloads pass through; REC refuses memory modes for Zarr/TIFF; no folder for memory-only recordings; `RecordingManager.releaseMemoryRecording` on removal. |
+
+Answered along the way: MoNaLISA's live session and `prepare_params` derive
+`scan_params` from the acquisition attributes, so the widget needs no special
+case (§3.3's open item).
+
+Remaining, in the order they are likely to matter:
+
+1. **Rig validation** of the overflow behaviour at real frame rates and of
+   MoNaLISA fast-Gauss numerics through the in-process source (the mock
+   setup `mock_scan_monalisa_live.json` now lists the widget).
+2. **Unknown timepoint count** in a repeat scan or lapse without a
+   recording: v1 treats each scan run as one job and each iteration as one
+   stack; `ViewOnlyLiveSession` sizes its buffer from
+   `recording:num_timepoints` (1) and drops frames past it, so a long
+   repeat only shows the latest stack. A growth policy in that session, or
+   passing the lapse count from the recording controller, is the fix.
+3. **Directory-watcher gate**: ImProcess's watcher panel still offers itself
+   only to streaming reconstructors although the runtime now accepts every
+   reconstructor; relaxing the gate is a small ImProcess change.
+4. **Zarr `MemoryStore` and TIFF hand-off** (§4.2): the REC refusal makes the
+   limitation explicit; the storer-side work is untouched.
+5. **Array-backed hand-off** (§4.5), still optional.
+6. **Screenshot** for `docs/gui.rst` (`tools/screenshot_widgets.py`).
+

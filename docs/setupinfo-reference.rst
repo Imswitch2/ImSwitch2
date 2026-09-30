@@ -517,7 +517,7 @@ Available widget names (case-sensitive):
 * Focus: ``FocusLock``, ``Autofocus``
 * Event-triggered and smart microscopy: ``EtSTED``, ``EtMonalisa``,
   ``EtSnouty``, ``SetupModes``, ``SetupStatus``
-* Analysis tools: ``BeadRec``, ``AlignAverage``, ``AlignXY``,
+* Analysis tools: ``BeadRec``, ``LiveRecon``, ``AlignAverage``, ``AlignXY``,
   ``AlignmentLine``, ``ULenses``, ``FFT``, ``FLIMHist``
 * Scripting: ``Console``, ``Watcher``
 

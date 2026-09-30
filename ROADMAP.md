@@ -189,6 +189,15 @@ should be an optional extra.
   GPU variant stays optional. **Remaining:** validation on a real rig.
   Crashed-writer stall fallback landed (configurable timeout with automatic
   disable for lapse sources that idle between timepoints).
+- ✅ **In-process live reconstruction in ImControl** (2026-09-30). The
+  `LiveRecon` widget runs any registered reconstructor on the acquisition
+  stream through a `LiveSource` over the detector chunk queue
+  (`imcontrol/model/liverecon/`), with the recorder's frame accounting and
+  attribute block shared through `RecordingPlan`; batch reconstructors run
+  once per stack (`StackBatchSession`); results are viewer layers updated in
+  place. Recordings kept in memory can open or reconstruct themselves in
+  ImProcess. Design and remaining items:
+  [docs/design/plans/imcontrol-live-reconstruction-widget.md](docs/design/plans/imcontrol-live-reconstruction-widget.md).
 - 🔄 **OME-standard recording formats.** TIFF/HDF5/Zarr recordings move to
   OME conventions (OME-TIFF, OME-NGFF 0.5, HDF5 + OME-XML) via a shared
   `OmeImageMeta` — implementation and tests in place
@@ -725,10 +734,14 @@ rewrite (Recording data-flow Phases 1.5 / 2 / 3) are **designed but
 deferred**. Full design + effort/risk breakdown:
 [docs/recording_dataflow_plan.md](docs/recording_dataflow_plan.md).
 
-**Why we looked at it:** it is the prerequisite for a file-less, lowest-latency
+**Why we looked at it:** it was thought to be the prerequisite for a file-less
 live-reconstruction source (`ChunkBrokerLiveSource`, the "P7" item in
 [docs/design/plans/live-reconstruction-port.md](docs/design/plans/live-reconstruction-port.md)),
 and for removing the acquisition-loop `time.sleep` / raising max throughput.
+The file-less source has since been built on today's per-consumer
+`readChunk` fan-out (`DetectorChunkLiveSource`, 2026-09-30) without the
+broker; what the broker would still add is the multi-consumer robustness and
+throughput below.
 
 **Why we deferred it (2026-06-23 review):**
 - **Live reconstruction does not need it.** The file-based live path
