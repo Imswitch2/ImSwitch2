@@ -1,121 +1,105 @@
-"""Controller for in-RAM live reconstruction hand-off from imcontrol (Phase P5)."""
+"""Reconstruct recordings ImControl hands over in memory, when asked to.
 
-import h5py
+A recording saved with *Save in memory for reconstruction* reaches ImProcess
+over the module channel the moment it is finished. With the Multidata
+panel's policy set to *Open and reconstruct*, this controller runs the
+active reconstructor's batch ``process()`` on every dataset it holds and
+publishes the results; with any other policy it does nothing. The recording
+is read through ``DataObj`` exactly as the same container on disk would be,
+so grouped metadata (``ScanStage:*`` and the like) and ``scanN`` lapse
+groups are seen as they are from a file.
+"""
 
 from imswitch.imcommon.model.logging import initLogger
-from imswitch.improcess.live import InMemoryStackWrapper
+from imswitch.improcess.model import DataObj
+from imswitch.improcess.model.image_sources import dataset_names, open_memory_container
+from imswitch.improcess.model.memory_recording_preferences import (
+    POLICY_RECONSTRUCT,
+    load_memory_recording_policy,
+)
 from .basecontrollers import ImProcessWidgetController
 
 
 class MemoryLiveController(ImProcessWidgetController):
-    """Routes completed RAM recordings through the active reconstructor.
-    
-    When enabled, subscribes to memory recordings from imcontrol and auto-routes
-    newly-arrived HDF5-backed in-RAM datasets through the active reconstructor's
-    batch process() path. Emits results via sigResultProduced for display in
-    ImProcess ReconstructionView.
-    
-    Scoped to completed HDF5 RAM recordings for v1 (Phase P5).
-    """
+    """Routes completed RAM recordings through the active reconstructor."""
+
+    RESULT_LABEL = "Live (RAM)"
 
     def __init__(self, *args, mainController=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._mainController = mainController
         self._logger = initLogger(self, tryInheritParent=False)
-        
-        self._enabled = False
-        
+
+        self._enabled = load_memory_recording_policy() == POLICY_RECONSTRUCT
+
         self._moduleCommChannel.memoryRecordings.sigDataSet.connect(self._onMemoryDataSet)
+        self._commChannel.sigMemoryRecordingPolicyChanged.connect(self._onPolicyChanged)
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
 
     def setEnabled(self, enabled: bool) -> None:
         """Enable or disable automatic RAM reconstruction."""
+        enabled = bool(enabled)
+        if enabled == self._enabled:
+            return
         self._enabled = enabled
         self._logger.info(f"Memory live reconstruction {'enabled' if enabled else 'disabled'}")
 
+    def _onPolicyChanged(self, policy: str) -> None:
+        self.setEnabled(str(policy) == POLICY_RECONSTRUCT)
+
     def _onMemoryDataSet(self, name: str, vFileItem) -> None:
-        """Handle a new memory recording arrival from imcontrol.
-        
-        Args:
-            name: Recording name (from RecordingManager).
-            vFileItem: VFile item containing the recording data.
-        """
+        """A recording arrived in memory: reconstruct each dataset it holds."""
         if not self._enabled:
             return
-        
-        try:
-            data = vFileItem.data
-            if not isinstance(data, h5py.File):
-                try:
-                    data = h5py.File(data)
-                except Exception as e:
-                    self._logger.debug(
-                        f"Skipping non-HDF5 memory recording '{name}': {e} "
-                        "(only HDF5 RAM recordings supported in v1)"
-                    )
-                    return
-            
-            reconstructor = self._getActiveReconstructor()
-            if reconstructor is None:
-                self._logger.warning(
-                    f"No active reconstructor available for memory recording '{name}'"
-                )
-                return
-            
-            params = self._getReconstructorParams()
-            
-            for datasetName in data.keys():
-                self._processDataset(name, datasetName, data, reconstructor, params)
-        
-        except Exception as e:
-            self._logger.error(f"Failed to process memory recording '{name}': {e}", exc_info=True)
 
-    def _processDataset(self, name: str, datasetName: str, data: h5py.File,
-                       reconstructor, params: dict) -> None:
-        """Process a single dataset from an HDF5 memory recording.
-        
-        Args:
-            name: Recording name.
-            datasetName: Dataset name within the HDF5 file.
-            data: h5py.File handle.
-            reconstructor: Active reconstructor instance.
-            params: Reconstruction parameters.
-        """
         try:
-            dataset = data[datasetName]
-            
-            if not isinstance(dataset, h5py.Dataset):
-                if isinstance(dataset, h5py.Group) and 'data' in dataset:
-                    dataset = dataset['data']
-                else:
-                    self._logger.debug(f"Skipping non-dataset key '{datasetName}' in '{name}'")
-                    return
-            
-            array = dataset[:]
-            attrs = dict(dataset.attrs)
-            
-            root_attrs = dict(data.attrs)
-            attrs.update(root_attrs)
-            
-            wrapper = InMemoryStackWrapper(
-                name=name,
-                dataset_name=datasetName,
-                data=array,
-                attrs=attrs,
+            container = open_memory_container(vFileItem.data)
+        except Exception as error:
+            self._logger.debug(
+                f"Skipping memory recording '{name}': it is not a readable "
+                f"container ({error})"
             )
-            
+            return
+
+        reconstructor = self._getActiveReconstructor()
+        if reconstructor is None:
+            self._logger.warning(
+                f"No active reconstructor available for memory recording '{name}'"
+            )
+            return
+        params = self._getReconstructorParams()
+        filePath = vFileItem.filePath if getattr(vFileItem, 'savedToDisk', False) else None
+
+        try:
+            names = dataset_names(container)
+        except Exception as error:
+            self._logger.error(
+                f"Could not list the datasets of memory recording '{name}': {error}"
+            )
+            return
+        for datasetName in names:
+            self._processDataset(name, datasetName, container, filePath, reconstructor, params)
+
+    def _processDataset(self, name, datasetName, container, filePath, reconstructor,
+                        params: dict) -> None:
+        try:
+            dataObj = DataObj(name, datasetName, path=filePath, file=container)
+
             from imswitch.improcess.reconstructors.run import run_reconstruction
 
-            result = run_reconstruction(reconstructor, wrapper, params).result
-
-            self._commChannel.sigResultProduced.emit(result, "Live (RAM)")
+            result = run_reconstruction(reconstructor, dataObj, params).result
+            self._commChannel.sigResultProduced.emit(result, self.RESULT_LABEL)
             self._logger.info(
                 f"Completed RAM reconstruction: {reconstructor.name} on {name}/{datasetName}"
             )
-        
-        except Exception as e:
+        except Exception as error:
             self._logger.error(
-                f"Failed to process dataset '{datasetName}' from memory recording '{name}': {e}",
-                exc_info=True
+                f"Failed to reconstruct dataset '{datasetName}' of memory recording "
+                f"'{name}': {error}",
+                exc_info=True,
             )
 
     def _getActiveReconstructor(self):

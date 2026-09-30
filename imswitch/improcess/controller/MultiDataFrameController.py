@@ -1,10 +1,15 @@
 import os
 
-import h5py
-
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import resolve_dataset_source
-from imswitch.improcess.model.image_sources import dataset_names
+from imswitch.improcess.model.image_sources import dataset_names, open_memory_container
+from imswitch.improcess.model.memory_recording_preferences import (
+    POLICY_CURRENT,
+    POLICY_RECONSTRUCT,
+    load_memory_recording_policy,
+    normalize_policy,
+    save_memory_recording_policy,
+)
 from .basecontrollers import ImProcessWidgetController
 
 
@@ -37,7 +42,34 @@ class MultiDataFrameController(ImProcessWidgetController):
         self._widget.sigSaveAllDataClicked.connect(self.saveAllData)
         self._widget.sigSelectedItemChanged.connect(self.updateInfo)
 
+        # How a recording ImControl kept in memory is received: listed, opened
+        # as current, or opened and reconstructed. Persisted per computer; the
+        # RAM reconstruction controller follows the channel signal.
+        self._memoryRecordingPolicy = load_memory_recording_policy()
+        setPolicy = getattr(self._widget, 'setMemoryRecordingPolicy', None)
+        if callable(setPolicy):
+            setPolicy(self._memoryRecordingPolicy)
+        policySignal = getattr(self._widget, 'sigMemoryRecordingPolicyChanged', None)
+        if policySignal is not None:
+            policySignal.connect(self.memoryRecordingPolicyChanged)
+
         self.updateInfo()
+
+    @property
+    def memoryRecordingPolicy(self):
+        return self._memoryRecordingPolicy
+
+    def memoryRecordingPolicyChanged(self, policy):
+        policy = normalize_policy(policy)
+        self._memoryRecordingPolicy = policy
+        try:
+            save_memory_recording_policy(policy)
+        except OSError as error:
+            self._logger.warning(
+                f'The memory-recording policy could not be saved ({error}); '
+                f'it applies until ImSwitch closes.'
+            )
+        self._commChannel.sigMemoryRecordingPolicyChanged.emit(policy)
 
     def dataFolderChanged(self, dataFolder):
         self._dataFolder = dataFolder
@@ -47,20 +79,53 @@ class MultiDataFrameController(ImProcessWidgetController):
             self._widget.setAllRowsHighlighted(False)
 
     def memoryDataSet(self, name, vFileItem):
-        data = vFileItem.data
-        if not isinstance(data, h5py.File):
-            data = h5py.File(data)
+        # An HDF5 byte stream, an open HDF5 file, a Zarr group or a TIFF file
+        # object: whatever the storer kept, DataObj reads it as it reads the
+        # same container on disk. (A Zarr group used to be pushed through
+        # h5py and failed on arrival.)
+        try:
+            data = open_memory_container(vFileItem.data)
+        except Exception as error:
+            self._logger.error(
+                f'The recording {name!r} handed over in memory cannot be opened: {error}'
+            )
+            return
 
         # The same discovery the on-disk path uses, rather than the container's
         # root keys. A lapse recorded to memory as one file holds a group per
         # timepoint (``scan0/Camera``), so root keys are group names that no
         # reader can open, and every timepoint arrived in ImProcess as a row
         # that fails when clicked.
+        added = []
         for datasetName in dataset_names(data):
-            self.makeAndAddDataObj(
+            dataObj = self.makeAndAddDataObj(
                 name, datasetName, path=vFileItem.filePath if vFileItem.savedToDisk else None,
                 file=data
             )
+            if dataObj is not None:
+                added.append(dataObj)
+
+        if added and self._memoryRecordingPolicy in (POLICY_CURRENT, POLICY_RECONSTRUCT):
+            self.openAsCurrentData(added[0])
+
+    def openAsCurrentData(self, dataObj):
+        """Load ``dataObj`` and make it the current data, as "Set as current" does."""
+        try:
+            self._loadingData = True
+            dataObj.checkAndLoadData()
+            self._commChannel.sigCurrentDataChanged.emit(dataObj)
+            self._widget.setAllRowsHighlighted(False)
+            highlight = getattr(self._widget, 'setRowHighlightedByDataObj', None)
+            if callable(highlight):
+                highlight(dataObj, True)
+            self.updateInfo()
+        except Exception as error:
+            self._logger.error(
+                f'The recording {dataObj.name!r} handed over in memory could not be '
+                f'opened as the current data: {error}', exc_info=True,
+            )
+        finally:
+            self._loadingData = False
 
     def memoryDataSavedToDisk(self, name, filePath):
         for dataObj in self.getDataObjsByMemRecordingName(name):
@@ -75,24 +140,32 @@ class MultiDataFrameController(ImProcessWidgetController):
         self.updateInfo()
 
     def getDataObjsByMemRecordingName(self, name):
+        try:
+            payload = self._moduleCommChannel.memoryRecordings[name].data
+        except KeyError:
+            return
+        expectedFilename = str(payload)
         for dataObj in self._widget.getAllDataObjs():
-            try:
-                expectedFilename = str(self._moduleCommChannel.memoryRecordings[name].data)
-            except KeyError:
-                pass
-            else:
-                if dataObj._file is not None and dataObj._file.filename == expectedFilename:
-                    yield dataObj
+            file = dataObj._file
+            if file is None:
+                continue
+            # An open container handed over as is (a Zarr group, a TIFF file)
+            # is the payload itself; an HDF5 file opened on the byte stream
+            # names that stream.
+            if file is payload or getattr(file, 'filename', None) == expectedFilename:
+                yield dataObj
 
     def makeAndAddDataObj(self, name, datasetName, path=None, file=None):
+        """Add a row for the dataset; returns its DataObj (the existing one if listed)."""
         dataObj = DataObj(name, datasetName, path=path, file=file)
         for existingDataObj in self._widget.getAllDataObjs():
             if dataObj.describesSameAs(existingDataObj):
-                return  # Already added
+                return existingDataObj  # Already added
 
         self._widget.addDataObj(name, datasetName, dataObj)
         self._widget.setDataObjMemoryFlag(dataObj, path is None)
         self.updateInfo()
+        return dataObj
 
     def _normalizedPathAndName(self, path):
         source = resolve_dataset_source(path)

@@ -232,6 +232,19 @@ class CommunicationChannel(SignalInterface):
     Listeners: ReconstructionViewController
     """
 
+    sigMemoryRecordingPolicyChanged = Signal(str)
+    """How a recording ImControl kept in memory is received from now on.
+
+    Payload: one of ``memory_recording_preferences.POLICIES`` -- ``list`` (a
+    Multidata row, opened by hand), ``current`` (opened as the current data
+    at once) or ``reconstruct`` (opened and run through the active
+    reconstructor). The Multidata panel owns the setting and persists it;
+    the RAM reconstruction controller follows it.
+
+    Emitters: MultiDataFrameController
+    Listeners: MemoryLiveController
+    """
+
     sigResultsChanged = Signal()
     """Fires when the set of loaded results, or which of them are selected,
     changes.

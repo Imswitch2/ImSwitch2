@@ -122,11 +122,24 @@ class MasterController:
         self.recordingManager.sigRecordingTimeUpdated.connect(cc.sigUpdateRecTime)
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
         self.recordingManager.sigMemoryRecordingAvailable.connect(self.memoryRecordingAvailable)
+        self.__moduleCommChannel.memoryRecordings.sigDataWillRemove.connect(
+            self.memoryRecordingWillBeRemoved
+        )
 
     def memoryRecordingAvailable(self, name, file, filePath, savedToDisk):
         self.__moduleCommChannel.memoryRecordings[name] = VFileItem(
             data=file, filePath=filePath, savedToDisk=savedToDisk
         )
+
+    def memoryRecordingWillBeRemoved(self, name):
+        """ImProcess is dropping a recording kept in memory: stop holding its bytes too."""
+        try:
+            filePath = self.__moduleCommChannel.memoryRecordings.getSavePath(name)
+        except KeyError:
+            return
+        release = getattr(self.recordingManager, 'releaseMemoryRecording', None)
+        if callable(release):
+            release(filePath)
 
     def _managerFinalizationCompleted(self, manager):
         completed = self.__dict__.setdefault(

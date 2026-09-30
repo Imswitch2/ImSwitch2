@@ -311,6 +311,10 @@ class RecordingWidget(Widget):
     def getSnapSaveMode(self):
         return self.snapSaveModeList.currentIndex() + 1
 
+    def showRecordingRefused(self, message):
+        """Tell the user why a recording did not start."""
+        QtWidgets.QMessageBox.warning(self, 'Recording not started', str(message))
+
     def getRecSaveMode(self):
         return self.recSaveModeList.currentIndex() + 1
 

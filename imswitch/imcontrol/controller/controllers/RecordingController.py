@@ -46,6 +46,26 @@ def _dispatchWithoutLifecycle(dispatch, *args):
     return dispatch(*args)
 
 
+def unsupported_memory_save_mode(saveMode, saveFormat):
+    """Why this save mode and format cannot be recorded, or ``None``.
+
+    The storers keep a recording in memory only as HDF5: Zarr has no memory
+    store yet (the writer would fail the recording after it started), and a
+    TIFF recording is never handed over, so *keep in memory* would silently
+    mean *on disk only*. Saying so before the first frame beats either.
+    """
+    if saveMode not in (SaveMode.RAM, SaveMode.DiskAndRAM):
+        return None
+    if saveFormat == SaveFormat.HDF5:
+        return None
+    keep = 'Save in memory for reconstruction' if saveMode == SaveMode.RAM \
+        else 'Save on disk and keep in memory'
+    return (
+        f'"{keep}" is only available with the HDF5 format; a {saveFormat.name} '
+        f'recording cannot be kept in memory. Choose HDF5, or "Save on disk".'
+    )
+
+
 class RecordingController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to RecordingWidget. """
 
@@ -218,7 +238,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self.updateRecAttrs(isSnapping=True)
 
         folder = self._widget.getRecFolder()
-        if not os.path.exists(folder):
+        if (
+            SaveMode(self._widget.getSnapSaveMode()) != SaveMode.RAM
+            and not os.path.exists(folder)
+        ):
             os.makedirs(folder)
         time.sleep(0.01)
 
@@ -297,6 +320,21 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self._finalizingRecCycle = False
             return
         if checked and not self.recording:
+            problem = unsupported_memory_save_mode(
+                SaveMode(self._widget.getRecSaveMode()),
+                SaveFormat(self._widget.getSaveFormat()),
+            )
+            if problem is not None:
+                # Refused before anything is armed; keep the button honest
+                # without re-entering the stop path.
+                self.__logger.warning(problem)
+                self._finalizingRecCycle = True
+                try:
+                    self._widget.setRecButtonChecked(False)
+                finally:
+                    self._finalizingRecCycle = False
+                self._widget.showRecordingRefused(problem)
+                return
             self.stopRequested = False
             # Open a fresh two-terminal window before the writer can arm. A
             # completed previous ScanOnce must not let an early writer terminal
@@ -332,7 +370,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.updateRecAttrs(isSnapping=False)
 
                 folder = self._widget.getRecFolder()
-                if not os.path.exists(folder):
+                # A recording kept in memory only writes nothing there; the
+                # folder is created when it is saved from ImProcess.
+                if (
+                    SaveMode(self._widget.getRecSaveMode()) != SaveMode.RAM
+                    and not os.path.exists(folder)
+                ):
                     os.makedirs(folder)
                 time.sleep(0.01)
                 self.savename = (

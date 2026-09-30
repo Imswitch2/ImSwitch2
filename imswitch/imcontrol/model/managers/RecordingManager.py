@@ -3029,6 +3029,17 @@ class RecordingManager(SignalInterface):
                 return path[:-len(suffix)], path[-len(suffix):]
         return os.path.splitext(path)
 
+    def releaseMemoryRecording(self, filePath) -> bool:
+        """Forget the in-memory buffer of a RAM recording that was handed over.
+
+        The buffer is kept here only so a later recording is not named like
+        one still held in memory and a lapse can reopen its own file. Once
+        ImProcess removes the recording, holding on to the bytes would keep
+        them alive for the rest of the session. Returns whether anything was
+        held for ``filePath``.
+        """
+        return self._memRecordings.pop(filePath, None) is not None
+
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path
         numExisting = 0

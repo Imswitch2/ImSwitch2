@@ -194,6 +194,19 @@ def dataset_names(container: Any) -> list[str]:
     raise ValueError(f'Unsupported image container "{type(container).__name__}"')
 
 
+def open_memory_container(payload: Any) -> Any:
+    """The image container behind a recording handed over in memory.
+
+    ImControl hands over whatever its storer kept: an HDF5 file object or the
+    byte stream it wrote to, a Zarr group, or a TIFF file object. Open
+    containers pass through; a byte stream is opened as HDF5, which is what
+    the recorder writes to memory. Anything else raises the reader's error.
+    """
+    if is_zarr_group(payload) or isinstance(payload, (h5py.Group, tiff.TiffFile)):
+        return payload
+    return h5py.File(payload, 'r')
+
+
 def resolve_image(
     container: Any,
     dataset_name: str | None,
