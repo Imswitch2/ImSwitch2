@@ -9,6 +9,7 @@ receipts. The guide is `docs/improcess-workflows.rst`.
 |---|---|---|
 | `batch_view_only_project_save.py` / `.yaml` | A folder of recordings → max projection → blur → OME-TIFF, one row per file in a summary CSV. | yes (no arguments) |
 | `split_process_merge_diamond.py` / `.yaml` | Split a stack, process each slice with different settings, merge; refers to the split's slices by port (`split.C0`). | yes (no arguments) |
+| `python_step_interleave.yaml` | A Python step: three slices at a time alternate between two outputs (`split.a`, `split.b`); one is filtered, both are saved. The code is written in block style (`code: |`), so the file reads like a script. | yes (`--input` the synthetic recording) |
 | `monalisa_reconstruct_chain.yaml` | MoNaLISA reconstruction → background subtraction → Z projection, two saves. Scan geometry comes from the recording's attributes. | needs a MoNaLISA recording |
 | `consolidate_two_sources.yaml` | Two reconstructions consolidated into one, bound from a two-column manifest. | needs MoNaLISA recordings |
 | `_synthetic.py` | Writes the synthetic recording the runnable examples use. | — |

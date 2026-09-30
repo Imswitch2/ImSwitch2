@@ -646,3 +646,30 @@ def test_a_widget_whose_after_run_raises_does_not_stop_publishing(qapp):
     notify_param_widget(SimpleNamespace(paramWidget=SimpleNamespace()), [], [], logger)
     notify_param_widget(SimpleNamespace(), [], [], logger)
     assert len(logger.exceptions) == 1
+
+
+# -- the shipped example ------------------------------------------------------
+
+_EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "improcess_workflows"
+
+
+def test_the_shipped_interleave_example_runs_on_the_synthetic_recording(registry, tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_improcess_synthetic", _EXAMPLES / "_synthetic.py")
+    synthetic = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(synthetic)
+    recording = synthetic.write_synthetic_recording(tmp_path / "cells.h5", frames=12, size=32)
+    with h5py.File(str(recording), "r") as handle:
+        frames = np.array(handle["data"])
+
+    workflow = Workflow.load(_EXAMPLES / "python_step_interleave.yaml")
+    assert validate(workflow, registry) == []
+    assert "code: |" in (_EXAMPLES / "python_step_interleave.yaml").read_text()
+    with run(workflow, registry=registry, bindings={"raw": str(recording)}, out_dir=tmp_path / "out") as report:
+        assert np.array_equal(report.result("split.a").data, frames[[0, 1, 2, 6, 7, 8]])
+        assert np.array_equal(report.result("split.b").data, frames[[3, 4, 5, 9, 10, 11]])
+        assert report.result("blur").data.shape == (6, 32, 32)
+        written = sorted(receipt.primary.name for receipt in report.receipts)
+    assert written == ["cells_interleave_a.ome.tif", "cells_interleave_b.ome.tif"]
+    assert all((tmp_path / "out" / name).exists() for name in written)
