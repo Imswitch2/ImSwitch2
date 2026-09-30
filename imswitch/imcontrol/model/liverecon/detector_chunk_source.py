@@ -15,6 +15,11 @@ Threading: ``poll()`` runs on the stream worker's thread; ``readChunk`` and
 worker calls them. :meth:`arm` and :meth:`mark_stream_ended` are called from
 the controller thread and only set plain attributes.
 
+End of stream: the controller marks it (the scan ended, or the user
+switched live off); frames arriving within a short grace after that are
+taken, then the source is complete whatever the detector goes on producing,
+since a free-running camera does not stop with the scan.
+
 Loss policy: a consumer that falls behind its byte budget has its queue
 cleared and its next read raises ``ChunkConsumerOverflowError``. The recorder
 fails the recording on that; a live preview re-registers, counts the loss and
@@ -45,6 +50,8 @@ DEFAULT_CONSUMER_KEY = 'LiveRecon'
 
 #: How long after the stream is marked ended late frames are still collected
 #: before the source reports completion (BeadRec drains for the same span).
+#: The deadline is fixed from the end mark: a free-running camera does not
+#: stop with the scan, and waiting for it to go quiet would wait forever.
 DEFAULT_DRAIN_GRACE_S = 0.5
 
 
@@ -52,12 +59,17 @@ def frame_shape_for_detector(detector, frame_transform=None,
                              dtype=None) -> tuple[int, ...]:
     """The array shape of one frame the detector delivers.
 
-    ``DetectorManager.shape`` is ``(width, height, ...)``; a frame array is
-    the reverse, ``(..., height, width)``. When frames are transformed for
-    display (a 90° rotation swaps the axes) the transformed shape is what the
-    consumer sees, so it is measured on a blank frame rather than guessed.
+    A camera's ``DetectorManager.shape`` is ``(width, height)``; its frame
+    array is the reverse, ``(height, width)``. A scan-driven detector (APD,
+    PMT, TimeTagger) stores its assembled volume's shape in array order
+    already, ``(..., Ny, Nx)``, and delivers that whole volume as one frame;
+    it is set when the scan is built, so read it after that. When frames
+    are transformed for display (a 90° rotation swaps the axes) the
+    transformed shape is what the consumer sees, so it is measured on a
+    blank frame rather than guessed.
     """
-    shape = tuple(int(v) for v in reversed(tuple(detector.shape)))
+    raw = tuple(int(v) for v in tuple(detector.shape))
+    shape = raw if getattr(detector, 'isScanDriven', False) else tuple(reversed(raw))
     if frame_transform is None:
         return shape
     blank = np.zeros(shape, dtype=np.dtype(dtype) if dtype is not None else np.uint16)
@@ -84,6 +96,7 @@ def build_live_stack_info(
     the controller says so).
     """
     from imswitch.improcess.model.acquisition_layout_resolver import (
+        AcquisitionLayoutResolutionError,
         resolve_acquisition_layout,
     )
 
@@ -94,12 +107,31 @@ def build_live_stack_info(
     dataset_path = dataset_path or attrs.get('recording:dataset_path') or f'/{detector_name}/data'
     attrs.setdefault('recording:dataset_path', dataset_path)
     resolution_frames = fps or 1
-    resolved = resolve_acquisition_layout(
-        attrs,
-        shape=(resolution_frames, *frame_shape),
-        detector=detector_name,
-        dataset_path=dataset_path,
-    )
+    try:
+        resolved = resolve_acquisition_layout(
+            attrs,
+            shape=(resolution_frames, *frame_shape),
+            detector=detector_name,
+            dataset_path=dataset_path,
+        )
+    except AcquisitionLayoutResolutionError as error:
+        # The scan source's layout does not describe what this detector
+        # delivers (a frame-stream layout for a detector that assembles a
+        # volume, say). A recording would carry it and be refused later; a
+        # live run is better served by the older metadata and the array
+        # shape, and by saying so.
+        initLogger('LiveReconStackInfo').warning(
+            f'{detector_name}: the declared acquisition layout does not fit the '
+            f'live stream ({error}); reconstructing from the other metadata'
+        )
+        for key in ('AcquisitionLayout:schema', 'AcquisitionLayout:json'):
+            attrs.pop(key, None)
+        resolved = resolve_acquisition_layout(
+            attrs,
+            shape=(resolution_frames, *frame_shape),
+            detector=detector_name,
+            dataset_path=dataset_path,
+        )
     return StackInfo(
         frame_shape=frame_shape,
         dtype=np.dtype(dtype),
@@ -246,15 +278,21 @@ class DetectorChunkLiveSource(LiveSource):
     def mark_stream_ended(self) -> None:
         """The producer is done (scan ended or the user stopped): drain, then complete.
 
-        Idempotent; the first call sets the reference time for the drain
-        grace period.
+        Frames that arrive within the drain grace are still taken (a camera's
+        last frames land after the scan's end signal); once it has passed the
+        stream is complete whatever the detector goes on producing.
+        Idempotent; the first call starts the grace period.
         """
         if self._ended_at is None:
             self._ended_at = self._clock()
 
+    def _past_drain_deadline(self) -> bool:
+        ended_at = self._ended_at
+        return ended_at is not None and (self._clock() - ended_at) >= self._drain_grace_s
+
     def poll(self) -> list[Chunk]:
         """Return the frames queued since the previous poll as one chunk."""
-        if not self._opened:
+        if not self._opened or self._past_drain_deadline():
             return []
         try:
             frames = self._read()
@@ -290,13 +328,7 @@ class DetectorChunkLiveSource(LiveSource):
         expected = self._stack_info.expected_frames
         if expected is not None and self._cursor >= expected:
             return True
-        ended_at = self._ended_at
-        if ended_at is None:
-            return False
-        reference = ended_at
-        if self._last_frame_at is not None and self._last_frame_at > reference:
-            reference = self._last_frame_at
-        return (self._clock() - reference) >= self._drain_grace_s
+        return self._past_drain_deadline()
 
     def close(self) -> None:
         """Release the consumer so the detector stops retaining frames for it."""

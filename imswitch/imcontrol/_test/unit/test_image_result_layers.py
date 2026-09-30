@@ -77,14 +77,20 @@ def _image(value, shape=(4, 5)):
 def test_first_update_creates_the_layer_and_later_ones_swap_its_data():
     widget = _WidgetStub()
 
-    widget.setResultLayers('job', [(_image(1), {'name': 'Recon: a', 'scale': (0.1, 0.2)}, 'image')])
+    created = widget.setResultLayers(
+        'job', [(_image(1), {'name': 'Recon: a', 'scale': (0.1, 0.2)}, 'image')]
+    )
+    assert created is True
     layer = widget.napariViewer.layers[0]
     assert layer.name == 'Recon: a'
     assert layer.kwargs['blending'] == 'additive'
     assert layer.scale == (0.1, 0.2)
 
-    widget.setResultLayers('job', [(_image(2), {'name': 'Recon: a', 'scale': (0.1, 0.2)}, 'image')])
+    created = widget.setResultLayers(
+        'job', [(_image(2), {'name': 'Recon: a', 'scale': (0.1, 0.2)}, 'image')]
+    )
 
+    assert created is False
     assert len(widget.napariViewer.added) == 1
     assert widget.napariViewer.layers == [layer]
     assert float(layer.data[0, 0]) == 2.0
@@ -198,6 +204,23 @@ def test_controller_coalesces_result_layer_updates_per_job(qtbot):
     calls = {call.args[0]: call.args[1] for call in widget.setResultLayers.call_args_list}
     assert float(calls['job'][0][0][0, 0]) == 2.0
     assert float(calls['other'][0][0][0, 0]) == 3.0
+
+
+def test_an_empty_viewer_fits_itself_to_the_first_result_layer(qtbot):
+    controller, widget = _controller_with_mock_widget()
+    widget.setResultLayers.return_value = True
+    controller._shouldResetView = True
+
+    controller.resultLayersUpdated('job', [(_image(1, shape=(6, 8)), {'name': 'a'}, 'image')])
+    qtbot.waitUntil(lambda: widget.setResultLayers.called, timeout=2000)
+
+    widget.resetView.assert_called_once()
+    assert controller._shouldResetView is False
+
+    widget.setResultLayers.return_value = False
+    controller.resultLayersUpdated('job', [(_image(2, shape=(6, 8)), {'name': 'a'}, 'image')])
+    qtbot.waitUntil(lambda: widget.setResultLayers.call_count == 2, timeout=2000)
+    widget.resetView.assert_called_once()
 
 
 def test_controller_drops_pending_updates_of_a_removed_job(qtbot):

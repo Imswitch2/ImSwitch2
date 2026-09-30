@@ -164,11 +164,19 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         pending, self.__pendingResultLayers = self.__pendingResultLayers, {}
         for jobName, layerData in pending.items():
             try:
-                self._widget.setResultLayers(jobName, layerData)
+                created = self._widget.setResultLayers(jobName, layerData)
             except Exception:
                 self.__logger.error(
                     f'Could not draw the result layers of {jobName!r}', exc_info=True
                 )
+                continue
+            # An empty viewer fits itself to the first thing shown in it, as
+            # it does for a snap; a viewer already showing a live view keeps
+            # the user's zoom.
+            if created and self.__dict__.get('_shouldResetView', False) and layerData:
+                shape = getattr(layerData[0][0], 'shape', None)
+                if shape is not None:
+                    self.adjustFrame(shape, instantResetView=True)
 
     def setExposure(self, exp):
         detectorName = self._master.detectorsManager.getAllDeviceNames()[0]

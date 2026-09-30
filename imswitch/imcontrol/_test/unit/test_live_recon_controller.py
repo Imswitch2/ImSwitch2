@@ -7,6 +7,7 @@ reconstructors, the live runtime and its worker threads are the real ones.
 """
 
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -173,6 +174,17 @@ def _setup(reconstructors=('view-only', 'beadrec')):
     )
 
 
+@pytest.fixture(autouse=True)
+def registry():
+    """Keep the process-wide widget-state registry out of these tests."""
+    fake = Mock()
+    with patch(
+        'imswitch.imcontrol.controller.controllers.LiveReconController.getWidgetStatePersistence',
+        return_value=fake,
+    ):
+        yield fake
+
+
 @pytest.fixture
 def rig(qtbot):
     detector = _FakeDetector()
@@ -231,6 +243,69 @@ def test_load_adds_a_known_reconstructor_to_the_offer(rig):
     assert controller.activeReconstructorId == 'snouty'
     assert widget.selectedReconstructor() == 'snouty'
     assert controller.loadReconstructor('no-such-plugin') is False
+
+
+def test_live_toggled_during_a_scan_waits_for_a_boundary(rig):
+    """Stacks are counted from the first frame a run sees, so a scan already
+    producing frames is not joined; the next iteration start begins the run."""
+    controller, manager, channel = rig.controller, rig.manager, rig.channel
+    channel.scanRunning = True
+
+    controller.setLiveEnabled(True)
+
+    assert not controller.hasActiveRun
+    assert manager.acquired == []
+    assert 'next iteration' in rig.widget.statusText()
+
+    channel.sigScanStarted.emit()
+    assert controller.hasActiveRun
+    assert rig.detector.calls[0] == ('start', 'LiveRecon', ChunkKind.RAW)
+
+
+def test_scan_driven_detector_streams_are_built_once_the_scan_is(rig, qtbot):
+    """An APD's volume shape is set when the scan is built and its one frame
+    arrives at the scan's end: lease at sigScanStarting, source at sigScanStarted."""
+    controller, manager, detector, channel = rig.controller, rig.manager, rig.detector, rig.channel
+    detector.isScanDriven = True
+    detector.shape = (3, 5, 4)                 # (S, Ny, Nx), array order
+    channel._layout = None                     # a point scan declares no camera layout
+
+    controller.setLiveEnabled(True)
+    channel.scanRunning = True
+    channel.sigScanStarting.emit()
+
+    assert controller.hasActiveRun
+    assert manager.acquired[0][1] is LeasePurpose.WORKFLOW
+    assert detector.calls == []                # nothing armed yet
+    assert 'built' in rig.widget.statusText()
+
+    channel.sigScanStarted.emit()
+    assert detector.calls[0] == ('start', 'LiveRecon', ChunkKind.RAW)
+    assert controller._run.source.stack_info.frame_shape == (3, 5, 4)
+
+    channel.scanRunning = False
+    channel.sigScanEnded.emit()
+    qtbot.waitUntil(lambda: not controller.hasActiveRun, timeout=8000)
+    assert manager.released == ['lease-1']
+
+
+def test_a_scan_that_ends_before_its_stream_was_built_releases_the_lease(rig):
+    controller, manager, detector, channel = rig.controller, rig.manager, rig.detector, rig.channel
+    detector.isScanDriven = True
+    controller.setLiveEnabled(True)
+    channel.sigScanStarting.emit()
+    assert controller.hasActiveRun
+
+    channel.sigScanEnded.emit()
+
+    assert not controller.hasActiveRun
+    assert manager.released == ['lease-1']
+    assert detector.calls == []
+
+
+def test_close_event_unregisters_the_component(rig, registry):
+    rig.controller.closeEvent()
+    registry.unregister.assert_called_with('LiveRecon')
 
 
 def test_scan_starting_leases_and_arms_the_detector_once_per_run(rig, qtbot):

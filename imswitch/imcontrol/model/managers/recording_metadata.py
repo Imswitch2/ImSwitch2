@@ -294,6 +294,24 @@ def expected_frames_for(plan: RecordingPlan, detector_name: str, *,
     return int(plan.rec_frames) * int(num_cam_ttl.get(detector_name, 1))
 
 
+def exposure_time_ms_for(detector):
+    """The detector's exposure time in ms for the attrs, or ``None``.
+
+    Different detectors expose it differently; the common spellings are
+    tried in turn and an unanswerable detector simply records none. The
+    recorder and the live reconstruction both use this, so a recording and
+    the live view of the same acquisition carry the same value.
+    """
+    try:
+        if hasattr(detector, 'getExposureTime'):
+            return detector.getExposureTime()
+        if hasattr(detector, 'exposure'):
+            return detector.exposure
+    except Exception:
+        return None
+    return None
+
+
 def build_recording_attrs(
     plan: RecordingPlan,
     detector_name: str,

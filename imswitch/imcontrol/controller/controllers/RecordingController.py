@@ -49,20 +49,30 @@ def _dispatchWithoutLifecycle(dispatch, *args):
 def unsupported_memory_save_mode(saveMode, saveFormat):
     """Why this save mode and format cannot be recorded, or ``None``.
 
-    The storers keep a recording in memory only as HDF5: Zarr has no memory
-    store yet (the writer would fail the recording after it started), and a
-    TIFF recording is never handed over, so *keep in memory* would silently
-    mean *on disk only*. Saying so before the first frame beats either.
+    Only HDF5 can be recorded to memory alone: Zarr has no memory store yet
+    (the writer would fail the recording after it started), though a Zarr
+    recording kept beside its file is handed over as a group and works. A
+    TIFF recording is never handed over in either mode, so *keep in memory*
+    would silently mean *on disk only*. Saying so before the first frame
+    beats either.
     """
     if saveMode not in (SaveMode.RAM, SaveMode.DiskAndRAM):
         return None
     if saveFormat == SaveFormat.HDF5:
         return None
-    keep = 'Save in memory for reconstruction' if saveMode == SaveMode.RAM \
-        else 'Save on disk and keep in memory'
+    if saveFormat == SaveFormat.ZARR and saveMode == SaveMode.DiskAndRAM:
+        return None
+    if saveMode == SaveMode.RAM:
+        return (
+            f'"Save in memory for reconstruction" needs the HDF5 format; a '
+            f'{saveFormat.name} recording cannot be kept in memory alone. '
+            f'Choose HDF5, "Save on disk and keep in memory" (HDF5 or ZARR), '
+            f'or "Save on disk".'
+        )
     return (
-        f'"{keep}" is only available with the HDF5 format; a {saveFormat.name} '
-        f'recording cannot be kept in memory. Choose HDF5, or "Save on disk".'
+        f'"Save on disk and keep in memory" is not available for the '
+        f'{saveFormat.name} format; a {saveFormat.name} recording is never '
+        f'handed over in memory. Choose HDF5 or ZARR, or "Save on disk".'
     )
 
 

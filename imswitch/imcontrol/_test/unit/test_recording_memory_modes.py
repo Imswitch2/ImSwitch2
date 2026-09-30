@@ -23,10 +23,10 @@ from imswitch.imcontrol.model import RecordingManager, SaveFormat, SaveMode
     (SaveMode.DiskAndRAM, SaveFormat.HDF5, False),
     (SaveMode.RAM, SaveFormat.ZARR, True),
     (SaveMode.RAM, SaveFormat.TIFF, True),
-    (SaveMode.DiskAndRAM, SaveFormat.ZARR, True),
+    (SaveMode.DiskAndRAM, SaveFormat.ZARR, False),   # handed over as a group
     (SaveMode.DiskAndRAM, SaveFormat.TIFF, True),
 ])
-def test_memory_modes_need_hdf5(saveMode, saveFormat, refused):
+def test_memory_modes_need_a_storer_that_hands_over(saveMode, saveFormat, refused):
     problem = unsupported_memory_save_mode(saveMode, saveFormat)
     assert (problem is not None) is refused
     if refused:

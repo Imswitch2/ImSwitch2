@@ -29,6 +29,21 @@ import numpy as np
 
 #: OME UnitsLength for micrometer, and UnitsTime for second.
 _SPACE_UNIT = '\u00b5m'
+
+#: Micrometres per unit, for the length units results and viewers use.
+_MICROMETRES_PER_UNIT = {
+    'nm': 1e-3, 'nanometer': 1e-3, 'nanometre': 1e-3,
+    'um': 1.0, '\u00b5m': 1.0, '\u03bcm': 1.0, 'micrometer': 1.0, 'micrometre': 1.0,
+    'micron': 1.0, 'microns': 1.0,
+    'mm': 1e3, 'millimeter': 1e3, 'millimetre': 1e3,
+    'm': 1e6, 'meter': 1e6, 'metre': 1e6,
+}
+
+
+def micrometres_per_unit(unit) -> 'float | None':
+    """How many micrometres one ``unit`` is, or ``None`` for a unit that is
+    not a length (``px``, ``''``): a scale in that unit cannot be converted."""
+    return _MICROMETRES_PER_UNIT.get(str(unit or '').strip().lower())
 _OME_NAMESPACE = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
 #: Namespace of the one MapAnnotation ImSwitch attaches to an image: the
 #: acquisition layout, recording outcome and any other key/value metadata
@@ -381,4 +396,4 @@ def _annotation_text(value: Any) -> str:
 
 
 __all__ = ['OmeAxis', 'OmeImageMeta', 'build_ome_xml', 'ANNOTATION_NAMESPACE',
-           'NOTE_KEY', '_SPACE_UNIT', '_TIME_UNIT']
+           'NOTE_KEY', '_SPACE_UNIT', '_TIME_UNIT', 'micrometres_per_unit']

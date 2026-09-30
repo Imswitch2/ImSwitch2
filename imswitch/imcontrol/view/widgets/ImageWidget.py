@@ -214,10 +214,12 @@ class ImageWidget(QtWidgets.QWidget):
         changes is recreated (napari cannot grow a layer's dims in place, see
         :meth:`_recreateLiveLayer`), and one the user deleted from the layer
         list comes back on the next update. Layers of the job that are absent
-        from ``layerData`` are removed.
+        from ``layerData`` are removed. Returns whether any layer was
+        created (rather than updated), so a caller can fit the view once.
         """
         existing = self.resultLayers.setdefault(jobName, {})
         seen = set()
+        created = False
         for data, kwargs, layerType in layerData:
             kwargs = dict(kwargs or {})
             layerType = str(layerType or 'image')
@@ -237,9 +239,11 @@ class ImageWidget(QtWidgets.QWidget):
             if layer is not None:
                 self._removeResultLayer(layer)
             existing[name] = self._addResultLayer(data, kwargs, layerType)
+            created = True
         for name in list(existing):
             if name not in seen:
                 self._removeResultLayer(existing.pop(name))
+        return created
 
     def removeResultLayers(self, jobName):
         """Remove every layer :meth:`setResultLayers` created for ``jobName``."""

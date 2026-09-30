@@ -12,7 +12,13 @@ viewer or in the panel's own image view.
 Ownership, mirroring BeadRec: the detector is leased (``WORKFLOW``) at
 ``sigScanStarting`` so a trigger-driven camera is armed before any TTL
 output, the chunk consumer is armed at the same moment, and both are released
-once the run has drained after ``sigScanEnded``. ImProcess is used as a
+once the run has drained after ``sigScanEnded``. A scan-driven detector
+(APD, PMT) delivers its assembled volume once per scan and learns its shape
+only when the scan is built, so its stream is set up at ``sigScanStarted``
+instead. A run never joins a scan that is already producing frames: its
+stacks are counted from the first frame, so it starts at a scan boundary
+(``sigScanStarting`` or, for a later iteration, ``sigScanStarted``) or waits
+for the next one. ImProcess is used as a
 library only (its reconstructors, live runtime and result helpers); nothing
 here touches its views or its module controller, and every ImProcess import
 is lazy so ImControl starts without it.
@@ -31,11 +37,13 @@ from qtpy import QtCore
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import ChunkKind
+from imswitch.imcommon.model.ome_metadata import micrometres_per_unit
 from imswitch.imcontrol.model.managers.recording_metadata import (
     SOURCE_FORMAT_MEMORY,
     RecordingPlan,
     build_recording_attrs,
     expected_frames_for,
+    exposure_time_ms_for,
 )
 from imswitch.imcontrol.view.widgets.LiveReconWidget import (
     DISPLAY_PANEL,
@@ -51,17 +59,16 @@ from ..basecontrollers import (
 from ..display_transform import apply_display_transform, display_transform_from_properties
 
 
-_UNIT_TO_UM = {
-    'nm': 1e-3, 'nanometer': 1e-3, 'nanometre': 1e-3,
-    'um': 1.0, 'µm': 1.0, 'micrometer': 1.0, 'micrometre': 1.0, 'micron': 1.0,
-    'mm': 1e3, 'millimeter': 1e3, 'millimetre': 1e3,
-}
 _TIME_LABELS = {'t', 'time', 'timepoint', 'timepoints'}
 
 
 @dataclass
 class _LiveRun:
-    """One live reconstruction: a leased detector, an armed source, a name."""
+    """One live reconstruction: a leased detector, a source, a name.
+
+    ``source`` is ``None`` while the run holds the lease but has not been
+    started: a scan-driven detector's stream is built once the scan is.
+    """
 
     detectorName: str
     leaseHandle: Any
@@ -69,8 +76,13 @@ class _LiveRun:
     name: str
     mode: str
     reconstructorId: str
+    reconstructor: Any = None
     ended: bool = False
     startedAt: float = field(default_factory=time.monotonic)
+
+    @property
+    def started(self) -> bool:
+        return self.source is not None
 
 
 class LiveReconController(ImConWidgetController, StatefulComponentMixin):
@@ -325,13 +337,17 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         if mode == MODE_FREE:
             self._beginRun(MODE_FREE)
         elif self._commChannel.isScanRunning():
-            # Join the scan in progress, as BeadRec does; frames it produced
-            # before this moment are not ours, so the first stack may be short.
-            self._beginRun(MODE_SCAN, joined=True)
+            # A scan already producing frames cannot be joined: the stacks are
+            # counted from the first frame the run sees. The next iteration
+            # (sigScanStarted) or the next scan (sigScanStarting) starts it.
+            self._widget.setStatusText(
+                'Live: a scan is running; starting at its next iteration or the next scan'
+            )
         else:
             self._widget.setStatusText('Live: waiting for the next scan')
 
     def onScanStarting(self) -> None:
+        """A scan run is about to start: arm now, before any TTL output."""
         if self._closed or not self._liveEnabled or self._widget.getMode() != MODE_SCAN:
             return
         run = self._run
@@ -339,22 +355,38 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             if run.mode == MODE_SCAN and not run.ended:
                 # A repeat or lapse iteration of the run already in progress.
                 return
-            # The previous run is still draining; start again once it is gone.
+            # The previous run is still draining; start again at a boundary
+            # once it is gone.
             self._pendingRestart = True
             return
         self._beginRun(MODE_SCAN)
 
     def onScanStarted(self) -> None:
+        """An iteration's hardware is running: complete a deferred run, or start one.
+
+        This is also a stack boundary, so a run that could not begin at
+        ``sigScanStarting`` (live switched on during a lapse, the previous run
+        still draining then) starts here.
+        """
         if self._closed or not self._liveEnabled or self._widget.getMode() != MODE_SCAN:
             return
-        if self._run is None and not self._pendingRestart:
-            self._beginRun(MODE_SCAN, joined=True)
+        run = self._run
+        if run is not None:
+            if not run.started and not run.ended:
+                self._startRun(run)
+            return
+        self._pendingRestart = False
+        self._beginRun(MODE_SCAN, atScanStarted=True)
 
     def onScanEnded(self) -> None:
         run = self._run
         if run is None or run.mode != MODE_SCAN or run.ended:
             return
         run.ended = True
+        if not run.started:
+            # Leased but never fed (the scan ended before it was built).
+            self._onRunFinished()
+            return
         run.source.mark_stream_ended()
         self._widget.setStatusText('Scan ended: finishing the reconstruction')
 
@@ -373,7 +405,8 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
     # Runs
     # ------------------------------------------------------------------
 
-    def _beginRun(self, mode: str, *, joined: bool = False) -> bool:
+    def _beginRun(self, mode: str, *, atScanStarted: bool = False) -> bool:
+        """Lease the detector and start the run, or defer the start to the scan build."""
         if self._run is not None:
             return False
         manager = self._master.detectorsManager
@@ -409,30 +442,47 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             )
             return False
 
-        try:
-            source = self._buildSource(mode, detectorName)
-            source.arm()
-        except Exception as exc:
-            self._logger.error(
-                f'Live reconstruction could not be prepared for "{detectorName}": {exc}',
-                exc_info=True,
-            )
-            self._releaseLease(handle)
-            self._widget.setStatusText(f'Could not prepare the live reconstruction: {exc}')
-            return False
-
         name = f'{getattr(reconstructor, "name", self._activeId)} ({detectorName})'
         run = _LiveRun(
-            detectorName=detectorName, leaseHandle=handle, source=source,
+            detectorName=detectorName, leaseHandle=handle, source=None,
             name=name, mode=mode, reconstructorId=str(self._activeId),
+            reconstructor=reconstructor,
         )
         self._run = run
         self._lastJobName = name
         self._heldResult = None
+
+        scanDriven = bool(getattr(manager[detectorName], 'isScanDriven', False))
+        if mode == MODE_SCAN and scanDriven and not atScanStarted:
+            # The volume's shape is set when the scan is built; the frame
+            # itself arrives at the scan's end, so nothing is missed by
+            # waiting for sigScanStarted.
+            self._widget.setStatusText('Armed: waiting for the scan to be built')
+            return True
+        return self._startRun(run)
+
+    def _startRun(self, run: _LiveRun) -> bool:
+        """Build and arm the source and start the ImProcess runtime on it."""
+        try:
+            source = self._buildSource(run.mode, run.detectorName)
+            source.arm()
+        except Exception as exc:
+            self._logger.error(
+                f'Live reconstruction could not be prepared for "{run.detectorName}": {exc}',
+                exc_info=True,
+            )
+            self._run = None
+            self._releaseLease(run.leaseHandle)
+            self._widget.setStatusText(f'Could not prepare the live reconstruction: {exc}')
+            return False
+        run.source = source
+
         live = self._liveController()
         params = self.currentParams()
         try:
-            started = bool(live.start(reconstructor, source, params, source_arg=None, name=name))
+            started = bool(live.start(
+                run.reconstructor, source, params, source_arg=None, name=run.name,
+            ))
         except Exception as exc:
             self._logger.error(f'Live reconstruction did not start: {exc}', exc_info=True)
             started = False
@@ -441,17 +491,12 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             try:
                 source.close()
             finally:
-                self._releaseLease(handle)
+                self._releaseLease(run.leaseHandle)
             self._widget.setStatusText('The live reconstruction did not start')
             return False
 
         self._statusTimer.start()
-        if joined:
-            self._widget.setStatusText(
-                'Joined a running scan: waiting for frames (the first stack may be short)'
-            )
-        else:
-            self._widget.setStatusText('Armed: waiting for frames')
+        self._widget.setStatusText('Armed: waiting for frames')
         return True
 
     def _buildSource(self, mode: str, detectorName: str):
@@ -480,7 +525,7 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         attrs = build_recording_attrs(
             plan, detectorName, sharedAttrs,
             expected_frames=framesPerStack,
-            exposure_time_ms=self._exposureFor(detector),
+            exposure_time_ms=exposure_time_ms_for(detector),
             start_time=datetime.now(timezone.utc).isoformat(),
         )
         dtype = np.dtype(getattr(detector, 'dtype', np.uint16))
@@ -531,17 +576,6 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             return None
         return lambda frame: apply_display_transform(np.asarray(frame), None, transform)[0]
 
-    @staticmethod
-    def _exposureFor(detector):
-        try:
-            if hasattr(detector, 'getExposureTime'):
-                return detector.getExposureTime()
-            if hasattr(detector, 'exposure'):
-                return detector.exposure
-        except Exception:
-            pass
-        return None
-
     def _liveController(self):
         if self._live is None:
             from imswitch.improcess.controller.CommunicationChannel import (
@@ -562,12 +596,13 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         if run is None:
             return
         run.ended = True
-        try:
-            run.source.mark_stream_ended()
-        except Exception:
-            pass
+        if run.started:
+            try:
+                run.source.mark_stream_ended()
+            except Exception:
+                pass
         live = self._live
-        if live is not None and live.is_running:
+        if run.started and live is not None and live.is_running:
             live.stop(graceful=graceful, notify_finished=True)
         else:
             self._onRunFinished()
@@ -586,35 +621,35 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         self._run = None
         self._statusTimer.stop()
         if run is not None:
-            try:
-                run.source.close()
-            except Exception:
-                pass
+            if run.started:
+                try:
+                    run.source.close()
+                except Exception:
+                    pass
             self._releaseLease(run.leaseHandle)
-            stats = run.source.stats
-            text = f'Finished: {stats.frames_received} frames'
-            if stats.frames_expected:
-                text += f' of {stats.frames_expected}'
-            if stats.incomplete:
-                text += ' (incomplete)'
-            if stats.frames_discarded:
-                text += f', {stats.frames_discarded} beyond the plan discarded'
+            if run.started:
+                stats = run.source.stats
+                text = f'Finished: {stats.frames_received} frames'
+                if stats.frames_expected:
+                    text += f' of {stats.frames_expected}'
+                if stats.incomplete:
+                    text += ' (incomplete)'
+                if stats.frames_discarded:
+                    text += f', {stats.frames_discarded} beyond the plan discarded'
+            else:
+                text = 'Finished: the scan ended before any frame was expected'
             if not self._widget.getKeepLayer() and self._widget.getDisplayTarget() == DISPLAY_VIEWER:
                 self._heldResult = None
                 self._removeResultLayers(run.name)
             self._widget.setStatusText(text)
-        if self._pendingRestart:
-            self._pendingRestart = False
-            if (
-                self._liveEnabled
-                and self._widget.getMode() == MODE_SCAN
-                and self._commChannel.isScanRunning()
-            ):
-                self._beginRun(MODE_SCAN, joined=True)
+        if self._pendingRestart and self._liveEnabled:
+            # Started at the next boundary (onScanStarted / onScanStarting),
+            # never in the middle of a scan already producing frames.
+            self._widget.setStatusText(text + '; the next scan iteration starts a new run')
 
     def _refreshStatus(self) -> None:
         run = self._run
-        if run is None:
+        if run is None or not run.started:
             return
         stats = run.source.stats
         text = f'Live: {stats.frames_received} frames received'
@@ -707,7 +742,7 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
                     if scale is not None:
                         scale = tuple(scale)[-data.ndim:]
             if scale is not None:
-                factor = _UNIT_TO_UM.get(unit.lower())
+                factor = micrometres_per_unit(unit)
                 if factor is not None:
                     scale = tuple(float(value) * factor for value in scale)
                 kwargs['scale'] = tuple(float(value) for value in scale)
@@ -830,4 +865,8 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             self._stopRun(graceful=False)
         except Exception as exc:
             self._logger.error(f'Live reconstruction did not stop cleanly: {exc}', exc_info=True)
+        try:
+            getWidgetStatePersistence().unregister('LiveRecon')
+        except Exception:
+            pass
         super().closeEvent()

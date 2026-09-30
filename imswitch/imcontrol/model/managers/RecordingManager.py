@@ -3926,23 +3926,16 @@ class RecordingWorker(Worker):
         )
 
     def _exposureTimeFor(self, detectorName):
-        """The detector's exposure time in ms for the attrs, or ``None``.
-
-        Different detectors expose it differently; the common spellings are
-        tried in turn and an unanswerable detector simply records none.
-        """
+        """The detector's exposure time in ms for the attrs, or ``None``."""
         try:
             detector = self.__recordingManager.detectorsManager[detectorName]
-            if hasattr(detector, 'getExposureTime'):
-                return detector.getExposureTime()
-            if hasattr(detector, 'exposure'):
-                return detector.exposure
         except Exception as e:
             logger.debug(
                 "Could not get exposure time for detector %s: %s",
                 detectorName, e
             )
-        return None
+            return None
+        return _ome.exposure_time_ms_for(detector)
 
     def _augment_attrs_with_recording_metadata(
         self,

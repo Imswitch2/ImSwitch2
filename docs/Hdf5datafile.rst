@@ -223,8 +223,9 @@ In other tools
 Known limitation
 ================
 
-Only HDF5 can be kept in memory.  *Save in memory for reconstruction* and
-*Save on disk and keep in memory* are refused before the recording starts
-when the Zarr or TIFF format is selected: Zarr has no memory store yet, and
-a TIFF recording is never handed over.  Use HDF5 for in-memory recording
-until a ``MemoryStore`` policy is added.
+Only HDF5 can be kept in memory alone.  *Save in memory for
+reconstruction* is refused before the recording starts for the Zarr and
+TIFF formats, and *Save on disk and keep in memory* for TIFF: Zarr has no
+memory store yet, and a TIFF recording is never handed over.  *Save on disk
+and keep in memory* works for HDF5 and Zarr.  Use HDF5 for memory-only
+recording until a ``MemoryStore`` policy is added.

@@ -767,7 +767,7 @@ Landed, each with tests that run without hardware:
 | 3 | `improcess/live/batch_session.py` (`StackBatchSession`); `LiveReconstructionController` wraps batch reconstructors; `LiveProcessWorker` publishes after `begin()` and skips empty or unchanged snapshots. |
 | 4 | `LiveReconWidget` / `LiveReconController` (key `LiveRecon`), registered in the widget and controller maps, dock tables, setup docstring, Config Studio groups and `mock_scan_monalisa_live.json`; `sigResultLayersUpdated` / `sigResultLayersRemoved` on the ImControl channel. |
 | 5 | `ImageWidget.setResultLayers` / `removeResultLayers` with the coalescing relay in `ImageController`; the ImProcess bridge routed through it and its scale converted to µm. |
-| 6 | Multidata *In-memory recordings* policy (`memory_recording_preferences.py`, `sigMemoryRecordingPolicyChanged`); `MemoryLiveController` follows it and reads through `DataObj`; Zarr/TIFF payloads pass through; REC refuses memory modes for Zarr/TIFF; no folder for memory-only recordings; `RecordingManager.releaseMemoryRecording` on removal. |
+| 6 | Multidata *In-memory recordings* policy (`memory_recording_preferences.py`, `sigMemoryRecordingPolicyChanged`); `MemoryLiveController` follows it and reads through `DataObj`; Zarr/TIFF payloads pass through; REC refuses memory-only Zarr and both memory modes for TIFF; no folder for memory-only recordings; `RecordingManager.releaseMemoryRecording` on removal. |
 
 Answered along the way: MoNaLISA's live session and `prepare_params` derive
 `scan_params` from the acquisition attributes, so the widget needs no special

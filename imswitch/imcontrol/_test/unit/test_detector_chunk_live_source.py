@@ -238,7 +238,10 @@ def test_completion_waits_for_the_drain_grace_after_the_end_mark():
     assert source.is_complete() is True
 
 
-def test_a_late_frame_restarts_the_drain_grace():
+def test_late_frames_within_the_grace_are_taken_and_the_deadline_holds():
+    """A camera's last frames land after the scan's end signal and are kept;
+    a camera that never stops (free-running, live view on) must not keep
+    the run alive: after the grace the stream is complete whatever arrives."""
     clock = _Clock(10.0)
     detector = _FakeDetector()
     source = _source(detector, _info(expected_frames=None), clock=clock,
@@ -249,11 +252,19 @@ def test_a_late_frame_restarts_the_drain_grace():
     clock.now = 10.3
     detector.produce(_frame(1))
     assert source.poll()[0].end == 1
-    clock.now = 10.7
     assert source.is_complete() is False
-    clock.now = 10.9
+    clock.now = 10.6
+    detector.produce(_frame(2))
+    assert source.poll() == []
     assert source.is_complete() is True
+    assert source.stats.frames_received == 1
     assert source.stats.ended is True
+
+
+def test_frame_shape_of_a_scan_driven_detector_is_taken_as_is():
+    detector = _FakeDetector(shape=(3, 100, 200))   # (S, Ny, Nx), array order
+    detector.isScanDriven = True
+    assert frame_shape_for_detector(detector) == (3, 100, 200)
 
 
 def test_all_planned_frames_complete_the_stream_without_an_end_mark():
@@ -360,6 +371,27 @@ def test_build_live_stack_info_resolves_the_recorded_layout():
     assert info.acquisition_layout.is_usable
     assert info.acquisition_layout.layout.detector == 'CAM'
     assert info.attrs['ScanStage:target_device'] == 'X'
+
+
+def test_build_live_stack_info_drops_a_layout_that_does_not_fit_the_stream():
+    """A frame-stream layout for a detector that delivers a 3D volume cannot
+    be resolved; the live path falls back to the remaining metadata rather
+    than refusing to run."""
+    layout = build_point_scan_layouts(
+        {'img_dims': [3, 2], 'img_axes_phys': ['x', 'y'], 'pixel_sizes': [0.1, 0.2]},
+        ('APD',), scan_source='ScanControllerPointScan',
+        pulse_counts=_OnePulseEach(),
+    )['APD']
+    plan = RecordingPlan('ScanOnce', rec_frames=6, acquisition_layouts={'APD': layout},
+                         source_format='memory')
+    attrs = build_recording_attrs(plan, 'APD', {}, expected_frames=6)
+    assert 'AcquisitionLayout:json' in attrs
+
+    info = build_live_stack_info('APD', (3, 5, 4), np.uint16, attrs, frames_per_stack=1)
+
+    assert info.frame_shape == (3, 5, 4)
+    assert 'AcquisitionLayout:json' not in info.attrs
+    assert info.acquisition_layout is not None
 
 
 def test_build_live_stack_info_without_a_timepoint_count_leaves_the_end_open():

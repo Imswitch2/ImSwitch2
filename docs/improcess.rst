@@ -77,9 +77,9 @@ There are three ways to open data:
 With the **Time lapse** reconstructor active, opening any one file or group
 of a time lapse opens the whole lapse as one stack (see `Time lapses`_).
 
-A recording ImControl saves with **Save in memory for reconstruction** (or
-**Save on disk and keep in memory**; HDF5 only) reaches ImProcess the moment
-it is finished.  The **In-memory recordings** setting in the Multidata dock
+A recording ImControl saves with **Save in memory for reconstruction**
+(HDF5) or **Save on disk and keep in memory** (HDF5 or Zarr) reaches
+ImProcess the moment it is finished.  The **In-memory recordings** setting in the Multidata dock
 decides what happens then: *List only* adds a row marked ``(MEMORY)`` to
 open by hand, *Open as current data* opens it at once, and *Open and
 reconstruct* opens it and runs the active reconstructor on it, so the result
