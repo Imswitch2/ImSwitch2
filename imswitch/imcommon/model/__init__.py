@@ -7,7 +7,7 @@ from .cancellation import (
     CancelToken, OperationCancelled, cancellableSleep, checkpoint,
     clearCurrentCancelToken, currentCancelToken, interruptThread, setCurrentCancelToken,
 )
-from .outputrouting import ThreadRoutingStream, routeThisThreadsOutputTo
+from .outputrouting import ThreadRoutingStream, currentRoute, routeThisThreadsOutputTo
 from .logging import initLogger
 from .shutdown import ShutdownState, shutdownState
 from .shortcut import shortcut, generateShortcuts, ShortcutScope, ShortcutAction, getBoundShortcuts

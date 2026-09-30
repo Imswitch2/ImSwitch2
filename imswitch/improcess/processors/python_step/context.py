@@ -11,7 +11,6 @@ ImScripting script; nothing here restricts it.
 
 from __future__ import annotations
 
-import contextlib
 import io
 import re
 import traceback
@@ -20,6 +19,7 @@ from typing import Any
 
 import numpy as np
 
+from imswitch.imcommon.model import currentRoute, routeThisThreadsOutputTo
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import finite_range
 from imswitch.improcess.model.labels_result import LabelsResult
@@ -233,17 +233,37 @@ def run_script(
     # not told its step's id, uses the plain name.
     filename = SCRIPT_FILENAME if step_name == "python" else f"<python step '{step_name}'>"
     namespace = build_namespace(inputs)
-    buffer = io.StringIO()
+    capture = _Capture(currentRoute())
     try:
         compiled = compile(code, filename, "exec")
-        # redirect_stdout swaps the process-wide sys.stdout, so text another
-        # thread prints meanwhile lands here too; accepted for a one-off script.
-        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+        # This thread's output only: a run on a worker thread must not swallow
+        # what the GUI thread prints meanwhile. What the code prints is also
+        # passed on to an outer route, which is how a panel streams it live.
+        with routeThisThreadsOutputTo(capture):
             exec(compiled, namespace)  # noqa: S102 - the feature: code runs as typed, like a plugin
     except (Exception, SystemExit) as exc:
         raise ScriptError.from_exception(exc, code, filename) from exc
     produced = _collect(namespace, ports)
-    return _build_results(produced, ports, inputs), buffer.getvalue()
+    return _build_results(produced, ports, inputs), capture.buffer.getvalue()
+
+
+class _Capture:
+    """What a run's code printed (stdout and stderr together), kept and passed on."""
+
+    def __init__(self, outer=None):
+        self.buffer = io.StringIO()
+        self._outer = outer
+
+    def write(self, text):
+        self.buffer.write(text)
+        if self._outer is not None:
+            self._outer.write(text)
+        return len(text)
+
+    def flush(self):
+        flush = getattr(self._outer, "flush", None)
+        if callable(flush):
+            flush()
 
 
 def _collect(namespace: dict, ports: tuple[str, ...]) -> dict:

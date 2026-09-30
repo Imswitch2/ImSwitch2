@@ -122,3 +122,39 @@ def test_the_exception_to_inject_can_be_chosen():
     assert interruptThread(thread.ident, KeyboardInterrupt) is True
     thread.join(10)
     assert outcome.get("kind") == "KeyboardInterrupt"
+
+
+def test_routes_nest_and_the_outer_one_is_put_back(restore_streams):
+    from imswitch.imcommon.model import currentRoute
+
+    outer, inner = io.StringIO(), io.StringIO()
+    assert currentRoute() is None
+    with routeThisThreadsOutputTo(outer):
+        print("one")
+        assert currentRoute() is outer
+        with routeThisThreadsOutputTo(inner):
+            print("two")
+            assert currentRoute() is inner
+        print("three")
+        assert currentRoute() is outer
+    assert currentRoute() is None
+    assert outer.getvalue() == "one\nthree\n" and inner.getvalue() == "two\n"
+
+
+def test_an_inner_route_can_pass_what_it_captures_to_the_outer_one(restore_streams):
+    from imswitch.imcommon.model import currentRoute
+
+    class Tee:
+        def __init__(self, *sinks):
+            self.sinks = [s for s in sinks if s is not None]
+
+        def write(self, text):
+            for sink in self.sinks:
+                sink.write(text)
+            return len(text)
+
+    outer, captured = io.StringIO(), io.StringIO()
+    with routeThisThreadsOutputTo(outer):
+        with routeThisThreadsOutputTo(Tee(captured, currentRoute())):
+            print("seen by both")
+    assert outer.getvalue() == captured.getvalue() == "seen by both\n"

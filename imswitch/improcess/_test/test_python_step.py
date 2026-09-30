@@ -3,6 +3,7 @@ the step inside a workflow."""
 
 import ast
 import os
+import time
 from pathlib import Path
 
 import h5py
@@ -1115,3 +1116,58 @@ def test_a_lazy_result_stays_lazy_in_the_console_namespace_and_is_read_in_a_step
     # an array already in memory is the same object either way
     stack = _stack()
     assert build_namespace([stack], materialise=False)["data"] is stack.data
+
+
+# -- what a run captures is this thread's output only -------------------------
+
+def test_a_run_does_not_swallow_what_other_threads_print_meanwhile(capsys):
+    import threading
+
+    def other():
+        time.sleep(0.05)
+        print("printed by another thread")            # the real stdout, not the run's capture
+
+    thread = threading.Thread(target=other)
+    thread.start()
+    code = "import time\nprint('mine')\ntime.sleep(0.3)\nprint('still mine')\nout = data\n"
+    (_result,), printed = run_script(code, [_stack()], ("out",))
+    thread.join(5)
+    assert printed == "mine\nstill mine\n"
+    assert "printed by another thread" in capsys.readouterr().out
+
+
+def test_what_the_code_prints_is_also_passed_to_an_outer_route_as_it_happens():
+    import io
+
+    from imswitch.imcommon.model import currentRoute, routeThisThreadsOutputTo
+
+    streamed = io.StringIO()
+    with routeThisThreadsOutputTo(streamed):
+        (_result,), printed = run_script("print('live')\nprint('more')\nout = data", [_stack()], ("out",))
+        assert currentRoute() is streamed                  # the outer route is back after the run
+    assert printed == "live\nmore\n" and streamed.getvalue() == "live\nmore\n"
+
+
+def test_a_failing_script_still_leaves_the_outer_route_in_place_and_streams_what_it_printed():
+    import io
+
+    from imswitch.imcommon.model import currentRoute, routeThisThreadsOutputTo
+
+    streamed = io.StringIO()
+    with routeThisThreadsOutputTo(streamed):
+        with pytest.raises(ScriptError):
+            run_script("print('before')\nraise ValueError('x')", [_stack()], ("out",))
+        assert currentRoute() is not None
+    assert streamed.getvalue() == "before\n"
+    assert currentRoute() is None
+
+
+def test_a_cancellation_is_not_a_script_error_and_user_code_cannot_swallow_it():
+    from imswitch.imcommon.model import OperationCancelled
+
+    code = (
+        "from imswitch.imcommon.model import OperationCancelled\n"
+        "try:\n    raise OperationCancelled('stop')\nexcept Exception:\n    swallowed = True\nout = data\n"
+    )
+    with pytest.raises(OperationCancelled):              # an `except Exception` in the script does not catch it
+        run_script(code, [_stack()], ("out",))

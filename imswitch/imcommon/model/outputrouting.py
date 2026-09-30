@@ -26,12 +26,24 @@ class ThreadRoutingStream:
         self._lock = threading.Lock()
 
     def register(self, threadIdent, sink):
+        """Route ``threadIdent``'s writes to ``sink``; returns the sink it replaced
+        (``None`` if it had none), so a nested route can put it back."""
         with self._lock:
+            previous = self._sinks.get(threadIdent)
             self._sinks[threadIdent] = sink
+            return previous
 
-    def unregister(self, threadIdent):
+    def unregister(self, threadIdent, restore=None):
+        """Stop routing ``threadIdent``, or go back to ``restore`` if one is given."""
         with self._lock:
-            self._sinks.pop(threadIdent, None)
+            if restore is None:
+                self._sinks.pop(threadIdent, None)
+            else:
+                self._sinks[threadIdent] = restore
+
+    def sinkOf(self, threadIdent):
+        with self._lock:
+            return self._sinks.get(threadIdent)
 
     def _target(self):
         return self._sinks.get(threading.get_ident(), self._fallback)
@@ -56,30 +68,44 @@ class ThreadRoutingStream:
 
 class routeThisThreadsOutputTo:
     """Context manager: route this thread's stdout/stderr writes to ``sink``
-    (anything with ``write``)."""
+    (anything with ``write``).
+
+    Re-entrant: a route opened inside another one (a script run inside a
+    processor run, both capturing) puts the outer sink back when it ends, and
+    :func:`currentRoute` lets the inner one pass what it captures on to it."""
 
     def __init__(self, sink):
         self._sink = sink
         self._routers = ()
+        self._previous = ()
 
     def __enter__(self):
         ident = threading.get_ident()
-        routers = []
+        routers, previous = [], []
         for streamName in ('stdout', 'stderr'):
             stream = getattr(sys, streamName)
             if not isinstance(stream, ThreadRoutingStream):
                 stream = ThreadRoutingStream(stream)
                 setattr(sys, streamName, stream)
-            stream.register(ident, self._sink)
+            previous.append(stream.register(ident, self._sink))
             routers.append(stream)
         self._routers = tuple(routers)
+        self._previous = tuple(previous)
         return self
 
     def __exit__(self, *_exc):
         ident = threading.get_ident()
-        for router in self._routers:
-            router.unregister(ident)
+        for router, previous in zip(self._routers, self._previous):
+            router.unregister(ident, restore=previous)
         return False
+
+
+def currentRoute():
+    """The sink this thread's ``stdout`` is routed to now, or ``None``."""
+    stream = sys.stdout
+    if isinstance(stream, ThreadRoutingStream):
+        return stream.sinkOf(threading.get_ident())
+    return None
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
