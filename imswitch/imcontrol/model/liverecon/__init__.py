@@ -12,6 +12,7 @@ so the source lives on this side of the boundary and imports the ImProcess
 from .detector_chunk_source import (
     DetectorChunkLiveSource,
     LiveStreamStats,
+    RetainedStack,
     build_live_stack_info,
     frame_shape_for_detector,
 )
@@ -19,6 +20,7 @@ from .detector_chunk_source import (
 __all__ = [
     'DetectorChunkLiveSource',
     'LiveStreamStats',
+    'RetainedStack',
     'build_live_stack_info',
     'frame_shape_for_detector',
 ]

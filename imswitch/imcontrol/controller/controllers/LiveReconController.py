@@ -22,26 +22,43 @@ for the next one. ImProcess is used as a
 library only (its reconstructors, live runtime and result helpers); nothing
 here touches its views or its module controller, and every ImProcess import
 is lazy so ImControl starts without it.
+
+After a run the held result can be sent to ImProcess's result list over the
+module channel (``sigProcessingResultProduced``), and, when the run kept its
+raw frames, the frames can be saved as an ImSwitch HDF5 recording with the
+reconstruction next to it. The frames are otherwise gone once reconstructed:
+the runtime consumes them, and nothing else records a scan that was not
+recorded.
 """
 
 from __future__ import annotations
 
+import copy
+import os
+import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 from qtpy import QtCore
 
-from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcommon.model import dirtools
+from imswitch.imcommon.model.memory_limits import describeBytes
+from imswitch.imcommon.model.ome_metadata import micrometres_per_unit
+from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import ChunkKind
-from imswitch.imcommon.model.ome_metadata import micrometres_per_unit
 from imswitch.imcontrol.model.managers.recording_metadata import (
+    MODE_SCAN as OME_MODE_SCAN,
+    MODE_TIMELAPSE as OME_MODE_TIMELAPSE,
     SOURCE_FORMAT_MEMORY,
     RecordingPlan,
     build_recording_attrs,
+    completed_recording_attrs,
     expected_frames_for,
     exposure_time_ms_for,
 )
@@ -78,11 +95,32 @@ class _LiveRun:
     reconstructorId: str
     reconstructor: Any = None
     ended: bool = False
+    keepRaw: bool = False
+    #: (Nx, Ny, Nz) and the step sizes the recorder would label a scan's
+    #: OME axes with; read at the scan start, since they describe that scan.
+    scanDims: Any = None
+    scanStepSizes: Any = None
     startedAt: float = field(default_factory=time.monotonic)
 
     @property
     def started(self) -> bool:
         return self.source is not None
+
+
+@dataclass
+class _SaveJob:
+    """What one press of *Save raw data and reconstruction* writes."""
+
+    rawPath: Optional[str]
+    rawStack: Any
+    rawRun: Optional[_LiveRun]
+    reconPath: Optional[Path]
+    result: Any
+
+
+def _safeFileName(text: str) -> str:
+    cleaned = re.sub(r'[^A-Za-z0-9._-]+', '_', str(text or '')).strip('._-')
+    return cleaned or 'live_recon'
 
 
 class LiveReconController(ImConWidgetController, StatefulComponentMixin):
@@ -120,6 +158,11 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         self._heldResult = None
         self._renderScheduled = False
         self._closed = False
+        # The raw frames the last finished run kept, and that run (its
+        # attribute block and scan geometry describe the frames).
+        self._rawStack = None
+        self._rawRun: Optional[_LiveRun] = None
+        self._saveThread: Optional[threading.Thread] = None
 
         self._statusTimer = QtCore.QTimer(self)
         self._statusTimer.setInterval(self.STATUS_INTERVAL_MS)
@@ -136,6 +179,8 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         widget.sigDisplayTargetChanged.connect(self._onDisplayTargetChanged)
         widget.sigFullLayerToggled.connect(lambda _checked: self._scheduleRender())
         widget.sigClearRequested.connect(self.clearResult)
+        widget.sigSendToImProcessRequested.connect(self.sendResultToImProcess)
+        widget.sigSaveRequested.connect(self.saveRawAndResult)
 
         self._commChannel.sigScanStarting.connect(self.onScanStarting)
         self._commChannel.sigScanStarted.connect(self.onScanStarted)
@@ -446,11 +491,15 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         run = _LiveRun(
             detectorName=detectorName, leaseHandle=handle, source=None,
             name=name, mode=mode, reconstructorId=str(self._activeId),
-            reconstructor=reconstructor,
+            reconstructor=reconstructor, keepRaw=bool(self._widget.getKeepRaw()),
         )
+        if mode == MODE_SCAN:
+            run.scanDims, run.scanStepSizes = self._scanGeometry()
         self._run = run
         self._lastJobName = name
         self._heldResult = None
+        self._dropRawStack()
+        self._updateActions()
 
         scanDriven = bool(getattr(manager[detectorName], 'isScanDriven', False))
         if mode == MODE_SCAN and scanDriven and not atScanStarted:
@@ -464,7 +513,7 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
     def _startRun(self, run: _LiveRun) -> bool:
         """Build and arm the source and start the ImProcess runtime on it."""
         try:
-            source = self._buildSource(run.mode, run.detectorName)
+            source = self._buildSource(run.mode, run.detectorName, retain=run.keepRaw)
             source.arm()
         except Exception as exc:
             self._logger.error(
@@ -496,10 +545,11 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             return False
 
         self._statusTimer.start()
+        self._updateActions()
         self._widget.setStatusText('Armed: waiting for frames')
         return True
 
-    def _buildSource(self, mode: str, detectorName: str):
+    def _buildSource(self, mode: str, detectorName: str, *, retain: bool = False):
         from imswitch.imcontrol.model.liverecon import (
             DetectorChunkLiveSource,
             build_live_stack_info,
@@ -537,7 +587,7 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         return DetectorChunkLiveSource(
             manager, detectorName, stackInfo,
             consumer_key=self.CONSUMER_KEY, chunk_kind=ChunkKind.RAW,
-            frame_transform=transform,
+            frame_transform=transform, retain_frames=retain,
         )
 
     def _scanPlan(self, detectorName: str) -> RecordingPlan:
@@ -563,6 +613,34 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             'ScanOnce', rec_frames=recFrames, num_cam_ttl=numCamTTL,
             acquisition_layouts=layouts, source_format=SOURCE_FORMAT_MEMORY,
         )
+
+    def _scanGeometry(self) -> tuple:
+        """``(scanDims, scanStepSizes)`` as the recorder reads them, or Nones.
+
+        Asked of the active scan source first and of the channel second, so
+        a rig with several scanners answers for the one about to run.
+        """
+        dims = steps = None
+        owners = [self._commChannel]
+        try:
+            source = self._commChannel.getActiveScanSource()
+        except Exception:
+            source = None
+        if source is not None:
+            owners.insert(0, source)
+        for owner in owners:
+            getDims = getattr(owner, 'getDimsScan', None)
+            getSteps = getattr(owner, 'getScanStepSizes', None)
+            if not callable(getDims) or not callable(getSteps):
+                continue
+            try:
+                dims = tuple(int(v) for v in getDims())
+                steps = tuple(float(v) for v in getSteps())
+            except Exception:
+                dims = steps = None
+                continue
+            break
+        return dims, steps
 
     def _frameTransformFor(self, detectorName: str):
         if not self._widget.getUseDisplayed():
@@ -636,12 +714,14 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
                     text += ' (incomplete)'
                 if stats.frames_discarded:
                     text += f', {stats.frames_discarded} beyond the plan discarded'
+                text += self._keepRawStack(run)
             else:
                 text = 'Finished: the scan ended before any frame was expected'
             if not self._widget.getKeepLayer() and self._widget.getDisplayTarget() == DISPLAY_VIEWER:
                 self._heldResult = None
                 self._removeResultLayers(run.name)
             self._widget.setStatusText(text)
+        self._updateActions()
         if self._pendingRestart and self._liveEnabled:
             # Started at the next boundary (onScanStarted / onScanStarting),
             # never in the middle of a scan already producing frames.
@@ -663,7 +743,32 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             text += f', {stats.frames_discarded} discarded'
         if stats.overflow_events:
             text += f', {stats.overflow_events} overflow(s): incomplete'
+        if run.keepRaw:
+            text += f', keeping raw frames ({describeBytes(run.source.retained_bytes())})'
         self._widget.setStatusText(text)
+
+    def _keepRawStack(self, run: _LiveRun) -> str:
+        """Take the finished run's kept frames; returns the status note for them."""
+        if not run.keepRaw:
+            return ''
+        try:
+            stack = run.source.retained_stack()
+        except Exception as exc:
+            self._logger.error(f'Could not take the kept raw frames: {exc}', exc_info=True)
+            return '; the raw frames could not be kept'
+        finally:
+            try:
+                run.source.release_retained()
+            except Exception:
+                pass
+        if stack is None:
+            return '; no raw frames were received'
+        self._rawStack = stack
+        self._rawRun = run
+        note = f'; raw frames kept: {stack.frames} ({describeBytes(stack.nbytes)})'
+        if not stack.complete:
+            note += ' (partial stack)'
+        return note
 
     # ------------------------------------------------------------------
     # Results and display
@@ -672,7 +777,10 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
     def _onLiveResult(self, result) -> None:
         if result is None:
             return
+        first = self._heldResult is None
         self._heldResult = result
+        if first:
+            self._updateActions()
         self._scheduleRender()
 
     def _onLiveTimepoint(self, index: int, plane) -> None:
@@ -789,8 +897,242 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
 
     def clearResult(self) -> None:
         self._heldResult = None
+        self._dropRawStack()
         self._widget.clearImage()
         self._removeResultLayers(self._lastJobName)
+        self._updateActions()
+
+    # ------------------------------------------------------------------
+    # Actions on the held result: send to ImProcess, save with raw frames
+    # ------------------------------------------------------------------
+
+    @property
+    def rawStack(self):
+        """The raw frames kept from the last finished run (``RetainedStack``), or None."""
+        return self._rawStack
+
+    def _dropRawStack(self) -> None:
+        self._rawStack = None
+        self._rawRun = None
+
+    def _updateActions(self) -> None:
+        widget = self._widget
+        widget.setSendToImProcessEnabled(self._heldResult is not None)
+        widget.setSaveEnabled(
+            (self._heldResult is not None or self._rawStack is not None)
+            and self._run is None and self._saveThread is None
+        )
+
+    def _imProcessSignal(self):
+        """The module-channel signal into ImProcess, when ImProcess is loaded."""
+        channel = self._moduleCommChannel
+        signal = getattr(channel, 'sigProcessingResultProduced', None)
+        if signal is None:
+            return None
+        try:
+            if not channel.isModuleRegistered('improcess'):
+                return None
+        except Exception:
+            return None
+        return signal
+
+    def sendResultToImProcess(self) -> bool:
+        """Offer the held result to ImProcess's result list.
+
+        Once the run has finished the object itself crosses (the modules
+        share a process, so nothing is copied). While a run is still
+        writing into it, a snapshot of the data goes instead, so the entry
+        in ImProcess does not keep changing under the user.
+        """
+        result = self._heldResult
+        if result is None:
+            self._widget.setStatusText('No reconstruction to send yet')
+            return False
+        signal = self._imProcessSignal()
+        if signal is None:
+            self._widget.setStatusText('ImProcess is not loaded; there is nothing to send to')
+            return False
+        name = self._lastJobName or str(getattr(result, 'name', '') or 'Live reconstruction')
+        if self._run is not None and self._run.started:
+            snapshot = self._snapshotResult(result)
+            if snapshot is None:
+                self._widget.setStatusText(
+                    'The reconstruction is still being written; try again when the run has ended'
+                )
+                return False
+            result = snapshot
+        signal.emit(result, name)
+        self._widget.setStatusText(f'Sent to ImProcess: {name}')
+        return True
+
+    @staticmethod
+    def _snapshotResult(result):
+        """A copy of ``result`` with its own data buffer and identity, or None."""
+        try:
+            snapshot = copy.copy(result)
+            snapshot.data = np.array(result.data, copy=True)
+        except Exception:
+            return None
+        try:
+            from imswitch.imcommon.algorithms.spatial_frame import mint_uid
+            snapshot.result_uid = mint_uid('result')
+        except Exception:
+            pass
+        metadata = getattr(result, 'metadata', None)
+        if isinstance(metadata, dict):
+            try:
+                snapshot.metadata = copy.deepcopy(metadata)
+            except Exception:
+                snapshot.metadata = dict(metadata)
+        if hasattr(snapshot, 'artifacts'):
+            snapshot.artifacts = []
+        return snapshot
+
+    def saveRawAndResult(self) -> bool:
+        """Write the kept raw frames and the held reconstruction to disk.
+
+        The raw frames become an ImSwitch HDF5 recording (the detector group
+        with the same attribute block a recording of the scan would carry),
+        at the path chosen; the reconstruction is saved next to it with a
+        ``_recon`` suffix in the first format the result supports (OME-TIFF
+        when it does). Writing runs on a worker thread; the status line
+        reports the outcome.
+        """
+        if self._run is not None:
+            self._widget.setStatusText('Wait for the run to finish before saving')
+            return False
+        if self._saveThread is not None:
+            self._widget.setStatusText('A save is still in progress')
+            return False
+        result, stack = self._heldResult, self._rawStack
+        if result is None and stack is None:
+            self._widget.setStatusText('Nothing to save: no reconstruction and no raw frames kept')
+            return False
+        path = self._widget.askForSavePath(self._suggestedSavePath())
+        if not path:
+            return False
+        rawPath = str(path)
+        if not rawPath.lower().endswith(('.h5', '.hdf5')):
+            rawPath += '.h5'
+        stem = os.path.splitext(rawPath)[0]
+        job = _SaveJob(
+            rawPath=rawPath if stack is not None else None,
+            rawStack=stack, rawRun=self._rawRun,
+            reconPath=Path(f'{stem}_recon') if result is not None else None,
+            result=result,
+        )
+        self._saveThread = threading.Thread(
+            target=self._runSave, args=(job,), name='LiveReconSave', daemon=True,
+        )
+        self._saveThread.start()
+        self._updateActions()
+        self._widget.setStatusText(f'Saving to {os.path.dirname(rawPath) or "."}…')
+        return True
+
+    def _runSave(self, job: _SaveJob) -> None:
+        """Worker thread: write what the job names, then report on the controller thread."""
+        written: list[str] = []
+        errors: list[str] = []
+        if job.rawPath and job.rawStack is not None:
+            try:
+                self._writeRawStack(job.rawStack, job.rawRun, job.rawPath)
+                written.append(job.rawPath)
+            except Exception as exc:
+                self._logger.error(f'Could not save the raw frames: {exc}', exc_info=True)
+                errors.append(f'raw frames: {exc}')
+        if job.reconPath is not None and job.result is not None:
+            try:
+                written.append(self._writeResult(job.result, job.reconPath))
+            except Exception as exc:
+                self._logger.error(f'Could not save the reconstruction: {exc}', exc_info=True)
+                errors.append(f'reconstruction: {exc}')
+        self._invokeOnControllerThread(lambda: self._onSaveFinished(written, errors))
+
+    def _writeRawStack(self, stack, run: Optional[_LiveRun], rawPath: str) -> None:
+        from imswitch.imcontrol.model.managers.RecordingManager import (
+            HDF5Storer,
+            annotationsFromAttrs,
+        )
+
+        detectorName = run.detectorName if run is not None else str(self._widget.selectedDetector())
+        planned = dict(run.source.stack_info.attrs) if run is not None and run.started else {}
+        planned['recording:lapse_index'] = int(stack.stack_index)
+        stats = run.source.stats if run is not None and run.started else None
+        attrs = completed_recording_attrs(
+            planned, stack.frames,
+            discarded_frames=int(getattr(stats, 'frames_discarded', 0) or 0),
+            frames_missing=(not stack.complete) or bool(getattr(stats, 'overflow_events', 0)),
+        )
+        manager = self._master.detectorsManager
+        storer = HDF5Storer(os.path.splitext(rawPath)[0], manager)
+        omeMeta = self._omeMetaFor(run, detectorName, stack.frames, annotationsFromAttrs(attrs))
+        if omeMeta is not None:
+            storer.omeMeta = {detectorName: omeMeta}
+        if os.path.exists(rawPath):
+            # The file dialog already asked about overwriting.
+            os.remove(rawPath)
+        storer.writeStack(rawPath, detectorName, stack.data, attrs)
+
+    def _omeMetaFor(self, run: Optional[_LiveRun], detectorName: str, nFrames: int, annotations):
+        """The recorder's OME description of the stack, or None when it cannot be built."""
+        recordingManager = getattr(self._master, 'recordingManager', None)
+        build = getattr(recordingManager, 'buildOmeMeta', None)
+        if not callable(build):
+            return None
+        mode = OME_MODE_SCAN if run is not None and run.mode == MODE_SCAN else OME_MODE_TIMELAPSE
+        try:
+            return build(
+                detectorName, mode, max(1, int(nFrames)),
+                scanDims=run.scanDims if run is not None else None,
+                scanStepSizes=run.scanStepSizes if run is not None else None,
+                annotations=annotations,
+            )
+        except Exception as exc:
+            self._logger.warning(f'No OME metadata for the raw frames: {exc}')
+            return None
+
+    @staticmethod
+    def _writeResult(result, reconPath: Path) -> str:
+        formats = tuple(getattr(result, 'supported_formats', ()) or ('tiff',))
+        fmt = 'tiff' if 'tiff' in formats else formats[0]
+        try:
+            receipt = result.save(reconPath, fmt, overwrite=True)
+        except TypeError:
+            receipt = result.save(reconPath, fmt)
+        primary = getattr(receipt, 'primary', None)
+        return str(primary) if primary is not None else str(reconPath)
+
+    def _onSaveFinished(self, written: list, errors: list) -> None:
+        self._saveThread = None
+        if self._closed:
+            return
+        parts = []
+        if written:
+            parts.append('Saved ' + ', '.join(os.path.basename(path) for path in written))
+        if errors:
+            parts.append('not saved: ' + '; '.join(errors))
+        self._widget.setStatusText('; '.join(parts) or 'Nothing was saved')
+        self._updateActions()
+
+    def _suggestedSavePath(self) -> str:
+        run = self._rawRun or self._run
+        detector = run.detectorName if run is not None else (self._widget.selectedDetector() or 'raw')
+        name = _safeFileName(self._lastJobName or 'live_recon')
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        return os.path.join(self._defaultSaveFolder(), f'{name}_{stamp}_{detector}.h5')
+
+    def _defaultSaveFolder(self) -> str:
+        """Today's recordings folder, as the Recording widget uses it."""
+        try:
+            options, _ = configfiletools.loadOptions()
+            folder = options.recording.folderFor()
+        except Exception:
+            folder = os.path.join(dirtools.UserFileDirs.Root, 'recordings')
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            pass
+        return folder
 
     # ------------------------------------------------------------------
     # Persistence
@@ -806,6 +1148,7 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             'useDisplayed': self._widget.getUseDisplayed(),
             'fullLayer': self._widget.getFullLayer(),
             'keepLayer': self._widget.getKeepLayer(),
+            'keepRaw': self._widget.getKeepRaw(),
         }
 
     def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
@@ -835,6 +1178,7 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             ('useDisplayed', self._widget.setUseDisplayed),
             ('fullLayer', self._widget.setFullLayer),
             ('keepLayer', self._widget.setKeepLayer),
+            ('keepRaw', self._widget.setKeepRaw),
         ):
             if key in state:
                 setter(bool(state[key]))
@@ -865,6 +1209,10 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             self._stopRun(graceful=False)
         except Exception as exc:
             self._logger.error(f'Live reconstruction did not stop cleanly: {exc}', exc_info=True)
+        thread = self._saveThread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=10.0)
+        self._dropRawStack()
         try:
             getWidgetStatePersistence().unregister('LiveRecon')
         except Exception:

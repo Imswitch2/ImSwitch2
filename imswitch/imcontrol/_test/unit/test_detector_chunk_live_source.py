@@ -15,6 +15,7 @@ from imswitch.imcontrol.controller.controllers._acquisition_layout_source import
 )
 from imswitch.imcontrol.model.liverecon import (
     DetectorChunkLiveSource,
+    RetainedStack,
     build_live_stack_info,
     frame_shape_for_detector,
 )
@@ -408,3 +409,100 @@ def test_frame_shape_for_detector_reverses_width_height_and_measures_transforms(
     detector = _FakeDetector(shape=(640, 480))
     assert frame_shape_for_detector(detector) == (480, 640)
     assert frame_shape_for_detector(detector, lambda f: f.T) == (640, 480)
+
+
+# -- kept frames ----------------------------------------------------------------
+
+def _retaining_source(detector, frames_per_stack, **kwargs):
+    info = StackInfo(
+        frame_shape=(4, 5), dtype=np.dtype(np.uint16), attrs={},
+        frames_per_stack=frames_per_stack, expected_frames=None, detector_name=detector.name,
+    )
+    return DetectorChunkLiveSource(
+        _FakeDetectorsManager(detector), detector.name, info, retain_frames=True, **kwargs
+    )
+
+
+def test_frames_are_not_kept_unless_asked():
+    detector = _FakeDetector()
+    info = StackInfo(frame_shape=(4, 5), dtype=np.dtype(np.uint16), attrs={}, frames_per_stack=2)
+    source = DetectorChunkLiveSource(_FakeDetectorsManager(detector), 'CAM', info)
+    source.open()
+    detector.produce(_frame(1), _frame(2))
+    source.poll()
+
+    assert source.retains_frames is False
+    assert source.retained_stack() is None
+    assert source.retained_bytes() == 0
+
+
+def test_a_whole_stack_is_kept_in_arrival_order():
+    detector = _FakeDetector()
+    source = _retaining_source(detector, frames_per_stack=3)
+    source.open()
+    detector.produce(_frame(1), _frame(2))
+    source.poll()
+    detector.produce(_frame(3))
+    source.poll()
+
+    stack = source.retained_stack()
+    assert isinstance(stack, RetainedStack)
+    assert stack.frames == 3 and stack.complete and stack.stack_index == 0
+    assert [int(plane[0, 0]) for plane in stack.data] == [1, 2, 3]
+    assert stack.nbytes == source.retained_bytes() == 3 * 4 * 5 * 2
+
+
+def test_the_latest_whole_stack_wins_over_a_partial_one_being_received():
+    detector = _FakeDetector()
+    source = _retaining_source(detector, frames_per_stack=2)
+    source.open()
+    detector.produce(_frame(1), _frame(2), _frame(3), _frame(4), _frame(5))   # one chunk, 2.5 stacks
+    source.poll()
+
+    stack = source.retained_stack()
+    assert stack.stack_index == 1 and stack.complete
+    assert [int(plane[0, 0]) for plane in stack.data] == [3, 4]
+    # Two stacks at most are held: the latest whole one and the one arriving.
+    assert source.retained_bytes() == 3 * 4 * 5 * 2
+
+    detector.produce(_frame(6))
+    source.poll()
+    stack = source.retained_stack()
+    assert stack.stack_index == 2 and stack.complete
+    assert [int(plane[0, 0]) for plane in stack.data] == [5, 6]
+
+
+def test_a_partial_stack_is_all_there_is_when_no_stack_completed():
+    detector = _FakeDetector()
+    source = _retaining_source(detector, frames_per_stack=4)
+    source.open()
+    detector.produce(_frame(1), _frame(2))
+    source.poll()
+
+    stack = source.retained_stack()
+    assert stack.frames == 2 and not stack.complete and stack.frames_expected == 4
+
+
+def test_kept_frames_survive_close_until_released():
+    detector = _FakeDetector()
+    source = _retaining_source(detector, frames_per_stack=1)
+    source.open()
+    detector.produce(_frame(7))
+    source.poll()
+    source.close()
+
+    assert source.retained_stack().frames == 1
+    source.release_retained()
+    assert source.retained_stack() is None
+    assert source.retained_bytes() == 0
+
+
+def test_without_a_stack_size_the_run_is_kept_as_one_stack():
+    detector = _FakeDetector()
+    source = _retaining_source(detector, frames_per_stack=None)
+    source.open()
+    detector.produce(_frame(1), _frame(2), _frame(3))
+    source.poll()
+
+    stack = source.retained_stack()
+    assert stack.frames == 3 and stack.complete and stack.frames_expected is None

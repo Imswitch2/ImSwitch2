@@ -1276,6 +1276,32 @@ class HDF5Storer(Storer):
                 other_attrs[key] = value
         return recording_attrs, other_attrs
 
+    def writeStack(self, path, detectorName, frames, attrs, *, recMode='recording'):
+        """Write one whole stack of ``detectorName`` as a finished recording file.
+
+        The same structured layout a streamed recording ends up with (the
+        detector group, its ``data`` dataset with the ``recording:*`` and
+        layout attributes, the categorised metadata groups, the OME payload
+        when ``omeMeta`` is set), written in one go from frames already in
+        memory. For a stack that was never streamed to disk -- the live
+        reconstruction tool keeps its run's frames in RAM and saves them on
+        request. ``attrs`` is the finished attribute block
+        (:func:`recording_metadata.completed_recording_attrs`). Returns the
+        stored shape.
+        """
+        data = np.asarray(frames)
+        if data.ndim == 2:
+            data = data[np.newaxis, ...]
+        attrs = dict(attrs or {})
+        self._set_ome_annotations(detectorName, attrs)
+        with AsTemporaryFile(path) as tmpPath:
+            with h5py.File(tmpPath, 'w') as file:
+                file.attrs['timestamp'] = time.time()
+                file.attrs['rec_mode'] = str(recMode)
+                self._createDetectorGroup(file, detectorName, data.dtype, attrs, data=data)
+        logger.info(f'Saved {detectorName} stack {tuple(data.shape)} to {path}')
+        return tuple(data.shape)
+
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Save snapshot with structured HDF5 layout.
 

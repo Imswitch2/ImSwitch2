@@ -10,7 +10,7 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
-from imswitch.imcommon.view.guitools import pyqtgraphtools
+from imswitch.imcommon.view.guitools import dialogtools, pyqtgraphtools
 from .basewidgets import Widget
 
 
@@ -36,7 +36,10 @@ class LiveReconWidget(Widget):
     sigUseDisplayedToggled = QtCore.Signal(bool)
     sigFullLayerToggled = QtCore.Signal(bool)
     sigKeepLayerToggled = QtCore.Signal(bool)
+    sigKeepRawToggled = QtCore.Signal(bool)
     sigClearRequested = QtCore.Signal()
+    sigSendToImProcessRequested = QtCore.Signal()
+    sigSaveRequested = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -78,9 +81,28 @@ class LiveReconWidget(Widget):
         )
         self.keepLayerCheck = QtWidgets.QCheckBox('Keep result after run')
         self.keepLayerCheck.setChecked(True)
+        self.keepRawCheck = QtWidgets.QCheckBox('Keep raw frames')
+        self.keepRawCheck.setToolTip(
+            'Keep the frames of the latest stack (one scan, or one free-running '
+            'update) in RAM while reconstructing, so they can be saved with the '
+            'reconstruction afterwards. Costs up to two stacks of frames in '
+            'memory; the status line says how much is held.'
+        )
         self.liveButton = QtWidgets.QPushButton('Live')
         self.liveButton.setCheckable(True)
         self.clearButton = QtWidgets.QPushButton('Clear')
+        self.sendButton = QtWidgets.QPushButton('Send to ImProcess')
+        self.sendButton.setToolTip(
+            'Add the reconstruction shown here to ImProcess\'s result list '
+            '(ImProcess must be loaded)'
+        )
+        self.sendButton.setEnabled(False)
+        self.saveButton = QtWidgets.QPushButton('Save raw data and reconstruction…')
+        self.saveButton.setToolTip(
+            'Write the kept raw frames as an ImSwitch HDF5 recording and the '
+            'reconstruction next to it'
+        )
+        self.saveButton.setEnabled(False)
         self.statusLabel = QtWidgets.QLabel('Idle')
         self.statusLabel.setWordWrap(True)
 
@@ -122,7 +144,8 @@ class LiveReconWidget(Widget):
         grid.addWidget(QtWidgets.QLabel('Frames per update'), row, 2)
         grid.addWidget(self.framesPerUpdateSpin, row, 3)
         row += 1
-        grid.addWidget(self.useDisplayedCheck, row, 0, 1, 4)
+        grid.addWidget(self.useDisplayedCheck, row, 0, 1, 2)
+        grid.addWidget(self.keepRawCheck, row, 2, 1, 2)
         row += 1
         grid.addWidget(QtWidgets.QLabel('Show in'), row, 0)
         grid.addWidget(self.displayCombo, row, 1)
@@ -133,6 +156,9 @@ class LiveReconWidget(Widget):
         row += 1
         grid.addWidget(self.liveButton, row, 0, 1, 3)
         grid.addWidget(self.clearButton, row, 3)
+        row += 1
+        grid.addWidget(self.sendButton, row, 0, 1, 2)
+        grid.addWidget(self.saveButton, row, 2, 1, 2)
         row += 1
         grid.addWidget(self.statusLabel, row, 0, 1, 4)
         row += 1
@@ -148,8 +174,11 @@ class LiveReconWidget(Widget):
         self.useDisplayedCheck.toggled.connect(self._emitIfNotBlocked(self.sigUseDisplayedToggled))
         self.fullLayerCheck.toggled.connect(self._emitIfNotBlocked(self.sigFullLayerToggled))
         self.keepLayerCheck.toggled.connect(self._emitIfNotBlocked(self.sigKeepLayerToggled))
+        self.keepRawCheck.toggled.connect(self._emitIfNotBlocked(self.sigKeepRawToggled))
         self.liveButton.toggled.connect(self.sigLiveToggled)
         self.clearButton.clicked.connect(self.sigClearRequested)
+        self.sendButton.clicked.connect(self.sigSendToImProcessRequested)
+        self.saveButton.clicked.connect(self.sigSaveRequested)
         self._syncModeControls()
         self._syncDisplayControls()
 
@@ -322,6 +351,30 @@ class LiveReconWidget(Widget):
 
     def setKeepLayer(self, enabled):
         self.keepLayerCheck.setChecked(bool(enabled))
+
+    def getKeepRaw(self):
+        return self.keepRawCheck.isChecked()
+
+    def setKeepRaw(self, enabled):
+        self.keepRawCheck.setChecked(bool(enabled))
+
+    # -- actions on the held result ----------------------------------------
+
+    def setSendToImProcessEnabled(self, enabled):
+        self.sendButton.setEnabled(bool(enabled))
+
+    def setSaveEnabled(self, enabled):
+        self.saveButton.setEnabled(bool(enabled))
+
+    def askForSavePath(self, suggestedPath):
+        """Ask where to write the raw frames; the reconstruction goes next to it.
+
+        Returns the chosen path, or ``None`` when the dialog was cancelled.
+        """
+        return dialogtools.askForFilePath(
+            self, 'Save raw data and reconstruction', defaultFolder=suggestedPath,
+            nameFilter='HDF5 recording (*.h5)', isSaving=True,
+        )
 
     def isLiveChecked(self):
         return self.liveButton.isChecked()

@@ -64,6 +64,11 @@ class ImProcessMainController(MainController):
         # Bridge live results to imcontrol if enabled
         self.__commChannel.sigResultProduced.connect(self._onResultProduced)
         self.__commChannel.sigLiveResultUpdated.connect(self._onLiveResultUpdated)
+        # A result another module made (ImControl's live reconstruction tool)
+        # joins the reconstruction list like one of ImProcess's own.
+        external = getattr(self.__moduleCommChannel, 'sigProcessingResultProduced', None)
+        if external is not None:
+            external.connect(self._onExternalResultProduced)
 
         # List of Controllers for the GUI Widgets
         self.__factory = ImProcessWidgetControllerFactory(
@@ -935,6 +940,21 @@ class ImProcessMainController(MainController):
             return bool(payloads())
         except Exception:
             return False
+
+    def _onExternalResultProduced(self, result, name):
+        """Fold a result produced by another module into the reconstruction list.
+
+        ImControl's live reconstruction tool sends the result it holds. It
+        arrives as an object, exactly as a panel's result does, so it is
+        published the same way: listed, made current, and bridged back to
+        the ImControl viewer when that display is on.
+        """
+        if result is None:
+            return
+        name = str(name or getattr(result, 'name', '') or 'result')
+        self.__commChannel.sigResultProduced.emit(result, name)
+        self.__commChannel.sigCurrentResultChanged.emit(result)
+        self.__commChannel.sigStatusMessage.emit(f'Received "{name}" from ImControl')
 
     def _onLiveResultUpdated(self, result):
         """Bridge live result update to imcontrol if display is enabled."""

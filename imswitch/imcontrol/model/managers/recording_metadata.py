@@ -366,3 +366,42 @@ def build_recording_attrs(
         attrs['recording:planned_start_time'] = str(plan.planned_start_time)
 
     return attrs
+
+
+def completed_recording_attrs(
+    attrs: Mapping[str, Any],
+    actual_frames: int,
+    *,
+    source_format: str = 'HDF5',
+    discarded_frames: int = 0,
+    frames_missing: bool = False,
+) -> Dict[str, Any]:
+    """The attribute block of a finished recording, from a planned one.
+
+    What the recording worker adds at finalize, for a stack written whole
+    after the fact (the live reconstruction tool saving the frames it kept):
+    the actual count and partition, the outcome, and the container the stack
+    now lives in. The outcome is ``stopped_early`` when fewer frames than
+    planned were written, or when ``frames_missing`` says the stream lost
+    some on the way, so a reader never mistakes a stack with holes for a
+    clean one.
+    """
+    completed: Dict[str, Any] = dict(attrs)
+    actual = int(max(0, actual_frames))
+    planned = completed.get('recording:planned_frames')
+    try:
+        planned = int(planned) if planned is not None else None
+    except (TypeError, ValueError):
+        planned = None
+    completed['recording:source_format'] = str(source_format)
+    completed['recording:actual_frames'] = actual
+    completed.setdefault('recording:planned_frames', actual)
+    completed.setdefault('recording:planned_partitions', 1)
+    completed['recording:actual_partitions'] = 1
+    completed['recording:discarded_frames'] = int(max(0, discarded_frames))
+    completed['recording:completion_outcome'] = (
+        'stopped_early'
+        if frames_missing or (planned is not None and actual < planned)
+        else 'complete'
+    )
+    return completed

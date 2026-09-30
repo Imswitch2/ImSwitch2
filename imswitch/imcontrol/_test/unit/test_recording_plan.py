@@ -23,6 +23,7 @@ from imswitch.imcontrol.model.managers.recording_metadata import (
     SOURCE_FORMAT_MEMORY,
     RecordingPlan,
     build_recording_attrs,
+    completed_recording_attrs,
     expected_frames_for,
     planned_frames_from_layout,
 )
@@ -190,3 +191,43 @@ def test_memory_source_format_is_distinct_from_the_file_formats():
     assert SOURCE_FORMAT_MEMORY == 'memory'
     plan = RecordingPlan('ScanOnce', rec_frames=1, source_format=SOURCE_FORMAT_MEMORY)
     assert build_recording_attrs(plan, 'CAM', {})['recording:source_format'] == 'memory'
+
+
+def test_completed_recording_attrs_finish_a_planned_block():
+    planned = build_recording_attrs(
+        RecordingPlan('ScanOnce', rec_frames=4, num_cam_ttl={'CAM': 1}, source_format='memory'),
+        'CAM', {'Detector:exposure': '12.5'}, expected_frames=4,
+    )
+
+    done = completed_recording_attrs(planned, 4)
+
+    assert done['recording:source_format'] == 'HDF5'
+    assert done['recording:actual_frames'] == 4
+    assert done['recording:planned_frames'] == 4
+    assert done['recording:actual_partitions'] == 1
+    assert done['recording:discarded_frames'] == 0
+    assert done['recording:completion_outcome'] == 'complete'
+    assert done['Detector:exposure'] == '12.5'
+    assert planned['recording:source_format'] == 'memory'      # input untouched
+
+
+@pytest.mark.parametrize('actual, missing, outcome', [
+    (3, False, 'stopped_early'),
+    (4, True, 'stopped_early'),
+    (4, False, 'complete'),
+])
+def test_completed_recording_attrs_report_missing_frames(actual, missing, outcome):
+    planned = {'recording:planned_frames': 4}
+
+    done = completed_recording_attrs(planned, actual, frames_missing=missing, discarded_frames=2)
+
+    assert done['recording:completion_outcome'] == outcome
+    assert done['recording:discarded_frames'] == 2
+
+
+def test_completed_recording_attrs_without_a_plan_take_the_actual_count():
+    done = completed_recording_attrs({}, 7)
+
+    assert done['recording:planned_frames'] == 7
+    assert done['recording:planned_partitions'] == 1
+    assert done['recording:completion_outcome'] == 'complete'

@@ -89,7 +89,7 @@ class CommunicationChannel(SignalInterface):
     ``ImProcessMainController`` forwards it to
     ``ImProcessMainView.showStatusMessage``.
 
-    Emitters: DataFrameController, FileIOController
+    Emitters: DataFrameController, FileIOController, ImProcessMainController
     Listeners: ImProcessMainController
     """
 

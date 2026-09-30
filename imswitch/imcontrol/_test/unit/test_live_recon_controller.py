@@ -9,6 +9,7 @@ reconstructors, the live runtime and its worker threads are the real ones.
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import h5py
 import numpy as np
 import pytest
 from qtpy import QtCore
@@ -39,6 +40,7 @@ class _FakeDetector:
         self.name = name
         self.shape = shape                 # (width, height)
         self.dtype = np.dtype(np.uint16)
+        self.pixelSizeUm = [1.0, 0.2, 0.1]
         self.forAcquisition = True
         self.isScanDriven = False
         self._hardware = []
@@ -185,8 +187,21 @@ def registry():
         yield fake
 
 
-@pytest.fixture
-def rig(qtbot):
+class _FakeModuleChannel:
+    """The module channel as the send-to-ImProcess action sees it."""
+
+    def __init__(self, registered=('imcontrol', 'improcess')):
+        self._registered = set(registered)
+        self.sent = []
+        self.sigProcessingResultProduced = SimpleNamespace(
+            emit=lambda result, name: self.sent.append((result, name))
+        )
+
+    def isModuleRegistered(self, moduleId):
+        return moduleId in self._registered
+
+
+def _build_rig(qtbot, moduleChannel=None):
     detector = _FakeDetector()
     manager = _FakeDetectorsManager(detector)
     channel = _FakeCommChannel(positions=4, layout=_layout(2, 2))
@@ -194,11 +209,37 @@ def rig(qtbot):
     qtbot.addWidget(widget)
     controller = LiveReconController(
         _setup(), channel, SimpleNamespace(detectorsManager=manager),
-        widget=widget, factory=None, moduleCommChannel=None,
+        widget=widget, factory=None, moduleCommChannel=moduleChannel,
     )
-    yield SimpleNamespace(detector=detector, manager=manager, channel=channel,
-                          widget=widget, controller=controller)
-    controller.closeEvent()
+    return SimpleNamespace(detector=detector, manager=manager, channel=channel,
+                           widget=widget, controller=controller, module=moduleChannel)
+
+
+@pytest.fixture
+def rig(qtbot):
+    built = _build_rig(qtbot)
+    yield built
+    built.controller.closeEvent()
+
+
+@pytest.fixture
+def improcess_rig(qtbot):
+    built = _build_rig(qtbot, _FakeModuleChannel())
+    yield built
+    built.controller.closeEvent()
+
+
+def _run_one_scan(rig, qtbot, frames=4):
+    """Drive one scan-coupled run to its end; the controller then holds its result."""
+    controller, detector, channel = rig.controller, rig.detector, rig.channel
+    controller.setLiveEnabled(True)
+    channel.scanRunning = True
+    channel.sigScanStarting.emit()
+    detector.produce(*[_frame(i + 1) for i in range(frames)])
+    qtbot.waitUntil(lambda: controller._heldResult is not None, timeout=8000)
+    channel.scanRunning = False
+    channel.sigScanEnded.emit()
+    qtbot.waitUntil(lambda: not controller.hasActiveRun, timeout=8000)
 
 
 def test_offers_the_setup_reconstructors_and_hosts_their_parameter_widgets(rig):
@@ -544,3 +585,160 @@ def test_widget_round_trips_its_controls(qtbot):
     assert widget.getImage().shape == (3, 4)
     widget.clearImage()
     assert widget.getImage() is None
+
+
+# -- send to ImProcess ------------------------------------------------------------
+
+def test_send_to_improcess_hands_over_the_held_result_after_the_run(improcess_rig, qtbot):
+    rig = improcess_rig
+    controller, widget = rig.controller, rig.widget
+    assert widget.sendButton.isEnabled() is False
+
+    _run_one_scan(rig, qtbot)
+
+    assert widget.sendButton.isEnabled()
+    assert controller.sendResultToImProcess() is True
+    (result, name), = rig.module.sent
+    assert result is controller._heldResult                  # the object itself crosses
+    assert name.endswith('(CAM)')
+    assert widget.statusText().startswith('Sent to ImProcess')
+
+
+def test_send_to_improcess_says_so_when_improcess_is_not_loaded(qtbot):
+    rig = _build_rig(qtbot, _FakeModuleChannel(registered=('imcontrol',)))
+    try:
+        _run_one_scan(rig, qtbot)
+
+        assert rig.controller.sendResultToImProcess() is False
+        assert rig.module.sent == []
+        assert 'ImProcess is not loaded' in rig.widget.statusText()
+    finally:
+        rig.controller.closeEvent()
+
+
+def test_send_without_a_result_or_a_module_channel_does_nothing(rig):
+    assert rig.controller.sendResultToImProcess() is False
+    assert 'No reconstruction' in rig.widget.statusText()
+
+
+def test_send_during_a_run_hands_over_a_snapshot(improcess_rig, qtbot):
+    rig = improcess_rig
+    controller, detector, widget = rig.controller, rig.detector, rig.widget
+    widget.setMode(MODE_FREE)
+    widget.setFramesPerUpdate(2)
+    controller.setLiveEnabled(True)
+    detector.produce(_frame(1), _frame(2))
+    qtbot.waitUntil(lambda: controller._heldResult is not None, timeout=8000)
+    held = controller._heldResult
+
+    assert controller.sendResultToImProcess() is True
+    (sent, _name), = rig.module.sent
+    assert sent is not held
+    np.testing.assert_array_equal(np.asarray(sent.data), np.asarray(held.data))
+    assert sent.result_uid != held.result_uid
+
+    controller.setLiveEnabled(False)
+    qtbot.waitUntil(lambda: not controller.hasActiveRun, timeout=8000)
+
+
+# -- kept raw frames and the manual save ----------------------------------------------
+
+def _text(value):
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def test_raw_frames_are_gone_after_a_run_unless_kept(rig, qtbot):
+    _run_one_scan(rig, qtbot)
+
+    assert rig.controller.rawStack is None
+    assert 'raw frames' not in rig.widget.statusText()
+    assert rig.widget.saveButton.isEnabled()                 # the result alone can be saved
+
+
+def test_kept_raw_frames_and_the_result_are_saved_as_a_recording_and_a_result(rig, qtbot, tmp_path):
+    controller, widget = rig.controller, rig.widget
+    widget.setKeepRaw(True)
+
+    _run_one_scan(rig, qtbot)
+
+    stack = controller.rawStack
+    assert stack is not None and stack.frames == 4 and stack.complete
+    assert 'raw frames kept: 4' in widget.statusText()
+    assert widget.saveButton.isEnabled()
+
+    target = tmp_path / 'run_CAM.h5'
+    widget.askForSavePath = lambda suggested: str(target)
+    assert controller.saveRawAndResult() is True
+    assert widget.saveButton.isEnabled() is False
+    qtbot.waitUntil(lambda: controller._saveThread is None, timeout=20000)
+
+    with h5py.File(target, 'r') as file:
+        assert _text(file.attrs['rec_mode']) == 'recording'
+        dataset = file['CAM/data']
+        assert dataset.shape == (4, 4, 5)
+        assert [int(plane[0, 0]) for plane in dataset[()]] == [1, 2, 3, 4]
+        assert _text(dataset.attrs['recording:source_format']) == 'HDF5'
+        assert int(dataset.attrs['recording:actual_frames']) == 4
+        assert _text(dataset.attrs['recording:completion_outcome']) == 'complete'
+        assert 'AcquisitionLayout:json' in dataset.attrs         # the scan's layout travels
+        assert _text(file['CAM/metadata/ScanStage'].attrs['target_device']) == 'X'
+
+    # The file is a recording to ImProcess, like one the recorder wrote.
+    from imswitch.improcess.model import DataObj
+    dataObj = DataObj('run_CAM.h5', 'CAM', path=str(target))
+    dataObj.checkAndLoadData()
+    assert dataObj.data.shape == (4, 4, 5)
+    assert _text(dataObj.attrs['detector_name']) == 'CAM'
+    dataObj.checkAndUnloadData()
+
+    recon = sorted(tmp_path.glob('run_CAM_recon*'))
+    assert len(recon) == 1 and recon[0].stat().st_size > 0
+    assert widget.statusText() == f'Saved run_CAM.h5, {recon[0].name}'
+    assert widget.saveButton.isEnabled()
+
+
+def test_save_waits_for_the_run_and_a_cancelled_dialog_saves_nothing(rig, qtbot, tmp_path):
+    controller, detector, widget = rig.controller, rig.detector, rig.widget
+    widget.setMode(MODE_FREE)
+    widget.setFramesPerUpdate(2)
+    widget.setKeepRaw(True)
+    controller.setLiveEnabled(True)
+    detector.produce(_frame(1), _frame(2))
+    qtbot.waitUntil(lambda: controller._heldResult is not None, timeout=8000)
+
+    assert widget.saveButton.isEnabled() is False
+    assert controller.saveRawAndResult() is False
+    assert 'Wait for the run' in widget.statusText()
+
+    controller.setLiveEnabled(False)
+    qtbot.waitUntil(lambda: not controller.hasActiveRun, timeout=8000)
+    assert controller.rawStack is not None and controller.rawStack.frames == 2
+
+    widget.askForSavePath = lambda suggested: None
+    assert controller.saveRawAndResult() is False
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_clear_drops_the_kept_raw_frames_and_a_new_run_replaces_them(rig, qtbot):
+    controller, widget = rig.controller, rig.widget
+    widget.setKeepRaw(True)
+    _run_one_scan(rig, qtbot)
+    assert controller.rawStack is not None
+
+    controller.clearResult()
+
+    assert controller.rawStack is None
+    assert widget.saveButton.isEnabled() is False
+    assert widget.sendButton.isEnabled() is False
+
+
+def test_keep_raw_is_part_of_the_component_state(rig):
+    controller, widget = rig.controller, rig.widget
+    widget.setKeepRaw(True)
+    assert controller.getComponentState()['keepRaw'] is True
+
+    widget.setKeepRaw(False)
+    controller.applyComponentState(
+        {'keepRaw': True}, applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+    )
+    assert widget.getKeepRaw() is True

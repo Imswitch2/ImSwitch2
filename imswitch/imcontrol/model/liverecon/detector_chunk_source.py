@@ -25,6 +25,12 @@ cleared and its next read raises ``ChunkConsumerOverflowError``. The recorder
 fails the recording on that; a live preview re-registers, counts the loss and
 carries on, and the run is reported incomplete. A recording running beside
 this source is unaffected: it has its own queue.
+
+Keeping frames: the runtime consumes what it is handed, so once a stack is
+reconstructed its frames are gone. With ``retain_frames`` the source keeps
+the frames of the stack being received and of the latest stack before it
+(one scan, or one free-running update), bounded by construction to two
+stacks, so a run made without a recording can still be saved afterwards.
 """
 
 from __future__ import annotations
@@ -167,6 +173,28 @@ class LiveStreamStats:
         )
 
 
+@dataclass(frozen=True)
+class RetainedStack:
+    """The frames of one stack the source kept, in arrival order."""
+
+    data: np.ndarray
+    stack_index: int
+    frames_expected: Optional[int]
+
+    @property
+    def frames(self) -> int:
+        return int(self.data.shape[0])
+
+    @property
+    def complete(self) -> bool:
+        """Every frame of the stack is here (always true without a stack size)."""
+        return self.frames_expected is None or self.frames >= int(self.frames_expected)
+
+    @property
+    def nbytes(self) -> int:
+        return int(self.data.nbytes)
+
+
 class DetectorChunkLiveSource(LiveSource):
     """Frames of one detector, read from its chunk queue as they arrive."""
 
@@ -185,6 +213,7 @@ class DetectorChunkLiveSource(LiveSource):
         frame_transform: Optional[Callable[[np.ndarray], np.ndarray]] = None,
         drain_grace_s: float = DEFAULT_DRAIN_GRACE_S,
         clock: Callable[[], float] = time.monotonic,
+        retain_frames: bool = False,
     ) -> None:
         """
         Args:
@@ -205,6 +234,8 @@ class DetectorChunkLiveSource(LiveSource):
             drain_grace_s: How long after :meth:`mark_stream_ended` empty
                 reads are tolerated before the stream counts as complete.
             clock: Monotonic clock, injectable for tests.
+            retain_frames: Keep the frames of the latest stack (see
+                :meth:`retained_stack`); off, the source keeps nothing.
         """
         self._detectorsManager = detectorsManager
         self._detectorName = str(detectorName)
@@ -225,6 +256,12 @@ class DetectorChunkLiveSource(LiveSource):
         self._ended_at: Optional[float] = None
         self._last_frame_at: Optional[float] = None
         self.name = f'{self._detectorName} live'
+
+        self._retain = bool(retain_frames)
+        self._retain_lock = threading.Lock()
+        self._retain_pieces: list[np.ndarray] = []   # the stack being received
+        self._retain_stack_index = 0
+        self._retain_latest: Optional[RetainedStack] = None
 
     # -- identity ---------------------------------------------------------
 
@@ -321,6 +358,8 @@ class DetectorChunkLiveSource(LiveSource):
         start = self._cursor
         end = start + int(data.shape[0])
         self._cursor = end
+        if self._retain:
+            self._retain_chunk(data, start)
         return [Chunk(data=data, start=start, end=end)]
 
     def is_complete(self) -> bool:
@@ -348,6 +387,76 @@ class DetectorChunkLiveSource(LiveSource):
                 )
             self._armed = False
             self._opened = False
+
+    # -- kept frames ------------------------------------------------------
+
+    @property
+    def retains_frames(self) -> bool:
+        return self._retain
+
+    def retained_stack(self) -> Optional[RetainedStack]:
+        """The stack worth saving: the one being received if it is whole,
+        else the latest whole one, else whatever partial stack there is.
+
+        ``None`` when nothing was kept. Safe to call from any thread, and
+        after :meth:`close`; the frames stay until :meth:`release_retained`.
+        """
+        with self._retain_lock:
+            latest = self._retain_latest
+            current = self._retained_current_locked()
+        if current is not None and (current.complete or latest is None):
+            return current
+        return latest
+
+    def retained_bytes(self) -> int:
+        """How much the kept frames occupy, for the status line."""
+        with self._retain_lock:
+            held = sum(int(piece.nbytes) for piece in self._retain_pieces)
+            if self._retain_latest is not None:
+                held += self._retain_latest.nbytes
+        return held
+
+    def release_retained(self) -> None:
+        """Let go of the kept frames."""
+        with self._retain_lock:
+            self._retain_pieces = []
+            self._retain_latest = None
+
+    def _retained_current_locked(self) -> Optional[RetainedStack]:
+        if not self._retain_pieces:
+            return None
+        return RetainedStack(
+            data=np.concatenate(self._retain_pieces),
+            stack_index=self._retain_stack_index,
+            frames_expected=self._stack_info.frames_per_stack,
+        )
+
+    def _retain_chunk(self, data: np.ndarray, start: int) -> None:
+        """File ``data`` (global frame indices from ``start``) by stack."""
+        fps = self._stack_info.frames_per_stack
+        with self._retain_lock:
+            if not fps:
+                # No stack size known: the whole run is one stack.
+                self._retain_pieces.append(data)
+                return
+            fps = int(fps)
+            count = int(data.shape[0])
+            offset = 0
+            while offset < count:
+                index = int(start) + offset
+                stack = index // fps
+                if stack != self._retain_stack_index:
+                    self._roll_retained_stack_locked(stack)
+                take = min(count - offset, (stack + 1) * fps - index)
+                self._retain_pieces.append(data[offset:offset + take])
+                offset += take
+
+    def _roll_retained_stack_locked(self, next_index: int) -> None:
+        current = self._retained_current_locked()
+        if current is not None:
+            self._retain_latest = current
+        self._retain_pieces = []
+        self._retain_stack_index = int(next_index)
 
     # -- internals --------------------------------------------------------
 
