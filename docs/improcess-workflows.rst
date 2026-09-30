@@ -398,7 +398,8 @@ from the code, not from a list of its own.
 file: it asks for the output folder and whether saves may overwrite, runs
 on a worker thread, adds every result to the reconstruction list, shows
 each step in the editor's status bar, and **Cancel run** stops it at the
-next step. **Run on selected results…** is the editor's form of *Run
+next step, or inside a running processor step (a Python step's loop included:
+it is interrupted after a moment; a save or a reconstruction finishes first). **Run on selected results…** is the editor's form of *Run
 workflow on selected results…*. Relative source paths in a saved workflow
 resolve against the file's folder, in the editor and in the File menu
 actions alike, as they do on the command line.

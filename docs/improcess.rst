@@ -1049,7 +1049,8 @@ The code is an ordinary parameter of the step (next to the output port names),
 so everything a processor gets comes with it: the result's provenance records
 the whole code, **File → Export workflow of current result…** writes it into a
 workflow file, *Run workflow over files…* applies it to a folder, and replay
-reproduces it.
+reproduces it.  For exploring before recording, **Tools → Console** runs the
+same kind of code over the results list (:ref:`below <improcess-console>`).
 
 The panel
 ---------
@@ -1059,6 +1060,8 @@ installed, a plain monospaced box otherwise), an **Output ports** line, and a
 read-only **Output** pane.  Like every processor that takes several results,
 it runs once over the inputs checked in the list, in the order listed.
 **Load snippet…** and **Save as snippet…** (below) keep code between sessions.
+**Run** starts the code on a thread of its own, so the window stays alive; while
+it runs, **Cancel** replaces **Run** (:ref:`below <improcess-runs>`).
 
 The *Output ports* line names the results the code will produce, separated by
 commas; it defaults to ``out``.  Names use letters, digits, ``_`` and ``-``,
@@ -1131,10 +1134,12 @@ step's id; the log has the full traceback, in which your code's frames are the
 ones in ``<python step>``.  A syntax error reports its own line.  Nothing is
 published when a run fails.
 
-What the code prints (and writes to ``stderr``) is shown in the **Output** pane
-after a successful run and kept, up to 4000 characters, in each output's
-metadata under ``python_step``.  Text printed by a script that then fails is
-not shown.
+What the code prints (and writes to ``stderr``) appears in the **Output** pane
+*as it prints*, while the run is still going, and stays there when the run
+fails (the error is added below it) or is cancelled.  Only this run's own
+output is captured: what the rest of the application prints meanwhile is not.  Up
+to 4000 characters of it are also kept in each output's metadata under
+``python_step``.
 
 Snippets
 --------
@@ -1163,10 +1168,98 @@ the Python steps, before it runs a file that contains any; the workflow
 editor, which hands over a workflow it is showing you, does not ask, and shows
 a step's code in its form.  Only run files you trust.
 
-The code runs where processors run: on the GUI thread from this panel, so a
-slow script freezes the window as a slow built-in does, and on the workflow
-worker thread from the editor and the File menu.  A running script cannot be
-cancelled; **Cancel run** takes effect between steps.
+The code runs where processors run: on a worker thread from this panel and from
+the toolbar, and on the workflow worker thread from the editor and the File
+menu; :ref:`it can be cancelled <improcess-runs>`.
+
+.. _improcess-runs:
+
+Runs, Cancel and live output
+----------------------------
+
+A processor run from a panel (this one, and every other processor panel,
+Segmentation, PSF resolution and Colocalization included; the Multicolor panel,
+which does its own computing, is the exception) and from the image toolbar
+(project, split, merge, combine, calculator, composite, RGB, crop) happens
+on a thread of its own, so a slow one no longer freezes the window.  The results
+are published, on the GUI thread, when the run ends.  One run at a time per panel;
+a second request is refused with a message, not queued.  The toolbar takes one
+operation at a time as well.
+
+While a panel runs, **Run** is off (however the selection changes meanwhile) and
+**Cancel** is on.  Cancelling discards everything the run had made: nothing
+half-finished reaches the results list.  It works in steps:
+
+#. **Cancel** asks.  A processor that calls
+   ``imswitch.imcommon.model.checkpoint()`` (in a loop, say) stops at its next one.
+#. One that does not is **interrupted**: after a second and a half an
+   ``OperationCancelled`` is raised inside its thread, and again every second if
+   the code caught it.  It is a ``BaseException``, so an ``except Exception`` in a
+   script cannot swallow it; a bare ``except:`` can, and is asked again.  The
+   interruption lands at the next line of Python, so a long call into compiled code
+   (a large numpy operation) finishes first.
+#. At application exit a run that is still going is stopped the same way, and a
+   thread that will not stop is left alone rather than destroyed while running.
+
+A Python step is interrupted like any other processor; a script that never
+looks at the clock is stopped within about two seconds.  A workflow run can be
+cancelled *inside* a step the same way (the editor's **Cancel run**, and quitting
+the application): only while a **processor** step is running.  A save, a
+reconstruction or a source being opened finishes first and the run stops after
+it, so no file is left half published.  The command line is cancelled with
+Ctrl+C, as before.
+
+.. _improcess-console:
+
+The console
+-----------
+
+**Tools → Console** opens a dock with a code editor above the Python console (the
+same one ImScripting has): one-line commands with history below, code of more than
+a line above.  Both run in one namespace, on the GUI thread, like every console
+command: a long script freezes the window until it returns, which is what the
+Python step is for.
+
+The namespace is the step's (``np``, ``data``, ``inputs``, ``axes``, ``scales``,
+``unit``, ``axis()``, ``results``, ``make_result()``, ``make_labels()``) bound to
+what is selected in the results list, or to the current result when nothing is;
+``outputs`` and ``out`` are not there, since nothing reads them.  A result that is
+not loaded into memory stays the lazy array it is (``np.asarray(data)`` reads it),
+so following the selection never reads a whole recording.  These names are rebound
+when the selection *changes* and before a command runs, and only then: what you
+assigned to another name is never touched, and neither is ``data`` while the
+selection stays the same, so ``data = data[0]`` survives until you select something
+else.  Three functions reach the list itself:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Name
+     - What it does
+   * - ``current()``
+     - The result shown now, or ``None``.
+   * - ``selected()``
+     - The results selected in the list, in list order.
+   * - ``publish(array_or_result, *, name=None, axes=None, scales=None, like=None)``
+     - Adds a result to the list and returns it.  An array of the dimensionality of
+       ``like`` (by default the first result ``data`` is bound to) inherits its axes,
+       scales and unit; any other says its ``axes`` (``make_result`` and
+       ``make_labels`` work too), by the same rules as a step's outputs.
+
+**Run** (Ctrl+Enter) runs the selected lines, or all of the code, with what it
+prints and any error (with its line in the editor) shown in the console pane.
+
+A result made with ``publish`` records an **opaque** provenance node, "made in the
+console", with no inputs and no replay: the console cannot know which of the lines
+typed into it made the array, and claiming a lineage would be a guess.  What was
+selected when it was published is kept as a label, which is context, not a claim.
+A step run on such a result chains on that node and cannot be replayed either, and
+the error says why.  The recorded form is the Python step:
+**Send to Python step** puts the editor's text in the step's code field (opening the
+panel) and runs nothing, so you choose its inputs and output ports.  There,
+``outputs = {...}`` replaces ``publish(...)``, and the panel says so when the code
+contains ``publish(``.
 
 Example
 -------
@@ -2029,12 +2122,26 @@ Widget hooks (optional)
     Methods the processor panel calls on the widget ``make_param_widget``
     returns, when it declares them.  ``setResult(result, rois)`` is called
     whenever the selected result changes, for a widget whose parameters
-    depend on its input (a row per axis, say).  ``after_run(results,
-    failures)`` is called once a run from the panel has ended, with the
-    results it produced and the ``(input, message)`` pairs of the inputs it
-    failed on, so the widget can show what the run printed or why it
-    failed; an exception raised there is logged and does not stop the
-    results being published.
+    depend on its input (a row per axis, say).  ``set_values(dict)`` lets
+    another part of the application fill the widget in (the console hands
+    code to the Python step this way); it takes the keys it is given and
+    leaves the rest.  Around a run: ``before_run()`` when it starts;
+    ``output_appended(text)`` with what the processor prints, as it prints it
+    (declaring it is what asks for the output to be streamed); and
+    ``after_run(results, failures)`` once it has ended, with the results it
+    produced and the ``(input, message)`` pairs of the inputs it failed on
+    (one saying ``"Cancelled."`` when it was cancelled).  An exception raised in
+    any of them is logged and does not stop the run or the results being
+    published.
+
+Running and cancelling
+    ``apply`` is run on a worker thread by every panel, the toolbar and the
+    workflow runner: no Qt objects, and nothing that must run on the GUI thread.
+    A loop that may run long can call ``imswitch.imcommon.model.checkpoint()``
+    to stop at a point of its choosing when the person cancels; without it the
+    run is interrupted after a moment, which lands at the next line of Python, so
+    clean up in ``finally`` and let ``OperationCancelled`` (a ``BaseException``)
+    pass.  What a cancelled run made is discarded.
 
 ``extra_param_keys`` (optional)
     Keys a workflow may set beyond the defaults, for a setting no widget

@@ -2,7 +2,7 @@
 
 Date: 2026-09-30
 
-Status: Phases A and B implemented 2026-09-30 on `feat/improcess-python-step` (the step, panel, `code` field, block-style YAML, shared code editor, snippets, and the notice before a file's Python code runs); Phase C (console) and Phase D (worker-thread processor runs) remain proposed. Implementation brief: `docs/agent_tasks/improcess_python_step.md`; see *Implementation notes* at the end.
+Status: Implemented 2026-09-30 on `feat/improcess-python-step`: Phases A and B (the step, panel, `code` field, block-style YAML, shared code editor, snippets, the notice before a file's Python code runs), Phase C (the console) and Phase D (processor runs on a worker thread with cancel and live output). Implementation brief: `docs/agent_tasks/improcess_python_step.md`; see *Implementation notes* at the end.
 
 ## Summary
 
@@ -283,3 +283,59 @@ design left open:
   input's own array, not a read-only copy (the docs say to copy it before
   changing it in place); the versions of imported modules are not recorded
   (open question above).
+
+## 8. Implementation notes (Phases C and D, 2026-09-30)
+
+**Phase C, the console.** As designed, with these decisions the design left open:
+
+- **Editor and console.** The dock is a code editor (the shared
+  `PythonCodeEditor`) above pyqtgraph's console, both in one namespace. The editor
+  is what *Send to Python step* sends; pyqtgraph's console alone has no multi-line
+  editor, and feeding pasted code through its line-by-line REPL breaks on a blank
+  line inside a block. **Run** (Ctrl+Enter) compiles the text as a whole.
+- **The namespace** is the step's less `outputs` / `out` (nothing reads them in a
+  console) plus `current()`, `selected()`, `publish()`. `data` and the names with
+  it are bound to the selection (the current result when nothing is selected),
+  rebound only when the selection *changes* and before a command, never while a
+  `publish` runs: rebinding on every command would undo the user's own
+  `data = data[0]`. A result that is not in memory stays lazy
+  (`build_namespace(materialise=False)`); the step still reads its input once.
+- **`publish`** takes `like=` (the result axes and calibration are inherited from;
+  by default the first bound result) next to `name`, `axes`, `scales`, and shares
+  the step's output rules (`result_from_value`).
+- **Provenance.** An `opaque` node with *no inputs*: the console cannot know which
+  lines made the array, so it claims no lineage; the selection at the time is kept
+  as a label (`selected_when_published`). A step run on such a result chains on the
+  node and is reported not replayable, with the reason.
+- **Send to Python step** fills the step's code field through a new
+  `set_values` hook and `ResultProcessorWidget.setParameterValues`, runs nothing,
+  and tells the person `publish(...)` becomes `outputs = {...}` in a step.
+
+**Phase D, worker-thread runs.** As the design's §3.5 proposed ("the ScriptExecutor
+pattern"), reusing its pieces by moving them to `imcommon.model`
+(`routeThisThreadsOutputTo`, `interruptThread`; `CancelToken` was already there):
+
+- **Where.** Every panel that publishes through `ResultProcessorController` (the
+  generic ones and the hand-built Segmentation, PSF resolution and Colocalization
+  panels, which now have a Cancel button through a shared `RunState`), the image
+  toolbar's processor operations, and workflow runs. Not converted: the
+  **Multicolor** panel, which computes inside its own widget methods rather than
+  through `Processor.apply`, and the toolbar's **Duplicate**, which is a copy.
+- **Cancel** asks (token; a processor may call `checkpoint()`), then after 1.5 s
+  injects `OperationCancelled` into the thread, again every second if it was
+  caught. A cancelled run publishes nothing, even if it finished first. Shutdown is
+  the one bounded wait; a thread that will not stop is parked, not destroyed.
+- **Workflows** interrupt the thread only while a *processor* step runs: a save
+  (staged, atomic) or a reconstruction is left to finish, so a file is never left
+  half published. `run()` turns a cancellation raised inside a step into the same
+  `RunError` ("split: cancelled", report attached) the between-steps check gives.
+- **Streaming** is opt-in: a parameter widget that declares `output_appended`
+  gets what the processor prints, from this thread only (routing is per thread, not
+  a swap of `sys.stdout`, so the GUI thread's prints are neither captured nor lost).
+  The framework's own failure log is kept out of it.
+- **Inline fallback.** A controller without a runner, or an image toolbar whose view
+  is not a real window, runs inline as before. That is what lets the existing
+  synchronous tests stand, and what a headless caller gets; the asynchronous paths
+  have their own tests with real widgets and real threads.
+- **Still open.** A long call into compiled code (one numpy operation) cannot be
+  interrupted until it returns; the Multicolor panel is still synchronous.
