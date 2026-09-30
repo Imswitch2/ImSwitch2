@@ -10,12 +10,11 @@ _MISSING_SCAN_IDENTITY = object()
 class _ScanDispatch:
     """One call marshalled onto the service object's UI-thread affinity."""
 
-    def __init__(self, action, *, show_rejection_popup=False) -> None:
+    def __init__(self, action) -> None:
         self.action = action
         self.result = None
         self.error = None
         self.finished = threading.Event()
-        self.show_rejection_popup = bool(show_rejection_popup)
         self._lock = threading.Lock()
         self._started = False
         self._cancelled = False
@@ -247,7 +246,6 @@ class ScanWorkflowService(SignalInterface):
         notify_starting: bool = True,
         preferred_source=None,
         exact_completion: bool = False,
-        show_rejection_popup: bool = False,
     ) -> ScanRequestResult:
         """Preflight, pre-arm, and dispatch one scan as one UI transaction.
 
@@ -386,15 +384,11 @@ class ScanWorkflowService(SignalInterface):
                         except Exception:
                             pass
 
-        return self._dispatch_scan_request(
-            preflightNotifyAndRun,
-            show_rejection_popup=show_rejection_popup,
-        )
+        return self._dispatch_scan_request(preflightNotifyAndRun)
 
     def run_scan(self, recalculate_signals: bool,
                  is_non_final_part_of_sequence: bool,
-                 notify_starting: bool = True,
-                 show_rejection_popup: bool = False) -> ScanRequestResult:
+                 notify_starting: bool = True) -> ScanRequestResult:
         """Target one resolved source, or use the legacy broadcast transport.
 
         Dispatch is marshalled onto this service's UI-thread affinity, where
@@ -413,7 +407,6 @@ class ScanWorkflowService(SignalInterface):
                 recalculate_signals,
                 is_non_final_part_of_sequence,
                 notify_starting=notify_starting,
-                show_rejection_popup=show_rejection_popup,
             )
         # The broadcast lands on ``runScanExternal`` exactly as the targeted
         # path does, so it makes the same assertion and owes the same start.
@@ -422,7 +415,6 @@ class ScanWorkflowService(SignalInterface):
                 recalculate_signals, is_non_final_part_of_sequence
             ),
             notify_starting,
-            show_rejection_popup=show_rejection_popup,
         )
 
     def exact_wait_supported(self) -> bool:
@@ -472,8 +464,7 @@ class ScanWorkflowService(SignalInterface):
 
     def run_scan_from(self, source, recalculate_signals: bool,
                       is_non_final_part_of_sequence: bool,
-                      notify_starting: bool = True,
-                      show_rejection_popup: bool = False) -> ScanRequestResult:
+                      notify_starting: bool = True) -> ScanRequestResult:
         """Invoke exactly one pre-resolved scan source.
 
         This is the safe path for ScanLapse: standalone scan setups can have
@@ -501,12 +492,9 @@ class ScanWorkflowService(SignalInterface):
                 recalculate_signals, is_non_final_part_of_sequence
             ),
             notify_starting,
-            show_rejection_popup=show_rejection_popup,
         )
 
-    def _dispatch_with_lifecycle(
-        self, action, notify_starting: bool, *, show_rejection_popup=False
-    ):
+    def _dispatch_with_lifecycle(self, action, notify_starting: bool):
         """Dispatch ``action``, publishing and pairing the run-level start.
 
         The emission happens inside the dispatched action so it lands on this
@@ -557,10 +545,7 @@ class ScanWorkflowService(SignalInterface):
                             except Exception:
                                 pass
 
-        return self._dispatch_scan_request(
-            startThenRun,
-            show_rejection_popup=show_rejection_popup,
-        )
+        return self._dispatch_scan_request(startThenRun)
 
     def _pair_unowned_scan_start(self, request, dispatchError=None) -> None:
         """Publish the end of a start no controller took responsibility for.
@@ -595,9 +580,7 @@ class ScanWorkflowService(SignalInterface):
                 exc_info=True,
             )
 
-    def _dispatch_scan_request(
-        self, action, *, show_rejection_popup=False
-    ) -> ScanRequestResult:
+    def _dispatch_scan_request(self, action) -> ScanRequestResult:
         """Run controller-facing dispatch on this service's UI thread.
 
         Workflow scripts commonly run on a worker thread. A direct Qt signal
@@ -607,10 +590,7 @@ class ScanWorkflowService(SignalInterface):
         envelope blocks only the caller while the UI thread performs the
         synchronous start handshake.
         """
-        dispatch = _ScanDispatch(
-            action,
-            show_rejection_popup=show_rejection_popup,
-        )
+        dispatch = _ScanDispatch(action)
         self.sigDispatchScanRequest.emit(dispatch)
         if not dispatch.finished.wait(_SCAN_DISPATCH_QUEUE_TIMEOUT_S):
             if dispatch.cancelIfQueued():
@@ -633,69 +613,8 @@ class ScanWorkflowService(SignalInterface):
             dispatch.result = self._run_scan_request(dispatch.action)
         except Exception as error:
             dispatch.error = error
-            if getattr(dispatch, 'show_rejection_popup', False):
-                self._emit_external_scan_rejection_popup(error=error)
         finally:
-            if (
-                dispatch.error is None
-                and getattr(dispatch, 'show_rejection_popup', False)
-            ):
-                self._emit_external_scan_rejection_popup(
-                    result=dispatch.result
-                )
             dispatch.finished.set()
-
-    def _emit_external_scan_rejection_popup(
-        self, *, result=None, error=None
-    ) -> None:
-        """Emit one UI-facing rejection message for one external request."""
-        message = ''
-        if result is not None:
-            try:
-                if (
-                    bool(getattr(result, 'handled', False))
-                    and not bool(getattr(result, 'accepted', False))
-                ):
-                    message = str(
-                        getattr(result, 'rejectionMessage', '') or ''
-                    )
-            except Exception:
-                message = ''
-        if not message and error is not None:
-            requestResult = getattr(error, 'scanRequestResult', None)
-            if requestResult is not None:
-                try:
-                    if bool(getattr(requestResult, 'accepted', False)):
-                        return
-                    if bool(getattr(requestResult, 'handled', False)):
-                        message = str(
-                            getattr(
-                                requestResult, 'rejectionMessage', ''
-                            ) or ''
-                        )
-                except Exception:
-                    message = ''
-            if not message:
-                message = str(error or '')
-        if not message:
-            return
-        if message.strip().lower().startswith('scan cancelled'):
-            return
-        signal = getattr(
-            self._comm_channel,
-            'sigExternalScanRequestRejectedForUi',
-            None,
-        )
-        emit = getattr(signal, 'emit', None)
-        if not callable(emit):
-            return
-        try:
-            emit(message)
-        except Exception:
-            initLogger(self).error(
-                'Failed to show external scan rejection message',
-                exc_info=True,
-            )
 
     def _run_scan_request(self, dispatch) -> ScanRequestResult:
         if self._activeScanRequest is not None:

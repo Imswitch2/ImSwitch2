@@ -5,10 +5,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from imswitch.imcontrol.controller.basecontrollers import SuperScanController
-from imswitch.imcontrol.controller.WorkflowServices import (
-    ScanRequestResult,
-    ScanWorkflowService,
-)
 from imswitch.imcontrol.controller.controllers.ScanControllerAdvanced import (
     ScanControllerAdvanced,
 )
@@ -405,33 +401,3 @@ def test_external_scan_uses_shared_reference_preflight_before_widget_changes():
     )
 
 
-def test_external_scan_rejection_popup_uses_aggregate_result_once():
-    service = ScanWorkflowService.__new__(ScanWorkflowService)
-    emitted = []
-    service._comm_channel = SimpleNamespace(
-        sigExternalScanRequestRejectedForUi=SimpleNamespace(emit=emitted.append)
-    )
-    result = ScanRequestResult()
-    result.report(object(), False, 'first refusal')
-    result.report(object(), False, 'second refusal')
-
-    service._emit_external_scan_rejection_popup(result=result)
-
-    assert emitted == ['first refusal; second refusal']
-
-
-def test_external_scan_rejection_popup_skips_user_cancelled_request():
-    service = ScanWorkflowService.__new__(ScanWorkflowService)
-    emitted = []
-    service._comm_channel = SimpleNamespace(
-        sigExternalScanRequestRejectedForUi=SimpleNamespace(emit=emitted.append)
-    )
-    result = ScanRequestResult()
-    result.report(
-        object(), False,
-        'Scan cancelled because unreferenced positioners were not accepted.',
-    )
-
-    service._emit_external_scan_rejection_popup(result=result)
-
-    assert emitted == []
