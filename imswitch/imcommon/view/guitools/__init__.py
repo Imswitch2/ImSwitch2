@@ -4,6 +4,7 @@ from .BetterDoubleSpinBox import BetterDoubleSpinBox
 from .BetterComboBox import BetterComboBox
 from .BetterSlider import BetterSlider
 from .CheckableComboBox import CheckableComboBox
+from .CodeEditor import PythonCodeEditor
 from .FloatSlider import FloatSlider
 from .FolderPathEdit import FolderPathEdit
 from .dialogtools import (

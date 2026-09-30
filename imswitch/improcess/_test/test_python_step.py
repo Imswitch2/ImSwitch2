@@ -592,7 +592,7 @@ def _panel(widget):
 
 
 def _run_from_panel(widget, run_processor, code, ports="out"):
-    widget.paramWidget.codeEditor.setPlainText(code)
+    widget.paramWidget.codeEditor.setText(code)
     widget.paramWidget.portsEdit.setText(ports)
     run_processor([_stack()], widget.parameterValues())
 
@@ -673,3 +673,83 @@ def test_the_shipped_interleave_example_runs_on_the_synthetic_recording(registry
         written = sorted(receipt.primary.name for receipt in report.receipts)
     assert written == ["cells_interleave_a.ome.tif", "cells_interleave_b.ome.tif"]
     assert all((tmp_path / "out" / name).exists() for name in written)
+
+
+# -- the shared code editor ---------------------------------------------------
+
+_EDITOR_MODULE = "imswitch.imcommon.view.guitools.CodeEditor"
+
+
+@pytest.fixture
+def without_qsci(monkeypatch):
+    """``CodeEditor`` imported again as if QScintilla were not installed."""
+    import importlib
+    import sys
+
+    from imswitch.imcommon.view import guitools
+
+    monkeypatch.setitem(sys.modules, "PyQt5.Qsci", None)
+    monkeypatch.setattr(guitools, "CodeEditor", guitools.CodeEditor)    # put the attribute back afterwards
+    monkeypatch.delitem(sys.modules, _EDITOR_MODULE)                    # put the module back afterwards
+    return importlib.import_module(_EDITOR_MODULE)
+
+
+def test_the_shared_editor_is_the_qscintilla_one_when_it_is_installed(qapp):
+    from qtpy import QtCore
+
+    from imswitch.imcommon.view import guitools
+    from imswitch.imscripting.view import EditorView
+
+    editor = guitools.PythonCodeEditor()
+    assert guitools.CodeEditor.QSCI_AVAILABLE
+    assert isinstance(editor, guitools.CodeEditor.Qsci.QsciScintilla)
+    assert EditorView.Scintilla is guitools.PythonCodeEditor       # ImScripting keeps its name for it
+    seen = []
+    editor.textChanged.connect(lambda: seen.append(editor.text()))
+    text = "a = 1\nif a:\n    b = 2\n"
+    editor.setText(text)
+    assert editor.text() == text and seen
+    assert editor.selectedText() == ""
+    assert isinstance(editor, QtCore.QObject)
+
+
+def test_without_qscintilla_the_editor_falls_back_to_a_plain_text_box(qapp, without_qsci):
+    from qtpy import QtWidgets
+
+    assert without_qsci.Qsci is None and without_qsci.QSCI_AVAILABLE is False
+    editor = without_qsci.PythonCodeEditor()
+    assert isinstance(editor, QtWidgets.QPlainTextEdit)
+    seen = []
+    editor.textChanged.connect(lambda: seen.append(1))
+    text = "a = 1\nif a:\n\tb = 2   \n\nc = 3"
+    editor.setText(text)
+    assert editor.text() == text and seen
+    editor.selectAll()
+    assert editor.selectedText() == text                            # newlines, not U+2029
+    assert editor.tabStopDistance() > 0
+
+
+def test_the_step_widget_uses_the_shared_editor_and_reads_its_text(qapp):
+    from imswitch.imcommon.view.guitools import PythonCodeEditor
+    from imswitch.improcess.processors.python_step.processor import PythonStepProcessor as Step
+
+    widget = Step().make_param_widget(None)
+    assert isinstance(widget.codeEditor, PythonCodeEditor)
+    assert widget.get_values() == Step.default_params()
+    widget.codeEditor.setText("x = 1\n    y = 2\n")
+    assert widget.get_values()["code"] == "x = 1\n    y = 2\n"       # as typed, inner whitespace kept
+    widget.codeEditor.setText("a = 1\r\nb = 2\r\n")                   # what QScintilla types on Windows
+    assert widget.get_values()["code"] == "a = 1\nb = 2\n"
+
+
+def test_the_step_widget_also_works_with_the_fallback_editor(qapp, without_qsci, monkeypatch):
+    from imswitch.improcess.processors.python_step import processor as step_module
+
+    monkeypatch.setattr(step_module, "PythonCodeEditor", without_qsci.PythonCodeEditor)
+    widget = step_module.PythonStepProcessor().make_param_widget(None)
+    assert type(widget.codeEditor) is without_qsci.PythonCodeEditor
+    assert widget.get_values() == step_module.PythonStepProcessor.default_params()
+    widget.codeEditor.setText("out = data + 1\n")
+    assert widget.get_values() == {"code": "out = data + 1\n", "ports": "out"}
+    widget.after_run([], [(None, "line 1: NameError: nope")])
+    assert widget.outputPane.toPlainText() == "line 1: NameError: nope"

@@ -10,6 +10,7 @@ from typing import Callable
 
 from qtpy import QtGui, QtWidgets
 
+from imswitch.imcommon.view.guitools import PythonCodeEditor
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors.base import OutputSpec, Processor, ProcessorOutput
@@ -79,10 +80,8 @@ class PythonStepProcessor(Processor):
         layout = QtWidgets.QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        editor = QtWidgets.QPlainTextEdit()
-        editor.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
-        editor.setTabStopDistance(4 * editor.fontMetrics().horizontalAdvance(" "))
-        editor.setPlainText(DEFAULT_CODE)
+        editor = PythonCodeEditor()
+        editor.setText(DEFAULT_CODE)
         editor.setMinimumHeight(160)
         editor.setToolTip(_CODE_HELP)
 
@@ -91,7 +90,7 @@ class PythonStepProcessor(Processor):
 
         output = QtWidgets.QPlainTextEdit()
         output.setReadOnly(True)
-        output.setFont(editor.font())
+        output.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
         output.setMaximumHeight(110)
         output.setPlaceholderText("What the code prints, and any error, appears here.")
 
@@ -104,7 +103,10 @@ class PythonStepProcessor(Processor):
         layout.addWidget(output)
 
         def get_values():
-            return {"code": editor.toPlainText(), "ports": ports.text()}
+            # QScintilla inserts the platform's line ending (CRLF on Windows);
+            # the recorded code is the same text whichever machine typed it.
+            code = editor.text().replace("\r\n", "\n").replace("\r", "\n")
+            return {"code": code, "ports": ports.text()}
 
         def after_run(results, failures):
             """Show what the last run printed and why it failed, if it did."""
