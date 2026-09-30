@@ -781,6 +781,42 @@ at `sigScanStarting`; a run never joins a scan already producing frames
 (§3.5's "joined" status is gone) and instead starts at the next boundary; and
 `DiskAndRAM` + Zarr is allowed, since the storer hands the group over.
 
+Follow-ups after the first rig test (2026-09-30):
+
+- **3D display mode.** Result layers are now padded to the viewer's
+  displayed dims like the live-view layers (`ImageWidget._on_ndisplay_changed`,
+  `setResultLayers`), and the flat overlays in `naparitools` hide in 3D
+  instead of raising from the `ndisplay` callback, which aborted napari's
+  own handlers while a grid, crosshair or ROI was showing. napari 0.7.1's
+  model handles a 2D layer in 3D on its own (checked headless), so these
+  two were the ImSwitch-side suspects; a volume needs *Full N-D layer* to
+  show as one.
+- **Send to ImProcess.** `ModuleCommunicationChannel.sigProcessingResultProduced`
+  carries the held `ProcessingResult` (the object; a data snapshot with a
+  fresh uid while a run is still writing into it) to
+  `ImProcessMainController._onExternalResultProduced`, which publishes it
+  through `sigResultProduced` and `sigCurrentResultChanged` as a panel's
+  result would be.
+- **Raw frames.** They were gone once reconstructed (the runtime consumes
+  them; `StackBatchSession` copies one stack and drops it). With *Keep raw
+  frames* the source retains the latest stack and the one arriving
+  (`DetectorChunkLiveSource.retained_stack`, at most two stacks by
+  construction, no new memory setting), and *Save raw data and
+  reconstruction…* writes them through `HDF5Storer.writeStack` with
+  `recording_metadata.completed_recording_attrs` (the finished attribute
+  block, `source_format` HDF5, outcome `stopped_early` when frames are
+  missing) and the recorder's OME description, plus the result through its
+  own `save`. ImProcess's `DataObj` reads the file back in the tests.
+  Handing the kept frames to ImProcess as an in-memory recording (a
+  `BytesIO` in `memoryRecordings`, uncompressed) is the obvious next step
+  and was left out: it doubles the frames in RAM.
+- **Provenance of unsaved sources.** `provenance._source_path_of` took an
+  in-container dataset path (`/CAM/data`) for a file, so a memory-only
+  recording read through `DataObj` and the in-process live stream were
+  recorded as replayable from a path nothing can open. Only a path on disk
+  is recorded now (`_file_path_or_none`); `MemoryLiveController._processDataset`
+  keeps its positional signature with `filePath` as a keyword.
+
 Remaining, in the order they are likely to matter:
 
 1. **Rig validation** of the overflow behaviour at real frame rates and of

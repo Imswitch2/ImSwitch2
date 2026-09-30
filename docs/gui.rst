@@ -1464,9 +1464,11 @@ viewer shows them (the detector's display rotation and flips applied)
 instead of as a recording stores them.  **Show in** puts the result in the
 main viewer as a layer named ``Recon: …`` that is updated in place (only the
 latest plane, unless **Full N-D layer** is ticked, in which case napari adds
-sliders for the other axes), or in the panel's own image view.  **Keep
-result after run** leaves the layer in the viewer once the run has ended;
-**Clear** removes it.
+sliders for the other axes), or in the panel's own image view.  To look at
+a volume in the viewer's 3D mode, tick **Full N-D layer**: the latest-plane
+layer is flat, and 3D mode shows it as a single plane.  **Keep result after
+run** leaves the layer in the viewer once the run has ended; **Clear**
+removes it, and the raw frames kept with it.
 
 Tick **Live** to start.  The status line reports frames received, stacks
 reconstructed and, should the reconstruction fall behind the acquisition,
@@ -1477,6 +1479,25 @@ queue.  Recording with **Save in memory for reconstruction** alongside is
 the way to keep the full data: the live tool shows the reconstruction as it
 forms, and the finished recording reaches ImProcess the moment it ends (see
 :doc:`improcess`, *Data ingest*).
+
+The reconstruction consumes the frames: once a stack is reconstructed its
+raw frames are gone, and a scan that was not recorded leaves no data behind.
+**Keep raw frames** changes that for the run at hand.  The tool then keeps
+the frames of the latest stack (one scan, or one free-running update) in
+RAM, at most two stacks of frames at a time, and the status line says how
+much is held and, at the end, how many frames were kept.  Once the run has
+ended, **Save raw data and reconstruction…** writes them: the raw frames as
+an ImSwitch HDF5 recording (the same detector group, metadata and
+acquisition layout a recording of that scan would carry, so ImProcess and
+Fiji open it like any other), at the path chosen in the dialog, and the
+reconstruction next to it with a ``_recon`` suffix, as OME-TIFF when the
+result supports it.  The dialog starts in today's recordings folder.
+
+**Send to ImProcess** adds the reconstruction shown here to ImProcess's
+result list, where it can be processed, measured and saved like a result
+ImProcess made itself; ImProcess must be loaded.  After the run the result
+object itself is handed over; during a run a snapshot of it goes instead,
+so the entry in ImProcess does not keep changing.
 
 
 Scripting
