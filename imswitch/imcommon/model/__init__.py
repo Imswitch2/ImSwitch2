@@ -5,8 +5,9 @@ from .VFileCollection import VFileItem, VFileCollection
 from .api import APIExport, apiGate, generateAPI
 from .cancellation import (
     CancelToken, OperationCancelled, cancellableSleep, checkpoint,
-    clearCurrentCancelToken, currentCancelToken, setCurrentCancelToken,
+    clearCurrentCancelToken, currentCancelToken, interruptThread, setCurrentCancelToken,
 )
+from .outputrouting import ThreadRoutingStream, routeThisThreadsOutputTo
 from .logging import initLogger
 from .shutdown import ShutdownState, shutdownState
 from .shortcut import shortcut, generateShortcuts, ShortcutScope, ShortcutAction, getBoundShortcuts
