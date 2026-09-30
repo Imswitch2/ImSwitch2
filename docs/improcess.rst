@@ -375,7 +375,8 @@ selection.
 * *Interacting/measuring tools* (ROI Manager, ROI stats, Profile) operate on
   the *active napari layer* and display their measurements in place; they do
   not create results.  All of them resolve their source layer through the
-  shared ``imswitch.improcess.layer_selection`` helper, so what counts as an
+  shared ``imswitch.imcommon.algorithms.layer_selection`` helper (also
+  importable as ``imswitch.improcess.layer_selection``), so what counts as an
   image source cannot drift between tools.  They also re-measure when the
   selected result changes: the ROI stays where it is and the numbers follow
   the result now under it, rather than lingering from the previous one.
@@ -384,7 +385,18 @@ The Profile tool can draw line and rectangle ROIs, plot the sampled profile,
 and optionally overlay fitted curves.  Available profile fits are no fit,
 single Gaussian, two independent Gaussians with center-distance reporting,
 and a single exponential decay/rise model.  Fit metrics are included when the
-profile is pushed to the results table or saved as CSV.
+profile is pushed to the results table or saved with *Save summary…*; *Save
+data…* writes the plotted curves themselves as CSV.
+
+*Layer* says which image is profiled, and the plot title names it.  *Active*
+is the layer selected in napari's layer list, kept while you draw (drawing
+selects the *Viewer Tools* layer rather than an image); choosing a layer by
+name keeps profiling it whatever is selected, and *All visible layers* plots
+one curve per visible image layer, each sampled in its own pixel size and
+offset.  The panel is shared with imcontrol's *Line Profile* panel — one
+widget, ``imswitch.imcommon.view.guitools.ProfileWidget`` — so a fix to one is
+a fix to both; imcontrol adds live redrawing and an *Intensity vs T* trace (see
+:doc:`gui`).
 
 The *Source* list chooses between the shape drawn in the panel (*Drawn*) and
 a named ROI from the ROI manager, which is re-plotted when the selected
@@ -1976,8 +1988,9 @@ Using a plugin
    ``_example_plugin.py`` template (underscore-prefixed files are ignored by
    discovery).  Ready-to-copy examples live in
    ``examples/improcess_plugins/`` (``invert.py``, ``gaussian_blur.py``, the
-   photophysics analysis ``photophysics_suite.py``, and the reconstructor
-   ``frame_average.py``).
+   photophysics analysis ``photophysics_suite.py``, the reconstructor
+   ``frame_average.py``, and ``lisai_restore.py``, see
+   `LISAI restoration`_).
 #. If you copied the file by hand, choose **Plugins → Reload plugins** (or
    restart ImProcess).
 #. A processor appears in the **Load plugin** dropdown in the Plugins toolbar;
@@ -1995,6 +2008,24 @@ active reconstructor hands over to the first registered one.  While a
 reconstruction is running the reconstructors are left untouched and the
 status bar says so — reload again when it has finished — so a running job
 never straddles two versions of one plugin.
+
+LISAI restoration
+-----------------
+
+``examples/improcess_plugins/lisai_restore.py`` runs a trained
+`LISAI <https://github.com/GuillaumeMinet/LISAI-resolft>`_ model (denoising
+and sub-sampled-image restoration for RESOLFT / MoNaLISA) on the selected
+result.  It is also listed in **Plugins → Browse online plugins...**.  It
+needs LISAI installed in the same Python environment as ImSwitch2 (with
+``torch``, ``torchvision`` and, for the HDN denoising models,
+``scikit-learn``), LISAI's one-time setup done from a terminal (any ``lisai`` command
+asks for a data root and writes ``configs/local_config.yml``; the plugin
+refuses to run until that file exists rather than trigger the prompt inside
+ImProcess), and at least one promoted model (``lisai models download <name>
+--install``).  The panel lists the installed promoted models; an
+up-sampling model's output gets correspondingly smaller pixel scales.  A
+multi-frame model predicts each frame from its neighbours, so the first and
+last frames of a time series are dropped unless *Pad edge frames* is ticked.
 
 Installing from the online store
 --------------------------------
