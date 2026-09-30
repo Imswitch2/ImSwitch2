@@ -987,7 +987,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def getNumScanPositions(self):
         """ Returns the number of scan positions for the configured scan. """
-        _, positions, _ = self._master.scanManager.getScanSignalsDict(self._analogParameterDict)
+        with self._positionSnapshotForScanDesign():
+            _, positions, _ = self._master.scanManager.getScanSignalsDict(
+                self._analogParameterDict
+            )
         numPositions = functools.reduce(lambda x, y: x * y, positions)
         return numPositions
 
