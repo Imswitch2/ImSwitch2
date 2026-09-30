@@ -1059,3 +1059,59 @@ def test_no_notice_without_python_steps_without_a_file_or_without_a_window(qapp,
     headless = _workflow_controller(SimpleNamespace(showStatusMessage=lambda m, timeout_ms=6000: None))
     assert headless._confirmPythonSteps(workflow, str(tmp_path / "interleave.yaml")) is True
     assert asked == []
+
+
+# -- outputs built outside a step (the console's publish) ----------------------
+
+def test_result_from_value_follows_the_same_rules_as_a_steps_outputs():
+    from imswitch.improcess.processors.python_step.context import make_labels, make_result, result_from_value
+
+    reference = _stack(scales=[2.0, 0.5, 0.25], unit="um")
+    same = result_from_value(reference.data * 2, reference, what="the array", default_name="d")
+    assert same.name == "d" and same.axis_labels == ["Z", "Y", "X"]
+    assert same.axis_scales == [2.0, 0.5, 0.25] and same.scale_unit == "um"
+
+    # the keyword arguments fill in what a make_result left unset, and never override it
+    flat = result_from_value(reference.data[0], reference, name="mip", axes=["Y", "X"])
+    assert (flat.name, flat.axis_labels, flat.axis_scales) == ("mip", ["Y", "X"], [0.5, 0.25])
+    own = result_from_value(make_result(reference.data[0], axes=["Y", "X"], name="own"), reference, name="kw")
+    assert own.name == "own"
+
+    labels = result_from_value(make_labels(np.ones((4, 4), np.uint8)), None, axes=["Y", "X"])
+    assert labels.kind == "labels" and labels.axis_labels == ["Y", "X"]
+
+    with pytest.raises(ScriptError, match="the array has 2 dimensions but the input has 3"):
+        result_from_value(reference.data[0], reference, what="the array")
+
+
+def test_result_from_value_without_a_reference_needs_axes():
+    from imswitch.improcess.processors.python_step.context import result_from_value
+
+    with pytest.raises(ScriptError, match="no input to take its axes from"):
+        result_from_value(np.zeros((4, 4)), None, what="the published array")
+    made = result_from_value(np.zeros((4, 4)), None, axes=["Y", "X"], scales=[0.1, 0.1])
+    assert made.axis_labels == ["Y", "X"] and made.axis_scales == [0.1, 0.1] and made.scale_unit == "px"
+
+
+def test_a_lazy_result_stays_lazy_in_the_console_namespace_and_is_read_in_a_step():
+    class Lazy:
+        shape = (3, 2, 2)
+        ndim = 3
+        reads = 0
+
+        def __array__(self, dtype=None, copy=None):
+            Lazy.reads += 1
+            return np.ones(self.shape, dtype=dtype or np.float32)
+
+        def __getitem__(self, key):
+            return np.ones(self.shape, np.float32)[key]
+
+    lazy_result = ArrayProcessingResult("lazy", Lazy(), ["Z", "Y", "X"])
+    console = build_namespace([lazy_result], materialise=False)
+    assert isinstance(console["data"], Lazy) and Lazy.reads == 0
+    assert console["data"][0].shape == (2, 2)
+    step = build_namespace([lazy_result])
+    assert isinstance(step["data"], np.ndarray) and Lazy.reads == 1
+    # an array already in memory is the same object either way
+    stack = _stack()
+    assert build_namespace([stack], materialise=False)["data"] is stack.data

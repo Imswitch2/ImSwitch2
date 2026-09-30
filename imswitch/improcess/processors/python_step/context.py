@@ -154,6 +154,13 @@ def make_labels(array, *, axes=None, scales=None, name=None) -> ScriptOutput:
     return _described(array, axes, scales, name, "labels")
 
 
+def _in_memory_or_lazy(data):
+    """``data`` as it is when it is an array already or a lazy view, else an array."""
+    if isinstance(data, np.ndarray) or (hasattr(data, "shape") and hasattr(data, "__getitem__")):
+        return data
+    return np.asarray(data)
+
+
 def _make_axis_lookup(labels: list[str]):
     def axis(label_or_index) -> int:
         """The index of the axis called ``label_or_index`` ("Z"), or that index itself."""
@@ -175,20 +182,27 @@ def _make_axis_lookup(labels: list[str]):
     return axis
 
 
-def build_namespace(inputs) -> dict:
+def build_namespace(inputs, *, materialise: bool = True) -> dict:
     """The names the code starts with, and no others.
 
     ``inputs`` are the step's input results, in the order the step lists
     them. ``data`` is the first one's own array (a lazy source is read into
     memory): copy it before changing it in place.
+
+    ``materialise=False`` leaves a result that is not in memory as the lazy
+    array it is, for the console, which rebinds these names on every change
+    of selection and must not read a whole recording each time.
     """
     results = list(inputs)
     first = results[0]
     labels = axis_labels_for_result(first)
+    as_array = np.asarray if materialise else _in_memory_or_lazy
+    # Each input is read once: ``data`` is ``inputs[0]``, not a second read of it.
+    arrays = [as_array(result.data) for result in results]
     return {
         "np": np,
-        "data": np.asarray(first.data),
-        "inputs": [np.asarray(result.data) for result in results],
+        "data": arrays[0],
+        "inputs": arrays,
         "axes": labels,
         "scales": axis_scales_for_result(first),
         "unit": getattr(first, "scale_unit", "px"),
@@ -273,79 +287,113 @@ def _collect(namespace: dict, ports: tuple[str, ...]) -> dict:
 
 def _build_results(produced: dict, ports: tuple[str, ...], inputs) -> list[ProcessingResult]:
     first = inputs[0]
-    first_labels = axis_labels_for_result(first)
-    first_scales = axis_scales_for_result(first)
-    unit = getattr(first, "scale_unit", "px")
-    results = []
-    for port in ports:
-        value = produced[port]
-        described = value if isinstance(value, ScriptOutput) else ScriptOutput(array=value)
-        array = _as_array(port, described)
-        if described.axes is not None:
-            if len(described.axes) != array.ndim:
-                raise ScriptError(
-                    f"output {port!r}: axes {list(described.axes)} name {len(described.axes)} "
-                    f"dimensions but the array has {array.ndim}"
-                )
-            labels = list(described.axes)
-            if described.scales is not None:
-                scales = list(described.scales)
-            else:
-                # Keep the calibration of the axes the output shares with the input.
-                by_label = dict(zip(first_labels, first_scales))
-                scales = [by_label.get(label, 1.0) for label in labels]
-        elif array.ndim == len(first_labels):
-            labels = list(first_labels)
-            scales = list(described.scales) if described.scales is not None else list(first_scales)
-        else:
-            raise ScriptError(
-                f"output {port!r} has {array.ndim} dimensions but the input has "
-                f"{len(first_labels)} ({', '.join(first_labels)}): say what its axes are "
-                f"with make_result(array, axes=[...])"
-            )
-        if len(scales) != array.ndim:
-            raise ScriptError(
-                f"output {port!r}: {len(scales)} scales for {array.ndim} dimensions"
-            )
-        name = described.name or f"{first.name} ({port})"
-        metadata = {"operation": "python", "port": port}
-        if described.kind == "labels":
-            results.append(
-                LabelsResult(
-                    name, _as_labels(port, array), labels,
-                    axis_scales=scales, scale_unit=unit, metadata=metadata,
-                )
-            )
-        else:
-            results.append(
-                ArrayProcessingResult(
-                    name, array, labels,
-                    display_levels=finite_range(array),
-                    axis_scales=scales, scale_unit=unit, metadata=metadata,
-                )
-            )
-    return results
+    return [
+        result_from_value(
+            produced[port], first,
+            what=f"output {port!r}",
+            default_name=f"{first.name} ({port})",
+            metadata={"operation": "python", "port": port},
+        )
+        for port in ports
+    ]
 
 
-def _as_array(port: str, described: ScriptOutput) -> np.ndarray:
+def result_from_value(
+    value,
+    reference,
+    *,
+    what: str = "output",
+    default_name: str | None = None,
+    name=None,
+    axes=None,
+    scales=None,
+    metadata=None,
+) -> ProcessingResult:
+    """One result from an array or a :func:`make_result` / :func:`make_labels` output.
+
+    ``reference`` is the result the array is taken to be derived from (the
+    step's first input): an array of its dimensionality inherits its axes,
+    scales and unit, any other says its axes itself, and with no reference
+    (``None``) every array must. ``name`` / ``axes`` / ``scales`` given here
+    take the place of those a :class:`ScriptOutput` left unset. ``what`` names
+    the value in error messages.
+    """
+    described = value if isinstance(value, ScriptOutput) else ScriptOutput(array=value)
+    array = _as_array(what, described)
+    axes = described.axes if described.axes is not None else (
+        tuple(str(label) for label in axes) if axes is not None else None
+    )
+    scales = described.scales if described.scales is not None else (
+        tuple(float(scale) for scale in scales) if scales is not None else None
+    )
+    if reference is not None:
+        reference_labels = axis_labels_for_result(reference)
+        reference_scales = axis_scales_for_result(reference)
+        unit = getattr(reference, "scale_unit", "px")
+    else:
+        reference_labels, reference_scales, unit = [], [], "px"
+    if axes is not None:
+        if len(axes) != array.ndim:
+            raise ScriptError(
+                f"{what}: axes {list(axes)} name {len(axes)} "
+                f"dimensions but the array has {array.ndim}"
+            )
+        labels = list(axes)
+        if scales is not None:
+            scale_values = list(scales)
+        else:
+            # Keep the calibration of the axes the output shares with the input.
+            by_label = dict(zip(reference_labels, reference_scales))
+            scale_values = [by_label.get(label, 1.0) for label in labels]
+    elif reference is not None and array.ndim == len(reference_labels):
+        labels = list(reference_labels)
+        scale_values = list(scales) if scales is not None else list(reference_scales)
+    elif reference is None:
+        raise ScriptError(
+            f"{what} has {array.ndim} dimensions and there is no input to take its axes from: "
+            f"say what they are with make_result(array, axes=[...])"
+        )
+    else:
+        raise ScriptError(
+            f"{what} has {array.ndim} dimensions but the input has "
+            f"{len(reference_labels)} ({', '.join(reference_labels)}): say what its axes are "
+            f"with make_result(array, axes=[...])"
+        )
+    if len(scale_values) != array.ndim:
+        raise ScriptError(f"{what}: {len(scale_values)} scales for {array.ndim} dimensions")
+    result_name = described.name or (None if name is None else str(name)) or default_name or "python result"
+    metadata = dict(metadata or {})
+    if described.kind == "labels":
+        return LabelsResult(
+            result_name, _as_labels(what, array), labels,
+            axis_scales=scale_values, scale_unit=unit, metadata=metadata,
+        )
+    return ArrayProcessingResult(
+        result_name, array, labels,
+        display_levels=finite_range(array),
+        axis_scales=scale_values, scale_unit=unit, metadata=metadata,
+    )
+
+
+def _as_array(what: str, described: ScriptOutput) -> np.ndarray:
     try:
         array = np.asarray(described.array)
-    except Exception as exc:  # noqa: BLE001 - reported with the port
-        raise ScriptError(f"output {port!r} is not an array: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - reported with the value's name
+        raise ScriptError(f"{what} is not an array: {exc}") from exc
     if array.dtype.kind not in _NUMERIC_KINDS:
         raise ScriptError(
-            f"output {port!r} must be a numeric array, got "
+            f"{what} must be a numeric array, got "
             f"{type(described.array).__name__} of dtype {array.dtype}"
         )
     return array
 
 
-def _as_labels(port: str, array: np.ndarray) -> np.ndarray:
+def _as_labels(what: str, array: np.ndarray) -> np.ndarray:
     """``array`` as label values: integers, or floats that are whole numbers."""
     if array.dtype.kind in "biu":
         return array
     if array.size and not np.all(np.isfinite(array) & (array == np.round(array))):
-        raise ScriptError(f"labels output {port!r} must hold whole numbers, got dtype {array.dtype}")
+        raise ScriptError(f"labels {what} must hold whole numbers, got dtype {array.dtype}")
     return array.astype(np.int32)
 
 
@@ -359,5 +407,6 @@ __all__ = [
     "make_labels",
     "make_result",
     "parse_ports",
+    "result_from_value",
     "run_script",
 ]
