@@ -2,7 +2,7 @@ from __future__ import annotations
 import numpy as np
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any,Callable,Mapping
+from typing import Any,Callable,Mapping,TYPE_CHECKING
 
 from ..core.cgh.execution.executor import CGHExecutionHandle,CGHExecutor
 from ..core.cgh.execution.result import CGHResult
@@ -20,11 +20,17 @@ from .control_mode import SLMControlMode
 from .runtime_factory import SLMRuntimeFactory
 from .position_reference_store import PositionReferenceStore
 from .feedback import (
-    AutomaticFeedbackState,MeasurementDispatcher,SLMFeedbackCallbacks,
+    AutomaticFeedbackState,GeometryCalibrationPayload,MeasurementDispatcher,SLMFeedbackCallbacks,
     SLMFeedbackService,
 )
 from .calibration import SLMCalibrationCallbacks,SLMCalibrationService
 from .section_layout import PreparedSectionLayoutChange,SLMSectionLayoutService
+
+if TYPE_CHECKING:
+    from ..workspace.calibration_store import SLMCalibrationStore
+    from ..workspace.fov_position_calibration_store import SLMFOVPositionCalibrationStore
+    from ..workspace.geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
+    from .startup_preferences import StartupPreferencesState
 
 
 def _noop(*_args,**_kwargs) -> None:
@@ -93,11 +99,11 @@ class SLMSession:
         configuration_service: SLMConfigurationService | None=None,
         current_config_path: str | None=None,
         measurement_dispatcher: MeasurementDispatcher | None=None,
-        calibration_store=None,
+        calibration_store: SLMCalibrationStore | None=None,
         position_reference_store: PositionReferenceStore | None=None,
-        fov_position_calibration_store=None,
-        geometry_orientation_calibration_store=None,
-        startup_preferences=None,
+        fov_position_calibration_store: SLMFOVPositionCalibrationStore | None=None,
+        geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None=None,
+        startup_preferences: StartupPreferencesState | None=None,
         display_name: str="",
         apply_startup_calibration_defaults: bool=False,
     ) -> None:
@@ -129,8 +135,11 @@ class SLMSession:
         self._upload_defer_depth = 0
         self._upload_pending = False
         self._last_upload_error: Exception | None = None
+
+        # Application services are owned by this session. They may coordinate
+        # runtime operations, but presentation adapters remain outside this layer.
         self.feedback = SLMFeedbackService(
-            self,
+            application_session=self,
             measurements=measurement_dispatcher,
             callbacks=self._feedback_callbacks(),
             position_reference_store=position_reference_store,
@@ -695,9 +704,13 @@ class SLMSession:
         grid_y: int,
         period_x_px: float,
         period_y_px: float,
-        on_finished: Callable[[bool,Exception | None,Mapping[str,Any] | None],None] | None=None,
+        on_finished: Callable[[bool,Exception | None,GeometryCalibrationPayload | None],None] | None=None,
     ) -> bool:
-        """Compute an isolated calibration CGH without committing experiment state."""
+        """Compute a detached geometry target and return its frame/localization payload.
+
+        The feedback workflow owns uploading this frame and restoring the
+        experiment afterward. This method does not commit experiment CGH state.
+        """
         self._require_active()
         self._require_editor_mode()
         self._require_section(section_key)
@@ -727,7 +740,9 @@ class SLMSession:
         self._active_cgh_requests[section_key]=active
         self._notify("on_cgh_computing_changed",section_key,True)
 
-        def finish(success,error,payload=None):
+        def finish(
+            success: bool,error: Exception | None,payload: GeometryCalibrationPayload | None=None,
+        ) -> None:
             current=self._active_cgh_requests.get(section_key)
             if current is None or current.request_id != request_id:
                 return
@@ -740,7 +755,7 @@ class SLMSession:
                 if not candidate.commit_cgh(result):
                     raise RuntimeError("Transient geometry CGH could not be committed")
                 frame=self.runtime.compose_transient_section_frame(section_key,candidate)
-                payload={
+                payload: GeometryCalibrationPayload={
                     "frame":frame,
                     "localization_context":candidate.get_feedback_localization_context(),
                     "target_intensities":np.array(job.resolution.spot_intensities,copy=True),

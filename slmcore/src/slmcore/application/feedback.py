@@ -4,13 +4,18 @@ The feedback service owns measurement/localization/adaptation state changes and
 automatic intensity-feedback sequencing. Presentation adapters may flush pending
 editor drafts before invoking it, collect destructive-operation confirmations,
 and render the callbacks emitted after authoritative application changes.
+
+Reference selections, FOV fit candidates and geometry workflows belong to this
+service; runtime feedback results belong to the session's current runtime.
+Stores own shared records and persistence. Public preview/context mappings retain
+their existing dictionary representation; TypedDicts describe that contract.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any,Callable,Mapping,Protocol,Sequence,TYPE_CHECKING
+from typing import Any,Callable,Mapping,Protocol,Sequence,TYPE_CHECKING,TypedDict,cast
 
 import numpy as np
 
@@ -22,6 +27,7 @@ from ..core.cgh.feedback import (
     FOVPositionCalibration,
     GeometryOrientationCalibration,
     GeometryOrientationAnalysis,
+    IntensityAnalysis,
     analyze_geometry_orientation,
     PositionReference,
     PositionReferenceMode,
@@ -33,7 +39,9 @@ from ..core.cgh.feedback import (
     orient_localization,
     reference_positions_for_localization,
 )
-from ..core.cgh.localization import infer_missing_localization,localize_measurement
+from ..core.cgh.localization import (
+    LocalizationResult,infer_missing_localization,localize_measurement,
+)
 from ..core.cgh.localization.policy import suggest_localization_sources
 from ..core.cgh.coordinates import reference_px_to_k,k_to_reference_px
 from ..core.cgh.propagation import simulate_propagation_fft
@@ -43,6 +51,12 @@ from .position_reference_store import (
 )
 
 if TYPE_CHECKING:
+    from ..core.calibration.slm_section_calibration import SLMSectionCalibration
+    from ..core.cgh.targets.resolution import TargetResolution
+    from ..core.engine.runtime import SLMRuntime
+    from ..core.engine.transition import SectionStateTransition
+    from ..workspace.fov_position_calibration_store import SLMFOVPositionCalibrationStore
+    from ..workspace.geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
     from .session import SLMSession
 
 
@@ -86,6 +100,10 @@ class MeasurementDispatcher(Protocol):
     Implementations decide the execution context of completion callbacks. A Qt
     adapter can therefore marshal callbacks onto the GUI thread without making
     the application service depend on Qt.
+
+    Feedback relies on the dispatcher delivering each completion at most once and
+    suppressing callbacks after request cancellation. The Qt dispatcher provides
+    both guarantees; the application service does not add its own request guard.
     """
 
     @property
@@ -123,8 +141,10 @@ class AutomaticFeedbackState:
 
 @dataclass(frozen=True)
 class FeedbackParameterUpdateResult:
+    """Parameter mutation result, optionally including preview intensity metrics."""
+
     changed: bool
-    candidate_analysis: Any=None
+    candidate_analysis: IntensityAnalysis | None=None
 
 
 @dataclass(frozen=True)
@@ -144,15 +164,127 @@ class FeedbackOrientationContext:
         return self.orientation is not self.saved_orientation
 
 
+class GeometryCalibrationPayload(TypedDict):
+    """Detached geometry CGH produced by SLMSession without experiment commit."""
+
+    frame: np.ndarray
+    localization_context: Mapping[str,Any]
+    target_intensities: np.ndarray
+    lattice_indices: np.ndarray
+    target_type: str
+    target_params: dict[str,Any]
+    resolution: TargetResolution
+    calibration: SLMSectionCalibration | None
+
+
+class GeometryOrientationCalibrationContext(TypedDict):
+    """Mapping consumed by geometry controls for the active section and plane."""
+
+    plane_name: str | None
+    calibrated: bool
+    calibration: GeometryOrientationCalibration | None
+    grid_x: int
+    grid_y: int
+    period_x_px: float
+    period_y_px: float
+    period_x_um: float | None
+    period_y_um: float | None
+    metric_periods_available: bool
+    computed: bool
+    frame_active: bool
+    any_frame_active: bool
+    active_frame_plane: str | None
+    measurement: ImageMeasurement | None
+    localization: LocalizationResult | None
+    localization_parameters: dict[str,Any]
+    localization_context: dict[str,Any]
+    analysis: GeometryOrientationAnalysis | None
+    analyze_enabled: bool
+    save_enabled: bool
+    detector_name: str | None
+
+
+class FOVPositionCalibrationContext(TypedDict):
+    """Selected/applied/default FOV state; reading it does not apply a field."""
+
+    plane_name: str | None
+    available_names: tuple[str,...]
+    selected_name: str | None
+    applied: bool
+    default_name: str | None
+    supported: bool
+    calibration: FOVPositionCalibration | None
+    candidate: FOVPositionCalibration | None
+    extrapolated_count: int
+    target_count: int
+    max_extrapolation_kxy: float
+    coverage_tolerance_kxy: float
+
+
+class FOVPositionCalibrationPreview(TypedDict):
+    """Sample and target displacement arrays for the candidate or saved field."""
+
+    source: str
+    name: str | None
+    model: str
+    degree: int
+    sample_count: int
+    rms_residual_kxy: float
+    max_residual_kxy: float
+    sample_positions_kxy: np.ndarray
+    sample_displacements_kxy: np.ndarray
+    current_positions_kxy: np.ndarray
+    current_displacements_kxy: np.ndarray
+
+
+class PositionReferenceResolutionMetadata(TypedDict,total=False):
+    """Description of the detector-space reference used for position feedback."""
+
+    mode: str
+    label: str
+    geometry: dict[str,Any]
+    name: str
+    plane_name: str
+    created_at: str
+    lifetime: str
+
+
+class PositionReferencePreview(TypedDict):
+    """Detector-space reference preview with legacy kxy displacement diagnostics."""
+
+    cropped_image: np.ndarray
+    measured_positions_px: np.ndarray
+    global_positions_px: np.ndarray
+    reference_positions_px: np.ndarray
+    reference_center_px: np.ndarray
+    fit_center_px: np.ndarray
+    fit_geometry: dict[str,Any]
+    editable_geometry: dict[str,Any] | None
+    ideal_positions_kxy: np.ndarray
+    baseline_positions_kxy: np.ndarray
+    displacement_kxy: np.ndarray
+    reference: PositionReferenceResolutionMetadata
+
+
+@dataclass
+class _FOVPositionCalibrationSelection:
+    """Mutable per-section/plane selection; separate from the persisted default."""
+
+    selected_name: str | None=None
+    applied: bool=False
+
+
 @dataclass
 class _GeometryCalibrationWorkflow:
+    """Manual section/plane workflow, retaining its target until explicit finish."""
+
     grid_x: int=5
     grid_y: int=4
     period_x_px: float | None=None
     period_y_px: float | None=None
-    payload: dict[str,Any] | None=None
+    payload: GeometryCalibrationPayload | None=None
     measurement: ImageMeasurement | None=None
-    localization: Any=None
+    localization: LocalizationResult | None=None
     localization_parameters: dict[str,Any] | None=None
     analysis: GeometryOrientationAnalysis | None=None
     detector_name: str | None=None
@@ -206,10 +338,14 @@ class PositionReferenceContext:
 
 @dataclass(frozen=True)
 class SLMFeedbackCallbacks:
-    """Presentation-neutral events emitted by :class:`SLMFeedbackService`."""
+    """Synchronous events on the caller/dispatcher thread, replaceable at runtime.
+
+    The session handles committed transitions and frame publication. Adapters
+    own any required thread marshalling; callbacks are not a persistence layer.
+    """
 
     on_section_changed: Callable[[str],None]=_noop
-    on_transition_committed: Callable[[str,Any],None]=_noop
+    on_transition_committed: Callable[[str,SectionStateTransition],None]=_noop
     on_measurement_busy_changed: Callable[[str,bool,str],None]=_noop
     on_measurement_error: Callable[[str,Exception],None]=_noop
     on_localization_error: Callable[[str,Exception],None]=_noop
@@ -235,7 +371,7 @@ class AutomaticFeedbackRunner:
     """Sequence automatic intensity feedback using application services only."""
 
     def __init__(self,service: "SLMFeedbackService") -> None:
-        self._service = service
+        self._feedback_service = service
         self._counter = 0
         self._run: _AutomaticRun | None = None
 
@@ -272,34 +408,34 @@ class AutomaticFeedbackRunner:
     ) -> bool:
         if self._run is not None:
             return False
-        if not self._service.can_run_automatic_feedback:
-            self._service._error(
+        if not self._feedback_service.can_run_automatic_feedback:
+            self._feedback_service._error(
                 "Automatic feedback unavailable",
-                RuntimeError(self._service.automatic_feedback_unavailable_reason),
+                RuntimeError(self._feedback_service.automatic_feedback_unavailable_reason),
             )
             return False
         rounds = int(rounds)
         if rounds <= 0:
-            self._service._error(
+            self._feedback_service._error(
                 "Automatic feedback failed",ValueError("Rounds must be > 0"),
             )
             return False
         source = str(source or "").strip()
         if not source:
-            self._service._error(
+            self._feedback_service._error(
                 "Automatic feedback failed",
                 ValueError("Select a detector before starting automatic feedback."),
             )
             return False
-        if self._service.session.is_cgh_computing(section_key):
-            self._service._error(
+        if self._feedback_service.application_session.is_cgh_computing(section_key):
+            self._feedback_service._error(
                 "Automatic feedback failed",
                 RuntimeError("Wait for the current CGH computation to finish."),
             )
             return False
-        cgh_status = self._service.session.runtime.get_section_cgh_status(section_key)
+        cgh_status = self._feedback_service.application_session.runtime.get_section_cgh_status(section_key)
         if cgh_status.result_state is not CGHResultState.CURRENT:
-            self._service._error(
+            self._feedback_service._error(
                 "Automatic feedback failed",
                 RuntimeError("Automatic feedback requires a current computed CGH."),
             )
@@ -323,7 +459,7 @@ class AutomaticFeedbackRunner:
             return
         run.stop_requested = True
         if run.stage == "acquiring":
-            self._service.cancel_measurement(run.section_key)
+            self._feedback_service.cancel_measurement(run.section_key)
             self._finish(cancelled=True)
             return
         self._emit_state()
@@ -332,7 +468,7 @@ class AutomaticFeedbackRunner:
         run = self._run
         if run is None:
             return
-        self._service.cancel_measurement(run.section_key)
+        self._feedback_service.cancel_measurement(run.section_key)
         self._run = None
         self._emit_state()
 
@@ -349,10 +485,10 @@ class AutomaticFeedbackRunner:
 
         run.stage = "acquiring"
         self._emit_state()
-        self._service.request_measurement(
+        self._feedback_service.request_measurement(
             run.section_key,
             run.source,
-            metadata=self._service.feedback_measurement_metadata(run.section_key),
+            metadata=self._feedback_service.feedback_measurement_metadata(run.section_key),
             on_result=lambda measurement,rid=run_id:self._on_measurement(rid,measurement),
             on_error=lambda error,rid=run_id:self._fail(rid,error),
         )
@@ -365,7 +501,7 @@ class AutomaticFeedbackRunner:
             self._finish(cancelled=True)
             return
         try:
-            previous_available = self._service.commit_measurement(
+            previous_available = self._feedback_service.commit_measurement(
                 run.section_key,measurement,reuse_previous_localization=False,
             )
             run.stage = "localizing"
@@ -373,18 +509,18 @@ class AutomaticFeedbackRunner:
             localized = False
             if run.reuse_previous_localization and previous_available:
                 try:
-                    self._service.reuse_localization(
+                    self._feedback_service.reuse_localization(
                         run.section_key,raise_errors=True,
                     )
                     localized = True
                 except Exception as error:
-                    self._service._warning(
+                    self._feedback_service._warning(
                         "Automatic feedback",
                         "Previous localization could not be reused; running "
                         "localization instead.\n%s" % error,
                     )
             if not localized:
-                self._service.localize_and_commit(run.section_key)
+                self._feedback_service.localize_and_commit(run.section_key)
 
             if run.stop_requested:
                 self._finish(cancelled=True)
@@ -392,7 +528,7 @@ class AutomaticFeedbackRunner:
 
             run.stage = "adapting"
             self._emit_state()
-            ok,_transition = self._service.apply_intensity_feedback(
+            ok,_transition = self._feedback_service.apply_intensity_feedback(
                 run.section_key,raise_errors=True,
             )
             if not ok:
@@ -400,7 +536,7 @@ class AutomaticFeedbackRunner:
 
             run.stage = "computing"
             self._emit_state()
-            started = self._service.session.compute_adapted_cgh(
+            started = self._feedback_service.application_session.compute_adapted_cgh(
                 run.section_key,
                 on_finished=lambda success,error,rid=run_id:
                     self._on_cgh_finished(rid,success,error),
@@ -417,7 +553,7 @@ class AutomaticFeedbackRunner:
         if run is None:
             return
         if not success:
-            if error is None or error is self._service.session.last_upload_error:
+            if error is None or error is self._feedback_service.application_session.last_upload_error:
                 self._finish(cancelled=False,failed=True)
             else:
                 self._fail(run_id,error)
@@ -431,14 +567,14 @@ class AutomaticFeedbackRunner:
     def _fail(self,run_id: int,error: Exception) -> None:
         if self._current(run_id) is None:
             return
-        self._service._error("Automatic feedback failed",error)
+        self._feedback_service._error("Automatic feedback failed",error)
         self._finish(cancelled=False,failed=True)
 
     def _finish(self,*,cancelled: bool,failed: bool=False) -> None:
         run = self._run
         if run is None:
             return
-        self._service.cancel_measurement(run.section_key)
+        self._feedback_service.cancel_measurement(run.section_key)
         self._run = None
         self._emit_state()
         if failed:
@@ -447,7 +583,7 @@ class AutomaticFeedbackRunner:
             text = "Automatic feedback stopped."
         else:
             text = "Automatic feedback completed (%d round(s))." % run.completed_rounds
-        self._service._callbacks.on_automatic_finished(run.section_key,text)
+        self._feedback_service._callbacks.on_automatic_finished(run.section_key,text)
 
     def _current(self,run_id: int) -> _AutomaticRun | None:
         run = self._run
@@ -456,7 +592,7 @@ class AutomaticFeedbackRunner:
         return run
 
     def _emit_state(self) -> None:
-        self._service._callbacks.on_automatic_state_changed(self.state)
+        self._feedback_service._callbacks.on_automatic_state_changed(self.state)
 
     @staticmethod
     def _progress(run: _AutomaticRun) -> str:
@@ -482,20 +618,29 @@ class AutomaticFeedbackRunner:
 
 
 class SLMFeedbackService:
-    """Application service for one session's measurement/feedback workflow."""
+    """Orchestrate feedback workflows for one toolkit-neutral SLM session.
+
+    ``SLMSession`` owns this facade. Runtime access stays live through the owning
+    application session because configuration/layout changes can replace the
+    runtime. This object owns transient workflow state; shared stores own records
+    and persistence. Qt adapters observe the service through callbacks.
+
+    The facade intentionally remains intact during Pass 1; focused workflow
+    services are extracted behind this API in the following structural pass.
+    """
 
     def __init__(
         self,
-        session: "SLMSession",
+        application_session: "SLMSession",
         *,
         measurements: MeasurementDispatcher | None=None,
         callbacks: SLMFeedbackCallbacks | None=None,
         position_reference_store: PositionReferenceStore | None=None,
-        fov_position_calibration_store=None,
-        geometry_orientation_calibration_store=None,
+        fov_position_calibration_store: SLMFOVPositionCalibrationStore | None=None,
+        geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None=None,
     ) -> None:
-        self.session = session
-        self.measurements = measurements
+        self._application_session: SLMSession = application_session
+        self._measurement_dispatcher = measurements
         self._callbacks = callbacks or SLMFeedbackCallbacks()
         self._measurement_requests: dict[str,MeasurementRequest] = {}
         # Runtime/test orientation is deliberately separate from startup
@@ -511,7 +656,7 @@ class SLMFeedbackService:
             tuple[str,str | None],_GeometryCalibrationWorkflow
         ] = {}
         self._fov_position_calibration_selections: dict[
-            tuple[str,str | None],dict[str,Any]
+            tuple[str,str | None],_FOVPositionCalibrationSelection
         ] = {}
         self._fov_position_calibration_candidates: dict[
             tuple[str,str | None],FOVPositionCalibration
@@ -533,16 +678,21 @@ class SLMFeedbackService:
             )
         self._automatic = AutomaticFeedbackRunner(self)
 
+    @property
+    def application_session(self) -> "SLMSession":
+        """Toolkit-neutral session that owns this feedback facade."""
+        return self._application_session
+
     def set_callbacks(self,callbacks: SLMFeedbackCallbacks | None) -> None:
         self._callbacks = callbacks or SLMFeedbackCallbacks()
 
     def set_measurement_dispatcher(
         self,measurements: MeasurementDispatcher | None,
     ) -> None:
-        if measurements is self.measurements:
+        if measurements is self._measurement_dispatcher:
             return
         self.prepare_runtime_change()
-        self.measurements = measurements
+        self._measurement_dispatcher = measurements
 
     @property
     def automatic_operation_active(self) -> bool:
@@ -554,32 +704,32 @@ class SLMFeedbackService:
 
     @property
     def can_run_automatic_feedback(self) -> bool:
-        measurements = self.measurements
+        measurements = self._measurement_dispatcher
         return bool(
-            self.session.editor_writes_allowed
-            and self.session.auto_upload_frame
-            and self.session.host_services.can_upload_frame
+            self._application_session.editor_writes_allowed
+            and self._application_session.auto_upload_frame
+            and self._application_session.host_services.can_upload_frame
             and measurements is not None
             and measurements.available
-            and not self.session.upload_deferred
+            and not self._application_session.upload_deferred
         )
 
     @property
     def automatic_feedback_unavailable_reason(self) -> str:
-        if not self.session.editor_writes_allowed:
+        if not self._application_session.editor_writes_allowed:
             return "Automatic feedback is unavailable in Fast Config mode."
-        if not self.session.auto_upload_frame:
+        if not self._application_session.auto_upload_frame:
             return "Automatic feedback is disabled when auto_upload_frame=False."
-        if not self.session.host_services.can_upload_frame:
+        if not self._application_session.host_services.can_upload_frame:
             return "Automatic feedback requires a frame-upload capability."
-        if self.measurements is None or not self.measurements.available:
+        if self._measurement_dispatcher is None or not self._measurement_dispatcher.available:
             return "Automatic feedback requires a measurement provider."
-        if self.session.upload_deferred:
+        if self._application_session.upload_deferred:
             return "Automatic feedback is unavailable while frame upload is deferred."
         return ""
 
     def available_sources(self,section_key: str) -> Sequence[str]:
-        measurements = self.measurements
+        measurements = self._measurement_dispatcher
         if measurements is None:
             return ()
         return tuple(measurements.available_sources(section_key))
@@ -587,13 +737,17 @@ class SLMFeedbackService:
     def preferred_source(
         self,section_key: str,available: Sequence[str],
     ) -> str | None:
-        measurements = self.measurements
+        measurements = self._measurement_dispatcher
         if measurements is None:
             return None
         return measurements.preferred_source(section_key,available)
 
+    # ------------------------------------------------------------------
+    # Feedback orientation and active measurement-plane context
+    # ------------------------------------------------------------------
+
     def _active_feedback_plane(self,section_key: str) -> str | None:
-        calibration = getattr(self.session,"calibration",None)
+        calibration = getattr(self._application_session,"calibration",None)
         if calibration is None:
             return None
         plane = calibration.active_plane(section_key)
@@ -607,7 +761,7 @@ class SLMFeedbackService:
         )
         if calibration is not None:
             return calibration.orientation
-        preferences = self.session.startup_preferences
+        preferences = self._application_session.startup_preferences
         value = (
             "identity" if preferences is None
             else preferences.feedback_orientation(section_key,plane_name)
@@ -617,12 +771,13 @@ class SLMFeedbackService:
     def geometry_orientation_calibration(
         self,section_key: str,*,plane_name: str | None=None,
     ) -> GeometryOrientationCalibration | None:
+        """Load the saved orientation for this SLM/section and active or given plane."""
         section=str(section_key)
         plane=(self._active_feedback_plane(section) if plane_name is None else str(plane_name or '').strip() or None)
         store=self._geometry_orientation_calibration_store
         if plane is None or store is None:
             return None
-        identity=self.session.runtime.identity
+        identity=self._application_session.runtime.identity
         if not store.exists(identity,section,plane):
             return None
         return store.load(identity,section,plane)
@@ -643,7 +798,7 @@ class SLMFeedbackService:
     def _geometry_period_guess_px(
         self,section_key: str,grid_x: int,grid_y: int,
     ) -> tuple[float,float]:
-        state=self.session.runtime.get_section_state_copy(section_key)
+        state=self._application_session.runtime.get_section_state_copy(section_key)
         selected=state.cgh.selected_target
         params={}
         if selected is not None and selected in state.cgh.items:
@@ -657,7 +812,7 @@ class SLMFeedbackService:
         return px,py
 
     def _geometry_period_to_um(self,section_key: str,value: float,axis: str) -> float | None:
-        calibration=self.session.runtime.get_section_calibration_copy(section_key)
+        calibration=self._application_session.runtime.get_section_calibration_copy(section_key)
         if calibration is None or not calibration.is_valid():
             return None
         k=reference_px_to_k(float(value))
@@ -666,14 +821,18 @@ class SLMFeedbackService:
         return float(dx if axis == 'x' else dy)
 
     def geometry_period_from_um(self,section_key: str,value_um: float,axis: str) -> float:
-        calibration=self.session.runtime.get_section_calibration_copy(section_key)
+        """Convert a metric period to reference pixels using the section calibration."""
+        calibration=self._application_session.runtime.get_section_calibration_copy(section_key)
         if calibration is None or not calibration.is_valid():
             raise RuntimeError('A valid section/plane FOV calibration is required for metric geometry periods.')
         x,y=((float(value_um),0.0) if axis == 'x' else (0.0,float(value_um)))
         kx,ky=calibration.um_to_kxy(x,y)
         return float(k_to_reference_px(kx if axis == 'x' else ky))
 
-    def geometry_orientation_calibration_context(self,section_key: str) -> dict[str,Any]:
+    def geometry_orientation_calibration_context(
+        self,section_key: str,
+    ) -> GeometryOrientationCalibrationContext:
+        """Inspect the active plane workflow, creating default draft geometry if absent."""
         section=str(section_key)
         plane=self._active_feedback_plane(section)
         key=(section,plane)
@@ -712,7 +871,7 @@ class SLMFeedbackService:
         }
 
     def _feedback_orientation_change_reason(self,section_key: str) -> str:
-        status = self.session.runtime.get_section_cgh_status(section_key)
+        status = self._application_session.runtime.get_section_cgh_status(section_key)
         current = status.current_round_index
         feedback_cgh_computed = bool(
             current is not None
@@ -744,7 +903,7 @@ class SLMFeedbackService:
         plane = self._active_feedback_plane(section)
         orientation = self.feedback_orientation(section)
         saved = self._saved_feedback_orientation(section,plane)
-        preferences = self.session.startup_preferences
+        preferences = self._application_session.startup_preferences
         plane_override = bool(
             plane
             and preferences is not None
@@ -761,6 +920,10 @@ class SLMFeedbackService:
             change_unavailable_reason=reason,
         )
 
+    # ------------------------------------------------------------------
+    # Position-reference selection, persistence and detector-space preview
+    # ------------------------------------------------------------------
+
     def _position_reference_key(
         self,section_key: str,
     ) -> tuple[str,str | None]:
@@ -768,7 +931,7 @@ class SLMFeedbackService:
         return section,self._active_feedback_plane(section)
 
     def _position_reference_change_reason(self,section_key: str) -> str:
-        status = self.session.runtime.get_section_feedback_status(section_key)
+        status = self._application_session.runtime.get_section_feedback_status(section_key)
         if bool(status.position_available):
             return (
                 "Clear the current position correction before changing its "
@@ -779,6 +942,7 @@ class SLMFeedbackService:
     def position_reference_selection(
         self,section_key: str,
     ) -> PositionReferenceSelection:
+        """Resolve the transient choice, falling back to global fit if its record is gone."""
         key = self._position_reference_key(section_key)
         selection = self._position_reference_selections.get(key)
         if selection is None:
@@ -804,6 +968,7 @@ class SLMFeedbackService:
     def position_reference_context(
         self,section_key: str,
     ) -> PositionReferenceContext:
+        """Inspect reference availability and compatibility without applying a correction."""
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         selection = self.position_reference_selection(section)
@@ -814,7 +979,7 @@ class SLMFeedbackService:
         )
         compatible = True
         compatibility_error = ""
-        inspection = self.session.runtime.get_section_feedback_inspection(section)
+        inspection = self._application_session.runtime.get_section_feedback_inspection(section)
         has_localization = bool(
             inspection.measurement is not None
             and inspection.measurement.localization is not None
@@ -865,6 +1030,7 @@ class SLMFeedbackService:
         editable_geometry: EditablePositionReferenceGeometry | Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
     ) -> PositionReferenceSelection:
+        """Select a reference for this plane without persisting or applying a correction."""
         self._require_editor_mode()
         section = str(section_key)
         reason = self._position_reference_change_reason(section)
@@ -877,7 +1043,7 @@ class SLMFeedbackService:
         if editable_locks is None:
             editable_locks = previous.editable_locks
         if normalized_mode is PositionReferenceMode.EDITABLE and editable_geometry is None:
-            inspection = self.session.runtime.get_section_feedback_inspection(section)
+            inspection = self._application_session.runtime.get_section_feedback_inspection(section)
             measurement = inspection.measurement
             if measurement is None or measurement.localization is None:
                 raise RuntimeError(
@@ -915,7 +1081,7 @@ class SLMFeedbackService:
         reason = self._position_reference_change_reason(section)
         if reason:
             raise RuntimeError(reason)
-        inspection = self.session.runtime.get_section_feedback_inspection(section)
+        inspection = self._application_session.runtime.get_section_feedback_inspection(section)
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
             raise RuntimeError(
@@ -952,7 +1118,7 @@ class SLMFeedbackService:
         plane = self._active_feedback_plane(section)
         if plane is None:  # guarded above; retained for static clarity.
             raise RuntimeError("Select a measurement plane first")
-        measurement = self.session.runtime.get_section_feedback_inspection(
+        measurement = self._application_session.runtime.get_section_feedback_inspection(
             section
         ).measurement
         if measurement is None or measurement.localization is None:
@@ -960,7 +1126,7 @@ class SLMFeedbackService:
         localization = orient_localization(
             measurement.localization,self.feedback_orientation(section),
         )
-        config_path = self.session.current_config_path
+        config_path = self._application_session.current_config_path
         return PositionReference(
             name=name,
             plane_name=plane,
@@ -969,8 +1135,8 @@ class SLMFeedbackService:
             image_shape=measurement.acquisition.image.shape,
             detector_name=measurement.acquisition.detector,
             metadata={
-                "source_slm_key":self.session.runtime.identity.key,
-                "source_slm_serial":self.session.runtime.identity.serial_number,
+                "source_slm_key":self._application_session.runtime.identity.key,
+                "source_slm_serial":self._application_session.runtime.identity.serial_number,
                 "source_section":section,
                 "source_target_type":localization.target_type,
                 "source_config_name":(
@@ -988,6 +1154,7 @@ class SLMFeedbackService:
         lifetime: PositionReferenceLifetime | str=PositionReferenceLifetime.SESSION,
         overwrite: bool=False,
     ) -> PositionReference:
+        """Store and select a complete localization; persist only for persistent lifetime."""
         self._require_editor_mode()
         store = self._position_reference_store
         if store is None:
@@ -1013,6 +1180,7 @@ class SLMFeedbackService:
     def persist_position_reference(
         self,section_key: str,name: str,
     ) -> PositionReferenceRecord:
+        """Promote a shared reference to persistent storage without changing selection."""
         self._require_editor_mode()
         plane = self._active_feedback_plane(section_key)
         if plane is None:
@@ -1022,6 +1190,7 @@ class SLMFeedbackService:
         return self._position_reference_store.persist(plane,str(name))
 
     def delete_position_reference(self,section_key: str,name: str) -> None:
+        """Delete the active plane's shared record and let store listeners reconcile users."""
         self._require_editor_mode()
         plane = self._active_feedback_plane(section_key)
         if plane is None:
@@ -1030,13 +1199,15 @@ class SLMFeedbackService:
             raise RuntimeError("Position-reference storage is unavailable")
         self._position_reference_store.delete(plane,str(name))
 
-    def position_reference_preview(self,section_key: str):
-        """Return detector-space reference preview plus legacy kxy diagnostics."""
+    def position_reference_preview(
+        self,section_key: str,
+    ) -> PositionReferencePreview | None:
+        """Return detector-space/kxy preview, or None when unavailable or incompatible."""
         try:
-            status = self.session.runtime.get_section_feedback_status(section_key)
+            status = self._application_session.runtime.get_section_feedback_status(section_key)
             if not status.localization_available:
                 return None
-            inspection = self.session.runtime.get_section_feedback_inspection(section_key)
+            inspection = self._application_session.runtime.get_section_feedback_inspection(section_key)
             measurement = inspection.measurement
             if measurement is None or measurement.localization is None:
                 return None
@@ -1049,7 +1220,7 @@ class SLMFeedbackService:
                 if reference_positions is None
                 else np.asarray(reference_positions,dtype=np.float64)
             )
-            analysis = self.session.runtime.compute_section_feedback_position_analysis(
+            analysis = self._application_session.runtime.compute_section_feedback_position_analysis(
                 section_key,
                 orientation=self.feedback_orientation(section_key),
                 reference_positions_px=reference_positions,
@@ -1077,7 +1248,7 @@ class SLMFeedbackService:
                     None if editable_geometry is None else editable_geometry.to_dict()
                 ),
                 "ideal_positions_kxy":np.asarray(
-                    self.session.runtime.get_section_fov_position_context(
+                    self._application_session.runtime.get_section_fov_position_context(
                         section_key
                     )["ideal_positions_kxy"]
                 ),
@@ -1094,8 +1265,9 @@ class SLMFeedbackService:
     def _resolve_position_reference(
         self,section_key: str,
     ) -> tuple[np.ndarray | None,dict[str,Any]]:
+        """Resolve oriented detector coordinates and provenance; None selects global fit."""
         section = str(section_key)
-        inspection = self.session.runtime.get_section_feedback_inspection(section)
+        inspection = self._application_session.runtime.get_section_feedback_inspection(section)
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
             raise RuntimeError("Accept a localization before using position feedback")
@@ -1152,7 +1324,7 @@ class SLMFeedbackService:
         }
 
     def _position_reference_create_reason(self,section_key: str) -> str:
-        status = self.session.runtime.get_section_feedback_status(section_key)
+        status = self._application_session.runtime.get_section_feedback_status(section_key)
         if FeedbackCapability.POSITION_CORRECTION not in set(status.capabilities):
             return "Position references are unavailable for this target."
         change_reason = self._position_reference_change_reason(section_key)
@@ -1162,7 +1334,7 @@ class SLMFeedbackService:
             return "Position-reference storage is unavailable."
         if self._active_feedback_plane(section_key) is None:
             return "Select a measurement plane before creating a position reference."
-        inspection = self.session.runtime.get_section_feedback_inspection(section_key)
+        inspection = self._application_session.runtime.get_section_feedback_inspection(section_key)
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
             return "Accept a localization before creating a position reference."
@@ -1171,7 +1343,7 @@ class SLMFeedbackService:
         return ""
 
     def _on_position_reference_store_changed(self) -> None:
-        runtime = self.session.runtime
+        runtime = self._application_session.runtime
         for section in tuple(runtime.section_keys):
             key = self._position_reference_key(section)
             selection = self._position_reference_selections.get(key)
@@ -1187,6 +1359,10 @@ class SLMFeedbackService:
                     self._position_reference_selections[key] = PositionReferenceSelection()
             self._section_changed(section)
 
+    # ------------------------------------------------------------------
+    # FOV position-calibration selection, fitting and runtime application
+    # ------------------------------------------------------------------
+
     def _fov_position_key(self,section_key: str) -> tuple[str,str | None]:
         section = str(section_key)
         return section,self._active_feedback_plane(section)
@@ -1194,7 +1370,7 @@ class SLMFeedbackService:
     def _saved_fov_position_calibration_name(
         self,section_key: str,plane_name: str | None,
     ) -> str | None:
-        preferences = self.session.startup_preferences
+        preferences = self._application_session.startup_preferences
         if preferences is None:
             return None
         return preferences.default_fov_position_calibration(
@@ -1208,31 +1384,34 @@ class SLMFeedbackService:
         if store is None:
             raise RuntimeError("FOV position-calibration storage is unavailable")
         return store.load(
-            self.session.runtime.identity,section_key,plane_name,name,
+            self._application_session.runtime.identity,section_key,plane_name,name,
         )
 
-    def fov_position_calibration_context(self,section_key: str) -> dict[str,Any]:
+    def fov_position_calibration_context(
+        self,section_key: str,
+    ) -> FOVPositionCalibrationContext:
+        """Resolve draft selection/default state without applying a field to the runtime."""
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         key = (section,plane)
         store = self._fov_position_calibration_store
         names = (
             () if plane is None or store is None else
-            store.list(self.session.runtime.identity,section,plane)
+            store.list(self._application_session.runtime.identity,section,plane)
         )
         selection = self._fov_position_calibration_selections.get(key)
         if selection is None:
             default_name = self._saved_fov_position_calibration_name(section,plane)
             selected = default_name if default_name in names else None
-            selection = {"selected_name":selected,"applied":bool(selected)}
+            selection = _FOVPositionCalibrationSelection(selected,bool(selected))
             self._fov_position_calibration_selections[key] = selection
-        selected = str(selection.get("selected_name") or "").strip() or None
+        selected = str(selection.selected_name or "").strip() or None
         if selected not in names:
             selected = None
-            selection["selected_name"] = None
-            selection["applied"] = False
-        applied = bool(selection.get("applied",False) and selected)
-        runtime_context = self.session.runtime.get_section_fov_position_context(section)
+            selection.selected_name = None
+            selection.applied = False
+        applied = bool(selection.applied and selected)
+        runtime_context = self._application_session.runtime.get_section_fov_position_context(section)
         outside = np.asarray(runtime_context.get("outside_mask",()),dtype=bool)
         extrapolated_count = int(np.count_nonzero(outside)) if applied else 0
         calibration = (
@@ -1255,14 +1434,17 @@ class SLMFeedbackService:
             "coverage_tolerance_kxy":float(runtime_context.get("coverage_tolerance_kxy",0.0)),
         }
 
-    def fov_position_calibration_preview(self,section_key: str) -> dict[str,Any] | None:
+    def fov_position_calibration_preview(
+        self,section_key: str,
+    ) -> FOVPositionCalibrationPreview | None:
+        """Preview the candidate or selected field, falling back to its recorded samples."""
         context = self.fov_position_calibration_context(section_key)
         key = self._fov_position_key(section_key)
         candidate = self._fov_position_calibration_candidates.get(key)
         calibration = candidate if candidate is not None else context.get("calibration")
         if calibration is None:
             return None
-        current = self.session.runtime.get_section_fov_position_context(section_key)
+        current = self._application_session.runtime.get_section_fov_position_context(section_key)
         ideal = np.asarray(current["ideal_positions_kxy"],dtype=np.float64)
         # Inspect the field at the current target when it is meaningful.  With
         # no target (or an incompatible target), fall back to the calibration's
@@ -1291,6 +1473,7 @@ class SLMFeedbackService:
     def select_fov_position_calibration(
         self,section_key: str,name: str | None,
     ) -> None:
+        """Select a saved field, updating the runtime only when Apply is already enabled."""
         self._require_editor_mode()
         section = str(section_key)
         plane = self._active_feedback_plane(section)
@@ -1299,15 +1482,15 @@ class SLMFeedbackService:
         key = (section,plane)
         selected = str(name or "").strip() or None
         selection = self._fov_position_calibration_selections.setdefault(
-            key,{"selected_name":None,"applied":False},
+            key,_FOVPositionCalibrationSelection(),
         )
         calibration = None
         if selected is not None:
             calibration = self._load_fov_position_calibration(section,plane,selected)
-        selection["selected_name"] = selected
-        if bool(selection.get("applied",False)):
+        selection.selected_name = selected
+        if bool(selection.applied):
             if calibration is None:
-                selection["applied"] = False
+                selection.applied = False
             self._set_runtime_fov_position_calibration(section,calibration)
             self._warn_fov_extrapolation(section)
         self._section_changed(section)
@@ -1315,6 +1498,7 @@ class SLMFeedbackService:
     def set_fov_position_calibration_applied(
         self,section_key: str,applied: bool,
     ) -> None:
+        """Enable/disable the selected runtime field without changing the saved default."""
         self._require_editor_mode()
         section = str(section_key)
         plane = self._active_feedback_plane(section)
@@ -1322,9 +1506,9 @@ class SLMFeedbackService:
             raise RuntimeError("Select a measurement plane before applying an FOV calibration")
         key = (section,plane)
         selection = self._fov_position_calibration_selections.setdefault(
-            key,{"selected_name":None,"applied":False},
+            key,_FOVPositionCalibrationSelection(),
         )
-        name = str(selection.get("selected_name") or "").strip() or None
+        name = str(selection.selected_name or "").strip() or None
         applied = bool(applied)
         if applied and name is None:
             raise RuntimeError("Choose an FOV calibration before enabling Apply")
@@ -1332,12 +1516,13 @@ class SLMFeedbackService:
             self._load_fov_position_calibration(section,plane,name)
             if applied else None
         )
-        selection["applied"] = applied
+        selection.applied = applied
         self._set_runtime_fov_position_calibration(section,calibration)
         self._section_changed(section)
         self._warn_fov_extrapolation(section)
 
     def set_default_fov_position_calibration(self,section_key: str) -> None:
+        """Persist this plane's selected default and enable it in the current runtime."""
         self._require_editor_mode()
         section = str(section_key)
         plane = self._active_feedback_plane(section)
@@ -1347,13 +1532,14 @@ class SLMFeedbackService:
         name = context.get("selected_name")
         if not name:
             raise RuntimeError("Choose an FOV calibration before setting the default")
-        preferences = self.session.startup_preferences
+        preferences = self._application_session.startup_preferences
         if preferences is None:
             raise RuntimeError("Startup preferences are unavailable")
         preferences.set_default_fov_position_calibration(section,plane,name)
         self.set_fov_position_calibration_applied(section,True)
 
     def delete_fov_position_calibration(self,section_key: str) -> str:
+        """Delete the selected record first, then clear matching default and draft state."""
         self._require_editor_mode()
         section = str(section_key)
         context = self.fov_position_calibration_context(section)
@@ -1368,8 +1554,8 @@ class SLMFeedbackService:
         # Delete first so a filesystem failure leaves both selection and
         # startup default untouched.  The synchronous store listener clears
         # the selected/applied runtime calibration.
-        store.delete(self.session.runtime.identity,section,plane,name)
-        preferences = self.session.startup_preferences
+        store.delete(self._application_session.runtime.identity,section,plane,name)
+        preferences = self._application_session.startup_preferences
         if (
             preferences is not None
             and preferences.default_fov_position_calibration(section,plane) == name
@@ -1382,12 +1568,13 @@ class SLMFeedbackService:
     def fit_fov_position_calibration(
         self,section_key: str,*,model: str="polynomial",degree: int=2,
     ) -> FOVPositionCalibration:
+        """Build an unsaved field from accepted correction or current position analysis."""
         self._require_editor_mode()
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         if plane is None:
             raise RuntimeError("Select a measurement plane before fitting an FOV calibration")
-        status = self.session.runtime.get_section_feedback_status(section)
+        status = self._application_session.runtime.get_section_feedback_status(section)
         if FeedbackCapability.POSITION_CORRECTION not in set(status.capabilities):
             raise RuntimeError("The current target does not support position correction")
 
@@ -1396,7 +1583,7 @@ class SLMFeedbackService:
         # correction experimentally and only then promote it to a persistent
         # FOV calibration.  Fall back to a fresh analysis only before a
         # correction has been accepted.
-        session_inspection = self.session.runtime.get_section_cgh_session_inspection(
+        session_inspection = self._application_session.runtime.get_section_cgh_session_inspection(
             section
         )
         correction = session_inspection.position_correction
@@ -1415,17 +1602,17 @@ class SLMFeedbackService:
             reference_positions,reference_metadata = self._resolve_position_reference(
                 section
             )
-            analysis = self.session.runtime.compute_section_feedback_position_analysis(
+            analysis = self._application_session.runtime.compute_section_feedback_position_analysis(
                 section,
                 orientation=self.feedback_orientation(section),
                 reference_positions_px=reference_positions,
             )
-            current = self.session.runtime.get_section_fov_position_context(section)
+            current = self._application_session.runtime.get_section_fov_position_context(section)
             ideal = np.asarray(current["ideal_positions_kxy"],dtype=np.float64)
             total_displacement = (
                 np.asarray(analysis.corrected_positions_kxy,dtype=np.float64)-ideal
             )
-            inspection = self.session.runtime.get_section_feedback_inspection(section)
+            inspection = self._application_session.runtime.get_section_feedback_inspection(section)
             detector = None
             if inspection.measurement is not None:
                 detector = inspection.measurement.acquisition.detector
@@ -1433,7 +1620,7 @@ class SLMFeedbackService:
 
         calibration = FOVPositionCalibration.fit(
             name="Current candidate",
-            slm_serial=self.session.runtime.identity.serial_number,
+            slm_serial=self._application_session.runtime.identity.serial_number,
             section_key=section,plane_name=plane,
             ideal_positions_kxy=ideal,
             total_displacements_kxy=total_displacement,
@@ -1453,6 +1640,7 @@ class SLMFeedbackService:
     def save_fov_position_calibration(
         self,section_key: str,name: str,*,overwrite: bool=False,
     ) -> FOVPositionCalibration:
+        """Persist the current candidate; selection/application follow store notifications."""
         self._require_editor_mode()
         section = str(section_key)
         plane = self._active_feedback_plane(section)
@@ -1472,6 +1660,7 @@ class SLMFeedbackService:
     def fov_position_calibration_replacement_warning(
         self,section_key: str,
     ) -> str:
+        """Describe coverage changes before replacing an applied field; empty means none."""
         section = str(section_key)
         context = self.fov_position_calibration_context(section)
         plane = context.get("plane_name")
@@ -1519,6 +1708,7 @@ class SLMFeedbackService:
         return ""
 
     def replace_applied_fov_position_calibration(self,section_key: str) -> str:
+        """Overwrite and reapply the selected record, then consume the fitted candidate."""
         self._require_editor_mode()
         section = str(section_key)
         context = self.fov_position_calibration_context(section)
@@ -1547,7 +1737,7 @@ class SLMFeedbackService:
         current = None
         current_known = False
         try:
-            current = self.session.runtime.get_section_fov_position_context(
+            current = self._application_session.runtime.get_section_fov_position_context(
                 section_key
             ).get("calibration")
             current_known = True
@@ -1570,8 +1760,8 @@ class SLMFeedbackService:
                 self._section_changed(section_key)
             return
 
-        self.session.cancel_cgh(section_key)
-        transition = self.session.runtime.set_section_fov_position_calibration(
+        self._application_session.cancel_cgh(section_key)
+        transition = self._application_session.runtime.set_section_fov_position_calibration(
             section_key,calibration,
         )
         if notify:
@@ -1593,10 +1783,12 @@ class SLMFeedbackService:
             )
 
     def apply_startup_fov_position_calibration_defaults(self) -> None:
+        """Explicitly reconcile default selections with the runtime after startup."""
         self.refresh_fov_position_calibration_contexts()
 
     def refresh_fov_position_calibration_contexts(self) -> None:
-        runtime = self.session.runtime
+        """Reconcile current sections/planes with selections and saved startup defaults."""
+        runtime = self._application_session.runtime
         active_keys = set()
         for section_key in tuple(runtime.section_keys):
             section = str(section_key)
@@ -1612,13 +1804,13 @@ class SLMFeedbackService:
                         runtime.identity,section,plane,name
                     )
                 )
-                selection = {
-                    "selected_name":name if valid_default else None,
-                    "applied":valid_default,
-                }
+                selection = _FOVPositionCalibrationSelection(
+                    selected_name=name if valid_default else None,
+                    applied=valid_default,
+                )
                 self._fov_position_calibration_selections[key] = selection
-            name = str(selection.get("selected_name") or "").strip() or None
-            applied = bool(selection.get("applied",False) and name and plane)
+            name = str(selection.selected_name or "").strip() or None
+            applied = bool(selection.applied and name and plane)
             calibration = (
                 self._load_fov_position_calibration(section,plane,name)
                 if applied else None
@@ -1631,7 +1823,7 @@ class SLMFeedbackService:
                 self._fov_position_calibration_candidates.pop(key,None)
 
     def _on_fov_position_calibration_store_changed(self) -> None:
-        runtime = self.session.runtime
+        runtime = self._application_session.runtime
         for section_key in tuple(runtime.section_keys):
             section = str(section_key)
             plane = self._active_feedback_plane(section)
@@ -1641,26 +1833,35 @@ class SLMFeedbackService:
             selection = self._fov_position_calibration_selections.get(key)
             if selection is None:
                 continue
-            name = str(selection.get("selected_name") or "").strip() or None
+            name = str(selection.selected_name or "").strip() or None
             exists = bool(
                 name and self._fov_position_calibration_store.exists(
                     runtime.identity,section,plane,name
                 )
             )
             if not exists:
-                selection["selected_name"] = None
-                selection["applied"] = False
+                selection.selected_name = None
+                selection.applied = False
                 self._set_runtime_fov_position_calibration(section,None,notify=True)
-            elif selection.get("applied"):
+            elif selection.applied:
                 calibration = self._load_fov_position_calibration(section,plane,name)
                 self._set_runtime_fov_position_calibration(section,calibration,notify=True)
             else:
                 self._section_changed(section)
 
+    # ------------------------------------------------------------------
+    # Geometry-orientation calibration workflow
+    # ------------------------------------------------------------------
+
     def compute_geometry_orientation_calibration_target(
         self,section_key: str,*,grid_x: int,grid_y: int,period_x_px: float,period_y_px: float,
         source: str,on_complete: Callable[[bool,Exception | None],None] | None=None,
     ) -> bool:
+        """Compute/upload a detached target, replacing workflow state only after success.
+
+        Acquisition is explicit. Failed computation/upload retains the previous
+        workflow; finish_geometry_orientation_calibration restores the experiment.
+        """
         self._require_editor_mode()
         section=str(section_key); plane=self._active_feedback_plane(section)
         if plane is None:
@@ -1671,12 +1872,14 @@ class SLMFeedbackService:
         pending_period_x=float(period_x_px); pending_period_y=float(period_y_px)
         pending_detector=str(source or '').strip() or None
 
-        def finished(success,error,payload):
+        def finished(
+            success: bool,error: Exception | None,payload: GeometryCalibrationPayload | None,
+        ) -> None:
             if not success or payload is None:
                 if on_complete is not None:on_complete(False,error or RuntimeError('Geometry calibration CGH failed'))
                 return
-            candidate_payload=dict(payload)
-            if not self.session.upload_frame(candidate_payload['frame']):
+            candidate_payload=cast(GeometryCalibrationPayload,dict(payload))
+            if not self._application_session.upload_frame(candidate_payload['frame']):
                 if on_complete is not None:
                     on_complete(False,RuntimeError('Could not upload the geometry calibration frame.'))
                 return
@@ -1693,7 +1896,7 @@ class SLMFeedbackService:
             self._section_changed(section)
             if on_complete is not None:on_complete(True,None)
 
-        return self.session.compute_geometry_orientation_cgh(
+        return self._application_session.compute_geometry_orientation_cgh(
             section,grid_x=int(grid_x),grid_y=int(grid_y),
             period_x_px=float(period_x_px),period_y_px=float(period_y_px),
             on_finished=finished,
@@ -1702,6 +1905,7 @@ class SLMFeedbackService:
     def acquire_geometry_orientation_calibration(
         self,section_key: str,source: str,*,on_complete: Callable[[bool,Exception | None],None] | None=None,
     ) -> None:
+        """Acquire for the displayed target, clearing its previous localization/analysis."""
         self._require_editor_mode()
         section=str(section_key); key=self._geometry_calibration_key(section)
         workflow=self._geometry_calibration_workflows.get(key)
@@ -1716,7 +1920,7 @@ class SLMFeedbackService:
         if not source:raise ValueError('Select a detector before acquisition.')
         workflow.detector_name=source
 
-        def result(measurement):
+        def result(measurement: ImageMeasurement) -> None:
             workflow.measurement=measurement
             workflow.localization=None; workflow.localization_parameters=None
             workflow.analysis=None
@@ -1726,7 +1930,7 @@ class SLMFeedbackService:
             self._section_changed(section)
             if on_complete is not None:on_complete(True,None)
 
-        def error(error):
+        def error(error: Exception) -> None:
             self._section_changed(section)
             if on_complete is not None:on_complete(False,error)
 
@@ -1739,6 +1943,7 @@ class SLMFeedbackService:
     def set_geometry_orientation_calibration_measurement(
         self,section_key: str,measurement: ImageMeasurement,
     ) -> None:
+        """Load a measurement for a computed target without changing the displayed frame."""
         self._require_editor_mode(); section=str(section_key)
         workflow=self._geometry_calibration_workflows.get(self._geometry_calibration_key(section))
         if workflow is None or workflow.payload is None:
@@ -1750,13 +1955,14 @@ class SLMFeedbackService:
 
     def _localize_geometry_orientation_workflow(
         self,section_key: str,workflow: _GeometryCalibrationWorkflow,parameters: Mapping[str,Any] | None,
-    ):
+    ) -> LocalizationResult:
+        """Replace this draft's localization and invalidate its previous orientation fit."""
         if workflow.payload is None or workflow.measurement is None:
             raise RuntimeError('Geometry calibration needs a computed target and measurement.')
         payload=workflow.payload
         if parameters is None:
             parameters=dict(
-                self.session.runtime.get_section_feedback_status(
+                self._application_session.runtime.get_section_feedback_status(
                     section_key
                 ).localization_params
             )
@@ -1775,7 +1981,8 @@ class SLMFeedbackService:
 
     def geometry_orientation_localization_candidate(
         self,section_key: str,parameters: Mapping[str,Any],
-    ):
+    ) -> LocalizationResult:
+        """Localize the calibration measurement and retain the candidate in its draft."""
         self._require_editor_mode(); section=str(section_key)
         workflow=self._geometry_calibration_workflows.get(self._geometry_calibration_key(section))
         if workflow is None:raise RuntimeError('Start geometry calibration first.')
@@ -1784,6 +1991,7 @@ class SLMFeedbackService:
         return candidate
 
     def analyze_geometry_orientation_calibration(self,section_key: str) -> GeometryOrientationAnalysis:
+        """Analyze the localized calibration target without saving or restoring its frame."""
         self._require_editor_mode(); section=str(section_key)
         workflow=self._geometry_calibration_workflows.get(self._geometry_calibration_key(section))
         if workflow is None or workflow.payload is None or workflow.measurement is None or workflow.localization is None:
@@ -1797,6 +2005,7 @@ class SLMFeedbackService:
         return analysis
 
     def save_geometry_orientation_calibration(self,section_key: str) -> GeometryOrientationCalibration:
+        """Persist an accepted orientation and refresh feedback; leave target displayed."""
         self._require_editor_mode(); section=str(section_key); plane=self._active_feedback_plane(section)
         if plane is None:raise RuntimeError('Select a measurement plane first.')
         workflow=self._geometry_calibration_workflows.get((section,plane))
@@ -1805,7 +2014,7 @@ class SLMFeedbackService:
         store=self._geometry_orientation_calibration_store
         if store is None:raise RuntimeError('Geometry orientation-calibration storage is unavailable.')
         calibration=GeometryOrientationCalibration(
-            slm_serial=self.session.runtime.identity.serial_number,section_key=section,plane_name=plane,
+            slm_serial=self._application_session.runtime.identity.serial_number,section_key=section,plane_name=plane,
             orientation=workflow.analysis.orientation,detector_name=workflow.detector_name,
             grid_x=workflow.grid_x,grid_y=workflow.grid_y,
             period_x_px=float(workflow.period_x_px),period_y_px=float(workflow.period_y_px),
@@ -1815,7 +2024,7 @@ class SLMFeedbackService:
         )
         store.save(calibration)
         self._feedback_orientations[section]=(plane,calibration.orientation)
-        if self.session.runtime.get_section_feedback_status(section).localization_available:
+        if self._application_session.runtime.get_section_feedback_status(section).localization_available:
             self._update_committed_analysis(section)
         self._section_changed(section)
         return calibration
@@ -1828,7 +2037,7 @@ class SLMFeedbackService:
         if active is None:
             return
         _plane,workflow=active
-        if not self.session.upload_current_frame():
+        if not self._application_session.upload_current_frame():
             raise RuntimeError('Could not restore the current experiment CGH.')
         workflow.frame_active=False
         self._section_changed(section)
@@ -1839,6 +2048,7 @@ class SLMFeedbackService:
     def set_feedback_orientation(
         self,section_key: str,orientation: FeedbackOrientation | str,
     ) -> FeedbackOrientation:
+        """Set this plane's transient orientation and recompute existing intensity metrics."""
         self._require_editor_mode()
         section = str(section_key)
         reason = self._feedback_orientation_change_reason(section)
@@ -1847,7 +2057,7 @@ class SLMFeedbackService:
         normalized = FeedbackOrientation.normalize(orientation)
         plane = self._active_feedback_plane(section)
         self._feedback_orientations[section] = (plane,normalized)
-        if self.session.runtime.get_section_feedback_status(
+        if self._application_session.runtime.get_section_feedback_status(
             section
         ).localization_available:
             self._update_committed_analysis(section)
@@ -1860,7 +2070,7 @@ class SLMFeedbackService:
         section = str(section_key)
         orientation = self.feedback_orientation(section)
         plane = self._active_feedback_plane(section)
-        preferences = self.session.startup_preferences
+        preferences = self._application_session.startup_preferences
         if preferences is None:
             raise RuntimeError("Startup preferences are unavailable")
         if plane is None:
@@ -1874,7 +2084,7 @@ class SLMFeedbackService:
 
     def refresh_feedback_orientation_contexts(self,*,force: bool=False) -> None:
         """Refresh orientation after plane changes or authoritative calibration changes."""
-        for section_key in tuple(self.session.runtime.section_keys):
+        for section_key in tuple(self._application_session.runtime.section_keys):
             section = str(section_key)
             current = self._feedback_orientations.get(section)
             if current is None:
@@ -1884,11 +2094,15 @@ class SLMFeedbackService:
                 continue
             orientation = self._saved_feedback_orientation(section,plane)
             self._feedback_orientations[section] = (plane,orientation)
-            if self.session.runtime.get_section_feedback_status(
+            if self._application_session.runtime.get_section_feedback_status(
                 section
             ).localization_available:
                 self._update_committed_analysis(section)
             self._section_changed(section)
+
+    # ------------------------------------------------------------------
+    # Measurement acquisition and localization workflow
+    # ------------------------------------------------------------------
 
     def request_measurement(
         self,
@@ -1899,12 +2113,13 @@ class SLMFeedbackService:
         on_result: Callable[[ImageMeasurement],None],
         on_error: Callable[[Exception],None],
     ) -> None:
+        """Replace a section's pending acquisition; the dispatcher owns late-result guards."""
         self._require_editor_mode()
         self.cancel_measurement(section_key)
         self._callbacks.on_measurement_busy_changed(
             section_key,True,"Waiting for %s..." % source,
         )
-        measurements = self.measurements
+        measurements = self._measurement_dispatcher
         if measurements is None:
             error = RuntimeError("No host measurement provider is configured.")
             self._callbacks.on_measurement_busy_changed(section_key,False,"")
@@ -1912,14 +2127,14 @@ class SLMFeedbackService:
             on_error(error)
             return
 
-        def result_callback(measurement):
+        def result_callback(measurement: ImageMeasurement) -> None:
             self._measurement_requests.pop(section_key,None)
             self._callbacks.on_measurement_busy_changed(section_key,False,"")
-            if not self.session.editor_writes_allowed:
+            if not self._application_session.editor_writes_allowed:
                 return
             on_result(measurement)
 
-        def error_callback(error):
+        def error_callback(error: Exception) -> None:
             self._measurement_requests.pop(section_key,None)
             self._callbacks.on_measurement_busy_changed(section_key,False,"")
             if not isinstance(error,Exception):
@@ -1944,6 +2159,7 @@ class SLMFeedbackService:
             self._measurement_requests[section_key] = request
 
     def cancel_measurement(self,section_key: str) -> None:
+        """Cancel a tracked request and report idle, leaving committed measurements intact."""
         request = self._measurement_requests.pop(section_key,None)
         if request is not None:
             request.cancel()
@@ -1958,7 +2174,7 @@ class SLMFeedbackService:
     ) -> None:
         self._require_editor_mode()
 
-        def commit_result(measurement):
+        def commit_result(measurement: ImageMeasurement) -> None:
             try:
                 self.commit_measurement(
                     section_key,measurement,
@@ -1983,7 +2199,7 @@ class SLMFeedbackService:
         reuse_previous_localization: bool=False,
     ) -> bool:
         self._require_editor_mode()
-        runtime = self.session.runtime
+        runtime = self._application_session.runtime
         previous_available = bool(
             runtime.get_section_feedback_status(
                 section_key
@@ -2015,9 +2231,9 @@ class SLMFeedbackService:
 
     def localization_candidate(
         self,section_key: str,parameters: Mapping[str,Any],
-    ):
+    ) -> tuple[LocalizationResult,IntensityAnalysis | None]:
         self.validate_target_hint_use(section_key,parameters)
-        runtime = self.session.runtime
+        runtime = self._application_session.runtime
         candidate = runtime.compute_section_feedback_localization_candidate(
             section_key,parameters,
         )
@@ -2034,14 +2250,14 @@ class SLMFeedbackService:
         return candidate,metrics
 
     def infer_missing_localization_candidate(
-        self,section_key: str,localization: Any,
-    ):
+        self,section_key: str,localization: LocalizationResult,
+    ) -> tuple[LocalizationResult,IntensityAnalysis | None]:
         """Return a candidate with unresolved lattice sites explicitly inferred."""
         self._require_editor_mode()
         candidate = infer_missing_localization(localization)
         metrics = None
         try:
-            metrics = self.session.runtime.compute_section_feedback_intensity_analysis(
+            metrics = self._application_session.runtime.compute_section_feedback_intensity_analysis(
                 section_key,candidate,orientation=self.feedback_orientation(section_key),
             )
         except Exception as error:
@@ -2054,7 +2270,7 @@ class SLMFeedbackService:
     def accept_localization(
         self,
         section_key: str,
-        localization: Any,
+        localization: LocalizationResult,
         parameters: Mapping[str,Any],
         *,
         raise_errors: bool=False,
@@ -2063,7 +2279,7 @@ class SLMFeedbackService:
             self._require_editor_mode()
             self.require_current_cgh_for_localization_commit(section_key)
             self.validate_target_hint_use(section_key,parameters)
-            runtime = self.session.runtime
+            runtime = self._application_session.runtime
             runtime.commit_section_feedback_localization(
                 section_key,localization,parameters,
             )
@@ -2088,11 +2304,11 @@ class SLMFeedbackService:
 
     def reuse_localization(
         self,section_key: str,*,raise_errors: bool=False,
-    ):
+    ) -> LocalizationResult | None:
         try:
             self._require_editor_mode()
             self.require_current_cgh_for_localization_commit(section_key)
-            localization = self.session.runtime.reuse_section_feedback_localization(
+            localization = self._application_session.runtime.reuse_section_feedback_localization(
                 section_key
             )
             self._update_committed_analysis(section_key,localization)
@@ -2105,7 +2321,7 @@ class SLMFeedbackService:
             return None
 
     def localize_and_commit(self,section_key: str) -> None:
-        status = self.session.runtime.get_section_feedback_status(section_key)
+        status = self._application_session.runtime.get_section_feedback_status(section_key)
         parameters = dict(status.localization_params)
         candidate,_metrics = self.localization_candidate(section_key,parameters)
         self.accept_localization(
@@ -2118,10 +2334,10 @@ class SLMFeedbackService:
         group: str,
         changes: Mapping[str,Any],
         *,
-        localization: Any=None,
+        localization: LocalizationResult | None=None,
     ) -> FeedbackParameterUpdateResult:
         self._require_editor_mode()
-        runtime = self.session.runtime
+        runtime = self._application_session.runtime
         changed = runtime.update_section_feedback_parameters(
             section_key,group,dict(changes or {}),
         )
@@ -2149,7 +2365,7 @@ class SLMFeedbackService:
 
     def apply_intensity_feedback(
         self,section_key: str,*,raise_errors: bool=False,
-    ):
+    ) -> tuple[bool,SectionStateTransition | None]:
         return self._apply_resolution_operation(
             section_key,
             lambda runtime:runtime.apply_section_intensity_feedback(section_key),
@@ -2157,7 +2373,7 @@ class SLMFeedbackService:
             raise_errors=raise_errors,
         )
 
-    def reset_intensity_feedback(self,section_key: str):
+    def reset_intensity_feedback(self,section_key: str) -> tuple[bool,SectionStateTransition | None]:
         return self._apply_resolution_operation(
             section_key,
             lambda runtime:runtime.reset_section_intensity_feedback(section_key),
@@ -2166,7 +2382,7 @@ class SLMFeedbackService:
 
     def apply_position_correction(
         self,section_key: str,*,reset_intensity: bool=False,
-    ):
+    ) -> tuple[bool,SectionStateTransition | None]:
         reference_positions,reference_metadata = self._resolve_position_reference(
             section_key
         )
@@ -2183,7 +2399,7 @@ class SLMFeedbackService:
 
     def set_position_active(
         self,section_key: str,active: bool,*,reset_intensity: bool=False,
-    ):
+    ) -> tuple[bool,SectionStateTransition | None]:
         return self._apply_resolution_operation(
             section_key,
             lambda runtime:runtime.set_section_position_correction_active(
@@ -2194,7 +2410,7 @@ class SLMFeedbackService:
 
     def clear_position_correction(
         self,section_key: str,*,reset_intensity: bool=False,
-    ):
+    ) -> tuple[bool,SectionStateTransition | None]:
         return self._apply_resolution_operation(
             section_key,
             lambda runtime:runtime.clear_section_position_correction(
@@ -2203,14 +2419,14 @@ class SLMFeedbackService:
             "Clearing position correction failed",
         )
 
-    def reset_to_round(self,section_key: str,round_index: int):
+    def reset_to_round(self,section_key: str,round_index: int) -> SectionStateTransition | None:
         self._require_editor_mode()
-        runtime = self.session.runtime
+        runtime = self._application_session.runtime
         inspection = runtime.get_section_cgh_session_inspection(section_key)
         rounds = {item.index:item for item in inspection.rounds}
         if int(round_index) not in rounds:
             raise ValueError("Only computed rounds can be restored.")
-        self.session.cancel_cgh(section_key)
+        self._application_session.cancel_cgh(section_key)
         transition = runtime.reset_section_cgh_to_round(section_key,int(round_index))
         if transition is not None:
             self._callbacks.on_transition_committed(section_key,transition)
@@ -2229,7 +2445,7 @@ class SLMFeedbackService:
         pad_size = int(pad_size)
         if pad_size <= 0:
             raise ValueError("CGH propagation pad size must be > 0")
-        inspection = self.session.runtime.get_section_cgh_session_inspection(section_key)
+        inspection = self._application_session.runtime.get_section_cgh_session_inspection(section_key)
         if str(position_context) == "not_corrected":
             selected = inspection.position_reference_round
         elif str(position_context) == "corrected":
@@ -2248,9 +2464,9 @@ class SLMFeedbackService:
         )
 
     def feedback_measurement_metadata(self,section_key: str) -> dict[str,Any]:
-        status = self.session.runtime.get_section_cgh_status(section_key)
+        status = self._application_session.runtime.get_section_cgh_status(section_key)
         return {
-            "slm_key":self.session.runtime.identity.key,
+            "slm_key":self._application_session.runtime.identity.key,
             "section_key":section_key,
             "cgh_state":status.result_state.value,
             "cgh_generation":status.result_generation,
@@ -2258,14 +2474,14 @@ class SLMFeedbackService:
         }
 
     def localization_context(self,section_key: str) -> Mapping[str,Any]:
-        runtime = self.session.runtime
+        runtime = self._application_session.runtime
         status = runtime.get_section_cgh_status(section_key)
         if status.result_state is not CGHResultState.CURRENT:
             return {}
         return runtime.get_section_feedback_localization_context(section_key)
 
     def require_current_cgh_for_localization_commit(self,section_key: str) -> None:
-        status = self.session.runtime.get_section_cgh_status(section_key)
+        status = self._application_session.runtime.get_section_cgh_status(section_key)
         if status.result_state is CGHResultState.MISSING:
             raise RuntimeError(
                 "No CGH has been computed yet. Compute the CGH before accepting "
@@ -2289,12 +2505,16 @@ class SLMFeedbackService:
         )
         if not uses_target:
             return
-        status = self.session.runtime.get_section_cgh_status(section_key)
+        status = self._application_session.runtime.get_section_cgh_status(section_key)
         if status.result_state is not CGHResultState.CURRENT:
             raise RuntimeError(
                 "Target localization guidance requires a current CGH result. "
                 "Use automatic/manual localization or recompute the CGH first."
             )
+
+    # ------------------------------------------------------------------
+    # Automatic feedback and service lifecycle
+    # ------------------------------------------------------------------
 
     def start_automatic_feedback(
         self,
@@ -2316,12 +2536,19 @@ class SLMFeedbackService:
         self._automatic.stop()
 
     def prepare_runtime_change(self) -> None:
+        """Cancel acquisition/automatic work and clear orientation overrides.
+
+        Reference/FOV selections, FOV candidates and geometry drafts currently
+        survive this hook. Their replacement lifetime is tracked separately in
+        docs/feedback-lifecycle-notes.md.
+        """
         self._automatic.cancel_for_runtime_change()
         for section_key in tuple(self._measurement_requests):
             self.cancel_measurement(section_key)
         self._feedback_orientations.clear()
 
     def dispose(self) -> None:
+        """Cancel work, unsubscribe from shared stores and discard all transient drafts."""
         self.prepare_runtime_change()
         if self._position_reference_store is not None:
             self._position_reference_store.remove_listener(
@@ -2341,10 +2568,10 @@ class SLMFeedbackService:
         self._geometry_calibration_workflows.clear()
 
     def _update_committed_analysis(
-        self,section_key: str,localization: Any=None,
+        self,section_key: str,localization: LocalizationResult | None=None,
     ) -> None:
         try:
-            runtime = self.session.runtime
+            runtime = self._application_session.runtime
             analysis = runtime.compute_section_feedback_intensity_analysis(
                 section_key,localization,
                 orientation=self.feedback_orientation(section_key),
@@ -2359,20 +2586,20 @@ class SLMFeedbackService:
     def _apply_resolution_operation(
         self,
         section_key: str,
-        operation,
+        operation: Callable[[SLMRuntime],SectionStateTransition | None],
         error_title: str,
         *,
         raise_errors: bool=False,
-    ):
-        if not self.session.editor_writes_allowed:
+    ) -> tuple[bool,SectionStateTransition | None]:
+        if not self._application_session.editor_writes_allowed:
             if raise_errors:
                 raise RuntimeError(
                     "Feedback changes are unavailable in Fast Config mode"
                 )
             return False,None
-        self.session.cancel_cgh(section_key)
+        self._application_session.cancel_cgh(section_key)
         try:
-            transition = operation(self.session.runtime)
+            transition = operation(self._application_session.runtime)
             if transition is not None:
                 self._callbacks.on_transition_committed(section_key,transition)
             else:
@@ -2397,11 +2624,11 @@ class SLMFeedbackService:
         self._callbacks.on_error(str(title),error)
 
     def _require_editor_mode(self) -> None:
-        if not self.session.editor_writes_allowed:
+        if not self._application_session.editor_writes_allowed:
             raise RuntimeError("Operation unavailable in Fast Config mode")
 
 
-def _localization_is_complete(localization: Any) -> bool:
+def _localization_is_complete(localization: LocalizationResult) -> bool:
     count = int(localization.lattice_indices.shape[1])
     matched_value = dict(getattr(localization,"diagnostics",{}) or {}).get(
         "matched_mask"

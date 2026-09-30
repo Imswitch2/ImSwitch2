@@ -6,6 +6,7 @@ from typing import Any,Callable,Mapping
 from qtpy import QtCore,QtWidgets
 
 from ...application.session import SLMSession,SLMSessionCallbacks
+from ...application.feedback import SLMFeedbackService
 from ...application.configuration import (
     CalibrationMismatchPolicy,ConfigLoadOutcome,CorrectionMismatchPolicy,
     PreparedConfigLoad,
@@ -38,6 +39,9 @@ class SLMQtSession(QtCore.QObject):
     It adapts the toolkit-independent :class:`SLMSession` to Qt views,
     interaction policy, dialogs and thread-aware host integration. Embedding
     applications provide capabilities, not SLM workflow callbacks.
+
+    ``SLMSession`` owns authoritative application services and runtime state;
+    this adapter owns Qt bindings, coordinators and presentation managers.
     """
 
     sigFrameChanged = QtCore.Signal(object)
@@ -70,7 +74,9 @@ class SLMQtSession(QtCore.QObject):
         if not isinstance(panel,SLMPanel):
             raise TypeError("panel must be an SLMPanel")
 
-        self._application = application_session
+        # Wrapped toolkit-neutral owner. Keep this name explicit so it cannot be
+        # confused with the Qt adapter itself or one of its coordinators.
+        self._application_session = application_session
         runtime = application_session.runtime
         self.panel = panel
         self.section_collection = panel.section_collection
@@ -112,7 +118,7 @@ class SLMQtSession(QtCore.QObject):
             on_automatic_feedback_finished=self._on_automatic_feedback_finished,
         )
 
-        self._application.set_callbacks(callbacks)
+        self._application_session.set_callbacks(callbacks)
 
         self._binding = self._create_binding(interaction_settings)
         self._connect_collection()
@@ -120,7 +126,7 @@ class SLMQtSession(QtCore.QObject):
             self.host_services.measurement_provider,
             parent=self,
         )
-        self._application.set_measurement_dispatcher(self._measurements)
+        self._application_session.set_measurement_dispatcher(self._measurements)
         self._feedback = FeedbackCoordinator(self)
         self.sigAutomaticOperationChanged.connect(
             self._refresh_control_mode_availability,
@@ -143,27 +149,27 @@ class SLMQtSession(QtCore.QObject):
 
     @property
     def last_upload_error(self) -> Exception | None:
-        return self._application.last_upload_error
+        return self._application_session.last_upload_error
 
     @property
     def runtime(self) -> SLMRuntime:
-        return self._application.runtime
+        return self._application_session.runtime
 
     @property
     def host_services(self) -> SLMHostServices:
-        return self._application.host_services
+        return self._application_session.host_services
 
     @property
-    def feedback_service(self):
-        return self._application.feedback
+    def feedback_service(self) -> SLMFeedbackService:
+        return self._application_session.feedback
 
     @property
     def calibration_service(self):
-        return self._application.calibration
+        return self._application_session.calibration
 
     @property
     def auto_upload_frame(self) -> bool:
-        return self._application.auto_upload_frame
+        return self._application_session.auto_upload_frame
 
     @property
     def display_name(self) -> str:
@@ -171,11 +177,11 @@ class SLMQtSession(QtCore.QObject):
 
     @property
     def startup_preferences(self):
-        return self._application.startup_preferences
+        return self._application_session.startup_preferences
 
     @property
     def section_layout_available(self) -> bool:
-        return self._application.section_layout_available
+        return self._application_session.section_layout_available
 
     @property
     def interaction_settings(self) -> RuntimeViewInteractionSettings:
@@ -183,38 +189,38 @@ class SLMQtSession(QtCore.QObject):
 
     @property
     def current_config_path(self) -> str | None:
-        return self._application.current_config_path
+        return self._application_session.current_config_path
 
     @property
     def current_config_metadata(self):
-        return self._application.current_config_metadata
+        return self._application_session.current_config_metadata
 
     @property
     def configuration_available(self) -> bool:
-        return self._application.configuration_available
+        return self._application_session.configuration_available
 
     @property
     def config_directory(self):
-        return self._application.config_directory
+        return self._application_session.config_directory
 
     def resolve_config_path(self,path_or_name) -> str:
-        return self._application.resolve_config_path(path_or_name)
+        return self._application_session.resolve_config_path(path_or_name)
 
     @property
     def control_mode(self) -> SLMControlMode:
-        return self._application.control_mode
+        return self._application_session.control_mode
 
     @property
     def fast_config_path(self) -> str | None:
-        return self._application.fast_config_path
+        return self._application_session.fast_config_path
 
     @property
     def editor_writes_allowed(self) -> bool:
-        return self._application.editor_writes_allowed
+        return self._application_session.editor_writes_allowed
 
     @property
     def is_cgh_busy(self) -> bool:
-        return self._application.is_cgh_busy
+        return self._application_session.is_cgh_busy
 
     @property
     def can_change_control_mode(self) -> bool:
@@ -250,7 +256,7 @@ class SLMQtSession(QtCore.QObject):
                 path = self.current_config_path
                 if path:
                     # Validate the exact compiled output before switching modes.
-                    self._application.validate_compiled_config(path)
+                    self._application_session.validate_compiled_config(path)
             else:
                 path = self.fast_config_path
                 if path:
@@ -274,7 +280,7 @@ class SLMQtSession(QtCore.QObject):
                     self.prepare_config_commit(
                         layout_changed=prepared.layout_changed,
                     )
-            return self._application.set_control_mode(
+            return self._application_session.set_control_mode(
                 requested,
                 calibration_mismatch_policy=calibration_policy,
                 correction_mismatch_policy=correction_policy,
@@ -288,7 +294,7 @@ class SLMQtSession(QtCore.QObject):
     def activate_compiled_config(self,path: str) -> bool:
         self._require_active()
         try:
-            self._application.activate_compiled_config(path)
+            self._application_session.activate_compiled_config(path)
             self.sigStatusChanged.emit("",False)
             return True
         except Exception as error:
@@ -353,7 +359,7 @@ class SLMQtSession(QtCore.QObject):
         if device.requires_explicit_connection:
             return self.connect_device(show_error=show_error)
         self.panel.set_connection_state(True)
-        result = self._application.initialize_device(upload_current_frame=False)
+        result = self._application_session.initialize_device(upload_current_frame=False)
         self._publish_active_device_frame()
         return result
 
@@ -364,7 +370,7 @@ class SLMQtSession(QtCore.QObject):
             raise RuntimeError("No SLM device provider is configured")
         self.panel.set_connection_busy(True)
         try:
-            result = self._application.connect_device(upload_current_frame=False)
+            result = self._application_session.connect_device(upload_current_frame=False)
             self.panel.set_connection_state(result.connected)
             if result.connected:
                 self._publish_active_device_frame()
@@ -389,7 +395,7 @@ class SLMQtSession(QtCore.QObject):
             raise RuntimeError("No SLM device provider is configured")
         self.panel.set_connection_busy(True)
         try:
-            result = self._application.disconnect_device()
+            result = self._application_session.disconnect_device()
             self.panel.set_connection_state(result.connected)
             if result.connected and show_error:
                 self.sigError.emit(
@@ -439,7 +445,7 @@ class SLMQtSession(QtCore.QObject):
     ) -> SLMRuntimeViewBinding:
         binding = SLMRuntimeViewBinding(
             runtime=self.runtime,
-            application_session=self._application,
+            application_session=self._application_session,
             section_collection=self.section_collection,
             interaction_settings=settings,
             correction_source_switch_confirm=(
@@ -488,7 +494,7 @@ class SLMQtSession(QtCore.QObject):
         self._binding.set_interaction_settings(settings)
 
     def set_auto_upload_frame(self,enabled: bool) -> None:
-        self._application.set_auto_upload_frame(bool(enabled))
+        self._application_session.set_auto_upload_frame(bool(enabled))
         self._feedback.refresh_automatic_availability()
         self._calibration.refresh_live_acquisition_all()
 
@@ -511,14 +517,14 @@ class SLMQtSession(QtCore.QObject):
         return self._binding.cancel_all(restore=restore)
 
     def is_cgh_computing(self,section_key: str) -> bool:
-        return self._application.is_cgh_computing(section_key)
+        return self._application_session.is_cgh_computing(section_key)
 
     def cancel_cgh(self,section_key: str) -> bool:
         self._require_active()
-        return self._application.cancel_cgh(section_key)
+        return self._application_session.cancel_cgh(section_key)
 
     def cancel_all_cgh(self) -> None:
-        self._application.cancel_all_cgh()
+        self._application_session.cancel_all_cgh()
 
     def compute_base_cgh(
         self,section_key: str,*,confirm_feedback_loss: bool=True,
@@ -543,7 +549,7 @@ class SLMQtSession(QtCore.QObject):
         except Exception as error:
             self._emit_exception("CGH preparation failed",error)
             return
-        self._application.compute_base_cgh(section_key)
+        self._application_session.compute_base_cgh(section_key)
 
     def compute_adapted_cgh(
         self,
@@ -570,7 +576,7 @@ class SLMQtSession(QtCore.QObject):
             if on_finished is not None:
                 on_finished(False,error)
             return False
-        return self._application.compute_adapted_cgh(
+        return self._application_session.compute_adapted_cgh(
             section_key,on_finished=on_finished,
         )
 
@@ -607,7 +613,7 @@ class SLMQtSession(QtCore.QObject):
 
         try:
             self.flush_section(section_key,propagate=True)
-            self._application.clear_section_cgh_session(section_key)
+            self._application_session.clear_section_cgh_session(section_key)
         except Exception as error:
             self._restore_section(section_key)
             self._emit_exception("Clearing CGH session failed",error)
@@ -881,7 +887,7 @@ class SLMQtSession(QtCore.QObject):
         except Exception as error:
             self._emit_exception("Automatic CGH preparation failed",error)
             return
-        self._application.compute_base_cgh(section_key)
+        self._application_session.compute_base_cgh(section_key)
 
     @QtCore.Slot(str,object)
     def _on_patch_applied(self,section_key: str,update: Any) -> None:
@@ -917,7 +923,7 @@ class SLMQtSession(QtCore.QObject):
         except Exception as error:
             self._emit_exception("SLM section UI synchronization failed",error)
         if bool(transition.frame_changed):
-            return self._application.publish_current_frame()
+            return self._application_session.publish_current_frame()
         return True
 
     def synchronize_section(self,section_key: str) -> None:
@@ -989,14 +995,14 @@ class SLMQtSession(QtCore.QObject):
         self._require_active()
         if not self.editor_writes_allowed:
             return False
-        return self._application.upload_current_frame()
+        return self._application_session.upload_current_frame()
 
     def publish_current_frame(self) -> None:
         """Publish preview state and apply the configured auto-upload policy."""
         self._require_active()
         if not self.editor_writes_allowed:
             return
-        self._application.publish_current_frame()
+        self._application_session.publish_current_frame()
 
     def defer_frame_upload(self):
         """Coalesce automatic hardware uploads across a transition batch.
@@ -1013,25 +1019,25 @@ class SLMQtSession(QtCore.QObject):
             raise RuntimeError(
                 "Cannot defer frame upload during automatic feedback"
             )
-        return self._application.defer_frame_upload()
+        return self._application_session.defer_frame_upload()
 
     def _publish_current_frame(self) -> bool:
         if not self.editor_writes_allowed:
             return False
-        return self._application.publish_current_frame()
+        return self._application_session.publish_current_frame()
 
     def _upload_frame_now(self) -> bool:
         if not self.editor_writes_allowed:
             return False
-        return self._application.upload_current_frame()
+        return self._application_session.upload_current_frame()
 
     @property
     def can_run_automatic_feedback(self) -> bool:
-        return self._application.can_run_automatic_feedback
+        return self._application_session.can_run_automatic_feedback
 
     @property
     def automatic_operation_active(self) -> bool:
-        return self._application.automatic_operation_active
+        return self._application_session.automatic_operation_active
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
@@ -1074,15 +1080,15 @@ class SLMQtSession(QtCore.QObject):
         return failures
 
     def prepare_section_layout_change(self,layout):
-        return self._application.prepare_section_layout_change(layout)
+        return self._application_session.prepare_section_layout_change(layout)
 
     def apply_section_topology(self, section_key, topologies):
-        return self._application.apply_section_topology(
+        return self._application_session.apply_section_topology(
             section_key, topologies,
         )
 
     def set_section_presentation(self, section_key, presentation):
-        return self._application.set_section_presentation(
+        return self._application_session.set_section_presentation(
             section_key, presentation,
         )
 
@@ -1095,7 +1101,7 @@ class SLMQtSession(QtCore.QObject):
         topologies_by_section=None,
         presentations=None,
     ) -> bool:
-        return self._application.apply_section_layout_change(
+        return self._application_session.apply_section_layout_change(
             prepared,
             calibration_mismatch_policy=calibration_mismatch_policy,
             correction_mismatch_policy=correction_mismatch_policy,
@@ -1104,7 +1110,7 @@ class SLMQtSession(QtCore.QObject):
         )
 
     def prepare_config_load(self,path: str) -> PreparedConfigLoad:
-        return self._application.prepare_config_load(path)
+        return self._application_session.prepare_config_load(path)
 
     def prepare_config_commit(self,*,layout_changed: bool) -> None:
         """Prepare only Qt-owned transient state before an application commit."""
@@ -1123,7 +1129,7 @@ class SLMQtSession(QtCore.QObject):
         correction_mismatch_policy=CorrectionMismatchPolicy.REJECT,
         require_complete: bool=False,
     ) -> ConfigLoadOutcome:
-        return self._application.apply_config_load(
+        return self._application_session.apply_config_load(
             prepared,
             calibration_mismatch_policy=calibration_mismatch_policy,
             correction_mismatch_policy=correction_mismatch_policy,
@@ -1131,30 +1137,30 @@ class SLMQtSession(QtCore.QObject):
         )
 
     def list_configs(self):
-        return self._application.list_configs()
+        return self._application_session.list_configs()
 
     def save_application_config(
         self,name: str,info: str="",*,overwrite: bool=False,
     ):
-        return self._application.save_config(name,info,overwrite=overwrite)
+        return self._application_session.save_config(name,info,overwrite=overwrite)
 
     def compare_config(self,path: str):
-        return self._application.compare_config(path)
+        return self._application_session.compare_config(path)
 
     def read_config_metadata(self,path: str):
-        return self._application.read_config_metadata(path)
+        return self._application_session.read_config_metadata(path)
 
     def inspect_config(self,path: str):
-        return self._application.inspect_config(path)
+        return self._application_session.inspect_config(path)
 
     def rename_config(self,path: str,new_name: str,*,overwrite: bool=False):
-        return self._application.rename_config(path,new_name,overwrite=overwrite)
+        return self._application_session.rename_config(path,new_name,overwrite=overwrite)
 
     def duplicate_config(self,path: str,new_name: str,*,overwrite: bool=False):
-        return self._application.duplicate_config(path,new_name,overwrite=overwrite)
+        return self._application_session.duplicate_config(path,new_name,overwrite=overwrite)
 
     def delete_config(self,path: str) -> None:
-        self._application.delete_config(path)
+        self._application_session.delete_config(path)
 
     def load_config(self,path: str,**kwargs) -> bool:
         self._require_active()
@@ -1231,7 +1237,7 @@ class SLMQtSession(QtCore.QObject):
         self.cancel_all_cgh()
         self._binding.dispose(restore=False)
         self._disconnect_collection()
-        self._application.dispose()
+        self._application_session.dispose()
         self._disposed = True
 
     def __del__(self) -> None:

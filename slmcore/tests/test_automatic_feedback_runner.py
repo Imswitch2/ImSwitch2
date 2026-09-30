@@ -32,7 +32,7 @@ class _Service:
     automatic_feedback_unavailable_reason = ""
 
     def __init__(self,*,reuse_fails=False):
-        self.session = _Session()
+        self.application_session = _Session()
         self.reuse_fails = reuse_fails
         self.acquisitions = []
         self.cancel_count = 0
@@ -100,7 +100,7 @@ def test_one_requested_round_does_not_acquire_an_extra_measurement():
     assert service.localize_count == 1
     assert service.adapt_count == 1
 
-    service.session.cgh_callback(True,None)
+    service.application_session.cgh_callback(True,None)
 
     assert not runner.active
     assert len(service.acquisitions) == 1
@@ -135,7 +135,7 @@ def test_stop_during_cgh_waits_for_that_cgh_then_stops():
     assert runner.state.stop_requested
     assert len(service.acquisitions) == 1
 
-    service.session.cgh_callback(True,None)
+    service.application_session.cgh_callback(True,None)
 
     assert not runner.active
     assert len(service.acquisitions) == 1

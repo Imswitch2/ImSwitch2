@@ -1,7 +1,14 @@
+"""Present application feedback workflows through Qt session windows.
+
+The coordinator owns windows, confirmations and action routing. The application
+feedback service owns workflow state and cancellation; the Qt session supplies
+the current runtime and section views when presentation state is refreshed.
+"""
+
 from __future__ import annotations
 
 import logging
-from typing import Any,Mapping,Sequence
+from typing import Any,Callable,Mapping,Sequence,TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
@@ -11,66 +18,79 @@ from ....application.feedback import AutomaticFeedbackState
 from ....core.measurement import ImageMeasurement,create_image_measurement
 from ...cgh.session_window import CGHSessionWindow,MeasurementsAction
 
+if TYPE_CHECKING:
+    from ....application.feedback import SLMFeedbackService
+    from ....core.cgh.localization import LocalizationResult
+    from ....core.cgh.measurement_metrics import IntensityAnalysis
+    from ....core.engine.transition import SectionStateTransition
+    from ..session import SLMQtSession
+
 
 _logger = logging.getLogger(__name__)
 
 
 class FeedbackCoordinator(QtCore.QObject):
-    """Qt presentation adapter for the application-owned feedback service."""
+    """Own feedback windows and adapt application callbacks on the Qt thread.
 
-    def __init__(self,controller) -> None:
-        super().__init__(controller)
-        self.controller = controller
-        self.service = controller.feedback_service
+    ``qt_session`` is the owning presentation adapter; ``feedback_service`` is
+    the toolkit-neutral application facade. Runtime and section-view access stay
+    live through the Qt session because configuration and layout changes can
+    replace both objects.
+    """
+
+    def __init__(self,qt_session: SLMQtSession) -> None:
+        super().__init__(qt_session)
+        self._qt_session: SLMQtSession = qt_session
+        self._feedback_service: SLMFeedbackService = qt_session.feedback_service
         self._windows: dict[str,CGHSessionWindow] = {}
 
     @property
     def automatic_operation_active(self) -> bool:
-        return self.service.automatic_operation_active
+        return self._feedback_service.automatic_operation_active
 
     def window(self,section_key: str) -> CGHSessionWindow | None:
         return self._windows.get(section_key)
 
     def open_window(self,section_key: str) -> None:
-        if not self.controller.editor_writes_allowed:
+        if not self._qt_session.editor_writes_allowed:
             return
-        self.controller._require_section(section_key)
+        self._qt_session._require_section(section_key)
         try:
-            self.controller.flush_section(section_key,propagate=True)
+            self._qt_session.flush_section(section_key,propagate=True)
             window = self._windows.get(section_key)
             sources = self.available_sources(section_key)
             current = self.preferred_source(section_key,sources)
             if window is None:
-                parent = self.controller.section_collection.section_view(
+                parent = self._qt_session.section_collection.section_view(
                     section_key
                 ).window()
                 window = CGHSessionWindow(
-                    status=self.controller.runtime.get_section_feedback_status(
+                    status=self._qt_session.runtime.get_section_feedback_status(
                         section_key
                     ),
                     inspection=(
-                        self.controller.runtime.get_section_feedback_inspection(
+                        self._qt_session.runtime.get_section_feedback_inspection(
                             section_key
                         )
                     ),
                     session_inspection=(
-                        self.controller.runtime.get_section_cgh_session_inspection(
+                        self._qt_session.runtime.get_section_cgh_session_inspection(
                             section_key
                         )
                     ),
-                    cgh_status=self.controller.runtime.get_section_cgh_status(
+                    cgh_status=self._qt_session.runtime.get_section_cgh_status(
                         section_key
                     ),
                     localization_context=self.localization_context(section_key),
                     detectors=sources,
                     current_detector=current,
-                    feedback_orientation=self.service.feedback_orientation(section_key),
+                    feedback_orientation=self._feedback_service.feedback_orientation(section_key),
                     feedback_orientation_context=(
                         self._feedback_orientation_ui_context(section_key)
                     ),
                     cgh_summary=self.measurements_cgh_summary(section_key),
                     title="CGH Session - %s/%s" % (
-                        self.controller.presenter.display_name,section_key,
+                        self._qt_session.presenter.display_name,section_key,
                     ),
                     parent=parent,
                 )
@@ -93,7 +113,7 @@ class FeedbackCoordinator(QtCore.QObject):
             self._configure_automatic_availability(window)
             self._apply_automatic_state_to_window(section_key,window)
             window.set_cgh_computing(
-                self.controller.is_cgh_computing(section_key)
+                self._qt_session.is_cgh_computing(section_key)
             )
             window.show()
             window.raise_()
@@ -102,16 +122,18 @@ class FeedbackCoordinator(QtCore.QObject):
             self._error("Measurements & Corrections failed",error)
 
     def close_windows(self) -> None:
+        """Close owned views without cancelling application feedback workflows."""
         for window in tuple(self._windows.values()):
             window.close()
             window.deleteLater()
         self._windows.clear()
 
     def synchronize_section(self,section_key: str) -> None:
+        """Render the current application runtime in an existing section window."""
         window = self._windows.get(section_key)
         if window is None:
             return
-        runtime = self.controller.runtime
+        runtime = self._qt_session.runtime
         window.set_session_state(
             runtime.get_section_feedback_status(section_key),
             runtime.get_section_feedback_inspection(section_key),
@@ -119,7 +141,7 @@ class FeedbackCoordinator(QtCore.QObject):
             runtime.get_section_cgh_status(section_key),
             self.localization_context(section_key),
             self.measurements_cgh_summary(section_key),
-            self.service.feedback_orientation(section_key),
+            self._feedback_service.feedback_orientation(section_key),
             self._feedback_orientation_ui_context(section_key),
         )
         self._synchronize_position_reference(section_key,window)
@@ -135,17 +157,18 @@ class FeedbackCoordinator(QtCore.QObject):
             self._apply_automatic_state_to_window(section_key,window)
 
     def available_sources(self,section_key: str) -> Sequence[str]:
-        return self.service.available_sources(section_key)
+        return self._feedback_service.available_sources(section_key)
 
     def preferred_source(
         self,section_key: str,available: Sequence[str],
     ) -> str | None:
-        return self.service.preferred_source(section_key,available)
+        return self._feedback_service.preferred_source(section_key,available)
 
     def _feedback_orientation_ui_context(
         self,section_key: str,
     ) -> dict[str,Any]:
-        context = self.service.feedback_orientation_context(section_key)
+        """Adapt the typed application context to the window's mapping contract."""
+        context = self._feedback_service.feedback_orientation_context(section_key)
         return {
             "plane_name":context.plane_name,
             "plane_override":context.plane_override,
@@ -158,7 +181,8 @@ class FeedbackCoordinator(QtCore.QObject):
     def _position_reference_ui_context(
         self,section_key: str,
     ) -> dict[str,Any]:
-        context = self.service.position_reference_context(section_key)
+        """Preserve the window's reference mapping and serialized geometry keys."""
+        context = self._feedback_service.position_reference_context(section_key)
         selection = context.selection
         return {
             "mode":selection.mode.value,
@@ -202,23 +226,27 @@ class FeedbackCoordinator(QtCore.QObject):
     ) -> None:
         window.set_position_reference_state(
             self._position_reference_ui_context(section_key),
-            self.service.position_reference_preview(section_key),
+            self._feedback_service.position_reference_preview(section_key),
         )
 
     def _synchronize_fov_position_calibration(
         self,section_key: str,window: CGHSessionWindow,
     ) -> None:
         window.set_fov_position_calibration_state(
-            self.service.fov_position_calibration_context(section_key),
-            self.service.fov_position_calibration_preview(section_key),
+            self._feedback_service.fov_position_calibration_context(section_key),
+            self._feedback_service.fov_position_calibration_preview(section_key),
         )
 
     def _synchronize_geometry_orientation_calibration(
         self,section_key: str,window: CGHSessionWindow,
     ) -> None:
         window.set_geometry_orientation_calibration_state(
-            self.service.geometry_orientation_calibration_context(section_key)
+            self._feedback_service.geometry_orientation_calibration_context(section_key)
         )
+
+    # ------------------------------------------------------------------
+    # Geometry-orientation calibration UI workflow
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _log_geometry_error(
@@ -234,7 +262,7 @@ class FeedbackCoordinator(QtCore.QObject):
         self,section_key: str,success: bool,error: Exception | None,
     ) -> None:
         window=self._windows.get(section_key)
-        self.controller.synchronize_section(section_key)
+        self._qt_session.synchronize_section(section_key)
         if success:
             if window is not None:
                 window.measurement_view.set_measurement_status(
@@ -250,7 +278,7 @@ class FeedbackCoordinator(QtCore.QObject):
         self,section_key: str,success: bool,error: Exception | None,
     ) -> None:
         window=self._windows.get(section_key)
-        self.controller.synchronize_section(section_key)
+        self._qt_session.synchronize_section(section_key)
         if success:
             if window is not None:
                 window.measurement_view.set_measurement_status(
@@ -272,13 +300,14 @@ class FeedbackCoordinator(QtCore.QObject):
     def compute_geometry_orientation_calibration(
         self,section_key: str,values: Mapping[str,Any],
     ) -> None:
+        """Flush editor changes and request a target using the UI's period units."""
         try:
-            self.controller.flush_section(section_key,propagate=True)
+            self._qt_session.flush_section(section_key,propagate=True)
             px=float(values.get('period_x')); py=float(values.get('period_y'))
             if str(values.get('period_unit') or '') == 'um':
-                px=self.service.geometry_period_from_um(section_key,px,'x')
-                py=self.service.geometry_period_from_um(section_key,py,'y')
-            self.service.compute_geometry_orientation_calibration_target(
+                px=self._feedback_service.geometry_period_from_um(section_key,px,'x')
+                py=self._feedback_service.geometry_period_from_um(section_key,py,'y')
+            self._feedback_service.compute_geometry_orientation_calibration_target(
                 section_key,grid_x=int(values.get('grid_x',5)),grid_y=int(values.get('grid_y',4)),
                 period_x_px=px,period_y_px=py,source=str(values.get('detector') or ''),
                 on_complete=lambda success,error,key=section_key:self._geometry_compute_complete(key,success,error),
@@ -286,11 +315,12 @@ class FeedbackCoordinator(QtCore.QObject):
         except Exception as error:
             self._log_geometry_error(section_key,'target computation setup',error)
             self._error('Geometry calibration failed',error)
-            self.controller.synchronize_section(section_key)
+            self._qt_session.synchronize_section(section_key)
 
     def acquire_geometry_orientation_calibration(self,section_key: str,source: str) -> None:
+        """Acquire against the displayed calibration target and report completion."""
         try:
-            self.service.acquire_geometry_orientation_calibration(
+            self._feedback_service.acquire_geometry_orientation_calibration(
                 section_key,source,
                 on_complete=lambda success,error,key=section_key:self._geometry_acquisition_complete(key,success,error),
             )
@@ -308,8 +338,8 @@ class FeedbackCoordinator(QtCore.QObject):
             if not path:return
             image=np.asarray(Image.open(path).convert('F'),dtype=np.float64)
             measurement=create_image_measurement(image,source='file',metadata={'path':str(path),'workflow':'geometry_orientation_calibration'})
-            self.service.set_geometry_orientation_calibration_measurement(section_key,measurement)
-            self.controller.synchronize_section(section_key)
+            self._feedback_service.set_geometry_orientation_calibration_measurement(section_key,measurement)
+            self._qt_session.synchronize_section(section_key)
         except Exception as error:
             self._log_geometry_error(section_key,'image load',error)
             self._set_measurement_error(section_key,error)
@@ -317,17 +347,19 @@ class FeedbackCoordinator(QtCore.QObject):
     def run_geometry_orientation_localization(
         self,section_key: str,parameters: Mapping[str,Any],
     ) -> None:
+        """Localize the calibration measurement without accepting normal feedback."""
         try:
-            self.service.geometry_orientation_localization_candidate(section_key,parameters)
-            self.controller.synchronize_section(section_key)
+            self._feedback_service.geometry_orientation_localization_candidate(section_key,parameters)
+            self._qt_session.synchronize_section(section_key)
         except Exception as error:
             self._log_geometry_error(section_key,'localization',error)
             self._set_localization_error(section_key,error)
 
     def finish_geometry_orientation_calibration(self,section_key: str) -> None:
+        """Ask the application to restore the experiment CGH and refresh the view."""
         try:
-            self.service.finish_geometry_orientation_calibration(section_key)
-            self.controller.synchronize_section(section_key)
+            self._feedback_service.finish_geometry_orientation_calibration(section_key)
+            self._qt_session.synchronize_section(section_key)
             window=self._windows.get(section_key)
             if window is not None:
                 window.measurement_view.set_measurement_status(
@@ -343,25 +375,25 @@ class FeedbackCoordinator(QtCore.QObject):
         source: str,
         *,
         metadata: Mapping[str,Any] | None,
-        on_result,
-        on_error,
+        on_result: Callable[[ImageMeasurement],None],
+        on_error: Callable[[Exception],None],
     ) -> None:
-        self.service.request_measurement(
+        self._feedback_service.request_measurement(
             section_key,source,metadata=metadata,
             on_result=on_result,on_error=on_error,
         )
 
     def cancel_measurement(self,section_key: str) -> None:
-        self.service.cancel_measurement(section_key)
+        self._feedback_service.cancel_measurement(section_key)
 
     def acquire(
         self,section_key: str,source: str,*,reuse_previous_localization: bool,
     ) -> None:
-        if not self.controller.editor_writes_allowed:
+        if not self._qt_session.editor_writes_allowed:
             return
         try:
-            self.controller.flush_section(section_key,propagate=True)
-            self.service.acquire(
+            self._qt_session.flush_section(section_key,propagate=True)
+            self._feedback_service.acquire(
                 section_key,source,
                 reuse_previous_localization=reuse_previous_localization,
             )
@@ -371,10 +403,10 @@ class FeedbackCoordinator(QtCore.QObject):
     def load(
         self,section_key: str,*,reuse_previous_localization: bool,
     ) -> None:
-        if not self.controller.editor_writes_allowed:
+        if not self._qt_session.editor_writes_allowed:
             return
         try:
-            self.controller.flush_section(section_key,propagate=True)
+            self._qt_session.flush_section(section_key,propagate=True)
             parent = self._windows.get(section_key)
             path,_selected = QtWidgets.QFileDialog.getOpenFileName(
                 parent,"Select feedback image","",
@@ -386,7 +418,7 @@ class FeedbackCoordinator(QtCore.QObject):
             measurement = create_image_measurement(
                 image,source="file",metadata={"path":str(path)},
             )
-            self.service.commit_measurement(
+            self._feedback_service.commit_measurement(
                 section_key,measurement,
                 reuse_previous_localization=reuse_previous_localization,
             )
@@ -400,21 +432,21 @@ class FeedbackCoordinator(QtCore.QObject):
         *,
         reuse_previous_localization: bool=False,
     ) -> bool:
-        return self.service.commit_measurement(
+        return self._feedback_service.commit_measurement(
             section_key,measurement,
             reuse_previous_localization=reuse_previous_localization,
         )
 
     def localization_candidate(
         self,section_key: str,parameters: Mapping[str,Any],
-    ):
-        return self.service.localization_candidate(section_key,parameters)
+    ) -> tuple[LocalizationResult,IntensityAnalysis | None]:
+        return self._feedback_service.localization_candidate(section_key,parameters)
 
     def run_localization_candidate(
         self,section_key: str,parameters: Mapping[str,Any],
     ) -> None:
         try:
-            candidate,metrics = self.service.localization_candidate(
+            candidate,metrics = self._feedback_service.localization_candidate(
                 section_key,parameters,
             )
             window = self._windows.get(section_key)
@@ -426,10 +458,10 @@ class FeedbackCoordinator(QtCore.QObject):
             self._set_localization_error(section_key,error)
 
     def infer_missing_localization_candidate(
-        self,section_key: str,localization: Any,parameters: Mapping[str,Any],
+        self,section_key: str,localization: LocalizationResult,parameters: Mapping[str,Any],
     ) -> None:
         try:
-            candidate,metrics = self.service.infer_missing_localization_candidate(
+            candidate,metrics = self._feedback_service.infer_missing_localization_candidate(
                 section_key,localization,
             )
             window = self._windows.get(section_key)
@@ -443,24 +475,24 @@ class FeedbackCoordinator(QtCore.QObject):
     def accept_localization(
         self,
         section_key: str,
-        localization: Any,
+        localization: LocalizationResult,
         parameters: Mapping[str,Any],
         *,
         raise_errors: bool=False,
     ) -> None:
-        self.service.accept_localization(
+        self._feedback_service.accept_localization(
             section_key,localization,parameters,raise_errors=raise_errors,
         )
 
     def reuse_localization(
         self,section_key: str,*,raise_errors: bool=False,
-    ):
-        return self.service.reuse_localization(
+    ) -> LocalizationResult | None:
+        return self._feedback_service.reuse_localization(
             section_key,raise_errors=raise_errors,
         )
 
     def localize_and_commit(self,section_key: str) -> None:
-        self.service.localize_and_commit(section_key)
+        self._feedback_service.localize_and_commit(section_key)
 
     def update_parameters(
         self,
@@ -468,11 +500,11 @@ class FeedbackCoordinator(QtCore.QObject):
         group: str,
         changes: Mapping[str,Any],
         *,
-        localization: Any=None,
+        localization: LocalizationResult | None=None,
         localization_parameters: Mapping[str,Any] | None=None,
     ) -> None:
         try:
-            result = self.service.update_parameters(
+            result = self._feedback_service.update_parameters(
                 section_key,group,changes,localization=localization,
             )
             window = self._windows.get(section_key)
@@ -487,14 +519,14 @@ class FeedbackCoordinator(QtCore.QObject):
                 )
         except Exception as error:
             self._error("Feedback parameter update failed",error)
-            self.controller.synchronize_section(section_key)
+            self._qt_session.synchronize_section(section_key)
 
     def apply_intensity_feedback(
         self,section_key: str,*,raise_errors: bool=False,
-    ):
+    ) -> tuple[bool,SectionStateTransition | None]:
         return self._run_resolution(
             section_key,
-            lambda:self.service.apply_intensity_feedback(
+            lambda:self._feedback_service.apply_intensity_feedback(
                 section_key,raise_errors=raise_errors,
             ),
             raise_errors=raise_errors,
@@ -502,52 +534,52 @@ class FeedbackCoordinator(QtCore.QObject):
 
     def reset_intensity_feedback(self,section_key: str) -> None:
         self._run_resolution(
-            section_key,lambda:self.service.reset_intensity_feedback(section_key),
+            section_key,lambda:self._feedback_service.reset_intensity_feedback(section_key),
         )
 
     def apply_position_correction(self,section_key: str) -> None:
-        if not self.controller.editor_writes_allowed:
+        if not self._qt_session.editor_writes_allowed:
             return
         reset = self._confirm_position_intensity_reset(section_key)
         if reset is None:
             return
         self._run_resolution(
             section_key,
-            lambda:self.service.apply_position_correction(
+            lambda:self._feedback_service.apply_position_correction(
                 section_key,reset_intensity=reset,
             ),
         )
 
     def set_position_active(self,section_key: str,active: bool) -> None:
-        if not self.controller.editor_writes_allowed:
+        if not self._qt_session.editor_writes_allowed:
             return
         reset = self._confirm_position_intensity_reset(section_key)
         if reset is None:
             return
         self._run_resolution(
             section_key,
-            lambda:self.service.set_position_active(
+            lambda:self._feedback_service.set_position_active(
                 section_key,bool(active),reset_intensity=reset,
             ),
         )
 
     def clear_position_correction(self,section_key: str) -> None:
-        if not self.controller.editor_writes_allowed:
+        if not self._qt_session.editor_writes_allowed:
             return
         reset = self._confirm_position_intensity_reset(section_key)
         if reset is None:
             return
         self._run_resolution(
             section_key,
-            lambda:self.service.clear_position_correction(
+            lambda:self._feedback_service.clear_position_correction(
                 section_key,reset_intensity=reset,
             ),
         )
 
     def reset_to_round(self,section_key: str,round_index: int) -> None:
-        if not self.controller.editor_writes_allowed:
+        if not self._qt_session.editor_writes_allowed:
             return
-        runtime = self.controller.runtime
+        runtime = self._qt_session.runtime
         inspection = runtime.get_section_cgh_session_inspection(section_key)
         rounds = {item.index:item for item in inspection.rounds}
         if int(round_index) not in rounds:
@@ -565,7 +597,7 @@ class FeedbackCoordinator(QtCore.QObject):
         ):
             return
         try:
-            self.service.reset_to_round(section_key,int(round_index))
+            self._feedback_service.reset_to_round(section_key,int(round_index))
         except Exception as error:
             self._error("Reset CGH round failed",error)
 
@@ -579,7 +611,7 @@ class FeedbackCoordinator(QtCore.QObject):
     ) -> None:
         window = self._windows.get(section_key)
         try:
-            intensity = self.service.propagate_round(
+            intensity = self._feedback_service.propagate_round(
                 section_key,int(round_index),
                 position_context=position_context,pad_size=pad_size,
             )
@@ -592,13 +624,13 @@ class FeedbackCoordinator(QtCore.QObject):
                 self._error("CGH propagation failed",error)
 
     def feedback_measurement_metadata(self,section_key: str) -> dict[str,Any]:
-        return self.service.feedback_measurement_metadata(section_key)
+        return self._feedback_service.feedback_measurement_metadata(section_key)
 
     def localization_context(self,section_key: str) -> Mapping[str,Any]:
-        return self.service.localization_context(section_key)
+        return self._feedback_service.localization_context(section_key)
 
     def measurements_cgh_summary(self,section_key: str) -> Mapping[str,Any]:
-        runtime = self.controller.runtime
+        runtime = self._qt_session.runtime
         inspection = runtime.get_section_cgh_session_inspection(section_key)
         target_state = None
         working = inspection.working_round
@@ -617,7 +649,7 @@ class FeedbackCoordinator(QtCore.QObject):
             target_key = target_state.target_type
             target_params = target_state.canonical_params
 
-        summary = dict(self.controller._target_presentation_summary(
+        summary = dict(self._qt_session._target_presentation_summary(
             section_key,target_key,target_params,
         ))
         if state.selected_target in state.items:
@@ -629,35 +661,38 @@ class FeedbackCoordinator(QtCore.QObject):
         return summary
 
     def require_current_cgh_for_localization_commit(self,section_key: str) -> None:
-        self.service.require_current_cgh_for_localization_commit(section_key)
+        self._feedback_service.require_current_cgh_for_localization_commit(section_key)
 
     def validate_target_hint_use(
         self,section_key: str,parameters: Mapping[str,Any],
     ) -> None:
-        self.service.validate_target_hint_use(section_key,parameters)
+        self._feedback_service.validate_target_hint_use(section_key,parameters)
 
     def _run_resolution(
-        self,section_key: str,operation,*,raise_errors: bool=False,
-    ):
-        if not self.controller.editor_writes_allowed:
+        self,section_key: str,
+        operation: Callable[[],tuple[bool,SectionStateTransition | None]],
+        *,raise_errors: bool=False,
+    ) -> tuple[bool,SectionStateTransition | None]:
+        if not self._qt_session.editor_writes_allowed:
             if raise_errors:
                 raise RuntimeError(
                     "Feedback changes are unavailable in Fast Config mode"
                 )
             return False,None
         try:
-            self.controller.flush_section(section_key,propagate=True)
+            self._qt_session.flush_section(section_key,propagate=True)
             return operation()
         except Exception as error:
             if raise_errors:
                 raise
             self._error("Feedback operation failed",error)
-            self.controller.synchronize_section(section_key)
+            self._qt_session.synchronize_section(section_key)
             return False,None
 
-    def _confirm_position_intensity_reset(self,section_key: str):
+    def _confirm_position_intensity_reset(self,section_key: str) -> bool | None:
+        """Return reset consent, False when unnecessary, or None on cancellation."""
         count = int(
-            self.controller.runtime.get_section_feedback_status(
+            self._qt_session.runtime.get_section_feedback_status(
                 section_key
             ).intensity_count
         )
@@ -707,10 +742,14 @@ class FeedbackCoordinator(QtCore.QObject):
         )
         return result == QtWidgets.QMessageBox.Yes
 
+    # ------------------------------------------------------------------
+    # Feedback action dispatch and localization interaction
+    # ------------------------------------------------------------------
+
     def _on_action(
         self,section_key: str,action: str,options: Mapping[str,Any],
     ) -> None:
-        if not self.controller.editor_writes_allowed:
+        if not self._qt_session.editor_writes_allowed:
             return
         try:
             request = MeasurementsAction(str(action))
@@ -722,9 +761,9 @@ class FeedbackCoordinator(QtCore.QObject):
             return
         values = dict(options or {})
         if request is MeasurementsAction.AUTOMATIC_STOP:
-            self.service.stop_automatic_feedback()
+            self._feedback_service.stop_automatic_feedback()
             return
-        if self.service.automatic_operation_active:
+        if self._feedback_service.automatic_operation_active:
             return
 
         if request is MeasurementsAction.ACQUIRE:
@@ -783,8 +822,8 @@ class FeedbackCoordinator(QtCore.QObject):
             self.compute_geometry_orientation_calibration(section_key,values)
         elif request is MeasurementsAction.GEOMETRY_CALIBRATION_ANALYZE:
             try:
-                analysis=self.service.analyze_geometry_orientation_calibration(section_key)
-                self.controller.synchronize_section(section_key)
+                analysis=self._feedback_service.analyze_geometry_orientation_calibration(section_key)
+                self._qt_session.synchronize_section(section_key)
                 if not analysis.accepted:
                     window=self._windows.get(section_key)
                     if window is not None:
@@ -796,19 +835,19 @@ class FeedbackCoordinator(QtCore.QObject):
                 self._error('Geometry calibration analysis failed',error)
         elif request is MeasurementsAction.GEOMETRY_CALIBRATION_SAVE:
             try:
-                self.service.save_geometry_orientation_calibration(section_key)
-                self.controller.synchronize_section(section_key)
+                self._feedback_service.save_geometry_orientation_calibration(section_key)
+                self._qt_session.synchronize_section(section_key)
             except Exception as error:
                 self._log_geometry_error(section_key,'save',error)
                 self._error('Saving geometry calibration failed',error)
         elif request is MeasurementsAction.GEOMETRY_CALIBRATION_FINISH:
             self.finish_geometry_orientation_calibration(section_key)
         elif request is MeasurementsAction.FEEDBACK_ORIENTATION:
-            self.service.set_feedback_orientation(
+            self._feedback_service.set_feedback_orientation(
                 section_key,values.get("orientation","identity"),
             )
         elif request is MeasurementsAction.FEEDBACK_ORIENTATION_SAVE:
-            self.service.save_feedback_orientation(section_key)
+            self._feedback_service.save_feedback_orientation(section_key)
         elif request is MeasurementsAction.INTENSITY_APPLY:
             self.apply_intensity_feedback(section_key)
         elif request is MeasurementsAction.INTENSITY_RESET:
@@ -856,7 +895,7 @@ class FeedbackCoordinator(QtCore.QObject):
         elif request is MeasurementsAction.POSITION_CLEAR:
             self.clear_position_correction(section_key)
         elif request is MeasurementsAction.COMPUTE_ADAPTED:
-            self.controller.compute_adapted_cgh(section_key)
+            self._qt_session.compute_adapted_cgh(section_key)
         elif request is MeasurementsAction.RESET_TO_ROUND:
             self.reset_to_round(section_key,int(values.get("round_index")))
         elif request is MeasurementsAction.PROPAGATE_SELECTED:
@@ -872,14 +911,14 @@ class FeedbackCoordinator(QtCore.QObject):
             window = self._windows.get(section_key)
             if window is not None:
                 window.show_inspection(
-                    self.controller.runtime.get_section_feedback_inspection(
+                    self._qt_session.runtime.get_section_feedback_inspection(
                         section_key
                     )
                 )
         elif request is MeasurementsAction.AUTOMATIC_START:
             try:
-                self.controller.flush_section(section_key,propagate=True)
-                self.service.start_automatic_feedback(
+                self._qt_session.flush_section(section_key,propagate=True)
+                self._feedback_service.start_automatic_feedback(
                     section_key,
                     rounds=int(values.get("rounds",1)),
                     source=str(values.get("detector") or ""),
@@ -899,9 +938,10 @@ class FeedbackCoordinator(QtCore.QObject):
         editable_geometry: Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | None=None,
     ) -> None:
+        """Flush editor changes before applying a reference selection mapping."""
         try:
-            self.controller.flush_section(section_key,propagate=True)
-            self.service.set_position_reference(
+            self._qt_session.flush_section(section_key,propagate=True)
+            self._feedback_service.set_position_reference(
                 section_key,
                 mode=mode,
                 reference_name=reference_name,
@@ -910,21 +950,22 @@ class FeedbackCoordinator(QtCore.QObject):
             )
         except Exception as error:
             self._error("Changing position reference failed",error)
-            self.controller.synchronize_section(section_key)
+            self._qt_session.synchronize_section(section_key)
 
     def fit_position_reference_center(self,section_key: str) -> None:
         try:
-            self.controller.flush_section(section_key,propagate=True)
-            self.service.fit_position_reference_center(section_key)
+            self._qt_session.flush_section(section_key,propagate=True)
+            self._feedback_service.fit_position_reference_center(section_key)
         except Exception as error:
             self._error("Fitting center reference failed",error)
-            self.controller.synchronize_section(section_key)
+            self._qt_session.synchronize_section(section_key)
 
     def add_position_reference(self,section_key: str,name: str) -> None:
+        """Create a reference, asking before replacing an existing name."""
         if not name:
             return
         try:
-            self.service.add_position_reference(section_key,name)
+            self._feedback_service.add_position_reference(section_key,name)
         except FileExistsError:
             parent = self._windows.get(section_key)
             answer = QtWidgets.QMessageBox.question(
@@ -938,7 +979,7 @@ class FeedbackCoordinator(QtCore.QObject):
             if answer != QtWidgets.QMessageBox.Yes:
                 return
             try:
-                self.service.add_position_reference(
+                self._feedback_service.add_position_reference(
                     section_key,name,overwrite=True,
                 )
             except Exception as error:
@@ -947,17 +988,19 @@ class FeedbackCoordinator(QtCore.QObject):
             self._error("Adding position reference failed",error)
 
     def persist_position_reference(self,section_key: str,name: str) -> None:
+        """Persist a session reference and present any application error."""
         if not name:
             return
         try:
-            self.service.persist_position_reference(section_key,name)
+            self._feedback_service.persist_position_reference(section_key,name)
         except Exception as error:
             self._error("Saving position reference permanently failed",error)
 
     def delete_position_reference(self,section_key: str,name: str) -> None:
+        """Confirm persistent deletion before delegating to the application."""
         if not name:
             return
-        context = self.service.position_reference_context(section_key)
+        context = self._feedback_service.position_reference_context(section_key)
         record = next(
             (item for item in context.references if item.name == name),None,
         )
@@ -973,28 +1016,30 @@ class FeedbackCoordinator(QtCore.QObject):
             if answer != QtWidgets.QMessageBox.Yes:
                 return
         try:
-            self.service.delete_position_reference(section_key,name)
+            self._feedback_service.delete_position_reference(section_key,name)
         except Exception as error:
             self._error("Deleting position reference failed",error)
 
     def fit_fov_position_calibration(
         self,section_key: str,*,model: str="polynomial",degree: int=2,
     ) -> None:
+        """Fit a transient candidate after flushing pending section edits."""
         try:
-            self.controller.flush_section(section_key,propagate=True)
-            self.service.fit_fov_position_calibration(
+            self._qt_session.flush_section(section_key,propagate=True)
+            self._feedback_service.fit_fov_position_calibration(
                 section_key,model=model,degree=degree,
             )
-            self.controller.synchronize_section(section_key)
+            self._qt_session.synchronize_section(section_key)
         except Exception as error:
             self._error("Fitting FOV calibration failed",error)
-            self.controller.synchronize_section(section_key)
+            self._qt_session.synchronize_section(section_key)
 
     def save_fov_position_calibration(self,section_key: str,name: str) -> None:
+        """Save the current candidate, confirming replacement of an existing name."""
         if not name:
             return
         try:
-            self.service.save_fov_position_calibration(section_key,name)
+            self._feedback_service.save_fov_position_calibration(section_key,name)
         except FileExistsError:
             parent = self._windows.get(section_key)
             answer = QtWidgets.QMessageBox.question(
@@ -1007,22 +1052,23 @@ class FeedbackCoordinator(QtCore.QObject):
             if answer != QtWidgets.QMessageBox.Yes:
                 return
             try:
-                self.service.save_fov_position_calibration(
+                self._feedback_service.save_fov_position_calibration(
                     section_key,name,overwrite=True,
                 )
             except Exception as error:
                 self._error("Saving FOV calibration failed",error)
         except Exception as error:
             self._error("Saving FOV calibration failed",error)
-        self.controller.synchronize_section(section_key)
+        self._qt_session.synchronize_section(section_key)
 
     def replace_applied_fov_position_calibration(self,section_key: str) -> None:
+        """Confirm the application's replacement warning before saving the fit."""
         parent = self._windows.get(section_key)
-        context = self.service.fov_position_calibration_context(section_key)
+        context = self._feedback_service.fov_position_calibration_context(section_key)
         name = context.get("selected_name")
         if not name:
             return
-        warning = self.service.fov_position_calibration_replacement_warning(
+        warning = self._feedback_service.fov_position_calibration_replacement_warning(
             section_key
         )
         text = 'Replace applied FOV calibration "%s" with the current fit?' % name
@@ -1036,22 +1082,22 @@ class FeedbackCoordinator(QtCore.QObject):
         if answer != QtWidgets.QMessageBox.Yes:
             return
         try:
-            self.service.replace_applied_fov_position_calibration(section_key)
+            self._feedback_service.replace_applied_fov_position_calibration(section_key)
         except Exception as error:
             self._error("Replacing FOV calibration failed",error)
-        self.controller.synchronize_section(section_key)
+        self._qt_session.synchronize_section(section_key)
 
     def _configure_automatic_availability(self,window: CGHSessionWindow) -> None:
         window.set_automatic_feedback_available(
-            self.service.can_run_automatic_feedback,
-            self.service.automatic_feedback_unavailable_reason,
+            self._feedback_service.can_run_automatic_feedback,
+            self._feedback_service.automatic_feedback_unavailable_reason,
         )
 
     def on_automatic_state_changed(self,state: AutomaticFeedbackState) -> None:
-        self.controller._set_section_interaction_locked(bool(state.active))
+        self._qt_session._set_section_interaction_locked(bool(state.active))
         for section_key,window in tuple(self._windows.items()):
             self._apply_automatic_state_to_window(section_key,window,state=state)
-        self.controller.sigAutomaticOperationChanged.emit(bool(state.active))
+        self._qt_session.sigAutomaticOperationChanged.emit(bool(state.active))
 
     def on_automatic_finished(self,section_key: str,message: str) -> None:
         window = self._windows.get(section_key)
@@ -1080,7 +1126,7 @@ class FeedbackCoordinator(QtCore.QObject):
         *,
         state: AutomaticFeedbackState | None=None,
     ) -> None:
-        state = self.service.automatic_state if state is None else state
+        state = self._feedback_service.automatic_state if state is None else state
         if not state.active:
             window.set_automatic_operation_state(False)
             return
@@ -1106,10 +1152,10 @@ class FeedbackCoordinator(QtCore.QObject):
             self._error("Localization failed",error)
 
     def _warning(self,title: str,message: Any) -> None:
-        self.controller.sigWarning.emit(str(title),message)
+        self._qt_session.sigWarning.emit(str(title),message)
 
     def _error(self,title: str,error: Exception) -> None:
-        self.controller._emit_exception(str(title),error)
+        self._qt_session._emit_exception(str(title),error)
 
     def refresh_automatic_availability(self) -> None:
         for section_key,window in tuple(self._windows.items()):
@@ -1117,10 +1163,13 @@ class FeedbackCoordinator(QtCore.QObject):
             self._apply_automatic_state_to_window(section_key,window)
 
     def prepare_runtime_replacement(self) -> None:
+        """Close views before the owning Qt session replaces section widgets."""
         self.close_windows()
 
     def runtime_replaced(self) -> None:
+        """No rebinding is needed because runtime and views are read on demand."""
         pass
 
     def dispose(self) -> None:
+        """Release owned windows; application and dispatcher disposal stay separate."""
         self.close_windows()
