@@ -82,6 +82,18 @@ def test_every_plugin_declares_its_contract_and_the_helper_agrees(cls, qapp):
 
 
 @pytest.mark.parametrize("cls", _CLASSES, ids=_IDS)
+def test_the_field_spec_agrees_with_the_defaults(cls):
+    """``param_spec()`` names every default, with the same value, and each
+    default is a value of its own field. Qt-free, like the spec itself."""
+    from imswitch.improcess.model.param_spec import ParamField, spec_for, spec_problems
+
+    assert spec_problems(cls) == []
+    spec = spec_for(cls)
+    assert all(isinstance(field, ParamField) for field in spec)
+    assert {field.key for field in spec} == set(cls.default_params())
+
+
+@pytest.mark.parametrize("cls", _CLASSES, ids=_IDS)
 def test_defaults_are_lossless_and_round_trip_through_the_codec(cls):
     plugin = cls()
     defaults = cls.default_params()
@@ -91,6 +103,32 @@ def test_defaults_are_lossless_and_round_trip_through_the_codec(cls):
     assert plugin.decode_params(encoded) == defaults
     assert plugin.migrate_params(encoded, cls.params_version) == encoded
     assert isinstance(cls.params_version, int) and cls.params_version >= 1
+
+
+def test_keys_a_plugin_reads_are_keys_a_workflow_may_set():
+    """A parameter ``apply``/``process`` reads with no widget default is still
+    a parameter: it is permitted through ``extra_param_keys`` so a workflow
+    file can set it and validation does not refuse it as unknown."""
+    from imswitch.improcess.processors import (
+        ImageCalculatorProcessor, MakeCompositeProcessor, MakeRGBProcessor,
+    )
+    from imswitch.improcess.reconstructors.smlm.localizer import SmlmLocalizer
+
+    assert "name" in ImageCalculatorProcessor.param_keys()
+    assert "colormaps" in MakeCompositeProcessor.param_keys()
+    assert {"channels", "channel_levels"} <= MakeRGBProcessor.param_keys()
+    assert "loop_selection" in SmlmLocalizer.param_keys()
+
+
+def test_the_legacy_monalisa_tree_hands_over_every_declared_key(qapp):
+    """The GUI drives MoNaLISA from ``ReconParTree`` rather than the plugin's
+    own widget (special-cased by id), so that tree is held to the same
+    key set as ``default_params()``."""
+    from imswitch.improcess.reconstructors.monalisa.reconstructor import MonalisaReconstructor
+    from imswitch.improcess.view.ImProcessMainView import ReconParTree
+
+    tree = ReconParTree()
+    assert set(tree.get_values()) == set(MonalisaReconstructor.default_params())
 
 
 def test_the_registry_stamps_a_version_from_the_distribution():

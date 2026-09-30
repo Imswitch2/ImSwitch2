@@ -1869,6 +1869,24 @@ Widget agreement (checked)
     default names (MoNaLISA's ``scan_params``).  It only *permits* a key; it
     injects and records nothing.
 
+``param_spec()`` (optional)
+    A class method returning one
+    :class:`~imswitch.improcess.model.param_spec.ParamField` per key of
+    ``default_params()``: its type (``int``, ``float``, ``bool``, ``text``,
+    ``select``, ``multiselect``, ``path``, ``json``), the choices behind a
+    combo box, the bounds, step and unit of a spin box, a label, a tooltip,
+    a group, and whether ``None`` is a value ("from the recording").  It is
+    what the workflow editor builds a step's form from, what
+    ``python -m imswitch.improcess.workflows list --json`` prints as
+    ``fields``, and what the LLM prompt in :doc:`improcess-workflows` can
+    be given.  The framework default derives one plain field per key from
+    the default value's type, so a plugin that declares nothing still gets a
+    working form; declare it to say what the widget knows.  The same keys and
+    the same defaults are required, and each default must be a value of its
+    own field (a ``select`` default among its options, a bounded number
+    within its bounds); ``check_plugin_contract`` reports any disagreement
+    and the built-ins are pinned by a test.
+
 ``output_spec()`` (optional)
     One port ``out`` unless you say otherwise: named ports when ``apply``
     returns a ``ProcessorOutput`` with ``keys``, a pattern when the ports

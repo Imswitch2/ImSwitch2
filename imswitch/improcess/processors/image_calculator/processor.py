@@ -54,6 +54,9 @@ class ImageCalculatorProcessor(Processor):
     # image processor, not to stop a mask being applied to the image it was
     # drawn on.
     kinds = ("image", "labels")
+    #: ``name`` renames the result. No widget offers it, so it is not a
+    #: default; a workflow may still set it.
+    extra_param_keys = ("name",)
 
     @classmethod
     def default_params(cls) -> dict:

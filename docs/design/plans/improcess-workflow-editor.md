@@ -2,7 +2,11 @@
 
 Date: 2026-09-30
 
-Status: Proposed (feasibility checked against the current checkout; nothing implemented yet)
+Status: Implemented through Phase 2 (2026-09-30) — Phase 0 contract fixes,
+`param_spec()` with the defaults-derived fallback and contract test, the
+Qt-free catalogue and document model, and the editor window wired into
+ImProcess (`File → Workflow editor…`, `Edit workflow of current result…`).
+Phase 3 (rich specs for every built-in) and Phase 4 are open.
 
 ## Summary
 

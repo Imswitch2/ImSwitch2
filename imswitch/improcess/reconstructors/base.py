@@ -221,6 +221,24 @@ class Reconstructor(ABC):
             return None
         return frozenset(cls.default_params()) | frozenset(cls.extra_param_keys)
 
+    @classmethod
+    def param_spec(cls) -> tuple:
+        """Field-level description of :meth:`default_params`, one
+        :class:`~imswitch.improcess.model.param_spec.ParamField` per key.
+
+        What a form builder, the ``workflows list`` catalogue and the workflow
+        editor read. The framework default derives each field from the
+        default value's type (a number, a flag, free text, JSON), which is
+        enough for a plain form; override it to say what the widget knows --
+        the choices behind a combo box, the bounds and unit of a spin box,
+        the tooltip -- with the same keys and the same defaults. A test pins
+        the two together
+        (:func:`~imswitch.improcess.model.param_spec.spec_problems`).
+        """
+        from imswitch.improcess.model.param_spec import spec_from_defaults
+
+        return spec_from_defaults(cls.default_params())
+
     def encode_params(self, params: dict | None) -> tuple[dict, list[str]]:
         """``(encoded, reasons)``: params as lossless JSON, or why not."""
         from imswitch.improcess.model.provenance import encode_params

@@ -216,6 +216,10 @@ class SmlmLocalizer(StreamingReconstructor):
     accepted_source_kinds = ("image", "localizations")
     description = "Single-molecule localization (net-gradient detect + fit)"
     default_save_subdir = "smlm"
+    #: ``loop_selection`` picks one index per non-frame loop of a recorded
+    #: multi-loop acquisition (see ``_select_frame_stream``); the GUI fills
+    #: it from the source inspection, a workflow states it.
+    extra_param_keys = ("loop_selection",)
 
     @classmethod
     def default_params(cls) -> dict:

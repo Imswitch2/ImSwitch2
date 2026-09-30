@@ -31,6 +31,9 @@ class MakeCompositeProcessor(Processor):
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.
     preserves_grid = True
+    #: ``colormaps`` lists one colormap name per channel; the panel picks
+    #: them after the fact, a workflow may set them up front.
+    extra_param_keys = ("colormaps",)
 
     @classmethod
     def default_params(cls) -> dict:

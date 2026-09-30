@@ -32,6 +32,9 @@ class MakeRGBProcessor(Processor):
     # on one measures the same features on the other.
     preserves_grid = True
     kinds = ("image", "composite")
+    #: ``channels`` picks which channel indices become R, G and B, and
+    #: ``channel_levels`` their display ranges; neither has a widget default.
+    extra_param_keys = ("channels", "channel_levels")
 
     @classmethod
     def default_params(cls) -> dict:

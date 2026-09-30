@@ -49,6 +49,10 @@ MODES = ("run", "replay")
 _SUFFIX = {"tiff": ".ome.tif", "hdf5": ".h5", "zarr": ".ome.zarr", "csv": ".csv",
            "picasso": ".hdf5", "imagej": ".tif", "json": ".json"}
 
+#: The placeholders a ``Save`` step's ``path_template`` may use; what
+#: :func:`render_save_path` fills in, and what an editor can offer.
+PATH_PLACEHOLDERS = ("out_dir", "source_stem", "step", "input_step", "name", "ext", "fmt")
+
 
 class RunError(RuntimeError):
     """A step failed; the report says which and why."""

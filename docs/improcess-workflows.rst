@@ -115,7 +115,10 @@ Parameters and defaults
 **widget default** — the value a freshly opened parameter panel would have
 handed the plugin — from ``default_params()``, which is pinned to the widget
 by a test. ``python -m imswitch.improcess.workflows list`` prints every
-plugin's id, version, ports and defaults.
+plugin's id, version, ports and defaults; with ``--json`` it also prints
+each parameter's **field** (its type, choices, bounds, unit and help) from
+the plugin's ``param_spec()``, which is what the workflow editor builds its
+forms from (see :ref:`workflows-editor`).
 
 The keys a step may set are the plugin's ``param_keys()``: its defaults plus
 any ``extra_param_keys`` it declares for settings no widget default names
@@ -308,6 +311,67 @@ provenance, so ``replay`` refuses that step too. The same applies to a
 plugin whose widget was found to disagree with its declaration. See
 :ref:`improcess-headless-contract` for what to declare and how to test it.
 
+.. _workflows-editor:
+
+The workflow editor
+===================
+
+**File → Workflow editor…** opens a window to build, edit, validate and
+run workflow files without writing YAML by hand. It is a sibling of the
+hardware configuration editor and works the same way: what it offers comes
+from the code, not from a list of its own.
+
+* The **palette** on the left lists every step kind and every installed
+  plugin — built-in reconstructors and processors by category, drop-in
+  plugins under their own heading — as the same registry a run uses sees
+  them. A plugin that cannot run headlessly (see
+  :ref:`improcess-headless-contract`) is listed greyed, with the reason.
+  Double-click an entry, or select it and press **Add step**, to add a
+  step after the selected one; a processing or save step takes the step it
+  follows as its input.
+* The **step list** in the middle shows the steps in execution order, with
+  the plugin, the inputs and an issue marker; **▲ Up**, **▼ Down** and
+  **Remove** reorder and delete. A step is never moved in front of one of
+  its inputs.
+* The **step form** on the right edits the selected step: a source's path
+  and dataset (or nothing, to bind it when the workflow runs), a
+  reconstruction's reconstructor and source, a processing step's
+  processor, ordered inputs (with the ports the earlier steps declare: a
+  channel split's ``C0, C1, …`` are typed after the step id) and
+  parameters, a save's input, format and path template. Parameter forms
+  are built from each plugin's ``param_spec()``: choices are combo boxes,
+  bounded numbers spin boxes with their unit, and a value that differs
+  from the plugin's default shows a *back to default* button. Only what
+  differs from the defaults is written to the file, as when the file is
+  written by hand.
+* The **issues** panel lists everything ``validate`` would report — an
+  unknown plugin, a reference to a port nobody produces, a parameter the
+  plugin does not take, a wrong arity — plus what the editor can add to
+  it: a value that is not one of its field's, a path template with a
+  placeholder nobody fills, two saves writing one file. Clicking an issue
+  selects its step. **Run…** refuses while any remain.
+
+**Run…** runs the workflow exactly as **File → Run workflow…** runs a
+file: it asks for the output folder and whether saves may overwrite, runs
+on a worker thread, adds every result to the reconstruction list, shows
+each step in the editor's status bar, and **Cancel run** stops it at the
+next step. **Run on selected results…** is the editor's form of *Run
+workflow on selected results…*. Relative source paths in a saved workflow
+resolve against the file's folder, in the editor and in the File menu
+actions alike, as they do on the command line.
+
+**File → Edit workflow of current result…** opens the editor on the steps
+that made the current result — the replay of its provenance, with
+parameters equal to the plugin defaults dropped — so a recipe can be
+changed and run again, or saved for other data. It refuses, with every
+reason, exactly when ``replay`` would.
+
+Workflow files open from and save to ``~/ImSwitchConfig/improcess_workflows``
+by default (the folder next to ``improcess_plugins``); the editor's file
+list shows what is there. Saving rewrites the file from the steps: a
+hand-written file's comments and layout are not kept, as a setup file's
+are not kept by the configuration editor.
+
 .. _workflows-replay:
 
 Replay: from a saved file back to a workflow
@@ -489,7 +553,9 @@ plugins from the user plugins folder.
    * - ``validate WORKFLOW``
      - Prints every issue that can be known before running.
    * - ``list``
-     - ``--json`` for the machine-readable catalogue.
+     - ``--json`` for the machine-readable catalogue: every plugin's id,
+       version, defaults, ports and ``fields`` (each parameter's type,
+       choices, bounds, unit and help).
    * - ``run WORKFLOW --out DIR``
      - ``--input PATH[::DATASET] …`` (one run per input, bound to the only
        source, or to the source named with ``--source ID``);
