@@ -1873,7 +1873,8 @@ Widget agreement (checked)
     A class method returning one
     :class:`~imswitch.improcess.model.param_spec.ParamField` per key of
     ``default_params()``: its type (``int``, ``float``, ``bool``, ``text``,
-    ``select``, ``multiselect``, ``path``, ``json``), the choices behind a
+    ``code``, ``select``, ``multiselect``, ``path``, ``json``; a ``code`` field
+    is multi-line text that a form shows in a code editor), the choices behind a
     combo box, the bounds, step and unit of a spin box, a label, a tooltip,
     a group, and whether ``None`` is a value ("from the recording").  It is
     what the workflow editor builds a step's form from, what

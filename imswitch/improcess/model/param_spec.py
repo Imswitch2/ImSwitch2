@@ -30,7 +30,7 @@ from typing import Any, Iterable, Mapping
 #: without ``ref`` (a workflow names no devices) and ``bool_auto`` (a
 #: parameter is always present, at its default), and it maps one-to-one onto
 #: pyqtgraph ``Parameter`` types, which the reconstructor widgets use.
-FIELD_TYPES = ("int", "float", "bool", "text", "select", "multiselect", "path", "json")
+FIELD_TYPES = ("int", "float", "bool", "text", "code", "select", "multiselect", "path", "json")
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,10 @@ class ParamField:
     bound a number (inclusive); ``step`` and ``decimals`` shape its spin box;
     ``suffix`` is its unit. ``nullable`` says ``None`` is a value in its own
     right ("unset", "from the recording"). ``group`` collects related fields
-    under one heading; ``advanced`` collapses a field by default.
+    under one heading; ``advanced`` collapses a field by default. A ``code``
+    field is multi-line text (a script, an expression) that a form shows in
+    a code editor rather than a one-line box; its value is a ``str`` like a
+    ``text`` field's, kept exactly as typed.
     """
 
     key: str
@@ -119,7 +122,7 @@ class ParamField:
             if self.max is not None and value > self.max:
                 return f"is above the maximum {self.max!r}"
             return None
-        if self.type in ("text", "path"):
+        if self.type in ("text", "code", "path"):
             return None if isinstance(value, str) else "must be text"
         if self.type == "select":
             return None if _in_options(value, self.options) else f"is not one of {list(self.options)!r}"
