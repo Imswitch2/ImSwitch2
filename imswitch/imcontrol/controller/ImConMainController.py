@@ -102,10 +102,13 @@ class ImConMainController(MainController):
 
         # Extra kwargs forwarded to specific controllers that need view-layer objects
         _imageWidget = self.__mainView.widgets.get('Image')
-        _toolManager = _imageWidget.toolManager if _imageWidget else None
         _extraKwargs = {
-            'ViewerTools': {'imageWidget': _imageWidget},
-            'LineProfile': {'imageToolManager': _toolManager},
+            # Viewer Tools' line/rectangle/intensity buttons select the Line
+            # Profile panel's modes, so it is handed the panel too.
+            'ViewerTools': {
+                'imageWidget': _imageWidget,
+                'lineProfileWidget': self.__mainView.widgets.get('LineProfile'),
+            },
         }
 
         for widgetKey, widget in self.__mainView.widgets.items():

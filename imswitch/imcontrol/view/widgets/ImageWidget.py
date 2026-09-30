@@ -3,6 +3,7 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import shortcut
 from imswitch.imcommon.view.guitools import naparitools
+from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 
 
 class ImageWidget(QtWidgets.QWidget):
@@ -21,8 +22,13 @@ class ImageWidget(QtWidgets.QWidget):
         #self.NapariSumImageWidget = naparitools.NapariSumImageWidget.addToViewer(self.napariViewer, 'right')
         self.imgLayers = {}
 
-        # ViewerToolManager for napari Shape-based tools (ROI, line, etc.)
-        self.toolManager = naparitools.ViewerToolManager(self.napariViewer)
+        # The viewer's tool broker, and the one ViewerToolManager behind it.
+        # Viewer Tools draws through the manager and the Line Profile panel
+        # through the broker; two managers on the one "Viewer Tools" layer
+        # each reacted to the other's shapes — a crosshair counted as the
+        # profile's line and was pruned as a duplicate.
+        self.toolService = ViewerToolService.for_viewer(self.napariViewer)
+        self.toolManager = self.toolService.manager
 
         # When the viewer switches to 3D display mode all live-view layers
         # must have at least 3 dimensions; otherwise napari's extent
