@@ -3,6 +3,7 @@ import weakref
 from abc import ABCMeta, abstractmethod
 
 from qtpy import QtCore, QtWidgets
+from imswitch.imcommon.model.lazy_exports import exported_class
 
 
 class _QObjectABCMeta(type(QtCore.QObject), ABCMeta):
@@ -74,6 +75,9 @@ class WidgetFactory:
         self._createdWidgets = []
 
     def createWidget(self, widgetClass, *args, **extraKwargs):
+        # ``widgets.ImageWidget`` is the module, not the class, in a process
+        # that imported the file directly first (see lazy_exports).
+        widgetClass = exported_class(widgetClass)
         kwargs = self._baseKwargs.copy()
         kwargs.update(extraKwargs)
 

@@ -4,6 +4,7 @@ import weakref
 
 from imswitch.imcommon.framework import FrameworkUtils, SignalInterface
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.lazy_exports import exported_class
 
 
 class MainController:
@@ -44,6 +45,9 @@ class WidgetControllerFactory:
         self.__logger = initLogger(self, tryInheritParent=True)
 
     def createController(self, controllerClass, widget, *args, **kwargs):
+        # ``controllers.X`` is the module, not the class, in a process that
+        # imported the file directly first (see lazy_exports).
+        controllerClass = exported_class(controllerClass)
         controller = controllerClass(*self.__args, *args,
                                      widget=widget, factory=self,
                                      moduleCommChannel=self.__moduleCommChannel,

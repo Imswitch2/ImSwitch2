@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import subprocess
 import sys
 import types
 
@@ -260,9 +262,37 @@ def _install_gui_dependency_stubs(*, matplotlib=True):
         sys.modules[name] = module
 
 
-def test_no_hardware_profile_constructs_imcontrol_ui(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+def test_no_hardware_profile_constructs_imcontrol_ui(tmp_path):
+    """Build the no-hardware ImControl UI in a fresh interpreter.
+
+    The stubs :func:`_install_gui_dependency_stubs` installs must be in place
+    before any ImSwitch GUI module is imported: ``EmbeddedNapari`` derives
+    from ``napari.Viewer`` at import time, and a class already bound to the
+    real napari runs the real viewer against the stubbed package and fails.
+    A shared pytest process cannot promise that order once any other test
+    has imported the real napari, so the construction runs in a child
+    interpreter of its own.
+    """
+    home = tmp_path / "home"
+    script = (
+        "from imswitch.test_no_hardware_ui_smoke import _construct_imcontrol_ui\n"
+        f"_construct_imcontrol_ui({str(home)!r})\n"
+    )
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", MPLBACKEND="Agg")
+    completed = subprocess.run(
+        [sys.executable, "-c", script], cwd=str(Path(__file__).resolve().parents[1]),
+        env=env, capture_output=True, text=True, timeout=600,
+    )
+    assert completed.returncode == 0, (
+        f"the ImControl UI did not construct (exit {completed.returncode}):\n"
+        f"{completed.stdout[-2000:]}\n{completed.stderr[-6000:]}"
+    )
+
+
+def _construct_imcontrol_ui(home: str) -> None:
+    """The smoke check proper; runs in a fresh interpreter (see the test above)."""
+    os.environ["HOME"] = str(home)
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
     _install_gui_dependency_stubs()
 
     from imswitch import imcontrol
@@ -271,19 +301,18 @@ def test_no_hardware_profile_constructs_imcontrol_ui(tmp_path, monkeypatch):
     from imswitch.imcontrol.model import Options
     from imswitch.imcontrol.view import ViewSetupInfo
 
-    user_root = tmp_path / "home" / "ImSwitchConfig"
-    monkeypatch.setattr(dirtools, "_baseUserFilesDir", user_root)
-    monkeypatch.setattr(dirtools.UserFileDirs, "Root", str(user_root))
-    monkeypatch.setattr(dirtools.UserFileDirs, "Config", str(user_root / "config"))
-    assert Path(dirtools.UserFileDirs.Root).is_relative_to(tmp_path / "home")
+    user_root = Path(home) / "ImSwitchConfig"
+    dirtools._baseUserFilesDir = user_root
+    dirtools.UserFileDirs.Root = str(user_root)
+    dirtools.UserFileDirs.Config = str(user_root / "config")
+    assert Path(dirtools.UserFileDirs.Root).is_relative_to(Path(home))
 
     from imswitch.imcommon.controller import ModuleCommunicationChannel
     from imswitch.imcontrol.controller.ImConMainController import ImConMainController
 
     # view.close() below asks "Save the current widget state?" in a modal box
     # that nobody answers offscreen; the test hung there after passing.
-    monkeypatch.setattr(ImConMainController, "_shouldSaveWidgetStateOnClose",
-                        lambda self: False)
+    ImConMainController._shouldSaveWidgetStateOnClose = lambda self: False
 
     view_setup_info = ViewSetupInfo.from_json(PROFILE_PATH.read_text(), infer_missing=True)
     options = Options(setupFileName=PROFILE_PATH.name)
