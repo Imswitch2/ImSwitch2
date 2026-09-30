@@ -24,6 +24,13 @@ _GUI_LAYOUT_STATE_KEY = 'ImProcessGuiLayout'
 _ROI_MANAGER_STATE_KEY = 'ImProcessROIManager'
 
 
+_LENGTH_UNIT_TO_UM = {
+    'nm': 1e-3, 'nanometer': 1e-3, 'nanometre': 1e-3,
+    'um': 1.0, 'µm': 1.0, 'micrometer': 1.0, 'micrometre': 1.0, 'micron': 1.0,
+    'mm': 1e3, 'millimeter': 1e3, 'millimetre': 1e3,
+}
+
+
 class ImProcessMainController(MainController):
     def __init__(self, mainView, moduleCommChannel, processingConfig=None):
         self.__mainView = mainView
@@ -958,6 +965,13 @@ class ImProcessMainController(MainController):
         scale = None
         if hasattr(result, 'axis_scales') and result.axis_scales:
             scale = result.axis_scales[-2:] if len(result.axis_scales) >= 2 else None
+        if scale is not None:
+            # The ImControl viewer is in micrometres; a MoNaLISA result is in
+            # nanometres, and sending its scale unchanged drew it a thousand
+            # times too large.
+            factor = _LENGTH_UNIT_TO_UM.get(str(getattr(result, 'scale_unit', '') or '').lower())
+            if factor is not None:
+                scale = [float(value) * factor for value in scale]
 
         self.__moduleCommChannel.sigLiveReconResult.emit(name, image, scale)
 

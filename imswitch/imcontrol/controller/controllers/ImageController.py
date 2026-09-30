@@ -9,6 +9,7 @@ from ..display_transform import apply_display_transform, display_transform_from_
 from imswitch.imcommon.model import initLogger
 import numpy as np
 import re
+from qtpy import QtCore
 
 class ImageController(LiveUpdatedController, StatefulComponentMixin):
     """ Linked to ImageWidget."""
@@ -23,6 +24,8 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         super().__init__(*args, **kwargs)
 
         self.__logger = initLogger(self, tryInheritParent=True)
+        self.__pendingResultLayers = {}
+        self.__resultRenderScheduled = False
         getWidgetStatePersistence().register('Image', self)
 
         if hasattr(self._commChannel, 'sigSetVisibleLayers'):
@@ -45,6 +48,9 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self._commChannel.sigRemoveItemFromVb.connect(self.removeItemFromVb)
         self._commChannel.sigMemorySnapAvailable.connect(self.memorySnapAvailable)
         self._commChannel.sigSetExposure.connect(lambda t: self.setExposure(t))
+        if hasattr(self._commChannel, 'sigResultLayersUpdated'):
+            self._commChannel.sigResultLayersUpdated.connect(self.resultLayersUpdated)
+            self._commChannel.sigResultLayersRemoved.connect(self.resultLayersRemoved)
 
         # Connect ModuleCommunicationChannel signals if available
         if self._moduleCommChannel is not None:
@@ -128,10 +134,41 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
             self.adjustFrame(image.shape, instantResetView=True)
 
     def liveReconResultAvailable(self, name, image, scale):
-        """ Adds live reconstruction result to widget. """
-        self._widget.addStaticLayer(name, image, scale)
-        if self._shouldResetView:
-            self.adjustFrame(image.shape, instantResetView=True)
+        """A live result from ImProcess (module channel): one layer per name.
+
+        Routed through the result-layer path, so a stream of updates keeps
+        replacing the same layer instead of adding one per update.
+        """
+        kwargs = {'name': str(name)}
+        if scale is not None:
+            kwargs['scale'] = tuple(float(v) for v in scale)
+        self.resultLayersUpdated(f'ImProcess: {name}', [(np.asarray(image), kwargs, 'image')])
+
+    def resultLayersUpdated(self, jobName, layerData):
+        """Keep the newest layer data per job and draw once the event loop is free.
+
+        A producer that publishes faster than the viewer redraws must not
+        queue up redraws: only the latest data of each job is drawn.
+        """
+        self.__pendingResultLayers[jobName] = list(layerData or [])
+        if not self.__resultRenderScheduled:
+            self.__resultRenderScheduled = True
+            QtCore.QTimer.singleShot(0, self._renderPendingResultLayers)
+
+    def resultLayersRemoved(self, jobName):
+        self.__pendingResultLayers.pop(jobName, None)
+        self._widget.removeResultLayers(jobName)
+
+    def _renderPendingResultLayers(self):
+        self.__resultRenderScheduled = False
+        pending, self.__pendingResultLayers = self.__pendingResultLayers, {}
+        for jobName, layerData in pending.items():
+            try:
+                self._widget.setResultLayers(jobName, layerData)
+            except Exception:
+                self.__logger.error(
+                    f'Could not draw the result layers of {jobName!r}', exc_info=True
+                )
 
     def setExposure(self, exp):
         detectorName = self._master.detectorsManager.getAllDeviceNames()[0]

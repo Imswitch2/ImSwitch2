@@ -20,6 +20,9 @@ class ImageWidget(QtWidgets.QWidget):
         #self.NapariResetViewWidget = naparitools.NapariResetViewWidget.addToViewer(self.napariViewer, 'right')
         #self.NapariSumImageWidget = naparitools.NapariSumImageWidget.addToViewer(self.napariViewer, 'right')
         self.imgLayers = {}
+        # Result layers other controllers keep in this viewer, updated in
+        # place: {jobName: {layerName: layer}} -- see setResultLayers.
+        self.resultLayers = {}
 
         # ViewerToolManager for napari Shape-based tools (ROI, line, etc.)
         self.toolManager = naparitools.ViewerToolManager(self.napariViewer)
@@ -175,15 +178,106 @@ class ImageWidget(QtWidgets.QWidget):
         self.imgLayers[name] = new
 
     def addStaticLayer(self, name, im, scale=None):
+        """Add one more image layer; every call adds a new one (a snap)."""
         kwargs = dict(rgb=False, name=name, blending='additive')
         if scale is not None:
-            sc = tuple(scale)
-            if len(sc) < im.ndim:
-                sc = (1.0,) * (im.ndim - len(sc)) + sc
-            elif len(sc) > im.ndim:
-                sc = sc[-im.ndim:]
-            kwargs['scale'] = sc
+            kwargs['scale'] = self._fitScale(scale, im.ndim)
         self.napariViewer.add_image(im, **kwargs)
+
+    @staticmethod
+    def _fitScale(scale, ndim):
+        """``scale`` padded (with 1.0) or trimmed to ``ndim`` entries."""
+        sc = tuple(float(v) for v in scale)
+        if len(sc) < ndim:
+            sc = (1.0,) * (ndim - len(sc)) + sc
+        elif len(sc) > ndim:
+            sc = sc[-ndim:]
+        return sc
+
+    # -- result layers ---------------------------------------------------
+
+    _RESULT_LAYER_ADDERS = {
+        'image': 'add_image',
+        'labels': 'add_labels',
+        'points': 'add_points',
+        'shapes': 'add_shapes',
+    }
+
+    def setResultLayers(self, jobName, layerData):
+        """Create or update the result layers of ``jobName`` in place.
+
+        ``layerData`` is a list of napari ``(data, kwargs, layerType)`` tuples
+        in display order. A layer is created once, keyed by job and layer
+        name, and afterwards only its data (and scale) are swapped, so a live
+        update costs a copy rather than a layer rebuild and keeps whatever
+        contrast, colormap and visibility the user set. A layer whose ndim
+        changes is recreated (napari cannot grow a layer's dims in place, see
+        :meth:`_recreateLiveLayer`), and one the user deleted from the layer
+        list comes back on the next update. Layers of the job that are absent
+        from ``layerData`` are removed.
+        """
+        existing = self.resultLayers.setdefault(jobName, {})
+        seen = set()
+        for data, kwargs, layerType in layerData:
+            kwargs = dict(kwargs or {})
+            layerType = str(layerType or 'image')
+            name = str(kwargs.get('name') or jobName)
+            kwargs['name'] = name
+            seen.add(name)
+            layer = existing.get(name)
+            if layer is not None and layer not in self.napariViewer.layers:
+                layer = None
+            if layer is not None and self._canUpdateInPlace(layer, data, layerType):
+                scale = kwargs.get('scale')
+                if scale is not None:
+                    layer.scale = self._fitScale(scale, layer.ndim)
+                layer.data = data
+                existing[name] = layer
+                continue
+            if layer is not None:
+                self._removeResultLayer(layer)
+            existing[name] = self._addResultLayer(data, kwargs, layerType)
+        for name in list(existing):
+            if name not in seen:
+                self._removeResultLayer(existing.pop(name))
+
+    def removeResultLayers(self, jobName):
+        """Remove every layer :meth:`setResultLayers` created for ``jobName``."""
+        for layer in self.resultLayers.pop(jobName, {}).values():
+            self._removeResultLayer(layer)
+
+    def resultLayerNames(self, jobName):
+        """The names of the layers currently held for ``jobName``."""
+        return list(self.resultLayers.get(jobName, {}))
+
+    @staticmethod
+    def _canUpdateInPlace(layer, data, layerType):
+        if layerType not in ('image', 'labels', 'points'):
+            return False
+        ndim = int(getattr(data, 'ndim', np.ndim(data)))
+        if layerType == 'points':
+            return ndim == 2 and int(data.shape[1]) == int(layer.ndim)
+        return ndim == int(layer.data.ndim)
+
+    def _addResultLayer(self, data, kwargs, layerType):
+        adder = getattr(self.napariViewer, self._RESULT_LAYER_ADDERS.get(layerType, 'add_image'))
+        if layerType == 'image':
+            kwargs.setdefault('blending', 'additive')
+            kwargs.setdefault('rgb', False)
+        scale = kwargs.get('scale')
+        if scale is not None and layerType != 'points':
+            kwargs['scale'] = self._fitScale(scale, int(getattr(data, 'ndim', np.ndim(data))))
+        return adder(data, **kwargs)
+
+    def _removeResultLayer(self, layer):
+        try:
+            layer.protected = False
+        except AttributeError:
+            pass
+        try:
+            self.napariViewer.layers.remove(layer)
+        except ValueError:
+            pass
 
     def getCurrentImageName(self):
         return self.napariViewer.active_layer.name

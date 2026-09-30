@@ -199,32 +199,59 @@ def test_bridge_ignores_1d_data():
     stub._ImProcessMainController__moduleCommChannel.sigLiveReconResult.emit.assert_not_called()
 
 
-def test_imagecontroller_slot_calls_addStaticLayer():
-    """ImageController.liveReconResultAvailable calls widget.addStaticLayer."""
+def test_imagecontroller_slot_keeps_one_layer_per_live_result():
+    """ImageController.liveReconResultAvailable routes through the result-layer
+    path: the first update creates the layer, later ones update it in place."""
+    from unittest.mock import patch
+
     from imswitch.imcontrol.controller.controllers.ImageController import ImageController
-    
-    # Create minimal stub
-    class _FakeWidget:
-        def __init__(self):
-            self.added_layers = []
-        
-        def addStaticLayer(self, name, image, scale=None):
-            self.added_layers.append((name, image, scale))
-    
-    stub_widget = _FakeWidget()
-    
-    # Bind the method to a fake controller
-    stub = SimpleNamespace(_widget=stub_widget, _shouldResetView=False)
-    bound_method = ImageController.liveReconResultAvailable.__get__(stub)
-    
-    # Call it
-    test_image = np.ones((10, 20))
-    test_scale = [1.5, 2.0]
-    bound_method('test-layer', test_image, test_scale)
-    
-    # Verify
-    assert len(stub_widget.added_layers) == 1
-    name, image, scale = stub_widget.added_layers[0]
-    assert name == 'test-layer'
-    assert np.array_equal(image, test_image)
-    assert scale == test_scale
+    from qtpy import QtCore, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    widget = Mock()
+    master = Mock()
+    master.detectorsManager.hasDevices.return_value = False
+    with patch(
+        'imswitch.imcontrol.controller.controllers.ImageController.getWidgetStatePersistence',
+        return_value=Mock(),
+    ):
+        controller = ImageController(
+            Mock(), Mock(), master, widget=widget, factory=Mock(), moduleCommChannel=Mock(),
+        )
+
+    controller.liveReconResultAvailable('test-layer', np.ones((10, 20)), [1.5, 2.0])
+    controller.liveReconResultAvailable('test-layer', np.full((10, 20), 2.0), [1.5, 2.0])
+    deadline = QtCore.QDeadlineTimer(2000)
+    while not widget.setResultLayers.called and not deadline.hasExpired():
+        app.processEvents()
+
+    assert widget.setResultLayers.call_count == 1
+    jobName, layers = widget.setResultLayers.call_args.args
+    assert jobName == 'ImProcess: test-layer'
+    data, kwargs, kind = layers[0]
+    assert kind == 'image'
+    assert np.array_equal(data, np.full((10, 20), 2.0))
+    assert kwargs == {'name': 'test-layer', 'scale': (1.5, 2.0)}
+    assert not widget.addStaticLayer.called
+
+
+def test_bridge_converts_the_scale_to_micrometres():
+    """The ImControl viewer is in µm; a nm-calibrated result must not be sent
+    with its raw scale (it was drawn a thousand times too large)."""
+    config = {'live_display_in_imcontrol': True}
+    stub, bridge = _create_bridge_stub(config, imcontrol_registered=True)
+
+    result = _FakeProcessingResult('nm-recon', np.ones((4, 6)), axis_scales=[100.0, 50.0])
+    result.scale_unit = 'nm'
+    bridge(result, 'NmResult')
+
+    _, _, scale = stub._ImProcessMainController__moduleCommChannel.sigLiveReconResult.emit.call_args[0]
+    assert scale == pytest.approx([0.1, 0.05])
+
+    stub, bridge = _create_bridge_stub(config, imcontrol_registered=True)
+    result = _FakeProcessingResult('um-recon', np.ones((4, 6)), axis_scales=[0.2, 0.3])
+    result.scale_unit = 'um'
+    bridge(result, 'UmResult')
+    _, _, scale = stub._ImProcessMainController__moduleCommChannel.sigLiveReconResult.emit.call_args[0]
+    assert scale == pytest.approx([0.2, 0.3])
