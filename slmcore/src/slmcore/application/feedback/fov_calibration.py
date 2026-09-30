@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any,TYPE_CHECKING,TypedDict
+from typing import Any,Callable,TYPE_CHECKING,TypedDict
 
 import numpy as np
 
@@ -14,8 +14,10 @@ from ...core.cgh.coordinates import reference_px_to_k,k_to_reference_px
 from .component import FeedbackComponent
 
 if TYPE_CHECKING:
+    from ...core.engine.runtime import SLMRuntime
     from ...workspace.fov_position_calibration_store import SLMFOVPositionCalibrationStore
-    from .service import SLMFeedbackService
+    from ..startup_preferences import StartupPreferencesState
+    from .contracts import SLMFeedbackCallbacks
 
 
 class FOVPositionCalibrationContext(TypedDict):
@@ -60,10 +62,28 @@ class FOVPositionCalibrationService(FeedbackComponent):
     """Own FOV calibration candidates, selection state and persisted access."""
 
     def __init__(
-        self,feedback: "SLMFeedbackService",
+        self,
+        *,
+        runtime_provider: Callable[[], "SLMRuntime"],
+        callbacks_provider: Callable[[], "SLMFeedbackCallbacks"],
+        editor_writes_allowed: Callable[[], bool],
+        active_feedback_plane: Callable[[str],str | None],
+        startup_preferences: Callable[[], "StartupPreferencesState | None"],
+        cancel_cgh: Callable[[str],None],
+        feedback_orientation: Callable[[str],Any],
+        resolve_position_reference: Callable[[str],tuple[Any,dict[str,Any]]],
         store: "SLMFOVPositionCalibrationStore | None"=None,
     ) -> None:
-        super().__init__(feedback)
+        super().__init__(
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+        )
+        self._active_feedback_plane_provider = active_feedback_plane
+        self._startup_preferences_provider = startup_preferences
+        self._cancel_cgh = cancel_cgh
+        self._feedback_orientation = feedback_orientation
+        self._resolve_position_reference_callback = resolve_position_reference
         self._fov_position_calibration_store = store
         self._fov_position_calibration_selections: dict[
             tuple[str,str | None],_FOVPositionCalibrationSelection
@@ -76,6 +96,9 @@ class FOVPositionCalibrationService(FeedbackComponent):
                 self._on_fov_position_calibration_store_changed
             )
 
+    def _active_feedback_plane(self,section_key: str) -> str | None:
+        return self._active_feedback_plane_provider(section_key)
+
     def _fov_position_key(self,section_key: str) -> tuple[str,str | None]:
         section = str(section_key)
         return section,self._active_feedback_plane(section)
@@ -83,7 +106,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
     def _saved_fov_position_calibration_name(
         self,section_key: str,plane_name: str | None,
     ) -> str | None:
-        preferences = self._application_session.startup_preferences
+        preferences = self._startup_preferences_provider()
         if preferences is None:
             return None
         return preferences.default_fov_position_calibration(
@@ -97,7 +120,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         if store is None:
             raise RuntimeError("FOV position-calibration storage is unavailable")
         return store.load(
-            self._application_session.runtime.identity,section_key,plane_name,name,
+            self._runtime.identity,section_key,plane_name,name,
         )
 
     def fov_position_calibration_context(
@@ -110,7 +133,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         store = self._fov_position_calibration_store
         names = (
             () if plane is None or store is None else
-            store.list(self._application_session.runtime.identity,section,plane)
+            store.list(self._runtime.identity,section,plane)
         )
         selection = self._fov_position_calibration_selections.get(key)
         if selection is None:
@@ -124,7 +147,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
             selection.selected_name = None
             selection.applied = False
         applied = bool(selection.applied and selected)
-        runtime_context = self._application_session.runtime.get_section_fov_position_context(section)
+        runtime_context = self._runtime.get_section_fov_position_context(section)
         outside = np.asarray(runtime_context.get("outside_mask",()),dtype=bool)
         extrapolated_count = int(np.count_nonzero(outside)) if applied else 0
         calibration = (
@@ -157,7 +180,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         calibration = candidate if candidate is not None else context.get("calibration")
         if calibration is None:
             return None
-        current = self._application_session.runtime.get_section_fov_position_context(section_key)
+        current = self._runtime.get_section_fov_position_context(section_key)
         ideal = np.asarray(current["ideal_positions_kxy"],dtype=np.float64)
         # Inspect the field at the current target when it is meaningful.  With
         # no target (or an incompatible target), fall back to the calibration's
@@ -245,7 +268,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         name = context.get("selected_name")
         if not name:
             raise RuntimeError("Choose an FOV calibration before setting the default")
-        preferences = self._application_session.startup_preferences
+        preferences = self._startup_preferences_provider()
         if preferences is None:
             raise RuntimeError("Startup preferences are unavailable")
         preferences.set_default_fov_position_calibration(section,plane,name)
@@ -267,8 +290,8 @@ class FOVPositionCalibrationService(FeedbackComponent):
         # Delete first so a filesystem failure leaves both selection and
         # startup default untouched.  The synchronous store listener clears
         # the selected/applied runtime calibration.
-        store.delete(self._application_session.runtime.identity,section,plane,name)
-        preferences = self._application_session.startup_preferences
+        store.delete(self._runtime.identity,section,plane,name)
+        preferences = self._startup_preferences_provider()
         if (
             preferences is not None
             and preferences.default_fov_position_calibration(section,plane) == name
@@ -287,7 +310,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         plane = self._active_feedback_plane(section)
         if plane is None:
             raise RuntimeError("Select a measurement plane before fitting an FOV calibration")
-        status = self._application_session.runtime.get_section_feedback_status(section)
+        status = self._runtime.get_section_feedback_status(section)
         if FeedbackCapability.POSITION_CORRECTION not in set(status.capabilities):
             raise RuntimeError("The current target does not support position correction")
 
@@ -296,7 +319,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         # correction experimentally and only then promote it to a persistent
         # FOV calibration.  Fall back to a fresh analysis only before a
         # correction has been accepted.
-        session_inspection = self._application_session.runtime.get_section_cgh_session_inspection(
+        session_inspection = self._runtime.get_section_cgh_session_inspection(
             section
         )
         correction = session_inspection.position_correction
@@ -312,20 +335,20 @@ class FOVPositionCalibrationService(FeedbackComponent):
             detector = correction.measurement.acquisition.detector
             source = "accepted_position_correction"
         else:
-            reference_positions,reference_metadata = self._resolve_position_reference(
+            reference_positions,reference_metadata = self._resolve_position_reference_callback(
                 section
             )
-            analysis = self._application_session.runtime.compute_section_feedback_position_analysis(
+            analysis = self._runtime.compute_section_feedback_position_analysis(
                 section,
-                orientation=self.feedback_orientation(section),
+                orientation=self._feedback_orientation(section),
                 reference_positions_px=reference_positions,
             )
-            current = self._application_session.runtime.get_section_fov_position_context(section)
+            current = self._runtime.get_section_fov_position_context(section)
             ideal = np.asarray(current["ideal_positions_kxy"],dtype=np.float64)
             total_displacement = (
                 np.asarray(analysis.corrected_positions_kxy,dtype=np.float64)-ideal
             )
-            inspection = self._application_session.runtime.get_section_feedback_inspection(section)
+            inspection = self._runtime.get_section_feedback_inspection(section)
             detector = None
             if inspection.measurement is not None:
                 detector = inspection.measurement.acquisition.detector
@@ -333,7 +356,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
 
         calibration = FOVPositionCalibration.fit(
             name="Current candidate",
-            slm_serial=self._application_session.runtime.identity.serial_number,
+            slm_serial=self._runtime.identity.serial_number,
             section_key=section,plane_name=plane,
             ideal_positions_kxy=ideal,
             total_displacements_kxy=total_displacement,
@@ -450,7 +473,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         current = None
         current_known = False
         try:
-            current = self._application_session.runtime.get_section_fov_position_context(
+            current = self._runtime.get_section_fov_position_context(
                 section_key
             ).get("calibration")
             current_known = True
@@ -473,8 +496,8 @@ class FOVPositionCalibrationService(FeedbackComponent):
                 self._section_changed(section_key)
             return
 
-        self._application_session.cancel_cgh(section_key)
-        transition = self._application_session.runtime.set_section_fov_position_calibration(
+        self._cancel_cgh(section_key)
+        transition = self._runtime.set_section_fov_position_calibration(
             section_key,calibration,
         )
         if notify:
@@ -501,7 +524,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
 
     def refresh_fov_position_calibration_contexts(self) -> None:
         """Reconcile current sections/planes with selections and saved startup defaults."""
-        runtime = self._application_session.runtime
+        runtime = self._runtime
         active_keys = set()
         for section_key in tuple(runtime.section_keys):
             section = str(section_key)
@@ -536,7 +559,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
                 self._fov_position_calibration_candidates.pop(key,None)
 
     def _on_fov_position_calibration_store_changed(self) -> None:
-        runtime = self._application_session.runtime
+        runtime = self._runtime
         for section_key in tuple(runtime.section_keys):
             section = str(section_key)
             plane = self._active_feedback_plane(section)

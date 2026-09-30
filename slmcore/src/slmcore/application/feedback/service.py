@@ -69,17 +69,102 @@ class SLMFeedbackService:
     ) -> None:
         self._application_session = application_session
         self._callbacks = callbacks or SLMFeedbackCallbacks()
-        self._measurement = MeasurementService(self,measurements)
+
+        runtime_provider = lambda:self._application_session.runtime
+        callbacks_provider = lambda:self._callbacks
+        editor_writes_allowed = lambda:bool(self._application_session.editor_writes_allowed)
+        startup_preferences = lambda:self._application_session.startup_preferences
+
+        self._measurement = MeasurementService(
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+            commit_measurement=lambda *args,**kwargs:
+                self._localization.commit_measurement(*args,**kwargs),
+            dispatcher=measurements,
+        )
         self._geometry = GeometryOrientationFeedbackService(
-            self,geometry_orientation_calibration_store,
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+            active_feedback_plane=self._active_feedback_plane,
+            startup_preferences=startup_preferences,
+            upload_frame=lambda frame:self._application_session.upload_frame(frame),
+            compute_geometry_orientation_cgh=(
+                lambda *args,**kwargs:
+                    self._application_session.compute_geometry_orientation_cgh(
+                        *args,**kwargs
+                    )
+            ),
+            upload_current_frame=(
+                lambda:self._application_session.upload_current_frame()
+            ),
+            request_measurement=self._measurement.request_measurement,
+            feedback_measurement_metadata=self._measurement.feedback_measurement_metadata,
+            update_committed_analysis=self._update_committed_analysis,
+            store=geometry_orientation_calibration_store,
         )
-        self._references = PositionReferenceService(self,position_reference_store)
+        self._references = PositionReferenceService(
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+            active_feedback_plane=self._active_feedback_plane,
+            feedback_orientation=self._geometry.feedback_orientation,
+            current_config_path=lambda:self._application_session.current_config_path,
+            store=position_reference_store,
+        )
         self._fov_calibration = FOVPositionCalibrationService(
-            self,fov_position_calibration_store,
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+            active_feedback_plane=self._active_feedback_plane,
+            startup_preferences=startup_preferences,
+            cancel_cgh=lambda key:self._application_session.cancel_cgh(key),
+            feedback_orientation=self._geometry.feedback_orientation,
+            resolve_position_reference=self._references._resolve_position_reference,
+            store=fov_position_calibration_store,
         )
-        self._localization = LocalizationService(self)
-        self._adaptation = FeedbackAdaptationService(self)
-        self._automatic = AutomaticFeedbackRunner(self)
+        self._localization = LocalizationService(
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+            feedback_orientation=self._geometry.feedback_orientation,
+            update_committed_analysis=self._update_committed_analysis,
+            refresh_editable_reference=(
+                self._references.refresh_editable_geometry_after_localization
+            ),
+        )
+        self._adaptation = FeedbackAdaptationService(
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+            cancel_cgh=lambda key:self._application_session.cancel_cgh(key),
+            feedback_orientation=self._geometry.feedback_orientation,
+            resolve_position_reference=self._references._resolve_position_reference,
+        )
+        self._automatic = AutomaticFeedbackRunner(
+            runtime_provider=runtime_provider,
+            can_run=lambda:bool(self.can_run_automatic_feedback),
+            unavailable_reason=lambda:self.automatic_feedback_unavailable_reason,
+            is_cgh_computing=(
+                lambda key:self._application_session.is_cgh_computing(key)
+            ),
+            compute_adapted_cgh=(
+                lambda *args,**kwargs:
+                    self._application_session.compute_adapted_cgh(*args,**kwargs)
+            ),
+            last_upload_error=lambda:self._application_session.last_upload_error,
+            callbacks_provider=callbacks_provider,
+            request_measurement=self._measurement.request_measurement,
+            cancel_measurement=self._measurement.cancel_measurement,
+            feedback_measurement_metadata=self._measurement.feedback_measurement_metadata,
+            commit_measurement=self._localization.commit_measurement,
+            reuse_localization=self._localization.reuse_localization,
+            localize_and_commit=self._localization.localize_and_commit,
+            apply_intensity_feedback=self._adaptation.apply_intensity_feedback,
+            report_error=self._error,
+            report_warning=self._warning,
+        )
 
     @property
     def application_session(self) -> "SLMSession":

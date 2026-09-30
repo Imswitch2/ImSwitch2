@@ -1,7 +1,7 @@
 """Checks for the responsibility-based application feedback module layout."""
 
 from slmcore.application import SLMFeedbackService as application_feedback_service
-from slmcore.application.feedback import SLMFeedbackService
+from slmcore.application.feedback import AutomaticFeedbackRunner,SLMFeedbackService
 from slmcore.application.feedback.adaptation import FeedbackAdaptationService
 from slmcore.application.feedback.fov_calibration import FOVPositionCalibrationService
 from slmcore.application.feedback.geometry_calibration import GeometryOrientationFeedbackService
@@ -26,3 +26,22 @@ def test_feedback_workflows_have_focused_application_services():
         FeedbackAdaptationService,
     )
     assert len({service.__module__ for service in services}) == len(services)
+
+
+def test_focused_feedback_services_do_not_retain_owner_locators():
+    import inspect
+
+    focused = (
+        AutomaticFeedbackRunner,
+        MeasurementService,
+        LocalizationService,
+        PositionReferenceService,
+        FOVPositionCalibrationService,
+        GeometryOrientationFeedbackService,
+        FeedbackAdaptationService,
+    )
+    forbidden = ("self._feedback =", "self._service =", "self._application_session =")
+    for service in focused:
+        source = inspect.getsource(service)
+        for token in forbidden:
+            assert token not in source, f"{service.__name__} retains owner locator {token}"

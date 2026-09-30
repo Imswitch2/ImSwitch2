@@ -9,17 +9,28 @@ from .component import FeedbackComponent
 from .contracts import MeasurementDispatcher,MeasurementRequest
 
 if TYPE_CHECKING:
-    from .service import SLMFeedbackService
+    from ...core.engine.runtime import SLMRuntime
+    from .contracts import SLMFeedbackCallbacks
 
 
 class MeasurementService(FeedbackComponent):
     """Own the measurement dispatcher and in-flight acquisition requests."""
 
     def __init__(
-        self,feedback: "SLMFeedbackService",
+        self,
+        *,
+        runtime_provider: Callable[[], "SLMRuntime"],
+        callbacks_provider: Callable[[], "SLMFeedbackCallbacks"],
+        editor_writes_allowed: Callable[[], bool],
+        commit_measurement: Callable[...,bool],
         dispatcher: MeasurementDispatcher | None=None,
     ) -> None:
-        super().__init__(feedback)
+        super().__init__(
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+        )
+        self._commit_measurement = commit_measurement
         self._measurement_dispatcher = dispatcher
         self._measurement_requests: dict[str,MeasurementRequest] = {}
 
@@ -73,7 +84,7 @@ class MeasurementService(FeedbackComponent):
         def result_callback(measurement: ImageMeasurement) -> None:
             self._measurement_requests.pop(section_key,None)
             self._callbacks.on_measurement_busy_changed(section_key,False,"")
-            if not self._application_session.editor_writes_allowed:
+            if not self._editor_writes_allowed():
                 return
             on_result(measurement)
 
@@ -119,7 +130,7 @@ class MeasurementService(FeedbackComponent):
 
         def commit_result(measurement: ImageMeasurement) -> None:
             try:
-                self.commit_measurement(
+                self._commit_measurement(
                     section_key,measurement,
                     reuse_previous_localization=reuse_previous_localization,
                 )
@@ -135,9 +146,9 @@ class MeasurementService(FeedbackComponent):
         )
 
     def feedback_measurement_metadata(self,section_key: str) -> dict[str,Any]:
-        status = self._application_session.runtime.get_section_cgh_status(section_key)
+        status = self._runtime.get_section_cgh_status(section_key)
         return {
-            "slm_key":self._application_session.runtime.identity.key,
+            "slm_key":self._runtime.identity.key,
             "section_key":section_key,
             "cgh_state":status.result_state.value,
             "cgh_generation":status.result_generation,

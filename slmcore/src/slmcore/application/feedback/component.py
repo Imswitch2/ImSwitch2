@@ -1,67 +1,47 @@
-"""Temporary shared bridge used while feedback responsibilities are extracted.
-
-Pass 2 keeps each focused service behavior-compatible by delegating cross-domain
-operations to the owning :class:`SLMFeedbackService`. Pass 3 narrows these
-whole-facade dependencies to explicit capabilities.
-"""
+"""Shared narrow infrastructure for focused feedback application services."""
 
 from __future__ import annotations
 
-from typing import Any,TYPE_CHECKING
+from typing import Any,Callable,TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .service import SLMFeedbackService
-    from ...core.cgh.localization import LocalizationResult
+    from ...core.engine.runtime import SLMRuntime
+    from .contracts import SLMFeedbackCallbacks
 
 
 class FeedbackComponent:
-    """Base for an extracted feedback application service."""
+    """Common runtime/callback/editor capabilities without an owner/session locator."""
 
-    def __init__(self,feedback: "SLMFeedbackService") -> None:
-        self._feedback = feedback
+    def __init__(
+        self,
+        *,
+        runtime_provider: Callable[[], "SLMRuntime"],
+        callbacks_provider: Callable[[], "SLMFeedbackCallbacks"],
+        editor_writes_allowed: Callable[[], bool],
+    ) -> None:
+        self._runtime_provider = runtime_provider
+        self._callbacks_provider = callbacks_provider
+        self._editor_writes_allowed = editor_writes_allowed
 
     @property
-    def _application_session(self):
-        return self._feedback.application_session
+    def _runtime(self) -> "SLMRuntime":
+        return self._runtime_provider()
 
     @property
-    def _callbacks(self):
-        return self._feedback._callbacks
-
-    def _active_feedback_plane(self,section_key: str) -> str | None:
-        return self._feedback._active_feedback_plane(section_key)
+    def _callbacks(self) -> "SLMFeedbackCallbacks":
+        return self._callbacks_provider()
 
     def _require_editor_mode(self) -> None:
-        self._feedback._require_editor_mode()
+        if not self._editor_writes_allowed():
+            raise RuntimeError("Operation unavailable in Fast Config mode")
 
     def _section_changed(self,section_key: str) -> None:
-        self._feedback._section_changed(section_key)
+        self._callbacks.on_section_changed(section_key)
 
     def _warning(self,title: str,message: Any) -> None:
-        self._feedback._warning(title,message)
+        self._callbacks.on_warning(str(title),message)
 
     def _error(self,title: str,error: Exception) -> None:
-        self._feedback._error(title,error)
-
-    def feedback_orientation(self,section_key: str):
-        return self._feedback.feedback_orientation(section_key)
-
-    def _update_committed_analysis(
-        self,section_key: str,localization: "LocalizationResult | None"=None,
-    ) -> None:
-        self._feedback._update_committed_analysis(section_key,localization)
-
-    def _apply_resolution_operation(self,*args,**kwargs):
-        return self._feedback._apply_resolution_operation(*args,**kwargs)
-
-    def _resolve_position_reference(self,section_key: str):
-        return self._feedback._resolve_position_reference(section_key)
-
-    def request_measurement(self,*args,**kwargs):
-        return self._feedback.request_measurement(*args,**kwargs)
-
-    def feedback_measurement_metadata(self,section_key: str):
-        return self._feedback.feedback_measurement_metadata(section_key)
-
-    def commit_measurement(self,*args,**kwargs):
-        return self._feedback.commit_measurement(*args,**kwargs)
+        if not isinstance(error,Exception):
+            error = RuntimeError(str(error))
+        self._callbacks.on_error(str(title),error)

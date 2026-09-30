@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any,Callable,TYPE_CHECKING
 
 from ...core.cgh.execution.status import CGHResultState
 from ...core.measurement import ImageMeasurement
 from .contracts import AutomaticFeedbackState
 
 if TYPE_CHECKING:
-    from .service import SLMFeedbackService
+    from ...core.engine.runtime import SLMRuntime
+    from .contracts import SLMFeedbackCallbacks
 
 
 @dataclass
@@ -27,8 +28,95 @@ class _AutomaticRun:
 class AutomaticFeedbackRunner:
     """Sequence automatic intensity feedback using application services only."""
 
-    def __init__(self,service: "SLMFeedbackService") -> None:
-        self._feedback_service = service
+    def __init__(
+        self,
+        service: Any | None=None,
+        *,
+        runtime_provider: Callable[[], "SLMRuntime"] | None=None,
+        can_run: Callable[[],bool] | None=None,
+        unavailable_reason: Callable[[],str] | None=None,
+        is_cgh_computing: Callable[[str],bool] | None=None,
+        compute_adapted_cgh: Callable[...,bool] | None=None,
+        last_upload_error: Callable[[],Exception | None] | None=None,
+        callbacks_provider: Callable[[], "SLMFeedbackCallbacks"] | None=None,
+        request_measurement: Callable[...,None] | None=None,
+        cancel_measurement: Callable[[str],None] | None=None,
+        feedback_measurement_metadata: Callable[[str],dict[str,Any]] | None=None,
+        commit_measurement: Callable[...,bool] | None=None,
+        reuse_localization: Callable[...,Any] | None=None,
+        localize_and_commit: Callable[[str],None] | None=None,
+        apply_intensity_feedback: Callable[...,tuple[bool,Any]] | None=None,
+        report_error: Callable[[str,Exception],None] | None=None,
+        report_warning: Callable[[str,Any],None] | None=None,
+    ) -> None:
+        # Compatibility path for callers that historically passed the facade.
+        # Only concrete capabilities are retained; the facade is not stored.
+        if service is not None:
+            session = service.application_session
+            runtime_provider = runtime_provider or (lambda:session.runtime)
+            can_run = can_run or (lambda:bool(service.can_run_automatic_feedback))
+            unavailable_reason = unavailable_reason or (
+                lambda:str(service.automatic_feedback_unavailable_reason)
+            )
+            is_cgh_computing = is_cgh_computing or session.is_cgh_computing
+            compute_adapted_cgh = compute_adapted_cgh or session.compute_adapted_cgh
+            last_upload_error = last_upload_error or (lambda:session.last_upload_error)
+            callbacks = service._callbacks
+            callbacks_provider = callbacks_provider or (lambda:callbacks)
+            request_measurement = request_measurement or service.request_measurement
+            cancel_measurement = cancel_measurement or service.cancel_measurement
+            feedback_measurement_metadata = (
+                feedback_measurement_metadata or service.feedback_measurement_metadata
+            )
+            commit_measurement = commit_measurement or service.commit_measurement
+            reuse_localization = reuse_localization or service.reuse_localization
+            localize_and_commit = localize_and_commit or service.localize_and_commit
+            apply_intensity_feedback = (
+                apply_intensity_feedback or service.apply_intensity_feedback
+            )
+            report_error = report_error or service._error
+            report_warning = report_warning or service._warning
+
+        required = {
+            "runtime_provider":runtime_provider,
+            "can_run":can_run,
+            "unavailable_reason":unavailable_reason,
+            "is_cgh_computing":is_cgh_computing,
+            "compute_adapted_cgh":compute_adapted_cgh,
+            "last_upload_error":last_upload_error,
+            "callbacks_provider":callbacks_provider,
+            "request_measurement":request_measurement,
+            "cancel_measurement":cancel_measurement,
+            "feedback_measurement_metadata":feedback_measurement_metadata,
+            "commit_measurement":commit_measurement,
+            "reuse_localization":reuse_localization,
+            "localize_and_commit":localize_and_commit,
+            "apply_intensity_feedback":apply_intensity_feedback,
+            "report_error":report_error,
+            "report_warning":report_warning,
+        }
+        missing = [name for name,value in required.items() if value is None]
+        if missing:
+            raise TypeError(
+                "AutomaticFeedbackRunner missing capabilities: "
+                + ", ".join(missing)
+            )
+        self._runtime_provider = runtime_provider
+        self._can_run = can_run
+        self._unavailable_reason = unavailable_reason
+        self._is_cgh_computing = is_cgh_computing
+        self._compute_adapted_cgh = compute_adapted_cgh
+        self._last_upload_error = last_upload_error
+        self._callbacks_provider = callbacks_provider
+        self._request_measurement = request_measurement
+        self._cancel_measurement = cancel_measurement
+        self._feedback_measurement_metadata = feedback_measurement_metadata
+        self._commit_measurement = commit_measurement
+        self._reuse_localization = reuse_localization
+        self._localize_and_commit = localize_and_commit
+        self._apply_intensity_feedback = apply_intensity_feedback
+        self._report_error = report_error
+        self._report_warning = report_warning
         self._counter = 0
         self._run: _AutomaticRun | None = None
 
@@ -65,34 +153,34 @@ class AutomaticFeedbackRunner:
     ) -> bool:
         if self._run is not None:
             return False
-        if not self._feedback_service.can_run_automatic_feedback:
-            self._feedback_service._error(
+        if not self._can_run():
+            self._report_error(
                 "Automatic feedback unavailable",
-                RuntimeError(self._feedback_service.automatic_feedback_unavailable_reason),
+                RuntimeError(self._unavailable_reason()),
             )
             return False
         rounds = int(rounds)
         if rounds <= 0:
-            self._feedback_service._error(
+            self._report_error(
                 "Automatic feedback failed",ValueError("Rounds must be > 0"),
             )
             return False
         source = str(source or "").strip()
         if not source:
-            self._feedback_service._error(
+            self._report_error(
                 "Automatic feedback failed",
                 ValueError("Select a detector before starting automatic feedback."),
             )
             return False
-        if self._feedback_service.application_session.is_cgh_computing(section_key):
-            self._feedback_service._error(
+        if self._is_cgh_computing(section_key):
+            self._report_error(
                 "Automatic feedback failed",
                 RuntimeError("Wait for the current CGH computation to finish."),
             )
             return False
-        cgh_status = self._feedback_service.application_session.runtime.get_section_cgh_status(section_key)
+        cgh_status = self._runtime_provider().get_section_cgh_status(section_key)
         if cgh_status.result_state is not CGHResultState.CURRENT:
-            self._feedback_service._error(
+            self._report_error(
                 "Automatic feedback failed",
                 RuntimeError("Automatic feedback requires a current computed CGH."),
             )
@@ -116,7 +204,7 @@ class AutomaticFeedbackRunner:
             return
         run.stop_requested = True
         if run.stage == "acquiring":
-            self._feedback_service.cancel_measurement(run.section_key)
+            self._cancel_measurement(run.section_key)
             self._finish(cancelled=True)
             return
         self._emit_state()
@@ -125,7 +213,7 @@ class AutomaticFeedbackRunner:
         run = self._run
         if run is None:
             return
-        self._feedback_service.cancel_measurement(run.section_key)
+        self._cancel_measurement(run.section_key)
         self._run = None
         self._emit_state()
 
@@ -142,10 +230,10 @@ class AutomaticFeedbackRunner:
 
         run.stage = "acquiring"
         self._emit_state()
-        self._feedback_service.request_measurement(
+        self._request_measurement(
             run.section_key,
             run.source,
-            metadata=self._feedback_service.feedback_measurement_metadata(run.section_key),
+            metadata=self._feedback_measurement_metadata(run.section_key),
             on_result=lambda measurement,rid=run_id:self._on_measurement(rid,measurement),
             on_error=lambda error,rid=run_id:self._fail(rid,error),
         )
@@ -158,7 +246,7 @@ class AutomaticFeedbackRunner:
             self._finish(cancelled=True)
             return
         try:
-            previous_available = self._feedback_service.commit_measurement(
+            previous_available = self._commit_measurement(
                 run.section_key,measurement,reuse_previous_localization=False,
             )
             run.stage = "localizing"
@@ -166,18 +254,18 @@ class AutomaticFeedbackRunner:
             localized = False
             if run.reuse_previous_localization and previous_available:
                 try:
-                    self._feedback_service.reuse_localization(
+                    self._reuse_localization(
                         run.section_key,raise_errors=True,
                     )
                     localized = True
                 except Exception as error:
-                    self._feedback_service._warning(
+                    self._report_warning(
                         "Automatic feedback",
                         "Previous localization could not be reused; running "
                         "localization instead.\n%s" % error,
                     )
             if not localized:
-                self._feedback_service.localize_and_commit(run.section_key)
+                self._localize_and_commit(run.section_key)
 
             if run.stop_requested:
                 self._finish(cancelled=True)
@@ -185,7 +273,7 @@ class AutomaticFeedbackRunner:
 
             run.stage = "adapting"
             self._emit_state()
-            ok,_transition = self._feedback_service.apply_intensity_feedback(
+            ok,_transition = self._apply_intensity_feedback(
                 run.section_key,raise_errors=True,
             )
             if not ok:
@@ -193,7 +281,7 @@ class AutomaticFeedbackRunner:
 
             run.stage = "computing"
             self._emit_state()
-            started = self._feedback_service.application_session.compute_adapted_cgh(
+            started = self._compute_adapted_cgh(
                 run.section_key,
                 on_finished=lambda success,error,rid=run_id:
                     self._on_cgh_finished(rid,success,error),
@@ -210,7 +298,7 @@ class AutomaticFeedbackRunner:
         if run is None:
             return
         if not success:
-            if error is None or error is self._feedback_service.application_session.last_upload_error:
+            if error is None or error is self._last_upload_error():
                 self._finish(cancelled=False,failed=True)
             else:
                 self._fail(run_id,error)
@@ -224,14 +312,14 @@ class AutomaticFeedbackRunner:
     def _fail(self,run_id: int,error: Exception) -> None:
         if self._current(run_id) is None:
             return
-        self._feedback_service._error("Automatic feedback failed",error)
+        self._report_error("Automatic feedback failed",error)
         self._finish(cancelled=False,failed=True)
 
     def _finish(self,*,cancelled: bool,failed: bool=False) -> None:
         run = self._run
         if run is None:
             return
-        self._feedback_service.cancel_measurement(run.section_key)
+        self._cancel_measurement(run.section_key)
         self._run = None
         self._emit_state()
         if failed:
@@ -240,7 +328,7 @@ class AutomaticFeedbackRunner:
             text = "Automatic feedback stopped."
         else:
             text = "Automatic feedback completed (%d round(s))." % run.completed_rounds
-        self._feedback_service._callbacks.on_automatic_finished(run.section_key,text)
+        self._callbacks_provider().on_automatic_finished(run.section_key,text)
 
     def _current(self,run_id: int) -> _AutomaticRun | None:
         run = self._run
@@ -249,7 +337,7 @@ class AutomaticFeedbackRunner:
         return run
 
     def _emit_state(self) -> None:
-        self._feedback_service._callbacks.on_automatic_state_changed(self.state)
+        self._callbacks_provider().on_automatic_state_changed(self.state)
 
     @staticmethod
     def _progress(run: _AutomaticRun) -> str:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any,Mapping,Sequence,TYPE_CHECKING,TypedDict
+from typing import Any,Callable,Mapping,Sequence,TYPE_CHECKING,TypedDict
 
 import numpy as np
 
@@ -22,7 +22,8 @@ from ..position_reference_store import (
 from .component import FeedbackComponent
 
 if TYPE_CHECKING:
-    from .service import SLMFeedbackService
+    from ...core.engine.runtime import SLMRuntime
+    from .contracts import SLMFeedbackCallbacks
 
 
 _EDITABLE_POSITION_REFERENCE_LOCK_FIELDS = frozenset({
@@ -119,10 +120,24 @@ class PositionReferenceService(FeedbackComponent):
     """Own transient reference selection state and shared reference access."""
 
     def __init__(
-        self,feedback: "SLMFeedbackService",
+        self,
+        *,
+        runtime_provider: Callable[[], "SLMRuntime"],
+        callbacks_provider: Callable[[], "SLMFeedbackCallbacks"],
+        editor_writes_allowed: Callable[[], bool],
+        active_feedback_plane: Callable[[str],str | None],
+        feedback_orientation: Callable[[str],Any],
+        current_config_path: Callable[[],str | None],
         store: PositionReferenceStore | None=None,
     ) -> None:
-        super().__init__(feedback)
+        super().__init__(
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+        )
+        self._active_feedback_plane_provider = active_feedback_plane
+        self._feedback_orientation = feedback_orientation
+        self._current_config_path = current_config_path
         self._position_reference_store = store
         self._position_reference_selections: dict[
             tuple[str,str | None],PositionReferenceSelection
@@ -132,6 +147,9 @@ class PositionReferenceService(FeedbackComponent):
                 self._on_position_reference_store_changed
             )
 
+    def _active_feedback_plane(self,section_key: str) -> str | None:
+        return self._active_feedback_plane_provider(section_key)
+
     def _position_reference_key(
         self,section_key: str,
     ) -> tuple[str,str | None]:
@@ -139,7 +157,7 @@ class PositionReferenceService(FeedbackComponent):
         return section,self._active_feedback_plane(section)
 
     def _position_reference_change_reason(self,section_key: str) -> str:
-        status = self._application_session.runtime.get_section_feedback_status(section_key)
+        status = self._runtime.get_section_feedback_status(section_key)
         if bool(status.position_available):
             return (
                 "Clear the current position correction before changing its "
@@ -187,7 +205,7 @@ class PositionReferenceService(FeedbackComponent):
         )
         compatible = True
         compatibility_error = ""
-        inspection = self._application_session.runtime.get_section_feedback_inspection(section)
+        inspection = self._runtime.get_section_feedback_inspection(section)
         has_localization = bool(
             inspection.measurement is not None
             and inspection.measurement.localization is not None
@@ -204,7 +222,7 @@ class PositionReferenceService(FeedbackComponent):
             try:
                 localization = orient_localization(
                     inspection.measurement.localization,
-                    self.feedback_orientation(section),
+                    self._feedback_orientation(section),
                 )
                 fit_geometry = editable_position_reference_geometry(localization)
             except Exception:
@@ -251,14 +269,14 @@ class PositionReferenceService(FeedbackComponent):
         if editable_locks is None:
             editable_locks = previous.editable_locks
         if normalized_mode is PositionReferenceMode.EDITABLE and editable_geometry is None:
-            inspection = self._application_session.runtime.get_section_feedback_inspection(section)
+            inspection = self._runtime.get_section_feedback_inspection(section)
             measurement = inspection.measurement
             if measurement is None or measurement.localization is None:
                 raise RuntimeError(
                     "Accept a localization before editing its reference lattice"
                 )
             localization = orient_localization(
-                measurement.localization,self.feedback_orientation(section),
+                measurement.localization,self._feedback_orientation(section),
             )
             editable_geometry = editable_position_reference_geometry(localization)
         selection = PositionReferenceSelection(
@@ -289,14 +307,14 @@ class PositionReferenceService(FeedbackComponent):
         reason = self._position_reference_change_reason(section)
         if reason:
             raise RuntimeError(reason)
-        inspection = self._application_session.runtime.get_section_feedback_inspection(section)
+        inspection = self._runtime.get_section_feedback_inspection(section)
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
             raise RuntimeError(
                 "Accept a localization before fitting its reference lattice"
             )
         localization = orient_localization(
-            measurement.localization,self.feedback_orientation(section),
+            measurement.localization,self._feedback_orientation(section),
         )
         previous = self.position_reference_selection(section)
         geometry = previous.editable_geometry
@@ -326,15 +344,15 @@ class PositionReferenceService(FeedbackComponent):
         plane = self._active_feedback_plane(section)
         if plane is None:  # guarded above; retained for static clarity.
             raise RuntimeError("Select a measurement plane first")
-        measurement = self._application_session.runtime.get_section_feedback_inspection(
+        measurement = self._runtime.get_section_feedback_inspection(
             section
         ).measurement
         if measurement is None or measurement.localization is None:
             raise RuntimeError("Accept a localization before creating a reference")
         localization = orient_localization(
-            measurement.localization,self.feedback_orientation(section),
+            measurement.localization,self._feedback_orientation(section),
         )
-        config_path = self._application_session.current_config_path
+        config_path = self._current_config_path()
         return PositionReference(
             name=name,
             plane_name=plane,
@@ -343,14 +361,14 @@ class PositionReferenceService(FeedbackComponent):
             image_shape=measurement.acquisition.image.shape,
             detector_name=measurement.acquisition.detector,
             metadata={
-                "source_slm_key":self._application_session.runtime.identity.key,
-                "source_slm_serial":self._application_session.runtime.identity.serial_number,
+                "source_slm_key":self._runtime.identity.key,
+                "source_slm_serial":self._runtime.identity.serial_number,
                 "source_section":section,
                 "source_target_type":localization.target_type,
                 "source_config_name":(
                     None if not config_path else Path(config_path).name
                 ),
-                "feedback_orientation":self.feedback_orientation(section).value,
+                "feedback_orientation":self._feedback_orientation(section).value,
             },
         )
 
@@ -412,15 +430,15 @@ class PositionReferenceService(FeedbackComponent):
     ) -> PositionReferencePreview | None:
         """Return detector-space/kxy preview, or None when unavailable or incompatible."""
         try:
-            status = self._application_session.runtime.get_section_feedback_status(section_key)
+            status = self._runtime.get_section_feedback_status(section_key)
             if not status.localization_available:
                 return None
-            inspection = self._application_session.runtime.get_section_feedback_inspection(section_key)
+            inspection = self._runtime.get_section_feedback_inspection(section_key)
             measurement = inspection.measurement
             if measurement is None or measurement.localization is None:
                 return None
             localization = orient_localization(
-                measurement.localization,self.feedback_orientation(section_key),
+                measurement.localization,self._feedback_orientation(section_key),
             )
             reference_positions,metadata = self._resolve_position_reference(section_key)
             reference = (
@@ -428,9 +446,9 @@ class PositionReferenceService(FeedbackComponent):
                 if reference_positions is None
                 else np.asarray(reference_positions,dtype=np.float64)
             )
-            analysis = self._application_session.runtime.compute_section_feedback_position_analysis(
+            analysis = self._runtime.compute_section_feedback_position_analysis(
                 section_key,
-                orientation=self.feedback_orientation(section_key),
+                orientation=self._feedback_orientation(section_key),
                 reference_positions_px=reference_positions,
             )
             selection = self.position_reference_selection(section_key)
@@ -456,7 +474,7 @@ class PositionReferenceService(FeedbackComponent):
                     None if editable_geometry is None else editable_geometry.to_dict()
                 ),
                 "ideal_positions_kxy":np.asarray(
-                    self._application_session.runtime.get_section_fov_position_context(
+                    self._runtime.get_section_fov_position_context(
                         section_key
                     )["ideal_positions_kxy"]
                 ),
@@ -475,12 +493,12 @@ class PositionReferenceService(FeedbackComponent):
     ) -> tuple[np.ndarray | None,dict[str,Any]]:
         """Resolve oriented detector coordinates and provenance; None selects global fit."""
         section = str(section_key)
-        inspection = self._application_session.runtime.get_section_feedback_inspection(section)
+        inspection = self._runtime.get_section_feedback_inspection(section)
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
             raise RuntimeError("Accept a localization before using position feedback")
         localization = orient_localization(
-            measurement.localization,self.feedback_orientation(section),
+            measurement.localization,self._feedback_orientation(section),
         )
         selection = self.position_reference_selection(section)
         if selection.mode is PositionReferenceMode.GLOBAL_FIT:
@@ -532,7 +550,7 @@ class PositionReferenceService(FeedbackComponent):
         }
 
     def _position_reference_create_reason(self,section_key: str) -> str:
-        status = self._application_session.runtime.get_section_feedback_status(section_key)
+        status = self._runtime.get_section_feedback_status(section_key)
         if FeedbackCapability.POSITION_CORRECTION not in set(status.capabilities):
             return "Position references are unavailable for this target."
         change_reason = self._position_reference_change_reason(section_key)
@@ -542,7 +560,7 @@ class PositionReferenceService(FeedbackComponent):
             return "Position-reference storage is unavailable."
         if self._active_feedback_plane(section_key) is None:
             return "Select a measurement plane before creating a position reference."
-        inspection = self._application_session.runtime.get_section_feedback_inspection(section_key)
+        inspection = self._runtime.get_section_feedback_inspection(section_key)
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
             return "Accept a localization before creating a position reference."
@@ -551,7 +569,7 @@ class PositionReferenceService(FeedbackComponent):
         return ""
 
     def _on_position_reference_store_changed(self) -> None:
-        runtime = self._application_session.runtime
+        runtime = self._runtime
         for section in tuple(runtime.section_keys):
             key = self._position_reference_key(section)
             selection = self._position_reference_selections.get(key)
@@ -576,7 +594,7 @@ class PositionReferenceService(FeedbackComponent):
         if selection is None or selection.mode is not PositionReferenceMode.EDITABLE:
             return
         oriented = orient_localization(
-            localization,self.feedback_orientation(section_key),
+            localization,self._feedback_orientation(section_key),
         )
         self._position_reference_selections[key] = PositionReferenceSelection(
             mode=PositionReferenceMode.EDITABLE,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any,Mapping,TYPE_CHECKING
+from typing import Any,Callable,Mapping,TYPE_CHECKING
 
 from ...core.cgh.execution.status import CGHResultState
 from ...core.cgh.feedback import IntensityAnalysis
@@ -13,11 +13,31 @@ from .component import FeedbackComponent
 from .contracts import FeedbackParameterUpdateResult
 
 if TYPE_CHECKING:
-    from .service import SLMFeedbackService
+    from ...core.engine.runtime import SLMRuntime
+    from .contracts import SLMFeedbackCallbacks
 
 
 class LocalizationService(FeedbackComponent):
     """Own localization computation/commit policy without owning acquisition."""
+
+    def __init__(
+        self,
+        *,
+        runtime_provider: Callable[[], "SLMRuntime"],
+        callbacks_provider: Callable[[], "SLMFeedbackCallbacks"],
+        editor_writes_allowed: Callable[[], bool],
+        feedback_orientation: Callable[[str],Any],
+        update_committed_analysis: Callable[[str,LocalizationResult | None],None],
+        refresh_editable_reference: Callable[[str,LocalizationResult],None],
+    ) -> None:
+        super().__init__(
+            runtime_provider=runtime_provider,
+            callbacks_provider=callbacks_provider,
+            editor_writes_allowed=editor_writes_allowed,
+        )
+        self._feedback_orientation = feedback_orientation
+        self._update_committed_analysis_callback = update_committed_analysis
+        self._refresh_editable_reference = refresh_editable_reference
 
     def commit_measurement(
         self,
@@ -27,7 +47,7 @@ class LocalizationService(FeedbackComponent):
         reuse_previous_localization: bool=False,
     ) -> bool:
         self._require_editor_mode()
-        runtime = self._application_session.runtime
+        runtime = self._runtime
         previous_available = bool(
             runtime.get_section_feedback_status(
                 section_key
@@ -61,14 +81,14 @@ class LocalizationService(FeedbackComponent):
         self,section_key: str,parameters: Mapping[str,Any],
     ) -> tuple[LocalizationResult,IntensityAnalysis | None]:
         self.validate_target_hint_use(section_key,parameters)
-        runtime = self._application_session.runtime
+        runtime = self._runtime
         candidate = runtime.compute_section_feedback_localization_candidate(
             section_key,parameters,
         )
         metrics = None
         try:
             metrics = runtime.compute_section_feedback_intensity_analysis(
-                section_key,candidate,orientation=self.feedback_orientation(section_key),
+                section_key,candidate,orientation=self._feedback_orientation(section_key),
             )
         except Exception as error:
             self._warning(
@@ -85,8 +105,8 @@ class LocalizationService(FeedbackComponent):
         candidate = infer_missing_localization(localization)
         metrics = None
         try:
-            metrics = self._application_session.runtime.compute_section_feedback_intensity_analysis(
-                section_key,candidate,orientation=self.feedback_orientation(section_key),
+            metrics = self._runtime.compute_section_feedback_intensity_analysis(
+                section_key,candidate,orientation=self._feedback_orientation(section_key),
             )
         except Exception as error:
             self._warning(
@@ -107,14 +127,12 @@ class LocalizationService(FeedbackComponent):
             self._require_editor_mode()
             self.require_current_cgh_for_localization_commit(section_key)
             self.validate_target_hint_use(section_key,parameters)
-            runtime = self._application_session.runtime
+            runtime = self._runtime
             runtime.commit_section_feedback_localization(
                 section_key,localization,parameters,
             )
-            self._feedback._references.refresh_editable_geometry_after_localization(
-                section_key,localization,
-            )
-            self._update_committed_analysis(section_key,localization)
+            self._refresh_editable_reference(section_key,localization)
+            self._update_committed_analysis_callback(section_key,localization)
             self._section_changed(section_key)
             return True
         except Exception as error:
@@ -129,10 +147,10 @@ class LocalizationService(FeedbackComponent):
         try:
             self._require_editor_mode()
             self.require_current_cgh_for_localization_commit(section_key)
-            localization = self._application_session.runtime.reuse_section_feedback_localization(
+            localization = self._runtime.reuse_section_feedback_localization(
                 section_key
             )
-            self._update_committed_analysis(section_key,localization)
+            self._update_committed_analysis_callback(section_key,localization)
             self._section_changed(section_key)
             return localization
         except Exception as error:
@@ -142,7 +160,7 @@ class LocalizationService(FeedbackComponent):
             return None
 
     def localize_and_commit(self,section_key: str) -> None:
-        status = self._application_session.runtime.get_section_feedback_status(section_key)
+        status = self._runtime.get_section_feedback_status(section_key)
         parameters = dict(status.localization_params)
         candidate,_metrics = self.localization_candidate(section_key,parameters)
         self.accept_localization(
@@ -158,7 +176,7 @@ class LocalizationService(FeedbackComponent):
         localization: LocalizationResult | None=None,
     ) -> FeedbackParameterUpdateResult:
         self._require_editor_mode()
-        runtime = self._application_session.runtime
+        runtime = self._runtime
         changed = runtime.update_section_feedback_parameters(
             section_key,group,dict(changes or {}),
         )
@@ -168,7 +186,7 @@ class LocalizationService(FeedbackComponent):
                 try:
                     candidate_analysis = runtime.compute_section_feedback_intensity_analysis(
                         section_key,localization,
-                        orientation=self.feedback_orientation(section_key),
+                        orientation=self._feedback_orientation(section_key),
                     )
                 except Exception as error:
                     self._warning(
@@ -178,21 +196,21 @@ class LocalizationService(FeedbackComponent):
             elif runtime.get_section_feedback_status(
                 section_key
             ).localization_available:
-                self._update_committed_analysis(section_key)
+                self._update_committed_analysis_callback(section_key,None)
         self._section_changed(section_key)
         return FeedbackParameterUpdateResult(
             changed=bool(changed),candidate_analysis=candidate_analysis,
         )
 
     def localization_context(self,section_key: str) -> Mapping[str,Any]:
-        runtime = self._application_session.runtime
+        runtime = self._runtime
         status = runtime.get_section_cgh_status(section_key)
         if status.result_state is not CGHResultState.CURRENT:
             return {}
         return runtime.get_section_feedback_localization_context(section_key)
 
     def require_current_cgh_for_localization_commit(self,section_key: str) -> None:
-        status = self._application_session.runtime.get_section_cgh_status(section_key)
+        status = self._runtime.get_section_cgh_status(section_key)
         if status.result_state is CGHResultState.MISSING:
             raise RuntimeError(
                 "No CGH has been computed yet. Compute the CGH before accepting "
@@ -216,7 +234,7 @@ class LocalizationService(FeedbackComponent):
         )
         if not uses_target:
             return
-        status = self._application_session.runtime.get_section_cgh_status(section_key)
+        status = self._runtime.get_section_cgh_status(section_key)
         if status.result_state is not CGHResultState.CURRENT:
             raise RuntimeError(
                 "Target localization guidance requires a current CGH result. "
