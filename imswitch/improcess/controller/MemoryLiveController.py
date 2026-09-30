@@ -81,10 +81,18 @@ class MemoryLiveController(ImProcessWidgetController):
             )
             return
         for datasetName in names:
-            self._processDataset(name, datasetName, container, filePath, reconstructor, params)
+            self._processDataset(
+                name, datasetName, container, reconstructor, params, filePath=filePath
+            )
 
-    def _processDataset(self, name, datasetName, container, filePath, reconstructor,
-                        params: dict) -> None:
+    def _processDataset(self, name, datasetName, container, reconstructor, params: dict,
+                        *, filePath=None) -> None:
+        """Reconstruct one dataset of an open memory recording.
+
+        ``filePath`` is where the recording is planned to be saved, when
+        known; a recording that never touched disk has none, and the result
+        then records a source that was not persisted.
+        """
         try:
             dataObj = DataObj(name, datasetName, path=filePath, file=container)
 
