@@ -158,3 +158,16 @@ def test_an_inner_route_can_pass_what_it_captures_to_the_outer_one(restore_strea
         with routeThisThreadsOutputTo(Tee(captured, currentRoute())):
             print("seen by both")
     assert outer.getvalue() == captured.getvalue() == "seen by both\n"
+
+
+def test_a_route_to_none_suspends_routing_for_its_block(restore_streams):
+    foreign = io.StringIO()
+    sys.stdout = foreign
+    captured = io.StringIO()
+    with routeThisThreadsOutputTo(captured):
+        print("captured")
+        with routeThisThreadsOutputTo(None):
+            print("belongs on the real stream")
+        print("captured again")
+    assert captured.getvalue() == "captured\ncaptured again\n"
+    assert foreign.getvalue() == "belongs on the real stream\n"

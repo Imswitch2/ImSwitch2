@@ -125,16 +125,38 @@ class PythonStepProcessor(Processor):
             if "ports" in values:
                 ports.setText(str(values["ports"]))
 
+        streamed = []
+
+        def before_run():
+            """A run is starting: clear the pane for what it prints."""
+            streamed.clear()
+            output.clear()
+
+        def output_appended(text):
+            """The running code printed ``text``: show it now."""
+            streamed.append(text)
+            output.moveCursor(QtGui.QTextCursor.End)
+            output.insertPlainText(text)
+            output.moveCursor(QtGui.QTextCursor.End)
+
         def after_run(results, failures):
-            """Show what the last run printed and why it failed, if it did."""
-            shown = []
-            for result in results:
-                printed = ((getattr(result, "metadata", None) or {}).get("python_step") or {}).get("stdout")
-                # Every output of one run carries the same text: show it once.
-                if printed and printed not in shown:
-                    shown.append(printed)
-            shown.extend(str(message) for _input, message in failures)
-            output.setPlainText("\n".join(part.rstrip("\n") for part in shown))
+            """Show what the last run printed and why it failed, if it did.
+
+            What was streamed while it ran stays (a failure or a cancellation
+            adds its message below it); a run that was not streamed, inline or
+            headless, takes what it printed from the results' metadata.
+            """
+            printed = "".join(streamed)
+            if not printed:
+                for result in results:
+                    text = ((getattr(result, "metadata", None) or {}).get("python_step") or {}).get("stdout")
+                    # Every output of one run carries the same text: show it once.
+                    if text and text != printed:
+                        printed = text
+            shown = [printed.rstrip("\n")] if printed else []
+            shown.extend(str(message).rstrip("\n") for _input, message in failures)
+            output.setPlainText("\n".join(shown))
+            streamed.clear()
 
         def say(text):
             output.setPlainText(text)
@@ -184,6 +206,8 @@ class PythonStepProcessor(Processor):
 
         widget.get_values = get_values
         widget.set_values = set_values
+        widget.before_run = before_run
+        widget.output_appended = output_appended
         widget.after_run = after_run
         widget.loadButton = load_button
         widget.saveButton = save_button

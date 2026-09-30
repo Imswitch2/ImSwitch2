@@ -56,6 +56,29 @@ class _CallbackSink:
         pass
 
 
+class _UnroutedLogger:
+    """A logger whose records go to the real stream even while the run's output is captured.
+
+    The framework logs a failed run (``logger.exception``) from the run's own
+    thread, and the log handler writes to ``stderr``: captured, the traceback
+    would appear in the panel's output, above the one-line error the panel shows.
+    """
+
+    def __init__(self, logger):
+        self._logger = logger
+
+    def __getattr__(self, name):
+        target = getattr(self._logger, name)
+        if not callable(target):
+            return target
+
+        def call(*args, **kwargs):
+            with routeThisThreadsOutputTo(None):
+                return target(*args, **kwargs)
+
+        return call
+
+
 def execute_run(processor, inputs, params: dict, logger, *, token=None, on_output=None) -> RunOutcome:
     """:func:`~imswitch.improcess.processors.run.run_processor` with cancel and output.
 
@@ -77,7 +100,10 @@ def execute_run(processor, inputs, params: dict, logger, *, token=None, on_outpu
             else contextlib.nullcontext()
         )
         with routed:
-            results, failures = run_processor(processor, inputs, params, logger)
+            results, failures = run_processor(
+                processor, inputs, params,
+                _UnroutedLogger(logger) if on_output is not None else logger,
+            )
     except OperationCancelled:
         return RunOutcome(cancelled=True)
     finally:

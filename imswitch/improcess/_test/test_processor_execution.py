@@ -192,3 +192,21 @@ def test_the_python_step_streams_while_it_runs_and_is_cancelled_by_its_token():
         thread.join(0.1)
     assert not thread.is_alive()
     assert holder == [RunOutcome(cancelled=True)]
+
+
+def test_the_frameworks_own_failure_log_is_not_captured_into_the_streamed_output(capsys):
+    import sys
+
+    class LoudLogger:
+        def exception(self, message, *args):
+            print("LOG:", message % args if args else message, file=sys.stderr)
+
+    def boom(result, params):
+        print("the processor's own line")
+        raise RuntimeError("no good")
+
+    chunks = []
+    outcome = execute_run(_Processor(boom), [_input()], {}, LoudLogger(), on_output=chunks.append)
+    assert "".join(chunks) == "the processor's own line\n"         # the log line is not in it
+    assert "LOG:" in capsys.readouterr().err                       # it went where logs go
+    assert [m for _i, m in outcome.failures] == ["no good"]

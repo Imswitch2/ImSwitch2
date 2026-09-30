@@ -46,7 +46,9 @@ class ThreadRoutingStream:
             return self._sinks.get(threadIdent)
 
     def _target(self):
-        return self._sinks.get(threading.get_ident(), self._fallback)
+        # A thread routed to ``None`` is explicitly not routed: the real stream.
+        sink = self._sinks.get(threading.get_ident())
+        return self._fallback if sink is None else sink
 
     def write(self, text):
         return self._target().write(text)
@@ -72,7 +74,9 @@ class routeThisThreadsOutputTo:
 
     Re-entrant: a route opened inside another one (a script run inside a
     processor run, both capturing) puts the outer sink back when it ends, and
-    :func:`currentRoute` lets the inner one pass what it captures on to it."""
+    :func:`currentRoute` lets the inner one pass what it captures on to it.
+    ``routeThisThreadsOutputTo(None)`` suspends routing for the block, so text
+    that belongs on the real stream (a log record) is not captured."""
 
     def __init__(self, sink):
         self._sink = sink
