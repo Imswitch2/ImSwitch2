@@ -356,7 +356,9 @@ class Processor(ABC):
         """
         Return the parameter editor widget shown in the processing chain panel.
         
-        Should expose a `get_values() -> dict` method.
+        Should expose a `get_values() -> dict` method. A widget may also declare
+        `after_run(results, failures)`, which the panel calls once a run has ended
+        (to show what the processor printed, or why it failed).
         """
         ...
     

@@ -20,6 +20,26 @@ _restriction_for = restriction_for
 _summary = summarize
 
 
+def notify_param_widget(panel, results, failures, logger) -> None:
+    """Tell a panel's parameter widget how the run went, if it asks to know.
+
+    Opt-in, like ``setResult``: a widget that declares ``after_run(results,
+    failures)`` is handed both lists as soon as the run ends, so it can show
+    what a script printed or why it failed. A widget that raises here must not
+    stop the results being published.
+    """
+    hook = getattr(getattr(panel, "paramWidget", None), "after_run", None)
+    if not callable(hook):
+        return
+    try:
+        hook(results, failures)
+    except Exception:
+        logger.exception(
+            "The parameter widget of %s failed in after_run",
+            getattr(getattr(panel, "processor", None), "id", "a processor"),
+        )
+
+
 class ResultProcessorController(ImProcessWidgetController):
     """Apply a registered Processor to the widget-selected result input(s)."""
 
@@ -55,6 +75,7 @@ class ResultProcessorController(ImProcessWidgetController):
             return
 
         results, failures = run_processor(processor, inputs, params, self._logger)
+        notify_param_widget(self._widget, results, failures, self._logger)
 
         if not results:
             self._widget.setStatusText(

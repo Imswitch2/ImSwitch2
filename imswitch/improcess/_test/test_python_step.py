@@ -552,3 +552,97 @@ def test_a_two_input_step_sees_both_inputs(registry, tmp_path):
     with run(workflow, registry=registry, out_dir=tmp_path / "out") as report:
         assert report.ports_of("both") == ["out"]          # one run over both, not one per input
         assert report.result("both").data[:, 0, 0].tolist() == [0, 2, 4, 6]
+
+
+# -- the panel ----------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def qapp():
+    from qtpy import QtWidgets
+
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+class _Signal:
+    def __init__(self):
+        self.emitted = []
+
+    def emit(self, *args):
+        self.emitted.append(args)
+
+
+class _Logger:
+    def __init__(self):
+        self.exceptions = []
+
+    def exception(self, *args):
+        self.exceptions.append(args)
+
+
+def _panel(widget):
+    """``ResultProcessorController.runProcessor`` over a real panel, the way the
+    existing controller tests bind it, with the communication channel stubbed."""
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.ResultProcessorController import ResultProcessorController
+
+    comm = SimpleNamespace(sigResultProduced=_Signal(), sigCurrentResultChanged=_Signal())
+    controller = SimpleNamespace(_widget=widget, _commChannel=comm, _logger=_Logger())
+    return ResultProcessorController.runProcessor.__get__(controller), controller
+
+
+def _run_from_panel(widget, run_processor, code, ports="out"):
+    widget.paramWidget.codeEditor.setPlainText(code)
+    widget.paramWidget.portsEdit.setText(ports)
+    run_processor([_stack()], widget.parameterValues())
+
+
+def test_the_panel_shows_what_was_printed_then_the_error_then_clears(qapp):
+    from imswitch.improcess.view.ResultProcessorWidget import ResultProcessorWidget
+
+    widget = ResultProcessorWidget(PythonStepProcessor())
+    run_processor, controller = _panel(widget)
+    pane = widget.paramWidget.outputPane
+
+    _run_from_panel(widget, run_processor, 'print("shape", data.shape)\nprint("done")\nout = data\n')
+    assert pane.toPlainText() == "shape (12, 4, 4)\ndone"
+    assert [args[1] for args in controller._commChannel.sigResultProduced.emitted] == ["rec (out)"]
+    assert widget.statusLabel.text() == "Created rec (out)."
+
+    _run_from_panel(widget, run_processor, "x = 1\ny = x + undefined_name\nout = y\n")
+    assert pane.toPlainText() == "line 2: NameError: name 'undefined_name' is not defined"
+    assert widget.statusLabel.text() == "line 2: NameError: name 'undefined_name' is not defined"
+    assert len(controller._commChannel.sigResultProduced.emitted) == 1      # nothing new published
+
+    _run_from_panel(widget, run_processor, "out = data\n")
+    assert pane.toPlainText() == ""                                         # a good run clears the error
+
+
+def test_the_panel_shows_a_syntax_error_and_a_bad_port_name(qapp):
+    from imswitch.improcess.view.ResultProcessorWidget import ResultProcessorWidget
+
+    widget = ResultProcessorWidget(PythonStepProcessor())
+    run_processor, _controller = _panel(widget)
+    _run_from_panel(widget, run_processor, "a = 1\nb = (\n")
+    assert "SyntaxError" in widget.paramWidget.outputPane.toPlainText()
+    _run_from_panel(widget, run_processor, "out = data\n", ports="a b")
+    assert "'a b'" in widget.paramWidget.outputPane.toPlainText()
+
+
+def test_a_widget_whose_after_run_raises_does_not_stop_publishing(qapp):
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.ResultProcessorController import notify_param_widget
+
+    def broken(results, failures):
+        raise RuntimeError("widget bug")
+
+    logger = _Logger()
+    panel = SimpleNamespace(processor=PythonStepProcessor(), paramWidget=SimpleNamespace(after_run=broken))
+    notify_param_widget(panel, [], [], logger)             # does not raise
+    assert len(logger.exceptions) == 1 and "python" in logger.exceptions[0][1:]
+
+    # and a widget that declares no hook, or no parameter widget at all, is left alone
+    notify_param_widget(SimpleNamespace(paramWidget=SimpleNamespace()), [], [], logger)
+    notify_param_widget(SimpleNamespace(), [], [], logger)
+    assert len(logger.exceptions) == 1

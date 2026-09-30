@@ -1864,6 +1864,17 @@ Widget agreement (checked)
     Machine-dependent widget defaults (a model path found at import time)
     go in ``default_params_volatile`` so the value comparison skips them.
 
+Widget hooks (optional)
+    Methods the processor panel calls on the widget ``make_param_widget``
+    returns, when it declares them.  ``setResult(result, rois)`` is called
+    whenever the selected result changes, for a widget whose parameters
+    depend on its input (a row per axis, say).  ``after_run(results,
+    failures)`` is called once a run from the panel has ended, with the
+    results it produced and the ``(input, message)`` pairs of the inputs it
+    failed on, so the widget can show what the run printed or why it
+    failed; an exception raised there is logged and does not stop the
+    results being published.
+
 ``extra_param_keys`` (optional)
     Keys a workflow may set beyond the defaults, for a setting no widget
     default names (MoNaLISA's ``scan_params``).  It only *permits* a key; it
