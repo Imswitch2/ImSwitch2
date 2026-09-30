@@ -322,72 +322,6 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             widget = None
         self._paramWidget = widget
         self._widget.setParameterWidget(widget)
-        self._wireFindPattern(widget)
-
-    def _wireFindPattern(self, widget) -> None:
-        """Connect a *Find pattern* action the parameter widget offers.
-
-        MoNaLISA's widget has one. In ImProcess it localizes on the loaded
-        data; here there is no file, so it localizes on what the detector
-        shows right now (the live view's latest frame), which is what a
-        user does before a scan: point at the sample, find the grid, check
-        it, then run.
-        """
-        accessor = getattr(widget, 'find_pattern_action', None)
-        if not callable(accessor):
-            return
-        try:
-            action = accessor()
-            action.sigActivated.connect(lambda *_: self.findPatternOnLatestFrame())
-        except Exception as exc:
-            self._logger.debug(f'No Find pattern action to connect: {exc}')
-
-    def findPatternOnLatestFrame(self) -> bool:
-        """Localize the illumination grid on the detector's latest frame."""
-        setter = getattr(self._paramWidget, 'set_pattern_params', None)
-        if not callable(setter):
-            return False
-        detectorName = self._widget.selectedDetector()
-        manager = self._master.detectorsManager
-        if not detectorName:
-            try:
-                detectorName = manager.getCurrentDetectorName()
-            except Exception:
-                detectorName = None
-        if not detectorName:
-            self._widget.setStatusText('No detector to read a frame from')
-            return False
-        # The shared read: a raw SDK read would steal frames from the chunk
-        # consumers (a recording, this tool's own run) that may be active.
-        try:
-            frame = manager.execOn(detectorName, lambda d: d.getLatestFrameShared())
-        except Exception as exc:
-            self._widget.setStatusText(f'Could not read a frame from "{detectorName}": {exc}')
-            return False
-        if frame is None or np.ndim(frame) < 2:
-            self._widget.setStatusText(f'"{detectorName}" has no frame yet; start the live view')
-            return False
-        transform = self._frameTransformFor(detectorName)
-        if transform is not None:
-            frame = transform(frame)
-        from imswitch.improcess.reconstructors.monalisa.localizer import (
-            PatternNotFoundError,
-            localize_pattern,
-            pattern_params_of,
-        )
-        try:
-            loc, _index = localize_pattern(np.asarray(frame), max_frames=1)
-        except PatternNotFoundError as exc:
-            self._logger.warning(f'Find pattern: {exc}')
-            self._widget.setStatusText(
-                f'No illumination grid found in the latest frame of "{detectorName}"'
-            )
-            return False
-        pattern = pattern_params_of(loc)
-        setter(pattern['row_offset'], pattern['col_offset'],
-               pattern['row_period'], pattern['col_period'])
-        self._widget.setStatusText(self._describePattern(pattern, 'Pattern found on the latest frame'))
-        return True
 
     @staticmethod
     def _describePattern(pattern: dict, lead: str) -> str:
@@ -858,7 +792,13 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
         self._scheduleRender()
 
     def _onLivePatternLocalized(self, pattern) -> None:
-        """Show the grid the MoNaLISA session assembles on in its parameter widget."""
+        """Show the grid this run localized afresh on its first stack.
+
+        Written into the hosted parameter widget's Pattern fields and the
+        status line so the run's own localization is what is on screen. The
+        fields are display only here: a live run never reads them, it
+        localizes on its own data every time.
+        """
         setter = getattr(self._paramWidget, 'set_pattern_params', None)
         try:
             values = {key: float(pattern[key]) for key in
@@ -872,7 +812,7 @@ class LiveReconController(ImConWidgetController, StatefulComponentMixin):
             except Exception as exc:
                 self._logger.debug(f'Could not show the localized pattern: {exc}')
         source = str(pattern.get('source', 'auto')) if hasattr(pattern, 'get') else 'auto'
-        lead = ('Pattern localized on the first frame' if source == 'auto'
+        lead = ('Pattern localized afresh on the first stack' if source == 'auto'
                 else 'Pattern taken from the parameters')
         self._logger.info(self._describePattern(values, lead))
         self._widget.setStatusText(self._describePattern(values, lead))

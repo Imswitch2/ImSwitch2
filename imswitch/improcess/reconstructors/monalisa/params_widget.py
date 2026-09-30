@@ -40,15 +40,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
              )},
             {'name': 'CPU/GPU', 'type': 'list', 'values': ['GPU', 'CPU']},
             {'name': 'Pattern', 'type': 'group', 'children': [
-                {'name': 'Auto-detect pattern', 'type': 'bool', 'value': True,
-                 'tip': (
-                     'Localize the illumination grid on the first raw frame of '
-                     'the data at every reconstruction, live or offline, and '
-                     'show it below. Off: reconstruct with the values below as '
-                     'they are (Find pattern fills them from the current data).'
-                 )},
-                {'name': 'Find pattern', 'type': 'action',
-                 'tip': 'Localize the grid on the current data and fill in the values below'},
                 {'name': 'Row-offset', 'type': 'float', 'value': 9.89, 'limits': (0, 9999)},
                 {'name': 'Col-offset', 'type': 'float', 'value': 10.4, 'limits': (0, 9999)},
                 {'name': 'Row-period', 'type': 'float', 'value': 11.05, 'limits': (0, 9999)},
@@ -145,7 +136,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             'pixel_size_nm': self.p.param('Pixel size').value(),
             'reconstruction_method': self.p.param('Reconstruction method').value(),
             'device': self.p.param('CPU/GPU').value(),
-            'auto_detect_pattern': pattern_pars.param('Auto-detect pattern').value(),
             'row_offset': pattern_pars.param('Row-offset').value(),
             'col_offset': pattern_pars.param('Col-offset').value(),
             'row_period': pattern_pars.param('Row-period').value(),
@@ -172,26 +162,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         pattern_pars.param('Col-offset').setValue(col_offset)
         pattern_pars.param('Row-period').setValue(row_period)
         pattern_pars.param('Col-period').setValue(col_period)
-
-    def get_pattern_params(self) -> dict:
-        """The grid as shown: row/col offset and period in pixels."""
-        pattern_pars = self.p.param('Pattern')
-        return {
-            'row_offset': pattern_pars.param('Row-offset').value(),
-            'col_offset': pattern_pars.param('Col-offset').value(),
-            'row_period': pattern_pars.param('Row-period').value(),
-            'col_period': pattern_pars.param('Col-period').value(),
-        }
-
-    def get_auto_detect_pattern(self) -> bool:
-        return bool(self.p.param('Pattern').param('Auto-detect pattern').value())
-
-    def set_auto_detect_pattern(self, enabled: bool) -> None:
-        self.p.param('Pattern').param('Auto-detect pattern').setValue(bool(enabled))
-
-    def find_pattern_action(self):
-        """The *Find pattern* action parameter, for a host to connect."""
-        return self.p.param('Pattern').param('Find pattern')
 
     def setOutputPixelSize(self, output_pixel_size_nm: tuple[float, float] | None) -> None:
         """Update the read-only output-pixel-size label.

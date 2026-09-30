@@ -64,6 +64,7 @@ class ImProcessMainController(MainController):
         # Bridge live results to imcontrol if enabled
         self.__commChannel.sigResultProduced.connect(self._onResultProduced)
         self.__commChannel.sigLiveResultUpdated.connect(self._onLiveResultUpdated)
+        self.__commChannel.sigLivePatternLocalized.connect(self._onLivePatternLocalized)
         # A result another module made (ImControl's live reconstruction tool)
         # joins the reconstruction list like one of ImProcess's own.
         external = getattr(self.__moduleCommChannel, 'sigProcessingResultProduced', None)
@@ -955,6 +956,20 @@ class ImProcessMainController(MainController):
         self.__commChannel.sigResultProduced.emit(result, name)
         self.__commChannel.sigCurrentResultChanged.emit(result)
         self.__commChannel.sigStatusMessage.emit(f'Received "{name}" from ImControl')
+
+    def _onLivePatternLocalized(self, pattern):
+        """Say which grid a live MoNaLISA run localized, in the status bar and the log."""
+        try:
+            text = (
+                f"Live MoNaLISA: pattern localized on the first stack: period "
+                f"{float(pattern['row_period']):.2f} x {float(pattern['col_period']):.2f} px, "
+                f"offset {float(pattern['row_offset']):.2f} / "
+                f"{float(pattern['col_offset']):.2f} px (row / col)"
+            )
+        except (KeyError, TypeError, ValueError):
+            return
+        self.__logger.info(text)
+        self.__commChannel.sigStatusMessage.emit(text)
 
     def _onLiveResultUpdated(self, result):
         """Bridge live result update to imcontrol if display is enabled."""

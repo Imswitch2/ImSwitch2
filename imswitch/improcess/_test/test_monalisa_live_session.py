@@ -190,10 +190,8 @@ def test_live_session_begin(synthetic_stack):
     assert "Dataset" in plan.axis_labels
     assert "Base" in plan.axis_labels
     assert "T" in plan.axis_labels
-    # Nothing asked for the widget's grid, so the session found its own.
     assert session.pattern_source == "auto"
     assert set(session.pattern_params) == {"row_offset", "col_offset", "row_period", "col_period"}
-    assert session.pattern_params["row_period"] == pytest.approx(10.0, abs=0.5)
 
 
 def _recorded_stack_info(frame_shape, layout, num_frames):
@@ -628,9 +626,6 @@ def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
         "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
         "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
         "bleaching_correction": False,
-        # Deliberately not the data's grid: with auto-detect off the widget's
-        # values are the contract, and the output shape must follow them.
-        "auto_detect_pattern": False,
         "row_offset": 3.0,
         "col_offset": 4.0,
         "row_period": 20.0,
@@ -1352,199 +1347,53 @@ def test_live_session_orients_from_data_and_cross_checks_the_layout(synthetic_st
     assert (session.nx_s, session.ny_s, session.num_linesteps) == (nx_s, ny_s, 1)
 
 
-# -- the grid: localized on a raw frame, never on the summed scan -------------------
+def test_every_live_session_localizes_the_pattern_afresh_on_its_own_stack(
+    synthetic_stack, monkeypatch
+):
+    """A live run never reuses a pattern: not the parameter fields, not a previous run's.
 
-def _full_period_scan(nx_s=10, ny_s=10, rows=120, cols=120, xp=10.0, yp=10.0, xo=3.3, yo=6.1):
-    """A raster scan that moves the foci over one whole period.
-
-    The sum of such a stack is uniform up to the sample: every pixel is lit
-    equally over the scan. A grid fitted to the sum follows the sample; a
-    grid fitted to one frame is the illumination.
+    Each session calls the localizer once, on its own whole first stack (the
+    localizer sums it), and the pattern values in ``params`` -- what a
+    parameter widget holds, possibly from an earlier session -- play no part.
     """
-    from scipy.ndimage import gaussian_filter
-
-    rng = np.random.default_rng(3)
-    sample = gaussian_filter(rng.random((rows, cols)), 4)
-    sample = 0.3 + 0.7 * (sample - sample.min()) / np.ptp(sample)
-    yy, xx = np.mgrid[0:rows, 0:cols]
-    sigma = 3.0 / 2.355
-    step_x, step_y = xp / nx_s, yp / ny_s
-    frames = []
-    for index in range(nx_s * ny_s):
-        sx = (index % nx_s) * step_x
-        sy = (index // nx_s) * step_y
-        illumination = np.zeros((rows, cols))
-        for cy in np.arange(yo + sy - 2 * yp, rows + yp, yp):
-            for cx in np.arange(xo + sx - 2 * xp, cols + xp, xp):
-                illumination += np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma ** 2))
-        frames.append(rng.poisson(40 + 150 * illumination * sample))
-    stack = np.stack(frames).astype(np.uint16)
-    attrs = {
-        "ImswitchData": {
-            "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
-            "ScanStage:axis_length": [(nx_s - 1) * 50.0, (ny_s - 1) * 50.0, 1.0],
-            "ScanStage:axis_step_size": [50.0, 50.0, 1.0],
-            "ScanStage:axis_step_size_unit": "nm",
-            "Rec:LapseTime": 1,
-        }
-    }
-    return stack, attrs, dict(row_offset=yo, col_offset=xo, row_period=yp, col_period=xp)
-
-
-def test_live_session_localizes_on_a_single_frame_not_the_summed_scan():
-    from imswitch.improcess.reconstructors.monalisa.localizer import localizer
-
-    stack, attrs, truth = _full_period_scan()
-    session = MonalisaReconstructor().make_session()
-
-    session.begin(
-        StreamInit(name="scan", dataset_name="CAM", data=stack, attrs=attrs),
-        params={"use_gpu": False, "auto_scan_orientation": False},
-    )
-
-    assert session.pattern_source == "auto"
-    found = session.pattern_params
-    for key, value in truth.items():
-        assert found[key] == pytest.approx(value, abs=0.6), key
-    # The old input, for the record: the summed scan is uniform up to the
-    # sample and the grid fitted to it is pixels off.
-    summed = localizer(stack)
-    assert max(abs(summed.xo - truth["col_offset"]), abs(summed.yo - truth["row_offset"])) > 1.0
-
-
-def test_live_session_uses_the_widget_grid_when_auto_detect_is_off(synthetic_stack):
-    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
-    session = MonalisaReconstructor().make_session()
-
-    session.begin(
-        StreamInit(name="scan", dataset_name="CAM", data=stack, attrs=attrs),
-        params={
-            "use_gpu": False, "auto_detect_pattern": False,
-            "row_offset": 3.0, "col_offset": 4.0, "row_period": 20.0, "col_period": 25.0,
-        },
-    )
-
-    assert session.pattern_source == "widget"
-    assert session.pattern_params == {
-        "row_offset": 3.0, "col_offset": 4.0, "row_period": 20.0, "col_period": 25.0,
-    }
-    assert (session.ny_c, session.nx_c) == (
-        int(np.ceil((stack.shape[-2] - 3.0) / 20.0)), int(np.ceil((stack.shape[-1] - 4.0) / 25.0)),
-    )
-
-
-def test_live_session_falls_back_to_the_widget_grid_when_no_frame_shows_one(synthetic_stack):
-    from imswitch.improcess.reconstructors.monalisa.localizer import PatternNotFoundError
+    from imswitch.improcess.reconstructors.monalisa import live_session as module
+    from imswitch.improcess.reconstructors.monalisa.localizer import localizer as real_localizer
 
     stack, attrs, *_ = synthetic_stack
-    blank = np.zeros_like(stack)                       # nothing to find in any frame
-    widget = {"row_offset": 5.0, "col_offset": 5.0, "row_period": 10.0, "col_period": 10.0}
+    calls = []
 
-    session = MonalisaReconstructor().make_session()
-    session.begin(
-        StreamInit(name="scan", dataset_name="CAM", data=blank, attrs=attrs),
-        params={"use_gpu": False, **widget},
-    )
-    assert session.pattern_source == "widget"
-    assert session.pattern_params == widget
+    def recording_localizer(data, *args, **kwargs):
+        calls.append(data)
+        return real_localizer(data, *args, **kwargs)
 
-    bare = MonalisaReconstructor().make_session()
-    with pytest.raises(PatternNotFoundError):
-        bare.begin(
-            StreamInit(name="scan", dataset_name="CAM", data=blank, attrs=attrs),
-            params={"use_gpu": False},
+    monkeypatch.setattr(module, "localizer", recording_localizer)
+    stale = {"row_offset": 1.0, "col_offset": 1.0, "row_period": 20.0, "col_period": 20.0}
+    runs = []
+    for name, data in (("run1", stack), ("run2", np.roll(stack, 3, axis=-1))):
+        session = MonalisaReconstructor().make_session()
+        session.begin(
+            StreamInit(name=name, dataset_name="CAM", data=data, attrs=attrs),
+            {"use_gpu": False, **stale},
         )
+        runs.append((session, data))
+
+    assert len(calls) == 2                       # one fresh localization per run
+    for (session, data), seen in zip(runs, calls):
+        np.testing.assert_array_equal(seen, data)  # the run's own whole first stack
+        assert session.pattern_source == "auto"
+        assert session.pattern_params != stale    # the parameter fields are not used
+    assert runs[0][0].pattern_params != runs[1][0].pattern_params
 
 
-def test_localize_pattern_skips_unusable_leading_frames(synthetic_stack):
-    from imswitch.improcess.reconstructors.monalisa.localizer import (
-        PatternNotFoundError,
-        localize_pattern,
+def test_an_explicit_pattern_is_the_offline_route_and_says_so(synthetic_stack):
+    stack, attrs, *_ = synthetic_stack
+    pattern = {"row_offset": 3.0, "col_offset": 4.0, "row_period": 20.0, "col_period": 25.0}
+    session = MonalisaReconstructor().make_session()
+
+    session.begin(
+        StreamInit(name="offline", dataset_name="CAM", data=stack, attrs=attrs),
+        {"use_gpu": False, "_monalisa_pattern_params": pattern},
     )
 
-    stack, *_ = synthetic_stack
-    shuttered = stack.copy()
-    shuttered[0] = 0                                    # the shutter was still closed
-
-    loc, index = localize_pattern(shuttered)
-
-    assert index == 1
-    assert loc.xp == pytest.approx(10.0, abs=0.5)
-    with pytest.raises(PatternNotFoundError):
-        localize_pattern(np.zeros_like(stack), max_frames=2)
-
-
-def test_a_dark_first_frame_is_a_fit_to_noise_and_is_skipped():
-    """Dark frames are not blank: the localizer fits *some* grid to their
-    noise, and only the fit quality tells it from a real one."""
-    from imswitch.improcess.reconstructors.monalisa.localizer import (
-        MIN_FIT_QUALITY,
-        PatternNotFoundError,
-        localize_pattern,
-        localizer,
-        plausible_localization,
-    )
-
-    stack, _attrs, truth = _full_period_scan(nx_s=2, ny_s=2)
-    rng = np.random.default_rng(5)
-    dark = rng.poisson(40, size=stack.shape[1:]).astype(np.uint16)
-
-    noise_fit = localizer(dark)
-    assert noise_fit.quality < MIN_FIT_QUALITY
-    assert not plausible_localization(noise_fit)
-    grid_fit = localizer(stack[0])
-    assert grid_fit.quality > 0.6 and plausible_localization(grid_fit)
-
-    loc, index = localize_pattern(np.stack([dark, dark, stack[0]]))
-    assert index == 2
-    assert loc.xo == pytest.approx(truth["col_offset"], abs=0.6)
-    with pytest.raises(PatternNotFoundError):
-        localize_pattern(np.stack([dark, dark, stack[0]]), max_frames=2)
-
-
-def test_offline_fast_gauss_localizes_the_grid_on_the_data_by_default(synthetic_stack):
-    """The widget's numbers may be last week's; the data says what the grid is."""
-    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
-    data_obj = InMemoryStackWrapper(
-        name="offline-auto", dataset_name="detector_0", data=stack, attrs={},
-    )
-    params = {
-        "reconstruction_method": "Fast Gauss MoNaLISA",
-        "device": "CPU",
-        "bleaching_correction": False,
-        "row_offset": 3.0, "col_offset": 4.0, "row_period": 20.0, "col_period": 25.0,
-        "scan_params": {
-            "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
-            "directions": ["pos", "pos", "pos"],
-            "steps": [str(nx_s), str(ny_s), "1", "1"],
-            "step_sizes": ["50", "50", "1", "1"],
-            "unidirectional": False,
-        },
-    }
-
-    result = MonalisaReconstructor().process(data_obj, params)
-
-    assert result.pattern_source == "auto"
-    assert result.pattern_params["row_period"] == pytest.approx(10.0, abs=0.5)
-    assert result.pattern_params["col_period"] == pytest.approx(10.0, abs=0.5)
-    assert result.data.shape[-2:] == (ny_c * ny_s, nx_c * nx_s)
-
-
-def test_default_params_and_widget_agree_on_auto_detect():
-    from imswitch.improcess.reconstructors.monalisa.params_widget import MonalisaParamsWidget
-
-    assert MonalisaReconstructor.default_params()["auto_detect_pattern"] is True
-    pytest.importorskip("pyqtgraph")
-    from qtpy import QtWidgets
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    _ = app
-    widget = MonalisaParamsWidget()
-    values = widget.get_values()
-    assert values["auto_detect_pattern"] is True
-    widget.set_auto_detect_pattern(False)
-    assert widget.get_values()["auto_detect_pattern"] is False
-    widget.set_pattern_params(1.5, 2.5, 11.0, 12.0)
-    assert widget.get_pattern_params() == {
-        "row_offset": 1.5, "col_offset": 2.5, "row_period": 11.0, "col_period": 12.0,
-    }
-    assert widget.find_pattern_action().name() == "Find pattern"
+    assert session.pattern_source == "explicit"
+    assert session.pattern_params == pattern

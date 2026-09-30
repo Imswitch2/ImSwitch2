@@ -1,12 +1,4 @@
-"""Localization of MoNaLISA scan grid from raw frames.
-
-:func:`localizer` fits the grid to one image. :func:`localize_pattern` is
-what the reconstruction paths call: it feeds the localizer *single raw
-frames*, never a sum over the scan. One frame shows the whole grid; over a
-full scan period the foci pass every pixel, so the sum is uniform up to
-the sample and the fit follows the sample's structure instead -- offsets
-off by pixels, a reconstruction that looks like nothing.
-"""
+"""Localization of MoNaLISA scan grid from raw frames."""
 
 from dataclasses import dataclass
 
@@ -14,21 +6,6 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import least_squares
 from scipy.signal import find_peaks
-
-
-class PatternNotFoundError(ValueError):
-    """No frame among those tried showed a usable illumination grid."""
-
-
-#: Below this fit quality (:attr:`LocalizationResult.quality`) a localization
-#: is a fit to noise, not to a grid. Calibrated on synthetic frames: a grid
-#: with foci six counts above a background of forty still scores 0.75, a
-#: frame of noise or of sample structure alone at most 0.2.
-MIN_FIT_QUALITY = 0.35
-
-#: A frame must hold this many periods along each axis for the fit to mean
-#: anything; a handful of samples correlates with any cosine.
-MIN_PERIODS_PER_AXIS = 4
 
 
 @dataclass(frozen=True)
@@ -43,11 +20,6 @@ class LocalizationResult:
     ny_c: int
     num_cols: int
     num_rows: int
-    #: How well the grid fits the frame it was localized on: the smaller of
-    #: the two axes' correlations between the filtered projection and the
-    #: fitted focus profile, in [-1, 1]. ``1.0`` for a grid that was given
-    #: rather than fitted.
-    quality: float = 1.0
 
 
 def localization_from_pattern(
@@ -84,96 +56,6 @@ def localization_from_pattern(
         ny_c=ny_c,
         num_cols=int(num_cols),
         num_rows=int(num_rows),
-    )
-
-
-PATTERN_KEYS = ("row_offset", "col_offset", "row_period", "col_period")
-
-
-def widget_pattern_params(params) -> dict | None:
-    """The pattern the parameter widget holds, as floats, or ``None``.
-
-    ``None`` when a key is missing, not a number, or a period is not
-    positive -- the values a widget shows before anything filled them.
-    """
-    try:
-        values = {key: float(params[key]) for key in PATTERN_KEYS}
-    except (KeyError, TypeError, ValueError):
-        return None
-    if values["row_period"] <= 0 or values["col_period"] <= 0:
-        return None
-    return values
-
-
-def pattern_params_of(loc: LocalizationResult) -> dict:
-    """``loc`` in the parameter widget's terms (row/col offset and period, px)."""
-    return {
-        "row_offset": float(loc.yo),
-        "col_offset": float(loc.xo),
-        "row_period": float(loc.yp),
-        "col_period": float(loc.xp),
-    }
-
-
-def plausible_localization(
-    loc: LocalizationResult, xp_guess: float = 10.0, yp_guess: float = 10.0
-) -> bool:
-    """Whether ``loc`` describes a grid a frame of a real pattern gives.
-
-    Finite, periods within a factor of two of the guess, enough periods in
-    the frame for the fit to mean anything, and a fit quality above
-    :data:`MIN_FIT_QUALITY`. The localizer always returns *some* grid; on a
-    dark frame or on sample structure alone it is a fit to noise, and this
-    is what tells the two apart.
-    """
-    values = (loc.xp, loc.xo, loc.yp, loc.yo, loc.quality)
-    if not all(np.isfinite(values)):
-        return False
-    if not (xp_guess / 2 <= loc.xp <= 2 * xp_guess):
-        return False
-    if not (yp_guess / 2 <= loc.yp <= 2 * yp_guess):
-        return False
-    if loc.num_cols < MIN_PERIODS_PER_AXIS * loc.xp or loc.num_rows < MIN_PERIODS_PER_AXIS * loc.yp:
-        return False
-    return loc.nx_c >= 2 and loc.ny_c >= 2 and loc.quality >= MIN_FIT_QUALITY
-
-
-def localize_pattern(
-    stack: np.ndarray,
-    *,
-    max_frames: int = 4,
-    xp_guess: float = 10.0,
-    yp_guess: float = 10.0,
-) -> tuple[LocalizationResult, int]:
-    """Localize the grid on one raw frame, trying the first ``max_frames`` in turn.
-
-    Frames are tried in order so a first frame taken before the
-    illumination settled (a shutter still closed, a frame of nothing) does
-    not decide the run. Returns the localization and the index of the frame
-    it came from. Raises :class:`PatternNotFoundError` when no tried frame
-    gives a plausible grid (:func:`plausible_localization`).
-    """
-    stack = np.asarray(stack)
-    if stack.ndim == 2:
-        stack = stack[np.newaxis]
-    if stack.ndim != 3:
-        raise ValueError(f"Expected a 2D frame or a 3D stack, got {stack.ndim}D")
-    count = min(max(1, int(max_frames)), int(stack.shape[0]))
-    failures = []
-    for index in range(count):
-        try:
-            loc = localizer(stack[index], xp_guess=xp_guess, yp_guess=yp_guess)
-        except Exception as exc:  # no FFT peak, a fit that diverged
-            failures.append(f"frame {index}: {type(exc).__name__}: {exc}")
-            continue
-        if plausible_localization(loc, xp_guess, yp_guess):
-            return loc, index
-        failures.append(
-            f"frame {index}: implausible grid (xp={loc.xp:.2f}, yp={loc.yp:.2f}, "
-            f"nx_c={loc.nx_c}, ny_c={loc.ny_c})"
-        )
-    raise PatternNotFoundError(
-        f"no illumination grid in the first {count} frame(s): " + "; ".join(failures)
     )
 
 
@@ -373,17 +255,7 @@ def localizer(
         ny_c,
         num_cols,
         num_rows,
-        quality=min(_fit_quality(x_img_avg, xo, xp), _fit_quality(y_img_avg, yo, yp)),
     )
-
-
-def _fit_quality(projection: np.ndarray, offset: float, period: float) -> float:
-    """Correlation between a filtered projection and the fitted focus profile."""
-    x = np.arange(projection.size)
-    model = np.cos(np.pi * (x - offset) / period) ** 6
-    if projection.size < 2 or projection.std() == 0 or model.std() == 0:
-        return 0.0
-    return float(np.corrcoef(projection, model)[0, 1])
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

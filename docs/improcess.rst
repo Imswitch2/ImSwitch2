@@ -1193,19 +1193,13 @@ paths:
   ``imswitch/improcess/reconstructors/monalisa/live_session.py`` regardless
   of the offline selector.
 
-**The illumination grid.** Both paths need the pattern's row/col period and
-offset in camera pixels. With ``Pattern -> Auto-detect pattern`` (on by
-default) every reconstruction, live or offline, localizes the grid on the
-first raw frame of its own data and writes what it found into the ``Pattern``
-fields, so the numbers shown are the ones used and a grid found on last
-week's recording never silently reconstructs today's. A frame taken before
-the illumination settled is skipped for the next one; if none of the first
-few frames shows a grid, the fields' values are used and the log says so.
-Untick it to reconstruct with the fields as they are; ``Find pattern`` fills
-them from the current data on demand. The grid is always localized on
-single raw frames, never on the mean of a scan: over a full scan period the
-foci pass every pixel, the mean is uniform up to the sample, and a grid
-fitted to it follows the sample's structure instead of the illumination.
+**The illumination grid.** A live run localizes the pattern afresh at the
+start of every run, on the sum of its own first stack: the sample is scanned
+under a fixed pattern, so the sum shows the grid with the sample averaged
+out.  It never reuses the ``Pattern`` values of the parameter widget or a
+previous run's grid, and the status bar says which grid it found.  The
+offline paths (*Reconstruct current*) use the ``Pattern`` values, which
+*Find pattern* fills from the mean of the loaded data.
 
 The MoNaLISA parameter widget's ``Bleaching correction`` checkbox applies to
 the full offline path, the fast-Gauss offline path, and live fast-Gauss. When

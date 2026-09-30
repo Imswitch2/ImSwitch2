@@ -6,10 +6,6 @@ from imswitch.improcess.reconstructors.monalisa.legacy import (
     LegacyMonalisaReconstructor,
     bleaching_correction,
 )
-from imswitch.improcess.reconstructors.monalisa.localizer import (
-    PatternNotFoundError,
-    localize_pattern,
-)
 from imswitch.improcess.reconstructors.monalisa.pattern_finder import PatternFinder
 from imswitch.improcess.reconstructors.monalisa.result import MonalisaProcessingResult
 from imswitch.improcess.reconstructors.monalisa.scan_params import (
@@ -56,66 +52,19 @@ class MoNaLISAController(ImProcessWidgetController):
             'unidirectional': True
         }
 
-    #: How many leading planes *Find pattern* may try before giving up.
-    PATTERN_FRAMES_TRIED = 4
-
     def findPattern(self):
-        """Localize the grid on the current data's first raw frames.
-
-        Single frames, never the mean: over a full scan period the mean is
-        uniform up to the sample, and a grid fitted to it is the sample's
-        structure, not the illumination.
-        """
         self._logger.debug('Find pattern clicked')
-        dataObj = self._main._currentDataObj
-        if dataObj is None:
+        if self._main._currentDataObj is None:
             return
-        frames = self._patternFrames(dataObj)
-        if frames is None:
+
+        meanData = self._main._currentDataObj.getMeanData()
+        if len(meanData) < 1:
             return
-        try:
-            loc, frameIndex = localize_pattern(frames, max_frames=self.PATTERN_FRAMES_TRIED)
-        except PatternNotFoundError as exc:
-            self._logger.warning(f'Find pattern: {exc}')
-            self._commChannel.sigStatusMessage.emit(
-                'No illumination grid found in the first frames of the current data'
-            )
-            return
-        pattern = [loc.yo, loc.xo, loc.yp, loc.xp]
-        self._logger.info(f'Pattern found on frame {frameIndex}: {pattern}')
+
+        self._logger.debug('Finding pattern')
+        pattern = self._patternFinder.findPattern(meanData)
+        self._logger.debug(f'Pattern found as: {self._pattern}')
         self.setPatternParams(pattern)
-        self.updatePattern()
-
-    def _patternFrames(self, dataObj):
-        """The first raw planes of ``dataObj`` as a stack, or its mean if none can be read."""
-        try:
-            from imswitch.improcess.model.plane_navigation import extract_plane, plane_count
-
-            handle = dataObj.data_handle
-            labels = dataObj.axis_labels
-            total = plane_count(handle.shape, labels)
-            if total > 0:
-                return np.stack([
-                    np.asarray(extract_plane(handle, index, labels))
-                    for index in range(min(self.PATTERN_FRAMES_TRIED, total))
-                ])
-        except Exception as exc:
-            self._logger.debug(f'Could not read the first planes for the pattern: {exc}')
-        meanData = dataObj.getMeanData()
-        if meanData is None or len(meanData) < 1:
-            return None
-        return np.asarray(meanData)
-
-    def livePatternLocalized(self, pattern):
-        """Show the grid a live session localized: what the reconstruction uses."""
-        try:
-            values = (
-                float(pattern['row_offset']), float(pattern['col_offset']),
-                float(pattern['row_period']), float(pattern['col_period']),
-            )
-        except (KeyError, TypeError, ValueError):
-            return
-        self.setPatternParams(values)
         self.updatePattern()
 
     def togglePattern(self, enabled):

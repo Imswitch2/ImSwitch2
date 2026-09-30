@@ -810,22 +810,17 @@ Follow-ups after the first rig test (2026-09-30):
   Handing the kept frames to ImProcess as an in-memory recording (a
   `BytesIO` in `memoryRecordings`, uncompressed) is the obvious next step
   and was left out: it doubles the frames in RAM.
-- **MoNaLISA's grid.** The live session localized the pattern on the sum
-  of its whole first stack; over a full scan period the foci pass every
-  pixel, the sum is uniform up to the sample, and the fitted grid was the
-  sample's structure (a synthetic full-period scan put the offsets 1.7 and
-  3.8 px off; a single frame is within 0.5 px). `localizer.localize_pattern`
-  now fits single raw frames, trying the first few, and every path uses it:
-  the live session, the offline fast-Gauss and full paths (behind the new
-  *Auto-detect pattern* option, on by default; off, the widget's values
-  stand, as the offline fast-Gauss path always assumed), the widget's
-  `find_pattern`, and the ImProcess panel's *Find pattern*, which read the
-  mean before. The grid a session assembles on is announced on
-  `sigLivePatternLocalized` and written into the parameter widget on both
-  sides, and ImControl's *Find pattern* localizes on the detector's latest
-  live-view frame. No persisted state carried a pattern across runs (the
-  session is made fresh per run and nothing caches one); what looked like
-  it was the widget showing numbers the run never used.
+- **MoNaLISA's grid.** Checked that a live run localizes afresh: each run
+  makes a new `MonalisaLiveSession`, whose `begin()` calls `localizer()` on
+  the sum of that run's first stack (right for a scanned sample under a
+  fixed pattern), and nothing persists a pattern -- ImProcess saves only its
+  dock layout and ROI sets, the live tool's state holds no reconstructor
+  parameters. A test pins it (one localization per run, on the run's own
+  stack, the parameter fields ignored). The grid found is now reported
+  (`sigLivePatternLocalized`: the live tool's status line and hosted widget,
+  ImProcess's status bar), so a run's fresh localization is visible. An
+  intermediate change that localized on single frames rested on a wrong
+  physical model and was reverted.
 - **Provenance of unsaved sources.** `provenance._source_path_of` took an
   in-container dataset path (`/CAM/data`) for a file, so a memory-only
   recording read through `DataObj` and the in-process live stream were

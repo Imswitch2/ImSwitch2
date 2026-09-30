@@ -10,13 +10,7 @@ from .gauss_processor import (
     DEFAULT_GAUSSIAN_SIGMA_PX,
     make_gauss_processor,
 )
-from .localizer import (
-    PatternNotFoundError,
-    localization_from_pattern,
-    localize_pattern,
-    pattern_params_of,
-    widget_pattern_params,
-)
+from .localizer import localization_from_pattern, localizer
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
 
@@ -90,9 +84,10 @@ class MonalisaLiveSession(StreamingSession):
         self.name = ""
         self.scan_params = {}
         self.output_pixel_size_nm = None
-        #: The grid the session assembles on (``LocalizationResult``) and
-        #: where it came from: ``auto`` (localized on a raw frame),
-        #: ``widget`` (the parameter widget's values) or ``explicit``.
+        #: The grid this session assembles on (``LocalizationResult``), and
+        #: where it came from: ``auto`` (localized afresh on this session's
+        #: first stack, the live case) or ``explicit`` (the offline fast-Gauss
+        #: path passing the widget's pattern).
         self.localization = None
         self.pattern_source = None
         # GPU streaming path: accumulate the in-flight timepoint's output on the
@@ -307,12 +302,15 @@ class MonalisaLiveSession(StreamingSession):
 
         loc_result = self._resolve_localization(working_data, params)
         self.localization = loc_result
+        self.pattern_source = (
+            "explicit" if params.get("_monalisa_pattern_params") else "auto"
+        )
         self.nx_c = loc_result.nx_c
         self.ny_c = loc_result.ny_c
 
         self._logger.info(
-            f"Pattern ({self.pattern_source}): xp={loc_result.xp:.2f}, "
-            f"xo={loc_result.xo:.2f}, yp={loc_result.yp:.2f}, yo={loc_result.yo:.2f}, "
+            f"Localized: xp={loc_result.xp:.2f}, xo={loc_result.xo:.2f}, "
+            f"yp={loc_result.yp:.2f}, yo={loc_result.yo:.2f}, "
             f"nx_c={loc_result.nx_c}, ny_c={loc_result.ny_c}"
         )
 
@@ -630,55 +628,38 @@ class MonalisaLiveSession(StreamingSession):
 
     @property
     def pattern_params(self) -> dict | None:
-        """The grid in the parameter widget's terms, or ``None`` before ``begin``."""
-        return pattern_params_of(self.localization) if self.localization is not None else None
-
-    def _resolve_localization(self, data: np.ndarray, params: dict):
-        """The grid the session assembles on; sets :attr:`pattern_source`.
-
-        In order: an explicit ``_monalisa_pattern_params`` (API callers);
-        the parameter widget's values when *Auto-detect pattern* is off;
-        else the grid localized on the first usable raw frame of the stack
-        (:func:`localize_pattern` -- one frame, never the summed scan), with
-        the widget's values as the fallback when no frame shows a grid.
-        """
-        explicit = params.get("_monalisa_pattern_params")
-        if explicit:
-            self.pattern_source = "explicit"
-            return self._localization_from(explicit, data)
-        widget = widget_pattern_params(params)
-        if not params.get("auto_detect_pattern", True):
-            if widget is None:
-                raise ValueError(
-                    "Auto-detect pattern is off and the pattern parameters "
-                    "(row/col offset and period) are not usable"
-                )
-            self.pattern_source = "widget"
-            return self._localization_from(widget, data)
-        try:
-            loc, frame_index = localize_pattern(data)
-        except PatternNotFoundError as exc:
-            if widget is None:
-                raise
-            self._logger.warning(
-                f"{exc}; reconstructing with the pattern parameters as given"
-            )
-            self.pattern_source = "widget"
-            return self._localization_from(widget, data)
-        self.pattern_source = "auto"
-        self._logger.info(f"Pattern localized on frame {frame_index}")
-        return loc
+        """The grid in the parameter widget's terms (row/col offset and period,
+        in pixels), or ``None`` before :meth:`begin`."""
+        loc = self.localization
+        if loc is None:
+            return None
+        return {
+            "row_offset": float(loc.yo),
+            "col_offset": float(loc.xo),
+            "row_period": float(loc.yp),
+            "col_period": float(loc.xp),
+        }
 
     @staticmethod
-    def _localization_from(pattern: dict, data: np.ndarray):
-        return localization_from_pattern(
-            row_offset=pattern["row_offset"],
-            col_offset=pattern["col_offset"],
-            row_period=pattern["row_period"],
-            col_period=pattern["col_period"],
-            num_rows=data.shape[-2],
-            num_cols=data.shape[-1],
-        )
+    def _resolve_localization(data: np.ndarray, params: dict):
+        """Use explicit widget pattern params when provided; otherwise localize.
+
+        Live reconstruction intentionally uses automatic localization on the
+        incoming data. Offline fast-Gauss reconstruction sets
+        ``_monalisa_pattern_params`` so it follows the parameter widget in the
+        same way as the full SignalExtractor path.
+        """
+        pattern = params.get("_monalisa_pattern_params")
+        if pattern:
+            return localization_from_pattern(
+                row_offset=pattern["row_offset"],
+                col_offset=pattern["col_offset"],
+                row_period=pattern["row_period"],
+                col_period=pattern["col_period"],
+                num_rows=data.shape[-2],
+                num_cols=data.shape[-1],
+            )
+        return localizer(data)
 
     @staticmethod
     def _resolve_pinhole_radius_px(params: dict, gaussian_sigma_px: float) -> float | None:

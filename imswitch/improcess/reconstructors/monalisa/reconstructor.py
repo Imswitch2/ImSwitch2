@@ -20,12 +20,6 @@ from .live_session import MonalisaLiveSession
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
-from .localizer import (
-    PatternNotFoundError,
-    localize_pattern,
-    pattern_params_of,
-    widget_pattern_params,
-)
 from .result import MonalisaProcessingResult
 from .signal_extractor import SignalExtractor
 
@@ -79,8 +73,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         'fast_gauss_gaussian_sigma_px': 2.0,
         'fast_gauss_pinhole_radius_sigma': 1.5,
         'bleaching_correction': False,
-        'auto_scan_orientation': True,
-        'auto_detect_pattern': True}
+        'auto_scan_orientation': True}
 
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')
@@ -134,19 +127,18 @@ class MonalisaReconstructor(StreamingReconstructor):
         """
         if not isinstance(param_widget, MonalisaParamsWidget):
             raise TypeError(f'Expected MonalisaParamsWidget, got {type(param_widget).__name__}')
-
-        # One raw frame shows the grid; the sum of a scan does not.
-        loc, frame_index = localize_pattern(np.asarray(data))
-        pattern = pattern_params_of(loc)
-        param_widget.set_pattern_params(
-            pattern['row_offset'], pattern['col_offset'],
-            pattern['row_period'], pattern['col_period'],
-        )
-        self._logger.info(
-            f'Pattern found on frame {frame_index}: '
-            f'row_offset={pattern["row_offset"]:.2f}, col_offset={pattern["col_offset"]:.2f}, '
-            f'row_period={pattern["row_period"]:.2f}, col_period={pattern["col_period"]:.2f}'
-        )
+        
+        # Use first frame for pattern detection
+        test_frame = data[0] if data.ndim == 3 else data
+        
+        # Find pattern
+        row_offset, col_offset, row_period, col_period = self._pattern_finder.find(test_frame)
+        
+        # Update widget
+        param_widget.set_pattern_params(row_offset, col_offset, row_period, col_period)
+        
+        self._logger.info(f'Pattern found: row_offset={row_offset:.2f}, col_offset={col_offset:.2f}, '
+                         f'row_period={row_period:.2f}, col_period={col_period:.2f}')
     
     #: ``scan_params`` comes from the file (or an explicit override), not a widget.
     extra_param_keys = ("scan_params",)
@@ -238,12 +230,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         # Bleaching correction
         if params.get('bleaching_correction', False):
             data = self._apply_bleaching_correction(data)
-
-        # The grid: localized on a raw frame of this very data unless the
-        # widget's values are asked for, so a pattern found on the previous
-        # recording never silently reconstructs this one.
-        params, pattern_source = self._pattern_for_process(data, params)
-
+        
         # Build pattern
         row_offset = np.mod(params['row_offset'], params['row_period'])
         col_offset = np.mod(params['col_offset'], params['col_period'])
@@ -326,36 +313,9 @@ class MonalisaReconstructor(StreamingReconstructor):
             axis_label_map=self._axis_labels,
             placement=placement,
         )
-        result.pattern_params = {
-            'row_offset': float(row_offset), 'col_offset': float(col_offset),
-            'row_period': float(params['row_period']), 'col_period': float(params['col_period']),
-        }
-        result.pattern_source = pattern_source
 
         self._logger.info(f'Reconstruction complete: shape {result.data.shape}')
         return result
-
-    def _pattern_for_process(self, data: np.ndarray, params: dict) -> tuple[dict, str]:
-        """``params`` with the grid to reconstruct on, and where it came from.
-
-        *Auto-detect pattern* (the default) localizes the grid on the first
-        usable raw frame; off, or when no frame shows a grid, the widget's
-        values stand.
-        """
-        if not params.get('auto_detect_pattern', True):
-            return params, 'widget'
-        try:
-            loc, frame_index = localize_pattern(data)
-        except PatternNotFoundError as exc:
-            self._logger.warning(f'{exc}; reconstructing with the pattern parameters as given')
-            return params, 'widget'
-        pattern = pattern_params_of(loc)
-        self._logger.info(
-            f'Pattern localized on frame {frame_index}: '
-            f'row_offset={pattern["row_offset"]:.2f}, col_offset={pattern["col_offset"]:.2f}, '
-            f'row_period={pattern["row_period"]:.2f}, col_period={pattern["col_period"]:.2f}'
-        )
-        return dict(params, **pattern), 'auto'
 
     def _placement_for(self, data_obj, frames: int):
         """Recorded output coordinates for this source, or ``None``.
@@ -557,23 +517,18 @@ class MonalisaReconstructor(StreamingReconstructor):
             output_pixel_size_nm=out_px,
             axis_label_map=self._axis_labels,
         )
-        result.pattern_params = getattr(session, 'pattern_params', None)
-        result.pattern_source = getattr(session, 'pattern_source', None)
         self._logger.info(f'Fast Gauss reconstruction complete: shape {result.data.shape}')
         return result
 
     @staticmethod
     def _fast_gauss_session_params(params: dict) -> dict:
-        """The session parameters of an offline fast-Gauss run.
-
-        With *Auto-detect pattern* off the widget's grid is passed explicitly;
-        otherwise the session localizes the grid on the data, as it does live.
-        """
+        """Pass widget pattern params into offline fast-Gauss localization."""
         session_params = dict(params)
-        if not params.get('auto_detect_pattern', True):
-            widget = widget_pattern_params(params)
-            if widget is not None:
-                session_params["_monalisa_pattern_params"] = widget
+        required = ("row_offset", "col_offset", "row_period", "col_period")
+        if all(key in params for key in required):
+            session_params["_monalisa_pattern_params"] = {
+                key: float(params[key]) for key in required
+            }
         return session_params
 
     def _fast_gauss_geometry_from_scan_params(self, scan_params: dict) -> dict:

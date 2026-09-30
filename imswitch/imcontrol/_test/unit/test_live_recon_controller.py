@@ -52,11 +52,6 @@ class _FakeDetector:
     def getExposureTime(self):
         return 12.5
 
-    def getLatestFrameShared(self, is_save=False):
-        return self.latestFrame
-
-    latestFrame = None
-
     def produce(self, *frames):
         self._hardware.extend(frames)
 
@@ -749,18 +744,9 @@ def test_keep_raw_is_part_of_the_component_state(rig):
     assert widget.getKeepRaw() is True
 
 
-# -- MoNaLISA's pattern: shown when the session found it, found on demand -------------
+# -- MoNaLISA's pattern: each run's fresh localization is what is shown ---------------
 
-def _grid_frame(rows=100, cols=100, xp=10.0, yp=10.0, xo=5.0, yo=5.0):
-    rng = np.random.default_rng(2)
-    frame = rng.integers(50, 150, size=(rows, cols), dtype=np.uint16)
-    for cy in np.arange(yo, rows, yp):
-        for cx in np.arange(xo, cols, xp):
-            frame[int(cy), int(cx)] += 300
-    return frame
-
-
-def test_a_localized_pattern_is_shown_in_the_hosted_parameter_widget(rig):
+def test_a_run_s_fresh_localization_is_shown_in_the_hosted_parameter_widget(rig):
     controller, widget = rig.controller, rig.widget
     paramWidget = Mock()
     controller._paramWidget = paramWidget
@@ -771,50 +757,22 @@ def test_a_localized_pattern_is_shown_in_the_hosted_parameter_widget(rig):
     })
 
     paramWidget.set_pattern_params.assert_called_once_with(1.5, 2.5, 10.0, 11.0)
-    assert widget.statusText().startswith('Pattern localized on the first frame')
+    assert widget.statusText().startswith('Pattern localized afresh on the first stack')
 
     paramWidget.set_pattern_params.reset_mock()
     controller._onLivePatternLocalized({'row_offset': None})
     paramWidget.set_pattern_params.assert_not_called()
 
 
-def test_find_pattern_localizes_the_detector_latest_frame(rig):
-    controller, widget, detector = rig.controller, rig.widget, rig.detector
-    paramWidget = Mock()
-    controller._paramWidget = paramWidget
-
-    detector.latestFrame = None
-    assert controller.findPatternOnLatestFrame() is False
-    assert 'no frame yet' in widget.statusText()
-    paramWidget.set_pattern_params.assert_not_called()
-
-    detector.latestFrame = _grid_frame()
-    assert controller.findPatternOnLatestFrame() is True
-    row_offset, col_offset, row_period, col_period = paramWidget.set_pattern_params.call_args.args
-    np.testing.assert_allclose([row_period, col_period], [10.0, 10.0], atol=0.5)
-    np.testing.assert_allclose([row_offset, col_offset], [5.0, 5.0], atol=0.6)
-    assert widget.statusText().startswith('Pattern found on the latest frame')
-
-    detector.latestFrame = np.zeros((60, 60), dtype=np.uint16)
-    assert controller.findPatternOnLatestFrame() is False
-    assert 'No illumination grid' in widget.statusText()
-
-
-def test_the_widgets_find_pattern_action_is_wired_when_it_offers_one(rig, qtbot):
-    from qtpy import QtWidgets
-
+def test_the_private_live_bus_relays_the_localized_pattern(rig):
     controller = rig.controller
-    action = Mock()
+    controller._liveController()
+    shown = []
+    controller._paramWidget = SimpleNamespace(set_pattern_params=lambda *v: shown.append(v))
 
-    class _ParamWidget(QtWidgets.QWidget):
-        set_pattern_params = Mock()
+    controller._bus.sigLivePatternLocalized.emit({
+        'row_offset': 1.0, 'col_offset': 2.0, 'row_period': 11.0, 'col_period': 11.5,
+        'source': 'auto',
+    })
 
-        def find_pattern_action(self):
-            return action
-
-    widget = _ParamWidget()
-    qtbot.addWidget(widget)
-
-    controller._installParamWidget(SimpleNamespace(make_param_widget=lambda parent: widget))
-
-    action.sigActivated.connect.assert_called_once()
+    assert shown == [(1.0, 2.0, 11.0, 11.5)]

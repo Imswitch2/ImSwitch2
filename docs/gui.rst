@@ -1499,14 +1499,11 @@ ImProcess made itself; ImProcess must be loaded.  After the run the result
 object itself is handed over; during a run a snapshot of it goes instead,
 so the entry in ImProcess does not keep changing.
 
-MoNaLISA needs the illumination grid (the pattern's period and offset in
-camera pixels).  With its **Auto-detect pattern** option on, each run
-localizes the grid on the first frame it receives and writes it into the
-**Pattern** fields, so the fields show what the run used; the status line
-reports it too.  **Find pattern** localizes the grid on the detector's
-latest live-view frame, for checking the grid before a scan or filling the
-fields to reconstruct with **Auto-detect pattern** off.  See :doc:`improcess`,
-*MoNaLISA fast-Gauss mode*.
+A MoNaLISA run localizes the illumination grid afresh on the sum of its
+first scan, every run; it never reuses the values in the **Pattern** fields
+or a previous run's grid.  The status line reports the grid found, and the
+**Pattern** fields show it; here they are for display only.  See
+:doc:`improcess`, *MoNaLISA fast-Gauss mode*.
 
 
 Scripting
