@@ -753,3 +753,197 @@ def test_the_step_widget_also_works_with_the_fallback_editor(qapp, without_qsci,
     assert widget.get_values() == {"code": "out = data + 1\n", "ports": "out"}
     widget.after_run([], [(None, "line 1: NameError: nope")])
     assert widget.outputPane.toPlainText() == "line 1: NameError: nope"
+
+
+# -- snippets -----------------------------------------------------------------
+
+@pytest.fixture
+def snippet_folder(tmp_path, monkeypatch):
+    from imswitch.imcommon.model import dirtools
+
+    monkeypatch.setattr(dirtools.UserFileDirs, "Root", str(tmp_path))
+    return tmp_path / "improcess_snippets"
+
+
+def test_the_snippet_folder_sits_in_the_user_files_and_is_made_on_demand(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    assert snippets.snippets_directory(create=False) == str(snippet_folder)
+    assert not snippet_folder.exists()
+    assert snippets.list_snippets() == []                    # listing does not create it
+    assert not snippet_folder.exists()
+    assert snippets.snippets_directory() == str(snippet_folder) and snippet_folder.is_dir()
+
+
+def test_a_snippet_round_trips_its_code_and_ports(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    code = 'ax = 0\n\ngroup = (np.arange(data.shape[ax]) // 3) % 2\n\toutputs = {}  \n'
+    path = snippets.save_snippet("three at a time", code, "a, b")
+    assert path == snippet_folder / "three at a time.py"
+    text = path.read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "# ports: a, b"           # the header is the first line
+    assert text == "# ports: a, b\n" + code                  # and nothing else is added
+    assert snippets.load_snippet("three at a time") == (code, "a, b")
+    assert snippets.load_snippet("three at a time.py") == (code, "a, b")    # the suffix is optional
+
+
+def test_list_snippets_gives_the_sorted_stems_of_py_files_only(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    snippets.save_snippet("zeta", "out = data\n", "out")
+    snippets.save_snippet("Alpha", "out = data\n", "out")
+    snippets.save_snippet("mid", "out = data\n", "out")
+    (snippet_folder / "notes.txt").write_text("not a snippet")
+    (snippet_folder / "sub.py").mkdir()                      # a folder is not a snippet
+    assert snippets.list_snippets() == ["Alpha", "mid", "zeta"]
+
+
+def test_a_snippet_without_a_header_gets_the_default_ports(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    snippet_folder.mkdir()
+    (snippet_folder / "plain.py").write_text("out = data * 2\n", encoding="utf-8")
+    assert snippets.load_snippet("plain") == ("out = data * 2\n", "out")
+    (snippet_folder / "hand.py").write_text("#Ports:a,b\nout = 1\n", encoding="utf-8")
+    assert snippets.load_snippet("hand") == ("out = 1\n", "a,b")          # a hand-written header counts
+    (snippet_folder / "later.py").write_text("x = 1\n# ports: a, b\n", encoding="utf-8")
+    assert snippets.load_snippet("later") == ("x = 1\n# ports: a, b\n", "out")   # only the first line
+    (snippet_folder / "empty.py").write_text("", encoding="utf-8")
+    assert snippets.load_snippet("empty") == ("", "out")
+    (snippet_folder / "bare.py").write_text("# ports:\nx = 1\n", encoding="utf-8")
+    assert snippets.load_snippet("bare") == ("x = 1\n", "out")
+
+
+def test_a_code_line_that_looks_like_a_header_is_kept_through_a_round_trip(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    code = "# ports: not, a, header\nout = data\n"
+    snippets.save_snippet("tricky", code, "a")
+    assert snippets.load_snippet("tricky") == (code, "a")
+
+
+def test_blank_ports_are_saved_as_the_default_and_line_endings_survive(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    snippets.save_snippet("blank", "out = data\r\nprint(1)\r\n", "  ")
+    assert snippets.load_snippet("blank") == ("out = data\r\nprint(1)\r\n", "out")
+    with pytest.raises(ValueError, match="one line"):
+        snippets.save_snippet("multi", "x = 1\n", "a,\nb")
+
+
+@pytest.mark.parametrize("name", ["", "   ", ".", "..", "../escape", "sub/dir", "sub\\dir", ".hidden", "a*b", "what?", "x:y"])
+def test_a_snippet_name_cannot_leave_the_folder_or_break_the_file_system(snippet_folder, name):
+    from imswitch.improcess.model import snippets
+
+    with pytest.raises(ValueError, match="snippet name"):
+        snippets.save_snippet(name, "x = 1\n", "out")
+    with pytest.raises(ValueError, match="snippet name"):
+        snippets.load_snippet(name)
+    assert not list(snippet_folder.parent.rglob("*.py"))
+
+
+def test_loading_a_missing_snippet_and_saving_without_overwrite_say_so(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    with pytest.raises(FileNotFoundError, match="nothing"):
+        snippets.load_snippet("nothing")
+    snippets.save_snippet("keep", "x = 1\n", "out")
+    with pytest.raises(FileExistsError, match="keep"):
+        snippets.save_snippet("keep", "x = 2\n", "out", overwrite=False)
+    assert snippets.load_snippet("keep")[0] == "x = 1\n"
+    snippets.save_snippet("keep", "x = 3\n", "out")                        # the default replaces
+    assert snippets.load_snippet("keep")[0] == "x = 3\n"
+
+
+def _patch_dialogs(monkeypatch, *, item=None, text=None, confirm=True):
+    """Stand-ins for the dialogs; each records the call it got."""
+    from qtpy import QtWidgets
+
+    calls = {"item": [], "text": [], "question": []}
+
+    def get_item(parent, title, label, items, *args):
+        calls["item"].append(list(items))
+        return (item, item is not None)
+
+    def get_text(parent, title, label, *args):
+        calls["text"].append(title)
+        return (text or "", text is not None)
+
+    def question(parent, title, message, *args):
+        calls["question"].append(message)
+        return QtWidgets.QMessageBox.Yes if confirm else QtWidgets.QMessageBox.No
+
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getItem", staticmethod(get_item))
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getText", staticmethod(get_text))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(question))
+    return calls
+
+
+def test_the_panel_saves_the_editor_and_ports_as_a_snippet_and_loads_it_back(qapp, snippet_folder, monkeypatch):
+    from imswitch.improcess.model import snippets
+
+    widget = PythonStepProcessor().make_param_widget(None)
+    widget.codeEditor.setText(INTERLEAVE_AX0)
+    widget.portsEdit.setText("a, b")
+
+    calls = _patch_dialogs(monkeypatch, text="interleave")
+    widget.saveButton.click()
+    assert calls["text"] == ["Save snippet"] and calls["question"] == []
+    assert snippets.load_snippet("interleave") == (INTERLEAVE_AX0, "a, b")
+    assert "Saved snippet 'interleave'" in widget.outputPane.toPlainText()
+
+    widget.codeEditor.setText("something else\n")
+    widget.portsEdit.setText("zzz")
+    calls = _patch_dialogs(monkeypatch, item="interleave")
+    widget.loadButton.click()
+    assert calls["item"] == [["interleave"]]
+    assert widget.get_values() == {"code": INTERLEAVE_AX0, "ports": "a, b"}
+    assert "Loaded snippet 'interleave'" in widget.outputPane.toPlainText()
+
+
+def test_the_panel_asks_before_replacing_a_snippet(qapp, snippet_folder, monkeypatch):
+    from imswitch.improcess.model import snippets
+
+    snippets.save_snippet("keep", "old = 1\n", "out")
+    widget = PythonStepProcessor().make_param_widget(None)
+    widget.codeEditor.setText("new = 2\n")
+
+    calls = _patch_dialogs(monkeypatch, text="keep", confirm=False)
+    widget.saveButton.click()
+    assert len(calls["question"]) == 1 and "keep" in calls["question"][0]
+    assert snippets.load_snippet("keep")[0] == "old = 1\n"
+
+    _patch_dialogs(monkeypatch, text="keep", confirm=True)
+    widget.saveButton.click()
+    assert snippets.load_snippet("keep")[0] == "new = 2\n"
+
+
+def test_the_panel_leaves_everything_alone_when_a_dialog_is_cancelled_or_fails(qapp, snippet_folder, monkeypatch):
+    from imswitch.improcess.model import snippets
+
+    widget = PythonStepProcessor().make_param_widget(None)
+    widget.codeEditor.setText("mine = 1\n")
+    widget.portsEdit.setText("a")
+
+    widget.loadButton.click()                                   # no snippets yet: a hint, not a dialog
+    assert "No snippets yet" in widget.outputPane.toPlainText()
+
+    _patch_dialogs(monkeypatch, text=None)                      # cancelled
+    widget.saveButton.click()
+    assert snippets.list_snippets() == []
+
+    _patch_dialogs(monkeypatch, text="../escape")               # an unusable name
+    widget.saveButton.click()
+    assert "snippet name" in widget.outputPane.toPlainText()
+    assert snippets.list_snippets() == []
+
+    snippets.save_snippet("there", "x = 1\n", "out")
+    _patch_dialogs(monkeypatch, item=None)                      # cancelled
+    widget.loadButton.click()
+    assert widget.get_values() == {"code": "mine = 1\n", "ports": "a"}
+
+    _patch_dialogs(monkeypatch, item="gone")                    # deleted meanwhile
+    widget.loadButton.click()
+    assert "Could not load snippet 'gone'" in widget.outputPane.toPlainText()
+    assert widget.get_values() == {"code": "mine = 1\n", "ports": "a"}

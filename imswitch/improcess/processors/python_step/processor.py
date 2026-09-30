@@ -11,6 +11,7 @@ from typing import Callable
 from qtpy import QtGui, QtWidgets
 
 from imswitch.imcommon.view.guitools import PythonCodeEditor
+from imswitch.improcess.model import snippets
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors.base import OutputSpec, Processor, ProcessorOutput
@@ -94,7 +95,16 @@ class PythonStepProcessor(Processor):
         output.setMaximumHeight(110)
         output.setPlaceholderText("What the code prints, and any error, appears here.")
 
-        layout.addWidget(QtWidgets.QLabel("Code"))
+        snippet_row = QtWidgets.QHBoxLayout()
+        load_button = QtWidgets.QPushButton("Load snippet…")
+        load_button.setToolTip("Replace the code and ports with a saved snippet")
+        save_button = QtWidgets.QPushButton("Save as snippet…")
+        save_button.setToolTip("Keep this code and its ports in the snippet folder")
+        snippet_row.addWidget(QtWidgets.QLabel("Code"))
+        snippet_row.addStretch(1)
+        snippet_row.addWidget(load_button)
+        snippet_row.addWidget(save_button)
+        layout.addLayout(snippet_row)
         layout.addWidget(editor, 1)
         form = QtWidgets.QFormLayout()
         form.addRow("Output ports", ports)
@@ -119,8 +129,56 @@ class PythonStepProcessor(Processor):
             shown.extend(str(message) for _input, message in failures)
             output.setPlainText("\n".join(part.rstrip("\n") for part in shown))
 
+        def say(text):
+            output.setPlainText(text)
+
+        def load_snippet_dialog():
+            names = snippets.list_snippets()
+            if not names:
+                say(f"No snippets yet. 'Save as snippet…' keeps the code in {snippets.snippets_directory(create=False)}.")
+                return
+            name, accepted = QtWidgets.QInputDialog.getItem(
+                widget, "Load snippet", "Snippet:", names, 0, False,
+            )
+            if not accepted or not name:
+                return
+            try:
+                code, port_names = snippets.load_snippet(name)
+            except (OSError, ValueError) as exc:
+                say(f"Could not load snippet {name!r}: {exc}")
+                return
+            editor.setText(code)
+            ports.setText(port_names)
+            say(f"Loaded snippet {name!r}.")
+
+        def save_snippet_dialog():
+            name, accepted = QtWidgets.QInputDialog.getText(widget, "Save snippet", "Snippet name:")
+            name = str(name or "").strip()
+            if not accepted or not name:
+                return
+            code = get_values()["code"]
+            try:
+                try:
+                    path = snippets.save_snippet(name, code, ports.text(), overwrite=False)
+                except FileExistsError:
+                    answer = QtWidgets.QMessageBox.question(
+                        widget, "Replace snippet?", f"A snippet called {name!r} already exists. Replace it?",
+                    )
+                    if answer != QtWidgets.QMessageBox.Yes:
+                        return
+                    path = snippets.save_snippet(name, code, ports.text())
+            except (OSError, ValueError) as exc:
+                say(f"Could not save snippet {name!r}: {exc}")
+                return
+            say(f"Saved snippet {path.stem!r} to {path}.")
+
+        load_button.clicked.connect(load_snippet_dialog)
+        save_button.clicked.connect(save_snippet_dialog)
+
         widget.get_values = get_values
         widget.after_run = after_run
+        widget.loadButton = load_button
+        widget.saveButton = save_button
         widget.codeEditor = editor
         widget.portsEdit = ports
         widget.outputPane = output
