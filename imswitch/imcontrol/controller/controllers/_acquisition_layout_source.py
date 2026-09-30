@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from contextlib import nullcontext
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 import numpy as np
@@ -189,7 +190,13 @@ def build_controller_point_scan_layouts(
 ) -> dict[str, AcquisitionLayout]:
     """Generate signals and adapt an ordinary point-scan controller."""
     controller.getParameters()
-    with controller._positionSnapshotForScanDesign():
+    snapshotFactory = getattr(
+        controller, '_positionSnapshotForScanDesign', None
+    )
+    snapshotContext = (
+        snapshotFactory() if callable(snapshotFactory) else nullcontext()
+    )
+    with snapshotContext:
         result = controller._master.scanManager.makeFullScan(
             controller._analogParameterDict,
             controller._digitalParameterDict,
