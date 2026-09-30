@@ -11,17 +11,37 @@ serialized into each container's native standard:
 This module deliberately has NO dependency on RecordingManager (the caller maps its
 ``RecMode`` to one of the normalized mode strings below), so it stays trivially unit
 testable.
+
+It also holds the *recording plan* helpers -- :class:`RecordingPlan`,
+:func:`expected_frames_for` and :func:`build_recording_attrs`. They decide how
+many frames a detector contributes to a session and which ``acquisition:*``,
+``recording:*`` and ``AcquisitionLayout:*`` attributes describe it. The
+``RecordingWorker`` calls them for every file it writes, and the in-process
+live-reconstruction path calls the same functions for the stream it never
+writes, so a reconstructor resolves the same geometry from a file, a RAM
+recording and a live stream. Keep them pure: no manager, no thread, no I/O.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
+
+import imswitch
+from imswitch.imcommon.model.acquisition_layout import (
+    ACQUISITION_LAYOUT_SCHEMA,
+    PAYLOAD_ASSEMBLED_IMAGE,
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    AcquisitionLayout,
+    decode_acquisition_layout,
+    encode_acquisition_layout,
+)
 
 # Normalized recording modes (decoupled from RecordingManager.RecMode).
 MODE_SNAP = 'snap'
@@ -147,3 +167,184 @@ def build_ome_image_meta(
             if stage_position_um is not None else None
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Recording plan: frame accounting and the recording attribute block
+# ---------------------------------------------------------------------------
+
+#: ``RecMode`` member names whose sessions cover exactly one scan.
+SCAN_MODE_NAMES = frozenset({'ScanOnce', 'ScanLapse'})
+
+#: ``recording:source_format`` value for a stream that is reconstructed in
+#: process and never written; the file formats use ``SaveFormat.name``.
+SOURCE_FORMAT_MEMORY = 'memory'
+
+
+@dataclass(frozen=True)
+class RecordingPlan:
+    """What one recording session intends, independent of how it is stored.
+
+    A plan is the recorder's inputs with the manager stripped away: the
+    ``RecordingWorker`` builds one from the arguments ``startRecording``
+    copied onto it, and the live-reconstruction path builds one from the same
+    scan-controller accessors the recording controller reads. Both then get
+    identical answers from :func:`expected_frames_for` and
+    :func:`build_recording_attrs`.
+
+    ``rec_mode`` is a ``RecMode`` member name (``'SpecFrames'``,
+    ``'ScanOnce'``, ...). ``acquisition_layouts`` maps detector name to an
+    :class:`AcquisitionLayout` or its encoded JSON.
+    """
+
+    rec_mode: str
+    rec_frames: Optional[int] = None
+    num_cam_ttl: Mapping[str, int] = field(default_factory=dict)
+    acquisition_layouts: Mapping[str, Any] = field(default_factory=dict)
+    source_format: str = 'HDF5'
+    num_timepoints: int = 1
+    lapse_index: int = 0
+    single_lapse_file: bool = False
+    lapse_interval_s: Optional[float] = None
+    planned_start_time: Optional[str] = None
+
+    @property
+    def is_scan_mode(self) -> bool:
+        """Whether one session covers exactly one hardware scan."""
+        return self.rec_mode in SCAN_MODE_NAMES
+
+    def layout_for(self, detector_name: str) -> Optional[AcquisitionLayout]:
+        """The detector's acquisition layout, decoded, or ``None``."""
+        value = (self.acquisition_layouts or {}).get(detector_name)
+        if value is None:
+            return None
+        if isinstance(value, AcquisitionLayout):
+            return value
+        if isinstance(value, (str, bytes, bytearray)):
+            return decode_acquisition_layout(value)
+        raise TypeError(
+            f"Acquisition layout for {detector_name!r} must be an "
+            "AcquisitionLayout or encoded JSON"
+        )
+
+
+def planned_frames_from_layout(layout: AcquisitionLayout) -> Optional[int]:
+    """How many frames a layout says its detector delivers, or ``None``.
+
+    An assembled image is one frame however many positions the scan has; a
+    frame stream delivers one frame per recorded event (the spans when the
+    layout records some, else the product of its loops). Any other payload
+    kind is not the layout's to count.
+    """
+    if layout.payload_kind == PAYLOAD_ASSEMBLED_IMAGE:
+        return 1
+    if layout.payload_kind == PAYLOAD_DETECTOR_FRAME_STREAM:
+        if layout.recorded_event_spans is not None:
+            return sum(
+                span.count * span.repeats
+                for span in layout.recorded_event_spans
+            )
+        return math.prod(loop.count for loop in layout.event_loops)
+    return None
+
+
+def expected_frames_for(plan: RecordingPlan, detector_name: str, *,
+                        is_scan_driven: bool) -> int:
+    """How many frames this detector produces for the session.
+
+    The two detector families answer this completely differently, and
+    treating them alike is what made scan recordings hang or truncate:
+
+    - A **free-running/trigger-driven camera** emits one frame per scan
+      position (per camera TTL pulse), so it yields
+      ``rec_frames * num_cam_ttl``.
+    - A **scan-driven** detector (APD, PMT, TimeTagger) integrates the whole
+      scan into a single assembled image and emits exactly ONE frame per
+      scan, whatever the position count. Expecting one frame per position
+      means waiting for frames that are never produced.
+
+    A recorded acquisition layout, when the plan carries one, answers before
+    either rule. In the lapse modes each session covers one scan, so the
+    scan-driven answer stays 1 there too; the per-timepoint loop supplies the
+    repetition.
+    """
+    layout = plan.layout_for(detector_name)
+    if layout is not None:
+        counted = planned_frames_from_layout(layout)
+        if counted is not None:
+            return int(counted)
+    if plan.is_scan_mode and is_scan_driven:
+        return 1
+    if plan.rec_frames is None:
+        raise ValueError(
+            f'recFrames must be specified in {plan.rec_mode} mode to derive '
+            f'the number of frames to record for detector {detector_name!r}'
+        )
+    num_cam_ttl = plan.num_cam_ttl or {}
+    if plan.is_scan_mode:
+        declared = num_cam_ttl.get(detector_name)
+        if declared is None:
+            raise ValueError(
+                f'The scan declares no TTL pulse per position for detector '
+                f'{detector_name!r}, so the number of frames to record '
+                f'cannot be derived. Gate it in the scan, deselect it, or '
+                f'record it in a non-scan mode.'
+            )
+        return int(plan.rec_frames) * int(declared)
+    return int(plan.rec_frames) * int(num_cam_ttl.get(detector_name, 1))
+
+
+def build_recording_attrs(
+    plan: RecordingPlan,
+    detector_name: str,
+    detector_attrs: Optional[Mapping[str, Any]] = None,
+    *,
+    expected_frames: Optional[int] = None,
+    exposure_time_ms: Any = None,
+    start_time: Optional[str] = None,
+    software_version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The flat attribute dict a recording carries for one detector.
+
+    Starts from the shared attributes the controller collected
+    (``detector_attrs``, ``'Category:key'`` keys) and adds the
+    ``acquisition:*`` block, the ``recording:*`` block and, when the plan
+    carries a layout for the detector, ``AcquisitionLayout:schema`` and
+    ``AcquisitionLayout:json``. ``start_time`` is shared by every detector of
+    one session, so the caller passes it in rather than each call reading
+    the clock.
+    """
+    attrs: Dict[str, Any] = dict(detector_attrs) if detector_attrs else {}
+
+    attrs['acquisition:software_version'] = software_version or imswitch.__version__
+    attrs['acquisition:start_time'] = (
+        start_time or datetime.now(timezone.utc).isoformat()
+    )
+    if exposure_time_ms is not None:
+        attrs['acquisition:exposure_time_ms'] = str(exposure_time_ms)
+
+    attrs['recording:detector_name'] = detector_name
+    attrs['recording:source_format'] = plan.source_format
+    if expected_frames is not None:
+        frame_count = int(expected_frames)
+        attrs['recording:expected_frames'] = frame_count
+        attrs['recording:planned_frames'] = frame_count
+        # No generic multi-stack boundary exists yet. For single-stack
+        # recording modes, the expected frame count is the stack size.
+        attrs['recording:frames_per_stack'] = frame_count
+    attrs.setdefault('recording:planned_partitions', 1)
+
+    layout = plan.layout_for(detector_name)
+    if layout is not None:
+        attrs['AcquisitionLayout:schema'] = ACQUISITION_LAYOUT_SCHEMA
+        attrs['AcquisitionLayout:json'] = encode_acquisition_layout(layout)
+
+    attrs['recording:num_timepoints'] = int(plan.num_timepoints or 1)
+    attrs['recording:lapse_index'] = int(plan.lapse_index or 0)
+    attrs['recording:single_lapse_file'] = bool(plan.single_lapse_file)
+    if plan.lapse_interval_s is not None:
+        attrs['recording:lapse_interval_s'] = float(plan.lapse_interval_s)
+    if plan.planned_start_time:
+        attrs['recording:planned_start_time'] = str(plan.planned_start_time)
+
+    return attrs

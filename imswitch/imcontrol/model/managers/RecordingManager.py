@@ -3887,97 +3887,85 @@ class RecordingWorker(Worker):
 
         return fileDests, filePaths
     
+    def _recordingPlan(self, recFrames=None, numCamTTL=None) -> _ome.RecordingPlan:
+        """The worker's inputs as a :class:`recording_metadata.RecordingPlan`.
+
+        Read off the instance dict: ``startRecording`` copies these fields onto
+        the worker before it runs, and the frame-accounting helpers are also
+        exercised on partially configured workers (tests, dry runs), which
+        must see a default rather than an attribute error. ``recFrames`` and
+        ``numCamTTL`` may be given explicitly, as ``_record`` does.
+        """
+        state = self.__dict__
+        recMode = state.get('recMode')
+        saveFormat = state.get('saveFormat')
+        if numCamTTL is None:
+            numCamTTL = state.get('numCamTTL') or {}
+        return _ome.RecordingPlan(
+            rec_mode=getattr(recMode, 'name', str(recMode or '')),
+            rec_frames=recFrames if recFrames is not None else state.get('recFrames'),
+            num_cam_ttl=dict(numCamTTL),
+            acquisition_layouts=state.get('acquisitionLayouts') or {},
+            source_format=getattr(saveFormat, 'name', 'HDF5'),
+            num_timepoints=int(state.get('recLapseTotal') or 1),
+            lapse_index=int(state.get('recLapseIndex') or 0),
+            single_lapse_file=bool(state.get('singleLapseFile') or False),
+            lapse_interval_s=state.get('recLapseIntervalS'),
+            planned_start_time=state.get('recLapseScheduledTime'),
+        )
+
+    def _exposureTimeFor(self, detectorName):
+        """The detector's exposure time in ms for the attrs, or ``None``.
+
+        Different detectors expose it differently; the common spellings are
+        tried in turn and an unanswerable detector simply records none.
+        """
+        try:
+            detector = self.__recordingManager.detectorsManager[detectorName]
+            if hasattr(detector, 'getExposureTime'):
+                return detector.getExposureTime()
+            if hasattr(detector, 'exposure'):
+                return detector.exposure
+        except Exception as e:
+            logger.debug(
+                "Could not get exposure time for detector %s: %s",
+                detectorName, e
+            )
+        return None
+
     def _augment_attrs_with_recording_metadata(
         self,
         attrs: Dict[str, Dict[str, Any]],
         expected_frames: Dict[str, int] | None = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Augment attrs with acquisition and live-source recording metadata.
-        
+
+        The attribute block itself is
+        :func:`recording_metadata.build_recording_attrs`, shared with the
+        in-process live reconstruction path so both describe an acquisition
+        identically; this method only supplies the worker's plan, one start
+        time for the whole session and each detector's exposure.
+
         Args:
             attrs: Dict mapping detector name to flat metadata dict.
             expected_frames: Optional total frame count per detector.
-        
+
         Returns:
             New dict with augmented metadata for each detector.
         """
-        augmented = {}
+        plan = self._recordingPlan()
         acquisition_start = datetime.now(timezone.utc).isoformat()
-        
+        expected_frames = expected_frames or {}
+        augmented = {}
         for detectorName, detector_attrs in attrs.items():
-            # Copy existing attrs
-            new_attrs = dict(detector_attrs) if detector_attrs else {}
-            
-            # Add software version
-            new_attrs['acquisition:software_version'] = imswitch.__version__
-            
-            # Add acquisition start timestamp
-            new_attrs['acquisition:start_time'] = acquisition_start
-            
-            # Add exposure time from detector if available
-            try:
-                detector = self.__recordingManager.detectorsManager[detectorName]
-                # Different detectors may expose this differently; try common attributes
-                if hasattr(detector, 'getExposureTime'):
-                    exposure_ms = detector.getExposureTime()
-                    new_attrs['acquisition:exposure_time_ms'] = str(exposure_ms)
-                elif hasattr(detector, 'exposure'):
-                    exposure_ms = detector.exposure
-                    new_attrs['acquisition:exposure_time_ms'] = str(exposure_ms)
-            except Exception as e:
-                logger.debug(
-                    "Could not get exposure time for detector %s: %s", 
-                    detectorName, e
-                )
-
-            new_attrs['recording:detector_name'] = detectorName
-            new_attrs['recording:source_format'] = self.saveFormat.name
-            if expected_frames is not None and detectorName in expected_frames:
-                frame_count = int(expected_frames[detectorName])
-                new_attrs['recording:expected_frames'] = frame_count
-                new_attrs["recording:planned_frames"] = frame_count
-                # No generic multi-stack boundary exists yet. For single-stack
-                # recording modes, the expected frame count is the stack size.
-                new_attrs['recording:frames_per_stack'] = frame_count
-            new_attrs.setdefault("recording:planned_partitions", 1)
-
-            layout_value = getattr(self, "acquisitionLayouts", {}).get(detectorName)
-            if layout_value is not None:
-                if isinstance(layout_value, AcquisitionLayout):
-                    encoded_layout = encode_acquisition_layout(layout_value)
-                elif isinstance(layout_value, (str, bytes, bytearray)):
-                    encoded_layout = encode_acquisition_layout(
-                        decode_acquisition_layout(layout_value)
-                    )
-                else:
-                    raise TypeError(
-                        f"Acquisition layout for {detectorName!r} must be an "
-                        "AcquisitionLayout or encoded JSON"
-                    )
-                new_attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
-                new_attrs["AcquisitionLayout:json"] = encoded_layout
-            
-            # Add lapse metadata
-            new_attrs['recording:num_timepoints'] = int(self.recLapseTotal or 1)
-            new_attrs['recording:lapse_index'] = int(self.recLapseIndex or 0)
-            new_attrs['recording:single_lapse_file'] = bool(self.singleLapseFile)
-            recLapseIntervalS = getattr(
-                self, 'recLapseIntervalS', None
+            augmented[detectorName] = _ome.build_recording_attrs(
+                plan,
+                detectorName,
+                detector_attrs,
+                expected_frames=expected_frames.get(detectorName),
+                exposure_time_ms=self._exposureTimeFor(detectorName),
+                start_time=acquisition_start,
             )
-            if recLapseIntervalS is not None:
-                new_attrs['recording:lapse_interval_s'] = float(
-                    recLapseIntervalS
-                )
-            recLapseScheduledTime = getattr(
-                self, 'recLapseScheduledTime', None
-            )
-            if recLapseScheduledTime:
-                new_attrs['recording:planned_start_time'] = str(
-                    recLapseScheduledTime
-                )
-            
-            augmented[detectorName] = new_attrs
-        
         return augmented
 
     def _isScanDrivenDetector(self, detectorName) -> bool:
@@ -3990,48 +3978,17 @@ class RecordingWorker(Worker):
     def _expectedFramesFor(self, detectorName, recFrames, numCamTTL) -> int:
         """How many frames this detector produces for the recording session.
 
-        The two detector families answer this completely differently, and
-        treating them alike is what made scan recordings hang or truncate:
-
-        - A **free-running/trigger-driven camera** emits one frame per scan
-          position (per camera TTL pulse), so it yields
-          ``recFrames * numCamTTL``.
-        - A **scan-driven** detector (APD, PMT, TimeTagger) integrates the
-          whole scan into a single assembled image and emits exactly ONE
-          frame per scan, whatever the position count. Expecting one frame
-          per position means waiting for frames that are never produced.
-
-        In the lapse modes each session covers one scan, so the scan-driven
-        answer stays 1 there too; the per-timepoint loop supplies the
-        repetition.
+        The rules (a camera yields one frame per scan position, a scan-driven
+        detector one assembled image per scan, a recorded layout answers
+        first) live in :func:`recording_metadata.expected_frames_for`, shared
+        with the live reconstruction path; this method only supplies the
+        worker's plan and whether the detector is scan-driven.
         """
-        layout = (self.__dict__.get('acquisitionLayouts') or {}).get(
-            detectorName
+        return _ome.expected_frames_for(
+            self._recordingPlan(recFrames, numCamTTL),
+            detectorName,
+            is_scan_driven=self._isScanDrivenDetector(detectorName),
         )
-        if layout is not None:
-            if layout.payload_kind == PAYLOAD_ASSEMBLED_IMAGE:
-                return 1
-            if layout.payload_kind == PAYLOAD_DETECTOR_FRAME_STREAM:
-                if layout.recorded_event_spans is not None:
-                    return sum(
-                        span.count * span.repeats
-                        for span in layout.recorded_event_spans
-                    )
-                return math.prod(loop.count for loop in layout.event_loops)
-        if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse) and \
-                self._isScanDrivenDetector(detectorName):
-            return 1
-        if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse):
-            declared = numCamTTL.get(detectorName)
-            if declared is None:
-                raise ValueError(
-                    f'The scan declares no TTL pulse per position for detector '
-                    f'{detectorName!r}, so the number of frames to record '
-                    f'cannot be derived. Gate it in the scan, deselect it, or '
-                    f'record it in a non-scan mode.'
-                )
-            return recFrames * int(declared)
-        return recFrames * numCamTTL.get(detectorName, 1)
 
     def _stallAllowanceFor(self, detectorName) -> float:
         """How long this detector may go without a frame before it is stalled.
