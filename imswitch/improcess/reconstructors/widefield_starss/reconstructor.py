@@ -9,6 +9,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import Reconstructor
 
 from .analysis import WidefieldStarssParams, analyze_widefield_starss_pair
@@ -88,6 +89,103 @@ class WidefieldStarssReconstructor(Reconstructor):
         'psf_radius': 3,
         'batch_input_folder': None,
         'batch_output_folder': None}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'current_role', 'select', 'Auto', label='Current file role',
+                options=('Auto', 'H', 'V'), group='Pairing',
+            ),
+            ParamField(
+                'counterpart_path', 'path', None, label='Counterpart path',
+                help='The other stack of the H/V pair; empty finds it by suffix', group='Pairing',
+                nullable=True,
+            ),
+            ParamField(
+                'h_suffix', 'text', '_h', label='H suffix',
+                help='Filename ending that marks the H stack (case-insensitive)', group='Pairing',
+            ),
+            ParamField(
+                'v_suffix', 'text', '_v', label='V suffix',
+                help='Filename ending that marks the V stack (case-insensitive)', group='Pairing',
+            ),
+            ParamField(
+                'convention', 'select', 'alternating', label='Convention',
+                options=('alternating', 'block'), group='Loading',
+            ),
+            ParamField(
+                'start_frame', 'int', 0, label='Start frame', min=0, max=1000000, group='Loading',
+            ),
+            ParamField('n_dark', 'int', 0, label='Dark frames', min=0, max=1000000, group='Loading'),
+            ParamField(
+                'n_off', 'int', 0, label='Off/background frames', min=0, max=1000000,
+                group='Loading',
+            ),
+            ParamField('sum_stacks', 'bool', False, label='Sum stacks', group='Loading'),
+            ParamField('split_detection', 'bool', False, label='Split detection', group='Analysis'),
+            ParamField(
+                'split_y', 'int', None, label='Split Y',
+                help='Row that splits the two detection halves; empty splits in the middle',
+                min=1, max=1000000, group='Analysis', nullable=True,
+            ),
+            ParamField(
+                'anisotropy_mode', 'select', 'stokes', label='Anisotropy mode',
+                options=('stokes', 'direct_0_90'), group='Analysis',
+            ),
+            ParamField(
+                'segmentation_mode', 'select', 'none', label='Segmentation mode',
+                options=('none', 'otsu', 'psf_peaks', 'line_psf'), group='Analysis',
+            ),
+            ParamField(
+                'smooth_sigma', 'float', 2.0, label='Smooth sigma', min=0.0, max=1000.0,
+                group='Analysis',
+            ),
+            ParamField(
+                'intensity_threshold', 'float', None, label='Intensity threshold',
+                help='Empty: no intensity threshold', group='Analysis', nullable=True,
+            ),
+            ParamField(
+                'segmentation_sigma', 'float', 2.0, label='Sigma', min=0.0, max=1000.0,
+                group='Segmentation',
+            ),
+            ParamField(
+                'min_size', 'int', 200, label='Min size', min=0, max=1000000,
+                group='Segmentation',
+            ),
+            ParamField(
+                'hole_size', 'int', 200, label='Hole size', min=0, max=1000000,
+                group='Segmentation',
+            ),
+            ParamField(
+                'threshold_scale', 'float', 1.0, label='Threshold scale', min=0.0, max=1000.0,
+                group='Segmentation',
+            ),
+            ParamField(
+                'psf_sigma', 'float', 2.0, label='PSF sigma', min=0.0, max=1000.0,
+                group='Segmentation',
+            ),
+            ParamField(
+                'psf_min_distance', 'int', 5, label='PSF min distance', min=1, max=1000000,
+                group='Segmentation',
+            ),
+            ParamField(
+                'psf_threshold_rel', 'float', 0.1, label='PSF threshold rel', min=0.0, max=1.0,
+                group='Segmentation',
+            ),
+            ParamField(
+                'psf_radius', 'int', 3, label='PSF radius', min=1, max=1000000,
+                group='Segmentation',
+            ),
+            ParamField(
+                'batch_input_folder', 'path', None, label='Batch input folder', group='Batch',
+                nullable=True, advanced=True,
+            ),
+            ParamField(
+                'batch_output_folder', 'path', None, label='Batch output folder', group='Batch',
+                nullable=True, advanced=True,
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger("WidefieldStarssReconstructor")

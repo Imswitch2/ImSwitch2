@@ -54,6 +54,7 @@ from imswitch.improcess.model.lapse_source import (
 )
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.model.result_io import save_image_result
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import (
     ReconstructionContext,
     Reconstructor,
@@ -257,6 +258,26 @@ class TimeLapseReconstructor(Reconstructor):
             "time_axis": TIME_AXIS_PLANNED,
             "incomplete": INCOMPLETE_MARK,
         }
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'detector', 'text', None, label='Detector',
+                help="Which detector's lapse to stack, for a lapse that recorded several; empty takes the one whose item was opened",
+                nullable=True,
+            ),
+            ParamField(
+                'time_axis', 'select', 'planned', label='Time axis',
+                help="Planned interval: T is evenly spaced at the interval the lapse\nwas set up with.\nActual start times: T follows when each point really started;\nthe viewer spaces planes by the typical step between them, and an\nexport records every plane's own time.\n\nEither way, both times are kept for every point, and a point that\nstarted late is listed in the Results table.",
+                options=('planned', 'actual'),
+            ),
+            ParamField(
+                'incomplete', 'select', 'mark', label='Incomplete points',
+                help='A stopped lapse can end on a point that is short or empty.\n\nMark in place: keep it, with the frames it never recorded (or\nthe whole point, if it is missing) left blank, and list it in the\nResults table.\nSkip at the end: leave incomplete points off the end of the stack.\n\nA point missing in the middle is always kept and marked: leaving\nit out would move every later point onto the wrong time.',
+                options=('mark', 'skip'),
+            ),
+        )
 
     def __init__(self):
         super().__init__()

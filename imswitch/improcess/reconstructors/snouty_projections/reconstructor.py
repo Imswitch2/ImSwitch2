@@ -6,6 +6,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import Reconstructor
 from imswitch.improcess.reconstructors.snouty._pipeline import load_restack_deskew_timelapse
 from imswitch.improcess.reconstructors.snouty.params_widget import SnoutyParamsWidget
@@ -49,6 +50,40 @@ class SnoutyProjectionsReconstructor(Reconstructor):
         'cycles': 1,
         'planes_in_cycle': 1,
         'restack': True}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('device', 'select', 'CPU', label='Device', options=('CPU', 'GPU')),
+            ParamField('n_timepoints', 'int', 1, label='Timepoints', min=1, max=9999),
+            ParamField(
+                'c_px', 'float', 100.0, label='Camera pixel size', min=1, max=10000, suffix='nm',
+                group='Geometry',
+            ),
+            ParamField(
+                'alpha_deg', 'float', 30.0, label='Tilt angle', min=0, max=90, suffix='°',
+                group='Geometry',
+            ),
+            ParamField(
+                'dy', 'float', 210.0, label='Scan step', min=1, max=10000, suffix='nm',
+                group='Geometry',
+            ),
+            ParamField(
+                'sample_vx_size', 'float', 200.0, label='Output voxel size', min=1, max=10000,
+                suffix='nm', group='Geometry',
+            ),
+            ParamField(
+                'camera_offset', 'float', 100.0, label='Camera offset', min=0, max=65535,
+                suffix='ADU', group='Acquisition',
+            ),
+            ParamField('flip_data', 'bool', False, label='Flip data', group='Acquisition'),
+            ParamField('cycles', 'int', 1, label='Cycles', min=1, max=9999, group='Acquisition'),
+            ParamField(
+                'planes_in_cycle', 'int', 1, label='Planes per cycle', min=1, max=9999,
+                group='Acquisition',
+            ),
+            ParamField('restack', 'bool', True, label='Restack', group='Acquisition'),
+        )
 
     def __init__(self):
         self._logger = initLogger('SnoutyProjectionsReconstructor')

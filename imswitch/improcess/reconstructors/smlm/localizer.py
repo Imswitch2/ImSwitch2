@@ -21,6 +21,7 @@ from imswitch.imcommon.model.acquisition_layout import (
 )
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.localization_schema import localizations_from_columns
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import StreamingReconstructor
 
 from .detection import detect_spots
@@ -230,6 +231,34 @@ class SmlmLocalizer(StreamingReconstructor):
         # None: the recording's own calibration answers (the widget's
         # 'From the recording'); a number overrides it.
         'pixel_size_nm': None}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'threshold', 'float', 500.0, label='Net-gradient threshold',
+                help='Minimum Picasso net gradient (inward slopes summed over the ROI) for a candidate peak. Tune with the Preview detection toggle: raise to reject noise, lower to catch dim emitters.',
+                min=0, group='Detection',
+            ),
+            ParamField(
+                'sigma', 'float', 1.0, label='Smoothing sigma',
+                help='Gaussian pre-smoothing width in pixels', min=0, max=20, group='Detection',
+            ),
+            ParamField(
+                'roi', 'int', 7, label='ROI size', help='Fitting window size in pixels (odd)',
+                min=3, max=31, group='Detection',
+            ),
+            ParamField(
+                'method', 'select', 'gausslq', label='Method',
+                help='gausslq: centroid + moments; mle: Poisson Gaussian MLE',
+                options=('gausslq', 'mle'), group='Fitting',
+            ),
+            ParamField(
+                'pixel_size_nm', 'float', None, label='Pixel size',
+                help="Empty: the recording's own calibration answers; a number overrides it",
+                min=0.0, max=1000000.0, suffix='nm', group='Calibration', nullable=True,
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger('SmlmLocalizer')

@@ -17,6 +17,7 @@ from qtpy import QtWidgets
 from imswitch.improcess.analysis.smlm_tables import apply_drift, estimate_drift
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import DriftCorrectedLocalizationResult
@@ -33,6 +34,16 @@ class SmlmDriftProcessor(Processor):
     @classmethod
     def default_params(cls) -> dict:
         return {'segments': 10, 'render_pixel_size_nm': 30.0}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('segments', 'int', 10, label='Temporal segments', min=2, max=10000),
+            ParamField(
+                'render_pixel_size_nm', 'float', 30.0, label='Render pixel', min=1, max=1000,
+                decimals=2, suffix='nm/px',
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

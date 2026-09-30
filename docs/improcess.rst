@@ -1885,7 +1885,13 @@ Widget agreement (checked)
     the same defaults are required, and each default must be a value of its
     own field (a ``select`` default among its options, a bounded number
     within its bounds); ``check_plugin_contract`` reports any disagreement
-    and the built-ins are pinned by a test.
+    and the built-ins are pinned by a test.  Every built-in declares one,
+    and a second test reads each built-in's widget back (the choices in
+    its combo boxes, the bounds and units of its spin boxes) and holds the
+    declaration to it.  ``python tools/draft_improcess_param_specs.py
+    my.plugin-id`` drafts the declaration for your own plugin from its
+    widget the same way; ``examples/improcess_plugins/gaussian_blur.py``
+    shows the result.
 
 ``output_spec()`` (optional)
     One port ``out`` unless you say otherwise: named ports when ``apply``

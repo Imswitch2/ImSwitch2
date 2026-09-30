@@ -17,6 +17,7 @@ import copy
 
 import numpy as np
 
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import Reconstructor
 
 from .result import MonalisaProcessingResult
@@ -99,6 +100,40 @@ class LegacyMonalisaReconstructor(Reconstructor):
             "scan_params": default_scan_params(),
             "axis_label_map": default_axis_label_map(),
         }
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('bleaching_correction', 'bool', False, label='Bleaching correction'),
+            ParamField(
+                'psf_fwhm_nm', 'json', [250.0], label='PSF FWHM',
+                help='One FWHM per channel, in nm',
+            ),
+            ParamField(
+                'bg_modelling', 'select', 'Constant', label='BG modelling',
+                options=('Constant', 'Gaussian', 'No background'),
+            ),
+            ParamField(
+                'bg_gaussian_size_nm', 'float', 1000.0, label='BG Gaussian size', min=0.0,
+                suffix='nm',
+            ),
+            ParamField('pixel_size_nm', 'float', 35.0, label='Pixel size', min=0.0, suffix='nm'),
+            ParamField('device', 'select', 'CPU', label='Device', options=('CPU', 'GPU')),
+            ParamField(
+                'pattern', 'json', None, label='Pattern',
+                help='[row_offset, col_offset, row_period, col_period] in pixels; empty finds the pattern',
+                nullable=True,
+            ),
+            ParamField(
+                'scan_params', 'json', default_scan_params(), label='Scan parameters',
+                help="The scan geometry (dimensions, directions, steps, step sizes), as the GUI's scan-params dialog holds it; a recorded run fills it from the acquisition attributes",
+                advanced=True,
+            ),
+            ParamField(
+                'axis_label_map', 'json', default_axis_label_map(), label='Axis label map',
+                help='How the scan axes are named in the recording', advanced=True,
+            ),
+        )
 
     def prepare_params(self, data_obj, params: dict | None) -> dict:
         """Fill ``scan_params`` from the acquisition attributes when absent."""

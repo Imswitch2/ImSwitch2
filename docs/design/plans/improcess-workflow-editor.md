@@ -2,11 +2,13 @@
 
 Date: 2026-09-30
 
-Status: Implemented through Phase 2 (2026-09-30) — Phase 0 contract fixes,
+Status: Implemented through Phase 3 (2026-09-30) — Phase 0 contract fixes,
 `param_spec()` with the defaults-derived fallback and contract test, the
-Qt-free catalogue and document model, and the editor window wired into
-ImProcess (`File → Workflow editor…`, `Edit workflow of current result…`).
-Phase 3 (rich specs for every built-in) and Phase 4 are open.
+Qt-free catalogue and document model, the editor window wired into
+ImProcess (`File → Workflow editor…`, `Edit workflow of current result…`),
+and a declared spec on every built-in, drafted from the widgets by
+`imswitch/improcess/model/param_probe.py` (`tools/draft_improcess_param_specs.py`)
+and held to them by `test_param_spec_matches_widgets.py`. Phase 4 is open.
 
 ## Summary
 
@@ -520,17 +522,28 @@ Each phase leaves the suite green and is independently useful.
 - Exit criterion: the four shipped example workflows can be opened, edited,
   validated, saved and run from the editor without touching a text file.
 
-### Phase 3: rich specs for every built-in
+### Phase 3: rich specs for every built-in (done)
 
-- `param_spec()` for all 39 built-ins and the shipped example plugins:
+- `param_spec()` for all 39 built-ins and the Gaussian-blur example:
   choices, bounds, units, tooltips and groups as the widgets have them.
-  A throw-away AST script (`tools/draft_improcess_param_specs.py`) can draft
-  the inline-closure and pyqtgraph cases from `addItems`/`setRange`/
-  `setSuffix`/`setToolTip`/`addRow` and the `get_values` mapping; the tail
-  is written by hand.
-- Exit criterion: no built-in field of type `text` whose widget is a combo
-  box, and no `json` field except stack-subset `ranges`, MoNaLISA
-  `scan_params` and the legacy dicts.
+- Drafted not by parsing source but by **probing the widgets**
+  (`model/param_probe.py`): each plugin's widget is built offscreen, every
+  control is perturbed and `get_values()` watched, so the control that
+  feeds a key is known together with its choices, bounds, step, unit,
+  label and tooltip. A control that moves several keys (a preset list)
+  is set aside as a macro; a key fed by several controls (a "full frame"
+  box blanking four spin boxes) is left to the author. Nine plugins needed
+  hand-written fields for such keys, the two placeholder widgets, the
+  source-inspection combos and the widget-less legacy MoNaLISA.
+- `tools/draft_improcess_param_specs.py` prints the draft for any
+  installed plugin, drop-ins included, for plugin authors.
+- `test_param_spec_matches_widgets.py` reads every built-in's widget back
+  and holds the declared choices, bounds and units to it, so the two
+  cannot drift apart silently; `test_plugin_param_contract.py` holds the
+  spec to the defaults.
+- Exit criterion met: no built-in is left to the fallback; the only
+  `json` fields are the genuinely structured ones (stack-subset `ranges`,
+  BeadRec `roi`, the legacy MoNaLISA dicts).
 
 ### Phase 4: beyond the config editor's scope (optional, in any order)
 
