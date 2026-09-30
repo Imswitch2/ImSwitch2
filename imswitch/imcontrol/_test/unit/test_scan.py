@@ -1,4 +1,4 @@
-import copy
+from dataclasses import replace
 import os
 
 import numpy as np
@@ -134,9 +134,14 @@ def test_beta_start_anchor_starts_from_position_before_scan():
                      'TTL_end': [[0.0015, 0.005], [0, 0]],
                      'sequence_time': 0.005}
 
-    setupInfo = copy.deepcopy(setupInfoBasic)
-    setupInfo.scan.scanDesignerParams = dict(setupInfo.scan.scanDesignerParams)
-    setupInfo.scan.scanDesignerParams['position_anchor'] = 'start'
+    scanInfo = replace(
+        setupInfoBasic.scan,
+        scanDesignerParams={
+            **setupInfoBasic.scan.scanDesignerParams,
+            'position_anchor': 'start',
+        },
+    )
+    setupInfo = replace(setupInfoBasic, scan=scanInfo)
     sh = ScanManagerBase(setupInfo=setupInfo)
     fullsig, _ = sh.makeFullScan(stageParameters, TTLParameters)
 
