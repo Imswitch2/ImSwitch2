@@ -122,9 +122,15 @@ class MasterController:
         self.recordingManager.sigRecordingTimeUpdated.connect(cc.sigUpdateRecTime)
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
         self.recordingManager.sigMemoryRecordingAvailable.connect(self.memoryRecordingAvailable)
-        self.__moduleCommChannel.memoryRecordings.sigDataWillRemove.connect(
-            self.memoryRecordingWillBeRemoved
+        # Release a memory recording's bytes once ImProcess removes it. A
+        # module channel without the collection (a test double) has nothing
+        # to release.
+        removal = getattr(
+            getattr(self.__moduleCommChannel, 'memoryRecordings', None),
+            'sigDataWillRemove', None,
         )
+        if removal is not None:
+            removal.connect(self.memoryRecordingWillBeRemoved)
 
     def memoryRecordingAvailable(self, name, file, filePath, savedToDisk):
         self.__moduleCommChannel.memoryRecordings[name] = VFileItem(
