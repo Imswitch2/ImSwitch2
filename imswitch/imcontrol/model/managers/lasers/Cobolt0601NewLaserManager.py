@@ -33,6 +33,11 @@ Safety design (matches the WFS reference at
   probed safely.
 """
 
+from functools import wraps
+import threading
+import time
+import traceback
+
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager, normalise_ports
 from .cobolt0601_protocols import (
@@ -116,6 +121,18 @@ class Cobolt0601NewLaserManager(LaserManager):
         self._modulation_power_mw = float(
             laserInfo.managerProperties.get('modulationPowerMw', 5.0)
         )
+        try:
+            self._scan_resume_settle_s = max(
+                0.0,
+                float(laserInfo.managerProperties.get('scanResumeSettleMs', 0.0))
+                / 1000.0,
+            )
+        except (TypeError, ValueError):
+            self.__logger.warning(
+                f'Invalid scanResumeSettleMs for Cobolt {self._port}; '
+                f'defaulting to 0 ms.'
+            )
+            self._scan_resume_settle_s = 0.0
         # ``simulation`` explicitly skips the real transport.  A separate
         # fallback flag preserves the long-standing behaviour for unavailable
         # ports without making every normal startup a simulation.
@@ -245,6 +262,19 @@ class Cobolt0601NewLaserManager(LaserManager):
         )
 
         self._laser = MockCobolt06(self._port)
+
+        # Keep protocol discovery/validation meaningful in mock mode. The
+        # shipped mock defaults to the legacy command family, but pause-based
+        # emission control requires the SCPI-compatible profile. Likewise, an
+        # explicitly requested SCPI profile must be represented by an SCPI
+        # mock rather than being rejected simply because real hardware was
+        # unavailable. Explicit legacy requests stay legacy so incompatible
+        # configurations (for example legacy + pause) still fail validation.
+        requested_profile = (self._protocol_profile or 'auto').lower()
+        if (requested_profile == SCPI_PROFILE_ID or
+                (requested_profile == 'auto' and self._pause_mode)):
+            self._laser.firmware = 'scpi'
+
         self._laser.initialize()
         self._real_hw = False
 
@@ -814,7 +844,12 @@ class Cobolt0601NewLaserManager(LaserManager):
                 # Laser is already started; just un-pause. The digital gate
                 # (las:pm:dig:ena 1, set by _enter_modulation_mode) keeps the
                 # beam dark until the scanner drives the TTL line HIGH.
-                self._run('resume')
+                # Some pause-controlled Cobolt firmware acknowledges resume
+                # before it is ready for the first external-modulation edge.
+                # Keep that hardware-specific settling time inside scan arming
+                # so returning from this method means the laser is ready.
+                if self._run('resume') and self._scan_resume_settle_s > 0:
+                    time.sleep(self._scan_resume_settle_s)
             else:
                 self._run('master_on')   # master on; TTL gates the actual emission
         else:

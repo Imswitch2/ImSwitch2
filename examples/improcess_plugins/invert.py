@@ -1,8 +1,8 @@
 """Invert intensities — the minimal ImProcess drop-in analysis plugin.
 
-Copy this file into ~/.imswitch/improcess_plugins/ (Analyze -> Drop-in plugins
--> Open plugins folder...) and Reload plugins. "Invert" then appears in the
-Load-tool dropdown.
+Copy this file into ~/.imswitch/improcess_plugins/ (Plugins -> Open plugins
+folder..., or pick it with Plugins -> Add plugin file...) and Reload plugins.
+"Invert" then appears in the Load-plugin dropdown of the Plugins toolbar.
 """
 
 import numpy as np

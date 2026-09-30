@@ -28,8 +28,10 @@ declares::
     python tools/extract_manager_schemas.py --package imswitch_my_plugin --write
     python tools/extract_manager_schemas.py --package imswitch_my_plugin --check
 
-The package is located with ``importlib.util.find_spec`` and never imported;
-its manifest names the managers (``id``, ``kind``, ``python_name``). Point
+The package is located through the import system's finders and never
+imported -- nor, for a dotted name, are its parent packages
+(:func:`find_package_spec`); its manifest names the managers (``id``,
+``kind``, ``python_name``), each resolved by module and class. Point
 each contribution's ``manager_properties_schema`` at the written
 ``schemas/managers/<id>.json`` and ImSwitch validates and edits against it.
 
@@ -148,14 +150,30 @@ def template_managers(templates_dir: Path) -> dict[str, str]:
     return found
 
 
+def core_python_names(managers_root: Path, categories: dict[str, str]) -> dict[str, str | None]:
+    """``name -> python_name`` for every core manager, exact for registered and legacy alike.
+
+    A registered manager's comes from the registry. An unregistered one's is
+    where ``MultiManager`` imports it from (:func:`extraction.legacy_python_name`),
+    so a class that merely shares its name elsewhere in the tree is never
+    taken for it. ``categories`` is updated with the catalog's category, which
+    wins over a template's.
+    """
+    python_names: dict[str, str | None] = {}
+    for name, (category, python_name) in catalog_managers(managers_root).items():
+        categories[name] = category
+        python_names[name] = python_name
+    for name, category in categories.items():
+        if not python_names.get(name):
+            python_names[name] = extraction.legacy_python_name(name, category)
+    return python_names
+
+
 def generation_inputs(args: argparse.Namespace):
     """Everything ``--write`` and ``--check`` need, computed once."""
     schemagen = _schemagen()
     categories = template_managers(args.templates_dir)
-    python_names: dict[str, str | None] = {}
-    for name, (category, python_name) in catalog_managers(args.managers_root).items():
-        categories[name] = category  # the catalog's category wins
-        python_names[name] = python_name
+    python_names = core_python_names(args.managers_root, categories)
     tree = extraction.extract_tree_indexed(args.managers_root)
     class_names = {
         name: extraction.resolve_class_name(name, tree, python_names.get(name))
@@ -175,7 +193,6 @@ def generation_inputs(args: argparse.Namespace):
     report = extraction.coverage_report(extractions, docs=cards or None)
     return schemagen.GenerationInputs(
         extractions=extractions,
-        classes=tree.classes,
         categories={name: categories[name] for name in resolved},
         overrides=schemagen.load_overrides(args.schemas_root),
         report=report,
@@ -184,11 +201,46 @@ def generation_inputs(args: argparse.Namespace):
     )
 
 
-def package_root(package: str) -> Path:
-    """The directory of an installed package, found without importing it."""
-    import importlib.util
+def find_package_spec(package: str):
+    """The spec of an installed package, located without running any of its code.
 
-    spec = importlib.util.find_spec(package)
+    ``importlib.util.find_spec("a.b")`` imports ``a`` -- executes
+    ``a/__init__.py`` -- to learn where ``a.b`` lives, and a hardware
+    plugin's ``__init__`` may import a vendor SDK. So each level is located
+    by asking the import system's finders directly, handing a subpackage its
+    parent's search locations instead of importing the parent. Finding a
+    spec never executes a module; the finders are the ones an import would
+    consult (editable installs included). None if there is no such package.
+    """
+    parts = package.split(".")
+    if not all(part.isidentifier() for part in parts):
+        return None
+    spec = None
+    locations = None
+    for depth in range(1, len(parts) + 1):
+        fullname = ".".join(parts[:depth])
+        spec = None
+        for finder in sys.meta_path:
+            find_spec = getattr(finder, "find_spec", None)
+            if find_spec is None:
+                continue
+            try:
+                spec = find_spec(fullname, locations)
+            except (ImportError, ValueError):
+                spec = None
+            if spec is not None:
+                break
+        if spec is None:
+            return None
+        locations = spec.submodule_search_locations
+        if locations is None and depth < len(parts):
+            return None  # a module on the way down, not a package
+    return spec
+
+
+def package_root(package: str) -> Path:
+    """The directory of an installed package, found without importing it or its parents."""
+    spec = find_package_spec(package)
     if spec is None or not spec.submodule_search_locations:
         raise SystemExit(f"package {package!r} is not installed or is not a package")
     return Path(next(iter(spec.submodule_search_locations)))
@@ -220,7 +272,8 @@ def package_inputs(args: argparse.Namespace):
     schemagen = _schemagen()
     root = package_root(args.package)
     managers = package_managers(root, args.package)
-    tree = extraction.extract_tree_indexed(root)
+    # Named as the package it is, so each class's key is its python_name.
+    tree = extraction.extract_tree_indexed(root, package=args.package)
     class_names = {
         name: extraction.resolve_class_name(name, tree, python_name)
         for name, (_category, python_name) in sorted(managers.items())
@@ -235,7 +288,6 @@ def package_inputs(args: argparse.Namespace):
     schemas_root = args.schemas_root if args.schemas_root_given else root / PACKAGE_SCHEMAS_DIR
     return schemagen.GenerationInputs(
         extractions=extractions,
-        classes=tree.classes,
         categories={name: managers[name][0] for name in resolved},
         overrides=schemagen.load_overrides(schemas_root),
         report=extraction.coverage_report(extractions),
@@ -253,15 +305,15 @@ def run_report(args: argparse.Namespace) -> int:
         if inputs.unresolved:
             print("no class found in the package (no schema): " + ", ".join(inputs.unresolved))
         return 0
-    catalog = catalog_managers(args.managers_root)
-    names = args.managers or sorted(catalog)
+    categories: dict[str, str] = {}
+    python_names = core_python_names(args.managers_root, categories)
+    names = args.managers or sorted(catalog_managers(args.managers_root))
     extractions = extraction.extract_managers(
         names,
         managers_root=args.managers_root,
         setups_dir=None if args.no_examples else args.setups_dir,
         docs_dir=None if args.no_docs else args.docs_dir,
-        class_names={name: python_name and python_name.rsplit(":", 1)[1]
-                     for name, (_category, python_name) in catalog.items()},
+        python_names=python_names,
     )
     docs = None if args.no_docs else extraction.docs_cards(args.docs_dir)
     report = extraction.coverage_report(extractions, docs=docs)

@@ -68,6 +68,14 @@
         "code:optional(in)",
         "docs:boolean"
       ]
+    },
+    "useMockOnFailure": {
+      "description": "When the controller does not answer the startup commands (a pyvisa",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
     }
   },
   "required": [

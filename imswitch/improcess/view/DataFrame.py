@@ -138,8 +138,19 @@ class DataFrame(QtWidgets.QFrame):
         self.slider.setValue(value)
 
     def setNumFrames(self, value):
+        """Set the frame range for new data without navigating.
+
+        Lowering the maximum below the slider's position clamps it, and the
+        clamp emits ``valueChanged`` like a user drag -- which read a plane of
+        the new data behind a preview that had just decided to show nothing,
+        decoding a non-lazy source whole, and replaced the mean on screen with
+        whatever frame the clamp landed on. The controls are updated silently
+        and agree with each other afterwards.
+        """
         self.numFrames.setText(str(value))
-        self.slider.setMaximum(value - 1 if value > 0 else 0)
+        with QtCore.QSignalBlocker(self.slider), QtCore.QSignalBlocker(self.frameNum):
+            self.slider.setMaximum(value - 1 if value > 0 else 0)
+            self.frameNum.setText(str(self.slider.value()))
 
     def setDataName(self, value):
         self.dataName.setText(f'File: {value}')

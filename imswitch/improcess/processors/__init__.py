@@ -81,29 +81,19 @@ def _all_processor_classes() -> dict[str, type]:
     return {**_AVAILABLE_PROCESSOR_CLASSES, **_USER_PROCESSOR_CLASSES}
 
 
-def load_user_plugins(directory: str | None = None) -> tuple[list[str], list]:
-    """Discover user drop-in processor plugins and register them for use.
+def _install_user_processor_classes(
+    classes: dict[str, type],
+) -> tuple[list[str], list]:
+    """Replace the user table with ``classes``; built-in ids win a collision.
 
-    Populates the module-level user-plugin table so discovered processors show
-    up in every enumeration (runtime tool loader, config validation) and can be
-    instantiated by id like a built-in. Built-in ids take precedence: a user
-    plugin that reuses a built-in id is rejected with a logged error.
-
-    Returns ``(loaded_ids, errors)``. Never raises — discovery is tolerant.
+    Called by :func:`imswitch.improcess.plugins.load_user_plugins` with what
+    one scan of the folder defined. Returns ``(installed_ids, errors)``.
     """
-    from imswitch.improcess.model.napari_endpoints import clear_user_endpoints
-    from imswitch.improcess.plugins.user_plugins import (
-        PluginLoadError,
-        discover_processor_plugins,
-    )
+    from imswitch.improcess.plugins.user_plugins import PluginLoadError
 
-    # Endpoint adapters contributed by plugin files are re-collected on
-    # every scan, so a removed file's adapters disappear with it.
-    clear_user_endpoints()
-    classes, errors = discover_processor_plugins(directory)
-    errors = list(errors)
     _USER_PROCESSOR_CLASSES.clear()
-    loaded: list[str] = []
+    installed: list[str] = []
+    errors: list = []
     for processor_id, processor_cls in classes.items():
         if processor_id in _AVAILABLE_PROCESSOR_CLASSES:
             errors.append(
@@ -117,8 +107,27 @@ def load_user_plugins(directory: str | None = None) -> tuple[list[str], list]:
             )
             continue
         _USER_PROCESSOR_CLASSES[processor_id] = processor_cls
-        loaded.append(processor_id)
-    return loaded, errors
+        installed.append(processor_id)
+    return installed, errors
+
+
+def load_user_plugins(directory: str | None = None) -> tuple[list[str], list]:
+    """Discover user drop-in plugins and register the processors for use.
+
+    One scan of the folder installs both the processor and the reconstructor
+    tables (see :func:`imswitch.improcess.plugins.load_user_plugins`); this
+    returns the processor side, ``(loaded_ids, errors)``, for callers that
+    only deal in processors. Discovered processors show up in every
+    enumeration (runtime tool loader, config validation) and can be
+    instantiated by id like a built-in. Built-in ids take precedence: a user
+    plugin that reuses a built-in id is rejected with a recorded error.
+
+    Never raises — discovery is tolerant.
+    """
+    from imswitch.improcess.plugins.user_plugins import load_user_plugins as _load_all
+
+    loaded = _load_all(directory)
+    return list(loaded.processors), list(loaded.errors)
 
 
 def clear_user_plugins() -> None:

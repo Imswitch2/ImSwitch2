@@ -13,7 +13,11 @@ from ..display_transform import (
     apply_display_transform,
     display_transform_from_properties,
 )
-from tifffile import imwrite, imread
+from tifffile import imread
+from imswitch.imcontrol.model.bead_rec_io import (
+    oriented_pixel_size, read_pixel_size_um, valid_pixel_size,
+    write_reconstruction_tiff,
+)
 from imswitch.imcontrol.view import guitools
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.managers import LeasePurpose
@@ -700,10 +704,14 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                 axialName="XY"
             self.axialName = axialName
             self.imDisplay=self.currentRunImgs.get(axialName)
+            self._displayPixelSizeUm = self._reconstructionPixelSizeUm(
+                False, axialName
+            )
         else:
             self.axialName = None
             if imgListIdx is not None and imgListIdx<len(self.resultRecords):
                 self.imDisplay=self.resultRecords[imgListIdx].image
+                self._displayPixelSizeUm = self.resultRecords[imgListIdx].pixel_size_um
             else:
                 return
         
@@ -822,6 +830,9 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                 return
             filename = os.path.splitext(os.path.basename(path))[0]
             itemName = self._widget.addToList(filename) # adds to list of items in widget
+            # A file BeadRec saved carries its pixel size; keep it, so saving
+            # it again does not drop the one fact a fit needs.
+            pixelSize = read_pixel_size_um(path)
             self._insertResultRecord(
                 0,
                 BeadRecResultRecord(
@@ -829,10 +840,12 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                     image=im,
                     source_path=path,
                     timestamp=time.time(),
+                    pixel_size_um=pixelSize,
                 ),
             )
         # display last image loaded
         self.imDisplay = im
+        self._displayPixelSizeUm = pixelSize
         self._widget.updateImage(self.imDisplay)
         self._widget.imageListWidget.setCurrentRow(self._widget.getInsertIndexAfterCurrent())
 
@@ -856,6 +869,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                     axial_name=axialName,
                     timestamp=time.time(),
                     scaled=scaled,
+                    pixel_size_um=self._reconstructionPixelSizeUm(scaled, key),
                 ),
             )
             if not self.ongoingScan:
@@ -899,7 +913,10 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self.lastDir = os.path.dirname(path)
         if path.split('.')[-1] not in ['tif', 'tiff']:
             path = path + ".tiff"
-        imwrite(path,self.imDisplay)
+        write_reconstruction_tiff(
+            path, self.imDisplay, self.__dict__.get('_displayPixelSizeUm'),
+            self._displayAnnotations(),
+        )
     
     def saveAll(self):
         """ Saves all images that are in self.listRecs, with file names from the list panel."""
@@ -917,7 +934,10 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             item = self._widget.imageListWidget.item(idx + name_offset)
             name = item.text() + ".tif"
             path = os.path.join(folder, name)
-            imwrite(path, record.image)
+            write_reconstruction_tiff(
+                path, record.image, record.pixel_size_um,
+                self._recordAnnotations(record),
+            )
 
     def roiToggled(self, enabled):
         """ Show or hide ROI."""
@@ -1346,15 +1366,20 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         oriented, _ = apply_display_transform(im, None, self._orientation)
         return oriented
 
-    def _showReconstruction(self, base):
+    def _showReconstruction(self, base, pixelSizeUm=None):
         """Orient `base` and show it, remembering it for re-orientation.
 
         `base` is the reconstruction after optional physical-pixel rescaling but
         before orientation. self.imDisplay holds the oriented image actually
         shown (so fits, saves and the pixel readout all use what the user sees).
+        `pixelSizeUm` is `base`'s; the shown image's follows the rotation.
         """
         self._orientBase = base
+        self._orientBasePixelSizeUm = pixelSizeUm
         self.imDisplay = self._applyOrientation(base)
+        self._displayPixelSizeUm = oriented_pixel_size(
+            pixelSizeUm, self._orientation.rotation
+        )
         self._widget.updateImage(self.imDisplay)
 
     def _onOrientationChanged(self):
@@ -1364,6 +1389,10 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self._orientation = DisplayTransform(*self._toTransformArgs())
         if self._orientBase is not None:
             self.imDisplay = self._applyOrientation(self._orientBase)
+            self._displayPixelSizeUm = oriented_pixel_size(
+                self.__dict__.get('_orientBasePixelSizeUm'),
+                self._orientation.rotation,
+            )
             self._widget.updateImage(self.imDisplay)
 
     def _toTransformArgs(self):
@@ -1377,15 +1406,79 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             # Rescale from the raw stored reconstruction (not the already-shown
             # image) so scale + orientation never compound across toggles.
             base = self.currentRunImgs.get(self.axialName)
-            if base is not None and self._widget.scaleButton.isChecked():
+            scaled = base is not None and self._widget.scaleButton.isChecked()
+            if scaled:
                 base = self.rescale(base)
             if base is not None:
-                self._showReconstruction(base)
+                self._showReconstruction(
+                    base,
+                    self._reconstructionPixelSizeUm(scaled, self.axialName),
+                )
                 return
         # Showing a saved list item (not the live reconstruction): orientation
         # toggles must not resurrect a stale reconstruction.
         self._orientBase = None
         self._widget.updateImage(self.imDisplay)
+
+    @staticmethod
+    def _isAxialImage(axialName):
+        """Whether ``axialName`` names an XZ/YZ follow-up of an auto-axial run."""
+        return axialName is not None and axialName != 'XY'
+
+    def _reconstructionPixelSizeUm(self, scaled, axialName):
+        """``(y, x)`` in µm of the reconstruction ``axialName``, before orientation.
+
+        One scan step per pixel; after rescaling, the finer of the two steps on
+        both axes (``rescale_reconstruction_to_pixel_size`` resamples to it).
+        None when the scan steps are unknown -- which includes every XZ/YZ
+        image: ``stepSizes`` is read once, at Run, from the XY scan, so an
+        axial image's rows (Z) have no step BeadRec knows.
+        """
+        if self._isAxialImage(axialName):
+            return None
+        steps = self.__dict__.get('stepSizes')
+        if steps is None or len(steps) < 2:
+            return None
+        pixel = valid_pixel_size((steps[1], steps[0]))    # stepSizes is (x, y)
+        if pixel is None:
+            return None
+        if scaled and not np.isclose(pixel[0], pixel[1]):
+            finer = min(pixel)
+            return (finer, finer)
+        return pixel
+
+    def _displayAnnotations(self):
+        """What the file of the image on screen should say about it."""
+        rotation, flipH, flipV = self._toTransformArgs()
+        annotations = {
+            'BeadRec:axial_name': self.__dict__.get('axialName'),
+            'BeadRec:orientation': {
+                'rotation': int(rotation), 'flip_h': bool(flipH),
+                'flip_v': bool(flipV),
+            },
+        }
+        if self.__dict__.get('dims') is not None:
+            annotations['BeadRec:scan_dims'] = [int(v) for v in self.dims]
+        # The XY scan's steps; an XZ/YZ image's are not known (see
+        # _reconstructionPixelSizeUm), and writing XY's would mislabel it.
+        if (
+            self.__dict__.get('stepSizes') is not None
+            and not self._isAxialImage(self.__dict__.get('axialName'))
+        ):
+            annotations['BeadRec:scan_step_um'] = [float(v) for v in self.stepSizes]
+        annotations['BeadRec:frames_per_pixel'] = int(
+            self.__dict__.get('framesPerPixel') or 1
+        )
+        return annotations
+
+    @staticmethod
+    def _recordAnnotations(record):
+        """A saved record's own metadata, as OME key/value pairs."""
+        return {
+            f'BeadRec:{key}': value
+            for key, value in record.metadata().items()
+            if key != 'pixel_size_um' and value is not None
+        }
 
     def rescale(self,im):
         """
@@ -1410,9 +1503,12 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         if self.recIm is None:
             return
         base = reconstruction_image(self.recIm, self.dims)
-        if self._widget.scaleButton.isChecked():
+        scaled = bool(self._widget.scaleButton.isChecked())
+        if scaled:
             base = self.rescale(base)
-        self._showReconstruction(base)
+        self._showReconstruction(
+            base, self._reconstructionPixelSizeUm(scaled, self.axialName)
+        )
 
 
     def centerCoordQuery(self, mode):

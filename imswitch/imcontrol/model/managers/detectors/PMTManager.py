@@ -4,9 +4,10 @@ import threading
 import time
 
 from imswitch.imcommon.framework import Signal, Thread, Worker
-from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import initLogger, memory_limits
 from .._scan_execution import PARTICIPANTS_KEY
 from .DetectorManager import (
+    _queueBudgetBytes,
     ChunkPayload, DetectorManager, _EMPTY_CHUNK, scanPixelSizesToZYX,
 )
 from ._live_display import LiveDisplayThrottle
@@ -699,6 +700,17 @@ class PMTManager(DetectorManager):
                 or self._image.dtype != image_dtype):
             self._image = np.zeros(img_dims_extra, dtype=image_dtype)
             self.setShape(img_dims_extra)
+            # See APDManager.initiateImage: the raw frame is this whole volume,
+            # and here is where its size is first known.
+            # A double built without a logger (tests) has nothing to say it to.
+            log = getattr(self, '_PMTManager__logger', None)
+            if log is not None:
+                log.info(
+                    f'Raw scan volume {img_dims_extra} {np.dtype(image_dtype).name}: '
+                    f'{memory_limits.describeBytes(self._image.nbytes)} per scan, '
+                    f'{memory_limits.frameBudgetNote(self._image.nbytes, _queueBudgetBytes())} '
+                    f'({memory_limits.settingRef("perDetectorQueueBytes")}).'
+                )
 
         self._image_display = np.zeros(
             tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]),

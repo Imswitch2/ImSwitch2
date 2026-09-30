@@ -8,25 +8,10 @@ class ScanManagerPointScan(SuperScanManager):
         super().__init__(*args, **kwargs)
 
     def makeFullScan(self, scanParameters, TTLParameters, *args):
-        """ Generates stage and TTL scan signals. """
+        """ Generates stage and TTL scan signals. Raises
+        ScanDesignRefusedError when the designer refuses the scan. """
         self._checkScanDefined()
-        if not self._scanDesigner.checkSignalLength(
-                scanParameters, self._setupInfo
-        ):
-            self._logger.error(
-                'Signal too long: try scanning a smaller ROI, faster, or with a larger pixel'
-                ' size.'
-            )
-            return
-        scanSignalsDict, positions, scanInfoDict = self.getScanSignalsDict(scanParameters)
-        if not self._scanDesigner.checkSignalComp(
-                scanParameters, self._setupInfo, scanInfoDict
-        ):
-            self._logger.error(
-                'Signal voltages outside scanner ranges: try scanning a smaller ROI or a slower'
-                ' scan.'
-            )
-            return
+        scanSignalsDict, scanInfoDict = self._designScanSignals(scanParameters)
         TTLCycleSignalsDict = self.getTTLCycleSignalsDict(TTLParameters, scanInfoDict)
         return (
             {'scanSignalsDict': scanSignalsDict,

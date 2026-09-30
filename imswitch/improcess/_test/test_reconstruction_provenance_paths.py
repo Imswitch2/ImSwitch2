@@ -17,7 +17,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from imswitch.improcess.model.array_result import ArrayProcessingResult  # noqa: E402
 from imswitch.improcess.model.provenance import graph_of, output_node  # noqa: E402
 from imswitch.improcess.reconstructors.base import (  # noqa: E402
-    Chunk,
     Reconstructor,
     StackInfo,
     StreamInit,
@@ -185,35 +184,6 @@ def test_legacy_monalisa_adapter_records_with_its_settings(tmp_path):
 
 # -- 5. live batch fallback ---------------------------------------------------------
 
-def test_live_batch_fallback_records_a_memory_source_as_non_replayable():
-    from imswitch.improcess.controller.CommunicationChannel import CommunicationChannel
-    from imswitch.improcess.controller.LiveReconstructionController import (
-        LiveReconstructionController,
-    )
-
-    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
-    comm = CommunicationChannel()
-    produced = []
-    comm.sigResultProduced.connect(lambda result, name: produced.append(result))
-    controller = LiveReconstructionController(comm)
-    controller._reconstructor = _Recon()
-    controller._source = SimpleNamespace(name="live-source")
-    controller._params = {"p": 1}
-    controller._is_streaming = False
-    controller._buffer = [Chunk(stack[:2], 0, 2), Chunk(stack[2:], 2, 4)]
-    controller._stack_info = StackInfo(frame_shape=(3, 3), dtype=stack.dtype, attrs={"x": 1},
-                                       expected_frames=4, frames_per_stack=4, detector_name="CAM")
-
-    controller._on_batch_stack_complete()
-
-    node = _recon_node(produced[0])
-    source = graph_of(produced[0])["nodes"][node["inputs"][0]["node"]]
-    assert source["source"]["kind"] == "memory"
-    assert source["source"]["fingerprint"]["shape"] == [4, 3, 3]
-    assert node["replayable"] is False
-    assert "not persisted" in node["reasons"][0]
-
-
 def test_a_memory_source_that_knows_its_recording_path_is_replayable(tmp_path):
     from imswitch.improcess.live.sources import InMemoryStackWrapper
 
@@ -275,33 +245,45 @@ class _Session(StreamingSession):
 
 
 def _stream_worker(expected=6):
+    """A worker whose session has begun on stack 0 (frames 0-1), as on the live
+    path; later frames go through :func:`_frames`. Snapshots are taken at stack
+    ends only."""
+    from imswitch.improcess.live.buffer import FrameGate, RawDataBuffer
     from imswitch.improcess.live.workers import LiveProcessWorker
 
     session = _Session()
-    worker = LiveProcessWorker(session, update_cadence=1)
+    worker = LiveProcessWorker(session, RawDataBuffer(2, (4, 4), np.float32), FrameGate(),
+                               frames_per_stack=2, viewer_update_interval_s=1e6)
     init = StreamInit(name="stream", dataset_name="CAM", data=np.zeros((2, 4, 4)),
                       stack_info=StackInfo(frame_shape=(4, 4), dtype=np.float32, expected_frames=expected))
     worker.setProvenance(_Recon(), {"s": 1}, init, expected_frames=expected)
     return worker, session
 
 
+def _frames(worker, start, end):
+    """Stream frames ``[start, end)`` through the worker's buffer."""
+    for index in range(start, end):
+        worker._raw_buffer.write(index, np.zeros((4, 4), np.float32))
+        worker.process_chunk(index)
+
+
 def test_streaming_snapshots_share_one_node_and_the_final_is_complete():
-    worker, session = _stream_worker(expected=4)      # every expected frame arrives
+    worker, session = _stream_worker(expected=6)      # every expected frame arrives
     snapshots, finals = [], []
     worker.sigResultUpdated.connect(snapshots.append)
     worker.sigStackFinished.connect(finals.append)
 
-    worker.processChunk(Chunk(np.zeros((2, 4, 4)), 0, 2))
-    worker.processChunk(Chunk(np.zeros((2, 4, 4)), 2, 4))
+    _frames(worker, 2, 6)                             # stacks 1 and 2, one snapshot each
     worker.finalize()
 
     first, second = (output_node(s) for s in snapshots)
     assert first["mode"] == "streaming" and first["completion"]["status"] == "partial"
-    assert first["completion"]["frames_committed"] == 2
-    assert second["completion"]["frames_committed"] == 4
+    assert first["completion"]["frames_committed"] == 4
+    assert second["completion"]["frames_committed"] == 6
     assert graph_of(snapshots[0])["output"]["node"] == graph_of(snapshots[1])["output"]["node"]
+    assert len(finals) == 1
     final = output_node(finals[0])
-    assert final["completion"] == {"status": "complete", "frames_committed": 4, "expected_frames": 4}
+    assert final["completion"] == {"status": "complete", "frames_committed": 6, "expected_frames": 6}
     assert final["replayable"] is False                     # live source, not a file
     assert "not persisted" in " ".join(final["reasons"])
 
@@ -310,7 +292,7 @@ def test_a_stalled_stream_says_so():
     worker, _ = _stream_worker()
     finals = []
     worker.sigStackFinished.connect(finals.append)
-    worker.processChunk(Chunk(np.zeros((2, 4, 4)), 0, 2))
+    _frames(worker, 2, 4)
     worker.markStalled(12.0)
     worker.finalize()
     node = output_node(finals[0])

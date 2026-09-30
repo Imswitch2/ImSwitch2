@@ -16,6 +16,7 @@ one "card" per manager class, with:
 | [lasers.rst](lasers.rst) | Laser sources and illumination |
 | [positioners.rst](positioners.rst) | Stages and piezos |
 | [rotators.rst](rotators.rst) | Rotation mounts |
+| [stands.rst](stands.rst) | Microscope stand integrations |
 
 These pages are rendered as part of the official Sphinx docs site
 (see `../index.rst`).  For "how do I add a new device manager

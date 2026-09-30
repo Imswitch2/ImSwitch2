@@ -50,7 +50,8 @@ class TestPositionerController:
             axes=['X', 'Y', 'Z'],
             move=MagicMock(),
             setPosition=MagicMock(),
-            joystick=False
+            joystick=False,
+            hide=False
         )
         
         # Create manager that supports both iteration and getitem
@@ -71,8 +72,18 @@ class TestPositionerController:
         ctrl.componentName = 'Positioner'
         ctrl.stateSchemaVersion = 1
         ctrl._stage_mock = stage_mock  # Store for test access
-        
+        # Settings __init__ would set; they are part of the saved state.
+        ctrl._isCoarseMode = False
+        ctrl._coarseStepMultiplier = 5.0
+        ctrl._liveUpdateIntervalMs = 300
+        ctrl._liveUpdateEnabled = {'Stage': False}
+        ctrl._joystickAutoReenable = True
+        ctrl._joystickAutoReenableDelayS = 5.0
+
         # Bind actual methods
+        ctrl._isPositionerShownInWidget = lambda pManager: PositionerController._isPositionerShownInWidget(
+            ctrl, pManager
+        )
         ctrl.getComponentState = lambda: PositionerController.getComponentState(ctrl)
         ctrl.applyComponentState = lambda state, applyMode: PositionerController.applyComponentState(
             ctrl, state, applyMode=applyMode
@@ -104,7 +115,16 @@ class TestPositionerController:
         )
         assert isinstance(warnings, list)
         controller._widget.setStepSize.assert_called()
-    
+        restored = controller.applySettings.call_args.args[0]
+        assert restored == {
+            'liveUpdateIntervalMs': state['live_update_interval_ms'],
+            'liveUpdateEnabled': state['live_update_enabled'],
+            'coarseStepMultiplier': state['coarse_step_multiplier'],
+            'joystickAutoReenable': state['joystick_auto_reenable'],
+            'joystickAutoReenableDelayS': state['joystick_auto_reenable_delay_s'],
+        }
+        controller.setStepMode.assert_called_once_with(state['coarse_mode'])
+
     def test_no_movement_startup_restore(self, controller):
         """Verify NO stage movement in STARTUP_RESTORE mode."""
         state = controller.getComponentState()

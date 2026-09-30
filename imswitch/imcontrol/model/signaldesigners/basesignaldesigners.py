@@ -149,6 +149,17 @@ class ScanDesigner(SignalDesigner, ABC):
         the RAM and to be generated and run inside a reasonable time). """
         return True
 
+    def signalLengthRefusal(self, scanParameters, setupInfo):
+        """ Why the scan is too long to run, or ``''`` when it is not.
+
+        Designers with a specific reason (a time cap, a sample limit)
+        override this and derive ``checkSignalLength`` from it; the default
+        keeps a designer that only answers yes/no working. """
+        if self.checkSignalLength(scanParameters, setupInfo):
+            return ''
+        return ('Signal too long: try scanning a smaller ROI, faster, or with '
+                'a larger pixel size.')
+
     @abstractmethod
     def make_signal(self, parameterDict, setupInfo):
         """ Method to be defined by child. Should return a dictionary with

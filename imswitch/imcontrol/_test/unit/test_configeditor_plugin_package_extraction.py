@@ -148,3 +148,109 @@ def test_a_missing_manifest_or_package_is_an_error(package):
     assert result.returncode != 0 and "imswitch.json" in result.stderr
     result = _run("--package", "no_such_package", "--write", cwd=package.parent)
     assert result.returncode != 0 and "not installed" in result.stderr
+
+
+# ── review of PR #35: identities, and parents that must not run ───────────
+SAME_NAME = '''
+    class CameraManager:
+        def __init__(self, detectorInfo, name, **lowLevelManagers):
+            self.serial = detectorInfo.managerProperties["serial_{mod}"]
+'''
+
+
+def _manifest(name, contributions):
+    return {"name": name, "display_name": name, "schema_version": "0.1", "imswitch_min_version": "0.1",
+            "license": "GPL-3.0-or-later", "contributions": {"device_managers": contributions}}
+
+
+def test_two_classes_of_one_name_get_their_own_schemas_and_check_tells_them_apart(tmp_path):
+    root = tmp_path / "twin_plugin"
+    root.mkdir()
+    (root / "__init__.py").write_text("raise RuntimeError('the tool must not import the plugin')\n", encoding="utf-8")
+    for mod in ("a", "b"):
+        (root / f"{mod}.py").write_text(textwrap.dedent(SAME_NAME.format(mod=mod)), encoding="utf-8")
+    (root / "imswitch.json").write_text(json.dumps(_manifest("twin", [
+        {"id": f"twin.{mod}", "kind": "detector", "display_name": mod,
+         "python_name": f"twin_plugin.{mod}:CameraManager"} for mod in ("a", "b")
+    ])), encoding="utf-8")
+    assert _run("--package", "twin_plugin", "--write", cwd=tmp_path).returncode == 0
+    managers = root / "schemas" / "managers"
+    schema_a = json.loads((managers / "twin.a.json").read_text(encoding="utf-8"))
+    schema_b = json.loads((managers / "twin.b.json").read_text(encoding="utf-8"))
+    assert schema_a["required"] == ["serial_a"] and schema_b["required"] == ["serial_b"]
+    assert _run("--package", "twin_plugin", "--check", cwd=tmp_path).returncode == 0
+    # What the old resolution wrote for b: a's contract. --check must object.
+    (managers / "twin.b.json").write_text((managers / "twin.a.json").read_text(encoding="utf-8")
+                                          .replace("twin.a managerProperties", "twin.b managerProperties"),
+                                          encoding="utf-8")
+    check = _run("--package", "twin_plugin", "--check", cwd=tmp_path)
+    assert check.returncode == 1 and "changed: managers/twin.b.json" in check.stdout
+
+
+def test_a_dotted_package_is_found_without_running_any_init(tmp_path):
+    """``find_spec("hardware_vendor.plugin")`` executes ``hardware_vendor/__init__.py``;
+    a hardware vendor's may import its SDK. Neither ``__init__`` may run."""
+    parent = tmp_path / "hardware_vendor"
+    plugin = parent / "plugin"
+    plugin.mkdir(parents=True)
+    (parent / "__init__.py").write_text("raise RuntimeError('parent __init__ executed')\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text("raise RuntimeError('plugin __init__ executed')\n", encoding="utf-8")
+    (plugin / "cams.py").write_text(textwrap.dedent(SAME_NAME.format(mod="hw")), encoding="utf-8")
+    (plugin / "imswitch.json").write_text(json.dumps(_manifest("hw", [
+        {"id": "hw.cam", "kind": "detector", "display_name": "cam",
+         "python_name": "hardware_vendor.plugin.cams:CameraManager"},
+    ])), encoding="utf-8")
+    for mode in ("--report", "--write", "--check"):
+        result = _run("--package", "hardware_vendor.plugin", mode, cwd=tmp_path)
+        assert result.returncode == 0, (mode, result.stderr)
+        assert "__init__ executed" not in result.stderr
+    schema = json.loads((plugin / "schemas" / "managers" / "hw.cam.json").read_text(encoding="utf-8"))
+    assert schema["required"] == ["serial_hw"]
+    missing = _run("--package", "hardware_vendor.nothing", "--report", cwd=tmp_path)
+    assert missing.returncode != 0 and "not installed" in missing.stderr
+    assert "__init__ executed" not in missing.stderr
+
+
+def test_the_package_locator_never_imports(tmp_path, monkeypatch):
+    """In-process too: the spec is found and nothing lands in sys.modules."""
+    import importlib.util as ilu
+
+    # The real package first: loading the tool into a process that has not
+    # imported it would install the tool's light stand-in for later tests.
+    import imswitch.imcontrol.model  # noqa: F401
+    spec = ilu.spec_from_file_location("extract_manager_schemas_under_test", _TOOL)
+    tool = ilu.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    parent = tmp_path / "noisy_vendor"
+    (parent / "plugin").mkdir(parents=True)
+    (parent / "__init__.py").write_text("raise RuntimeError('parent __init__ executed')\n", encoding="utf-8")
+    (parent / "plugin" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    found = tool.find_package_spec("noisy_vendor.plugin")
+    assert found is not None and Path(next(iter(found.submodule_search_locations))) == parent / "plugin"
+    assert "noisy_vendor" not in sys.modules and "noisy_vendor.plugin" not in sys.modules
+    assert tool.find_package_spec("noisy_vendor.missing") is None
+    assert tool.find_package_spec("not a package") is None
+
+
+def test_a_contribution_implemented_outside_the_package_is_unresolved_not_matched_by_name(tmp_path):
+    """Review of PR #37: ``external_driver.camera:CameraManager`` got the
+    plugin's own ``vendor_plugin.local:CameraManager`` schema."""
+    root = tmp_path / "shadow_plugin"
+    root.mkdir()
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    (root / "local.py").write_text(textwrap.dedent(SAME_NAME.format(mod="local")), encoding="utf-8")
+    (root / "imswitch.json").write_text(json.dumps(_manifest("shadow", [
+        {"id": "shadow.local", "kind": "detector", "display_name": "local",
+         "python_name": "shadow_plugin.local:CameraManager"},
+        {"id": "shadow.external", "kind": "detector", "display_name": "external",
+         "python_name": "external_driver.camera:CameraManager"},
+    ])), encoding="utf-8")
+    result = _run("--package", "shadow_plugin", "--write", cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "no class found in the tree (no schema written): shadow.external" in result.stdout
+    schemas = root / "schemas"
+    assert not (schemas / "managers" / "shadow.external.json").exists()
+    assert json.loads((schemas / "managers" / "shadow.local.json").read_text(encoding="utf-8"))["required"] == ["serial_local"]
+    assert json.loads((schemas / "index.json").read_text(encoding="utf-8"))["unresolved"] == ["shadow.external"]
+    assert _run("--package", "shadow_plugin", "--check", cwd=tmp_path).returncode == 0

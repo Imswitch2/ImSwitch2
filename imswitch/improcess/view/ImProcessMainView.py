@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.dockarea import Dock, DockArea
@@ -20,7 +22,8 @@ from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
-from .WatcherFrame import WatcherFrame
+from .DirectoryWatcherFrame import DirectoryWatcherFrame
+from .FolderPreferencesDialog import FolderPreferencesDialog
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
@@ -47,8 +50,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigSaveReconstructionAll = QtCore.Signal()
     sigSaveCoeffs = QtCore.Signal()
     sigSaveCoeffsAll = QtCore.Signal()
-    sigSetDataFolder = QtCore.Signal()
-    sigSetSaveFolder = QtCore.Signal()
+    sigOpenFolderPreferences = QtCore.Signal()
 
     sigReconstuctCurrent = QtCore.Signal()
     sigCancelReconstruction = QtCore.Signal()
@@ -69,6 +71,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     # dock header. Carries the plugin id (e.g. "view-only", "monalisa").
     sigActiveReconstructorChanged = QtCore.Signal(str)
     sigLoadProcessorRequested = QtCore.Signal(str)
+    # Emitted when the user picks a reconstructor to load at runtime from
+    # Tools -> Load reconstructor. Carries the plugin id.
+    sigLoadReconstructorRequested = QtCore.Signal(str)
     # Emitted when the user asks to re-scan the drop-in analysis plugins folder.
     sigReloadPluginsRequested = QtCore.Signal()
     # Workflows: export the current result's provenance as a workflow file,
@@ -209,16 +214,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._shortcutActions['file.save-coeffs-all'] = saveCoeffsAllAction
 
         file.addSeparator()
-
-        setDataFolder = QtWidgets.QAction('Set default data folder…', self)
-        setDataFolder.triggered.connect(self.sigSetDataFolder)
-        file.addAction(setDataFolder)
-
-        setSaveFolder = QtWidgets.QAction('Set default save folder…', self)
-        setSaveFolder.triggered.connect(self.sigSetSaveFolder)
-        file.addAction(setSaveFolder)
-
-        file.addSeparator()
         exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
         exportWorkflowAction.setToolTip(
             'Write the steps that made the current result as a workflow file '
@@ -296,6 +291,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addSeparator()
         self._processorToolbar.addWidget(QtWidgets.QLabel('Panels: '))
         self._buildAnalysisToolShortcuts()
+        self._buildLoadReconstructorMenu()
 
         self._pluginsToolbar = self.addToolBar('Plugins')
         self._pluginsToolbar.setObjectName('ImProcessPluginsToolbar')
@@ -319,7 +315,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
-        self.watcherFrame = WatcherFrame()
+        self.directoryWatcherFrame = DirectoryWatcherFrame()
 
         btnFrame = BtnFrame()
         self._btnFrame = btnFrame
@@ -416,6 +412,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
 
         self.pickDatasetsDialog = PickDatasetsDialog(self, allowMultiSelect=True)
+        self.folderPreferencesDialog = FolderPreferencesDialog(self)
 
         # Parameter tree lives inside a host frame so setParameterWidget can
         # swap the active reconstructor's parameter widget without disturbing
@@ -488,16 +485,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if not showActionsPanel:
             actionsDock.hide()
 
-        self.watcherDock = Dock('File watcher', size=(2, 3))
-        self.watcherDock.addWidget(self.watcherFrame)
-        self.dockArea.addDock(self.watcherDock, 'bottom', actionsDock)
-        self.docks['File watcher'] = self.watcherDock
+        # Kept, not just consumed: setDirectoryWatcherAvailable() has to be
+        # able to tell "hidden because this plugin cannot stream" from
+        # "hidden because the config switched the panel off".
+        self._showFileWatcherPanel = bool(showFileWatcherPanel)
+        self.directoryWatcherDock = Dock('Directory watcher', size=(2, 3))
+        self.directoryWatcherDock.addWidget(self.directoryWatcherFrame)
+        self.dockArea.addDock(self.directoryWatcherDock, 'bottom', actionsDock)
+        self.docks['Directory watcher'] = self.directoryWatcherDock
         if not showFileWatcherPanel:
-            self.watcherDock.hide()
+            self.directoryWatcherDock.hide()
 
         self.multiDataDock = Dock('Multidata management', size=(2, 3))
         self.multiDataDock.addWidget(self.multiDataFrame)
-        self.dockArea.addDock(self.multiDataDock, 'above', self.watcherDock)
+        self.dockArea.addDock(self.multiDataDock, 'above', self.directoryWatcherDock)
         self.docks['Multidata management'] = self.multiDataDock
         if not showMultiDataPanel:
             self.multiDataDock.hide()
@@ -583,6 +584,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         resetLayoutAction.triggered.connect(self.resetLayout)
         viewMenu.addAction(resetLayoutAction)
 
+        self._buildPreferencesMenu(menuBar)
+
         pg.setConfigOption('imageAxisOrder', 'row-major')
 
         self._connectResultPusher(self.profileWidget)
@@ -590,6 +593,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._connectResultPusher(self.roiManagerWidget)
         self._connectResultPusher(self.graphWidget)
         self._connectResultPusher(self.metadataWidget)
+
+    def _buildPreferencesMenu(self, menuBar) -> None:
+        """Add Preferences, last of ImProcess's own menus: settings of this
+        computer, kept between sessions. MultiModuleWindow appends the
+        application-wide entries to this same menu, after a separator."""
+        self._preferencesMenu = menuBar.addMenu('&Preferences')
+        self._preferencesMenu.setToolTipsVisible(True)
+        self.folderPreferencesAction = QtWidgets.QAction('Default folders…', self)
+        self.folderPreferencesAction.setToolTip(
+            'Where the open and save dialogs start on this computer. Kept'
+            ' between sessions.'
+        )
+        self.folderPreferencesAction.triggered.connect(self.sigOpenFolderPreferences)
+        self._preferencesMenu.addAction(self.folderPreferencesAction)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
@@ -630,6 +647,48 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         combo.setEnabled(bool(choices))
         combo.setCurrentIndex(0)
         combo.blockSignals(False)
+
+    def _buildLoadReconstructorMenu(self) -> None:
+        """Add Tools -> Load reconstructor, filled by the controller.
+
+        The Parameters-dock picker only offers reconstructors that are
+        registered, and the setup file decides which built-ins those are. This
+        submenu lists every reconstructor ImProcess knows about but has not
+        loaded, so one can be brought in for the session without editing the
+        setup file or hunting for its source.
+        """
+        self._analysisMenu.addSeparator()
+        self._loadReconstructorMenu = self._analysisMenu.addMenu('Load reconstructor')
+        self._loadReconstructorMenu.setToolTipsVisible(True)
+        self._loadReconstructorActions: dict[str, QtWidgets.QAction] = {}
+        self.setAvailableReconstructors([])
+
+    def setAvailableReconstructors(
+        self,
+        choices: list[tuple[str, str, str]],
+        placeholder: str = 'All reconstructors loaded',
+    ) -> None:
+        """Fill Tools -> Load reconstructor with ``(id, name, description)``
+        entries; an empty list leaves a disabled placeholder."""
+        menu = self._loadReconstructorMenu
+        menu.clear()
+        self._loadReconstructorActions = {}
+        if not choices:
+            action = menu.addAction(placeholder)
+            action.setEnabled(False)
+            return
+        for plugin_id, plugin_name, description in choices:
+            action = QtWidgets.QAction(str(plugin_name or plugin_id), menu)
+            tooltip = str(description or '') or f'Load the {plugin_name} reconstructor'
+            action.setToolTip(tooltip)
+            action.setStatusTip(tooltip)
+            action.triggered.connect(
+                lambda _checked=False, pid=str(plugin_id): (
+                    self.sigLoadReconstructorRequested.emit(pid)
+                )
+            )
+            menu.addAction(action)
+            self._loadReconstructorActions[str(plugin_id)] = action
 
     def setLoadedRuntimeProcessors(self, choices: list[tuple[str, str]]) -> None:
         combo = self._loadedProcessorCombo
@@ -766,6 +825,19 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._pluginsMenu.addAction(open_action)
         self._pluginMenuActions['open-folder'] = open_action
 
+        add_action = QtWidgets.QAction(
+            improcessIcon('plugin-add', self), 'Add plugin file...', self
+        )
+        add_action.setToolTip(
+            'Copy a plugin file (.py) into the plugins folder and reload'
+        )
+        add_action.setStatusTip(add_action.toolTip())
+        add_action.triggered.connect(
+            lambda _checked=False: self._addPluginFiles()
+        )
+        self._pluginsMenu.addAction(add_action)
+        self._pluginMenuActions['add-file'] = add_action
+
         reload_action = QtWidgets.QAction(
             improcessIcon('plugin-reload', self), 'Reload plugins', self
         )
@@ -781,6 +853,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self._pluginsToolbar.addSeparator()
         self._pluginsToolbar.addAction(store_action)
+        self._pluginsToolbar.addAction(add_action)
         self._pluginsToolbar.addAction(reload_action)
 
         # Installed napari plugins as one-way endpoints for results. The menu
@@ -800,6 +873,49 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         directory = user_plugins_directory(create=True)
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(directory))
+
+    def _addPluginFiles(self) -> None:
+        """Copy user-chosen plugin files into the plugins folder and reload.
+
+        The one-click form of "open the folder, copy the file, reload": what
+        someone who just wrote a reconstructor or processor wants from the
+        menu bar. Files that discovery would not see (not ``.py``, or
+        underscore-prefixed) are reported rather than copied.
+        """
+        from imswitch.improcess.plugins import (
+            install_plugin_files,
+            user_plugins_directory,
+        )
+
+        paths, _selected_filter = QtWidgets.QFileDialog.getOpenFileNames(
+            self, 'Add plugin file', '', 'Python plugin (*.py);;All files (*)'
+        )
+        if not paths:
+            return
+        directory = user_plugins_directory(create=True)
+        installed, skipped = install_plugin_files(
+            paths, directory, overwrite=self._confirmPluginOverwrite
+        )
+        parts = []
+        if installed:
+            names = ', '.join(os.path.basename(path) for path in installed)
+            parts.append(f'Added plugin file(s): {names}')
+        if skipped:
+            parts.append('Not added: ' + '; '.join(skipped))
+        self.showStatusMessage('. '.join(parts), timeout_ms=10000)
+        if installed:
+            self.sigReloadPluginsRequested.emit()
+
+    def _confirmPluginOverwrite(self, name: str) -> bool:
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            'Replace plugin file?',
+            f'A plugin file named {name!r} already exists in the plugins '
+            'folder. Replace it?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
 
     def _openPluginStore(self) -> None:
         """Open the online plugin store; reload plugins after any change."""
@@ -1447,6 +1563,92 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         elif not visible and not collapsed:
             recon.toggleReconListPane()
 
+    @staticmethod
+    def _setDockVisible(dock, visible: bool) -> None:
+        """Show or hide a dock *and its tab label*.
+
+        ``Dock`` does not override ``hide()``, so it is plain
+        ``QWidget.hide()`` -- which hides the dock's own widget only. Once a
+        dock joins a tab group (anything added ``'above'`` / ``'below'`` it)
+        pyqtgraph reparents its ``label`` into the tab bar, so the tab keeps
+        showing for a hidden dock and the panel still looks available.
+
+        Hiding at construction time happens to look right only because the
+        tab group is created afterwards.
+        """
+        if visible:
+            dock.show()
+        else:
+            dock.hide()
+        label = getattr(dock, 'label', None)
+        if label is None:
+            return
+        try:
+            label.setVisible(bool(visible))
+        except Exception:
+            pass
+
+    def isDirectoryWatcherRunning(self) -> bool:
+        """Whether a directory watch is currently monitoring."""
+        live = getattr(self.directoryWatcherFrame, 'liveCheck', None)
+        return bool(live is not None and live.isChecked())
+
+    def stopDirectoryWatcher(self) -> None:
+        """Stop any running watch by clearing the monitoring checkbox.
+
+        Clearing it emits ``sigLiveChanged(False)`` through the frame's own
+        wiring, which is what actually shuts the watcher down -- the view
+        never owns the run. Already-idle is left alone, so no spurious
+        signal is emitted.
+        """
+        live = getattr(self.directoryWatcherFrame, 'liveCheck', None)
+        if live is not None and live.isChecked():
+            live.setChecked(False)
+
+    def confirmDirectoryWatcherInterruption(self) -> bool:
+        """Ask before an action that would end a running watch; True = go on.
+
+        Returns ``True`` immediately when nothing is running, so callers can
+        guard unconditionally -- the same shape as ``confirm_bulk_publish``.
+        """
+        if not self.isDirectoryWatcherRunning():
+            return True
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            'Stop directory watching?',
+            'Directory watching is running. Changing the reconstructor '
+            'will stop it, and the timelapse currently being processed '
+            'will not be finished. Continue?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
+
+    def setDirectoryWatcherAvailable(self, available: bool) -> None:
+        """Show the Directory watcher only for reconstructors that stream.
+
+        The panel starts a live streaming run, so a reconstructor with no
+        ``make_session()`` has nothing to offer it -- leaving it visible
+        invites the user to start a watch that could never produce a result.
+
+        Hiding a *running* watch would be worse than showing it, so the
+        monitoring checkbox is cleared on the way out. That emits
+        ``sigLiveChanged(False)`` through the frame's existing wiring, which
+        is what actually stops the watcher -- the dock never owns the run.
+
+        The startup flag still wins: a panel the config switched off stays
+        off for every reconstructor.
+        """
+        dock = self.docks.get('Directory watcher')
+        if dock is None:
+            return
+
+        show = bool(available) and self._showFileWatcherPanel
+        if not show:
+            self.stopDirectoryWatcher()
+        self._setDockVisible(dock, show)
+        self._syncDockVisibilityActions()
+
     def setReconstructionActionsVisible(
         self,
         reconstruct_current: bool = True,
@@ -1837,6 +2039,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             return result == QtWidgets.QDialog.Accepted
         else:
             self.pickDatasetsDialog.show()
+
+    def showFolderPreferencesDialog(self):
+        """Raise the default-folders editor."""
+        self.folderPreferencesDialog.show()
+        self.folderPreferencesDialog.raise_()
+        self.folderPreferencesDialog.activateWindow()
 
     def getPatternParams(self):
         if getattr(self, "findPatBtn", None) is None:

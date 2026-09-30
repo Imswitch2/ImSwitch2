@@ -3,13 +3,13 @@ Port a device manager from a third-party project
 *************************************************
 
 When a sibling project (in-house code, a fork, an open-source
-microscopy stack) has a driver for hardware ImSwitch doesn't support
-yet, the most efficient path is usually to wrap it as an ImSwitch
+microscopy stack) has a driver for hardware ImSwitch2 doesn't support
+yet, the most efficient path is usually to wrap it as an ImSwitch2
 manager rather than rewrite from scratch.
 
 This guide distills the patterns we used porting five managers from
-the WidefieldStarss project — see ``docs/design/plans/ws-integration.md``
-for the full historical plan.
+the WidefieldStarss project — see the repository's `WidefieldStarss
+integration plan <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/plans/ws-integration.md>`_ for the full history.
 
 
 When porting is the right call
@@ -26,14 +26,17 @@ Port (don't rewrite) if the third-party driver:
 If any of those break down, treat the third-party code as a *reference
 implementation* rather than something to copy verbatim.  Read it,
 understand what the wire protocol or SDK call sequence actually does,
-then write a clean ImSwitch-shaped wrapper around the same library.
+then write a clean ImSwitch2-shaped wrapper around the same library.
 
 
 Step 1 — Identify the device category
 =====================================
 
-ImSwitch has fixed abstract bases for each device kind.  Pick the one
-that matches:
+ImSwitch2 has fixed abstract bases for the four main device kinds.  Pick
+the one that matches.  A plugin imports it from ``imswitch.pluginapi``
+(for example ``from imswitch.pluginapi import DetectorManager``), the
+stable import path for plugins; an in-tree manager imports it from its own
+folder (``from .DetectorManager import DetectorManager``).
 
 .. list-table::
    :widths: 15 60
@@ -42,15 +45,23 @@ that matches:
    * - Category
      - Base class
    * - ``detector``
-     - ``imswitch.imcontrol.model.managers.detectors.DetectorManager``
+     - ``DetectorManager``
+       (``imswitch.imcontrol.model.managers.detectors.DetectorManager.DetectorManager``)
    * - ``laser``
-     - ``imswitch.imcontrol.model.managers.lasers.LaserManager``
+     - ``LaserManager``
+       (``imswitch.imcontrol.model.managers.lasers.LaserManager.LaserManager``)
    * - ``positioner``
-     - ``imswitch.imcontrol.model.managers.positioners.PositionerManager``
+     - ``PositionerManager``
+       (``imswitch.imcontrol.model.managers.positioners.PositionerManager.PositionerManager``)
    * - ``rotator``
-     - ``imswitch.imcontrol.model.managers.rotators.RotatorManager``
+     - ``RotatorManager``
+       (``imswitch.imcontrol.model.managers.rotators.RotatorManager.RotatorManager``)
+   * - ``rs232``, ``slm``, ``flip_mirror``, ``stand``
+     - No abstract base; follow an existing manager in ``managers/rs232/``,
+       ``managers/slms/``, ``managers/flipMirrors/`` or ``managers/stands/``.
    * - *other*
-     - Promote to a singleton "low-level" manager (see :class:`~imswitch.imcontrol.controller.MasterController.MasterController`)
+     - Promote to a singleton "low-level" manager built in
+       ``MasterController`` (``imswitch/imcontrol/controller/MasterController.py``)
 
 If the device doesn't fit cleanly — e.g. it's an instrument that
 produces scalar measurements rather than images, or it's a timing
@@ -65,12 +76,12 @@ Step 2 — Decide on the driver / manager split
 Most ports want two files, not one:
 
 * **Driver** under ``imswitch/imcontrol/model/interfaces/<vendor>.py``
-  — pure I/O, no ImSwitch types.  This is where you import the
+  — pure I/O, no ImSwitch2 types.  This is where you import the
   vendor SDK (lazily, behind try/except).  This is also where you
   put a hardware-free mock so tests don't need the device.
 
 * **Manager** under ``imswitch/imcontrol/model/managers/<category>/<Name>Manager.py``
-  — implements the abstract base, owns ImSwitch-side concerns
+  — implements the abstract base, owns ImSwitch2-side concerns
   (signal emission, lifecycle, ``managerProperties`` parsing), and
   delegates all hardware talking to the driver.
 
@@ -125,12 +136,12 @@ things to leave behind:
 * **Calibrated positions / setpoints.**  ``move_to_h()`` /
   ``move_to_v()`` belong in user scripts, not in the manager.  Surface
   them via ``move_abs(h_pos)``.
-* **Keypress / mouse / widget bindings.**  ImSwitch controllers wire
+* **Keypress / mouse / widget bindings.**  ImSwitch2 controllers wire
   UI events, not managers.
 * **Plotting and analysis code.**  Drivers produce data; analysis is
   a separate concern.
 * **Sleep-based polling for completion in synchronous calls.**
-  ImSwitch's manager API usually returns once the device acknowledges;
+  ImSwitch2's manager API usually returns once the device acknowledges;
   long synchronous waits should be made async or thread-pooled.
 
 
@@ -138,9 +149,11 @@ Step 5 — Plumb the setup file
 =============================
 
 Each device gets a JSON entry under the appropriate top-level dict
-(``detectors``, ``lasers``, ``positioners``, ``rotators``).  The
-``managerName`` must exactly match your class name; ``managerProperties``
-is a free-form dict the manager parses.  Example for a rotator port::
+(``detectors``, ``lasers``, ``positioners``, ``rotators``).
+``managerName`` names the manager: the class name for an in-tree manager,
+or a device plugin registry id or alias (for example ``builtin.av`` for
+``AVManager``).  ``managerProperties`` is a free-form dict the manager parses.
+Example for a rotator port::
 
     "rotators": {
         "hwp": {
@@ -175,15 +188,16 @@ For each port, target **three test layers**:
    downstream mock state.
 
 See ``test_teensypulse_driver.py``, ``test_teensy_pulse_manager.py``,
-and ``test_pulse_generator_integration.py`` for a worked example of
-all three layers.
+and ``test_pulse_generator_integration.py`` in
+``imswitch/imcontrol/_test/unit/`` for a worked example of all three
+layers.
 
 
 Worked example: WidefieldStarss ports
 =====================================
 
-The full plan with per-port code review lives in
-``docs/design/plans/ws-integration.md``.  Quick summary of what each
+The full plan with per-port code review lives in the repository's
+`WidefieldStarss integration plan <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/plans/ws-integration.md>`_.  Quick summary of what each
 port involved:
 
 ============================  =============================  =====================================
@@ -192,7 +206,7 @@ Port                          Hardest part                   Pattern that made i
 ``KinesisRotatorManager``     None — straight wrapping       Lazy vendor import + mock fallback
 ``ElliptecRotatorManager``    Multidrop bus sharing          Refcounted per-COM-port singleton bus
 ``JenaPiezoZManager``         Polling/retry settle loop      Configurable timeout + clean timeout error
-``KinesisStageManager``       No jog API on the base class   Added default no-op ``jog_start``/``jog_stop``
+``KinesisStageManager``       No jog API on the base class   ``jog_start``/``jog_stop`` on the manager itself; callers check they exist
 ``ThorCamTSIManager``         DLL bootstrap + threading      Driver/mock split + drop WFS thread model
 ============================  =============================  =====================================
 
@@ -207,5 +221,5 @@ Cross-references
   backend, including the abstract-base lessons.
 - :doc:`/adding-device-support` — base-class reference for detectors,
   lasers, positioners.
-- ``docs/design/plans/ws-integration.md`` — full WS integration plan
-  with per-port analysis and architectural decisions.
+- `WidefieldStarss integration plan <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/plans/ws-integration.md>`_ (repository note) — full
+  plan with per-port analysis and architectural decisions.

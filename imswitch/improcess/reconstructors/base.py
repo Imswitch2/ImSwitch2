@@ -174,14 +174,15 @@ class Reconstructor(ABC):
     """
 
     default_save_subdir: str = "rec"
-    """Subdirectory name the WatcherFrame uses for reconstructed outputs.
+    """Subdirectory name a save path should use for reconstructed outputs.
 
-    The file watcher writes one output per watched input under
-    ``{watched_dir}/{default_save_subdir}/``. Override per modality to pick a
-    plugin-appropriate folder name (e.g. ``"deskew"`` for SNOUTY) or to keep
-    multiple watchers coexisting without overwriting each other. ``"rec"`` is
-    the historical MoNaLISA default and is kept here so behavior is
-    unchanged for plugins that don't override.
+    Declarative metadata only: the batch file watcher that consumed it was
+    removed with the rest of the old watch-and-run path, so nothing reads it
+    today. It is retained as part of the plugin contract for a future save
+    path, which would write outputs under
+    ``{output_dir}/{default_save_subdir}/``. Override per modality to pick a
+    plugin-appropriate folder name (e.g. ``"deskew"`` for SNOUTY). ``"rec"``
+    is the historical MoNaLISA default.
     """
 
     supports_consolidation: bool = False
@@ -246,6 +247,52 @@ class Reconstructor(ABC):
         """
         return dict(params or {})
 
+    accepted_layouts: tuple[str, ...] | None = None
+    """On-disk layouts the live path may hand this plugin, or ``None``.
+
+    ``None`` means no restriction, which is the right default: most plugins
+    care about the *shape* of the data, not how it was filed. The values are
+    the ``LAYOUT_*`` constants in
+    :mod:`~imswitch.improcess.live.source_type` -- named here as plain
+    strings because that module reads sources, which read this one, and the
+    dependency may only run one way.
+
+    Consulted through :meth:`accepts_raw_source`; override that instead for
+    anything this pair cannot express.
+    """
+
+    requires_frame_stacks: bool = False
+    """Set ``True`` when a timepoint must be a *stack* of frames.
+
+    A scanning reconstructor reassembles ``nx * ny`` raw frames into one
+    image, so a recording contributing a single frame per timepoint gives it
+    nothing to work with. This is independent of being a timelapse: a camera
+    lapse is fifty timepoints of one frame each.
+    """
+
+    def accepts_raw_source(self, source_type) -> bool:
+        """Whether this plugin can reconstruct a recording of this shape.
+
+        Asked by the live path *before* a reader is built, so an unusable
+        recording is skipped rather than opened and then abandoned.
+
+        The default answers from :attr:`accepted_layouts` and
+        :attr:`requires_frame_stacks`, which covers the declarative cases.
+        Override for a constraint those cannot state -- but prefer declaring,
+        so the answer stays inspectable without calling anything.
+
+        Args:
+            source_type: The recording's ``RawSourceType``.
+        """
+        layouts = self.accepted_layouts
+        if layouts is not None and getattr(source_type, "layout", None) not in layouts:
+            return False
+        if (
+            self.requires_frame_stacks
+            and not getattr(source_type, "has_frame_stacks", False)
+        ):
+            return False
+        return True
 
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -585,6 +632,25 @@ class StreamingSession(ABC):
     def result(self) -> ProcessingResult:
         """Return a snapshot of the current reconstruction."""
         ...
+
+    def live_plane(self) -> "tuple[int, np.ndarray] | None":
+        """One timepoint's output slice, for an incremental viewer update.
+
+        Returns ``(timepoint_index, plane)`` where ``plane`` is a **copy** of
+        that timepoint's slice of the output, keeping every axis (so the
+        timepoint axis has length 1 and the caller can assign it straight into
+        an identically-shaped buffer).
+
+        This is the cheap path for live updates: the viewer keeps its own
+        accumulating buffer and writes each plane into it, instead of receiving
+        a fresh copy of the whole growing volume on every refresh. The copy is
+        what keeps the boundary hard -- the session never hands out memory it
+        goes on writing to.
+
+        Returning ``None`` (the default) means the session cannot do
+        incremental updates, and callers fall back to :meth:`result`.
+        """
+        return None
 
     def finish(self) -> ProcessingResult:
         """Finalize processing and return the final result."""

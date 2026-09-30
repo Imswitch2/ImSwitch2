@@ -323,3 +323,42 @@ def test_finalize_uses_safe_disable_and_reports_immediate_off_failure():
 
     fake.fail_commands.add('SETLDENABLE 0')
     assert manager.finalize() is False
+
+
+@pytest.mark.nohardware
+@pytest.mark.parametrize('raw, expected', [
+    ('F >100 3100', [100, 3100]),
+    ('D >199.9 3050.0', [200, 3050]),
+    ('D >199.9 3050.7', [200, 3050]),
+    ('D > 0.0 1000.4 ', [0, 1000]),
+])
+def test_power_limits_accept_fractional_replies_rounded_inward(raw, expected):
+    """A unit reporting '199.9' made startup fail and fall back to mock."""
+    assert MPBLaserManager._parsePowerLimits(raw) == expected
+
+
+@pytest.mark.nohardware
+@pytest.mark.parametrize('raw', [
+    'D >100', 'D >100 200 300', 'D >abc 3050', 'D >-1 3050',
+    'D >3050 100', 'D >199.9 200.1', 'D >nan 3050', 'D >100 inf',
+])
+def test_power_limits_reject_malformed_replies(raw):
+    with pytest.raises(ValueError, match='power-limit reply'):
+        MPBLaserManager._parsePowerLimits(raw)
+
+
+@pytest.mark.nohardware
+def test_fractional_limits_keep_every_ramp_step_inside_the_reported_range():
+    fake = FakeMPB(mode=1, output=1000, limits=(199.9, 3050.0))
+
+    manager = _manager(fake)
+
+    assert manager._isMock is False
+    setpoints = [
+        float(command.rsplit(' ', 1)[-1])
+        for command in fake.commands if command.startswith('SETPOWER 0 ')
+    ]
+    assert setpoints and setpoints[-1] == 200
+    assert all(199.9 <= value <= 3050.0 for value in setpoints)
+    assert all(value == int(value) for value in setpoints)
+    assert fake.enabled is False

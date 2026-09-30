@@ -36,6 +36,63 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._install_reconstructor_params(self._main._activeReconstructor)
         self._publishReconstructorChoices()
 
+    def isReconstructionRunning(self) -> bool:
+        """Whether a worker-thread reconstruction job is in flight."""
+        return self._reconstructionThread is not None
+
+    def pluginsReloaded(self):
+        """Re-sync the active reconstructor and the picker after drop-in
+        reconstructors were re-registered.
+
+        Three cases. The active one is untouched (a built-in, or a plugin
+        whose file did not change): only the picker is refreshed. The same id
+        is now a fresh instance (an edited plugin): it is swapped in and its
+        parameter widget rebuilt, so the edit is live at once. The active one
+        is gone (its file was removed): the first registered reconstructor
+        takes over, as at startup.
+        """
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        registry = get_registry()
+        active = self._main._activeReconstructor
+        fresh = (
+            registry.get_reconstructor(active.id, raise_on_missing=False)
+            if active is not None
+            else None
+        )
+        if active is not None and fresh is active:
+            pass
+        elif fresh is not None:
+            self._logger.info(
+                f"Reconstructor {fresh.id!r} was reloaded; using its new code"
+            )
+            self._main._activeReconstructor = fresh
+            self._install_reconstructor_params(fresh)
+        else:
+            if active is not None:
+                self._logger.info(
+                    f"Active reconstructor {active.id!r} is no longer available; "
+                    "selecting another"
+                )
+            self._main._activeReconstructor = self._select_reconstructor()
+            if self._main._activeReconstructor is not None:
+                self._install_reconstructor_params(self._main._activeReconstructor)
+        self._publishReconstructorChoices()
+
+    def reconstructorLoaded(self, plugin_id: str) -> bool:
+        """A reconstructor was registered at runtime: offer it in the picker
+        and make it active.
+
+        Returns whether it became the active one. It does not when it cannot
+        take the current source and the user's selection cannot be reopened
+        for it; the picker then does not offer it until a file it accepts is
+        open, and the caller says so.
+        """
+        self._publishReconstructorChoices()
+        self._on_user_changed_reconstructor(plugin_id)
+        active = self._main._activeReconstructor
+        return active is not None and active.id == plugin_id
+
     def _select_reconstructor(self):
         from imswitch.improcess.reconstructors.registry import get_registry
 
@@ -109,7 +166,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
         data_obj = getattr(self._main, '_currentDataObj', None)
         selected = getattr(data_obj, 'sourceOriginalPath', None)
-        if not selected or selected == getattr(data_obj, 'dataPath', None):
+        if not selected:
             return None
         accepted = tuple(
             getattr(reconstructor, 'accepted_source_kinds', ('image',))
@@ -120,11 +177,19 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
         except Exception:
             return None
-        return (
-            selected
-            if source_kind_for(resolved.format_id) in accepted
-            else None
-        )
+        kind = source_kind_for(resolved.format_id)
+        if kind not in accepted:
+            return None
+        # Already loaded means the same path *as the same kind of source*. A
+        # time lapse is opened at the very file the user picked, so comparing
+        # paths alone would call that file "already loaded" for a reconstructor
+        # that wants it as an image, and strand the picker on the lapse.
+        if (
+            kind == getattr(data_obj, 'sourceKind', 'image')
+            and str(resolved.path) == str(getattr(data_obj, 'dataPath', None))
+        ):
+            return None
+        return selected
 
     def currentDataChanged(self, data_obj) -> None:
         """Select a compatible plugin and pass it a metadata-only inspection."""
@@ -173,6 +238,40 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 f"for {reconstructor.id}: {exc}"
             )
 
+    def _confirm_reconstructor_change(self) -> bool:
+        """Ask before a reconstructor change ends a running watch.
+
+        ``True`` means go ahead -- either nothing was running, or the user
+        accepted. On acceptance the watch is stopped here rather than left
+        to :meth:`setDirectoryWatcherAvailable`, which only stops one when
+        the panel is going away: switching between two *streaming* plugins
+        keeps the panel, and would otherwise keep the old run alive.
+
+        On refusal the picker is put back, so the combo keeps showing what
+        is actually active. ``setActiveReconstructorName`` blocks signals,
+        so reverting does not re-enter this handler.
+        """
+        widget = self._widget
+        try:
+            if widget.confirmDirectoryWatcherInterruption():
+                widget.stopDirectoryWatcher()
+                return True
+        except AttributeError:
+            # A view build without the directory-watcher panel has nothing
+            # to interrupt.
+            return True
+
+        active = getattr(self._main, '_activeReconstructor', None)
+        name = getattr(active, 'name', None)
+        if name:
+            try:
+                widget.setActiveReconstructorName(name)
+            except Exception:
+                self._logger.debug(
+                    'Could not restore the reconstructor picker', exc_info=True
+                )
+        return False
+
     def _showSourceInspection(self, inspection) -> None:
         """Put the inspection's warnings in the Parameters dock."""
         show = getattr(self._widget, 'setSourceInspection', None)
@@ -219,6 +318,14 @@ class ReconstructorManagerController(ImProcessWidgetController):
         auto-route so the viewer reflects the change immediately."""
         if not plugin_id:
             return
+
+        # A watch in flight belongs to the reconstructor that started it, and
+        # the next job off the queue would use the new one -- one session
+        # producing results from two plugins. So the watch ends here, and the
+        # user is told before it does rather than after.
+        if not self._confirm_reconstructor_change():
+            return
+
         from imswitch.improcess.reconstructors.registry import get_registry
 
         for candidate in get_registry().reconstructors():
@@ -341,15 +448,20 @@ class ReconstructorManagerController(ImProcessWidgetController):
         except Exception:
             pass
 
-        # Push the active reconstructor's preferred output folder name to
-        # the file watcher so 'Watch and run' writes outputs under the
-        # plugin's default_save_subdir instead of a hardcoded 'rec/'.
-        watcher = self._main.watcherFrameController
-        if watcher is not None:
-            try:
-                watcher.setSaveSubdir(getattr(reconstructor, 'default_save_subdir', 'rec'))
-            except Exception:
-                pass
+        # The Directory watcher drives a live streaming run, so it is only
+        # meaningful for a reconstructor that can make a session. Declared
+        # capability, like is_pass_through above -- not another id check.
+        try:
+            self._widget.setDirectoryWatcherAvailable(
+                bool(getattr(reconstructor, 'supports_streaming', False))
+            )
+        except Exception:
+            # Logged, not swallowed silently: a failure here leaves the panel
+            # offering a run the plugin cannot perform, which looks like the
+            # feature simply not working.
+            self._logger.debug(
+                'Could not update Directory watcher availability', exc_info=True
+            )
 
         # NOTE: Special-case by ID retained because MoNaLISA uses a legacy parameter
         # tree that differs fundamentally from the standard plugin widget API.

@@ -408,15 +408,97 @@ def test_transport_exceptions_map_to_the_shared_taxonomy():
                    'L1O1')
 
 
-def test_frequency_startup_write_failure_propagates():
+def test_strict_frequency_startup_write_failure_is_a_startup_error():
     rs232 = FakeRS232(raise_cmds={'I0': OSError('port gone')})
-    with pytest.raises(TransportFailure):
+    with pytest.raises(DeviceInitializationError) as excinfo:
         _build(
             rs232=rs232,
             protocolProfile='aa.frequency-startup',
             frequencyMHz=143.0,
+            useMockOnFailure=False,
         )
-    assert rs232.cmds == ['I0']
+    assert isinstance(excinfo.value.__cause__, TransportFailure)
+    assert rs232.cmds == ['I0', 'L1O0']
+
+
+# ---------------------------------------------------------------------------
+# Startup without an answering controller — mock fallback
+# ---------------------------------------------------------------------------
+
+
+def _timeout(command):
+    """What pyvisa raises when the controller never answers."""
+    return {command: TimeoutError('VI_ERROR_TMO (-1073807339): Timeout expired')}
+
+
+def test_unanswered_startup_continues_in_mock_mode_after_an_off(caplog):
+    """A pyvisa timeout at startup used to propagate out of the manager and
+    abort ImSwitch."""
+    rs232 = FakeRS232(raise_cmds=_timeout('L1I1O0'))
+    with caplog.at_level('WARNING'):
+        m, _ = _build(rs232=rs232)
+    assert m._isMock is True
+    assert rs232.cmds == ['L1I1O0', 'L1O0']
+    assert 'mock mode' in caplog.text
+    assert not [r for r in caplog.records if r.levelname == 'CRITICAL']
+
+
+def test_mock_mode_sends_nothing_further():
+    rs232 = FakeRS232(raise_cmds=_timeout('L1I0'))
+    m, _ = _build(rs232=rs232, ttlToggling=True)
+    rs232.cmds.clear()
+    m.setValue(500)
+    m.setEnabled(True)
+    m.setScanModeActive(True)
+    m.setScanModeActive(False)
+    m.setEnabled(False)
+    assert rs232.cmds == []
+
+
+def test_unacknowledged_off_is_reported_as_critical(caplog):
+    rs232 = FakeRS232(raise_cmds={**_timeout('L1I1O0'), **_timeout('L1O0')})
+    with caplog.at_level('WARNING'):
+        m, _ = _build(rs232=rs232)
+    assert m._isMock is True
+    assert rs232.cmds == ['L1I1O0', 'L1O0']
+    critical = [r for r in caplog.records if r.levelname == 'CRITICAL']
+    assert critical and 'was not acknowledged' in critical[0].getMessage()
+
+
+@pytest.mark.parametrize('strict', [False, 'false', 'no', 0])
+def test_strict_startup_raises_a_startup_error_after_the_off(strict):
+    rs232 = FakeRS232(raise_cmds=_timeout('L1I1O0'))
+    with pytest.raises(DeviceInitializationError, match='useMockOnFailure') as excinfo:
+        _build(rs232=rs232, useMockOnFailure=strict)
+    assert isinstance(excinfo.value.__cause__, CommandTimeout)
+    assert rs232.cmds == ['L1I1O0', 'L1O0']
+
+
+def test_frequency_startup_failure_falls_back_to_mock_by_default():
+    rs232 = FakeRS232(raise_cmds={'I0': OSError('port gone')})
+    m, _ = _build(
+        rs232=rs232,
+        protocolProfile='aa.frequency-startup',
+        frequencyMHz=143.0,
+    )
+    assert m._isMock is True
+    assert rs232.cmds == ['I0', 'L1O0']
+
+
+def test_a_configuration_error_still_aborts_even_with_mock_fallback():
+    """Mock mode is for a controller that does not answer, not a bad file."""
+    with pytest.raises(DeviceInitializationError):
+        _build(protocolProfile='aa.nonexistent', useMockOnFailure=True)
+
+
+def test_a_failure_after_startup_still_propagates():
+    """Only the startup exchange falls back; a live channel that stops
+    answering must not look successful to the GUI."""
+    rs232 = FakeRS232(raise_cmds={'L1O1': OSError('port gone')})
+    m, _ = _build(rs232=rs232)
+    assert m._isMock is False
+    with pytest.raises(TransportFailure):
+        m.setEnabled(True)
 
 
 # ---------------------------------------------------------------------------

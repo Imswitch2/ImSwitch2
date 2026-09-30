@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 
@@ -126,8 +127,24 @@ class MPBLaserManager(LaserManager):
 
     @staticmethod
     def _parsePowerLimits(raw):
-        values = [int(value) for value in str(raw).split('>')[-1].split()]
-        if len(values) != 2 or values[0] < 0 or values[1] <= values[0]:
+        """Parse ``GETPOWERSETPTLIM`` into whole-mW ``[minimum, maximum]``.
+
+        Some units report fractional limits (``'199.9 3050.0'``). Setpoints
+        are sent as whole mW, the form in field use, so the limits are
+        rounded inward -- the minimum up, the maximum down -- and no setpoint
+        or ramp step derived from them can fall outside what the unit
+        reported.
+        """
+        try:
+            low, high = (
+                float(value) for value in str(raw).split('>')[-1].split()
+            )
+            values = [math.ceil(low), math.floor(high)]
+        except (ValueError, OverflowError):
+            raise ValueError(
+                f'Unexpected MPB power-limit reply: {raw!r}'
+            ) from None
+        if values[0] < 0 or values[1] <= values[0]:
             raise ValueError(f'Unexpected MPB power-limit reply: {raw!r}')
         return values
 

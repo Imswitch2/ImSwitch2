@@ -15,7 +15,7 @@ fields and :doc:`scan-lifecycle` for the controller/recording lifecycle.
 Geometry and pixel count
 ========================
 
-For every active scan axis, Imswitch2 calculates::
+For every active scan axis, ImSwitch2 calculates::
 
     pixels = max(1, round(size / step))
 
@@ -41,9 +41,9 @@ Line steps are interleaved line by line, not acquired as complete sequential
 frames. ``N`` steps therefore take roughly ``N`` times the line acquisition
 time. Point-detector output depends on its manager:
 
-* ``APDManager`` preserves the line-step dimension and records it as channels,
-  normally ``(T, C, Y, X)``.
-* ``PMTManager`` sums the line steps into one 2D image before publishing it.
+* ``APDManager`` and ``PMTManager`` preserve the line-step dimension and
+  record it as channels, normally ``(T, C, Y, X)``. The PMT's live view shows
+  the steps summed into one image; its recordings are not summed.
 * A camera produces a frame for every rising edge in its TTL program.
 
 
@@ -93,7 +93,7 @@ result after conversion, especially when several devices share windows.
 
 The displayed **Dead time** is dwell time minus the end of the latest programmed
 event. A negative value means the program extends beyond the dwell and should be
-corrected before scanning. Use **Plot scan** and enable **include TTL** to inspect
+corrected before scanning. Use **Plot** and enable **include TTL** to inspect
 the generated analog and digital waveforms before driving hardware.
 
 .. warning::
@@ -110,7 +110,7 @@ Hardware requirements and limits
 ================================
 
 Every scanning axis needs ``forScanning: true`` and a valid ``analogChannel``.
-Real, non-mock axes used by ``GalvoScanDesigner`` additionally require these
+Axes that ``GalvoScanDesigner`` sweeps smoothly additionally require these
 ``managerProperties``:
 
 ``vel_max``
@@ -132,6 +132,11 @@ For example::
 Use values measured or specified for the actual scanner. Missing velocity or
 acceleration limits stop signal construction with a configuration error.
 
+An axis is swept smoothly unless its ``managerProperties`` set
+``"smoothScan": false``; without that key, only an axis whose name contains
+``mock`` is stepped. A stepped axis (a piezo or stage on the fast axis, for
+example) needs no limits.
+
 Signal construction also refuses more than 10 million spatial positions. The
 optional ``scan.maxScanTimeMin`` setup value adds a duration guard; ``null`` or
 omission disables that time guard. The guard is an early estimate, not a
@@ -147,18 +152,17 @@ For a single acquisition:
 1. Select the detector or detectors in the Recording widget.
 2. Confirm that every triggered camera is enabled in the intended line steps
    and that its exposure plus readout fits inside the trigger interval/dwell.
-3. Choose **Scan once** and press **REC**. This arms the recording; it does not
-   choose or start a scan prematurely.
-4. Start the Advanced scan from its own widget. The recording binds to that
-   exact controller and derives its spatial dimensions and camera TTL rising-
-   edge counts from the generated scan.
-5. Inspect the saved axes: APD line steps are channels, while PMT output is
-   summed as described above.
+3. Choose **Scan once** and press **REC**. The Advanced widget is the setup's
+   ``Scan`` widget, so this arms the recording *and* starts the Advanced scan;
+   do not also press the scan widget's own start button, which would be
+   refused while the scan runs. The recording derives its spatial dimensions
+   and camera TTL rising-edge counts from the generated scan.
+4. Inspect the saved axes: APD and PMT line steps are channels.
 
-If the setup contains several scan widgets, **Scan once** still binds to the
-one the operator starts. A recording-driven **Timelapse** cannot infer that
-choice, so select the required controller in **Scan source** before starting;
-the run is refused while that choice remains ambiguous.
+**Scan once** always drives the ``Scan`` widget, even if the setup has other
+scan widgets as well. A **Timelapse scan** on such a setup needs the required
+controller selected in **Scan source** before starting; the run is refused
+while that choice remains ambiguous.
 
 General Scan-once recording counts the rising edges in each generated camera
 TTL waveform, including multiple pulses in one line step. **BeadRec is
@@ -208,10 +212,15 @@ Advanced scan troubleshooting
    * - Programmed intra-pixel offset has no effect
      - Expected with the built-in designers; the metadata is retained but the
        positioner waveform is not generated.
+   * - Line-step image has the wrong number of lines or channels
+     - Search the log for ``[LineStepDiag]``. The scan controller, NI-DAQ
+       manager and APD manager each log the expanded line count, sample
+       budget, line-clock edges and read plan, ending in ``status=OK`` or
+       ``status=MISMATCH: ...`` naming what disagrees.
 
 
 .. seealso::
 
-   :doc:`gui` for the rest of the Imcontrol interface,
+   :doc:`gui` for the rest of the ImControl interface,
    :doc:`devices/detectors` for detector-specific line-step output, and
    :doc:`scan-lifecycle` for developer-level ownership and completion rules.

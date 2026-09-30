@@ -49,6 +49,17 @@ class PluginRegistry:
         self._processors[plugin.id] = plugin
         self.__logger.debug(f"Registered processor: {plugin.id} ({plugin.name})")
 
+    def unregister_reconstructor(self, plugin_id: str) -> 'Reconstructor | None':
+        """Remove one reconstructor by id; returns it, or None if not registered.
+
+        Used when a drop-in reconstructor's file disappears between reloads:
+        the picker reads this registry, so a stale entry would stay on offer.
+        """
+        plugin = self._reconstructors.pop(plugin_id, None)
+        if plugin is not None:
+            self.__logger.debug(f"Unregistered reconstructor: {plugin_id}")
+        return plugin
+
     def clear(self) -> None:
         """Remove all registered plugins before applying a new setup config."""
         self._reconstructors.clear()

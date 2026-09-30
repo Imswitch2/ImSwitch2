@@ -74,8 +74,10 @@ dirtools.initUserFilesIfNeeded()
 _modulesFilePath = os.path.join(dirtools.UserFileDirs.Config, 'modules.json')
 
 if not os.path.isfile(_modulesFilePath):
-    # Modules file doesn't exist, create it.
-    _modules = _Modules(enabled=['imcontrol', 'imscripting'])
+    # Modules file doesn't exist, create it. Normally the copy of
+    # _data/user_defaults/config/modules.json above has already created it;
+    # keep this list in step with that file.
+    _modules = _Modules(enabled=['imcontrol', 'improcess', 'imscripting'])
 else:
     with open(_modulesFilePath, 'r') as modulesFile:
         _modules = _Modules.from_json(modulesFile.read(), infer_missing=True)

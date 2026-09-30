@@ -1,5 +1,7 @@
 """Tests for LiveReconstructionController."""
 
+import time
+
 import numpy as np
 from types import SimpleNamespace
 from qtpy import QtCore, QtWidgets
@@ -30,8 +32,12 @@ class _Result(ProcessingResult):
 class _StreamingSession(StreamingSession):
     def __init__(self):
         self.buffer = None
+        # Mirrors MonalisaLiveSession: the run's name comes in on StreamInit and
+        # is carried by every result, which is what names the viewer entry.
+        self.name = "stream"
 
     def begin(self, init_obj: StreamInit, params: dict) -> StreamPlan:
+        self.name = init_obj.name
         frames = init_obj.stack_info.expected_frames if init_obj.stack_info else 10
         self.buffer = np.zeros((frames, *init_obj.data.shape[-2:]), dtype=np.float32)
         self.push(init_obj.data, 0, init_obj.data.shape[0])
@@ -45,7 +51,7 @@ class _StreamingSession(StreamingSession):
         self.buffer[start:end] = chunk
 
     def result(self) -> ProcessingResult:
-        return _Result("stream", self.buffer.copy(), ["T", "Y", "X"])
+        return _Result(self.name, self.buffer.copy(), ["T", "Y", "X"])
 
 
 class _StreamingRecon(StreamingReconstructor):
@@ -173,30 +179,25 @@ def _wait_for_finished(controller, timeout_ms=3000):
 
 
 def test_controller_streaming_path():
-    """LiveReconstructionController sets up streaming path for StreamingReconstructor."""
+    """start() takes the streaming branch for a StreamingReconstructor and
+    builds the process worker lazily once the stack shape is known."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
     stack = np.arange(6 * 4 * 5, dtype=np.float32).reshape(6, 4, 5)
     source = _TestSource(stack, chunk_size=2)
-    reconstructor = _StreamingRecon()
 
-    comm_channel = CommunicationChannel()
-    controller = LiveReconstructionController(comm_channel)
+    controller = LiveReconstructionController(CommunicationChannel())
 
-    controller._reconstructor = reconstructor
-    controller._source = source
-    controller._params = {}
-    controller._running = False
-    controller._is_streaming = True
-    controller._stream_thread = None
-    controller._process_thread = None
-    controller._buffer = []
-
-    session = reconstructor.make_session()
-    controller._process_worker = LiveProcessWorker(session, update_cadence=1)
-    controller._stream_worker = LiveStreamWorker(source)
-
+    assert controller.start(_StreamingRecon(), source, {}, source_arg="synthetic") is True
     assert controller._is_streaming is True
     assert controller._stream_worker is not None
-    assert controller._process_worker is not None
+    assert controller._process_worker is None  # not built until _on_init_stack_ready
+
+    assert _wait_for_finished(controller)
+    assert controller._running is False
+    assert controller._stream_thread is None
+    assert controller._process_thread is None
+    assert controller._raw_buffer is None
 
 
 def test_controller_batch_fallback_path():
@@ -258,7 +259,7 @@ def test_controller_stop_quits_thread_event_loops():
     controller._process_worker = object()
     controller._source = source
 
-    controller.stop()
+    controller.stop(graceful=False)      # teardown mechanics, not the drain path
 
     assert stream_worker.stopped is True
     assert stream_thread.request_interruption_called is True
@@ -298,7 +299,12 @@ def test_stack_finished_emits_queue_signal_after_cleanup():
     comm_channel = CommunicationChannel()
     controller = LiveReconstructionController(comm_channel)
     controller.sigFinished.connect(lambda: events.append("finished"))
-    comm_channel.sigResultProduced.connect(lambda *_args: events.append("result"))
+    # A streaming run publishes its final snapshot on the live path, so it
+    # updates the entry it already owns instead of appending a second one.
+    comm_channel.sigLiveResultUpdated.connect(lambda *_a: events.append("result"))
+    comm_channel.sigResultProduced.connect(
+        lambda *_a: events.append("UNEXPECTED_sigResultProduced")
+    )
 
     controller._running = True
     controller._is_streaming = True
@@ -321,7 +327,7 @@ def test_controller_processes_two_streaming_sources_sequentially():
     comm_channel = CommunicationChannel()
     controller = LiveReconstructionController(comm_channel)
     results = []
-    comm_channel.sigResultProduced.connect(lambda result, _title: results.append(result))
+    comm_channel.sigLiveResultUpdated.connect(results.append)
 
     for offset in (0, 1000):
         stack = (
@@ -330,13 +336,60 @@ def test_controller_processes_two_streaming_sources_sequentially():
         )
         source = _TestSource(stack, chunk_size=2)
 
+        results.clear()
         assert controller.start(_StreamingRecon(), source, {}, source_arg="synthetic")
         assert _wait_for_finished(controller)
+        # A run emits several live updates; what matters is that each run
+        # produced results and tore its threads down before the next started.
+        assert results, f"run with offset {offset} produced no result"
         assert controller._running is False
         assert controller._stream_thread is None
         assert controller._process_thread is None
 
-    assert len(results) == 2
+
+def test_run_name_names_the_result_so_each_job_gets_its_own_entry():
+    """``start(name=...)`` flows to StreamInit and out on every result.
+
+    ``ReconstructionViewController`` creates a new viewer entry whenever an
+    incoming live result's name differs from the selected one's, so a per-job
+    name is what gives each timelapse folder its own data object.
+    """
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    comm_channel = CommunicationChannel()
+    controller = LiveReconstructionController(comm_channel)
+    names = []
+    comm_channel.sigLiveResultUpdated.connect(lambda r: names.append(r.name))
+
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+    source = _TestSource(stack, chunk_size=2)  # source.name == "test-source"
+
+    assert controller.start(
+        _StreamingRecon(), source, {}, source_arg="synthetic", name="timelapse_07"
+    )
+    assert _wait_for_finished(controller)
+
+    assert names, "no live results were emitted"
+    # The explicit run name wins over the source's own name.
+    assert set(names) == {"timelapse_07"}
+
+
+def test_run_name_falls_back_to_the_source_name():
+    """Without an explicit name, the source's ``name`` still names the run."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    comm_channel = CommunicationChannel()
+    controller = LiveReconstructionController(comm_channel)
+    names = []
+    comm_channel.sigLiveResultUpdated.connect(lambda r: names.append(r.name))
+
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+    source = _TestSource(stack, chunk_size=2)
+
+    assert controller.start(_StreamingRecon(), source, {}, source_arg="synthetic")
+    assert _wait_for_finished(controller)
+
+    assert set(names) == {"test-source"}
 
 
 def test_controller_clears_streaming_run_when_session_finish_fails():
@@ -440,3 +493,125 @@ def test_controller_effective_stall_timeout_without_idle_source(qtbot, tmpdir, m
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+# --- graceful stop ---------------------------------------------------------
+#
+# Reconstruction is slower than streaming, so the stream worker normally sits
+# blocked on the inter-stack barrier having already dispatched a whole
+# timepoint: those frames are queued on the process thread. Killing the thread
+# there leaves the viewer's last timepoint half reconstructed, so stop() drains
+# the queue first.
+
+
+class _SlowSession(_StreamingSession):
+    """Processes one frame at a time, slowly, recording what it got."""
+
+    def __init__(self, delay=0.03):
+        super().__init__()
+        self.delay = delay
+        self.pushed = []
+
+    def push(self, chunk, start, end):
+        time.sleep(self.delay)
+        super().push(chunk, start, end)
+        self.pushed.append(start)
+
+
+class _SlowRecon(_StreamingRecon):
+    def __init__(self):
+        self.session = _SlowSession()
+
+    def make_session(self):
+        return self.session
+
+
+class _NeverEndingSource(_TestSource):
+    """Two stacks of frames, and never reports completion (a live timelapse)."""
+
+    def __init__(self, stack, chunk_size, frames_per_stack):
+        super().__init__(stack, chunk_size)
+        self.frames_per_stack = frames_per_stack
+
+    def open(self, path_or_handle):
+        return StackInfo(
+            frame_shape=self.stack.shape[-2:],
+            dtype=self.stack.dtype,
+            expected_frames=self.stack.shape[0],
+            frames_per_stack=self.frames_per_stack,
+            detector_name="CAM",
+        )
+
+    def is_complete(self):
+        return False
+
+
+# Anchored module-side on purpose: a QApplication created into a *local* dies
+# when that function returns, taking every QObject with it ("wrapped C/C++
+# object has been deleted" on the next touch).
+_APP = None
+
+
+def _qapp():
+    global _APP
+    _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    return _APP
+
+
+def _spin_until(predicate, timeout_ms=8000):
+    app = _qapp()
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def _start_slow_run(fps=10):
+    _qapp()
+    stack = np.arange(2 * fps * 3 * 3, dtype=np.float32).reshape(2 * fps, 3, 3)
+    source = _NeverEndingSource(stack, chunk_size=fps, frames_per_stack=fps)
+    recon = _SlowRecon()
+    controller = LiveReconstructionController(CommunicationChannel())
+
+    assert controller.start(recon, source, {}, source_arg="synthetic")
+    # Wait until the second stack is under way but nowhere near finished.
+    assert _spin_until(lambda: len(recon.session.pushed) >= 2)
+    return controller, recon, fps
+
+
+def test_graceful_stop_finishes_the_timepoint_in_flight():
+    """Every frame already queued must be processed before teardown."""
+    controller, recon, fps = _start_slow_run()
+    assert len(recon.session.pushed) < fps + 1      # genuinely mid-timepoint
+
+    controller.stop()                                # graceful by default
+    assert _spin_until(lambda: controller._running is False), "stop never completed"
+
+    # begin() consumed stack 0 as one push; stack 1 arrives frame by frame.
+    assert recon.session.pushed == [0] + list(range(fps, 2 * fps))
+
+
+def test_graceful_stop_does_not_block_the_calling_thread():
+    """Teardown is asynchronous -- the UI must not freeze for a whole timepoint."""
+    controller, recon, fps = _start_slow_run()
+
+    t0 = time.monotonic()
+    controller.stop()
+    elapsed = time.monotonic() - t0
+
+    remaining = (fps - len(recon.session.pushed)) * recon.session.delay
+    assert elapsed < max(0.05, remaining / 2), f"stop() blocked for {elapsed:.3f}s"
+    assert _spin_until(lambda: controller._running is False)
+
+
+def test_immediate_stop_tears_down_without_draining():
+    """graceful=False is still available for when a new run cannot wait."""
+    controller, recon, _ = _start_slow_run()
+
+    controller.stop(graceful=False)
+
+    assert controller._running is False
+    assert controller._stream_thread is None
+

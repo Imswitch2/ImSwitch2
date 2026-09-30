@@ -102,14 +102,19 @@ class PositionerInfo(DeviceInfo):
     forScanning: bool = False
     """ Whether the positioner is used for scanning. """
 
-    resetOnClose: bool = True
-    """ Whether the positioner should be reset to 0-position upon closing ImSwitch. """
+    resetOnClose: bool = False
+    """ Whether the positioner should be moved to position 0 when ImSwitch closes.
+    Off unless the setup asks for it: a stage that drives itself somewhere on
+    exit can hit an objective, a sample or a stage limit nobody expected. """
 
     joystick: bool = False
     """ Whether the positioner is connected to a joystick. """
 
     liveUpdate: bool = False
-    """ Whether the positioner position should be updated live. """
+    """ Whether live position updates are available for this positioner. """
+
+    hide: bool = False
+    """ Whether the positioner is hidden from the manual Positioner widget. """
 
     shortcutModifier: Optional[str] = None
     """ Keyboard-shortcut group used to jog this positioner from the Positioner

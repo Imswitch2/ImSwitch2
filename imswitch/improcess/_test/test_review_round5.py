@@ -134,16 +134,15 @@ def test_a_failed_backup_restore_keeps_the_backup_and_says_where(tmp_path, monke
 # 2./3. live provenance fails closed, and the first stack counts -------------------------
 
 def test_a_live_result_whose_provenance_cannot_be_recorded_is_a_failure(monkeypatch):
-    from imswitch.improcess._test.test_reconstruction_provenance_paths import _stream_worker
+    from imswitch.improcess._test.test_reconstruction_provenance_paths import _frames, _stream_worker
     from imswitch.improcess.reconstructors import run as run_module
-    from imswitch.improcess.reconstructors.base import Chunk
 
     worker, _ = _stream_worker(expected=4)
     monkeypatch.setattr(run_module, "record_snapshot", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no record")))
     finished, failed = [], []
     worker.sigStackFinished.connect(finished.append)
     worker.sigFailed.connect(failed.append)
-    worker.processChunk(Chunk(np.zeros((2, 4, 4)), 2, 4))
+    _frames(worker, 2, 4)
     worker.finalize()
     assert finished == [] and failed and "provenance" in failed[0]
 

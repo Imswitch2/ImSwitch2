@@ -29,6 +29,7 @@ class PositionerManager(ABC):
         self.__resetOnClose = positionerInfo.resetOnClose
         self.__joystick = positionerInfo.joystick
         self.__liveUpdate = positionerInfo.liveUpdate
+        self.__hide = getattr(positionerInfo, 'hide', False)
         self.__shortcutModifier = getattr(positionerInfo, 'shortcutModifier', None)
         if not positionerInfo.forPositioning and not positionerInfo.forScanning:
             raise ValueError('At least one of forPositioning and forScanning must be set in'
@@ -83,6 +84,16 @@ class PositionerManager(ABC):
     def liveUpdate(self) -> bool:
         """ Whether the positioner position should be updated live. """
         return self.__liveUpdate
+
+    @property
+    def hide(self) -> bool:
+        """Whether this positioner is hidden from the manual Positioner widget."""
+        return self.__hide
+
+    @property
+    def isAvailable(self) -> bool:
+        """Whether this positioner should be exposed to UI/controllers."""
+        return getattr(self, 'device', True) is not None
 
     @property
     def shortcutModifier(self):

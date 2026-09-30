@@ -97,7 +97,7 @@ def clear_cache() -> None:
 
 
 def index(root: Optional[Path] = None) -> Optional[dict]:
-    """The generated ``index.json``: generator version, per-manager hashes, coverage."""
+    """The generated ``index.json``: generator version, per-manager counts, coverage."""
     return _read_json(Path(root or default_root()) / _INDEX_FILE)
 
 

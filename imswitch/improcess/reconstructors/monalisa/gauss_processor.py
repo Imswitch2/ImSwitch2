@@ -160,6 +160,16 @@ class GaussProcessorCPU:
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
         self.num_frames_in_stack = nx_s * ny_s
 
+        # Bilinear interpolation corners and fractional offsets depend only on
+        # x_interp/y_interp and the frame size, all fixed for the lifetime of
+        # this processor, so precompute them once instead of every call.
+        self.x0 = np.clip(np.floor(self.x_interp).astype(np.int32), 0, self.num_cols - 1)
+        self.x1 = np.clip(self.x0 + 1, 0, self.num_cols - 1)
+        self.y0 = np.clip(np.floor(self.y_interp).astype(np.int32), 0, self.num_rows - 1)
+        self.y1 = np.clip(self.y0 + 1, 0, self.num_rows - 1)
+        self.dx = self.x_interp - self.x0
+        self.dy = self.y_interp - self.y0
+
     def _calculate_weights(
         self,
         footprint: tuple[np.ndarray, np.ndarray],
@@ -193,14 +203,7 @@ class GaussProcessorCPU:
         Returns:
             1D array of reconstructed intensity values.
         """
-        x0 = np.clip(np.floor(self.x_interp).astype(np.int32), 0, self.num_cols - 1)
-        x1 = np.clip(x0 + 1, 0, self.num_cols - 1)
-
-        y0 = np.clip(np.floor(self.y_interp).astype(np.int32), 0, self.num_rows - 1)
-        y1 = np.clip(y0 + 1, 0, self.num_rows - 1)
-
-        dx = self.x_interp - x0
-        dy = self.y_interp - y0
+        x0, x1, y0, y1, dx, dy = self.x0, self.x1, self.y0, self.y1, self.dx, self.dy
 
         interp_vals = (
             frame[y0, x0] * (1 - dx) * (1 - dy)
@@ -221,13 +224,7 @@ class GaussProcessorCPU:
         Returns:
             Processed pixels for each raw frame in the chunk.
         """
-        x0 = np.clip(np.floor(self.x_interp).astype(np.int32), 0, self.num_cols - 1)
-        x1 = np.clip(x0 + 1, 0, self.num_cols - 1)
-        y0 = np.clip(np.floor(self.y_interp).astype(np.int32), 0, self.num_rows - 1)
-        y1 = np.clip(y0 + 1, 0, self.num_rows - 1)
-
-        dx = self.x_interp - x0
-        dy = self.y_interp - y0
+        x0, x1, y0, y1, dx, dy = self.x0, self.x1, self.y0, self.y1, self.dx, self.dy
 
         interp_vals = (
             chunk[:, y0, x0] * (1 - dx) * (1 - dy)
@@ -322,6 +319,16 @@ class GaussProcessorGPU:
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
         self.num_frames_in_stack = nx_s * ny_s
 
+        # Bilinear interpolation corners and fractional offsets depend only on
+        # x_interp/y_interp and the frame size, all fixed for the lifetime of
+        # this processor, so precompute them once (on GPU) instead of every call.
+        self.x0 = cp.clip(cp.floor(self.x_interp).astype(cp.int32), 0, self.num_cols - 1)
+        self.x1 = cp.clip(self.x0 + 1, 0, self.num_cols - 1)
+        self.y0 = cp.clip(cp.floor(self.y_interp).astype(cp.int32), 0, self.num_rows - 1)
+        self.y1 = cp.clip(self.y0 + 1, 0, self.num_rows - 1)
+        self.dx = self.x_interp - self.x0
+        self.dy = self.y_interp - self.y0
+
     def _calculate_weights(
         self,
         footprint: tuple[np.ndarray, np.ndarray],
@@ -355,14 +362,7 @@ class GaussProcessorGPU:
         Returns:
             1D array of reconstructed intensity values on CPU.
         """
-        x0 = cp.clip(cp.floor(self.x_interp).astype(cp.int32), 0, self.num_cols - 1)
-        x1 = cp.clip(x0 + 1, 0, self.num_cols - 1)
-
-        y0 = cp.clip(cp.floor(self.y_interp).astype(cp.int32), 0, self.num_rows - 1)
-        y1 = cp.clip(y0 + 1, 0, self.num_rows - 1)
-
-        dx = self.x_interp - x0
-        dy = self.y_interp - y0
+        x0, x1, y0, y1, dx, dy = self.x0, self.x1, self.y0, self.y1, self.dx, self.dy
 
         interp_vals = (
             frame_gpu[y0, x0] * (1 - dx) * (1 - dy)
@@ -372,6 +372,31 @@ class GaussProcessorGPU:
         ).reshape((self.num_foci, self.pts_per_focus))
 
         return cp.asnumpy(cp.dot(interp_vals, self.lsq_weights))
+
+    def process_chunk_gpu(self, chunk_gpu: Any) -> Any:
+        """
+        Process an entire 3D chunk (num_frames, Y, X) at once, result on GPU.
+
+        Same computation as :meth:`process_chunk` but the result is left on the
+        device (a cupy array), so a caller can keep accumulating on the GPU and
+        defer the GPU->host (D2H) copy to a lower, viewer-driven cadence.
+
+        Args:
+            chunk_gpu: A sub-stack (chunk) of raw frames on GPU.
+
+        Returns:
+            Processed pixels for each raw frame in the chunk, on GPU.
+        """
+        x0, x1, y0, y1, dx, dy = self.x0, self.x1, self.y0, self.y1, self.dx, self.dy
+
+        interp_vals = (
+            chunk_gpu[:, y0, x0] * (1 - dx) * (1 - dy)
+            + chunk_gpu[:, y1, x0] * (1 - dx) * dy
+            + chunk_gpu[:, y0, x1] * dx * (1 - dy)
+            + chunk_gpu[:, y1, x1] * dx * dy
+        ).reshape((-1, self.num_foci, self.pts_per_focus))
+
+        return cp.matmul(interp_vals, self.lsq_weights)
 
     def process_chunk(self, chunk_gpu: Any) -> np.ndarray:
         """
@@ -383,22 +408,7 @@ class GaussProcessorGPU:
         Returns:
             Processed pixels for each raw frame in the chunk (on CPU).
         """
-        x0 = cp.clip(cp.floor(self.x_interp).astype(cp.int32), 0, self.num_cols - 1)
-        x1 = cp.clip(x0 + 1, 0, self.num_cols - 1)
-        y0 = cp.clip(cp.floor(self.y_interp).astype(cp.int32), 0, self.num_rows - 1)
-        y1 = cp.clip(y0 + 1, 0, self.num_rows - 1)
-
-        dx = self.x_interp - x0
-        dy = self.y_interp - y0
-
-        interp_vals = (
-            chunk_gpu[:, y0, x0] * (1 - dx) * (1 - dy)
-            + chunk_gpu[:, y1, x0] * (1 - dx) * dy
-            + chunk_gpu[:, y0, x1] * dx * (1 - dy)
-            + chunk_gpu[:, y1, x1] * dx * dy
-        ).reshape((-1, self.num_foci, self.pts_per_focus))
-
-        return cp.asnumpy(cp.matmul(interp_vals, self.lsq_weights))
+        return cp.asnumpy(self.process_chunk_gpu(chunk_gpu))
 
     def update_frame_inds(
         self,

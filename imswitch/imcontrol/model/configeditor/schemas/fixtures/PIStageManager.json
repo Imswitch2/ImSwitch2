@@ -4,6 +4,7 @@
     "managerName": "PIStageManager",
     "managerProperties": {
       "device": "example",
+      "runtime_timeout_ms": 1,
       "usb_description": "example"
     }
   }

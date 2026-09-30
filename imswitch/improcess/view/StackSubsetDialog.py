@@ -7,7 +7,11 @@ from dataclasses import dataclass
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
-from imswitch.improcess.processors._axis_split import axis_labels_for_result, shape_for_result
+from imswitch.improcess.processors._axis_split import (
+    axis_labels_for_result,
+    axis_scales_for_result,
+    shape_for_result,
+)
 
 
 def crop_preview_rectangle(labels, first_last_by_axis):
@@ -34,6 +38,28 @@ def crop_preview_rectangle(labels, first_last_by_axis):
     return [[y0, x0], [y0, x1], [y1, x1], [y1, x0]]
 
 
+def crop_preview_scale(labels, scales):
+    """Return the ``(Y, X)`` layer scale that puts the preview on the image.
+
+    ImProcess shows a result with its ``axis_scales`` as the image layer's
+    scale, so the image sits in physical units while the rectangle is built
+    in pixel indices. Without the same scale the preview came out ``1 / pixel
+    size`` times too large -- ten times on a 0.1 µm/px image. Falls back to
+    ``(1.0, 1.0)`` when the result carries no usable Y/X scale, which is also
+    how an uncalibrated image is displayed.
+    """
+    labels = list(labels)
+    scales = list(scales or [])
+    try:
+        y = float(scales[labels.index("Y")])
+        x = float(scales[labels.index("X")])
+    except (ValueError, IndexError, TypeError):
+        return (1.0, 1.0)
+    if not (np.isfinite(y) and np.isfinite(x) and y > 0 and x > 0):
+        return (1.0, 1.0)
+    return (y, x)
+
+
 @dataclass
 class _AxisRangeRow:
     axis: int
@@ -57,11 +83,15 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
     #: whenever a spinbox is touched.
     MANUAL = "Manual"
 
+    #: Outline thickness of the crop preview, in screen pixels.
+    PREVIEW_EDGE_PX = 2
+
     def __init__(self, result=None, parent=None, napari_viewer=None, rois=()):
         super().__init__(parent)
         self._updating = False
         self._shape = ()
         self._labels = []
+        self._scales = []
         self._rows: list[_AxisRangeRow] = []
         self._rois = []
         self._appliedROI = None
@@ -125,6 +155,7 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
         self._rows = []
         self._shape = shape_for_result(result) if result is not None else ()
         self._labels = axis_labels_for_result(result) if result is not None else []
+        self._scales = axis_scales_for_result(result) if result is not None else []
         self.table.setRowCount(len(self._shape))
         for axis, (label, size) in enumerate(
             zip(self._labels, self._shape, strict=True)
@@ -277,9 +308,15 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
         if rect is None:
             return
         data = [np.array(rect, dtype=float)]
+        scale = crop_preview_scale(self._labels, self._scales)
+        edge_width = self._preview_edge_width(scale)
         try:
             if self._preview_layer is not None and self._preview_layer in self._viewer.layers:
+                # Scale first: the panel retargets to results of other pixel
+                # sizes, and the data must land in the new frame.
+                self._preview_layer.scale = scale
                 self._preview_layer.data = data
+                self._preview_layer.edge_width = edge_width
             else:
                 self._preview_layer = self._viewer.add_shapes(
                     data,
@@ -287,11 +324,26 @@ class StackSubsetRangesWidget(QtWidgets.QWidget):
                     name="Crop preview",
                     edge_color="yellow",
                     face_color=[1.0, 1.0, 0.0, 0.10],
-                    edge_width=2,
+                    edge_width=edge_width,
+                    scale=scale,
                 )
         except Exception:
             # Never let a preview-drawing hiccup block the crop dialog itself.
             self._preview_layer = None
+
+    def _preview_edge_width(self, scale) -> float:
+        """Edge width in the preview layer's data units, ~PREVIEW_EDGE_PX on screen.
+
+        napari multiplies a shape's ``edge_width`` by the layer's scale and the
+        camera zoom, so once the layer carries the image's scale a fixed width
+        would be ``width x pixel size`` world units: a fifth of a screen pixel
+        at 0.1 µm/px. Dividing the world width by the scale undoes that, as the
+        ROI overlay does. The dialog is modal, so the zoom cannot change under it.
+        """
+        from imswitch.imcommon.view.guitools.naparitools import worldEdgeWidth
+
+        world = worldEdgeWidth(self._viewer, self.PREVIEW_EDGE_PX)
+        return world / (sum(scale) / len(scale))
 
     def _remove_crop_preview(self) -> None:
         if self._preview_layer is not None and self._viewer is not None:

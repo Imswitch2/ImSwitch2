@@ -54,9 +54,16 @@ def test_every_template_key_is_one_the_code_reads(category, name, template):
     if not schema.get("x-imswitch-open-passthrough"):
         unknown = [f["key"] for f in template.get("props", []) if f["key"] not in allowed]
         assert unknown == [], f"{name}: template lists properties the code never reads: {unknown}"
-        for nest_key in template.get("nested", {}):
+        for nest_key, children in template.get("nested", {}).items():
             assert nest_key in props and props[nest_key].get("x-imswitch-kind") == "object", \
                 f"{name}: nested section {nest_key!r} is not an object property of the schema"
+            sub_props = props[nest_key].get("properties") or {}
+            if sub_props:
+                # The code names this dict's keys: the template may list only those.
+                # (A dict the code hands on whole -- hamamatsu, tis -- lists none.)
+                unknown_children = [f["key"] for f in children if f["key"] not in sub_props]
+                assert unknown_children == [], \
+                    f"{name}: {nest_key} lists keys the code never reads: {unknown_children}"
     kind = CATEGORY_METADATA[category].kind
     kind_props = (resources.kind_schema_for(kind) or {}).get("properties") or {}
     unknown_top = [f["key"] for f in template.get("top", []) if f["key"] not in kind_props or f["key"] in NOT_FORM_FIELDS]
@@ -68,8 +75,12 @@ def test_every_template_type_is_a_refinement_and_never_a_repeat(category, name, 
     schema = resources.generated_schema_for(name) or {}
     props = schema.get("properties") or {}
     kind_props = (resources.kind_schema_for(CATEGORY_METADATA[category].kind) or {}).get("properties") or {}
+    nested = [
+        (f"nested:{nest_key}", children, (props.get(nest_key) or {}).get("properties") or {})
+        for nest_key, children in template.get("nested", {}).items()
+    ]
     for section, fields, described in (("top", template.get("top", []), kind_props),
-                                        ("props", template.get("props", []), props)):
+                                        ("props", template.get("props", []), props), *nested):
         for f in fields:
             tp = f.get("type")
             prop = described.get(f["key"])

@@ -1,4 +1,5 @@
 import dataclasses
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -8,8 +9,9 @@ import zarr
 
 from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
-    ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes,
+    dirtools, ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes,
     isCriticalRestoreWarning,
+    memory_limits,
     shutdownState,
 )
 from imswitch.imcommon.framework import Thread
@@ -63,6 +65,10 @@ class ImConMainController(MainController):
         self.__mainView.sigOpenShortcutEditor.connect(self.openShortcutEditor)
         self.__mainView.sigOpenSessionNotes.connect(self.openSessionNotes)
         self.__mainView.sigOpenConfigEditor.connect(self.openConfigEditor)
+        self.__mainView.sigOpenMemoryLimits.connect(self.openMemoryLimits)
+        self.__mainView.memoryLimitsDialog.sigSaveRequested.connect(self.saveMemoryLimits)
+        self.__mainView.sigOpenRecordingFolder.connect(self.openRecordingFolder)
+        self.__mainView.recordingFolderDialog.sigSaveRequested.connect(self.saveRecordingFolder)
         self.__mainView.sessionNotesDialog.sigNotesChanged.connect(self.setSessionNote)
 
         # The Config Studio, while it is open. One window at a time: a second
@@ -214,6 +220,30 @@ class ImConMainController(MainController):
         
         # Register per-positioner axis jog actions (Phase 3c migration)
         self._registerPositionerJogActions()
+
+        # Positioner-wide actions live in the same global shortcut catalog as jog actions.
+        if 'Positioner' in self.controllers:
+            positionerController = self.controllers['Positioner']
+            positionerWidget = positionerController._widget
+            self.__shortcutManager.registerAction(
+                actionId='positioner.toggleCoarseFine',
+                displayName='Positioner: toggle coarse/fine',
+                callback=positionerController.toggleStepMode,
+                defaultKeySequence=None,
+                scope=ShortcutScope.Application,
+                owner=positionerWidget,
+                initiallyBound=False,
+            )
+            if positionerController._getJoystickPositionerName() is not None:
+                self.__shortcutManager.registerAction(
+                    actionId='positioner.toggleJoystick',
+                    displayName='Positioner: toggle joystick',
+                    callback=positionerController.toggleJoystick,
+                    defaultKeySequence=None,
+                    scope=ShortcutScope.Application,
+                    owner=positionerWidget,
+                    initiallyBound=False,
+                )
         
         self.__shortcutManager.loadConfigOverrides(self.__setupInfo.shortcuts)
         self.__shortcutManager.computeEffectiveBindings()
@@ -485,6 +515,88 @@ class ImConMainController(MainController):
         dialog.setNotes(self.__commChannel.getSessionNote())
         self.__mainView.showSessionNotesDialog()
 
+    def openMemoryLimits(self):
+        """Show the memory-limits editor, seeded with what the options file holds."""
+        options, _ = configfiletools.loadOptions()
+        dialog = self.__mainView.memoryLimitsDialog
+        dialog.setValues(getattr(options, 'memory', None))
+        self.__mainView.showMemoryLimitsDialog()
+
+    def saveMemoryLimits(self, values):
+        """Save the memory limits to the options file and adopt them now.
+
+        Refused while a recording runs: every queue check reads the limit in
+        force, so lowering a queue below what it holds would fail the
+        recording in progress. The dialog stays open with the reason.
+        """
+        dialog = self.__mainView.memoryLimitsDialog
+        master = self.__masterController
+        recordingManager = getattr(master, 'recordingManager', None)
+        if recordingManager is not None and getattr(recordingManager, 'record', False):
+            dialog.setStatus(
+                'A recording is running. Stop it first: a smaller queue '
+                'would fail the recording in progress.'
+            )
+            return
+
+        from imswitch.imcontrol.model.Options import MemoryOptions
+        try:
+            memory = MemoryOptions(**{field: int(value) for field, value in values.items()})
+            options, _ = configfiletools.loadOptions()
+            configfiletools.saveOptions(dataclasses.replace(options, memory=memory))
+        except Exception as e:
+            self.__logger.error(f'Could not save the memory limits: {e}', exc_info=True)
+            dialog.setStatus(f'Could not save the memory limits: {e}')
+            return
+        memory_limits.configure(memory, logger=self.__logger)
+        dialog.setStatus('')
+        dialog.accept()
+
+    def openRecordingFolder(self):
+        """Show the recordings-folder editor, seeded with what the options file holds."""
+        options, _ = configfiletools.loadOptions()
+        dialog = self.__mainView.recordingFolderDialog
+        dialog.setValues(getattr(options, 'recording', None))
+        self.__mainView.showRecordingFolderDialog()
+
+    def saveRecordingFolder(self, values):
+        """Save the default recordings folder and point the Recording widget at it.
+
+        Safe during a recording: a recording works out its file name when it
+        starts, so the one running keeps its file and only later recordings
+        and snapshots go to the new folder. A folder that cannot be one -- no
+        path, a relative path (which would depend on where ImSwitch was
+        started), an existing file -- keeps the dialog open with the reason.
+        """
+        from imswitch.imcontrol.model.Options import RecordingOptions
+
+        dialog = self.__mainView.recordingFolderDialog
+        try:
+            folder = dirtools.checkedFolderPath(values.get('outputFolder'))
+        except ValueError as e:
+            dialog.setStatus(str(e))
+            return
+
+        recording = RecordingOptions(
+            outputFolder=folder,
+            includeDateInOutputFolder=bool(values.get('includeDateInOutputFolder', True)),
+        )
+        try:
+            options, _ = configfiletools.loadOptions()
+            configfiletools.saveOptions(dataclasses.replace(options, recording=recording))
+        except Exception as e:
+            self.__logger.error(f'Could not save the recordings folder: {e}', exc_info=True)
+            dialog.setStatus(f'Could not save the recordings folder: {e}')
+            return
+
+        recordingController = self.controllers.get('Recording')
+        if recordingController is not None:
+            recordingController.setRecFolder(recording.folderFor())
+        self.__logger.info(f'Recordings folder set to {recording.outputFolder}'
+                           f'{" (dated subfolders)" if recording.includeDateInOutputFolder else ""}')
+        dialog.setStatus('')
+        dialog.accept()
+
     def openConfigEditor(self):
         """ Open the Config Studio on this microscope's setup files.
 
@@ -601,9 +713,22 @@ class ImConMainController(MainController):
         from imswitch.imcommon.model import ShortcutScope
         from imswitch.imcontrol.controller.ShortcutManager import computePositionerJogDefaults
 
-        jogDefaults = computePositionerJogDefaults(self.__setupInfo.positioners)
-
+        visiblePositioners = {}
         for positionerName, positionerInfo in self.__setupInfo.positioners.items():
+            if not positionerInfo.forPositioning or getattr(positionerInfo, 'hide', False):
+                continue
+            try:
+                self.__masterController.positionersManager[positionerName]
+            except Exception:
+                continue
+            # Keep shortcuts registered for configured/visible positioners even
+            # when hardware is unavailable at startup. Runtime reconnect can then
+            # make the existing widget + actions usable without rebuilding them.
+            visiblePositioners[positionerName] = positionerInfo
+
+        jogDefaults = computePositionerJogDefaults(visiblePositioners)
+
+        for positionerName, positionerInfo in visiblePositioners.items():
             for axis in positionerInfo.axes:
                 for direction, label in (('plus', '+'), ('minus', '-')):
                     actionId = f'positioner.{positionerName}.{axis}.{direction}'

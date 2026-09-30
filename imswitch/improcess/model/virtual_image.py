@@ -161,7 +161,11 @@ class TiffVirtualArray(_VirtualArrayBase):
     def __getitem__(self, key: Any) -> np.ndarray:
         if self._array is not None:
             return np.asarray(self._array[key])
-        return np.asarray(self.asarray()[key])
+        # No lazy path: the whole series is decoded to serve any key. What is
+        # returned must not be a view into that decode, or one displayed plane
+        # keeps the entire series alive -- and a loop over planes holds the
+        # previous series while decoding the next.
+        return _detached(self.asarray(), key)
 
     def asarray(self) -> np.ndarray:
         if self._array is not None:
@@ -172,6 +176,14 @@ class TiffVirtualArray(_VirtualArrayBase):
         closer = getattr(self._store, "close", None)
         if callable(closer):
             closer()
+
+
+def _detached(full: np.ndarray, key: Any) -> np.ndarray:
+    """``full[key]``, copied when it is a view of part of ``full``."""
+    selected = np.asarray(full[key])
+    if selected.base is not None and selected.nbytes < full.nbytes:
+        selected = selected.copy()
+    return selected
 
 
 class EagerVirtualArray(_VirtualArrayBase):

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "availableCubes": {
+      "description": "Optional mapping from Leica cube slot numbers to display names.  Slot",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:default:object",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "LeicaDMIStandManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "LeicaDMIStandManager"
+  ]
+}

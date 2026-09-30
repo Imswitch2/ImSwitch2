@@ -217,6 +217,14 @@ def _tiling_manifest_for_path(path: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def tiling_manifest_for_path(path: str | Path) -> Path | None:
+    """The ``tiles.json`` of the tiling run ``path`` belongs to, if any.
+
+    Raises ``ValueError`` when the path sits inside more than one run.
+    """
+    return _tiling_manifest_for_path(Path(path))
+
+
 def has_zarr_ancestor(path: str | Path) -> bool:
     return _zarr_ancestor(Path(path)) is not None
 

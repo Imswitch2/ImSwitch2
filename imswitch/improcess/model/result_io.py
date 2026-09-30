@@ -17,6 +17,10 @@ along as JSON in whatever each format offers for text:
 
 Formats are chosen by the file suffix, so "save as .h5" means HDF5 without a
 second control to keep in step with the filename.
+
+A result whose data is lazy -- a time lapse, a virtually opened file -- is
+written one index of its leading axis at a time, never read whole: a lapse
+larger than memory saves as readily as it opens.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from imswitch.imcommon.model.ome_metadata import (
     build_ome_xml,
 )
 from imswitch.improcess.model.footprint import HISTORY_KEY, history_of
+from imswitch.improcess.model.lazy_array import plane_chunks
 from imswitch.improcess.model.provenance import PROVENANCE_KEY
 from imswitch.improcess.model.save_protocol import (
     SavePlan,
@@ -64,8 +69,31 @@ SAVE_FILTERS = (
 _AXIS_TYPES = {"x": "space", "y": "space", "z": "space", "t": "time", "c": "channel"}
 
 
+#: Above this, a streamed TIFF is written as BigTIFF. Classic TIFF addresses
+#: 4 GiB; the margin covers the tags and the OME-XML.
+_BIGTIFF_BYTES = 2 ** 32 - 2 ** 27
+
+
 class UnsupportedResultFormat(ValueError):
     """The requested container cannot hold this result."""
+
+
+def _is_lazy(data: Any) -> bool:
+    """An array-like that reads when indexed rather than holding its values."""
+    return (
+        not isinstance(data, np.ndarray)
+        and hasattr(data, "shape")
+        and hasattr(data, "dtype")
+        and hasattr(data, "__getitem__")
+    )
+
+
+def _shape_and_dtype(data: Any) -> tuple[tuple[int, ...], np.dtype]:
+    """Shape and dtype without reading a lazy array's values."""
+    if _is_lazy(data):
+        return tuple(int(size) for size in data.shape), np.dtype(data.dtype)
+    array = np.asarray(data)
+    return tuple(array.shape), array.dtype
 
 
 def file_dialog_filter() -> str:
@@ -106,14 +134,15 @@ def ome_meta_for_result(result, *, name: str = "") -> OmeImageMeta:
 
 def ome_meta_for_view(view, *, name: str = "result") -> OmeImageMeta:
     """Describe a :class:`~.result.SerializationView` in OME terms."""
-    data = np.asarray(view.data)
+    shape, dtype = _shape_and_dtype(view.data)
+    ndim = len(shape)
     labels = [str(label) for label in view.axis_labels or []]
     scales = [float(value) for value in view.axis_scales or []]
     unit = str(view.scale_unit or "px")
 
     # An axis with no label still needs one, or the axis count disagrees with
     # the data and OmeImageMeta refuses the pair outright.
-    while len(labels) < data.ndim:
+    while len(labels) < ndim:
         labels.insert(0, "Q")
     while len(scales) < len(labels):
         scales.insert(0, 1.0)
@@ -130,7 +159,7 @@ def ome_meta_for_view(view, *, name: str = "result") -> OmeImageMeta:
     # takes the first name still free instead.
     axes = []
     used: set[str] = set()
-    for label in (labels[: data.ndim] if data.ndim else labels):
+    for label in (labels[:ndim] if ndim else labels):
         key = label.lower()[:1]
         if key not in _AXIS_TYPES or key in used:
             key = next((name for name in "ztcyx" if name not in used), "")
@@ -152,7 +181,7 @@ def ome_meta_for_view(view, *, name: str = "result") -> OmeImageMeta:
         name=name,
         axes=axes,
         scale=scales[: len(axes)],
-        dtype=data.dtype if data.size else None,
+        dtype=dtype if int(np.prod(shape)) else None,
         channels=channels,
     )
 
@@ -219,10 +248,55 @@ def _json_attributes(result, extra: dict | None = None, document=None) -> dict[s
 # writers
 # --------------------------------------------------------------------------
 
-def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None, document=None) -> None:
+def _aligned_labels(result, ndim: int) -> list[str]:
+    labels = [str(label) for label in getattr(result, "axis_labels", []) or []]
+    while len(labels) < ndim:
+        labels.insert(0, "Q")
+    return labels[-ndim:] if ndim else labels
+
+
+def _plane_delta_t(result, shape, times_s) -> list[float] | None:
+    """Per-plane ``DeltaT`` for OME, from one time per index of the T axis.
+
+    OME numbers planes over every axis but the last two; each plane takes the
+    time of the T index it belongs to. None when the result has no T among
+    those axes or the times do not cover it -- a partial list would put times
+    on the wrong planes.
+    """
+    if times_s is None or len(shape) < 3:
+        return None
+    labels = _aligned_labels(result, len(shape))
+    if "T" not in labels[:-2]:
+        return None
+    axis = labels.index("T")
+    times = list(times_s)
+    if len(times) != shape[axis] or any(value is None for value in times):
+        return None
+    leading = tuple(shape[:-2])
+    positions = np.unravel_index(np.arange(int(np.prod(leading))), leading)[axis]
+    return [float(times[int(position)]) for position in positions]
+
+
+def _leading_blocks(data, shape):
+    """``(index, block)`` along the first axis, each read on its own."""
+    if len(shape) <= 2:
+        yield (), np.asarray(data[...])
+        return
+    for position in range(shape[0]):
+        yield (position,), np.asarray(data[position])
+
+
+def _tiff_pages(data, shape):
+    for _index, block in _leading_blocks(data, shape):
+        yield from block.reshape(-1, *shape[-2:])
+
+
+def _save_tiff(result, path: Path, data, meta: OmeImageMeta, extra=None,
+               document=None, times_s=None) -> None:
     import tifffile
 
-    metadata = meta.tiff_metadata(data.shape)
+    shape, dtype = _shape_and_dtype(data)
+    metadata = meta.tiff_metadata(shape)
     # The provenance travels in the OME Description, which is where OME puts
     # "how was this made" and what a compliant reader will show.
     from imswitch.improcess.model.footprint import json_safe
@@ -246,14 +320,35 @@ def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
     # stored shape then disagrees with the declared axes and the write fails
     # outright. Only a result that really is RGB says so.
     photometric = "rgb" if _is_rgb(result) else "minisblack"
-    if np.ndim(data) < 2:
+    if len(shape) < 2:
         raise ValueError(
             f"cannot write {getattr(result, 'name', 'result')!r} as TIFF: a TIFF page needs "
-            f"two axes, this result has {np.ndim(data)} (shape {tuple(np.shape(data))})"
+            f"two axes, this result has {len(shape)} (shape {shape})"
         )
+    delta_t = _plane_delta_t(result, shape, times_s)
+    if delta_t is not None:
+        plane = dict(metadata.get("Plane") or {})
+        plane["DeltaT"] = delta_t
+        plane["DeltaTUnit"] = ["s"] * len(delta_t)
+        metadata["Plane"] = plane
+
+    streamed = _is_lazy(data) and photometric != "rgb"
+    if _is_lazy(data) and not streamed:
+        data = np.asarray(data)
+    options = {}
+    if streamed:
+        # Pages are handed over one leading index at a time; tifffile needs the
+        # whole shape up front to lay out the file and the OME-XML.
+        nbytes = int(np.prod(shape)) * dtype.itemsize
+        options = {"shape": shape, "dtype": dtype, "bigtiff": nbytes > _BIGTIFF_BYTES}
+
+    def pixels():
+        return _tiff_pages(data, shape) if streamed else data
+
     try:
         tifffile.imwrite(
-            str(path), data, ome=True, metadata=metadata, photometric=photometric
+            str(path), pixels(), ome=True, metadata=metadata,
+            photometric=photometric, **options,
         )
     except Exception:
         # OME cannot describe every array -- more axes than it has names for,
@@ -263,9 +358,9 @@ def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
         # carries the calibration and the footprint, goes in either way.
         metadata.pop("Description", None)
         tifffile.imwrite(
-            str(path), data,
+            str(path), pixels(),
             description=json.dumps(description, ensure_ascii=False, default=str) or None,
-            metadata=metadata, photometric=photometric,
+            metadata=metadata, photometric=photometric, **options,
         )
 
 
@@ -278,23 +373,46 @@ def _is_rgb(result) -> bool:
         return False
 
 
-def _save_hdf5(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None, document=None) -> None:
+def _save_hdf5(result, path: Path, data, meta: OmeImageMeta, extra=None,
+               document=None, times_s=None) -> None:
     import h5py
 
+    shape, dtype = _shape_and_dtype(data)
     with h5py.File(str(path), "w") as handle:
-        dataset = handle.create_dataset("data", data=data)
+        if _is_lazy(data):
+            dataset = handle.create_dataset(
+                "data", shape=shape, dtype=dtype,
+                chunks=plane_chunks(shape) if 0 not in shape and len(shape) > 2 else None,
+            )
+            for index, block in _leading_blocks(data, shape):
+                dataset[index if index else ...] = block
+        else:
+            dataset = handle.create_dataset("data", data=data)
         # Fiji reads element_size_um; everything else reads the OME-XML.
         dataset.attrs["element_size_um"] = meta.element_size_um()
         dataset.attrs["axis_labels"] = ",".join(
             str(label) for label in getattr(result, "axis_labels", []) or []
         )
         dataset.attrs["scale_unit"] = str(getattr(result, "scale_unit", "px"))
+        delta_t = _plane_delta_t(result, shape, times_s)
         try:
-            handle.attrs["ome_xml"] = build_ome_xml(meta, data.shape)
+            handle.attrs["ome_xml"] = build_ome_xml(
+                meta, shape,
+                plane=(
+                    {"DeltaT": delta_t, "DeltaTUnit": ["s"] * len(delta_t)}
+                    if delta_t is not None else None
+                ),
+            )
         except Exception:
             # A container that cannot express this array's axes is still worth
             # writing: the pixels and the footprint are the point.
             pass
+        if times_s is not None and all(value is not None for value in times_s):
+            times = handle.create_dataset(
+                "t_seconds", data=np.asarray(list(times_s), dtype=float)
+            )
+            times.attrs["unit"] = "s"
+            times.attrs["axis"] = "T"
         for key, value in _json_attributes(result, extra).items():
             handle.attrs[key] = value
         if document is not None:
@@ -303,23 +421,35 @@ def _save_hdf5(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
             handle.attrs["channel_names"] = json.dumps([c.get("name") for c in meta.channels])
 
 
-def _save_zarr(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=None, document=None) -> None:
+def _save_zarr(result, path: Path, data, meta: OmeImageMeta, extra=None,
+               document=None, times_s=None) -> None:
     import zarr
 
+    shape, dtype = _shape_and_dtype(data)
     root = zarr.open_group(str(path), mode="w")
+    lazy = _is_lazy(data)
+    chunks = plane_chunks(shape) if lazy and 0 not in shape and len(shape) > 2 else None
     if hasattr(root, "create_array"):
-        array = root.create_array("0", shape=data.shape, dtype=data.dtype)
-        array[...] = data
+        options = {"chunks": chunks} if chunks else {}
+        array = root.create_array("0", shape=shape, dtype=dtype, **options)
     else:  # zarr 2
-        array = root.create_dataset("0", data=data)
+        array = root.create_dataset("0", shape=shape, dtype=dtype, chunks=chunks)
+    if lazy:
+        for index, block in _leading_blocks(data, shape):
+            array[index if index else ...] = block
+    else:
+        array[...] = data
     attributes = dict(root.attrs)
     try:
-        attributes["ome"] = meta.ngff_ome_metadata(path="0", ndim=data.ndim)
+        attributes["ome"] = meta.ngff_ome_metadata(path="0", ndim=len(shape))
     except Exception:
         # An array OME cannot describe still gets written, with its axis
         # labels and footprint in the plain attributes.
         pass
     attributes.update(_json_attributes(result, extra))
+    if times_s is not None and all(value is not None for value in times_s):
+        # OME-NGFF has a time scale but no per-timepoint times.
+        attributes["t_seconds"] = [float(value) for value in times_s]
     root.attrs.update(attributes)
     if document is not None:
         embed_zarr(root, document)
@@ -329,7 +459,7 @@ _WRITERS = {"tiff": _save_tiff, "hdf5": _save_hdf5, "zarr": _save_zarr}
 
 
 def save_image_result(result, path, fmt: str | None = None, extra: dict | None = None,
-                      document=None) -> str:
+                      document=None, *, times_s=None) -> str:
     """Write ``result`` to ``path``; returns the format actually used.
 
     The single writer for anything with a ``data`` array. A result type with
@@ -343,6 +473,11 @@ def save_image_result(result, path, fmt: str | None = None, extra: dict | None =
     ``document`` is the provenance document the save protocol built for this
     file; called directly (outside the protocol) one is built for a
     single-file plan, so the file still carries its graph.
+
+    ``times_s`` is one time in seconds per index of the result's T axis, for a
+    T axis that is not evenly spaced or whose spacing is worth keeping exactly:
+    OME-TIFF and HDF5's OME-XML get it as each plane's ``DeltaT``, and HDF5 and
+    Zarr as a ``t_seconds`` list. The T scale still goes in as the increment.
     """
     path = Path(path)
     fmt = str(fmt or format_for_path(path)).lower()
@@ -354,8 +489,11 @@ def save_image_result(result, path, fmt: str | None = None, extra: dict | None =
             f"{', '.join(sorted(_WRITERS))}"
         )
     view = result.serialization_view() if hasattr(result, "serialization_view") else None
-    data = np.asarray(view.data if view is not None else getattr(result, "data", None))
-    if data.ndim == 0:
+    data = view.data if view is not None else getattr(result, "data", None)
+    if not _is_lazy(data):
+        data = np.asarray(data)
+    shape, _dtype = _shape_and_dtype(data)
+    if len(shape) == 0:
         raise UnsupportedResultFormat("Result has no image data to write")
     if view is not None and view.extra:
         extra = {**(view.extra or {}), **(extra or {})}
@@ -366,7 +504,7 @@ def save_image_result(result, path, fmt: str | None = None, extra: dict | None =
         meta = ome_meta_for_view(view, name=str(getattr(result, "name", "") or "result"))
     else:
         meta = ome_meta_for_result(result)
-    writer(result, path, data, meta, extra, document)
+    writer(result, path, data, meta, extra, document, times_s=times_s)
     return fmt
 
 

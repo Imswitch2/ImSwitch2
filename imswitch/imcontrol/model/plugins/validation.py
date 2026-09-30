@@ -9,6 +9,7 @@ from pathlib import Path
 from .manifest import DeviceManagerContribution
 from .registry import DevicePluginRegistry
 from .setup_metadata import (
+    CORE_MANAGERS_PACKAGE,
     KIND_METADATA,
     daq_device_categories,
     setup_section_to_kind,
@@ -85,8 +86,6 @@ def resolve_schema(contribution: DeviceManagerContribution) -> dict | None:
         return None
 
 
-#: The package whose manager classes the generated schemas describe.
-CORE_MANAGERS_PACKAGE = "imswitch.imcontrol.model.managers"
 
 
 def implemented_by_core(contribution: DeviceManagerContribution, schema: dict) -> bool:

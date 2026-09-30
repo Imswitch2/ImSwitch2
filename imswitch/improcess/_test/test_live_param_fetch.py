@@ -32,35 +32,44 @@ class _LegacyWidget:
         self.parTree.get_param_dict.return_value = {"legacy": "dict"}
 
 
-def _controller(controller_class, widget):
-    controller = controller_class.__new__(controller_class)
+def _live_mode_controller(widget):
+    """LiveModeController names its own attributes/methods in PEP 8 snake_case."""
+    controller = LiveModeController.__new__(LiveModeController)
+    controller._main_controller = _Main(widget)
+    controller._logger = MagicMock()
+    return controller
+
+
+def _memory_live_controller(widget):
+    """MemoryLiveController still uses the older camelCase names."""
+    controller = MemoryLiveController.__new__(MemoryLiveController)
     controller._mainController = _Main(widget)
     controller._logger = MagicMock()
     return controller
 
 
 def test_live_mode_uses_view_reconstruction_params():
-    controller = _controller(LiveModeController, _Widget())
+    controller = _live_mode_controller(_Widget())
 
-    assert controller._getReconstructorParams() == {"from": "view"}
+    assert controller._get_reconstructor_params() == {"from": "view"}
 
 
 def test_memory_live_uses_view_reconstruction_params():
-    controller = _controller(MemoryLiveController, _Widget())
+    controller = _memory_live_controller(_Widget())
 
     assert controller._getReconstructorParams() == {"from": "view"}
 
 
 def test_live_param_lookup_falls_back_to_param_widget_values():
-    controller = _controller(LiveModeController, _LegacyWidget())
+    controller = _live_mode_controller(_LegacyWidget())
 
-    assert controller._getReconstructorParams() == {"legacy": "values"}
+    assert controller._get_reconstructor_params() == {"legacy": "values"}
 
 
 def test_live_param_lookup_falls_back_to_empty_dict_without_widget():
-    controller = _controller(LiveModeController, None)
+    controller = _live_mode_controller(None)
 
-    assert controller._getReconstructorParams() == {}
+    assert controller._get_reconstructor_params() == {}
 
 
 def test_monalisa_reconstruct_uses_legacy_path_by_default():

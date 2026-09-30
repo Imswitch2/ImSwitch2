@@ -143,13 +143,15 @@ def test_reload_user_plugins_rediscovers_and_refreshes(tmp_path, monkeypatch):
         exception=lambda *a, **k: None,
     )
     refreshed = []
-    controller._refresh_runtime_processor_choices = lambda: refreshed.append(True)
+    controller._refresh_runtime_processor_choices = lambda: refreshed.append("processors")
+    controller._refresh_reconstructor_choices = lambda: refreshed.append("reconstructors")
 
     try:
         controller._reload_user_plugins()
 
         assert "user.invert" in processors.available_processor_ids()
         assert registry.get_processor("user.invert", raise_on_missing=False) is not None
-        assert refreshed == [True]
+        # Both runtime menus are refreshed: the tool combo and Load reconstructor.
+        assert refreshed == ["processors", "reconstructors"]
     finally:
         processors.clear_user_plugins()

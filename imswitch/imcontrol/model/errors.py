@@ -13,6 +13,20 @@ class IncompatibilityError(Exception):
         self.message = message
 
 
+class ScanDesignRefusedError(Exception):
+    """The scan manager refused to build a scan from these parameters.
+
+    The message is the reason, written for the operator ("Scan would take
+    20.8 min, above the 1 min cap (scan.maxScanTimeMin)."). ``makeFullScan``
+    used to log the reason and return None, and every caller that unpacked
+    the result turned the refusal into a TypeError that carried no reason.
+    """
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.message = message
+
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #

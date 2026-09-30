@@ -4,9 +4,12 @@ from types import SimpleNamespace
 
 import h5py
 import numpy as np
+import pytest
 from qtpy import QtCore
 
-from imswitch.imcontrol.model import DetectorInfo, RecMode, SaveFormat, SaveMode, SetupInfo
+from imswitch.imcontrol.model import (
+    DetectorInfo, RecMode, SaveFormat, SaveMode, ScanDesignRefusedError, SetupInfo,
+)
 from imswitch.imcontrol.model.managers.RecordingManager import RecordingManager
 from imswitch.imcontrol.model.managers.NidaqManager import NidaqManager
 from imswitch.imcontrol.model.managers.detectors.APDManager import APDManager
@@ -982,7 +985,8 @@ def test_z_only_stepped_scan_end_to_end_from_galvo_fixture(tmp_path):
     bad_analog, _ = serializer.build_analog(widget, setup_info.positioners)
     bad_digital = serializer.build_digital(
         widget, bad_analog, setup_info.positioners, setup_info.getTTLDevices())
-    assert builder._make_full_scan(bad_analog, bad_digital) == (None, None)
+    with pytest.raises(ScanDesignRefusedError, match='voltages outside'):
+        builder._make_full_scan(bad_analog, bad_digital)
     widget.center = {'Z': 5.0}
 
     # 3) Shared attributes: the real SuperScanController.updateScanStageAttrs

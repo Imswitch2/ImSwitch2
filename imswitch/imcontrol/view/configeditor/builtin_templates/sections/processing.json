@@ -212,7 +212,7 @@
       "default": false,
       "req": false,
       "grp": "Viewer",
-      "tip": "Draw SMLM localization results as GPU-rendered summed Gaussians (napari-storm) instead of the built-in low-resolution histogram preview. Requires the optional 'storm' extra: pip install imswitch[storm]. Without it this setting has no effect and results keep the preview.",
+      "tip": "Draw SMLM localization results as GPU-rendered summed Gaussians (napari-storm) instead of the built-in low-resolution histogram preview. Requires the optional 'storm' extra: pip install imswitch2[storm]. Without it this setting has no effect and results keep the preview.",
       "opts": []
     },
     {

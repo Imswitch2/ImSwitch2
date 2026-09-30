@@ -94,6 +94,42 @@ class LazySubsetArray:
         return tuple(composed)
 
 
+def is_dask_array(data: Any) -> bool:
+    return type(data).__module__.split(".", 1)[0] == "dask"
+
+
+def plane_chunks(shape: Sequence[int]) -> tuple[int, ...]:
+    """One chunk per 2-D plane: what a viewer reads when it shows one."""
+    shape = tuple(int(size) for size in shape)
+    if len(shape) <= 2:
+        return shape
+    return (1,) * (len(shape) - 2) + shape[-2:]
+
+
+def display_array(data: Any):
+    """``data`` in a form the viewer can transpose.
+
+    An ndarray or a dask array is returned as it is. A lazy source that owns
+    its files and says so (``display_lazily``) gets a dask view chunked by
+    plane, so napari reads the plane on screen and nothing else. Any other
+    lazy view is read now: it borrows a handle that closes when another file
+    is loaded, and a read deferred to the next slider move would fail then.
+    Something that transposes itself is left to do so.
+    """
+    if isinstance(data, np.ndarray) or is_dask_array(data):
+        return data
+    to_dask = getattr(data, "to_dask", None)
+    shape = getattr(data, "shape", None)
+    if getattr(data, "display_lazily", False) and callable(to_dask) and shape is not None:
+        try:
+            return to_dask(chunks=plane_chunks(shape))
+        except ImportError:
+            pass
+    if hasattr(data, "transpose"):
+        return data
+    return np.asarray(data)
+
+
 def identity_lazy_view(source, *, source_shape: Sequence[int]) -> LazySubsetArray:
     """Wrap ``source`` in a full-range LazySubsetArray (no cropping)."""
     shape = tuple(int(size) for size in source_shape)
@@ -149,4 +185,10 @@ def _compose_axis_key(
     )
 
 
-__all__ = ["LazySubsetArray", "identity_lazy_view"]
+__all__ = [
+    "LazySubsetArray",
+    "display_array",
+    "identity_lazy_view",
+    "is_dask_array",
+    "plane_chunks",
+]

@@ -231,7 +231,13 @@ class DevicePluginRegistry:
             )
             if hint.note:
                 lines.append(f"  {hint.note}")
-            lines.append(f"  Install it with: {hint.install_command()}")
+            if hint.source:
+                lines.append(
+                    "  It is not published on PyPI. From an ImSwitch2 source "
+                    f"checkout, install it with: {hint.install_command()}"
+                )
+            else:
+                lines.append(f"  Install it with: {hint.install_command()}")
 
         lines.append("")
         lines.append(

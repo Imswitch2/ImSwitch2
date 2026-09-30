@@ -254,7 +254,12 @@ now; entry-point discovery is a future item):
 
 `register_default_reconstructors(registry, filter_ids)` and
 `register_default_processors(registry, filter_ids)` instantiate and register the
-requested ids (or all, if `filter_ids is None`).
+requested ids (or all, if `filter_ids is None`), plus every user drop-in plugin
+of that kind: a `.py` file in the user plugins folder defining a `Processor` or
+`Reconstructor` subclass (see [`plugins/`](plugins/)) is installed into
+`_USER_PROCESSOR_CLASSES` / `_USER_RECONSTRUCTOR_CLASSES` by one scan
+(`imswitch.improcess.plugins.load_user_plugins()`), gated by its presence on
+disk rather than by config, with built-in ids winning any collision.
 
 ### 2.3 Startup: config vs standalone defaults
 
@@ -279,6 +284,12 @@ Beyond startup, processors can also be **runtime-loaded** on demand: the main
 controller calls `register_processor_by_id(registry, id)` when the user adds an
 analysis tool from the UI, and `_restore_runtime_processor` re-registers any
 processor that was loaded in a previous session (persisted layout state).
+Reconstructors likewise: **Tools → Load reconstructor** lists every known but
+unregistered reconstructor (`available_reconstructor_specs()` minus the
+registry), and `_load_runtime_reconstructor` calls
+`register_reconstructor_by_id(registry, id)` and has the reconstructor manager
+offer it in the picker and activate it (`reconstructorLoaded`). This is
+per-session; the setup file's `processing.reconstructors` makes it permanent.
 Runtime tool metadata lives in
 [`model/runtime_tools.py`](model/runtime_tools.py): processor-backed tools point
 at their processor id and widget kind, while panel-only tools such as
@@ -435,7 +446,10 @@ still fires without a final `sigResultProduced` payload. This keeps
      from the file headlessly, and `make_overlay(...)`.
 4. **Register it**: add `'<id>': YourReconstructor` to
    `_AVAILABLE_RECONSTRUCTOR_CLASSES` in
-   [`reconstructors/__init__.py`](reconstructors/__init__.py).
+   [`reconstructors/__init__.py`](reconstructors/__init__.py) — or, for a
+   plugin that does not live in the source tree, put the class in a `.py` file
+   in the user plugins folder (**Plugins → Add plugin file…**); drop-in
+   discovery finds reconstructors as it finds processors.
 5. **Enable it** in the setup JSON `processing.reconstructors` list (see §5), or
    rely on `auto_select_reconstructor` via `file_extensions` / modality tag.
 

@@ -67,6 +67,15 @@
         "dataclass:PositionerInfo.forScanning: bool"
       ]
     },
+    "hide": {
+      "default": false,
+      "description": "Whether the positioner is hidden from the manual Positioner widget.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:PositionerInfo.hide: bool"
+      ]
+    },
     "isPositiveDirection": {
       "default": true,
       "description": "Whether the direction of the positioner is positive.",
@@ -87,7 +96,7 @@
     },
     "liveUpdate": {
       "default": false,
-      "description": "Whether the positioner position should be updated live.",
+      "description": "Whether live position updates are available for this positioner.",
       "type": "boolean",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
@@ -125,8 +134,8 @@
       ]
     },
     "resetOnClose": {
-      "default": true,
-      "description": "Whether the positioner should be reset to 0-position upon closing ImSwitch.",
+      "default": false,
+      "description": "Whether the positioner should be moved to position 0 when ImSwitch closes. Off unless the setup asks for it: a stage that drives itself somewhere on exit can hit an objective, a sample or a stage limit nobody expected.",
       "type": "boolean",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [

@@ -2,17 +2,7 @@
 Global-level functions
 **********************
 
-.. method:: getLogger(self) -> logging.LoggerAdapter
-
-   Returns a logger instance that can be used to print formatted
-   messages to the console. 
-
-.. method:: getScriptDirPath(self) -> str
-
-   Returns the path to the directory containing the running script.
-   
-
-.. method:: callAndWaitForSignal(self, signal: imswitch.imcommon.framework.qt.Signal, func: Callable, *args, timeout: Optional[float] = None, **kwargs) -> Any
+.. method:: callAndWaitForSignal(signal: imswitch.imcommon.framework.qt.Signal, func: Callable, *args, timeout: Optional[float] = None, **kwargs) -> Any
 
    Creates a waiter for ``signal``, then calls ``func(*args,
    **kwargs)``, then waits for the signal. Returns what ``func``
@@ -25,7 +15,17 @@ Global-level functions
    after ``timeout`` seconds and ``OperationCancelled`` if the script is
    stopped. 
 
-.. method:: getWaitForSignal(self, signal: imswitch.imcommon.framework.qt.Signal, pollIntervalSeconds: float = 0.05, timeout: Optional[float] = None) -> Callable[[], NoneType]
+.. method:: getLogger() -> logging.LoggerAdapter
+
+   Returns a logger instance that can be used to print formatted
+   messages to the console. 
+
+.. method:: getScriptDirPath() -> str
+
+   Returns the path to the directory containing the running script.
+   
+
+.. method:: getWaitForSignal(signal: imswitch.imcommon.framework.qt.Signal, pollIntervalSeconds: float = 0.05, timeout: Optional[float] = None) -> Callable[[], NoneType]
 
    Returns a function that will wait for the specified signal to emit.
    The returned function will wait until the signal has been emitted
@@ -39,12 +39,12 @@ Global-level functions
    optional ``timeout`` argument of its own that overrides the one given
    here. The polling interval defaults to 50 ms. 
 
-.. method:: importScript(self, path: str) -> Any
+.. method:: importScript(path: str) -> Any
 
    Imports the script at the specified path (either absolute or
    relative to the main script) and returns it as a module variable. 
 
-.. method:: runScanAndWait(self, timeout: Optional[float] = None, source: Optional[str] = None) -> None
+.. method:: runScanAndWait(timeout: Optional[float] = None, source: Optional[str] = None) -> None
 
    Starts one scan through ``api.imcontrol.runScan`` and waits for
    exactly that scan to end, whatever the timing of its signals. Raises
@@ -54,14 +54,15 @@ Global-level functions
    stopped (the running scan then finishes on its own). ``source`` picks
    the scan controller on rigs with several. 
 
-.. method:: sleep(self, seconds: float) -> None
+.. method:: sleep(seconds: float) -> None
 
    Sleeps for the specified number of seconds. Unlike ``time.sleep``,
    this returns immediately (raising ``OperationCancelled``) when the
    script is stopped. 
 
-.. method:: waitUntil(self, predicate: Callable[[], bool], timeout: Optional[float] = None, pollIntervalSeconds: float = 0.05) -> None
+.. method:: waitUntil(predicate: Callable[[], bool], timeout: Optional[float] = None, pollIntervalSeconds: float = 0.05) -> None
 
    Waits until ``predicate()`` returns a true value. Raises
    ``TimeoutError`` after ``timeout`` seconds (``None`` waits
    indefinitely) and ``OperationCancelled`` if the script is stopped. 
+

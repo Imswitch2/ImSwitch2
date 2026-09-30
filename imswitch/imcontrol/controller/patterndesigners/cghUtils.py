@@ -256,7 +256,7 @@ def crop_with_preview(arr, kernel_size=3, threshold=0.3,crop_coord=None):
         kernel = np.ones((kernel_size, kernel_size), dtype="uint8")
         if not _CV2_AVAILABLE:
             raise ImportError('opencv-python is required for SLM pattern design. '
-                              'Install with: pip install "imswitch[full]"')
+                              'Install with: pip install "imswitch2[full]"')
         arr_dilation = cv2.dilate(binary, kernel, iterations=1)
 
         nonzero_y, nonzero_x = np.nonzero(arr_dilation)

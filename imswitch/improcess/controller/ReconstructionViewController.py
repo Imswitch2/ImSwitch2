@@ -1,7 +1,11 @@
+from pathlib import Path
+
 import numpy as np
+from qtpy import QtCore
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.contrast import auto_levels, finite_range
+from imswitch.improcess.model.lazy_array import display_array
 from imswitch.improcess.model.result import result_kind
 from .basecontrollers import ImProcessWidgetController
 
@@ -28,6 +32,24 @@ class ReconstructionViewController(ImProcessWidgetController):
         # index was what decided whose display settings were being saved.
         self._displayedResult = None
 
+        # Live-update coalescing: streaming reconstruction can emit results
+        # faster than a full napari redraw completes. Keep only the newest and
+        # render it once the event loop is free, so the GUI never falls behind.
+        self._pendingLiveResult = None
+        self._liveRenderScheduled = False
+        # Set once the current live result has had one full render (which
+        # establishes the layers); subsequent updates take the fast in-place
+        # data-swap path unless the layer structure changes.
+        self._liveEstablished = False
+        # Newest completed timepoint from the streaming session; the slider is
+        # advanced to it inside the coalesced render.
+        self._liveLatestTimepoint = None
+        # The list entry owned by the live run currently streaming, and its
+        # name. Held by reference so a job's updates keep landing in its own
+        # data object even if the user selects a different entry mid-run.
+        self._liveItem = None
+        self._liveName = None
+
         self._transposeOrder = [0, 1, 2, 3, 4, 5]
         self._axisStep = (0, 0, 0, 0, 0, 0)
         # Axis labels of the image currently shown in the viewer, in displayed
@@ -38,6 +60,9 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._commChannel.sigScanParamsUpdated.connect(self.scanParamsUpdated)
         self._commChannel.sigResultProduced.connect(self.resultProduced)
         self._commChannel.sigLiveResultUpdated.connect(self.liveResultUpdated)
+        self._commChannel.sigLiveTimepointUpdated.connect(self.liveTimepointUpdated)
+        self._commChannel.sigSaveLiveResult.connect(self.saveLiveResult)
+        self._commChannel.sigLiveTimepointDone.connect(self._onLiveTimepointDone)
         # Results that have ever arrived as a live update. Their pixels can be
         # rewritten between render passes, so they never get a mutation token
         # and nothing downstream caches a measurement of them.
@@ -221,8 +246,11 @@ class ReconstructionViewController(ImProcessWidgetController):
         reconObj = self._widget.getCurrentItemData()
         if reconObj is not None:
             self.setImgSlice(autoLevels=autoLevels, levels=levels)
-            if (self._currItemInd is None or self._prevViewId is None or
-                    self.getViewId() != self._prevViewId):
+            if (
+                self._currItemInd is None
+                or self._prevViewId is None
+                or self.getViewId() != self._prevViewId
+            ):
                 self._widget.resetView()
         else:
             self._widget.clearImage()
@@ -231,6 +259,8 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def setImgSlice(self, autoLevels=False, levels=None):
         current = self._widget.getCurrentItemData()
+        # TODO: I would argue that all of the logic of '_setProcessingResultSlice'
+        #   should be placed in this method, since this method is barely doing anything
         self._setProcessingResultSlice(current, autoLevels=autoLevels, levels=levels)
 
     def _setProcessingResultSlice(self, result, autoLevels=False, levels=None):
@@ -242,6 +272,8 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.clearImage()
             return
 
+        # display_layers = list(DisplayLayerSpec_0, DisplayLayerSpec_1, ...)
+        # DisplayLayerSpec_i(name=..., data=array(...))
         display_layers = result.display_layers() if hasattr(result, "display_layers") else []
         if display_layers:
             if hasattr(result, "applyDisplayLayerSettings"):
@@ -270,13 +302,13 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.clearImage()
             return
 
-        data = result.data
-        if not hasattr(data, "transpose"):
-            # A lazy view over a file (a workflow's view-only reconstruction,
-            # a duplicate of one): the viewer shows pixels, so this is where
-            # they are read -- the same moment the GUI's own loader reads a
-            # file it opens.
-            data = np.asarray(data)
+        # A lazy view over a file it does not own (a workflow's view-only
+        # reconstruction, a duplicate of one) is read here, the same moment the
+        # GUI's own loader reads a file it opens: the handle it borrows closes
+        # when another file is loaded. One that owns its files -- a time lapse
+        # -- reaches napari as a dask array instead, which transposes without
+        # reading and is read a plane at a time as the sliders move.
+        data = display_array(result.data)
         if getattr(data, "ndim", 0) < 2:
             # napari's image layer holds planes. A 1D result pushed into it
             # leaves the layer's transform and units disagreeing about the
@@ -363,17 +395,23 @@ class ReconstructionViewController(ImProcessWidgetController):
         two axes are on screen, and the transposed array supplies the sizes.
         Anything measuring the layer later reads it back off the layer itself.
         """
-        data = np.asarray(data)
+        # Sizes only: the array may be lazy, and reading it to learn its shape
+        # read the whole of it.
+        shape = tuple(
+            int(size) for size in (
+                data.shape if hasattr(data, "shape") else np.shape(data)
+            )
+        )
         labels = [str(label) for label in axis_labels]
-        scales = list(axis_scales or [1.0] * data.ndim)
+        scales = list(axis_scales or [1.0] * len(shape))
         axes = [
             {
                 "label": labels[axis] if axis < len(labels) else str(axis),
-                "size": int(data.shape[axis]),
+                "size": int(shape[axis]),
                 "scale": float(scales[axis]) if axis < len(scales) else 1.0,
                 "unit": scale_unit,
             }
-            for axis in range(data.ndim)
+            for axis in range(len(shape))
         ]
         return {
             "result_uid": getattr(result, "result_uid", None),
@@ -665,31 +703,182 @@ class ReconstructionViewController(ImProcessWidgetController):
         """
         if result is None:
             return
+
         name = displayName or getattr(result, 'name', '') or 'result'
         self._widget.addNewData(result, name)
         self._resultsChanged()
 
     def liveResultUpdated(self, result):
-        """Update the view with a live reconstruction result.
-        
-        Refreshes the current display with the latest partial result from
-        a streaming reconstruction session.
+        """Queue a live reconstruction result for rendering.
+
+        Coalescing: a fast streaming session can emit several results while one
+        full redraw is still running. We keep only the newest and render it via
+        a 0-delay timer once the event loop is free, so the viewer always shows
+        near-latest data and the GUI never accumulates a backlog.
         """
         if result is None:
             return
-        
+
+        # Registered here rather than in the render path: coalescing keeps
+        # only the newest result, so a result that never reaches a render
+        # pass must still be known as live.
         uid = getattr(result, "result_uid", None)
         if uid:
             self._liveResultUids.add(uid)
 
-        current = self._widget.getCurrentItemData()
-        if current is None or getattr(current, 'name', '') != getattr(result, 'name', ''):
-            self._widget.addNewData(result, getattr(result, 'name', 'Live'))
-        else:
-            currentItem = self._widget.reconList.currentItem()
-            if currentItem is not None:
-                currentItem.setData(1, result)
-                self.fullUpdate(levels=None)
+        self._pendingLiveResult = result
+        if not self._liveRenderScheduled:
+            self._liveRenderScheduled = True
+            QtCore.QTimer.singleShot(0, self._renderPendingLiveResult)
+
+    @QtCore.Slot(str, str)
+    def saveLiveResult(self, name: str, path: str) -> None:
+        """Write the named live data object to ``path`` as a TIFF.
+
+        The viewer holds the accumulated buffer, so it is what can write it.
+
+        Any pending live render is flushed first: :meth:`liveResultUpdated`
+        only *schedules* the newest result, and a run's final result is emitted
+        immediately before ``sigFinished`` -- so without this the file could be
+        written one update stale.
+
+        The name is checked rather than trusted: a run whose entry the user has
+        since deleted or replaced is skipped, instead of writing whatever object
+        happens to be live now.
+        """
+        if self._pendingLiveResult is not None:
+            self._renderPendingLiveResult()
+
+        result = self._liveItem.data(1) if self._liveItemIsAlive() else None
+        if result is None or getattr(result, 'name', None) != name:
+            self._logger.warning(
+                "Not saving %r: it is no longer the live data object", name
+            )
+            return
+
+        try:
+            result.save(Path(path), "tiff")
+        except Exception as exc:
+            self._logger.error("Could not save %r to %s: %s", name, path, exc)
+            return
+        self._logger.info("Saved %s", path)
+
+    @QtCore.Slot(int, object)
+    def liveTimepointUpdated(self, index: int, plane) -> None:
+        """Write one reconstructed timepoint into the live result's own buffer.
+
+        The result the viewer holds owns its array (the session handed over a
+        copy), so writing into it here is a GUI-thread-only operation -- the
+        process thread never touches this memory.
+
+        Unlike :meth:`liveResultUpdated`, the data is applied **immediately**
+        rather than coalesced: successive planes carry different timepoints, so
+        keeping only the newest would silently drop reconstructed data. Only
+        the redraw is coalesced, which is the expensive part.
+        """
+        if not self._liveItemIsAlive():
+            return
+        result = self._liveItem.data(1)
+        if result is None or plane is None:
+            return
+
+        try:
+            axis = list(result.axis_labels).index("T")
+        except (AttributeError, ValueError):
+            self._logger.debug("liveTimepointUpdated: result has no T axis; ignoring")
+            return
+
+        target = [slice(None)] * result.data.ndim
+        target[axis] = slice(index, index + 1)
+        try:
+            result.data[tuple(target)] = plane
+        except Exception as exc:
+            self._logger.debug(
+                "liveTimepointUpdated: could not write timepoint %s (%s)", index, exc
+            )
+            return
+
+        self._pendingLiveResult = result
+        if not self._liveRenderScheduled:
+            self._liveRenderScheduled = True
+            QtCore.QTimer.singleShot(0, self._renderPendingLiveResult)
+
+    def _liveItemIsAlive(self) -> bool:
+        """Whether the live run's entry still exists in the list.
+
+        The user can delete entries while a run streams -- ``removeRecon``
+        takes the item out of the list, ``removeAllRecon`` deletes it outright
+        (leaving a dangling wrapper that raises on access). Either way the run
+        should just create a fresh entry on its next result rather than fail.
+        """
+        if self._liveItem is None:
+            return False
+        try:
+            return self._widget.reconList.row(self._liveItem) >= 0
+        except RuntimeError:  # underlying C++ item already deleted
+            return False
+
+    def _renderPendingLiveResult(self):
+        """Render the newest live result into the data object owned by its job.
+
+        Every job follows the same two-step sequence: its first result creates
+        one data object named after the job, and every later result updates
+        that same object. The job is identified by the result's name (the
+        timelapse folder), which is unique per job -- so no de-duplicating
+        suffix is needed and none is added.
+        """
+        self._liveRenderScheduled = False
+        result = self._pendingLiveResult
+        self._pendingLiveResult = None
+        if result is None:
+            return
+
+        name = getattr(result, 'name', '') or 'Live'
+        if not self._liveItemIsAlive() or self._liveName != name:
+            self._liveItem = self._widget.addNamedData(result, name)
+            self._liveName = name
+            self._liveEstablished = False
+            self._liveLatestTimepoint = None
+            return
+
+        # Update this job's own entry, not whatever is selected -- otherwise a
+        # click elsewhere mid-run would overwrite that other entry's data.
+        self._liveItem.setData(1, result)
+        if self._widget.reconList.currentItem() is not self._liveItem:
+            # The user is inspecting a different entry; leave their view alone.
+            # Re-selecting the live entry redraws it via sigItemSelected.
+            return
+
+        # Fast path: after the first full render the layers exist, so an update
+        # is just an in-place pixel swap -- no layer rebuild. Calling
+        # tryFastLiveUpdate IS the update; it reports False (having changed
+        # nothing) if the layer structure no longer matches, and we rebuild.
+        rendered = (
+            self._liveEstablished
+            and self._widget.tryFastLiveUpdate(result, self._transposeOrder)
+        )
+        if rendered:
+            self._advanceLiveTimeSlider()
+            return
+
+        self.fullUpdate(levels=None)
+        self._liveEstablished = True
+        self._advanceLiveTimeSlider()
+
+    @QtCore.Slot(int)
+    def _onLiveTimepointDone(self, timepoint: int) -> None:
+        self._liveLatestTimepoint = timepoint
+
+    def _advanceLiveTimeSlider(self) -> None:
+        """Move the viewer's timepoint slider to the newest completed stack."""
+        t = self._liveLatestTimepoint
+        if t is None:
+            return
+        labels = self._displayedAxisLabels
+        for name in ("T", "Timepoints", "Time"):
+            if name in labels:
+                self._widget.moveDimStep(labels.index(name), t)
+                return
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

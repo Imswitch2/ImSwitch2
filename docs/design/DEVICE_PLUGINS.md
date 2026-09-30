@@ -262,7 +262,7 @@ version = "0.1.0"
 description = "Acme device support for ImSwitch2"
 requires-python = ">=3.10"
 dependencies = [
-    "ImSwitch>=0.1",
+    "imswitch2>=0.1",
 ]
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",

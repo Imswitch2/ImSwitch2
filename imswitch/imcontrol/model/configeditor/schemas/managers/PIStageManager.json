@@ -11,6 +11,14 @@
         "docs:string"
       ]
     },
+    "runtime_timeout_ms": {
+      "description": "Positive runtime command timeout in milliseconds, applied to both",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:optional(get)"
+      ]
+    },
     "usb_description": {
       "description": "Optional explicit USB description string.  If omitted the",
       "x-imswitch-kind": "string",

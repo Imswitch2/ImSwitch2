@@ -28,12 +28,12 @@ def main():
 
     enabledModuleIds = modulesconfigtools.getEnabledModuleIds()
     if 'imscripting' in enabledModuleIds:
-        # Ensure that imscripting is added last
-        
+        # Ensure that imscripting is added last: its script scope snapshots
+        # the controllers loaded before it, so a module after it has no `api`
         enabledModuleIds.append(enabledModuleIds.pop(enabledModuleIds.index('imscripting')))
 
     modulePkgs = [importlib.import_module(pythontools.joinModulePath('imswitch', moduleId))
-                  for moduleId in modulesconfigtools.getEnabledModuleIds()]
+                  for moduleId in enabledModuleIds]
 
     moduleCommChannel = ModuleCommunicationChannel()
 

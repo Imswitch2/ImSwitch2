@@ -37,6 +37,7 @@ IMPROCESS_ICON_NAMES = {
     "plugin-store": "mdi6.storefront-outline",
     "plugin-folder": "mdi6.folder-open-outline",
     "plugin-reload": "mdi6.reload",
+    "plugin-add": "mdi6.file-plus-outline",
 }
 
 _FALLBACK_STANDARDS = {
@@ -69,6 +70,7 @@ _FALLBACK_STANDARDS = {
     "plugin-store": QtWidgets.QStyle.SP_DialogOpenButton,
     "plugin-folder": QtWidgets.QStyle.SP_DirOpenIcon,
     "plugin-reload": QtWidgets.QStyle.SP_BrowserReload,
+    "plugin-add": QtWidgets.QStyle.SP_FileIcon,
 }
 
 _QTAWESOME_MISSING_WARNED = False

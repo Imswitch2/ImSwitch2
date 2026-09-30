@@ -46,6 +46,20 @@
         "docs:string"
       ]
     },
+    "scanResumeSettleMs": {
+      "description": "Extra delay, in milliseconds, after a successful pause-mode scan resume",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
     "scpiPowerUnit": {
       "description": "Unit used by SCPI power setpoint commands.  Defaults to ``\"mW\"``, which",
       "x-imswitch-kind": "string",

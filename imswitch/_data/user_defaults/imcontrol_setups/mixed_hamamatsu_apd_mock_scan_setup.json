@@ -1,9 +1,9 @@
 {
-    "__comment__": "Hardware-free mixed detector scan setup. Uses MockHamamatsu in external frame-trigger mode and APDManager synthetic scan data with nidaq.simulation = true. The APD ctrInputLine/terminal values are fake simulated input identifiers used only to satisfy manager configuration; no physical input task is opened in simulation mode.",
+    "__comment__": "Hardware-free mixed detector scan setup. Uses MockHamamatsu in external frame-trigger mode and APDManager synthetic scan data with nidaq.simulation = true. The camera's digitalLine is a simulated line that only lets the Scan widget gate it, so a scan recording can expect one camera frame per TTL. The APD ctrInputLine/terminal values are fake simulated input identifiers used only to satisfy manager configuration; no physical input task is opened in simulation mode.",
     "detectors": {
         "Camera": {
             "analogChannel": null,
-            "digitalLine": null,
+            "digitalLine": "Dev1/port0/line0",
             "managerName": "HamamatsuManager",
             "managerProperties": {
                 "cameraListIndex": "mock",

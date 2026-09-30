@@ -3,21 +3,26 @@ Rotators — reference
 **********************
 
 This page documents every ``RotatorManager`` implementation in
-ImSwitch.  For each manager you get the setup-file JSON it expects,
+ImSwitch2.  For each manager you get the setup-file JSON it expects,
 field-by-field, plus any required low-level managers and vendor
 libraries.
 
 For the manager-writing-side perspective see
-:doc:`/adding-device-support`; for end-to-end recipes see the
-:doc:`how-to guides </how-to/wire-teensy>`.
+:doc:`/adding-device-support`; to wrap a driver from another project see
+:doc:`/how-to/port-from-third-party`.
+
+**Vendor libraries.**  The ``hardware`` extra (``pip install -e
+".[hardware]"``, see :doc:`../installation`) installs ``pylablib``, which
+the Kinesis and Elliptec rotators use.  The Standa XIMC library comes from
+the vendor's installer.
 
 
 How rotators are configured
 ===========================
 
 Rotators live under the top-level ``"rotators"`` dict in your setup
-JSON.  Each entry uses the generic
-:class:`~imswitch.imcontrol.model.SetupInfo.DeviceInfo` shape, but
+JSON.  Each entry uses the generic ``DeviceInfo`` shape
+(``imswitch.imcontrol.model.SetupInfo``), but
 the only fields actually consumed by rotator managers are
 ``managerName`` and ``managerProperties``.  ``analogChannel`` and
 ``digitalLine`` are present in the dataclass but ignored — leave them
@@ -85,14 +90,14 @@ None.
 **Vendor library**
 
 ``imswitch.imcontrol.model.interfaces.standamotor.StandaMotor`` (bundled
-ImSwitch wrapper around XIMC).  Lazy-imported.  If the import or
+ImSwitch2 wrapper around XIMC).  Lazy-imported.  If the import or
 ``StandaMotor`` construction fails (commonly: ``ximcLibLocation``
 unreachable network drive), the manager falls back to
 ``MockStandaMotor`` for headless operation.
 
 **Source**
 
-`StandaRotatorManager.py <../../imswitch/imcontrol/model/managers/rotators/StandaRotatorManager.py>`_
+`StandaRotatorManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/rotators/StandaRotatorManager.py>`_
 
 
 KinesisRotatorManager
@@ -152,7 +157,7 @@ same ``move_to`` / ``move_by`` / ``get_position`` API.
 
 **Source**
 
-`KinesisRotatorManager.py <../../imswitch/imcontrol/model/managers/rotators/KinesisRotatorManager.py>`_
+`KinesisRotatorManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/rotators/KinesisRotatorManager.py>`_
 
 
 ElliptecRotatorManager
@@ -161,7 +166,7 @@ ElliptecRotatorManager
 Thorlabs ELL14 / ELL14K Elliptec rotation mounts.
 
 The Elliptec wire protocol is **multidrop** — multiple rotators share
-one COM port distinguished by ``address``.  ImSwitch's manager uses a
+one COM port distinguished by ``address``.  The manager uses a
 refcounted, per-port shared-bus singleton so multiple
 ``ElliptecRotatorManager`` instances on the same ``port`` cooperate
 safely.  When the last instance is finalized the bus is closed.
@@ -239,4 +244,4 @@ simulator suitable for headless / CI use.
 
 **Source**
 
-`ElliptecRotatorManager.py <../../imswitch/imcontrol/model/managers/rotators/ElliptecRotatorManager.py>`_
+`ElliptecRotatorManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/rotators/ElliptecRotatorManager.py>`_

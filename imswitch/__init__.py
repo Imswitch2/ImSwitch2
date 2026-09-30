@@ -1,4 +1,14 @@
-__version__ = '0.1.0'
+__version__ = '0.2.0'
+
+#: PyPI distribution name.  The import package stays ``imswitch``; only the
+#: distribution is renamed, because ``ImSwitch`` on PyPI is the upstream
+#: project, and asking pip for the old name installs *that* over this package.
+#: ``test_distribution_identity.py`` fails if this value and setup.cfg drift
+#: apart, and if an install hint or a plugin dependency uses the old name.
+__distname__ = 'imswitch2'
+
+#: GitHub "owner/repo" of this project, for links and the bundle update check.
+__github_repo__ = 'Imswitch2/Imswitch2'
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

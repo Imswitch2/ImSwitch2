@@ -83,7 +83,7 @@ What the plugin receives, by result kind:
        metadata carries ``z_scale_assumed: true``. Every other table column
        (frame, photons, sigma, uncertainties) becomes a point property. The
        preview histogram is added as a context layer only when the endpoint
-       asks for it, translated to the table's minimum coordinate because
+       asks for it (``includePreview``), translated to the table's minimum coordinate because
        that is where the preview was binned.
    * - table, curve
      - No layer form. These results reach no endpoint; save them to a file
@@ -230,7 +230,7 @@ is not replayable by definition.
 Adapters
 ========
 
-An adapter is a :class:`~imswitch.improcess.model.napari_endpoints.NapariEndpoint`.
+An adapter is a ``NapariEndpoint`` (``imswitch.improcess.model.napari_endpoints``).
 The built-in ones live in that module; yours go in the setup file or in a
 drop-in plugin.
 
@@ -279,6 +279,14 @@ Fields:
    ``hdf5`` (labels), ``picasso-hdf5``, ``localizations-csv`` (localization).
 ``kinds``
    Result kinds the endpoint accepts. Required for verified endpoints.
+``verified``
+   Optional, default ``true``: a config entry is an adapter. ``false``
+   lists a dock endpoint as unverified; reader lanes must stay verified.
+``includePreview``
+   Optional, default ``false``: for a localization result, also send the
+   histogram preview as a context layer.
+``description``
+   Optional tooltip for the menu entry.
 ``outputMappings``
    Dock lane, optional: how layers the plugin creates map back
    (``pattern`` against the layer name, ``layerType``, ``kind``,
@@ -288,7 +296,7 @@ Worked example 1: a dock widget (``napari-skimage``)
 ------------------------------------------------------
 
 ``napari-skimage`` is a pure npe2 plugin from the napari organisation with
-one dock widget per scikit-image operation. Install it into the ImSwitch
+one dock widget per scikit-image operation. Install it into the ImSwitch2
 environment::
 
    pip install napari-skimage
@@ -373,7 +381,7 @@ Layers appear at the wrong scale
 Installing plugins
    **Plugins → napari plugins → Install napari plugins…** opens napari's own
    plugin manager if ``napari-plugin-manager`` is installed; otherwise
-   ``pip install <plugin>`` into the ImSwitch environment, then **Rescan
+   ``pip install <plugin>`` into the ImSwitch2 environment, then **Rescan
    installed napari plugins**.
 
 Testing tiers

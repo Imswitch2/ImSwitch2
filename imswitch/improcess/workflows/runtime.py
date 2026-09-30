@@ -4,8 +4,8 @@ The GUI fills the process-wide registry from the setup file at startup. A
 workflow run gets a registry of its own: fresh, so two runs in one process
 cannot see each other's plugins; every built-in available unless a config
 narrows it, because a workflow file names what it needs; drop-in plugins
-discovered the same way the GUI discovers them; and versions stamped at
-registration, as always.
+(processors and reconstructors) discovered the same way the GUI discovers
+them; and versions stamped at registration, as always.
 """
 
 from __future__ import annotations
@@ -31,16 +31,14 @@ def bootstrap_registry(
     built-in is. ``reconstructor_ids`` / ``processor_ids`` override both.
     Duplicate ids are an error rather than a silent replacement.
     """
-    from imswitch.improcess.processors import (
-        _all_processor_classes,
-        load_user_plugins,
-    )
-    from imswitch.improcess.reconstructors import _AVAILABLE_RECONSTRUCTOR_CLASSES
+    from imswitch.improcess.plugins import load_user_plugins
+    from imswitch.improcess.processors import _all_processor_classes
+    from imswitch.improcess.reconstructors import _all_reconstructor_classes
     from imswitch.improcess.reconstructors.registry import PluginRegistry
 
     if user_plugins:
-        _loaded, errors = load_user_plugins()
-        for error in errors:
+        loaded = load_user_plugins()
+        for error in loaded.errors:
             # Tolerant, as the GUI is: a broken drop-in file must not stop a batch.
             _log().warning("Skipped drop-in plugin %s: %s", error.path, error.message.splitlines()[-1])
 
@@ -54,7 +52,7 @@ def bootstrap_registry(
             wanted_reconstructors = wanted_reconstructors if wanted_reconstructors is not None else list(cfg_recon)
             wanted_processors = wanted_processors if wanted_processors is not None else list(cfg_proc)
 
-    reconstructors = dict(_AVAILABLE_RECONSTRUCTOR_CLASSES)
+    reconstructors = dict(_all_reconstructor_classes())
     processors = dict(_all_processor_classes())
     if wanted_reconstructors is None:
         wanted_reconstructors = sorted(reconstructors)

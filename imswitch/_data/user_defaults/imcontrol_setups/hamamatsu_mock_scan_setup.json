@@ -1,9 +1,9 @@
 {
-    "__comment__": "Hardware-free Hamamatsu scan setup. Uses a MockHamamatsu camera in external frame-trigger mode plus MockPositionerManager stages and simulated NI-DAQ timing. All analogChannel and digitalLine values are null, so no physical AO/DO channels or nidaqmx hardware are required. The scan simulator generates virtual frame triggers for the mock camera.",
+    "__comment__": "Hardware-free Hamamatsu scan setup. Uses a MockHamamatsu camera in external frame-trigger mode plus MockPositionerManager stages and simulated NI-DAQ timing. No physical AO/DO channels or nidaqmx hardware are required: analogChannel values are null, and the camera's digitalLine is a simulated line that only lets the Scan widget gate it (a scan recording needs a camera TTL per position to know how many frames to expect). The scan simulator generates virtual frame triggers for the mock camera.",
     "detectors": {
         "Camera": {
             "analogChannel": null,
-            "digitalLine": null,
+            "digitalLine": "Dev1/port0/line0",
             "managerName": "HamamatsuManager",
             "managerProperties": {
                 "cameraListIndex": "mock",

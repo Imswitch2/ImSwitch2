@@ -46,10 +46,15 @@ Detectors
      - Mock class
      - How it's enabled
      - Trigger-aware?
-   * - ``AVManager`` / ``TISManager``
+   * - ``AVManager``
      - ``MockCameraTIS`` (``imswitch.imcontrol.model.interfaces.tiscamera_mock``)
+     - Always: no video driver is bundled, so every ``cameraListIndex``
+       loads the mock. This is the camera the shipped no-hardware setups use.
+     - No (free-runs).
+   * - ``TISManager``
+     - ``MockCameraTIS``
      - Automatic fallback: loaded whenever the real camera fails to
-       initialize, or explicitly via ``"cameraListIndex": "mock"``.
+       initialize, for example with ``"cameraListIndex": "mock"``.
      - No (free-runs).
    * - ``HamamatsuManager``
      - ``MockHamamatsu`` (``imswitch.imcontrol.model.interfaces.hamamatsu_mock``)
@@ -60,15 +65,19 @@ Detectors
    * - ``PhotometricsManager``
      - ``MockPhotometrics`` (``imswitch.imcontrol.model.interfaces.photometrics_mock``)
      - Same fallback pattern; ``"cameraListIndex": "mock"``.
-     - Yes. ``mockTrigger(n)`` queues frames in either external trigger
-       mode; the internal trigger free-runs on wall-clock at the exposure
-       cadence. Emits ``uint16``.
+     - Not in a simulated scan. The mock itself queues frames with
+       ``mockTrigger(n)`` in either external trigger mode and free-runs on
+       wall-clock at the exposure cadence with the internal trigger, but
+       ``PhotometricsManager`` does not connect it to the simulated scan's
+       frame triggers, so nothing calls ``mockTrigger``. Emits ``uint16``.
    * - ``ThorCamTSIManager``
      - ``MockThorTSICamera``
      - Automatic when ``cameraSerial`` starts with ``MOCK_``, or when the
        real SDK/serial fails to open.
-     - Partial — see ``docs/advanced_scan_triggered_recording_audit.md``
-       for the triggered-recording audit of this manager's mock/real paths.
+     - Partial — the repository note
+       ``docs/advanced_scan_triggered_recording_audit.md`` (not part of the
+       published documentation) audits this manager's mock/real
+       triggered-recording paths.
    * - ``APDManager`` / ``PMTManager``
      - No separate mock *class* — the real manager generates synthetic
        scan-shaped samples in place.
@@ -76,8 +85,8 @@ Detectors
        ``nidaq.simulation: true``), or forced via
        ``"simulation_mode": true`` in ``managerProperties`` against real
        hardware.
-     - Yes, via the ``mockStartScan`` / ``mockTrigger`` / ``mockStopScan`` /
-       ``mockScanDone`` protocol described below.
+     - Yes: in simulation each starts its own synthetic scan when the scan
+       is built (see *NI-DAQ / scan simulation* below).
 
 APD synthetic data is modeled as a monotonic cumulative counter that
 reconstructs to bounded non-negative integer photon counts
@@ -92,7 +101,7 @@ Positioners / stages
 * ``MockPositionerManager`` — a standalone one-axis manager (no serial/DAQ
   backing at all) used directly in setup JSON for repeat/timelapse-style
   mock stages. Correctly tracks position in ``self._position``.
-* ``NidaqPositioner`` — runs against a simulated NI-DAQ
+* ``NidaqPositionerManager`` — runs against a simulated NI-DAQ
   (``nidaq.simulation: true``); no physical AO/DO channels are opened.
 * ``MHXYStageManager`` (Marzhauser XY over RS232) — falls back to
   ``MockRS232Driver`` when the configured ``rs232device`` fails to
@@ -161,23 +170,27 @@ itself into software-only mode
        """Owns software-only scan timing and virtual frame-trigger dispatch."""
 
 ``NidaqManager`` delegates to the coordinator instead of building real
-AO/DO tasks. The coordinator drives a small optional protocol that detector
-managers can implement incrementally (``hasattr``-gated, not every detector
-needs every method):
+AO/DO tasks. For each scan the coordinator builds a ``SimulatedScanPlan``
+and runs it on a worker thread, which spreads every detector's planned frame
+count over a wall-clock duration (the plan's duration, clamped to
+0.2–5 s):
 
-.. code-block:: python
+* The coordinator emits ``sigFrameTrigger(detectorName, n)`` as frames fall
+  due; ``NidaqManager`` re-emits it as ``sigSimScanFrameTrigger``.
+  ``HamamatsuManager`` connects to that signal when its camera is the mock
+  and passes ``n`` on to the camera's ``mockTrigger(n)``, which queues
+  exactly ``n`` frames. No other detector manager listens to it.
+* ``APDManager`` and ``PMTManager`` do not use the frame triggers. In
+  simulation mode they call their own ``mockStartScan()`` when the scan is
+  built, which runs their scan worker on synthetic samples.
+* When the plan has run, the worker emits ``sigDone``, which is connected to
+  ``NidaqManager.scanDone()``. That completes the scan exactly once.
 
-   def mockStartScan(scanInfoDict: dict, signalDict: dict) -> None: ...
-   def mockTrigger(n: int = 1) -> None: ...
-   def mockStopScan() -> None: ...
-   def mockScanDone() -> bool: ...
-
-Cameras use ``mockTrigger(n)`` to queue exactly ``n`` frames; APD/PMT use
-``mockStartScan`` to start synthetic scan-shaped data production. Scan
-completion is reported back to the coordinator, which completes the scan
-exactly once — this replaced an earlier design where
+The managers' ``mockStopScan()`` and ``mockScanDone()`` methods are used
+only by tests. This design replaced an earlier one where
 ``registerExternalScanDriver()`` globally suppressed camera triggering
-whenever an APD/PMT was present, which broke mixed detector setups.
+whenever an APD/PMT was present, which broke mixed detector setups;
+``registerExternalScanDriver()`` is now a no-op kept for compatibility.
 
 Workflow facade
 ~~~~~~~~~~~~~~~
@@ -226,17 +239,21 @@ Ready-to-use hardware-free setup files, all under
   Hamamatsu camera *and* synthetic APD scan data in the same setup, the
   regression case for the mixed-detector race fixed in the scan simulation
   coordinator work.
+* ``galvo_apd_mock_scan_setup.json`` — an APD with ``NidaqPositionerManager``
+  galvo/piezo axes and ``NidaqLaserManager`` lasers on a simulated NI-DAQ,
+  for designing, running and recording Advanced (galvo-designer) scans,
+  including single-axis scans.
 
 Treat "null AO/DO channels" (no physical scan output built) and "fake
 ``Dev1/...`` detector input names" (manager configuration placeholders only,
 required by ``APDManager``/etc. field validation) as two distinct kinds of
-"fake" — see the source note in ``no-hardware-validation.md`` for the exact
-distinction per file.
+"fake". The ``__comment__`` entry at the top of each scan setup file
+describes what that file fakes.
 
 Limitations
 ------------
 
-These are current, real gaps — not aspirational — as of 2026-07-01:
+These are current, real gaps — not aspirational — as of 2026-09-25:
 
 * **No unified mock contract.** Enablement conventions differ per family:
   ``cameraListIndex: "mock"`` (cameras), automatic try/except fallback
@@ -260,12 +277,13 @@ These are current, real gaps — not aspirational — as of 2026-07-01:
   ``QThread``/``WriterThread`` involved, so it can't hit the teardown abort.
   It locks down the cycling contract; it does not exercise real HDF5/writer
   finalization across cycles.
-* **No scan controller exposes a "stop a running scan" action, real or
-  mock.** ``ScanControllerBase``/``ScanControllerAdvanced`` have no
-  ``stopScan``/``abortScan`` method; once a scan starts it runs to its full
-  programmed length. This isn't mock-specific: real NI-DAQ AO/DO waveform
-  tasks aren't interrupted early either, by the same design. The mock side
-  is already ready for this if it's ever added:
+* **Aborting does not stop a running scan, real or mock.** The NI-DAQ scan
+  controllers share ``abortScan()`` from ``SuperScanController``; it
+  cancels pending repeat, sequence and follow-up runs, but a scan already
+  running continues to its full programmed length and the run ends on the
+  NI-DAQ's own ``sigScanDone``. This isn't mock-specific: real NI-DAQ AO/DO
+  waveform tasks aren't interrupted early either, by the same design. The
+  mock side is already ready for this if it's ever added:
   ``ScanSimulationCoordinator.stop()`` → ``SimulatedScanWorker.stop()`` sets
   a flag checked once per ~30 ms tick, so an external call aborts within one
   tick (measured ~17 ms), not the 5 s duration cap, and correctly suppresses
@@ -273,11 +291,6 @@ These are current, real gaps — not aspirational — as of 2026-07-01:
   the opposite — that abort only unblocks after the capped duration timer —
   based on a stale note written before this coordinator existed; verified
   against the current code and corrected here.)
-* **Nested-dict scan-TTL metadata is silently dropped.** Values like
-  ``linestep_enable``/``pulse_starts_s`` aren't HDF5-attr-serializable
-  (``dtype('O')`` has no native HDF5 equivalent) and are skipped rather than
-  encoded, so mock Advanced/Beta scan recordings lose that metadata.
-  Cosmetic today; would need JSON-encoding to fix.
 * **Synthetic detector content isn't a "fake specimen."** APD/PMT and camera
   mock data is bounded noise tuned by mean/max/seed knobs, not derived from
   a simulated sample. It's enough to validate frame counts, dtypes, and
@@ -302,16 +315,13 @@ Roughly in priority order:
    writer-thread-wait outside the Qt event loop under test, or add an
    explicit test-only drain/timeout, rather than another retry of the same
    full end-to-end test shape that has aborted every previous time.
-2. **Add a "stop a running scan" action to the scan controllers** (real and
-   mock). This is a general scan-lifecycle feature, not mock-only work — see
-   Limitations. When it lands, wire it to
+2. **Make aborting stop a running scan** (real and mock). This is a
+   general scan-lifecycle feature, not mock-only work — see Limitations.
+   When it lands, wire it to
    ``NidaqManager``/``ScanSimulationCoordinator.stop()`` for the simulated
    path; no coordinator-side change is needed first, it already aborts
    promptly.
-3. **JSON-encode nested-dict scan-TTL metadata** before HDF5 attr writes so
-   Advanced/Beta mock recordings keep full metadata instead of silently
-   dropping it.
-4. **Define one mock-manager contract/property** (e.g. a documented
+3. **Define one mock-manager contract/property** (e.g. a documented
    ``managerProperties["mock"]`` convention plus a small
    ``MockCapableManager`` mixin/protocol) that every device family — cameras,
    positioners, lasers, rotators, SLMs, stands — is expected to follow, and
@@ -319,17 +329,17 @@ Roughly in priority order:
    in :doc:`adding-device-support` and :doc:`devices/plugins` so new
    in-tree and plugin managers pick a single pattern instead of inventing
    another one.
-5. *(dropped by decision, 2026-07-02)* ~~Give the live-reconstruction debug
+4. *(dropped by decision, 2026-07-02)* ~~Give the live-reconstruction debug
    loop a synthetic sample.~~ Judged overkill: replaying *real* legacy
-   recordings through the real storers/live sources (local harness in
-   ``Mini_Recon/live_replay/``, not in-repo) validates the streaming
+   recordings through the real storers/live sources (a local harness, not
+   in-repo) validates the streaming
    pipeline end-to-end with data whose reconstruction can actually be
    judged, which covers the need better than a simulated scene would.
-6. **Add SLM/rotator optical-effect stubs** where cheap (e.g. rotator mock
+5. **Add SLM/rotator optical-effect stubs** where cheap (e.g. rotator mock
    angle affecting a reported polarization value) so downstream logic that
    reacts to those readings has something non-trivial to see in no-hardware
    tests.
-7. **Document the plugin mock convention** once (4) exists, and align the
+6. **Document the plugin mock convention** once (3) exists, and align the
    ThorCam-TSI (``MOCK_`` prefix) and zhinst (``useMock``) plugin examples
    with it as the reference implementation for third-party device authors.
 
