@@ -508,12 +508,6 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             if refusalMessage:
                 self._externalScanRequestFailureMessage = refusalMessage
                 return
-            if not self._confirmUnreferencedScanIfNeeded():
-                self._externalScanRequestFailureMessage = (
-                    'Scan cancelled because unreferenced positioners were not '
-                    'accepted.'
-                )
-                return
             self._widget.setScanMode()
             self._widget.setRepeatEnabled(False)
             self.runScanAdvanced(
@@ -614,7 +608,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
         coordinator = getattr(self, '_scanCoordinator', None)
         if coordinator is None:
-            return ''
+            return self._unreferencedScanStartRefusal()
         try:
             activeIteration = getattr(coordinator, 'activeToken')
         except Exception:
@@ -641,7 +635,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             except Exception:
                 return 'Unable to verify current scan-run ownership.'
         if activeRun is None:
-            return ''
+            return self._unreferencedScanStartRefusal()
 
         localToken = getattr(self, '_scanRunToken', None)
         if activeRun is not localToken:
@@ -672,7 +666,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             or bool(getattr(activeRun, 'releaseRequested', False))
         ):
             return 'The current scan run is failed, stopped, or releasing.'
-        return ''
+        return self._unreferencedScanStartRefusal()
 
     def _detachExternalScanRequestCompletions(self, runToken):
         """Remove and return the requests pending for this exact run.
@@ -856,6 +850,24 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 # once sigScanDone publication has returned.
                 completeRequest()
     
+    def _unreferencedScanStartRefusal(self) -> str:
+        """Return a non-interactive refusal for unreferenced scan axes."""
+        if self._suppressUnreferencedScanWarning:
+            return ''
+
+        unreferenced = self._getUnreferencedScanAxes()
+        if not unreferenced:
+            return ''
+
+        axesText = ', '.join(
+            f'{positionerName} ({axis})'
+            for positionerName, axis in unreferenced
+        )
+        return (
+            'This scan uses unreferenced open-loop positioners: '
+            f'{axesText}. Reference them before starting an external scan.'
+        )
+
     def _confirmUnreferencedScanIfNeeded(self) -> bool:
         """Ask the user before scanning with unreferenced open-loop axes."""
         if self._suppressUnreferencedScanWarning:

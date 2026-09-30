@@ -37,6 +37,12 @@ class NidaqPositionerManager(PositionerManager):
             axis: 0 for axis in positionerInfo.axes
         })
 
+        # Simulation has no unknown physical stage state to synchronize.
+        # Treat its software coordinates as referenced so headless/API scans
+        # are not blocked by an interactive hardware-safety workflow.
+        if getattr(self._nidaqManager, 'isSimulating', False):
+            self.markReferenced()
+
     @property
     def defaultReferenceVoltage(self):
         return self._defaultReferenceVoltage

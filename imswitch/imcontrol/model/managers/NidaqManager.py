@@ -1124,6 +1124,11 @@ class NidaqManager(SignalInterface):
                 f'NI-DAQ digital write failed for {target}: {error}',
             )
 
+    @property
+    def isSimulating(self) -> bool:
+        """Whether this NI-DAQ manager is running without real hardware."""
+        return self.__simulating
+
     def setAnalog(self, target, voltage, min_val=-1, max_val=1, *, raise_on_error=False):
         """Set one analog channel through a registered finite output task.
 

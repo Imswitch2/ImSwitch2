@@ -21,11 +21,12 @@ from imswitch.imcontrol.model.managers.positioners.NidaqPositionerManager import
 class FakeNidaqManager:
     """Records every DAQ command so tests can assert what was sent."""
 
-    def __init__(self, fail=False, return_false=False):
+    def __init__(self, fail=False, return_false=False, simulating=False):
         self.analog_calls = []  # (target, voltage, min_val, max_val)
         self.raise_on_error_calls = []
         self.fail = fail
         self.return_false = return_false
+        self.isSimulating = simulating
 
     def setAnalog(self, target, voltage, min_val, max_val, *, raise_on_error=False):
         self.analog_calls.append((target, voltage, min_val, max_val))
@@ -70,9 +71,13 @@ def _make_positioner_info(
     )
 
 
-def _make_manager(name='NidaqZ', *, fail=False, return_false=False, **kwargs):
+def _make_manager(
+    name='NidaqZ', *, fail=False, return_false=False, simulating=False, **kwargs
+):
     """Build NidaqPositionerManager with a fake DAQ."""
-    nidaq = FakeNidaqManager(fail=fail, return_false=return_false)
+    nidaq = FakeNidaqManager(
+        fail=fail, return_false=return_false, simulating=simulating
+    )
     info = _make_positioner_info(**kwargs)
     mgr = NidaqPositionerManager(info, name, nidaqManager=nidaq)
     return mgr, nidaq
@@ -220,6 +225,18 @@ def test_negative_position_writes_negative_voltage():
     assert voltage == -2.0
     assert min_val == -10.0
     assert max_val == 10.0
+
+@pytest.mark.nohardware
+def test_simulated_nidaq_positioner_starts_reference_safe_without_motion():
+    mgr, nidaq = _make_manager(
+        simulating=True,
+        default_reference_voltage=5.0,
+    )
+
+    assert nidaq.analog_calls == []
+    assert mgr.isAxisReferenced('Z') is True
+    assert mgr.isReferenced is True
+
 
 @pytest.mark.nohardware
 def test_open_loop_positioner_starts_unreferenced():

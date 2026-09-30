@@ -287,11 +287,37 @@ def test_non_beta_scan_keeps_legacy_non_scanned_center_positioning():
     stage.setPosition.assert_called_once_with(5.0, 0)
 
 
-def test_external_preflight_without_coordinator_leaves_reference_to_dialog():
+def test_external_preflight_refuses_unreferenced_axes_without_dialog():
+    ctrl = _bare_controller()
+    stage = _ScanPositioner(axes=('X',), referenced={'X': False})
+    ctrl._scanCompletionPublishing = False
+    ctrl.isRunning = False
+    ctrl._scanCoordinator = None
+    ctrl._suppressUnreferencedScanWarning = False
+    ctrl.positioners = {'Stage': stage}
+    ctrl._master = SimpleNamespace(positionersManager={'Stage': stage})
+    ctrl._setupInfo = SimpleNamespace(
+        positioners={'Stage': SimpleNamespace(axes=['X'])}
+    )
+    ctrl._widget = SimpleNamespace(
+        confirmUnreferencedScan=MagicMock(
+            side_effect=AssertionError('external preflight must not open UI')
+        )
+    )
+
+    refusal = ctrl._externalScanStartRefusal()
+
+    assert 'unreferenced open-loop positioners' in refusal
+    assert 'Stage (X)' in refusal
+    ctrl._widget.confirmUnreferencedScan.assert_not_called()
+
+
+def test_external_preflight_respects_session_acceptance_of_unreferenced_axes():
     ctrl = _bare_controller()
     ctrl._scanCompletionPublishing = False
-    ctrl._isRunningFlag = False
+    ctrl.isRunning = False
     ctrl._scanCoordinator = None
+    ctrl._suppressUnreferencedScanWarning = True
 
     assert ctrl._externalScanStartRefusal() == ''
 
