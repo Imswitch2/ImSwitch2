@@ -437,6 +437,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._logger.debug(
             f"Session initialized with output shape {getattr(plan, 'out_shape', '?')}"
         )
+        self._announce_pattern()
         # A stall is forwarded so the final record says "stalled", not
         # "complete".
         self._stream_worker.sigStalled.connect(self._process_worker.markStalled)
@@ -447,6 +448,15 @@ class LiveReconstructionController(QtCore.QObject):
         self._stream_worker.sigStackComplete.connect(self._process_worker.finalize)
         self._stream_worker.frame_gate.consumed_through(self._frames_per_stack - 1)
         self._stream_worker.resume(self._raw_buffer)
+
+    def _announce_pattern(self) -> None:
+        """Tell the widgets which grid a MoNaLISA session localized (if it did)."""
+        pattern = getattr(self._session, 'pattern_params', None)
+        if not pattern:
+            return
+        payload = dict(pattern)
+        payload['source'] = getattr(self._session, 'pattern_source', None) or 'auto'
+        self._commChannel.sigLivePatternLocalized.emit(payload)
 
     @QtCore.Slot(str)
     def _on_stream_failed(self, message: str) -> None:

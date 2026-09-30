@@ -89,7 +89,8 @@ class CommunicationChannel(SignalInterface):
     ``ImProcessMainController`` forwards it to
     ``ImProcessMainView.showStatusMessage``.
 
-    Emitters: DataFrameController, FileIOController, ImProcessMainController
+    Emitters: DataFrameController, FileIOController, ImProcessMainController,
+        MoNaLISAController
     Listeners: ImProcessMainController
     """
 
@@ -220,6 +221,20 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: LiveReconstructionController
     Listeners: ReconstructionViewController
+    """
+
+    sigLivePatternLocalized = Signal(object)
+    """The illumination grid a MoNaLISA live session assembles on.
+
+    Payload: ``(pattern,)``, a dict with ``row_offset``, ``col_offset``,
+    ``row_period`` and ``col_period`` in pixels and ``source``: ``auto``
+    (localized on a raw frame of the stream), ``widget`` (the parameter
+    widget's values) or ``explicit``. Emitted once per live session, when it
+    has begun on its first stack, so the parameter widget shows the grid the
+    reconstruction actually uses rather than whatever it held before.
+
+    Emitters: LiveReconstructionController
+    Listeners: ImProcessMainViewController
     """
 
     sigLiveTimepointDone = Signal(int)

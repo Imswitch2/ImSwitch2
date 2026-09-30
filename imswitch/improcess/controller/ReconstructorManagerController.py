@@ -795,6 +795,18 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 setter(output_pixel_size_nm)
             except Exception:
                 pass
+        # Likewise the grid a MoNaLISA run localized on its own data, so the
+        # widget shows the pattern that was used rather than the one it held.
+        pattern = getattr(result, 'pattern_params', None)
+        setter = getattr(par_tree, 'set_pattern_params', None)
+        if pattern and callable(setter):
+            try:
+                setter(
+                    pattern['row_offset'], pattern['col_offset'],
+                    pattern['row_period'], pattern['col_period'],
+                )
+            except Exception:
+                pass
 
     def _handleSmlmPreviewToggled(self, enabled):
         """Handle SMLM preview checkbox toggle."""

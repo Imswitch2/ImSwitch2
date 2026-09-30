@@ -70,6 +70,9 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._commChannel.sigSaveFolderChanged.connect(self.fileIOController.saveFolderChanged)
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
         self._commChannel.sigScanParamsUpdated.connect(self.monalisaController.scanParamsUpdated)
+        self._commChannel.sigLivePatternLocalized.connect(
+            self.monalisaController.livePatternLocalized
+        )
 
         self._widget.sigSaveReconstruction.connect(lambda: self.fileIOController.saveCurrent('reconstruction'))
         self._widget.sigSaveReconstructionAll.connect(lambda: self.fileIOController.saveAll('reconstruction'))
