@@ -224,3 +224,39 @@ def test_a_step_run_on_a_console_result_chains_on_its_node_and_is_not_replayable
     with pytest.raises(ReplayError) as caught:
         workflow_from_provenance(ProvenanceDocument(graph=graph_of(results[0])), registry=registry)
     assert "console" in str(caught.value)
+
+
+# -- following the selection without undoing the user's own names -------------
+
+def test_refresh_if_changed_rebinds_only_when_the_selection_moved():
+    a, b = _result("a"), _result("b")
+    live = _List([a], a)
+    session = live.session()
+    session.namespace["data"] = "the user's own data"
+    assert session.refresh_if_changed() is False            # same selection: hands off
+    assert session.namespace["data"] == "the user's own data"
+    live.selected = [b]
+    assert session.refresh_if_changed() is True
+    assert session.namespace["data"] is b.data
+    assert session.refresh_if_changed() is False
+    live.selected, live.current = [], None
+    assert session.refresh_if_changed() is True and session.namespace["data"] is None
+
+
+def test_a_selection_that_changes_while_publishing_is_picked_up_at_the_next_command_not_mid_script():
+    rec = _result("rec")
+    live = _List([rec], rec)
+    new_ones = []
+
+    def publish(result, name):
+        new_ones.append(result)
+        live.selected = [result]                              # the list selects what it was given
+        session.refresh_if_changed()                          # ... and its signal reaches the controller
+
+    session = ConsoleSession(selected=lambda: list(live.selected), current=lambda: live.current, publish=publish)
+    exec("first = publish(data * 2)\nsecond = publish(data * 3)", session.namespace)
+    assert [np.array_equal(r.data, rec.data * k) for r, k in zip(new_ones, (2, 3))] == [True, True]
+    assert session.namespace["data"] is rec.data              # still the original, through both publishes
+    assert new_ones[1].name == "rec (console)"                # not "rec (console) (console)"
+    assert session.refresh_if_changed() is True                # the next command sees the selection
+    assert session.namespace["data"] is new_ones[1].data

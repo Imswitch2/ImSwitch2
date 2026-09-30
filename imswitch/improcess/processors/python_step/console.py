@@ -54,6 +54,8 @@ class ConsoleSession:
         self._publish = publish
         self.namespace: dict = namespace if namespace is not None else {}
         self._bound: list[ProcessingResult] = []
+        self._signature: tuple | None = None
+        self._frozen = 0
         self.namespace.update(
             {
                 "np": np,
@@ -80,6 +82,13 @@ class ConsoleSession:
         """The results ``data``, ``inputs`` and ``results`` are bound to now."""
         return list(self._bound)
 
+    def _chosen(self) -> list[ProcessingResult]:
+        chosen = [result for result in self.selected() if result is not None]
+        if not chosen:
+            shown = self.current()
+            chosen = [shown] if shown is not None else []
+        return chosen
+
     def refresh(self) -> list[ProcessingResult]:
         """Rebind ``data`` and the other reserved names to the selection.
 
@@ -88,11 +97,9 @@ class ConsoleSession:
         reads it), so following the selection never reads a whole recording.
         Returns the results now bound.
         """
-        chosen = [result for result in self.selected() if result is not None]
-        if not chosen:
-            shown = self.current()
-            chosen = [shown] if shown is not None else []
+        chosen = self._chosen()
         self._bound = chosen
+        self._signature = tuple(id(result) for result in chosen)
         if chosen:
             fresh = build_namespace(chosen, materialise=False)
             for name in REBOUND_NAMES:
@@ -103,6 +110,21 @@ class ConsoleSession:
             )
             self.namespace["axis"] = _no_axes
         return list(chosen)
+
+    def refresh_if_changed(self) -> bool:
+        """:meth:`refresh`, but only when the selection is not what ``data`` is bound to.
+
+        What the controller calls on every selection change and before every
+        command: rebinding on each command would undo a user's own
+        ``data = data[0]``, so nothing is touched while the selection is the
+        same, nor while a ``publish`` is in progress. Returns whether it rebound.
+        """
+        if self._frozen:
+            return False
+        if tuple(id(result) for result in self._chosen()) == self._signature:
+            return False
+        self.refresh()
+        return True
 
     # -- publishing ---------------------------------------------------------------
 
@@ -130,7 +152,13 @@ class ConsoleSession:
         if graph_of(result) is None:
             # A result that already has a history keeps it; only a new one is "made here".
             record_console_result(result, selection=self._bound)
-        self._publish(result, getattr(result, "name", "") or "console result")
+        # Adding to the list moves the selection; ``data`` must not move under a
+        # script that publishes twice, so it is rebound at the next command instead.
+        self._frozen += 1
+        try:
+            self._publish(result, getattr(result, "name", "") or "console result")
+        finally:
+            self._frozen -= 1
         return result
 
 

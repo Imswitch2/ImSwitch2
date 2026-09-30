@@ -29,6 +29,7 @@ from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
 from .SmlmRenderWidget import SmlmRenderWidget
 from .ProfileWidget import ProfileWidget
+from .PythonConsoleWidget import PythonConsoleWidget
 from .PSFResolutionWidget import PSFResolutionWidget
 from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
@@ -1457,6 +1458,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 spec.processor_id or spec.id
             ),
             'graph': lambda: GraphWidget(),
+            'console': lambda: PythonConsoleWidget(),
             'profile': lambda: ProfileWidget(viewer),
             'metadata': lambda: MetadataWidget(),
             'segmentation': lambda: SegmentationWidget(

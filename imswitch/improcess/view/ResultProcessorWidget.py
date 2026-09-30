@@ -226,6 +226,19 @@ class ResultProcessorWidget(QtWidgets.QWidget):
             return SCOPE_CURRENT
         return str(self.scopeCombo.currentData() or SCOPE_CURRENT)
 
+    def setParameterValues(self, values: dict) -> bool:
+        """Put ``values`` in the parameter widget, if it lets them be set.
+
+        Opt-in, like ``setResult``: a widget that declares ``set_values(dict)``
+        takes the keys it is given and leaves the rest (the console uses it to
+        hand code to the Python step). Returns whether the widget took them.
+        """
+        setter = getattr(self.paramWidget, "set_values", None)
+        if not callable(setter):
+            return False
+        setter(dict(values))
+        return True
+
     def parameterValues(self) -> dict:
         getter = getattr(self.paramWidget, "get_values", None)
         values = dict(getter() if callable(getter) else {})

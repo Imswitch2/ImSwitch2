@@ -118,6 +118,13 @@ class PythonStepProcessor(Processor):
             code = editor.text().replace("\r\n", "\n").replace("\r", "\n")
             return {"code": code, "ports": ports.text()}
 
+        def set_values(values):
+            """Fill the editor and the ports line; a key not given is left as it is."""
+            if "code" in values:
+                editor.setText(str(values["code"]))
+            if "ports" in values:
+                ports.setText(str(values["ports"]))
+
         def after_run(results, failures):
             """Show what the last run printed and why it failed, if it did."""
             shown = []
@@ -176,6 +183,7 @@ class PythonStepProcessor(Processor):
         save_button.clicked.connect(save_snippet_dialog)
 
         widget.get_values = get_values
+        widget.set_values = set_values
         widget.after_run = after_run
         widget.loadButton = load_button
         widget.saveButton = save_button
