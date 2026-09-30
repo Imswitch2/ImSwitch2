@@ -87,7 +87,7 @@ def test_compute_detection_preview_coordinate_orientation():
     assert abs(y_sorted[1] - 30) < 1.0
 
 
-# --- Controller-level preview chain (real _updateSmlmPreview code path) ---
+# --- Controller-level preview chain (real _updatePreview code path) ---
 
 from types import SimpleNamespace
 
@@ -112,15 +112,18 @@ def _spot_frame(row=25, col=30, shape=(50, 50)):
 
 
 def _preview_controller(image, checked=True, threshold=50.0):
+    from imswitch.improcess.reconstructors.smlm.localizer import SmlmLocalizer
+
     ctrl = ReconstructorManagerController.__new__(ReconstructorManagerController)
     ctrl._main = SimpleNamespace(
-        _activeReconstructor=SimpleNamespace(id="smlm-localizer"),
+        _activeReconstructor=SmlmLocalizer(),
+        _currentDataObj=None,
         dataFrameController=SimpleNamespace(getDisplayedImage2D=lambda: image),
     )
     statuses = []
-    ctrl._smlmPreviewWidget = SimpleNamespace(
+    ctrl._previewWidget = SimpleNamespace(
         previewCheckbox=SimpleNamespace(isChecked=lambda: checked),
-        get_detection_values=lambda: {"threshold": threshold, "sigma": 1.0, "roi": 7},
+        get_values=lambda: {"threshold": threshold, "sigma": 1.0, "roi": 7},
         setPreviewStatus=statuses.append,
     )
     ctrl._commChannel = SimpleNamespace(
@@ -134,7 +137,7 @@ def _preview_controller(image, checked=True, threshold=50.0):
 def test_controller_preview_emits_spots_and_count_status():
     ctrl, statuses = _preview_controller(_spot_frame())
 
-    ctrl._updateSmlmPreview()
+    ctrl._updatePreview()
 
     (x, y), = ctrl._commChannel.sigDetectionPreviewUpdated.emitted
     assert len(x) == 1 and len(y) == 1
@@ -146,7 +149,7 @@ def test_controller_preview_reports_zero_candidates_with_threshold_hint():
     ctrl, statuses = _preview_controller(np.zeros((50, 50), dtype=np.float32),
                                          threshold=100.0)
 
-    ctrl._updateSmlmPreview()
+    ctrl._updatePreview()
 
     (x, y), = ctrl._commChannel.sigDetectionPreviewUpdated.emitted
     assert len(x) == 0 and len(y) == 0
@@ -156,7 +159,7 @@ def test_controller_preview_reports_zero_candidates_with_threshold_hint():
 def test_controller_preview_no_data_loaded():
     ctrl, statuses = _preview_controller(None)
 
-    ctrl._updateSmlmPreview()
+    ctrl._updatePreview()
 
     (x, y), = ctrl._commChannel.sigDetectionPreviewUpdated.emitted
     assert len(x) == 0 and len(y) == 0
@@ -166,7 +169,7 @@ def test_controller_preview_no_data_loaded():
 def test_controller_toggle_off_clears_overlay_and_status():
     ctrl, statuses = _preview_controller(_spot_frame())
 
-    ctrl._handleSmlmPreviewToggled(False)
+    ctrl._handlePreviewToggled(False)
 
     assert ctrl._commChannel.sigDetectionPreviewVisibilityChanged.emitted == [(False,)]
     (x, y), = ctrl._commChannel.sigDetectionPreviewUpdated.emitted
@@ -174,11 +177,11 @@ def test_controller_toggle_off_clears_overlay_and_status():
     assert statuses[-1] == ""
 
 
-def test_controller_preview_inactive_for_other_reconstructor():
+def test_controller_preview_inactive_for_a_reconstructor_without_one():
     ctrl, statuses = _preview_controller(_spot_frame())
     ctrl._main._activeReconstructor = SimpleNamespace(id="monalisa")
 
-    ctrl._updateSmlmPreview()
+    ctrl._updatePreview()
 
     assert ctrl._commChannel.sigDetectionPreviewUpdated.emitted == []
     assert statuses == []

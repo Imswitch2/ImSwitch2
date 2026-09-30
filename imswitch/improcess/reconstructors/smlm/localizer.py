@@ -21,7 +21,7 @@ from imswitch.imcommon.model.acquisition_layout import (
 )
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.localization_schema import localizations_from_columns
-from imswitch.improcess.reconstructors.base import StreamingReconstructor
+from imswitch.improcess.reconstructors.base import DetectionPreview, StreamingReconstructor
 
 from .detection import detect_spots
 from .fitting import fit_spots
@@ -229,6 +229,26 @@ class SmlmLocalizer(StreamingReconstructor):
 
     def __init__(self):
         self._logger = initLogger('SmlmLocalizer')
+
+    def detection_preview(self, data_obj, displayed_image, params: dict):
+        """Candidate spots of the displayed frame (detection only, no fitting)."""
+        from .preview import compute_detection_preview
+
+        threshold = float(params.get("threshold", 500.0))
+        x, y = compute_detection_preview(
+            displayed_image,
+            threshold=threshold,
+            roi=int(params.get("roi", 7)),
+            sigma=float(params.get("sigma", 1.0)),
+        )
+        if len(x):
+            status = f"Preview: {len(x)} candidate spot(s) on the displayed frame."
+        else:
+            status = (
+                "Preview: 0 candidates \u2014 lower the net-gradient threshold "
+                f"(now {threshold:g})."
+            )
+        return DetectionPreview(x, y, status)
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return SmlmParamsWidget(parent)

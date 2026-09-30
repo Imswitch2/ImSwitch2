@@ -160,13 +160,17 @@ def calculate_results(
 
     first_name = getattr(first, "name", "A")
     second_name = getattr(second, "name", "B")
+    # The output has the shape of one of the inputs (the gate saw to that);
+    # its axes are that input's, which is not always the first: a (Y, X)
+    # image minus a (1, 1, 1, 1, Y, X) one has the six axes of the second.
+    source = first if data.shape == np.shape(first.data) else second
     return ArrayProcessingResult(
         name=name or f"{first_name} {operation} {second_name}",
         data=data,
-        axis_labels=list(axis_labels_for_result(first)),
+        axis_labels=list(axis_labels_for_result(source)),
         display_levels=finite_range(data),
-        axis_scales=list(axis_scales_for_result(first)),
-        scale_unit=getattr(first, "scale_unit", "px"),
+        axis_scales=list(axis_scales_for_result(source)),
+        scale_unit=getattr(source, "scale_unit", "px"),
         metadata={
             "operation": ImageCalculatorProcessor.id,
             "calculator_operation": operation,

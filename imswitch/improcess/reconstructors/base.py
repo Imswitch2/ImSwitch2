@@ -145,6 +145,19 @@ def preflight_acquisition_layout(
     return tuple(issues)
 
 
+@dataclass(frozen=True)
+class DetectionPreview:
+    """What :meth:`Reconstructor.detection_preview` draws: points and a line.
+
+    ``x`` and ``y`` are column and row coordinates in the raw frame, so
+    that a spot at pixel ``(row, col)`` lands on that pixel on screen.
+    """
+
+    x: np.ndarray
+    y: np.ndarray
+    status: str = ""
+
+
 class Reconstructor(ABC):
     """
     Turns raw DataObj into a ProcessingResult.
@@ -373,6 +386,20 @@ class Reconstructor(ABC):
         Returns:
             A pyqtgraph GraphicsItem (e.g., ScatterPlotItem) to be added to
             DataFrame.imageItem.getViewBox(), or None for no overlay.
+        """
+        return None
+
+    def detection_preview(
+        self, data_obj: DataObj, displayed_image, params: dict
+    ) -> "DetectionPreview | None":
+        """Spots to draw on the raw-data viewer, for a parameter widget's preview.
+
+        A widget with a ``previewCheckbox`` and a ``sigPreviewToggled`` signal
+        gets the plugin's preview drawn over the raw frames while the box is
+        checked: the localizer's candidate spots on the displayed frame, the
+        MoNaLISA lattice reconstructor's foci. ``displayed_image`` is the 2D
+        frame on screen, ``params`` the widget's values. ``None`` means the
+        plugin has nothing to draw; the widget then shows nothing.
         """
         return None
 

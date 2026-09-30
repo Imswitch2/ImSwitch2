@@ -25,9 +25,10 @@ def test_non_tiling_reconstructors_keep_image_only_inline_defaults():
     a table that opens straight to a result and never reaches a reconstructor —
     and that must not weaken this contract. The time-lapse reconstructor runs
     on the worker too (it opens every file of a lapse for its header), but
-    takes lapses, never manifests.
+    takes lapses, never manifests. So does the MoNaLISA lattice reconstructor,
+    whose reconstruction of one scan takes half a minute.
     """
-    worker_plugins = {"tiling-mosaic", "time-lapse"}
+    worker_plugins = {"tiling-mosaic", "time-lapse", "monalisa-lattice"}
     for plugin_id, plugin_class in _AVAILABLE_RECONSTRUCTOR_CLASSES.items():
         if plugin_id == "tiling-mosaic":
             continue

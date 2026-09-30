@@ -200,6 +200,126 @@ def test_compatibility_check_does_not_materialize_lazy_data():
     assert ok
 
 
+# -- singleton axes and units are not differences in the pixels ---------------
+
+def _legacy(name="legacy", shape=(8, 10), pitch_nm=30.0, value=0.0):
+    """A result of the MoNaLISA reconstructor: six axes, four of them 1, nm."""
+    data = np.full((1, 1, 1, 1, *shape), value, dtype=np.float32)
+    return ArrayProcessingResult(
+        name=name,
+        data=data,
+        axis_labels=["Dataset", "Base", "T", "Z", "Y", "X"],
+        axis_scales=[1.0, 1.0, 1.0, 1.0, pitch_nm, pitch_nm],
+        scale_unit="nm",
+    )
+
+
+def _plain(name="plain", shape=(8, 10), pitch_um=0.03, value=1.0):
+    """A result of the lattice reconstructor: the image and nothing else, um."""
+    data = np.full(shape, value, dtype=np.float32)
+    return ArrayProcessingResult(
+        name=name, data=data, axis_labels=["Y", "X"],
+        axis_scales=[pitch_um, pitch_um], scale_unit="um",
+    )
+
+
+def test_singleton_axes_do_not_keep_the_same_picture_apart():
+    """(1, 1, 1, 1, Y, X) in nm and (Y, X) in um are one image twice over."""
+    legacy, plain = _legacy(), _plain()
+
+    ok, reason = combine_compatibility([legacy, plain], mode="stack", new_axis_label="C")
+    assert ok, reason
+    out = stack_results([legacy, plain], axis_label="C")
+    assert out.data.shape == (2, 8, 10)
+    assert out.axis_labels == ["C", "Y", "X"]
+    assert out.scale_unit == "nm"
+    assert out.axis_scales == pytest.approx([1.0, 30.0, 30.0])
+    np.testing.assert_array_equal(out.data[0], 0.0)
+    np.testing.assert_array_equal(out.data[1], 1.0)
+
+    # The other way round the output takes the first input's unit.
+    out = stack_results([plain, legacy], axis_label="C")
+    assert out.data.shape == (2, 8, 10)
+    assert out.scale_unit == "um"
+    assert out.axis_scales == pytest.approx([1.0, 0.03, 0.03])
+    np.testing.assert_array_equal(out.data[0], 1.0)
+
+
+def test_inputs_that_agree_axis_for_axis_keep_their_axes():
+    """Two legacy results stack as they always did: nothing is squeezed."""
+    out = stack_results([_legacy("a"), _legacy("b")], axis_label="C")
+    assert out.data.shape == (2, 1, 1, 1, 1, 8, 10)
+    assert out.axis_labels == ["C", "Dataset", "Base", "T", "Z", "Y", "X"]
+
+
+def test_concatenating_along_a_singleton_axis_grows_it():
+    """A legacy result's T axis, one plane long, takes a plain image as its
+    second plane; the axes the plain image lacks are read as singletons."""
+    legacy, plain = _legacy(), _plain()
+
+    ok, reason = combine_compatibility([legacy, plain], mode="concatenate", join_axis=2)
+    assert ok, reason
+    out = concatenate_results([legacy, plain], join_axis=2)
+    assert out.data.shape == (2, 8, 10)
+    assert out.axis_labels == ["T", "Y", "X"]
+    assert out.axis_scales == pytest.approx([1.0, 30.0, 30.0])
+    assert out.metadata["join_axis"] == "T"
+    np.testing.assert_array_equal(out.data[0], 0.0)
+    np.testing.assert_array_equal(out.data[1], 1.0)
+
+    # A plain first input has no T axis to concatenate along; the join axis
+    # is the first input's, so that stays Y.
+    out = concatenate_results([plain, legacy], join_axis=0)
+    assert out.data.shape == (16, 10)
+    assert out.scale_unit == "um"
+
+
+def test_singleton_tolerance_does_not_forgive_real_differences():
+    legacy = _legacy()
+    ok, reason = combine_compatibility([legacy, _plain(shape=(8, 12))], mode="stack")
+    assert not ok
+    assert "(8, 12)" in reason and "(1, 1, 1, 1, 8, 10)" in reason
+
+    wrong_labels = _plain()
+    wrong_labels.axis_labels = ["X", "Y"]
+    ok, reason = combine_compatibility([legacy, wrong_labels], mode="stack")
+    assert not ok
+    assert "axes" in reason
+
+    ok, reason = combine_compatibility([legacy, _plain(pitch_um=0.04)], mode="stack")
+    assert not ok
+    assert "scale" in reason and "um" in reason and "nm" in reason
+
+    pixels = _plain()
+    pixels.scale_unit = "px"
+    ok, reason = combine_compatibility([legacy, pixels], mode="stack")
+    assert not ok
+    assert "unit" in reason
+
+
+def test_a_squeezed_singleton_axis_no_longer_collides_with_the_new_label():
+    """The plain image has no Z, so stacking along a new Z is fine even
+    though the legacy input carries a Z axis of length 1."""
+    ok, reason = combine_compatibility([_legacy(), _plain()], mode="stack", new_axis_label="Z")
+    assert ok, reason
+    out = stack_results([_legacy(), _plain()], axis_label="Z")
+    assert out.axis_labels == ["Z", "Y", "X"]
+
+
+def test_singleton_alignment_does_not_materialize_lazy_data():
+    a = ArrayProcessingResult(
+        name="a", data=_ShapeOnlyArray((1, 1, 8, 10)),
+        axis_labels=["T", "Z", "Y", "X"],
+    )
+    b = ArrayProcessingResult(
+        name="b", data=_ShapeOnlyArray((8, 10)), axis_labels=["Y", "X"]
+    )
+    ok, reason = combine_compatibility([a, b], mode="stack", new_axis_label="C")
+    assert ok, reason
+    ok, reason = combine_compatibility([a, b], mode="concatenate", join_axis=0)
+    assert ok, reason
+
+
 # -- processor contract --------------------------------------------------------
 
 def test_stack_combine_is_registered():

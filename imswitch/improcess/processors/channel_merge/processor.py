@@ -13,11 +13,10 @@ from imswitch.improcess.model.contrast import finite_range
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.processors._axis_split import (
     axis_labels_for_result,
-    axis_scales_for_result,
     shape_for_result,
 )
 from imswitch.improcess.processors.base import Processor
-from imswitch.improcess.processors.combine import combine_compatibility
+from imswitch.improcess.processors.combine import align_results, combine_compatibility
 
 #: Axis label of the channel axis this processor creates.
 CHANNEL_AXIS_LABEL = "C"
@@ -92,10 +91,10 @@ def merge_results(
     if not ok:
         raise ValueError(reason)
 
-    first = results[0]
-    labels = axis_labels_for_result(first)
-    scales = axis_scales_for_result(first)
-    arrays = [np.asarray(result.data) for result in results]
+    alignment = align_results(results, mode="stack", new_axis_label=axis_label)
+    labels = list(alignment.labels)
+    scales = list(alignment.scales)
+    arrays = alignment.arrays(results)
     source_names = [getattr(result, "name", "result") for result in results]
 
     data = np.stack(arrays, axis=0)
@@ -108,7 +107,7 @@ def merge_results(
         view_modes=[ViewMode("Channels", tuple(range(data.ndim)))],
         display_levels=finite_range(data),
         axis_scales=output_scales,
-        scale_unit=getattr(first, "scale_unit", "px"),
+        scale_unit=alignment.unit,
         metadata={
             "operation": ChannelMergeProcessor.id,
             "source_results": source_names,

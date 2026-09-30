@@ -33,6 +33,11 @@ The experiments:
 * ``e6`` -- spot-shape self-calibration from the data.
 * ``e7`` -- per-focus geometry errors (centre, width, ellipticity) and a
   non-parametric (template / spline) spot shape against the Gaussian.
+* ``e8`` -- the checks of the review (section 8 of the document): what the
+  footprint buys against what the joint fit buys, the joint fit under model
+  mismatch, the support of its weights, the gridding regularizer, and the
+  numbers of the reference diamond recording. Uses its own random generator,
+  so it neither depends on nor changes the numbers of ``e1``-``e7``.
 """
 
 from __future__ import annotations
@@ -867,6 +872,227 @@ def e7_spot_models():
           f"{np.exp(-11.0**2 / (2 * sigma_all**2)):.1e}).\n")
 
 
+# ================================================================ E8
+def _e8_reach_against_jointness(rng):
+    print("### E8a -- E5a again, with the isolated fit at every reach\n")
+    syn = _Synthetic()
+    N = syn.N
+    S_true, _, _ = _make_sample(N)
+    target = syn.conv(S_true, syn.HE)
+    frames = rng.poisson(syn.forward(S_true) + syn.bg).astype(float)
+    cam = N // 2
+    yy, xx = np.mgrid[0:cam, 0:cam].astype(float)
+    foci = (syn.foci - 1.0) / 2.0
+    # The synthetic acquisition is periodic, and so are the distances.
+    dx = np.abs(xx.ravel()[None, :] - foci[:, :1])
+    dy = np.abs(yy.ravel()[None, :] - foci[:, 1:])
+    dist2 = np.minimum(dx, cam - dx) ** 2 + np.minimum(dy, cam - dy) ** 2
+    sigma = np.sqrt(syn.sigma_d**2 + syn.sigma_e**2) / 2.0
+    flat = frames.reshape(frames.shape[0], -1)
+    rms_t = float(np.sqrt(np.mean(target**2)))
+    G = np.exp(-dist2 / (2 * sigma**2))
+    nearest = np.argmin(dist2, axis=0)
+
+    def row(name, pixels, amplitudes):
+        img = syn.place(amplitudes)
+        scale = float(np.sum(img * target) / np.sum(target * target))
+        return (name, pixels, scale,
+                float(np.sqrt(np.mean((img - target) ** 2))) / rms_t,
+                float(np.sqrt(np.mean((img / scale - target) ** 2))) / rms_t)
+
+    rows = []
+    for r_sigma in (1.5, 2.0, 2.5, 3.0, 4.0):
+        inside = dist2 <= (r_sigma * sigma) ** 2
+        iso = np.empty((flat.shape[0], len(foci)))
+        for f in range(len(foci)):
+            idx = inside[f]
+            D = np.stack([G[f, idx], np.ones(idx.sum())], 1)
+            iso[:, f] = flat[:, idx] @ np.linalg.pinv(D)[0]
+        rows.append(row(f"ISO {r_sigma} sigma", int(inside[0].sum()), iso))
+        mask = inside.any(axis=0)
+        consts = np.stack([(nearest == f) & mask for f in range(len(foci))]).astype(float)
+        D = np.concatenate([G[:, mask], consts[:, mask]], axis=0).T
+        joint = (np.linalg.pinv(D)[:len(foci)] @ flat[:, mask].T).T
+        rows.append(row(f"JOINT {r_sigma} sigma", int(inside[0].sum()), joint))
+    D = np.concatenate([G, np.ones((1, G.shape[1]))], axis=0).T
+    rows.append(row("JOINT all pixels, one constant", G.shape[1] // len(foci),
+                    (np.linalg.pinv(D)[:-1] @ flat.T).T))
+    md_table(["estimator", "px/focus", "scale vs S*h_e", "rel. RMSE vs S*h_e",
+              "rel. RMSE after a global rescale"], rows)
+    print(f"E5 geometry: period {syn.period / 2:g} px, spot sigma {sigma:.2f} px "
+          f"({syn.period / 2 / sigma:.1f} sigma between foci). At equal reach the "
+          "isolated and the joint fit have the same error: the noise is set by the "
+          "footprint, and at this spacing there is no crosstalk to remove.\n")
+
+
+def _e8_model_mismatch(rng):
+    print("### E8b -- the joint fit when the model is not the truth\n")
+    period, sigma = 11.05, 2.0
+    shape = (100, 100)
+    pts = lattice_points((period, 0.0), (0.0, period), (3.3, 5.1), shape, margin=3 * sigma)
+    n = len(pts)
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]].astype(float)
+    X, Y = xx.ravel(), yy.ravel()
+
+    def dist2_to(p):
+        return (X[None, :] - p[:, :1]) ** 2 + (Y[None, :] - p[:, 1:]) ** 2
+
+    dist2 = dist2_to(pts)
+    nearest = np.argmin(dist2, axis=0)
+    A = 200.0 * (0.5 + rng.random(n))
+    H = 60.0 * (0.5 + rng.random(n))
+    interior = np.array([
+        f for f in range(n)
+        if period + 2 < pts[f, 0] < shape[1] - period - 2
+        and period + 2 < pts[f, 1] < shape[0] - period - 2
+    ])
+    clean = np.exp(-dist2 / (2 * sigma**2)).T @ A + 50.0
+    scenes = [
+        ("model = truth", clean, {}),
+        ("spot sigma 3% wide", clean, {"sigma": 1.03 * sigma}),
+        ("centres off by 0.05 px rms", clean,
+         {"pts": pts + rng.normal(scale=0.05, size=pts.shape)}),
+        ("background gradient 0.3 / px", clean + 0.3 * X + 0.2 * Y, {}),
+        ("Gaussian haze sigma 6, not modelled",
+         clean + np.exp(-dist2 / 72.0).T @ H, {}),
+        ("Gaussian haze sigma 6, modelled with 6",
+         clean + np.exp(-dist2 / 72.0).T @ H, {"haze": 6.0}),
+        ("Gaussian haze sigma 6, modelled with 5",
+         clean + np.exp(-dist2 / 72.0).T @ H, {"haze": 5.0}),
+        ("Gaussian haze sigma 6, modelled with 8",
+         clean + np.exp(-dist2 / 72.0).T @ H, {"haze": 8.0}),
+        ("Lorentzian haze, modelled with Gaussian 6",
+         clean + (1.0 / (1 + dist2 / 36.0)).T @ (0.3 * H), {"haze": 6.0}),
+    ]
+    reaches = (1.5, 2.5, 3.0, 4.0)
+    rows = []
+    for name, frame, model in scenes:
+        d2m = dist2_to(model.get("pts", pts))
+        Gm = np.exp(-d2m / (2 * model.get("sigma", sigma) ** 2))
+        cells = []
+        for r_sigma in reaches:
+            inside = dist2 <= (r_sigma * sigma) ** 2
+            mask = inside.any(axis=0)
+            iso = []
+            for f in interior:
+                idx = inside[f]
+                D = np.stack([Gm[f, idx], np.ones(idx.sum())], 1)
+                iso.append(np.linalg.pinv(D)[0] @ frame[idx] - A[f])
+            blocks = [Gm[:, mask]]
+            if "haze" in model:
+                blocks.append(np.exp(-d2m / (2 * model["haze"] ** 2))[:, mask])
+            cells_of = np.stack([(nearest == f) & mask for f in range(n)])
+            blocks.append(cells_of.astype(float)[:, mask])
+            W = np.linalg.pinv(np.concatenate(blocks, axis=0).T)[:n]
+            joint = (W @ frame[mask] - A)[interior]
+            cells.append(f"{np.sqrt(np.mean(np.square(iso))):.2g} / "
+                         f"{np.sqrt(np.mean(joint**2)):.2g}")
+        rows.append((name, *cells))
+    md_table(["scene"] + [f"{r} sigma: ISO / JOINT" for r in reaches], rows)
+    print("Rms amplitude bias in counts (amplitudes 100-300, noiseless). The haze "
+          "term is only in the joint model; the isolated fit never has it.\n")
+
+    print("### E8c -- support of the joint weights (reach 3 sigma)\n")
+    inside = dist2 <= (3.0 * sigma) ** 2
+    mask = inside.any(axis=0)
+    consts = np.stack([(nearest == f) & mask for f in range(n)]).astype(float)
+    D = np.concatenate([np.exp(-dist2 / (2 * sigma**2))[:, mask], consts[:, mask]], 0).T
+    f = interior[len(interior) // 2]
+    w = np.linalg.pinv(D)[f]
+    near = np.hypot(pts[:, 0] - pts[f, 0], pts[:, 1] - pts[f, 1]) < 1.6 * period
+    rows = []
+    for name, keep in (("own footprint", inside[f][mask]),
+                       ("own and the 8 neighbours' footprints", inside[near].any(0)[mask]),
+                       ("all fitted pixels", np.ones(mask.sum(), bool))):
+        rows.append((name, int(keep.sum()),
+                     float(np.where(keep, w, 0.0) @ clean[mask] - A[f])))
+    md_table(["weights kept", "pixels", "bias of the truncated estimator (counts)"], rows)
+
+    neighbour = int(np.argsort(np.hypot(pts[:, 0] - pts[f, 0], pts[:, 1] - pts[f, 1]))[1])
+    rows = []
+    for name, design in (
+        ("spots + constants", D),
+        ("spots + haze (sigma 6) + constants",
+         np.concatenate([D[:, :n], np.exp(-dist2 / 72.0)[:, mask].T, D[:, n:]], axis=1)),
+    ):
+        cov = np.linalg.pinv(design.T @ design)
+        spread = np.sqrt(cov[f, f] * cov[neighbour, neighbour])
+        rows.append((name, float(cov[f, neighbour] / spread)))
+    md_table(["model", "correlation of neighbouring amplitudes"], rows)
+
+
+def _e8_regularizer():
+    print("### E8d -- gridding regularizer: coefficient norm against roughness\n")
+    field = _bandlimited_field()
+    a, n1, n2 = 11.0, 22, 19
+    th = np.radians(17.0)
+    step = np.sqrt(a * a * np.sqrt(3) / 2 / (n1 * n2))
+    foci = lattice_points((a * np.cos(th), a * np.sin(th)),
+                          (a * np.cos(th + np.pi / 3), a * np.sin(th + np.pi / 3)),
+                          (2.2, 3.7), (110, 110), margin=n1 * step)
+    offs = np.array([(i * step, j * step) for j in range(n2) for i in range(n1)])
+    pos = (foci[None, :, :] + offs[:, None, :]).reshape(-1, 2)
+    size = int(110 / step)
+    gx, gy = (pos[:, 0] - 2.2) / step, (pos[:, 1] - 3.7) / step
+    inside = (gx >= -2) & (gx < size + 1) & (gy >= -2) & (gy < size + 1)
+    gx, gy = gx[inside], gy[inside]
+    RY, RX = np.mgrid[0:size, 0:size].astype(float)
+    truth, values = field(RX, RY), field(gx, gy)
+    rms = float(np.sqrt(np.mean(truth**2)))
+    evaluate, splat = _bspline_ops(gx, gy, size, size)
+    _, bilinear_splat = _bilinear_ops(gx, gy, size, size)
+    covered = bilinear_splat(np.ones(gx.size)) >= 0.1
+
+    def laplacian(c):
+        return (-4 * c + np.roll(c, 1, 0) + np.roll(c, -1, 0)
+                + np.roll(c, 1, 1) + np.roll(c, -1, 1))
+
+    rows = []
+    sl = (slice(12, size - 12), slice(12, size - 12))
+    norm, roughness = "sum c^2", "sum (Laplacian c)^2"
+    for name, lam in ((norm, 1e-3), (norm, 1e-4), (roughness, 1e-3),
+                      (roughness, 1e-4), (roughness, 1e-5)):
+        def matvec(v, name=name, lam=lam):
+            c = v.reshape(size, size)
+            penalty = c if name == norm else laplacian(laplacian(c))
+            return (splat(evaluate(c)) + lam * penalty).ravel()
+
+        rhs = splat(values).ravel()
+        coef, _ = cg(LinearOperator((size * size,) * 2, matvec=matvec, dtype=float),
+                     rhs, x0=rhs, rtol=1e-9, maxiter=2000)
+        coef = coef.reshape(size, size)
+        img = (np.roll(coef, 1, 0) + 4 * coef + np.roll(coef, -1, 0)) / 6
+        img = (np.roll(img, 1, 1) + 4 * img + np.roll(img, -1, 1)) / 6
+        err = (img - truth)[sl]
+        rows.append((name, lam, float(np.sqrt(np.mean(err[covered[sl]] ** 2))) / rms,
+                     float(np.sqrt(np.mean(err[~covered[sl]] ** 2))) / rms))
+    md_table(["penalty", "lambda", "rel. RMSE, covered pixels", "rel. RMSE, holes"], rows)
+    print("E4's rotated hexagonal case. Neither penalty recovers the holes: the "
+          "samples are not there.\n")
+
+
+def e8_review_checks():
+    """The checks behind the review of the plan (section 8)."""
+    print("## E8 -- review checks\n")
+    rng = np.random.default_rng(20260929)
+    _e8_reach_against_jointness(rng)
+    _e8_model_mismatch(rng)
+    _e8_regularizer()
+    print("### E8e -- the reference diamond recording\n")
+    period, pixel, step_nm = 10.41, PIXEL_NM, 35.0
+    width = period * np.sqrt(2) * pixel
+    md_table(["quantity", "value"],
+             [("width of the brick domain, period * sqrt(2) (nm)", f"{width:.1f}"),
+              ("width scanned, 32 * 35 nm", f"{32 * step_nm:.1f}"),
+              ("mismatch", f"{32 * step_nm / width - 1:+.2%}"),
+              ("strip of each cell left unscanned if the step is 35 nm (nm)",
+               f"{width - 32 * step_nm:.1f}"),
+              ("pixel size at which 32 steps subdivide exactly (nm)",
+               f"{32 * step_nm / (period * np.sqrt(2)):.2f}"),
+              ("step at which 32 steps subdivide exactly, 77 nm pixels (nm)",
+               f"{width / 32:.2f}")])
+
+
 EXPERIMENTS = {
     "e1": e1_extraction,
     "e2": e2_noise_weighting,
@@ -875,6 +1101,7 @@ EXPERIMENTS = {
     "e5": e5_two_stage_vs_ml,
     "e6": e6_spot_calibration,
     "e7": e7_spot_models,
+    "e8": e8_review_checks,
 }
 
 

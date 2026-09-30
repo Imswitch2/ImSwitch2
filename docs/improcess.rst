@@ -180,7 +180,14 @@ new results:
   *Split stack*, which the dialog says when a single stack is checked.
 * *Stack/Combine...* — stack same-shaped selected results along a new axis, or
   concatenate compatible results along an existing axis. Axis labels, pixel
-  scales and scale units must agree.
+  scales and scale units must agree. Two differences are forgiven because
+  they are not differences in the pixels: singleton axes one input has and
+  another lacks (a ``(1, 1, 1, 1, Y, X)`` MoNaLISA result combines with a
+  ``(Y, X)`` image; the combined result keeps only the axes they share, the
+  join axis included), and a length unit stated differently (``nm`` against
+  ``um``, converted before the scales are compared; the output takes the
+  first input's unit). The same applies to *Merge channels* and to the
+  compatibility check of the *Image calculator*.
 * *Image calculator...* — combine exactly two loaded results with pixel-wise
   add, subtract, multiply, divide, minimum, maximum, average or absolute
   difference operations.  A label mask published by the ROI manager's
@@ -426,6 +433,7 @@ ID                      Type           Purpose
 ======================= ============== ====================================================
 monalisa                Reconstructor  MoNaLISA point-scanning SIM (the full method needs Windows + CUDA DLL)
 monalisa-legacy         Reconstructor  Internal adapter behind MoNaLISA's full method; not for direct use
+monalisa-lattice        Reconstructor  Experimental MoNaLISA reconstruction for any lattice, geometry read from the frames
 view-only               Reconstructor  Pass-through; raw frames wrapped as a result
 widefield-starss        Reconstructor  H/V WidefieldSTARSS anisotropy maps and region metrics
 snouty                  Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
@@ -537,7 +545,8 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
    * - ``channel-merge``
      - Dimensions and channels
      - Two or more selected rank >= 2 results with identical shape, axis
-       labels and compatible axis scales.
+       labels and compatible axis scales (singleton axes and nm/um
+       differences forgiven, see *Stack/Combine* above).
      - ``ArrayProcessingResult`` with a new leading channel axis, default
        label ``C``.
    * - ``stack-combine``
@@ -1265,7 +1274,11 @@ The SMLM parameter widget exposes:
   entered value applies when the recording has no calibration (with neither,
   1 nm pixels are assumed), and is required when it is calibrated
   differently along Y and X.
-* **Preview detection** toggle — when enabled, candidate spots from the
+* **Preview detection** toggle (the MoNaLISA lattice reconstructor's
+  *Show found foci* is the same overlay, drawing the foci it reads from the
+  recording; any reconstructor whose widget has a ``previewCheckbox`` and a
+  ``sigPreviewToggled`` signal and that answers ``detection_preview`` gets
+  it) — when enabled, candidate spots from the
   detection step (before fitting) appear as a live scatter overlay on the
   raw-data frame viewer. The overlay updates automatically whenever detection
   parameters change or when the displayed frame changes (via the frame slider
