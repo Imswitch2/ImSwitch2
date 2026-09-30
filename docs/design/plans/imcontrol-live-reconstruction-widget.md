@@ -773,6 +773,14 @@ Answered along the way: MoNaLISA's live session and `prepare_params` derive
 `scan_params` from the acquisition attributes, so the widget needs no special
 case (§3.3's open item).
 
+Changed from the design during review: the source completes a fixed grace
+after the end mark rather than waiting for the detector to go quiet (a
+free-running camera never does); a scan-driven detector's stream is built at
+`sigScanStarted`, when its volume shape is known, with the lease still taken
+at `sigScanStarting`; a run never joins a scan already producing frames
+(§3.5's "joined" status is gone) and instead starts at the next boundary; and
+`DiskAndRAM` + Zarr is allowed, since the storer hands the group over.
+
 Remaining, in the order they are likely to matter:
 
 1. **Rig validation** of the overflow behaviour at real frame rates and of

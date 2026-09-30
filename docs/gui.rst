@@ -1446,11 +1446,15 @@ Pick the **Detector** to reconstruct from and a **Mode**:
 
 * **During scans** reconstructs each scan while it runs.  The tool arms the
   detector and its frame queue when the scan is about to start, so no frame
-  is missed, reads the scan's geometry and acquisition layout from the scan
-  controller, and describes the stream with the same metadata a recording
-  would carry.  A reconstructor that streams (MoNaLISA fast Gauss, the SMLM
-  localizer, View only) updates several times per scan; any other
-  reconstructs once per complete scan stack, as soon as the stack is in.
+  is missed (a point detector, whose volume arrives once per scan, is set up
+  once the scan is built), reads the scan's geometry and acquisition layout
+  from the scan controller, and describes the stream with the same metadata
+  a recording would carry.  A reconstructor that streams (MoNaLISA fast
+  Gauss, the SMLM localizer, View only) updates several times per scan; any
+  other reconstructs once per complete scan stack, as soon as the stack is
+  in.  Switching **Live** on while a scan is already running starts at that
+  scan's next iteration or at the next scan, never in the middle of one: the
+  stacks are counted from the first frame the tool sees.
 * **Free-running** reconstructs the detector stream in chunks of **Frames
   per update** frames until **Live** is switched off, for reconstructors
   that do not need whole scan stacks.
