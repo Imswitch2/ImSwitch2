@@ -156,6 +156,49 @@ with the input's position appended (``out``, ``out1``, ``out2`` …).
 Multi-input processors (``channel-merge``, ``image-calculator``,
 ``colocalization``, ``frc`` …) take their inputs in the order listed.
 
+.. _workflows-python-steps:
+
+Python steps
+------------
+
+The ``python`` processor runs a few lines of Python as a step, for a
+transformation no processor covers.  Its two parameters are the ``code`` and
+the ``ports`` it produces (comma-separated, ``out`` by default); a later step
+refers to a port like any other (``split.a``), and ``validate`` checks the
+reference against ``ports`` before anything runs::
+
+    - step: process
+      id: split
+      processor: python
+      params:
+        ports: a, b
+        code: |
+          ax = 0
+          group = (np.arange(data.shape[ax]) // 3) % 2
+          outputs = {
+              "a": np.take(data, np.flatnonzero(group == 0), axis=ax),
+              "b": np.take(data, np.flatnonzero(group == 1), axis=ax),
+          }
+      inputs: [rec]
+    - step: process
+      id: blur
+      processor: filter
+      params: {radius: 1.0}
+      inputs: [split.a]
+
+Saving a workflow writes a multi-line parameter in YAML **block style**
+(``code: |``), so a file reads like the script it carries rather than a quoted
+line full of ``\n``; it loads back to exactly the same text.  The code is
+recorded whole in the provenance of every result the step makes, which is what
+lets **Export workflow of current result…** and replay reproduce it.  What the
+code can use, the rules for its outputs and how errors are reported are in
+:ref:`improcess-python-step`; a runnable file is
+``examples/improcess_workflows/python_step_interleave.yaml``.
+
+The code runs with the full access of the process, so a workflow file from
+someone else can run their code: the GUI asks once before running a file that
+contains Python steps.  The command line does not ask.
+
 Saves
 -----
 

@@ -509,8 +509,9 @@ accept kind ``image`` unless noted; ``stack-subset``, ``projection``,
 intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
 ``smlm-drift``, ``smlm-group``) accept only ``localization``.
 ``label-morphology`` accepts only ``labels``, ``image-calculator`` accepts
-``image`` and ``labels``, and ``table-to-localizations`` accepts only
-``table``.
+``image`` and ``labels``, ``python`` (the :ref:`Python step
+<improcess-python-step>`) accepts ``image``, ``labels`` and ``composite``, and
+``table-to-localizations`` accepts only ``table``.
 
 .. list-table::
    :header-rows: 1
@@ -608,6 +609,12 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        have; a ``px`` result combines with a calibrated one.
      - ``ArrayProcessingResult`` from pixel-wise arithmetic; division by zero
        yields zero. The toolbar dialog is the normal two-input entry point.
+   * - ``python``
+     - Scripting
+     - Any ``image``, ``labels`` or ``composite`` result, one or several; the
+       code decides what the axes mean.
+     - One result per output port the step declares (``out`` by default),
+       named in ``ports``; see :ref:`improcess-python-step`.
    * - ``drift-correct``
      - Restoration
      - Any result whose ``axis_labels`` contain ``T``.
@@ -1025,6 +1032,160 @@ The usual workflow is:
 The same functionality is available as registered processors:
 ``multicolor-registration`` extracts and optionally saves the transform, while
 ``multicolor-apply`` applies a saved HDF5 transform to later data.
+
+.. _improcess-python-step:
+
+Python step
+===========
+
+The Python step is the built-in processor ``python`` (category *Scripting*): a
+few lines of Python that turn the selected result, or several, into new
+results.  It is the escape hatch for the one-off transformation no processor
+covers — three slices at a time alternating between two outputs, say — where
+writing a drop-in plugin (*Drop-in analysis plugins*, below) would be more
+work than the job.  Open it from **Tools → Python step**.
+
+The code is an ordinary parameter of the step (next to the output port names),
+so everything a processor gets comes with it: the result's provenance records
+the whole code, **File → Export workflow of current result…** writes it into a
+workflow file, *Run workflow over files…* applies it to a folder, and replay
+reproduces it.
+
+The panel
+---------
+
+The panel is a code editor (ImScripting's Python editor when QScintilla is
+installed, a plain monospaced box otherwise), an **Output ports** line, and a
+read-only **Output** pane.  Like every processor that takes several results,
+it runs once over the inputs checked in the list, in the order listed.
+**Load snippet…** and **Save as snippet…** (below) keep code between sessions.
+
+The *Output ports* line names the results the code will produce, separated by
+commas; it defaults to ``out``.  Names use letters, digits, ``_`` and ``-``,
+the same as a step reference, and a later step in a workflow refers to them as
+``step.port`` (``split.a``), checked before the run.
+
+What the code sees
+------------------
+
+The code starts with these names, and no others:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 72
+
+   * - Name
+     - What it is
+   * - ``np``
+     - numpy.
+   * - ``data``
+     - The first input's array.  A lazily loaded result is read into memory.
+       It is the input's own array: copy it (``data.copy()``) before changing
+       it in place.
+   * - ``inputs``
+     - The array of every input, in the order listed.
+   * - ``axes``, ``scales``, ``unit``
+     - The first input's axis labels, pixel scales and scale unit.
+   * - ``axis(label_or_index)``
+     - The index of an axis: ``axis("Z")`` (any capitalisation), or the index
+       itself when given a number.  An unknown axis is an error listing the
+       labels.
+   * - ``results``
+     - The input result objects themselves, for their metadata.  Read them;
+       do not change them.
+   * - ``make_result(array, *, axes=None, scales=None, name=None)``
+     - An output with axes you name, for an array whose number of dimensions
+       differs from the input's.
+   * - ``make_labels(array, *, axes=None, scales=None, name=None)``
+     - The same for a label image (``labels`` kind, as segmentation makes):
+       integers, or floats holding whole numbers.
+   * - ``outputs``, ``out``
+     - What the code sets, below.
+
+Outputs
+-------
+
+Set ``outputs`` to a dict from port name to array, with one entry for every
+declared port and no others.  With a single port, ``out = array`` is enough,
+and so is ``outputs = array`` for the default port ``out``.  The run checks
+this and says which ports are
+missing and which are not declared, with the declared list.  Each entry is a
+numeric array (boolean, integer or float) or the result of ``make_result`` /
+``make_labels``:
+
+* an array with the **same number of dimensions** as the first input inherits
+  its axis labels, scales and unit, whatever its shape;
+* any other array must come through ``make_result(array, axes=["Y", "X"])``;
+  the scales of axes it shares with the input come along (``scales=`` sets
+  them), and the error otherwise names the port and both dimensionalities;
+* an output is named ``<input name> (<port>)`` unless ``name=`` says
+  otherwise.
+
+Errors and printed output
+-------------------------
+
+An error in the code is reported as one line with the line of *your* code it
+came from — ``line 3: NameError: name 'x' is not defined`` — in the panel's
+status line and the **Output** pane, and in a workflow run's error next to the
+step's id; the log has the full traceback, in which your code's frames are the
+ones in ``<python step>``.  A syntax error reports its own line.  Nothing is
+published when a run fails.
+
+What the code prints (and writes to ``stderr``) is shown in the **Output** pane
+after a successful run and kept, up to 4000 characters, in each output's
+metadata under ``python_step``.  Text printed by a script that then fails is
+not shown.
+
+Snippets
+--------
+
+**Save as snippet…** writes the code and the ports line to
+``~/ImSwitchConfig/improcess_snippets/<name>.py`` (asking before it replaces
+one); **Load snippet…** puts a saved one back into the editor.  A snippet is a
+plain Python file whose first line may name the ports::
+
+    # ports: a, b
+    ax = 0
+    ...
+
+That line is the only part that is not the code, and it is removed on load.  A
+snippet that turns out to be useful beyond one session can become a drop-in
+plugin by the template in *Drop-in analysis plugins*; nothing forces that step.
+
+Trust
+-----
+
+The code runs in-process with full Python: like a drop-in plugin or an
+ImScripting script, **not sandboxed**, with the same access as ImSwitch.  A
+workflow file can therefore carry code that runs when it is run:
+**File → Run workflow…** (and the variants that run a file) asks once, naming
+the Python steps, before it runs a file that contains any; the workflow
+editor, which hands over a workflow it is showing you, does not ask, and shows
+a step's code in its form.  Only run files you trust.
+
+The code runs where processors run: on the GUI thread from this panel, so a
+slow script freezes the window as a slow built-in does, and on the workflow
+worker thread from the editor and the File menu.  A running script cannot be
+cancelled; **Cancel run** takes effect between steps.
+
+Example
+-------
+
+Three slices at a time along the first axis, alternating between outputs ``a``
+and ``b`` (ports ``a, b``)::
+
+    ax = 0
+    group = (np.arange(data.shape[ax]) // 3) % 2
+    outputs = {
+        "a": np.take(data, np.flatnonzero(group == 0), axis=ax),
+        "b": np.take(data, np.flatnonzero(group == 1), axis=ax),
+    }
+
+On a 12-slice stack ``a`` holds slices 0–2 and 6–8 and ``b`` the rest, each
+with the input's axes.  Use ``axis("Z")`` instead of ``0`` when the file names
+its axes.  As a workflow step, with a filter on ``split.a`` and saves of both
+branches, it is ``examples/improcess_workflows/python_step_interleave.yaml``
+(see :doc:`improcess-workflows`).
 
 Active reconstructor
 ====================

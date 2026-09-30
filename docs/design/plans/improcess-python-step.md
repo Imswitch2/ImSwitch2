@@ -2,7 +2,7 @@
 
 Date: 2026-09-30
 
-Status: Proposed (feasibility checked with a running prototype; nothing implemented). Implementation brief for an agent: `docs/agent_tasks/improcess_python_step.md`.
+Status: Phases A and B implemented 2026-09-30 on `feat/improcess-python-step` (the step, panel, `code` field, block-style YAML, shared code editor, snippets, and the notice before a file's Python code runs); Phase C (console) and Phase D (worker-thread processor runs) remain proposed. Implementation brief: `docs/agent_tasks/improcess_python_step.md`; see *Implementation notes* at the end.
 
 ## Summary
 
@@ -256,3 +256,30 @@ recorded, exported, batched and replayed.
   records ImSwitch's version, not scipy's. Recording the versions of
   modules a script imported is possible (`sys.modules` before and after)
   and would make the record complete.
+
+## 7. Implementation notes (Phases A and B, 2026-09-30)
+
+What was built follows the design; where it differs or decides something the
+design left open:
+
+- **`make_labels` builds `LabelsResult`** (`model/labels_result.py`, kind
+  `labels`), not `SegmentationResult`. The latter is fixed to `("Y", "X")` and
+  needs a full `SegmentationAnalysis`, so it cannot honour `axes=` / `scales=`
+  or a stack of labels; `LabelsResult` is the same kind, takes any
+  dimensionality and is what an imported labels layer already becomes.
+- **The compile filename is `<python step>`**, not `<python step 'split'>`: a
+  processor is not told its step's id. `run_script(..., step_name=)` names it
+  for a caller that knows one. The `SyntaxError` line is the error's own.
+- **`python` joins the kind allow-lists** in `test_result_kind_matrix.py`
+  (labels and composite), with the reason beside them: its code decides what
+  the values mean.
+- **The hook is `notify_param_widget`**, a module-level function in
+  `ResultProcessorController` rather than a method, because the existing
+  controller tests bind `runProcessor` onto a stand-in object.
+- **`SystemExit` from the script is an error**, not the end of the program; a
+  `KeyboardInterrupt` is not caught.
+- **Not done, on purpose:** what a script printed *before* it failed is not
+  shown (the hook receives only the one-line failure message); `data` is the
+  input's own array, not a read-only copy (the docs say to copy it before
+  changing it in place); the versions of imported modules are not recorded
+  (open question above).
