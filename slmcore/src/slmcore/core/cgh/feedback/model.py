@@ -159,7 +159,7 @@ class PositionAnalysis:
 
 @dataclass(frozen=True)
 class PositionCorrection:
-    """Serializable-in-principle one-shot mapping sampled at ideal spot positions."""
+    """Self-contained absolute position correction sampled at ideal spot positions."""
 
     measurement: FeedbackMeasurement
     analysis: PositionAnalysis
@@ -200,6 +200,21 @@ class PositionCorrection:
             raise ValueError("Position-correction arrays must share shape (2, N)")
         if ideal.shape[1] != indices.shape[1]:
             raise ValueError("Position correction spot count mismatch")
+        expected_corrected = baseline + displacement
+        if not np.allclose(
+            corrected,expected_corrected,rtol=1e-9,atol=1e-12,
+        ):
+            raise ValueError(
+                "Position correction must satisfy corrected_positions_kxy = "
+                "baseline_positions_kxy + displacement_kxy"
+            )
+        if not np.allclose(
+            self.analysis.corrected_positions_kxy,corrected,
+            rtol=1e-9,atol=1e-12,
+        ):
+            raise ValueError(
+                "Position correction analysis does not match corrected positions"
+            )
         object.__setattr__(self,"lattice_indices",indices)
         object.__setattr__(self,"ideal_positions_kxy",ideal)
         object.__setattr__(self,"displacement_kxy",displacement)
@@ -284,6 +299,8 @@ class FeedbackStatus:
     localization_params: Mapping[str,Any]
     intensity_params: Mapping[str,Any]
     position_params: Mapping[str,Any]
+    position_stale: bool = False
+    position_stale_reason: str = ""
     measurement_metrics: Mapping[str,float] = field(default_factory=dict)
     adaptation_pending: bool = False
     feedback_compute_pending: bool = False
@@ -316,6 +333,10 @@ class FeedbackStatus:
             self,"position_available",bool(self.position_available),
         )
         object.__setattr__(self,"position_active",bool(self.position_active))
+        object.__setattr__(self,"position_stale",bool(self.position_stale))
+        object.__setattr__(
+            self,"position_stale_reason",str(self.position_stale_reason or ""),
+        )
         object.__setattr__(
             self,"inspection_available",bool(self.inspection_available),
         )

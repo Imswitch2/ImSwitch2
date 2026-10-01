@@ -8,9 +8,21 @@ class _CghStatus:
     result_state = CGHResultState.CURRENT
 
 
+class _FeedbackStatus:
+    def __init__(self,*,stale=False,reason=""):
+        self.position_stale = bool(stale)
+        self.position_stale_reason = str(reason)
+
+
 class _Runtime:
+    def __init__(self):
+        self.feedback_status = _FeedbackStatus()
+
     def get_section_cgh_status(self,section_key):
         return _CghStatus()
+
+    def get_section_feedback_status(self,section_key):
+        return self.feedback_status
 
 
 class _Session:
@@ -195,3 +207,19 @@ def test_stop_during_cgh_waits_for_that_cgh_then_stops():
 
     assert not runner.active
     assert len(service.acquisitions) == 1
+
+
+def test_stale_position_correction_blocks_automatic_feedback_start():
+    service = _Service()
+    service.application_session.runtime.feedback_status = _FeedbackStatus(
+        stale=True,reason="Position correction is stale because the FOV calibration changed.",
+    )
+    runner = AutomaticFeedbackRunner(service)
+
+    assert not runner.start(
+        "sec_0",rounds=1,source="cam",reuse_previous_localization=False,
+    )
+    assert not runner.active
+    assert service.acquisitions == []
+    assert service.errors
+    assert "FOV calibration changed" in str(service.errors[-1][1])

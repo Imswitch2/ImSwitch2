@@ -541,7 +541,7 @@ def test_fov_selection_swap_while_applied_updates_runtime_and_keeps_default(tmp_
     session.dispose()
 
 
-def test_switching_fov_calibration_clears_transient_position_feedback(tmp_path):
+def test_switching_fov_calibration_marks_position_feedback_stale(tmp_path):
     from slmcore import SLMWorkspace
 
     workspace = SLMWorkspace(tmp_path)
@@ -563,6 +563,9 @@ def test_switching_fov_calibration_clears_transient_position_feedback(tmp_path):
     session.feedback.select_fov_position_calibration("sec_0","field B")
     status = runtime.get_section_feedback_status("sec_0")
     assert status.position_active is False
+    assert status.position_available is True
+    assert status.position_stale is True
+    assert "FOV calibration changed" in status.position_stale_reason
     assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field B"
 
     session.dispose()

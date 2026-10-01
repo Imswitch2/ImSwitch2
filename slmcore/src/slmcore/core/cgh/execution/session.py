@@ -557,6 +557,7 @@ class CGHSession:
             and working.purpose is CGHPreparedPurpose.WORKING_ROUND
             and working.feedback_change is FeedbackChangeKind.INTENSITY
         )
+        position_stale_reason = self._position_correction_stale_reason(context)
         return FeedbackStatus(
             capabilities=capabilities,
             acquisition_available=measurement is not None,
@@ -564,6 +565,8 @@ class CGHSession:
             intensity_count=self._committed_intensity_count,
             position_available=self._position_correction is not None,
             position_active=self._position_active,
+            position_stale=bool(position_stale_reason),
+            position_stale_reason=position_stale_reason,
             inspection_available=(
                 measurement is not None
                 or bool(self._rounds)
@@ -1055,6 +1058,15 @@ class CGHSession:
             )
 
         target = self._current_round_target(state,context)
+        committed = self._committed_target
+        if committed is None:
+            raise RuntimeError("No committed target is available")
+        base_target = self._build_target(committed,context)
+        if self._position_active:
+            stale_reason = self._position_correction_stale_reason(context)
+            if stale_reason:
+                raise RuntimeError(stale_reason)
+
         oriented_localization = orient_localization(
             measurement.localization,orientation,
         )
@@ -1064,32 +1076,37 @@ class CGHSession:
             metrics=measurement.metrics,
         )
         ideal_positions = target.resolution.ideal_spot_positions_kxy
-        baseline_positions = self._fov_baseline_positions(target)
+        # Position analysis is incremental around the positions that actually
+        # generated the acquired image (P0 when OFF, Pn when ON). Persistence,
+        # however, always collapses the result back to one absolute correction
+        # from the current FOV-corrected root baseline P0.
+        measurement_baseline = np.asarray(
+            target.resolution.spot_positions_kxy,dtype=np.float64,
+        )
+        root_baseline = self._fov_baseline_positions(base_target)
         analysis = analyze_position(
             oriented_measurement,
             ideal_positions_kxy=ideal_positions,
-            baseline_positions_kxy=baseline_positions,
+            baseline_positions_kxy=measurement_baseline,
             reference_positions_px=reference_positions_px,
             calibration=context.calibration,
             parameters=self._position_params,
         )
+        corrected_positions = analysis.corrected_positions_kxy
+        total_displacement = corrected_positions - root_baseline
         correction = PositionCorrection(
             measurement=oriented_measurement,
             analysis=analysis,
             lattice_indices=target.resolution.lattice_indices,
             ideal_positions_kxy=ideal_positions,
-            displacement_kxy=analysis.correction_kxy,
-            corrected_positions_kxy=analysis.corrected_positions_kxy,
+            displacement_kxy=total_displacement,
+            corrected_positions_kxy=corrected_positions,
             calibration=(
                 {} if context.calibration is None else context.calibration.to_dict()
             ),
             reference=dict(reference_metadata or {}),
-            baseline_positions_kxy=baseline_positions,
+            baseline_positions_kxy=root_baseline,
         )
-        committed = self._committed_target
-        if committed is None:
-            raise RuntimeError("No committed target is available")
-        base_target = self._build_target(committed,context)
         self._validate_position_correction_for_resolution(
             correction,base_target.resolution,
         )
@@ -1138,7 +1155,9 @@ class CGHSession:
                 metrics=measurement.metrics,
             ),
             ideal_positions_kxy=target.resolution.ideal_spot_positions_kxy,
-            baseline_positions_kxy=self._fov_baseline_positions(target),
+            baseline_positions_kxy=np.asarray(
+                target.resolution.spot_positions_kxy,dtype=np.float64,
+            ),
             reference_positions_px=reference_positions_px,
             calibration=context.calibration,
             parameters=self._position_params,
@@ -1163,6 +1182,9 @@ class CGHSession:
             )
         if active:
             self._validate_position_correction_for_committed_target(context)
+            stale_reason = self._position_correction_stale_reason(context)
+            if stale_reason:
+                raise RuntimeError(stale_reason)
         self._position_active = active
         self._reset_intensity_sequence(state,context)
         return True
@@ -1173,6 +1195,14 @@ class CGHSession:
     ) -> bool:
         self._require_capability(state,FeedbackCapability.POSITION_CORRECTION)
         if self._position_correction is None:
+            return False
+        was_active = bool(self._position_active)
+        if not was_active:
+            # Forgetting an inactive correction does not change the effective
+            # target, so neither intensity state nor the hologram needs reset.
+            self._position_correction = None
+            self._position_reference_round = None
+            self._position_active = False
             return False
         if self._committed_intensity_count > 0 and not reset_intensity:
             raise RuntimeError(
@@ -1305,6 +1335,8 @@ class CGHSession:
                     self._validate_position_correction_for_committed_target(
                         context,
                     )
+                    if self._position_correction_stale_reason(context):
+                        self._position_active = False
                 self._applied = (
                     None if not self._rounds else AppliedCGH(
                         result=self._rounds[-1].result,
@@ -1829,7 +1861,9 @@ class CGHSession:
             return False
 
         self.invalidate_prepared_compute()
-        self._position_correction = None
+        # Keep the previous absolute correction for inspection, but changing
+        # the FOV-calibrated root baseline makes it inapplicable until a fresh
+        # position correction is measured against the new baseline.
         self._position_reference_round = None
         self._position_active = False
         self._working_round = None
@@ -1840,6 +1874,30 @@ class CGHSession:
         self._prefer_previous_initialization = False
         self._requires_fresh_initialization = True
         return True
+
+    def _position_correction_stale_reason(
+        self,context: SectionContext,
+    ) -> str:
+        correction = self._position_correction
+        if correction is None:
+            return ""
+        target_state = self._committed_target
+        if target_state is None:
+            return "Position correction is stale because no committed target is available."
+        try:
+            target = self._build_target(target_state,context)
+            self._validate_position_correction_for_resolution(
+                correction,target.resolution,
+            )
+            current_baseline = self._fov_baseline_positions(target)
+        except Exception as error:
+            return "Position correction is stale: %s" % error
+        if not np.allclose(
+            correction.baseline_positions_kxy,current_baseline,
+            rtol=1e-9,atol=1e-12,
+        ):
+            return "Position correction is stale because the FOV calibration changed."
+        return ""
 
     @staticmethod
     def _validate_position_correction_for_resolution(

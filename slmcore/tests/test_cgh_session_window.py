@@ -702,11 +702,13 @@ def test_position_tab_uses_right_controls_and_pending_position_is_actionable():
 
         assert (
             window.position_status_label.text()
-            == "Correction ready · hologram pending"
+            == "Applying correction · hologram pending"
         )
+        assert window.position_use_checkbox.isChecked()
+        assert not window.position_use_checkbox.isEnabled()
         assert not window.position_apply_button.isEnabled()
         assert window._compute_adapted_buttons[1].isEnabled()
-        assert window.position_clear_button.isEnabled()
+        assert not window.position_clear_button.isEnabled()
 
         legend_texts = [
             label.text()

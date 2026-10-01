@@ -5,7 +5,9 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
+from slmcore import (
+    DEFAULT_REGISTRIES,FOVPositionCalibration,SLMGeometry,SLMIdentity,SLMRuntime,
+)
 from slmcore.core.cgh import (
     FeedbackChangeKind,
     CGHResult,
@@ -1197,3 +1199,200 @@ def test_inferred_missing_spot_is_usable_for_intensity_but_not_position():
     runtime.apply_section_intensity_feedback(section_key)
     inspection = runtime.get_section_cgh_session_inspection(section_key)
     assert inspection.working_round is not None
+
+
+def _test_fov_calibration(name: str,dx: float,dy: float):
+    points = np.array([
+        [-0.25,0.25,-0.25,0.25,0.0],
+        [-0.25,-0.25,0.25,0.25,0.0],
+    ],dtype=np.float64)
+    displacement = np.vstack([
+        np.full(points.shape[1],float(dx)),
+        np.full(points.shape[1],float(dy)),
+    ])
+    return FOVPositionCalibration.fit(
+        name=name,
+        slm_serial="SER123",
+        section_key="sec_0",
+        plane_name="sample",
+        ideal_positions_kxy=points,
+        total_displacements_kxy=displacement,
+        degree=1,
+    )
+
+
+def test_replacement_position_correction_is_measured_incrementally_but_stored_absolute():
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _measurement,localization = _attach_localized_measurement(runtime,section_key)
+    reference_1 = np.asarray(localization.expected_positions_px,dtype=np.float64).copy()
+    reference_1[0] += 3.0
+    runtime.apply_section_position_correction(
+        section_key,reference_positions_px=reference_1,
+    )
+    first = runtime.get_section_cgh_session_inspection(
+        section_key
+    ).position_correction
+    assert first is not None
+    assert np.linalg.norm(first.displacement_kxy) > 0
+    np.testing.assert_allclose(
+        first.corrected_positions_kxy,
+        first.baseline_positions_kxy + first.displacement_kxy,
+    )
+
+    _commit_job(runtime,section_key)
+    _measurement,localization = _attach_localized_measurement(runtime,section_key)
+    reference_2 = np.asarray(localization.expected_positions_px,dtype=np.float64).copy()
+    reference_2[1] += 2.0
+    runtime.apply_section_position_correction(
+        section_key,reference_positions_px=reference_2,
+    )
+    second = runtime.get_section_cgh_session_inspection(
+        section_key
+    ).position_correction
+    assert second is not None
+
+    # The second analysis is the newly measured P1 -> P2 increment.
+    np.testing.assert_allclose(
+        second.corrected_positions_kxy,
+        first.corrected_positions_kxy + second.analysis.correction_kxy,
+    )
+    # The stored correction is nevertheless one self-contained P0 -> P2 map.
+    np.testing.assert_allclose(
+        second.displacement_kxy,
+        second.corrected_positions_kxy - second.baseline_positions_kxy,
+    )
+    np.testing.assert_allclose(
+        second.displacement_kxy,
+        first.displacement_kxy + second.analysis.correction_kxy,
+    )
+    assert not np.allclose(
+        second.displacement_kxy,second.analysis.correction_kxy,
+    )
+
+
+def test_position_correction_model_rejects_incremental_displacement_as_total():
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _measurement,localization = _attach_localized_measurement(runtime,section_key)
+    reference = np.asarray(localization.expected_positions_px,dtype=np.float64).copy()
+    reference[0] += 2.0
+    runtime.apply_section_position_correction(
+        section_key,reference_positions_px=reference,
+    )
+    correction = runtime.get_section_cgh_session_inspection(
+        section_key
+    ).position_correction
+    assert correction is not None
+    with pytest.raises(ValueError,match="baseline_positions_kxy"):
+        replace(
+            correction,
+            displacement_kxy=np.asarray(correction.displacement_kxy) + 0.01,
+        )
+
+
+def test_fov_change_retains_position_correction_as_stale_and_blocks_reenable():
+    runtime,section_key = _runtime()
+    calibration_a = _test_fov_calibration("a",0.001,-0.001)
+    calibration_b = _test_fov_calibration("b",0.004,0.002)
+    runtime.set_section_fov_position_calibration(section_key,calibration_a)
+    _commit_job(runtime,section_key)
+    _measurement,localization = _attach_localized_measurement(runtime,section_key)
+    reference = np.asarray(localization.expected_positions_px,dtype=np.float64).copy()
+    reference[0] += 2.0
+    runtime.apply_section_position_correction(
+        section_key,reference_positions_px=reference,
+    )
+    _commit_job(runtime,section_key)
+    assert runtime.get_section_feedback_status(section_key).position_active
+
+    runtime.set_section_fov_position_calibration(section_key,calibration_b)
+    status = runtime.get_section_feedback_status(section_key)
+    assert status.position_available
+    assert not status.position_active
+    assert status.position_stale
+    assert "FOV calibration changed" in status.position_stale_reason
+    with pytest.raises(RuntimeError,match="FOV calibration changed"):
+        runtime.set_section_position_correction_active(section_key,True)
+
+    transition = runtime.clear_section_position_correction(section_key)
+    assert transition is None
+    status = runtime.get_section_feedback_status(section_key)
+    assert not status.position_available
+    assert not status.position_stale
+
+
+def test_clearing_inactive_position_correction_preserves_intensity_rounds():
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _measurement,localization = _attach_localized_measurement(runtime,section_key)
+    reference = np.asarray(localization.expected_positions_px,dtype=np.float64).copy()
+    reference[0] += 2.0
+    runtime.apply_section_position_correction(
+        section_key,reference_positions_px=reference,
+    )
+    _commit_job(runtime,section_key)
+
+    runtime.set_section_position_correction_active(section_key,False)
+    _commit_job(runtime,section_key)
+    _commit_next_intensity_round(runtime,section_key)
+    before = runtime.get_section_feedback_status(section_key)
+    assert not before.position_active
+    assert before.position_available
+    assert before.intensity_count == 1
+    assert not before.feedback_compute_pending
+
+    transition = runtime.clear_section_position_correction(section_key)
+    assert transition is None
+    after = runtime.get_section_feedback_status(section_key)
+    assert not after.position_available
+    assert after.intensity_count == before.intensity_count
+    assert not after.feedback_compute_pending
+
+
+def test_saved_absolute_position_correction_can_be_reloaded_and_readjusted():
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _measurement,localization = _attach_localized_measurement(runtime,section_key)
+    reference_1 = np.asarray(localization.expected_positions_px,dtype=np.float64).copy()
+    reference_1[0] += 3.0
+    runtime.apply_section_position_correction(
+        section_key,reference_positions_px=reference_1,
+    )
+    _commit_job(runtime,section_key)
+    first = runtime.get_section_cgh_session_inspection(
+        section_key
+    ).position_correction
+    assert first is not None
+
+    restored = SLMRuntime.from_config(
+        runtime.create_config(),registries=DEFAULT_REGISTRIES,
+    )
+    restored_status = restored.get_section_feedback_status(section_key)
+    assert restored_status.position_available
+    assert restored_status.position_active
+    assert not restored_status.position_stale
+
+    _measurement,localization = _attach_localized_measurement(
+        restored,section_key,
+    )
+    reference_2 = np.asarray(localization.expected_positions_px,dtype=np.float64).copy()
+    reference_2[1] += 2.0
+    restored.apply_section_position_correction(
+        section_key,reference_positions_px=reference_2,
+    )
+    second = restored.get_section_cgh_session_inspection(
+        section_key
+    ).position_correction
+    assert second is not None
+    np.testing.assert_allclose(
+        second.baseline_positions_kxy,first.baseline_positions_kxy,
+    )
+    np.testing.assert_allclose(
+        second.corrected_positions_kxy,
+        first.corrected_positions_kxy + second.analysis.correction_kxy,
+    )
+    np.testing.assert_allclose(
+        second.displacement_kxy,
+        second.corrected_positions_kxy - second.baseline_positions_kxy,
+    )

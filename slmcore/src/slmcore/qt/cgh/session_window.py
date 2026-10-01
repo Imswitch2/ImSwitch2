@@ -898,6 +898,16 @@ class CGHSessionWindow(QtWidgets.QDialog):
         controls_layout.addWidget(correction_label)
         controls_layout.addWidget(self.position_status_label)
 
+        self.position_use_checkbox = QtWidgets.QCheckBox(
+            "Use position correction"
+        )
+        self.position_use_checkbox.toggled.connect(
+            lambda checked:self._emit(
+                MeasurementsAction.POSITION_SET_ACTIVE,{"active":bool(checked)},
+            )
+        )
+        controls_layout.addWidget(self.position_use_checkbox)
+
         correction_actions = QtWidgets.QHBoxLayout()
         correction_actions.setContentsMargins(0,0,0,0)
         correction_actions.setSpacing(5)
@@ -2585,18 +2595,50 @@ class CGHSessionWindow(QtWidgets.QDialog):
             status.feedback_compute_pending
             and status.pending_feedback_change is FeedbackChangeKind.POSITION
         )
+        position_stale = bool(getattr(status,"position_stale",False))
+        position_stale_reason = str(
+            getattr(status,"position_stale_reason","") or ""
+        )
         if position_pending:
-            position_text = (
-                "Correction ready · hologram pending"
-                if status.position_available else "Correction cleared · hologram pending"
-            )
+            if status.position_available:
+                position_text = (
+                    "Applying correction · hologram pending"
+                    if status.position_active
+                    else "Using baseline · hologram pending"
+                )
+            else:
+                position_text = "Correction cleared · hologram pending"
             position_color = _WARNING_COLOR
+        elif position_stale:
+            position_text = "Stored correction stale · FOV calibration changed"
+            position_color = _WARNING_COLOR
+        elif status.position_available and status.position_active:
+            position_text,position_color = "Correction active",_OK_COLOR
         elif status.position_available:
-            position_text,position_color = "Correction applied",_OK_COLOR
+            position_text,position_color = (
+                "Correction stored · using baseline",_MUTED_COLOR
+            )
         else:
             position_text,position_color = "No correction",_MUTED_COLOR
         self.position_status_label.setText(position_text)
         self.position_status_label.setStyleSheet("color: %s;" % position_color)
+        use_blocker = QtCore.QSignalBlocker(self.position_use_checkbox)
+        self.position_use_checkbox.setChecked(bool(status.position_active))
+        del use_blocker
+        self.position_use_checkbox.setEnabled(
+            position_available
+            and status.position_available
+            and not position_stale
+            and not position_pending
+            and current_context
+            and not self._cgh_computing
+        )
+        self.position_use_checkbox.setToolTip(
+            position_stale_reason
+            if position_stale else
+            "Temporarily switch between the stored corrected positions and "
+            "the FOV-corrected baseline. The hologram is recomputed automatically."
+        )
         position_localization_complete = bool(
             localized
             and status.localization_total_count > 0
@@ -2605,12 +2647,18 @@ class CGHSessionWindow(QtWidgets.QDialog):
         reference_compatible = bool(
             self._position_reference_context.get("compatible",True)
         )
+        self.position_apply_button.setText(
+            "New correction" if position_stale else
+            "Replace correction" if status.position_available else
+            "Apply correction"
+        )
         self.position_apply_button.setEnabled(
             position_available
             and position_localization_complete
             and reference_compatible
             and viewing_current
             and not self._cgh_computing
+            and not position_pending
         )
         if localized and not position_localization_complete:
             position_tip = (
@@ -2629,6 +2677,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             and status.position_available
             and current_context
             and not self._cgh_computing
+            and not position_pending
         )
 
         reuse_available = bool(

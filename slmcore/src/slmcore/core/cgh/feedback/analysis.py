@@ -22,7 +22,7 @@ def analyze_position(
     calibration: Any=None,
     parameters: Mapping[str,Any],
 ) -> PositionAnalysis:
-    """Derive one non-cumulative correction relative to ideal target positions.
+    """Derive one position adjustment relative to the supplied active baseline.
 
     Position correction itself does not require a section calibration.
     The localized target provides the detector-pixel -> target-kxy mapping.

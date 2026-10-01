@@ -181,7 +181,19 @@ class AutomaticFeedbackRunner:
                 RuntimeError("Wait for the current CGH computation to finish."),
             )
             return False
-        cgh_status = self._runtime_provider().get_section_cgh_status(section_key)
+        runtime = self._runtime_provider()
+        feedback_status = runtime.get_section_feedback_status(section_key)
+        if bool(getattr(feedback_status,"position_stale",False)):
+            self._report_error(
+                "Automatic feedback failed",
+                RuntimeError(
+                    str(getattr(feedback_status,"position_stale_reason","") or
+                        "Clear or replace the stale position correction before "
+                        "starting automatic feedback.")
+                ),
+            )
+            return False
+        cgh_status = runtime.get_section_cgh_status(section_key)
         if cgh_status.result_state is not CGHResultState.CURRENT:
             self._report_error(
                 "Automatic feedback failed",

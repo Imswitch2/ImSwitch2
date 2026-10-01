@@ -176,11 +176,15 @@ class FeedbackActionRouter:
         elif request is MeasurementsAction.FOV_CALIBRATION_REPLACE:
             self._fov_calibration.replace_applied(section_key)
         elif request is MeasurementsAction.POSITION_SET_ACTIVE:
-            self._adaptation.set_position_active(
+            ok,transition = self._adaptation.set_position_active(
                 section_key,bool(values.get("active",False)),
             )
+            if ok and transition is not None:
+                self._compute_adapted_cgh(section_key)
         elif request is MeasurementsAction.POSITION_CLEAR:
-            self._adaptation.clear_position_correction(section_key)
+            ok,transition = self._adaptation.clear_position_correction(section_key)
+            if ok and transition is not None:
+                self._compute_adapted_cgh(section_key)
         elif request is MeasurementsAction.COMPUTE_ADAPTED:
             self._compute_adapted_cgh(section_key)
         elif request is MeasurementsAction.RESET_TO_ROUND:

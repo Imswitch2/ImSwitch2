@@ -68,26 +68,36 @@ class FeedbackAdaptationCoordinator:
             ),
         )
 
-    def set_position_active(self,section_key: str,active: bool) -> None:
+    def set_position_active(
+        self,section_key: str,active: bool,
+    ) -> tuple[bool,SectionStateTransition | None]:
         if not self._editor_writes_allowed():
-            return
+            return False,None
         reset = self._confirm_position_intensity_reset(section_key)
         if reset is None:
-            return
-        self._run_resolution(
+            return False,None
+        return self._run_resolution(
             section_key,
             lambda:self._feedback.set_position_active(
                 section_key,bool(active),reset_intensity=reset,
             ),
         )
 
-    def clear_position_correction(self,section_key: str) -> None:
+    def clear_position_correction(
+        self,section_key: str,
+    ) -> tuple[bool,SectionStateTransition | None]:
         if not self._editor_writes_allowed():
-            return
-        reset = self._confirm_position_intensity_reset(section_key)
-        if reset is None:
-            return
-        self._run_resolution(
+            return False,None
+        status = self._runtime().get_section_feedback_status(section_key)
+        if bool(status.position_active):
+            reset = self._confirm_position_intensity_reset(section_key)
+            if reset is None:
+                return False,None
+        else:
+            # Forgetting an inactive/stale correction does not change the
+            # effective spot positions, so intensity feedback remains valid.
+            reset = False
+        return self._run_resolution(
             section_key,
             lambda:self._feedback.clear_position_correction(
                 section_key,reset_intensity=reset,
