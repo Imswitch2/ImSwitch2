@@ -461,7 +461,8 @@ math                    Processor      Constant arithmetic and unary transforms 
 image-calculator        Processor      Pixel-wise arithmetic between two compatible results
 segmentation            Processor      Threshold + connected-component labels and ROI export
 label-morphology        Processor      Fill, erode, dilate, open, close or watershed 2D label masks
-psf-resolution          Processor      2D Gaussian bead/PSF FWHM and sigma measurements
+psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations
+psf-bead-select         Processor      Re-select the beads of a psf-resolution bead table (FWHM range, ellipticity, R²)
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
 multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
@@ -634,9 +635,17 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        opening, closing or watershed splitting.
    * - ``psf-resolution``
      - Measurement
-     - Any rank >= 2 image-like result.  Extra axes collapse to index ``0``.
-     - ``PSFResolutionResult`` table with axes ``ROI, Metric`` and FWHM plot
-       payload.  Intended as an analysis output, not an image-stack input.
+     - Any rank >= 2 image-like result.  A ``Z`` axis with more than one
+       plane makes it a 3-D analysis; every other extra axis collapses to
+       index ``0``.
+     - Ports ``beads`` (``BeadTableResult``, one row per candidate bead with
+       status and ``selected`` flag), ``summary`` (``PSFSummaryResult``),
+       ``average_psf`` (image) and, when requested on calibrated 3-D data,
+       ``aberrations`` (``AberrationsResult``, Zernike modes 5-11).
+   * - ``psf-bead-select``
+     - Measurement
+     - A ``beads`` table from ``psf-resolution``.
+     - Ports ``beads`` and ``summary`` with the new selection; no refitting.
    * - ``colocalization``
      - Measurement
      - Rank >= 3 image-like result with a compare axis containing at least two
@@ -976,13 +985,42 @@ PSF resolution panel
 ====================
 
 Set ``"psfResolutionPanel": true`` in the ``processing`` block to show a
-bead/PSF resolution panel.  It fits a non-rotated 2D Gaussian to the
-currently selected reconstruction result — full-frame or per ROI Manager
-entry — and publishes a ``PSFResolutionResult`` into the reconstruction list.
-Selecting the result shows center, sigma, FWHM, amplitude, background and RMS
-fit error in the results table (with CSV export) and the FWHM plot in the
-graph panel.  The panel's ROI Manager sourcing is forwarded to the
-``psf-resolution`` processor via the ``rois`` parameter.
+bead/PSF resolution panel.  With an image selected it runs ``psf-resolution``:
+
+* **Beads from** — *Auto-detect beads* (LoG detection; 3-D stacks are
+  detected on their maximum projection and fitted on the stack), *ROI
+  Manager* (one bead per ROI, forwarded through the ``rois`` parameter) or
+  *Whole image* (one PSF for the frame, the behaviour of the first version).
+* Candidates near the border, too close to a neighbour, saturated or
+  abnormally bright (aggregates) are flagged and kept out of the fits; side
+  lobes and defocus rings of brighter beads are discarded.
+* Each bead is fitted with an axis-aligned Gaussian (2-D), or separably /
+  as a full 3-D Gaussian.  Widths are in nm when the data carry a physical
+  scale (or the *Pixel size* / *Z step* overrides are set), otherwise in px.
+* With a **bead diameter**, widths are corrected for the bead's own extent
+  by subtracting variances: ``sigma_psf² = sigma_meas² − d²/20`` for
+  volume-labelled and ``d²/12`` for shell-labelled beads.  A warning is
+  issued when the correction exceeds 30 % of the measured width.
+* With **NA and wavelength**, the summary compares the result with the
+  widefield diffraction limit (0.51 λ/NA laterally, 0.88 λ/(n − √(n² − NA²))
+  axially).
+* The **summary** reports mean, std, SEM, median and MAD of the selected
+  beads, the averaged-bead value, bead counts per status, the lateral FWHM
+  trend across the field and, for 3-D stacks, the focal-plane tilt and field
+  curvature.
+* **Estimate aberrations** (3-D, calibrated, NA and wavelength set) fits
+  Zernike modes 5-11 (astigmatism, coma, trefoil, primary spherical; Noll
+  indexing, nm RMS) to the averaged bead by model-based phase retrieval with
+  a scalar PSF model.  It needs a through-focus stack.  Signs and angles
+  depend on the z direction (*Flip z*) and image orientation; magnitudes do
+  not.  The SLM pattern designer defines Noll modes 2/3, 7/8 and 11
+  differently, so those coefficients cannot be applied there one to one.
+
+With a ``beads`` table selected, the panel switches to re-selection: a
+histogram of the fitted lateral FWHMs with a draggable range, the selection
+bounds and **Apply selection**, which runs ``psf-bead-select`` (the range is
+recorded in the provenance like any parameter).  Recorded first-version runs
+migrate to *Whole image* or *ROI Manager* with their pixel size in nm.
 
 Colocalization panel
 ====================
@@ -1639,7 +1677,7 @@ to your ImControl setup file (the same JSON you select via
             "smlmRenderPanel": true,
             "napariStormViewer": true,
             "reconstructors": ["monalisa", "smlm-localizer", "view-only"],
-            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
+            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "psf-bead-select", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
         }
     }
 
@@ -1724,7 +1762,7 @@ The MoNaLISA preset's block, as shipped in ``monalisa_processor.json``::
             "roiManagerPanel": true,
             "roiStatsPanel": true,
             "reconstructors": ["monalisa", "view-only"],
-            "processors": ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
+            "processors": ["drift-correct", "projection", "segmentation", "psf-resolution", "psf-bead-select", "colocalization", "frc"]
         }
     }
 

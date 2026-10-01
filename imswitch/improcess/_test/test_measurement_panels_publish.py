@@ -32,9 +32,10 @@ from imswitch.improcess.processors.colocalization import (
     ColocalizationProcessor,
     ColocalizationResult,
 )
+from imswitch.improcess.processors.psf_bead_select import PSFBeadSelectProcessor
 from imswitch.improcess.processors.psf_resolution import (
+    BeadTableResult,
     PSFResolutionProcessor,
-    PSFResolutionResult,
 )
 
 
@@ -67,11 +68,14 @@ def _coloc_result():
     )
 
 
+def _psf_outputs(params=None):
+    output = PSFResolutionProcessor().apply(_psf_result(), params or {})
+    return dict(zip(output.keys, output.results))
+
+
 def _table_result():
-    return PSFResolutionProcessor().apply(
-        _psf_result(),
-        {"pixel_size": 1.0, "unit": "px"},
-    )
+    """A table the PSF panel can do nothing with: the summary, not the beads."""
+    return _psf_outputs()["summary"]
 
 
 def _roi_manager(rois):
@@ -101,9 +105,11 @@ def test_psf_panel_emits_processor_contract_params(qtbot):
     assert emitted_result is result
     assert isinstance(panel.processor, PSFResolutionProcessor)
     # End-to-end: the real processor must accept the panel's params.
-    psf_result = panel.processor.apply(emitted_result, params)
-    assert isinstance(psf_result, PSFResolutionResult)
-    assert psf_result.analysis.metadata["source"] == "full-image"
+    output = panel.processor.apply(emitted_result, params)
+    beads = dict(zip(output.keys, output.results))["beads"]
+    assert isinstance(beads, BeadTableResult)
+    assert beads.analysis.source == "auto"
+    assert [row["status"] for row in beads.table_records()] == ["ok"]
 
 
 def test_psf_panel_roi_source_forwards_roi_manager_rois(qtbot):
@@ -119,8 +125,10 @@ def test_psf_panel_roi_source_forwards_roi_manager_rois(qtbot):
     assert len(runs) == 1
     _, params = runs[0]
     assert params["rois"] == rois
-    psf_result = panel.processor.apply(_psf_result(), params)
-    assert psf_result.analysis.rows()[0]["name"] == "roi-bead"
+    output = panel.processor.apply(_psf_result(), params)
+    beads = dict(zip(output.keys, output.results))["beads"]
+    assert beads.analysis.source == "rois"
+    assert len(beads.table_records()) == 1
 
 
 def test_psf_panel_roi_source_requires_roi_manager(qtbot):
@@ -159,6 +167,46 @@ def test_psf_panel_rejects_incompatible_result_kind(qtbot):
     assert runs == []
     assert not panel.fitButton.isEnabled()
     assert "not compatible" in panel.summaryLabel.text()
+
+
+def test_psf_panel_bead_table_switches_to_selection_mode(qtbot):
+    panel = PSFResolutionWidget(napariViewer=None)
+    qtbot.addWidget(panel)
+    runs = _capture_runs(panel)
+    beads = _psf_outputs()["beads"]
+
+    panel.setCurrentResult(beads)
+    assert isinstance(panel.processor, PSFBeadSelectProcessor)
+    assert not panel.fitButton.isEnabled()
+    panel.applySelection()
+
+    assert len(runs) == 1
+    emitted, params = runs[0]
+    assert emitted is beads
+    output = panel.processor.apply(emitted, params)
+    assert output.keys == ("beads", "summary")
+
+
+def test_psf_panel_range_slider_sets_the_lateral_bounds(qtbot):
+    panel = PSFResolutionWidget(napariViewer=None)
+    qtbot.addWidget(panel)
+    panel.setCurrentResult(_psf_outputs()["beads"])
+    if panel.region is None:
+        return
+    panel.region.setRegion((3.0, 6.0))
+    panel._regionToSpins()
+
+    values = panel.selectForm.get_values()
+    assert values["fwhm_lat_min"] == 3.0 and values["fwhm_lat_max"] == 6.0
+
+
+def test_psf_panel_returns_to_fit_mode_for_images(qtbot):
+    panel = PSFResolutionWidget(napariViewer=None)
+    qtbot.addWidget(panel)
+    panel.setCurrentResult(_psf_outputs()["beads"])
+    panel.setCurrentResult(_psf_result())
+    assert isinstance(panel.processor, PSFResolutionProcessor)
+    assert panel.fitButton.isEnabled()
 
 
 # --- Colocalization panel ---

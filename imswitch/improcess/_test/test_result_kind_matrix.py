@@ -73,14 +73,17 @@ def _sample_locs(count: int = 4) -> np.recarray:
     )
 
 
+def _psf_bead_table():
+    output = PSFResolutionProcessor().apply(_image_2d(), {"source": "full_image"})
+    return dict(zip(output.keys, output.results))["beads"]
+
+
 def _representative_results():
     """One real result per semantic kind, produced by the real processors."""
     return {
         "image": _image_2d(),
         "labels": SegmentationProcessor().apply(_image_2d(), {}),
-        "table": PSFResolutionProcessor().apply(
-            _image_2d(), {"pixel_size": 1.0, "unit": "px"}
-        ),
+        "table": _psf_bead_table(),
         "curve": FRCProcessor().apply(
             _image_2d(), {"mode": "single-image", "pixel_size": 1.0}
         ),
@@ -131,9 +134,10 @@ def test_non_image_results_are_never_offered_to_image_processors():
     calculator, and localization results match only the SMLM table/render
     processors."""
     results = _representative_results()
-    # The one processor that consumes tables on purpose: the explicit
-    # promotion of a points table to localizations (never automatic).
-    table_processor_ids = {"table-to-localizations"}
+    # The processors that consume tables on purpose: the explicit promotion
+    # of a points table to localizations (never automatic), and the
+    # re-selection of a PSF bead table (it accepts nothing but that table).
+    table_processor_ids = {"table-to-localizations", "psf-bead-select"}
     for processor in _all_processors():
         for kind_name in ("curve", "rgb"):
             assert not processor.accepts(results[kind_name]), (

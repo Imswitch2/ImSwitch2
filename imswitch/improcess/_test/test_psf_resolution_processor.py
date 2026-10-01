@@ -9,6 +9,7 @@ from imswitch.improcess.analysis.roi_manager import ROIRecord
 from imswitch.improcess.model import PlotPayload, ProcessingResult
 from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.processors.psf_resolution import (
+    BeadTableResult,
     PSFResolutionProcessor,
     PSFResolutionResult,
 )
@@ -68,20 +69,27 @@ def test_fit_psf_batch_uses_roi_names_and_scaling():
     assert analysis.metadata["source"] == "roi"
 
 
-def test_psf_resolution_processor_registered_and_generates_payload():
+def _outputs(output):
+    """Port name -> result of a ProcessorOutput."""
+    return dict(zip(output.keys, output.results))
+
+
+def test_psf_resolution_processor_registered_and_fits_whole_image():
+    """``full_image`` is the v1 behaviour without ROIs: one PSF for the frame."""
     image = _gaussian()
     result = MinimalResult(name="image", data=image, axis_labels=["Y", "X"])
-    processor = PSFResolutionProcessor()
 
-    psf_result = processor.apply(result, {"pixel_size": 1.0, "unit": "px"})
+    out = _outputs(PSFResolutionProcessor().apply(result, {"source": "full_image", "average_psf": False}))
 
     assert "psf-resolution" in available_processor_ids()
-    assert isinstance(psf_result, PSFResolutionResult)
-    assert psf_result.data.shape == (1, len(PSFResolutionResult._METRICS))
-    payloads = psf_result.plot_payloads()
-    assert len(payloads) == 1
-    assert isinstance(payloads[0], PlotPayload)
-    assert payloads[0].metadata["fit_count"] == 1
+    assert set(out) == {"beads", "summary"}
+    beads = out["beads"]
+    assert isinstance(beads, BeadTableResult) and beads.kind == "table"
+    (row,) = beads.table_records()
+    assert row["fwhm_y_px"] == pytest.approx(2.354820045 * 2.4, rel=0.03)
+    assert row["fwhm_x_px"] == pytest.approx(2.354820045 * 3.1, rel=0.03)
+    payloads = beads.plot_payloads()
+    assert payloads and all(isinstance(p, PlotPayload) for p in payloads)
 
 
 def test_psf_resolution_processor_accepts_rois_param():
@@ -90,12 +98,52 @@ def test_psf_resolution_processor_accepts_rois_param():
     result = MinimalResult(name="image", data=image, axis_labels=["Y", "X"])
     rois = [ROIRecord("roi-bead", "rectangle", (4, 17, 5, 20))]
 
-    psf_result = PSFResolutionProcessor().apply(
-        result, {"pixel_size": 1.0, "unit": "px", "rois": rois}
-    )
+    out = _outputs(PSFResolutionProcessor().apply(result, {"source": "rois", "rois": rois}))
 
-    assert psf_result.analysis.metadata["source"] == "roi"
-    assert psf_result.analysis.rows()[0]["name"] == "roi-bead"
+    assert out["beads"].analysis.source == "rois"
+    (row,) = out["beads"].table_records()
+    assert row["status"] == "ok"
+    assert row["fwhm_x_px"] == pytest.approx(2.354820045 * 2.0, rel=0.05)
+
+
+def test_rois_source_without_rois_is_an_error():
+    result = MinimalResult(name="image", data=_gaussian(), axis_labels=["Y", "X"])
+    with pytest.raises(ValueError, match="no ROIs"):
+        PSFResolutionProcessor().apply(result, {"source": "rois"})
+
+
+def test_pixel_size_comes_from_the_data_scale():
+    result = MinimalResult(
+        name="image", data=_gaussian(), axis_labels=["Y", "X"], axis_scales=[0.1, 0.1], scale_unit="um"
+    )
+    out = _outputs(PSFResolutionProcessor().apply(result, {"source": "full_image"}))
+    (row,) = out["beads"].table_records()
+    assert row["fwhm_x_nm"] == pytest.approx(2.354820045 * 3.1 * 100.0, rel=0.03)
+
+
+def test_pixel_size_override_wins_over_the_data_scale():
+    result = MinimalResult(name="image", data=_gaussian(), axis_labels=["Y", "X"])
+    out = _outputs(PSFResolutionProcessor().apply(result, {"source": "full_image", "pixel_size_nm": 50.0}))
+    (row,) = out["beads"].table_records()
+    assert row["fwhm_x_nm"] == pytest.approx(2.354820045 * 3.1 * 50.0, rel=0.03)
+
+
+def test_v1_params_migrate():
+    processor = PSFResolutionProcessor()
+    whole = processor.migrate_params({"pixel_size": 0.1, "unit": "um"}, 1)
+    assert whole["source"] == "full_image" and whole["pixel_size_nm"] == pytest.approx(100.0)
+    assert "unit" not in whole and "pixel_size" not in whole
+    assert processor.migrate_params({"pixel_size": 1.0, "unit": "px"}, 1)["pixel_size_nm"] == 0.0
+    rois = [ROIRecord("roi-bead", "rectangle", (4, 17, 5, 20))]
+    assert processor.migrate_params({"pixel_size": 1.0, "unit": "px", "rois": rois}, 1)["source"] == "rois"
+    assert set(processor.migrate_params({}, 1)) <= processor.param_keys()
+
+
+def test_output_ports_follow_the_params():
+    spec = PSFResolutionProcessor().output_spec({"average_psf": False})
+    assert spec.ports == ("beads", "summary")
+    spec = PSFResolutionProcessor().output_spec({"fit_aberrations": True})
+    assert spec.ports == ("beads", "summary", "average_psf", "aberrations")
 
 
 def test_psf_resolution_result_saves_hdf5(tmp_path):
