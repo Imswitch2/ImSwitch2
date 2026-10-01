@@ -19,6 +19,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 TRANSFORM_OPERATIONS = (
@@ -39,6 +40,15 @@ class TransformProcessor(Processor):
     @classmethod
     def default_params(cls) -> dict:
         return {'operation': 'rotate-90-cw'}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'operation', 'select', 'rotate-90-cw', label='Transform',
+                options=('rotate-90-cw', 'rotate-90-ccw', 'flip-horizontal', 'flip-vertical'),
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

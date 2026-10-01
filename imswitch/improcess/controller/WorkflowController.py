@@ -28,20 +28,28 @@ class _RunWorker(QtCore.QObject):
     sigFinished = QtCore.Signal(object)     # RunReport
     sigFailed = QtCore.Signal(str, object)  # message, RunReport or None
     sigDone = QtCore.Signal(int, int)       # runs finished, runs failed
+    sigProgress = QtCore.Signal(int, int, str)  # step index, step count, step id ('done' at the end)
 
     def __init__(self, workflow, registry, out_dir, parent=None, *, overwrite: bool = False,
-                 bindings_list=None):
+                 bindings_list=None, source_root=None):
         super().__init__(parent)
         self._workflow = workflow
         self._registry = registry
         self._out_dir = out_dir
         self._overwrite = bool(overwrite)
         self._bindings_list = list(bindings_list) if bindings_list is not None else [None]
+        #: Folder relative source paths resolve against (the workflow file's);
+        #: an attribute rather than a required argument so a subclass that
+        #: pins the constructor keeps working.
+        self.source_root = source_root
         self._cancelled = False
 
     def cancel(self) -> None:
         """Ask the run to stop at the next step boundary (thread-safe: a flag)."""
         self._cancelled = True
+
+    def _progress(self, index, total, step_id) -> None:
+        self.sigProgress.emit(int(index), int(total), str(step_id))
 
     def _should_stop(self) -> bool:
         if self._cancelled:
@@ -66,6 +74,7 @@ class _RunWorker(QtCore.QObject):
                 report = run(
                     self._workflow, registry=self._registry, out_dir=self._out_dir,
                     bindings=bindings, overwrite=self._overwrite, cancel=self._should_stop,
+                    source_root=self.source_root, progress=self._progress,
                 )
             except RunError as exc:
                 failed += 1
@@ -110,10 +119,14 @@ class WorkflowController(QtCore.QObject):
         self._holders: list = []
         self._shuttingDown = False
         self._batchFailures: list[str] = []
+        # The workflow editor window, one at a time, opened on demand.
+        self._editor = None
         for name, slot in (("sigExportWorkflowRequested", self.exportWorkflow),
                            ("sigRunWorkflowRequested", self.runWorkflow),
                            ("sigRunWorkflowOnResultsRequested", self.runWorkflowOnResults),
-                           ("sigRunWorkflowOverFilesRequested", self.runWorkflowOverFiles)):
+                           ("sigRunWorkflowOverFilesRequested", self.runWorkflowOverFiles),
+                           ("sigOpenWorkflowEditor", self.openEditor),
+                           ("sigEditWorkflowOfResultRequested", self.editWorkflowOfResult)):
             signal = getattr(mainView, name, None)
             if signal is not None:
                 signal.connect(slot)
@@ -161,6 +174,100 @@ class WorkflowController(QtCore.QObject):
             self._logger.warning("Workflow export: %s", warning)
         self._status(f"Wrote workflow {written.name} ({len(replay.workflow.steps)} steps).")
         return written
+
+    # -- editor -----------------------------------------------------------------
+
+    def openEditor(self, document=None):
+        """Open the workflow editor: one window, reused; ``document`` shown when given.
+
+        Not modal: a workflow file changes nothing about the running session,
+        so the panels stay usable while one is being written.
+        """
+        if self._editor is None:
+            try:
+                from imswitch.improcess.model.workfloweditor.folders import workflows_directory
+                from imswitch.improcess.view.workfloweditor import MainWindow
+
+                parent = self._mainView if isinstance(self._mainView, QtWidgets.QWidget) else None
+                editor = MainWindow(self._catalog(), start_folder=workflows_directory(), parent=parent)
+            except Exception as exc:  # noqa: BLE001 - reported to the operator
+                self._logger.error("Failed to open the workflow editor: %s", exc, exc_info=True)
+                self._status(f"Could not open the workflow editor: {exc}")
+                return None
+            editor.sig_run_requested.connect(self.runWorkflowObject)
+            editor.sig_run_on_results_requested.connect(self.runWorkflowObjectOnResults)
+            editor.sig_cancel_requested.connect(self.requestCancel)
+            editor.sig_closed.connect(self._onEditorClosed)
+            editor.set_running(self._thread is not None)
+            self._editor = editor
+        if document is not None:
+            self._editor.load_document(document)
+        self._editor.show()
+        self._editor.raise_()
+        self._editor.activateWindow()
+        return self._editor
+
+    def editWorkflowOfResult(self):
+        """Open the steps that made the current result in the editor."""
+        from imswitch.improcess.model.workfloweditor import WorkflowDocument
+        from imswitch.improcess.workflows.replay import ReplayError
+        from imswitch.improcess.workflows.steps import WorkflowError
+
+        result = self._reconstructionController.getActiveResult()
+        if result is None:
+            self._status("No result selected.")
+            return None
+        name = f"workflow-{_slug(getattr(result, 'name', 'result'))}"
+        try:
+            document = WorkflowDocument.from_result(result, self._catalog(), name=name)
+        except (ReplayError, WorkflowError) as exc:
+            reasons = getattr(exc, "reasons", None)
+            self._status(f"Cannot edit this result's workflow: {reasons[0] if reasons else exc}")
+            self._logger.warning("Workflow import refused:\n%s", exc)
+            return None
+        for note in document.notes:
+            self._logger.warning("Workflow import: %s", note)
+        return self.openEditor(document)
+
+    def _catalog(self):
+        if self._editor is not None:
+            return self._editor.catalog
+        from imswitch.improcess.model.workfloweditor import build_catalog
+
+        return build_catalog(self._registry())
+
+    def _onEditorClosed(self) -> None:
+        editor = self._editor
+        self._editor = None
+        if editor is not None:
+            editor.deleteLater()
+
+    def runWorkflowObject(self, workflow, source_root=None, out_dir=None, overwrite=None):
+        """Run an in-memory workflow (the editor's) as ``runWorkflow`` runs a file."""
+        return self._runBatch(None, [None], out_dir=out_dir, overwrite=overwrite, workflow=workflow,
+                              source_root=source_root)
+
+    def runWorkflowObjectOnResults(self, workflow, results=None, out_dir=None, overwrite=None):
+        """Apply an in-memory workflow's processing to every selected result."""
+        results = self._selectedResults(results)
+        if not results:
+            return False
+        return self._runOnResults(None, workflow, results, out_dir=out_dir, overwrite=overwrite)
+
+    def requestCancel(self) -> None:
+        """Ask the running workflow to stop at its next step, without waiting.
+
+        The GUI-thread form of :meth:`cancelRun`: the worker's completion
+        then queues the ordinary clean-up, and the editor learns the run is
+        over the way it learns of any other end.
+        """
+        worker, thread = self._worker, self._thread
+        if thread is None:
+            return
+        if worker is not None:
+            worker.cancel()
+        thread.requestInterruption()
+        self._status("Cancelling the workflow at its next step…")
 
     # -- run --------------------------------------------------------------------
 
@@ -215,6 +322,16 @@ class WorkflowController(QtCore.QObject):
         step after it runs on the result as it is in the list. Each run's
         outputs chain onto the result's own provenance.
         """
+        results = self._selectedResults(results)
+        if not results:
+            return False
+        loaded = self._loadWorkflow(path, title="Run workflow on selected results")
+        if loaded is None:
+            return False
+        path, workflow = loaded
+        return self._runOnResults(path, workflow, results, out_dir=out_dir, overwrite=overwrite)
+
+    def _selectedResults(self, results) -> list:
         from imswitch.improcess.model.result import ProcessingResult
 
         if results is None:
@@ -225,11 +342,9 @@ class WorkflowController(QtCore.QObject):
         results = [r for r in results if isinstance(r, ProcessingResult)]
         if not results:
             self._status("Select one or more results in the reconstruction list first.")
-            return False
-        loaded = self._loadWorkflow(path, title="Run workflow on selected results")
-        if loaded is None:
-            return False
-        path, workflow = loaded
+        return results
+
+    def _runOnResults(self, path, workflow, results, *, out_dir=None, overwrite=None):
         entry = self._entryStep(workflow)
         if entry is None:
             return False
@@ -296,7 +411,8 @@ class WorkflowController(QtCore.QObject):
             )
         return None
 
-    def _runBatch(self, path, bindings_list, *, out_dir=None, overwrite=None, workflow=None):
+    def _runBatch(self, path, bindings_list, *, out_dir=None, overwrite=None, workflow=None,
+                  source_root=None):
         from imswitch.improcess.workflows.steps import validate
 
         if workflow is None:
@@ -307,6 +423,10 @@ class WorkflowController(QtCore.QObject):
         elif self._thread is not None:
             self._status("A workflow is already running.")
             return False
+        if source_root is None and path:
+            # Relative source paths resolve against the workflow file's folder,
+            # as they do on the command line, not against the process's cwd.
+            source_root = str(Path(path).resolve().parent)
         registry = self._registry()
         issues = validate(workflow, registry)
         if issues:
@@ -327,8 +447,10 @@ class WorkflowController(QtCore.QObject):
         self._worker = _RunWorker(
             workflow, registry, Path(out_dir), overwrite=overwrite, bindings_list=bindings_list,
         )
+        self._worker.source_root = source_root
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
+        self._worker.sigProgress.connect(self._onProgress)
         self._worker.sigFinished.connect(self._onFinished)
         self._worker.sigFailed.connect(self._onFailed)
         self._worker.sigDone.connect(self._onBatchDone)
@@ -337,7 +459,14 @@ class WorkflowController(QtCore.QObject):
         count = len(bindings_list)
         self._status(f"Running workflow {workflow.name}" + (f" ({count} runs)…" if count > 1 else "…"))
         self._thread.start()
+        if self._editor is not None:
+            self._editor.set_running(True)
         return True
+
+    @QtCore.Slot(int, int, str)
+    def _onProgress(self, index: int, total: int, step_id: str) -> None:
+        if self._editor is not None:
+            self._editor.set_progress(index, total, step_id)
 
     @QtCore.Slot(int, int)
     def _onBatchDone(self, finished: int, failed: int) -> None:
@@ -582,11 +711,18 @@ class WorkflowController(QtCore.QObject):
             self._thread.deleteLater()
         self._thread = None
         self._worker = None
+        if self._editor is not None:
+            self._editor.set_running(False)
 
     def _status(self, message: str) -> None:
         show = getattr(self._mainView, "showStatusMessage", None)
         if callable(show):
             show(message)
+        if self._editor is not None:
+            try:
+                self._editor.show_status(message)
+            except RuntimeError:  # the window is being destroyed
+                pass
         self._logger.info(message)
 
 

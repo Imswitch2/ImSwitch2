@@ -13,6 +13,7 @@ from imswitch.improcess.processors._axis_split import (
     resolve_axis,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import CompositeResult
@@ -31,10 +32,23 @@ class MakeCompositeProcessor(Processor):
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.
     preserves_grid = True
+    #: ``colormaps`` lists one colormap name per channel; the panel picks
+    #: them after the fact, a workflow may set them up front.
+    extra_param_keys = ("colormaps",)
 
     @classmethod
     def default_params(cls) -> dict:
         return {'axis': 'Auto'}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'axis', 'select', 'Auto', label='Axis',
+                help='Channel axis to render as composite layers.',
+                options=('Auto', 'C', 'Channel', 'Channels', 'Base'),
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

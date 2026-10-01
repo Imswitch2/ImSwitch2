@@ -84,6 +84,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     # to each selected result, or its source to each chosen file.
     sigRunWorkflowOnResultsRequested = QtCore.Signal()
     sigRunWorkflowOverFilesRequested = QtCore.Signal()
+    # The workflow editor: a window to build, validate and run workflow files,
+    # optionally opened on the steps that made the current result.
+    sigOpenWorkflowEditor = QtCore.Signal()
+    sigEditWorkflowOfResultRequested = QtCore.Signal()
 
     sigImageAutoContrastRequested = QtCore.Signal()
     sigImageResetContrastRequested = QtCore.Signal()
@@ -214,6 +218,24 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._shortcutActions['file.save-coeffs-all'] = saveCoeffsAllAction
 
         file.addSeparator()
+        workflowEditorAction = QtWidgets.QAction('Workflow editor…', self)
+        workflowEditorAction.setToolTip(
+            'Build, edit, validate and run ImProcess workflow files; every installed '
+            'reconstructor and processor is offered with its parameters'
+        )
+        workflowEditorAction.triggered.connect(
+            lambda _checked=False: self.sigOpenWorkflowEditor.emit()
+        )
+        file.addAction(workflowEditorAction)
+        editWorkflowAction = QtWidgets.QAction('Edit workflow of current result…', self)
+        editWorkflowAction.setToolTip(
+            'Open the steps that made the current result in the workflow editor, '
+            'to change them and run them again'
+        )
+        editWorkflowAction.triggered.connect(
+            lambda _checked=False: self.sigEditWorkflowOfResultRequested.emit()
+        )
+        file.addAction(editWorkflowAction)
         exportWorkflowAction = QtWidgets.QAction('Export workflow of current result…', self)
         exportWorkflowAction.setToolTip(
             'Write the steps that made the current result as a workflow file '
@@ -2220,6 +2242,12 @@ class ReconParTree(ParameterTree):
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
+            {'name': 'Auto-detect scan orientation', 'type': 'bool', 'value': True,
+             'tip': (
+                 'Override the scan-params dialog by picking the fast/slow axis '
+                 'and pos/neg direction that minimize total variation of the '
+                 'reconstructed image.'
+             )},
             {'name': 'File extension', 'type': 'list', 'values': ['hdf5', 'zarr']},
         ]
 
@@ -2254,6 +2282,7 @@ class ReconParTree(ParameterTree):
             'fast_gauss_pinhole_radius_sigma': fast_gauss_opts.param(
                 'Pinhole radius').value(),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
+            'auto_scan_orientation': self.p.param('Auto-detect scan orientation').value(),
         }
 
 

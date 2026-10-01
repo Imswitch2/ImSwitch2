@@ -12,6 +12,7 @@ from imswitch.improcess.processors._axis_split import (
     split_port_keys,
     split_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor, ProcessorOutput
 
 
@@ -32,6 +33,16 @@ class ChannelSplitProcessor(Processor):
     @classmethod
     def default_params(cls) -> dict:
         return {'axis': 'Auto'}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'axis', 'select', 'Auto', label='Axis',
+                help='Channel axis to split. Auto uses C, Channel or Base.',
+                options=('Auto', 'C', 'Channel', 'Channels', 'Base'),
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
