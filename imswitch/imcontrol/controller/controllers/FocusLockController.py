@@ -73,6 +73,8 @@ class FocusLockController(ImConWidgetController):
         self._focusLeaseLock = threading.Lock()
         self._focusCalibrationActive = False
         self._focusCameraStopPending = False
+        self._focusCameraSettingsTree = None
+        self._focusCameraSettingsUpdating = False
 
         # Scan arbitration. Depth-counted rather than a boolean: workflows may
         # publish sigScanStarting/sigScanEnded themselves, so a duplicate start
@@ -109,6 +111,7 @@ class FocusLockController(ImConWidgetController):
             self._logger.error(
                 f'Focus lock could not crop {self.camera} to {self.cropFrame}: {e}'
             )
+        self._setupFocusCameraSettings()
         self._widget.setKp(self._setupInfo.focusLock.piKp)
         self._widget.setKi(self._setupInfo.focusLock.piKi)
 
@@ -117,7 +120,6 @@ class FocusLockController(ImConWidgetController):
         self._widget.kiEdit.textChanged.connect(self.gainsChanged)
 
         self._widget.lockButton.clicked.connect(self.toggleFocus)
-        self._widget.camDialogButton.clicked.connect(self.cameraDialog)
         self._widget.cameraAcqButton.toggled.connect(
             self.toggleFocusCameraAcquisition
         )
@@ -344,6 +346,145 @@ class FocusLockController(ImConWidgetController):
                 self._focusAcqHandle = None
 
     # ------------------------------------------------------------------
+    # Focus-camera settings
+    # ------------------------------------------------------------------
+
+    def _setupFocusCameraSettings(self):
+        """Build and bind a detector-settings tree for ``focusLock.camera``.
+
+        This deliberately does not go through SettingsController and does not
+        switch DetectorsManager.currentDetector: a dedicated focus camera may
+        be ``forFocusLock`` only, and opening this tab must never alter the
+        detector used by the normal live-view/recording workflow.
+        """
+        widget = self.__dict__.get('_widget')
+        createTree = getattr(widget, 'setFocusCameraSettings', None)
+        if not callable(createTree):
+            return
+
+        try:
+            detector = self._master.detectorsManager[self.camera]
+            tree = createTree(
+                self.camera,
+                detector.model,
+                detector.parameters,
+                detector.actions,
+                detector.supportedBinnings,
+                getattr(self._setupInfo, 'rois', {}) or {},
+            )
+        except Exception:
+            self._logger.error(
+                f'Failed to build focus-camera settings for {self.camera}',
+                exc_info=True,
+            )
+            return
+
+        self._focusCameraSettingsTree = tree
+
+        # Only detector-specific Parameters/Actions are wired here. The whole
+        # Image frame group remains visible but disabled in FocusLockWidget;
+        # focusLock.frameCrop* stays the authoritative ROI for this pass.
+        for parameterName, parameter in detector.parameters.items():
+            try:
+                paramInWidget = tree.p.param(parameter.group).param(parameterName)
+            except Exception:
+                self._logger.warning(
+                    f'Focus-camera parameter {parameterName!r} is not present '
+                    'in the settings tree; it will not be editable here.'
+                )
+                continue
+            paramInWidget.sigValueChanged.connect(
+                lambda _, value, parameterName=parameterName:
+                self._setFocusCameraParameter(parameterName, value)
+            )
+
+        for actionName, action in detector.actions.items():
+            try:
+                actionInWidget = tree.p.param(action.group).param(actionName)
+            except Exception:
+                self._logger.warning(
+                    f'Focus-camera action {actionName!r} is not present in the '
+                    'settings tree; it will not be available here.'
+                )
+                continue
+            actionInWidget.sigActivated.connect(
+                lambda actionName=actionName:
+                self._runFocusCameraAction(actionName)
+            )
+
+        self._refreshFocusCameraSettings()
+
+    def _refreshFocusCameraSettings(self):
+        """Read the current focus-camera state back into its dedicated tree."""
+        tree = self.__dict__.get('_focusCameraSettingsTree')
+        if tree is None:
+            return
+
+        try:
+            detector = self._master.detectorsManager[self.camera]
+        except Exception:
+            return
+
+        self._focusCameraSettingsUpdating = True
+        try:
+            for parameterName, parameter in detector.parameters.items():
+                try:
+                    paramInWidget = tree.p.param(parameter.group).param(parameterName)
+                except Exception:
+                    continue
+                paramInWidget.setValue(parameter.value)
+
+            updateFrame = getattr(
+                self._widget, 'updateFocusCameraFrameReadback', None
+            )
+            if callable(updateFrame):
+                updateFrame(
+                    detectorModel=detector.model,
+                    binning=detector.binning,
+                    frameStart=detector.frameStart,
+                    shape=detector.shape,
+                    fullShape=detector.fullShape,
+                )
+        finally:
+            self._focusCameraSettingsUpdating = False
+
+    def _setFocusCameraParameter(self, parameterName, value):
+        """Write one Camera-tab parameter to the dedicated focus detector."""
+        if self.__dict__.get('_focusCameraSettingsUpdating', False):
+            return
+
+        try:
+            detector = self._master.detectorsManager[self.camera]
+            parameter = detector.parameters[parameterName]
+            if not getattr(parameter, 'editable', True):
+                self._refreshFocusCameraSettings()
+                return
+            detector.setParameter(parameterName, value)
+        except Exception:
+            self._logger.error(
+                f'Failed to set focus-camera parameter {parameterName!r}',
+                exc_info=True,
+            )
+        finally:
+            # setParameter may update several related/read-only parameters.
+            # Always show the hardware/manager readback rather than assuming
+            # the value requested by the GUI is the value that stuck.
+            self._refreshFocusCameraSettings()
+
+    def _runFocusCameraAction(self, actionName):
+        """Run an action exposed by the current focus-camera manager."""
+        try:
+            detector = self._master.detectorsManager[self.camera]
+            detector.actions[actionName].func()
+        except Exception:
+            self._logger.error(
+                f'Failed to run focus-camera action {actionName!r}',
+                exc_info=True,
+            )
+        finally:
+            self._refreshFocusCameraSettings()
+
+    # ------------------------------------------------------------------
     # Focus-camera acquisition ownership
     # ------------------------------------------------------------------
 
@@ -456,6 +597,7 @@ class FocusLockController(ImConWidgetController):
             self._syncFocusCameraUi(False)
             return False
 
+        self._refreshFocusCameraSettings()
         self._syncFocusCameraUi(True)
         return True
 
@@ -951,9 +1093,6 @@ class FocusLockController(ImConWidgetController):
             self.unlockFocus()
             self._widget.lockButton.setText('Lock')
         self._publishFocusLockState()
-
-    def cameraDialog(self):
-        self._master.detectorsManager[self.camera].openPropertiesDialog()
 
     def focusCalibrationStart(self):
         if self.__dict__.get('_shutdownComplete', False):

@@ -4,10 +4,12 @@ from qtpy import QtWidgets
 
 from imswitch.imcontrol.view import guitools as guitools
 from .basewidgets import Widget
+from .DetectorSettingsTree import DetectorSettingsTree
 
 
 class FocusLockWidget(Widget):
-    """ Widget containing focus lock interface. """
+    """Widget containing focus lock interface."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -42,10 +44,6 @@ class FocusLockWidget(Widget):
             'signal to return before correcting again.'
         )
 
-        self.camDialogButton = guitools.BetterPushButton('Cam Dialog')
-        self.camDialogButton.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
-                                           QtWidgets.QSizePolicy.Expanding)
-
         # Focus-camera acquisition is an explicit runtime resource, just like
         # the main View widget's live acquisition. It defaults ON to preserve
         # the historical focus-lock behaviour, but can now be stopped when the
@@ -78,9 +76,9 @@ class FocusLockWidget(Widget):
         self.focusPlot = self.focusLockGraph.addPlot(row=1, col=0)
         self.focusPlot.setLabels(bottom=('Time', 's'), left=('Laser position', 'px'))
         self.focusPlot.showGrid(x=True, y=True)
-        self.focusPlotCurve = self.focusPlot.plot(pen='y') # update from FocusLockController
+        self.focusPlotCurve = self.focusPlot.plot(pen='y')  # updated by controller
 
-        # Webcam graph
+        # Focus-camera image stays permanently visible to the right of both tabs.
         self.webcamGraph = pg.GraphicsLayoutWidget()
         self.camImg = pg.ImageItem(border='w')
         self.camImg.setImage(np.zeros((100, 100)))
@@ -91,28 +89,111 @@ class FocusLockWidget(Widget):
         self.vb.addItem(self.center)
         self.center.setVisible(True)
 
-        # GUI layout below
-        grid = QtWidgets.QGridLayout()
-        self.setLayout(grid)
-        grid.addWidget(self.focusLockGraph, 0, 0, 1, 9)
-        grid.addWidget(self.webcamGraph, 0, 9, 4, 1)
-        grid.addWidget(self.focusCalibButton, 1, 2, 2, 1)
-        grid.addWidget(self.calibrationDisplay, 3, 0, 1, 2)
-        grid.addWidget(self.kpLabel, 1, 3)
-        grid.addWidget(self.kpEdit, 1, 4)
-        grid.addWidget(self.kiLabel, 2, 3)
-        grid.addWidget(self.kiEdit, 2, 4)
-        grid.addWidget(self.lockButton, 1, 5, 2, 1)
-        grid.addWidget(self.ScanBlock, 3, 3,1,2)
-        grid.addWidget(self.twoFociBox, 3, 5)
-        grid.addWidget(self.calibFromLabel, 1, 0)
-        grid.addWidget(self.calibFromEdit, 1, 1)
-        grid.addWidget(self.calibToLabel, 2, 0)
-        grid.addWidget(self.calibToEdit, 2, 1)
-        grid.addWidget(self.calibCurveButton, 3, 2)
-        grid.addWidget(self.cameraAcqButton, 1, 6, 1, 1)
-        grid.addWidget(self.camDialogButton, 2, 6, 1, 1)
-        grid.addWidget(self.lockStateLabel, 3, 6)
+        # The left side switches between the focus-lock controls and the
+        # settings of the dedicated focus camera. The camera settings tree is
+        # inserted later by FocusLockController once focusLock.camera is known.
+        self.tabs = QtWidgets.QTabWidget()
+        self.focusLockTab = QtWidgets.QWidget()
+        self.cameraTab = QtWidgets.QWidget()
+        self.tabs.addTab(self.focusLockTab, 'Focus lock')
+        self.tabs.addTab(self.cameraTab, 'Camera')
+
+        focusGrid = QtWidgets.QGridLayout()
+        self.focusLockTab.setLayout(focusGrid)
+        focusGrid.addWidget(self.focusLockGraph, 0, 0, 1, 7)
+        focusGrid.addWidget(self.calibFromLabel, 1, 0)
+        focusGrid.addWidget(self.calibFromEdit, 1, 1)
+        focusGrid.addWidget(self.calibToLabel, 2, 0)
+        focusGrid.addWidget(self.calibToEdit, 2, 1)
+        focusGrid.addWidget(self.focusCalibButton, 1, 2, 2, 1)
+        focusGrid.addWidget(self.calibrationDisplay, 3, 0, 1, 2)
+        focusGrid.addWidget(self.calibCurveButton, 3, 2)
+        focusGrid.addWidget(self.kpLabel, 1, 3)
+        focusGrid.addWidget(self.kpEdit, 1, 4)
+        focusGrid.addWidget(self.kiLabel, 2, 3)
+        focusGrid.addWidget(self.kiEdit, 2, 4)
+        focusGrid.addWidget(self.lockButton, 1, 5, 2, 1)
+        focusGrid.addWidget(self.ScanBlock, 3, 3, 1, 2)
+        focusGrid.addWidget(self.twoFociBox, 3, 5)
+        focusGrid.addWidget(self.cameraAcqButton, 1, 6, 2, 1)
+        focusGrid.addWidget(self.lockStateLabel, 3, 6)
+
+        self._cameraTabLayout = QtWidgets.QVBoxLayout()
+        self.cameraTab.setLayout(self._cameraTabLayout)
+        self.cameraSettingsTree = None
+        self._cameraSettingsPlaceholder = QtWidgets.QLabel(
+            'Focus camera settings unavailable.'
+        )
+        self._cameraSettingsPlaceholder.setWordWrap(True)
+        self._cameraTabLayout.addWidget(self._cameraSettingsPlaceholder)
+        self._cameraTabLayout.addStretch(1)
+
+        layout = QtWidgets.QHBoxLayout()
+        self.setLayout(layout)
+        layout.addWidget(self.tabs, 3)
+        layout.addWidget(self.webcamGraph, 2)
+
+    def setFocusCameraSettings(self, detectorName, detectorModel, detectorParameters,
+                               detectorActions, supportedBinnings, roiInfos):
+        """Create the reusable settings tree for ``focusLock.camera``.
+
+        The focus-lock ROI remains setup-owned for now. The Image frame group
+        is intentionally shown as read-only context but none of its controls is
+        wired to hardware from FocusLockController.
+        """
+        if self.cameraSettingsTree is not None:
+            self._cameraTabLayout.removeWidget(self.cameraSettingsTree)
+            self.cameraSettingsTree.deleteLater()
+
+        if self._cameraSettingsPlaceholder is not None:
+            self._cameraTabLayout.removeWidget(self._cameraSettingsPlaceholder)
+            self._cameraSettingsPlaceholder.deleteLater()
+            self._cameraSettingsPlaceholder = None
+
+        tree = DetectorSettingsTree(
+            detectorParameters,
+            detectorActions,
+            supportedBinnings,
+            roiInfos,
+        )
+        self.cameraSettingsTree = tree
+
+        modelParam = tree.p.param('Model')
+        modelParam.setValue(detectorModel)
+        modelParam.setOpts(
+            tip=f'Focus camera: {detectorName}'
+        )
+
+        frameParam = tree.p.param('Image frame')
+        frameParam.setOpts(
+            tip=(
+                'Focus-lock frame/ROI is controlled by the focusLock.frameCrop* '
+                'setup values. Editing it from this tab is not enabled yet.'
+            )
+        )
+        for child in frameParam.children():
+            child.setOpts(enabled=False)
+
+        self._cameraTabLayout.insertWidget(0, tree)
+        return tree
+
+    def updateFocusCameraFrameReadback(self, *, detectorModel, binning,
+                                       frameStart, shape, fullShape):
+        """Show the current focus-camera frame without making it editable."""
+        tree = self.cameraSettingsTree
+        if tree is None:
+            return
+
+        tree.p.param('Model').setValue(detectorModel)
+        frameParam = tree.p.param('Image frame')
+        frameParam.param('Binning').setValue(binning)
+        frameParam.param('Mode').setValue('Custom')
+        frameParam.param('X0').setValue(frameStart[0])
+        frameParam.param('Y0').setValue(frameStart[1])
+        frameParam.param('Width').setLimits((1, fullShape[0]))
+        frameParam.param('Width').setValue(shape[0])
+        frameParam.param('Height').setLimits((1, fullShape[1]))
+        frameParam.param('Height').setValue(shape[1])
 
     def setFocusCameraActive(self, active):
         """Sync the acquisition button without re-triggering the controller."""
@@ -125,9 +206,10 @@ class FocusLockWidget(Widget):
 
     def _setCamAcqButtonLabel(self):
         if self.cameraAcqButton.isChecked():
-            self.cameraAcqButton.setText("Stop Cam")
+            self.cameraAcqButton.setText('Stop Cam')
         else:
-            self.cameraAcqButton.setText("Start Cam")
+            self.cameraAcqButton.setText('Start Cam')
+
     def setKp(self, kp):
         self.kpEdit.setText(str(kp))
 
