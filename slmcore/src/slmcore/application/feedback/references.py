@@ -157,15 +157,6 @@ class PositionReferenceService(FeedbackComponent):
         section = str(section_key)
         return section,self._active_feedback_plane(section)
 
-    def _position_reference_change_reason(self,section_key: str) -> str:
-        status = self._runtime.get_section_feedback_status(section_key)
-        if bool(status.position_available):
-            return (
-                "Clear the current position correction before changing its "
-                "reference."
-            )
-        return ""
-
     def position_reference_selection(
         self,section_key: str,
     ) -> PositionReferenceSelection:
@@ -229,7 +220,6 @@ class PositionReferenceService(FeedbackComponent):
             except Exception:
                 fit_geometry = None
 
-        change_reason = self._position_reference_change_reason(section)
         create_reason = self._position_reference_create_reason(section)
         return PositionReferenceContext(
             selection=selection,
@@ -241,8 +231,11 @@ class PositionReferenceService(FeedbackComponent):
             ),
             compatible=compatible,
             compatibility_error=compatibility_error,
-            change_allowed=not bool(change_reason),
-            change_unavailable_reason=change_reason,
+            # Reference selection/editing is transient state for the next
+            # position-feedback operation.  An applied correction keeps its own
+            # provenance and therefore does not lock this state.
+            change_allowed=True,
+            change_unavailable_reason="",
             create_allowed=not bool(create_reason),
             create_unavailable_reason=create_reason,
             fit_geometry=fit_geometry,
@@ -260,9 +253,6 @@ class PositionReferenceService(FeedbackComponent):
         """Select a reference for this plane without persisting or applying a correction."""
         self._require_editor_mode()
         section = str(section_key)
-        reason = self._position_reference_change_reason(section)
-        if reason:
-            raise RuntimeError(reason)
         normalized_mode = PositionReferenceMode.normalize(mode)
         previous = self.position_reference_selection(section)
         if editable_geometry is None and previous.editable_geometry is not None:
@@ -305,9 +295,6 @@ class PositionReferenceService(FeedbackComponent):
         """Replace the editable reference with a strong center-prioritized fit."""
         self._require_editor_mode()
         section = str(section_key)
-        reason = self._position_reference_change_reason(section)
-        if reason:
-            raise RuntimeError(reason)
         inspection = self._runtime.get_section_feedback_inspection(section)
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
@@ -563,9 +550,6 @@ class PositionReferenceService(FeedbackComponent):
         status = self._runtime.get_section_feedback_status(section_key)
         if FeedbackCapability.POSITION_CORRECTION not in set(status.capabilities):
             return "Position references are unavailable for this target."
-        change_reason = self._position_reference_change_reason(section_key)
-        if change_reason:
-            return change_reason
         if self._position_reference_store is None:
             return "Position-reference storage is unavailable."
         if self._active_feedback_plane(section_key) is None:

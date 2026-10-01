@@ -371,6 +371,49 @@ def test_named_session_reference_is_shared_but_selection_is_transient(tmp_path):
     session_a.dispose()
     session_b.dispose()
 
+def test_position_reference_workflow_remains_available_with_stored_correction(tmp_path):
+    from dataclasses import replace
+
+    from slmcore import PositionReferenceMode,PositionReferenceStore
+
+    store = PositionReferenceStore(tmp_path / "position_references")
+    runtime = _runtime()
+    session = SLMSession(runtime=runtime,position_reference_store=store)
+    session.calibration.active_plane = lambda _section:"sample"
+    _attach_reference_localization(runtime)
+    session.feedback.add_position_reference("sec_0","first reference")
+
+    original_status = runtime.get_section_feedback_status
+    runtime.get_section_feedback_status = lambda section:replace(
+        original_status(section),position_available=True,position_active=True,
+    )
+    try:
+        context = session.feedback.position_reference_context("sec_0")
+        assert context.change_allowed
+        assert context.create_allowed
+
+        selection = session.feedback.set_position_reference(
+            "sec_0",mode=PositionReferenceMode.GLOBAL_FIT,
+        )
+        assert selection.mode is PositionReferenceMode.GLOBAL_FIT
+        selection = session.feedback.set_position_reference(
+            "sec_0",mode=PositionReferenceMode.REFERENCE,
+            reference_name="first reference",
+        )
+        assert selection.reference_name == "first reference"
+
+        saved = session.feedback.add_position_reference(
+            "sec_0","corrected localization",
+        )
+        assert saved.name == "corrected localization"
+        assert session.feedback.position_reference_selection(
+            "sec_0"
+        ).reference_name == "corrected localization"
+    finally:
+        runtime.get_section_feedback_status = original_status
+        session.dispose()
+
+
 def test_named_reference_reindexes_source_orientation_for_destination_section(tmp_path):
     from slmcore import PositionReferenceStore
     from slmcore.core.cgh.feedback import orient_localization

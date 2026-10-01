@@ -282,9 +282,6 @@ class SLMFeedbackService:
     ) -> tuple[str,str | None]:
         return self._references._position_reference_key(section_key)
 
-    def _position_reference_change_reason(self,section_key: str) -> str:
-        return self._references._position_reference_change_reason(section_key)
-
     def position_reference_selection(
         self,section_key: str,
     ) -> PositionReferenceSelection:
