@@ -1114,10 +1114,11 @@ The code starts with these names, and no others:
      - numpy.
    * - ``data``
      - The first input's array.  A lazily loaded result is read into memory.
-       It is the input's own array: copy it (``data.copy()``) before changing
-       it in place.
+       It is **read-only**: the input is a result in the list, recorded as it
+       is, so a write into it (``data[0] = 0``, ``data *= 2``) is an error at
+       that line.  Change a copy instead (``work = data.copy()``).
    * - ``inputs``
-     - The array of every input, in the order listed.
+     - The array of every input, in the order listed; read-only like ``data``.
    * - ``axes``, ``scales``, ``unit``
      - The first input's axis labels, pixel scales and scale unit.
    * - ``axis(label_or_index)``
@@ -1157,7 +1158,10 @@ numeric array (boolean, integer or float) or the result of ``make_result`` /
   calibrates it) unless the input is one-dimensional itself, and it is drawn in
   the :ref:`Graph panel <improcess-graph-curves>`;
 * an output is named ``<input name> (<port>)`` unless ``name=`` says
-  otherwise.
+  otherwise;
+* an output that is an input, or a slice of one (``out = data``,
+  ``out = data[::2]``), is copied, so a new result never shares its pixels
+  with an existing one.
 
 A single number is not an array: ``print()`` it, or output ``np.array([value])``.
 
@@ -1320,7 +1324,9 @@ The namespace is the step's (``np``, ``data``, ``inputs``, ``axes``, ``scales``,
 what is selected in the results list, or to the current result when nothing is;
 ``outputs`` and ``out`` are not there, since nothing reads them.  A result that is
 not loaded into memory stays the lazy array it is (``np.asarray(data)`` reads it),
-so following the selection never reads a whole recording.  These names are rebound
+so following the selection never reads a whole recording; one that is in memory is
+read-only, as in the step, and a published array never shares its pixels with
+a result in the list.  These names are rebound
 when the selection *changes* and before a command runs, and only then: what you
 assigned to another name is never touched, and neither is ``data`` while the
 selection stays the same, so ``data = data[0]`` survives until you select something

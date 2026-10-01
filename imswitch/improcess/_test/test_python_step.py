@@ -1113,9 +1113,11 @@ def test_a_lazy_result_stays_lazy_in_the_console_namespace_and_is_read_in_a_step
     assert console["data"][0].shape == (2, 2)
     step = build_namespace([lazy_result])
     assert isinstance(step["data"], np.ndarray) and Lazy.reads == 1
-    # an array already in memory is the same object either way
+    # an array already in memory is not read again: a read-only view of it either way
     stack = _stack()
-    assert build_namespace([stack], materialise=False)["data"] is stack.data
+    for materialise in (False, True):
+        view = build_namespace([stack], materialise=materialise)["data"]
+        assert np.shares_memory(view, stack.data) and not view.flags.writeable
 
 
 # -- what a run captures is this thread's output only -------------------------
@@ -1171,3 +1173,53 @@ def test_a_cancellation_is_not_a_script_error_and_user_code_cannot_swallow_it():
     )
     with pytest.raises(OperationCancelled):              # an `except Exception` in the script does not catch it
         run_script(code, [_stack()], ("out",))
+
+
+# -- the inputs are read-only, the outputs independent ---------------------------------------
+
+def _grid(name="in"):
+    return ArrayProcessingResult(name, np.arange(12.0).reshape(3, 4), ["Y", "X"])
+
+
+@pytest.mark.parametrize("code", [
+    "data[0] = 5\nout = data",
+    "inputs[0] += 1\nout = data",
+    "data.sort(axis=0)\nout = data",
+    "np.multiply(data, 2, out=data)\nout = data",
+])
+def test_the_code_cannot_change_its_input(code):
+    source = _grid()
+    before = source.data.copy()
+    with pytest.raises(ScriptError) as caught:
+        run_script(code, [source], ("out",))
+    assert caught.value.line == 1
+    assert "read-only" in str(caught.value) and "data.copy()" in str(caught.value)
+    np.testing.assert_array_equal(source.data, before)
+
+
+def test_a_copy_can_be_changed_and_the_input_stays_as_it_was():
+    source = _grid()
+    (result,), _ = run_script("work = data.copy()\nwork[0] = -1\nout = work", [source], ("out",))
+    assert result.data[0, 0] == -1 and source.data[0, 0] == 0
+
+
+@pytest.mark.parametrize("code", [
+    "out = data",
+    "out = data[::2]",
+    "out = inputs[1]",
+    "out = results[0].data",
+    "out = results[1].data[:, 1:]",
+])
+def test_an_output_never_shares_its_pixels_with_an_input(code):
+    first, second = _grid("first"), _grid("second")
+    (result,), _ = run_script(code, [first, second], ("out",))
+    assert result.data.flags.writeable
+    assert not np.shares_memory(result.data, first.data)
+    assert not np.shares_memory(result.data, second.data)
+
+
+def test_the_processor_leaves_its_input_untouched_through_a_workflow_style_run():
+    source = _grid()
+    with pytest.raises(ScriptError):
+        PythonStepProcessor().apply(source, {"code": "data[data > 2] = 0\nout = data", "ports": "out"})
+    np.testing.assert_array_equal(source.data, np.arange(12.0).reshape(3, 4))

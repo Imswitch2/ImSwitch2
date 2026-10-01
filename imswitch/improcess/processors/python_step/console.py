@@ -148,6 +148,7 @@ class ConsoleSession:
                 what="the published array",
                 default_name=default, name=name, axes=axes, scales=scales,
                 metadata={"operation": "console"},
+                sources=[bound.data for bound in self._bound],
             )
         if graph_of(result) is None:
             # A result that already has a history keeps it; only a new one is "made here".

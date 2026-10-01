@@ -19,6 +19,16 @@ def _result(name="rec", shape=(6, 4, 4), scales=None, unit="px"):
     return ArrayProcessingResult(name, data, ["Z", "Y", "X"][-len(shape):], axis_scales=scales, scale_unit=unit)
 
 
+def _bound_to(value, result) -> bool:
+    """``value`` shows ``result``'s pixels, read-only: the namespace never hands
+    out a writable input, so identity with ``result.data`` is not the test."""
+    return (
+        isinstance(value, np.ndarray)
+        and np.shares_memory(value, result.data)
+        and not value.flags.writeable
+    )
+
+
 class _List:
     """A stand-in for the results list the controller reads."""
 
@@ -44,7 +54,7 @@ def test_the_namespace_is_the_steps_less_outputs_plus_the_live_list():
     }
     assert "outputs" not in session.namespace and "out" not in session.namespace
     assert session.namespace["np"] is np
-    assert session.namespace["data"] is rec.data
+    assert _bound_to(session.namespace["data"], rec)
     assert session.namespace["axes"] == ["Z", "Y", "X"]
     assert session.namespace["results"] == [rec]
 
@@ -59,6 +69,18 @@ def test_current_and_selected_answer_from_the_list():
     assert session.current() is None and session.selected() == []
 
 
+def test_the_console_hands_out_read_only_inputs_and_publishes_independent_results():
+    rec = _result()
+    session = _List([rec], rec).session()
+    with pytest.raises(ValueError, match="read-only"):
+        exec("data[0] = 1", session.namespace)
+    published = session.publish(session.namespace["data"])
+    assert published.data.flags.writeable and not np.shares_memory(published.data, rec.data)
+    published = session.publish(rec.data[1:])
+    assert not np.shares_memory(published.data, rec.data)
+    assert rec.data[0, 0, 0] == 0
+
+
 def test_data_follows_the_selection_and_falls_back_to_the_current_result():
     a, b, c = _result("a"), _result("b", shape=(3, 4, 4)), _result("c")
     live = _List([a, b], c)
@@ -68,7 +90,7 @@ def test_data_follows_the_selection_and_falls_back_to_the_current_result():
 
     live.selected = []
     assert session.refresh() == [c]                     # nothing selected: the current one
-    assert session.namespace["data"] is c.data
+    assert _bound_to(session.namespace["data"], c)
 
     live.current = None
     assert session.refresh() == []
@@ -237,7 +259,7 @@ def test_refresh_if_changed_rebinds_only_when_the_selection_moved():
     assert session.namespace["data"] == "the user's own data"
     live.selected = [b]
     assert session.refresh_if_changed() is True
-    assert session.namespace["data"] is b.data
+    assert _bound_to(session.namespace["data"], b)
     assert session.refresh_if_changed() is False
     live.selected, live.current = [], None
     assert session.refresh_if_changed() is True and session.namespace["data"] is None
@@ -256,7 +278,7 @@ def test_a_selection_that_changes_while_publishing_is_picked_up_at_the_next_comm
     session = ConsoleSession(selected=lambda: list(live.selected), current=lambda: live.current, publish=publish)
     exec("first = publish(data * 2)\nsecond = publish(data * 3)", session.namespace)
     assert [np.array_equal(r.data, rec.data * k) for r, k in zip(new_ones, (2, 3))] == [True, True]
-    assert session.namespace["data"] is rec.data              # still the original, through both publishes
+    assert _bound_to(session.namespace["data"], rec)          # still the original, through both publishes
     assert new_ones[1].name == "rec (console)"                # not "rec (console) (console)"
     assert session.refresh_if_changed() is True                # the next command sees the selection
-    assert session.namespace["data"] is new_ones[1].data
+    assert _bound_to(session.namespace["data"], new_ones[1])

@@ -47,6 +47,8 @@ SCRIPT_FILENAME = "<python step>"
 _PORT_NAME = re.compile(r"^[A-Za-z0-9_\-]+$")
 #: dtype kinds an output array may have: bool, signed and unsigned integer, float.
 _NUMERIC_KINDS = "biuf"
+#: Added to numpy's "... is read-only" when the code writes into an input.
+_READ_ONLY_HINT = " (the inputs are read-only: change a copy, data.copy())"
 
 
 def parse_ports(text) -> tuple[str, ...]:
@@ -98,6 +100,10 @@ class ScriptError(RuntimeError):
 
         name = "SystemExit" if isinstance(exc, SystemExit) else type(exc).__name__
         detail = "the code called exit()" if isinstance(exc, SystemExit) else str(exc)
+        if isinstance(exc, ValueError) and "read-only" in detail:
+            # numpy's "assignment destination is read-only" names no culprit;
+            # here it is nearly always ``data`` or ``inputs``.
+            detail += _READ_ONLY_HINT
         message = f"{name}: {detail}" if detail else name
         frames = [
             frame for frame in traceback.extract_tb(exc.__traceback__)
@@ -162,6 +168,38 @@ def _in_memory_or_lazy(data):
     return np.asarray(data)
 
 
+def _read_only(array):
+    """``array`` as a view that refuses writes; anything else (a lazy array) as it is.
+
+    The inputs are results in the list, recorded as they are: code that wrote
+    into ``data`` would change that result in place, under a provenance that
+    still describes it unchanged. A view costs no copy, and a write into it
+    fails at the line of the code that tried.
+    """
+    if isinstance(array, np.ndarray):
+        view = array.view()
+        view.flags.writeable = False
+        return view
+    return array
+
+
+def _independent(array: np.ndarray, sources) -> np.ndarray:
+    """``array``, or a copy of it when it is read-only or overlaps one of ``sources``.
+
+    An output is a new result. Were it a window onto an input's pixels
+    (``out = data``, a slice of it, the input result's own array), a later
+    change to either -- a labels layer painted in napari, say -- would change
+    both. A view of a read-only input is read-only itself, so the flag alone
+    catches the common cases; ``sources`` catches a writable way in.
+    """
+    if not array.flags.writeable:
+        return array.copy()
+    for source in sources:
+        if isinstance(source, np.ndarray) and np.may_share_memory(array, source):
+            return array.copy()
+    return array
+
+
 def _make_axis_lookup(labels: list[str]):
     def axis(label_or_index) -> int:
         """The index of the axis called ``label_or_index`` ("Z"), or that index itself."""
@@ -187,8 +225,9 @@ def build_namespace(inputs, *, materialise: bool = True) -> dict:
     """The names the code starts with, and no others.
 
     ``inputs`` are the step's input results, in the order the step lists
-    them. ``data`` is the first one's own array (a lazy source is read into
-    memory): copy it before changing it in place.
+    them. ``data`` is the first one's array (a lazy source is read into
+    memory) and ``inputs`` all of them, as read-only views: code that wants to
+    change values in place changes a copy (``data.copy()``), never the input.
 
     ``materialise=False`` leaves a result that is not in memory as the lazy
     array it is, for the console, which rebinds these names on every change
@@ -199,7 +238,7 @@ def build_namespace(inputs, *, materialise: bool = True) -> dict:
     labels = axis_labels_for_result(first)
     as_array = np.asarray if materialise else _in_memory_or_lazy
     # Each input is read once: ``data`` is ``inputs[0]``, not a second read of it.
-    arrays = [as_array(result.data) for result in results]
+    arrays = [_read_only(as_array(result.data)) for result in results]
     return {
         "np": np,
         "data": arrays[0],
@@ -314,6 +353,7 @@ def _build_results(produced: dict, ports: tuple[str, ...], inputs) -> list[Proce
             what=f"output {port!r}",
             default_name=f"{first.name} ({port})",
             metadata={"operation": "python", "port": port},
+            sources=[result.data for result in inputs],
         )
         for port in ports
     ]
@@ -329,6 +369,7 @@ def result_from_value(
     axes=None,
     scales=None,
     metadata=None,
+    sources=(),
 ) -> ProcessingResult:
     """One result from an array or a :func:`make_result` / :func:`make_labels` output.
 
@@ -337,7 +378,9 @@ def result_from_value(
     scales and unit, any other says its axes itself, and with no reference
     (``None``) every array must. ``name`` / ``axes`` / ``scales`` given here
     take the place of those a :class:`ScriptOutput` left unset. ``what`` names
-    the value in error messages.
+    the value in error messages. The array is copied when it is read-only or
+    shares memory with ``reference`` or one of ``sources`` (the inputs' data),
+    so a result made here never shares its pixels with an existing one.
     """
     described = value if isinstance(value, ScriptOutput) else ScriptOutput(array=value)
     array = _as_array(what, described)
@@ -346,6 +389,7 @@ def result_from_value(
             f"{what} is a single number, not an array: print() it, "
             f"or output it as a one-element array"
         )
+    array = _independent(array, [getattr(reference, "data", None), *sources])
     axes = described.axes if described.axes is not None else (
         tuple(str(label) for label in axes) if axes is not None else None
     )

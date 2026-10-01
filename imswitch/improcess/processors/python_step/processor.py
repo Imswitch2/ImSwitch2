@@ -26,8 +26,9 @@ from imswitch.improcess.processors.python_step.context import (
 STDOUT_LIMIT = 4000
 
 _CODE_HELP = (
-    "Python run over the input. Names: np, data (the first input as an array), "
-    "inputs (every input's array), axes / scales / unit (the first input's), "
+    "Python run over the input. Names: np, data (the first input's array, read-only: "
+    "change data.copy()), inputs (every input's array, read-only), "
+    "axes / scales / unit (the first input's), "
     "axis('Z') (an axis index by label), results (the input results), "
     "make_result(array, axes=[...]) and make_labels(array) for an output whose "
     "dimensions differ from the input's. Set outputs = {port: array} with one "

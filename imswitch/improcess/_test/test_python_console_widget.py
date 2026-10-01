@@ -147,6 +147,16 @@ class _Comm:
         return [(getattr(r, "name", "r"), r) for r in self.selected]
 
 
+def _bound_to(value, result) -> bool:
+    """``value`` shows ``result``'s pixels, read-only: the namespace never hands
+    out a writable input, so identity with ``result.data`` is not the test."""
+    return (
+        isinstance(value, np.ndarray)
+        and np.shares_memory(value, result.data)
+        and not value.flags.writeable
+    )
+
+
 def _controller(widget, comm):
     from imswitch.improcess.controller.PythonConsoleController import PythonConsoleController
 
@@ -158,7 +168,7 @@ def test_the_controller_binds_the_namespace_to_the_selection_and_follows_it(widg
     comm = _Comm([a])
     _controller(widget, comm)
     space = widget.namespace()
-    assert space["data"] is a.data and space["results"] == [a]
+    assert _bound_to(space["data"], a) and space["results"] == [a]
 
     comm.selected = [a, b]
     comm.sigResultsChanged.emit()                              # the list announces a new selection
@@ -167,7 +177,7 @@ def test_the_controller_binds_the_namespace_to_the_selection_and_follows_it(widg
     comm.selected = []
     current = _stack("shown")
     comm.sigCurrentResultChanged.emit(current)                 # nothing selected: follow the current one
-    assert space["data"] is current.data
+    assert _bound_to(space["data"], current)
 
 
 def test_the_controller_can_be_told_the_current_result_when_the_console_opens_late(widget):
@@ -176,7 +186,7 @@ def test_the_controller_can_be_told_the_current_result_when_the_console_opens_la
     assert widget.namespace()["data"] is None
     shown = _stack("shown")
     controller.seed(shown)
-    assert widget.namespace()["data"] is shown.data
+    assert _bound_to(widget.namespace()["data"], shown)
     assert controller.session.current() is shown
 
 
@@ -187,7 +197,7 @@ def test_a_selection_moved_without_a_signal_is_picked_up_before_the_next_command
     comm.selected = [b]                                        # no signal reached the console
     widget.editor.setText("seen = data")
     widget.runEditor()
-    assert widget.namespace()["seen"] is b.data
+    assert _bound_to(widget.namespace()["seen"], b)
 
 
 def test_the_users_own_names_survive_until_the_selection_really_changes(widget):
@@ -281,7 +291,7 @@ def test_opening_the_console_wires_it_to_the_list_with_the_current_result(widget
     comm = _Comm([])
     controller, _ = _main_controller({"console": widget}, comm, shown)
     controller._wire_runtime_result_processor("console")
-    assert widget.namespace()["data"] is shown.data
+    assert _bound_to(widget.namespace()["data"], shown)
     first = controller._consoleController
     controller._wire_runtime_result_processor("console")          # wiring again does not stack a second controller
     assert controller._consoleController is first
