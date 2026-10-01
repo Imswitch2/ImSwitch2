@@ -60,15 +60,32 @@ class _TreeParam:
 
 
 class _Tree:
-    def __init__(self, detector):
+    def __init__(self, detector, detectorParameters=None, detectorActions=None):
         self.p = _TreeParam()
-        for parameterName, parameter in detector.parameters.items():
+        detectorParameters = (
+            detector.parameters if detectorParameters is None else detectorParameters
+        )
+        detectorActions = detector.actions if detectorActions is None else detectorActions
+        frame = self.p.add('Image frame', _TreeParam())
+        for name, value in (
+            ('Binning', detector.binning),
+            ('Mode', 'Custom'),
+            ('X0', detector.frameStart[0]),
+            ('Y0', detector.frameStart[1]),
+            ('Width', detector.shape[0]),
+            ('Height', detector.shape[1]),
+            ('Apply', None),
+            ('New ROI', None),
+            ('Abort ROI', None),
+        ):
+            frame.add(name, _TreeParam(value))
+        for parameterName, parameter in detectorParameters.items():
             try:
                 group = self.p.param(parameter.group)
             except KeyError:
                 group = self.p.add(parameter.group, _TreeParam())
             group.add(parameterName, _TreeParam(parameter.value))
-        for actionName, action in detector.actions.items():
+        for actionName, action in detectorActions.items():
             try:
                 group = self.p.param(action.group)
             except KeyError:
@@ -84,7 +101,7 @@ class _Widget:
 
     def setFocusCameraSettings(self, detectorName, detectorModel,
                                detectorParameters, detectorActions,
-                               supportedBinnings, roiInfos):
+                               supportedBinnings, roiInfos, croppable=True):
         self.created = {
             'name': detectorName,
             'model': detectorModel,
@@ -92,8 +109,9 @@ class _Widget:
             'actions': detectorActions,
             'binnings': supportedBinnings,
             'rois': roiInfos,
+            'croppable': croppable,
         }
-        return _Tree(self._detector)
+        return _Tree(self._detector, detectorParameters, detectorActions)
 
     def updateFocusCameraFrameReadback(self, **kwargs):
         self.frameReadback = kwargs
@@ -107,6 +125,8 @@ class _Detector:
         self.frameStart = (4, 5)
         self.shape = (76, 20)
         self.fullShape = (640, 480)
+        self.croppable = True
+        self.cropCalls = []
         self.setCalls = []
         self.actionCalls = 0
         self.parameters = {
@@ -120,10 +140,19 @@ class _Detector:
                 group='Acquisition', value='Internal', editable=True,
                 options=['Internal', 'External'],
             ),
+            'ROI X0': DetectorNumberParameter(
+                group='ROI', value=4, editable=True, valueUnits='px'
+            ),
         }
         self.actions = {
             'Refresh': DetectorAction(group='Acquisition', func=self._refresh)
         }
+
+
+    def crop(self, x, y, w, h):
+        self.cropCalls.append((x, y, w, h))
+        self.frameStart = (int(x), int(y))
+        self.shape = (int(w), int(h))
 
     def setParameter(self, name, value):
         self.setCalls.append((name, value))
@@ -161,10 +190,26 @@ def _makeController():
     ctrl._logger = _Logger()
     ctrl._widget = _Widget(detector)
     ctrl._master = _Master(detector)
-    ctrl._setupInfo = SimpleNamespace(rois={'Small': object()})
+    ctrl._setupInfo = SimpleNamespace(
+        rois={'Small': object()},
+        focusLock=SimpleNamespace(swapImageAxes=False),
+    )
     ctrl.camera = 'FocusCam'
     ctrl._focusCameraSettingsTree = None
     ctrl._focusCameraSettingsUpdating = False
+    ctrl._focusCameraPostStopAction = None
+    ctrl._focusRoiEditing = False
+    ctrl._focusRoiSession = None
+    ctrl._focusRoiSelection = None
+    ctrl._focusRoiDisplayShape = None
+    ctrl._focusCalibrationActive = False
+    ctrl._focusCameraStopPending = False
+    ctrl._shutdownComplete = False
+    ctrl.locked = False
+    ctrl.aboutToLock = False
+    ctrl._suspendedLock = False
+    ctrl._FocusLockController__processDataThread = None
+    ctrl.focusCameraAcquisitionActive = lambda: False
     return ctrl, detector
 
 
@@ -175,6 +220,7 @@ def test_focus_camera_tree_is_bound_without_switching_global_detector():
 
     assert ctrl._widget.created['name'] == 'FocusCam'
     assert ctrl._widget.created['model'] == detector.model
+    assert 'ROI X0' not in ctrl._widget.created['parameters']
     assert ctrl._master.detectorsManager.getCurrentDetectorName() == 'MainCam'
     assert ctrl._widget.frameReadback == {
         'detectorModel': 'Focus model',
@@ -219,7 +265,7 @@ def test_focus_camera_action_uses_current_manager_and_refreshes_values():
     assert tree.p.param('Timings').param('Real exposure').value() == 0.012
 
 
-def test_focus_lock_widget_uses_two_tabs_and_disables_frame_controls(qtbot):
+def test_focus_lock_widget_uses_two_tabs_and_exposes_safe_roi_controls(qtbot):
     widget = FocusLockWidget()
     qtbot.addWidget(widget)
 
@@ -240,4 +286,60 @@ def test_focus_lock_widget_uses_two_tabs_and_disables_frame_controls(qtbot):
     assert tree.p.param('Model').value() == 'Focus model'
 
     frame = tree.p.param('Image frame')
-    assert all(child.opts.get('enabled') is False for child in frame.children())
+    assert frame.param('Binning').opts.get('enabled') is False
+    assert frame.param('Mode').opts.get('enabled') is False
+    for name in ('X0', 'Y0', 'Width', 'Height', 'Apply', 'New ROI', 'Abort ROI'):
+        assert frame.param(name).opts.get('enabled') is True
+    for name in ('Save mode', 'Delete mode', 'Update all detectors'):
+        assert frame.param(name).opts.get('visible') is False
+
+
+def test_numeric_focus_roi_applies_hardware_readback_without_global_detector_switch():
+    ctrl, detector = _makeController()
+    FocusLockController._setupFocusCameraSettings(ctrl)
+    tree = ctrl._focusCameraSettingsTree
+    frame = tree.p.param('Image frame')
+    for name, value in (('X0', 12), ('Y0', 16), ('Width', 100), ('Height', 80)):
+        frame.param(name)._value = value
+
+    persisted = []
+    ctrl._persistFocusCameraRoi = lambda roi: persisted.append(tuple(roi))
+    ctrl._refreshFocusCameraSettings = lambda: None
+    ctrl._endFocusCameraRoiSession = lambda: None
+
+    FocusLockController.applyFocusCameraROI(ctrl)
+
+    assert detector.cropCalls == [(12, 16, 100, 80)]
+    assert persisted == [(12, 16, 100, 80)]
+    assert ctrl._master.detectorsManager.getCurrentDetectorName() == 'MainCam'
+
+
+def test_graphical_roi_coordinate_mapping_handles_unswapped_camera_axes():
+    ctrl, detector = _makeController()
+    ctrl._focusRoiDisplayShape = (240, 320)
+    ctrl._setupInfo.focusLock.swapImageAxes = False
+
+    roi = FocusLockController._focusCameraDisplayRoiToSensor(
+        ctrl, (24, 32), (48, 64)
+    )
+
+    # Raw camera frames are (sensor Y, sensor X), and FocusLock displays numpy
+    # axis 0 as ViewBox X. Without swapImageAxes the graphical axes therefore
+    # map back to sensor Y/X respectively.
+    assert roi == (64, 48, 128, 96)
+
+
+def test_graphical_roi_round_trip_preserves_sensor_geometry():
+    ctrl, detector = _makeController()
+    sensor = (40, 60, 200, 120)
+    display = (320, 240)
+
+    position, size = FocusLockController._focusCameraSensorRoiToDisplay(
+        ctrl, sensor, display, detector.fullShape
+    )
+    ctrl._focusRoiDisplayShape = display
+    round_trip = FocusLockController._focusCameraDisplayRoiToSensor(
+        ctrl, position, size
+    )
+
+    assert round_trip == sensor

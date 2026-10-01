@@ -1,6 +1,6 @@
 import numpy as np
 import pyqtgraph as pg
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcontrol.view import guitools as guitools
 from .basewidgets import Widget
@@ -88,6 +88,8 @@ class FocusLockWidget(Widget):
         self.center = pg.InfiniteLine()
         self.vb.addItem(self.center)
         self.center.setVisible(True)
+        self.focusCameraROI = None
+        self._focusCameraCroppable = False
 
         # The left side switches between the focus-lock controls and the
         # settings of the dedicated focus camera. The camera settings tree is
@@ -134,12 +136,15 @@ class FocusLockWidget(Widget):
         layout.addWidget(self.webcamGraph, 2)
 
     def setFocusCameraSettings(self, detectorName, detectorModel, detectorParameters,
-                               detectorActions, supportedBinnings, roiInfos):
+                               detectorActions, supportedBinnings, roiInfos,
+                               croppable=True):
         """Create the reusable settings tree for ``focusLock.camera``.
 
-        The focus-lock ROI remains setup-owned for now. The Image frame group
-        is intentionally shown as read-only context but none of its controls is
-        wired to hardware from FocusLockController.
+        Focus Lock owns its ROI workflow instead of reusing SettingsController:
+        the focus camera must be stopped at the worker/lease boundary before a
+        crop is changed. Binning and saved frame modes therefore stay read-only
+        here, while custom X/Y/width/height plus Apply/New ROI/Abort ROI are
+        available when the detector reports that it is croppable.
         """
         if self.cameraSettingsTree is not None:
             self._cameraTabLayout.removeWidget(self.cameraSettingsTree)
@@ -157,29 +162,37 @@ class FocusLockWidget(Widget):
             roiInfos,
         )
         self.cameraSettingsTree = tree
+        self._focusCameraCroppable = bool(croppable)
 
         modelParam = tree.p.param('Model')
         modelParam.setValue(detectorModel)
-        modelParam.setOpts(
-            tip=f'Focus camera: {detectorName}'
-        )
+        modelParam.setOpts(tip=f'Focus camera: {detectorName}')
 
         frameParam = tree.p.param('Image frame')
         frameParam.setOpts(
             tip=(
-                'Focus-lock frame/ROI is controlled by the focusLock.frameCrop* '
-                'setup values. Editing it from this tab is not enabled yet.'
+                'Focus-camera ROI. Applying a crop safely stops the dedicated '
+                'focus acquisition first, reads the camera geometry back, and '
+                'then restores acquisition when appropriate.'
             )
         )
-        for child in frameParam.children():
-            child.setOpts(enabled=False)
+        frameParam.param('Binning').setOpts(enabled=False)
+        frameParam.param('Mode').setOpts(enabled=False)
+        for name in ('X0', 'Y0', 'Width', 'Height', 'Apply', 'New ROI', 'Abort ROI'):
+            frameParam.param(name).setOpts(enabled=self._focusCameraCroppable)
+
+        # These are global Settings-widget concepts, not part of the dedicated
+        # focus-camera workflow. Keeping them hidden avoids implying that Focus
+        # Lock can edit shared ROI presets or other detectors.
+        for name in ('Save mode', 'Delete mode', 'Update all detectors'):
+            frameParam.param(name).hide()
 
         self._cameraTabLayout.insertWidget(0, tree)
         return tree
 
     def updateFocusCameraFrameReadback(self, *, detectorModel, binning,
                                        frameStart, shape, fullShape):
-        """Show the current focus-camera frame without making it editable."""
+        """Show the current (or pending edit) focus-camera frame geometry."""
         tree = self.cameraSettingsTree
         if tree is None:
             return
@@ -188,12 +201,75 @@ class FocusLockWidget(Widget):
         frameParam = tree.p.param('Image frame')
         frameParam.param('Binning').setValue(binning)
         frameParam.param('Mode').setValue('Custom')
-        frameParam.param('X0').setValue(frameStart[0])
-        frameParam.param('Y0').setValue(frameStart[1])
-        frameParam.param('Width').setLimits((1, fullShape[0]))
-        frameParam.param('Width').setValue(shape[0])
-        frameParam.param('Height').setLimits((1, fullShape[1]))
-        frameParam.param('Height').setValue(shape[1])
+        frameParam.param('X0').setLimits((0, max(0, int(fullShape[0]) - 1)))
+        frameParam.param('Y0').setLimits((0, max(0, int(fullShape[1]) - 1)))
+        frameParam.param('X0').setValue(int(frameStart[0]))
+        frameParam.param('Y0').setValue(int(frameStart[1]))
+        frameParam.param('Width').setLimits((1, max(1, int(fullShape[0]))))
+        frameParam.param('Width').setValue(int(shape[0]))
+        frameParam.param('Height').setLimits((1, max(1, int(fullShape[1]))))
+        frameParam.param('Height').setValue(int(shape[1]))
+
+    def setFocusCameraRoiEditing(self, editing):
+        """Reflect whether the graphical full-frame ROI editor is active."""
+        tree = self.cameraSettingsTree
+        if tree is None:
+            return
+        frameParam = tree.p.param('Image frame')
+        enabled = self._focusCameraCroppable
+        frameParam.param('New ROI').setOpts(enabled=enabled and not editing)
+        frameParam.param('Apply').setOpts(enabled=enabled)
+        frameParam.param('Abort ROI').setOpts(enabled=enabled)
+
+    def showFocusCameraROI(self, position, size, bounds):
+        """Show the graphical focus-camera ROI in focus-image coordinates."""
+        if self.focusCameraROI is None:
+            self.focusCameraROI = pg.RectROI(
+                position,
+                size,
+                maxBounds=QtCore.QRectF(0, 0, float(bounds[0]), float(bounds[1])),
+            )
+            self.vb.addItem(self.focusCameraROI)
+        else:
+            self.focusCameraROI.maxBounds = QtCore.QRectF(
+                0, 0, float(bounds[0]), float(bounds[1])
+            )
+            self.focusCameraROI.blockSignals(True)
+            try:
+                self.focusCameraROI.setPos(position)
+                self.focusCameraROI.setSize(size)
+            finally:
+                self.focusCameraROI.blockSignals(False)
+        self.focusCameraROI.show()
+        return self.focusCameraROI
+
+    def setFocusCameraROISelection(self, position, size):
+        roi = self.focusCameraROI
+        if roi is None:
+            return
+        roi.blockSignals(True)
+        try:
+            roi.setPos(position)
+            roi.setSize(size)
+        finally:
+            roi.blockSignals(False)
+
+    def getFocusCameraROISelection(self):
+        roi = self.focusCameraROI
+        if roi is None:
+            return None
+        pos = roi.pos()
+        size = roi.size()
+        return ((float(pos.x()), float(pos.y())),
+                (float(size.x()), float(size.y())))
+
+    def hideFocusCameraROI(self):
+        if self.focusCameraROI is None:
+            return
+        try:
+            self.vb.removeItem(self.focusCameraROI)
+        finally:
+            self.focusCameraROI = None
 
     def setFocusCameraActive(self, active):
         """Sync the acquisition button without re-triggering the controller."""

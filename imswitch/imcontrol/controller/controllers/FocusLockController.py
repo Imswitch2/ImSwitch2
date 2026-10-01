@@ -1,3 +1,4 @@
+import dataclasses
 import threading
 import sip
 
@@ -9,7 +10,9 @@ from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, Thread, Timer
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model import configfiletools
 from imswitch.imcontrol.model.managers import LeasePurpose
+from imswitch.imcontrol.view import guitools
 from ..basecontrollers import ImConWidgetController
 
 _CLOSE_WAIT_TIMEOUT_MS = 2000
@@ -75,6 +78,11 @@ class FocusLockController(ImConWidgetController):
         self._focusCameraStopPending = False
         self._focusCameraSettingsTree = None
         self._focusCameraSettingsUpdating = False
+        self._focusCameraPostStopAction = None
+        self._focusRoiEditing = False
+        self._focusRoiSession = None
+        self._focusRoiSelection = None
+        self._focusRoiDisplayShape = None
 
         # Scan arbitration. Depth-counted rather than a boolean: workflows may
         # publish sigScanStarting/sigScanEnded themselves, so a duplicate start
@@ -364,13 +372,24 @@ class FocusLockController(ImConWidgetController):
 
         try:
             detector = self._master.detectorsManager[self.camera]
+            # Some managers expose raw ROI registers as ordinary detector
+            # parameters (ThorCamTSI: ROI X0/Y0/X1/Y1). The dedicated Image
+            # frame workflow below is the only safe ROI path because it stops
+            # the focus worker first; do not expose a second path that bypasses
+            # that synchronization.
+            focusParameters = {
+                name: parameter
+                for name, parameter in detector.parameters.items()
+                if parameter.group != 'ROI'
+            }
             tree = createTree(
                 self.camera,
                 detector.model,
-                detector.parameters,
+                focusParameters,
                 detector.actions,
                 detector.supportedBinnings,
                 getattr(self._setupInfo, 'rois', {}) or {},
+                detector.croppable,
             )
         except Exception:
             self._logger.error(
@@ -384,7 +403,7 @@ class FocusLockController(ImConWidgetController):
         # Only detector-specific Parameters/Actions are wired here. The whole
         # Image frame group remains visible but disabled in FocusLockWidget;
         # focusLock.frameCrop* stays the authoritative ROI for this pass.
-        for parameterName, parameter in detector.parameters.items():
+        for parameterName, parameter in focusParameters.items():
             try:
                 paramInWidget = tree.p.param(parameter.group).param(parameterName)
             except Exception:
@@ -410,6 +429,15 @@ class FocusLockController(ImConWidgetController):
             actionInWidget.sigActivated.connect(
                 lambda actionName=actionName:
                 self._runFocusCameraAction(actionName)
+            )
+
+        frame = tree.p.param('Image frame')
+        frame.param('Apply').sigActivated.connect(self.applyFocusCameraROI)
+        frame.param('New ROI').sigActivated.connect(self.beginFocusCameraROI)
+        frame.param('Abort ROI').sigActivated.connect(self.abortFocusCameraROI)
+        for name in ('X0', 'Y0', 'Width', 'Height'):
+            frame.param(name).sigValueChanged.connect(
+                lambda *_args, name=name: self._focusCameraFrameFieldChanged(name)
             )
 
         self._refreshFocusCameraSettings()
@@ -438,11 +466,18 @@ class FocusLockController(ImConWidgetController):
                 self._widget, 'updateFocusCameraFrameReadback', None
             )
             if callable(updateFrame):
+                selection = self.__dict__.get('_focusRoiSelection')
+                if self.__dict__.get('_focusRoiEditing', False) and selection is not None:
+                    frameStart = selection[:2]
+                    shape = selection[2:]
+                else:
+                    frameStart = detector.frameStart
+                    shape = detector.shape
                 updateFrame(
                     detectorModel=detector.model,
                     binning=detector.binning,
-                    frameStart=detector.frameStart,
-                    shape=detector.shape,
+                    frameStart=frameStart,
+                    shape=shape,
                     fullShape=detector.fullShape,
                 )
         finally:
@@ -485,6 +520,477 @@ class FocusLockController(ImConWidgetController):
             self._refreshFocusCameraSettings()
 
     # ------------------------------------------------------------------
+    # Focus-camera ROI
+    # ------------------------------------------------------------------
+
+    def _focusCameraRoiOperationAllowed(self) -> bool:
+        """Return whether changing the focus-camera geometry is safe now."""
+        if self.__dict__.get('_focusCalibrationActive', False):
+            self._warnFocusCameraRoi(
+                'ROI unavailable',
+                'The focus-camera ROI cannot be changed while focus calibration is running.'
+            )
+            return False
+        if (
+            self.__dict__.get('locked', False)
+            or self.__dict__.get('aboutToLock', False)
+            or self.__dict__.get('_suspendedLock', False)
+        ):
+            self._warnFocusCameraRoi(
+                'ROI unavailable',
+                'Unlock the focus lock before changing the focus-camera ROI.'
+            )
+            return False
+        if self.__dict__.get('_focusCameraStopPending', False):
+            self._warnFocusCameraRoi(
+                'Camera still stopping',
+                'The focus camera is still stopping. Apply the ROI after that operation completes.'
+            )
+            return False
+        try:
+            detectors = self._master.detectorsManager
+            if not detectors[self.camera].croppable:
+                self._warnFocusCameraRoi(
+                    'ROI unavailable',
+                    'The configured focus camera does not support cropping.'
+                )
+                return False
+            activeLeases = getattr(detectors, 'activeAcquisitionLeases', lambda: ())()
+            ownHandle = self.__dict__.get('_focusAcqHandle')
+            otherUsers = [
+                handle for handle in activeLeases
+                if handle is not ownHandle and self.camera in handle.detectorNames
+            ]
+            if otherUsers:
+                self._warnFocusCameraRoi(
+                    'ROI unavailable',
+                    'The focus camera is currently used by another acquisition. '
+                    'Stop that acquisition before changing its ROI.'
+                )
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _warnFocusCameraRoi(self, title, message):
+        self._logger.warning(message)
+        try:
+            guitools.showWarning(self._widget, title, message)
+        except Exception:
+            # Warning dialogs are best-effort (notably in headless tests).
+            pass
+
+    def _focusCameraFrameValues(self):
+        tree = self.__dict__.get('_focusCameraSettingsTree')
+        if tree is None:
+            return None
+        frame = tree.p.param('Image frame')
+        return tuple(
+            int(round(frame.param(name).value()))
+            for name in ('X0', 'Y0', 'Width', 'Height')
+        )
+
+    def _focusCameraFrameFieldChanged(self, _name=None):
+        """Keep a graphical ROI and the numeric fields in sync while editing."""
+        if self.__dict__.get('_focusCameraSettingsUpdating', False):
+            return
+        if not self.__dict__.get('_focusRoiEditing', False):
+            return
+        values = self._focusCameraFrameValues()
+        if values is None:
+            return
+        self._focusRoiSelection = self._clampFocusCameraRoi(values)
+        self._syncFocusCameraRoiOverlayFromSelection()
+
+    def _clampFocusCameraRoi(self, roi):
+        detector = self._master.detectorsManager[self.camera]
+        fullW, fullH = (int(detector.fullShape[0]), int(detector.fullShape[1]))
+        x, y, w, h = (int(round(v)) for v in roi)
+        x = max(0, min(x, max(0, fullW - 1)))
+        y = max(0, min(y, max(0, fullH - 1)))
+        w = max(1, min(w, fullW - x))
+        h = max(1, min(h, fullH - y))
+        return (x, y, w, h)
+
+    def _queueFocusCameraPostStopAction(self, action) -> bool:
+        """Run ``action`` only after the focus worker can no longer touch camera.
+
+        This is also the continuation point for a camera SDK read that outlives
+        the bounded stop wait. The existing FOCUS lease is retained until the
+        worker finishes, so ROI changes can never race an in-flight frame read.
+        """
+        if self.__dict__.get('_shutdownComplete', False):
+            return False
+        if self.__dict__.get('_focusCameraStopPending', False):
+            return False
+        if self.__dict__.get('_focusCameraPostStopAction') is not None:
+            return False
+
+        self._focusCameraPostStopAction = action
+        processThread = self.__dict__.get(
+            '_FocusLockController__processDataThread'
+        )
+        if self.focusCameraAcquisitionActive() or self._threadIsRunning(processThread):
+            self._stopFocusCameraAcquisition()
+        else:
+            self._runFocusCameraPostStopAction()
+        return True
+
+    def _runFocusCameraPostStopAction(self):
+        action = self.__dict__.get('_focusCameraPostStopAction')
+        if action is None:
+            return
+        self._focusCameraPostStopAction = None
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        try:
+            action()
+        except Exception:
+            self._logger.error(
+                'Focus-camera operation failed after acquisition stopped',
+                exc_info=True,
+            )
+
+    def applyFocusCameraROI(self):
+        """Apply numeric/graphical focus-camera ROI through a safe stop boundary."""
+        if not self._focusCameraRoiOperationAllowed():
+            return
+        requested = self._focusCameraFrameValues()
+        if requested is None:
+            return
+        if requested[2] <= 0 or requested[3] <= 0:
+            self._warnFocusCameraRoi(
+                'ROI not applied', 'Focus-camera ROI width and height must be positive.'
+            )
+            return
+        requested = self._clampFocusCameraRoi(requested)
+
+        session = self.__dict__.get('_focusRoiSession')
+        if session is not None:
+            restartAfter = bool(session['restoreAcquisition'])
+            restoreOnFailure = tuple(session['original'])
+        else:
+            restartAfter = self.focusCameraAcquisitionActive()
+            detector = self._master.detectorsManager[self.camera]
+            restoreOnFailure = tuple(detector.frameStart) + tuple(detector.shape)
+
+        queued = self._queueFocusCameraPostStopAction(
+            lambda: self._applyFocusCameraRoiStopped(
+                requested, restartAfter, restoreOnFailure
+            )
+        )
+        if not queued:
+            self._warnFocusCameraRoi(
+                'ROI not applied', 'Another focus-camera operation is still pending.'
+            )
+
+    def _applyFocusCameraRoiStopped(self, requested, restartAfter, restoreOnFailure):
+        detector = self._master.detectorsManager[self.camera]
+        try:
+            detector.crop(*requested)
+            actual = tuple(detector.frameStart) + tuple(detector.shape)
+        except Exception as e:
+            self._logger.error(
+                f'Could not apply focus-camera ROI {requested}: {e}',
+                exc_info=True,
+            )
+            # A multi-register camera may have changed geometry before rejecting
+            # the request. Restore the last known-good focus ROI if possible.
+            try:
+                detector.crop(*restoreOnFailure)
+            except Exception:
+                self._logger.error(
+                    f'Could not restore focus-camera ROI {restoreOnFailure}',
+                    exc_info=True,
+                )
+            self._endFocusCameraRoiSession()
+            self._refreshFocusCameraSettings()
+            if restartAfter:
+                self._startFocusCameraAcquisition()
+            self._warnFocusCameraRoi(
+                'ROI not applied',
+                f'The focus camera did not accept the requested ROI: {e}'
+            )
+            return
+
+        self._persistFocusCameraRoi(actual)
+        self._endFocusCameraRoiSession()
+        self._refreshFocusCameraSettings()
+        if restartAfter:
+            self._startFocusCameraAcquisition()
+
+    def beginFocusCameraROI(self):
+        """Enter graphical ROI editing on a temporary full-chip live preview."""
+        if self.__dict__.get('_focusRoiEditing', False):
+            return
+        if not self._focusCameraRoiOperationAllowed():
+            return
+
+        detector = self._master.detectorsManager[self.camera]
+        original = tuple(detector.frameStart) + tuple(detector.shape)
+        self._focusRoiSession = {
+            'original': original,
+            'restoreAcquisition': self.focusCameraAcquisitionActive(),
+        }
+        self._focusRoiSelection = original
+        self._focusRoiEditing = True
+        try:
+            self._widget.setFocusCameraRoiEditing(True)
+        except AttributeError:
+            pass
+        self._syncFocusCameraUi(self.focusCameraAcquisitionActive(), toggleEnabled=False)
+
+        queued = self._queueFocusCameraPostStopAction(
+            self._startFocusCameraRoiPreview
+        )
+        if not queued:
+            self._endFocusCameraRoiSession()
+            self._warnFocusCameraRoi(
+                'ROI editor unavailable',
+                'Another focus-camera operation is still pending.'
+            )
+
+    def _startFocusCameraRoiPreview(self):
+        detector = self._master.detectorsManager[self.camera]
+        session = self.__dict__.get('_focusRoiSession')
+        if session is None:
+            return
+        full = (0, 0, int(detector.fullShape[0]), int(detector.fullShape[1]))
+        try:
+            detector.crop(*full)
+        except Exception as e:
+            self._logger.error(
+                f'Could not open full-chip focus-camera ROI preview: {e}',
+                exc_info=True,
+            )
+            self._endFocusCameraRoiSession()
+            if session['restoreAcquisition']:
+                self._startFocusCameraAcquisition()
+            self._warnFocusCameraRoi(
+                'ROI editor unavailable',
+                f'The focus camera could not switch to full-frame preview: {e}'
+            )
+            return
+
+        # The numeric fields remain the ROI being edited, not the temporary
+        # full-frame hardware geometry used only as a preview canvas.
+        self._refreshFocusCameraSettings()
+        if not self._startFocusCameraAcquisition():
+            try:
+                detector.crop(*session['original'])
+            except Exception:
+                self._logger.error(
+                    'Could not restore focus-camera ROI after preview start failed',
+                    exc_info=True,
+                )
+            self._endFocusCameraRoiSession()
+            self._refreshFocusCameraSettings()
+            self._warnFocusCameraRoi(
+                'ROI editor unavailable',
+                'The focus camera could not start the full-frame live preview.'
+            )
+            return
+        self._syncFocusCameraUi(True, toggleEnabled=False)
+
+    def abortFocusCameraROI(self):
+        """Cancel graphical editing, or discard unapplied numeric ROI edits."""
+        session = self.__dict__.get('_focusRoiSession')
+        if session is None:
+            self._refreshFocusCameraSettings()
+            return
+        if self.__dict__.get('_focusCameraStopPending', False):
+            return
+
+        restartAfter = bool(session['restoreAcquisition'])
+        original = tuple(session['original'])
+        queued = self._queueFocusCameraPostStopAction(
+            lambda: self._restoreFocusCameraRoiStopped(original, restartAfter)
+        )
+        if not queued:
+            self._warnFocusCameraRoi(
+                'ROI not restored', 'Another focus-camera operation is still pending.'
+            )
+
+    def _restoreFocusCameraRoiStopped(self, original, restartAfter):
+        detector = self._master.detectorsManager[self.camera]
+        try:
+            detector.crop(*original)
+        except Exception as e:
+            self._logger.error(
+                f'Could not restore focus-camera ROI {original}: {e}',
+                exc_info=True,
+            )
+            self._warnFocusCameraRoi(
+                'ROI not restored',
+                f'The focus camera did not accept its previous ROI: {e}'
+            )
+        self._endFocusCameraRoiSession()
+        self._refreshFocusCameraSettings()
+        if restartAfter:
+            self._startFocusCameraAcquisition()
+
+    def _endFocusCameraRoiSession(self):
+        self._focusRoiEditing = False
+        self._focusRoiSession = None
+        self._focusRoiSelection = None
+        self._focusRoiDisplayShape = None
+        try:
+            self._widget.hideFocusCameraROI()
+            self._widget.setFocusCameraRoiEditing(False)
+        except AttributeError:
+            pass
+
+    def _persistFocusCameraRoi(self, roi):
+        """Persist only hardware-read-back geometry, never the requested ROI."""
+        x, y, w, h = (int(v) for v in roi)
+        self.cropFrame = (x, y, w, h)
+        focusLock = getattr(self._setupInfo, 'focusLock', None)
+        if focusLock is None:
+            return
+        self._setupInfo.focusLock = dataclasses.replace(
+            focusLock,
+            frameCropx=x,
+            frameCropy=y,
+            frameCropw=w,
+            frameCroph=h,
+        )
+        try:
+            configfiletools.saveSetupInfo(
+                configfiletools.loadOptions()[0], self._setupInfo
+            )
+        except Exception:
+            self._logger.error(
+                'Focus-camera ROI was applied but could not be saved to setup',
+                exc_info=True,
+            )
+
+    def _focusCameraSensorRoiToDisplay(self, roi, displayShape, fullShape):
+        x, y, w, h = (float(v) for v in roi)
+        displayW, displayH = (float(displayShape[0]), float(displayShape[1]))
+        fullW, fullH = (float(fullShape[0]), float(fullShape[1]))
+        if displayW <= 0 or displayH <= 0 or fullW <= 0 or fullH <= 0:
+            return (0.0, 0.0), (1.0, 1.0)
+        # FocusLock displays numpy axis 0 along the ViewBox X axis (the
+        # vertical focus line is positioned from an axis-0 centroid). Camera
+        # frames arrive as (sensor Y, sensor X). swapImageAxes transposes them
+        # to (sensor X, sensor Y), so the transposed case maps directly while
+        # the ordinary case exchanges X/Y here.
+        if self._setupInfo.focusLock.swapImageAxes:
+            return (
+                (x * displayW / fullW, y * displayH / fullH),
+                (w * displayW / fullW, h * displayH / fullH),
+            )
+        return (
+            (y * displayW / fullH, x * displayH / fullW),
+            (h * displayW / fullH, w * displayH / fullW),
+        )
+
+    def _focusCameraDisplayRoiToSensor(self, position, size):
+        detector = self._master.detectorsManager[self.camera]
+        displayShape = self.__dict__.get('_focusRoiDisplayShape')
+        if displayShape is None:
+            return None
+        displayW, displayH = (float(displayShape[0]), float(displayShape[1]))
+        fullW, fullH = (float(detector.fullShape[0]), float(detector.fullShape[1]))
+        if displayW <= 0 or displayH <= 0:
+            return None
+        dx, dy = position
+        dw, dh = size
+        if self._setupInfo.focusLock.swapImageAxes:
+            roi = (
+                dx * fullW / displayW,
+                dy * fullH / displayH,
+                dw * fullW / displayW,
+                dh * fullH / displayH,
+            )
+        else:
+            roi = (
+                dy * fullW / displayH,
+                dx * fullH / displayW,
+                dh * fullW / displayH,
+                dw * fullH / displayW,
+            )
+        return self._clampFocusCameraRoi(roi)
+
+    def _focusCameraRoiGraphicsChanged(self, *_args):
+        if not self.__dict__.get('_focusRoiEditing', False):
+            return
+        try:
+            selection = self._widget.getFocusCameraROISelection()
+        except AttributeError:
+            return
+        if selection is None:
+            return
+        roi = self._focusCameraDisplayRoiToSensor(*selection)
+        if roi is None:
+            return
+        self._focusRoiSelection = roi
+        self._focusCameraSettingsUpdating = True
+        try:
+            detector = self._master.detectorsManager[self.camera]
+            self._widget.updateFocusCameraFrameReadback(
+                detectorModel=detector.model,
+                binning=detector.binning,
+                frameStart=roi[:2],
+                shape=roi[2:],
+                fullShape=detector.fullShape,
+            )
+        finally:
+            self._focusCameraSettingsUpdating = False
+
+    def _syncFocusCameraRoiOverlayFromSelection(self):
+        if not self.__dict__.get('_focusRoiEditing', False):
+            return
+        displayShape = self.__dict__.get('_focusRoiDisplayShape')
+        roi = self.__dict__.get('_focusRoiSelection')
+        if displayShape is None or roi is None:
+            return
+        detector = self._master.detectorsManager[self.camera]
+        position, size = self._focusCameraSensorRoiToDisplay(
+            roi, displayShape, detector.fullShape
+        )
+        try:
+            self._widget.setFocusCameraROISelection(position, size)
+        except AttributeError:
+            pass
+
+    def _updateFocusCameraRoiOverlayForImage(self, img):
+        if not self.__dict__.get('_focusRoiEditing', False):
+            return
+        if np.ndim(img) < 2:
+            return
+        displayShape = (int(img.shape[0]), int(img.shape[1]))
+        previousShape = self.__dict__.get('_focusRoiDisplayShape')
+        self._focusRoiDisplayShape = displayShape
+        roi = self.__dict__.get('_focusRoiSelection')
+        if roi is None:
+            return
+        detector = self._master.detectorsManager[self.camera]
+        position, size = self._focusCameraSensorRoiToDisplay(
+            roi, displayShape, detector.fullShape
+        )
+        graphics = getattr(self._widget, 'focusCameraROI', None)
+        if graphics is None:
+            try:
+                graphics = self._widget.showFocusCameraROI(
+                    position, size, displayShape
+                )
+                graphics.sigRegionChanged.connect(
+                    self._focusCameraRoiGraphicsChanged
+                )
+            except AttributeError:
+                return
+        elif previousShape != displayShape:
+            # A binning/backend change can alter the full-preview image size.
+            # Re-express the same sensor ROI in the new display coordinates.
+            try:
+                self._widget.showFocusCameraROI(
+                    position, size, displayShape
+                )
+            except AttributeError:
+                pass
+
+    # ------------------------------------------------------------------
     # Focus-camera acquisition ownership
     # ------------------------------------------------------------------
 
@@ -515,10 +1021,13 @@ class FocusLockController(ImConWidgetController):
                 exc_info=True,
             )
 
+        roiEditing = self.__dict__.get('_focusRoiEditing', False)
         if toggleEnabled is None:
-            toggleEnabled = not self.__dict__.get(
-                '_focusCalibrationActive', False
-            ) and not self.__dict__.get('_focusCameraStopPending', False)
+            toggleEnabled = (
+                not self.__dict__.get('_focusCalibrationActive', False)
+                and not self.__dict__.get('_focusCameraStopPending', False)
+                and not roiEditing
+            )
         cameraButton = getattr(widget, 'cameraAcqButton', None)
         if cameraButton is not None:
             try:
@@ -532,13 +1041,15 @@ class FocusLockController(ImConWidgetController):
         lockButton = getattr(widget, 'lockButton', None)
         if lockButton is not None:
             try:
-                lockButton.setEnabled(bool(active))
+                lockButton.setEnabled(bool(active) and not roiEditing)
             except Exception:
                 pass
         calibButton = getattr(widget, 'focusCalibButton', None)
         if calibButton is not None:
             try:
-                calibButton.setEnabled(bool(active) and not calibrationActive)
+                calibButton.setEnabled(
+                    bool(active) and not calibrationActive and not roiEditing
+                )
             except Exception:
                 pass
 
@@ -611,8 +1122,11 @@ class FocusLockController(ImConWidgetController):
         self.__processDataThread = None
         self._releaseFocusLease()
         self._focusCameraStopPending = False
-        if not self.__dict__.get('_shutdownComplete', False):
-            self._syncFocusCameraUi(False)
+        if self.__dict__.get('_shutdownComplete', False):
+            self._focusCameraPostStopAction = None
+            return
+        self._syncFocusCameraUi(False)
+        self._runFocusCameraPostStopAction()
 
     def _stopFocusCameraAcquisition(self) -> bool:
         """Stop the camera worker before releasing its FOCUS lease.
@@ -647,9 +1161,7 @@ class FocusLockController(ImConWidgetController):
             '_FocusLockController__processDataThread'
         )
         if processThread is None:
-            self._releaseFocusLease()
-            self._focusCameraStopPending = False
-            self._syncFocusCameraUi(False)
+            self._finishFocusCameraStop()
             return True
 
         self._focusCameraStopPending = True
@@ -1215,6 +1727,7 @@ class FocusLockController(ImConWidgetController):
         # udpate graphics
         self.updateSetPointData()
         self._widget.camImg.setImage(img)
+        self._updateFocusCameraRoiOverlayForImage(img)
         if self.currPoint < self.buffer:
             self._widget.focusPlotCurve.setData(self.timeData[1:self.currPoint],
                                                 self.setPointData[1:self.currPoint])

@@ -145,6 +145,8 @@ def _makeController(*, active=False, worker=None):
     ctrl._shutdownComplete = False
     ctrl._focusCalibrationActive = False
     ctrl._focusCameraStopPending = False
+    ctrl._focusCameraPostStopAction = None
+    ctrl._focusRoiEditing = False
     ctrl._focusLeaseLock = threading.Lock()
     ctrl._focusAcqHandle = 'lease-existing' if active else None
     ctrl._FocusLockController__processDataThread = worker
@@ -238,3 +240,22 @@ def test_unlocked_focus_lock_does_not_block_reacquisition_barrier():
     ctrl = _makeController(active=False)
 
     assert FocusLockController.waitForFocusReacquired(ctrl, timeoutS=0) is True
+
+
+def test_post_stop_action_waits_for_stuck_worker_before_running():
+    worker = _Worker(waitResult=False)
+    worker.running = True
+    ctrl = _makeController(active=True, worker=worker)
+    calls = []
+
+    assert FocusLockController._queueFocusCameraPostStopAction(
+        ctrl, lambda: calls.append('roi')
+    ) is True
+
+    assert calls == []
+    assert ctrl._focusAcqHandle == 'lease-existing'
+
+    worker.finish()
+
+    assert calls == ['roi']
+    assert ctrl._focusAcqHandle is None
