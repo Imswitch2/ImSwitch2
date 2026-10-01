@@ -150,8 +150,31 @@ def orientation_permutation(
     return np.asarray(transformed,dtype=np.int64).ravel()
 
 
+def orientation_reindex_permutation(
+    lattice_indices: np.ndarray,
+    source_orientation: FeedbackOrientation | str,
+    target_orientation: FeedbackOrientation | str,
+) -> np.ndarray:
+    """Reindex source-oriented columns into target-oriented logical order.
+
+    ``orient_localization`` stores detector positions in the logical order for
+    one section's feedback orientation.  A saved reference may later be used by
+    a section with a different feedback orientation.  This permutation maps
+    values that are already in ``source_orientation`` order into the order
+    expected by ``target_orientation`` without changing detector coordinates.
+    """
+    source = orientation_permutation(lattice_indices,source_orientation)
+    target = orientation_permutation(lattice_indices,target_orientation)
+    if source.size != target.size:  # pragma: no cover - same lattice by construction.
+        raise ValueError("Feedback orientation permutations have different sizes")
+    inverse_source = np.empty_like(source)
+    inverse_source[source] = np.arange(source.size,dtype=np.int64)
+    return inverse_source[target]
+
+
 __all__ = [
     "FeedbackOrientation",
     "orient_localization",
     "orientation_permutation",
+    "orientation_reindex_permutation",
 ]

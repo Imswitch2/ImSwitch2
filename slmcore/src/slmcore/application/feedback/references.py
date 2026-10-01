@@ -13,7 +13,8 @@ from ...core.cgh.feedback import (
     PositionReferenceMode,editable_position_reference_geometry,
     editable_reference_center_px,editable_reference_positions,
     fit_center_reference_geometry,localization_positions_full_px,
-    orient_localization,reference_positions_for_localization,
+    orient_localization,orientation_reindex_permutation,
+    reference_positions_for_localization,
 )
 from ...core.cgh.localization import LocalizationResult
 from ..position_reference_store import (
@@ -540,6 +541,15 @@ class PositionReferenceService(FeedbackComponent):
                 % (reference.detector_name,current_detector)
             )
         positions = reference_positions_for_localization(reference,localization)
+        source_orientation = dict(reference.metadata or {}).get(
+            "feedback_orientation"
+        )
+        if source_orientation not in (None,""):
+            positions = positions[:,orientation_reindex_permutation(
+                localization.lattice_indices,
+                source_orientation,
+                self._feedback_orientation(section),
+            )]
         return positions,{
             "mode":selection.mode.value,
             "label":reference.name,

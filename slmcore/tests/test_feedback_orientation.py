@@ -5,6 +5,7 @@ import numpy as np
 from slmcore.application.startup_preferences import StartupPreferencesState
 from slmcore.core.cgh.feedback import (
     FeedbackOrientation,orient_localization,orientation_permutation,
+    orientation_reindex_permutation,
 )
 from slmcore.core.cgh.localization import LocalizationResult
 from slmcore.setup import SLMStartupPreferences
@@ -65,6 +66,26 @@ def test_all_feedback_orientations_are_bijections_for_square_lattice():
             localization.lattice_indices,orientation,
         )
         assert sorted(permutation.tolist()) == [0,1,2,3]
+
+
+def test_orientation_reindex_permutation_converts_between_section_conventions():
+    indices = np.array([
+        [0,1,2,0,1,2],
+        [0,0,0,1,1,1],
+    ],dtype=np.int64)
+    raw = np.arange(12,dtype=np.float64).reshape(2,6)
+
+    for source_orientation in FeedbackOrientation:
+        source_permutation = orientation_permutation(indices,source_orientation)
+        source_ordered = raw[:,source_permutation]
+        for target_orientation in FeedbackOrientation:
+            target_permutation = orientation_permutation(indices,target_orientation)
+            reindex = orientation_reindex_permutation(
+                indices,source_orientation,target_orientation,
+            )
+            np.testing.assert_array_equal(
+                source_ordered[:,reindex],raw[:,target_permutation],
+            )
 
 
 def test_feedback_orientation_preferences_resolve_plane_then_default():

@@ -17,6 +17,7 @@ from .orientation import (
     FeedbackOrientation,
     orient_localization,
     orientation_permutation,
+    orientation_reindex_permutation,
 )
 from .reference import (
     EditablePositionReferenceGeometry,
@@ -75,5 +76,6 @@ __all__ = [
     "localization_positions_full_px",
     "orient_localization",
     "orientation_permutation",
+    "orientation_reindex_permutation",
     "reference_positions_for_localization",
 ]

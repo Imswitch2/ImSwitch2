@@ -371,6 +371,38 @@ def test_named_session_reference_is_shared_but_selection_is_transient(tmp_path):
     session_a.dispose()
     session_b.dispose()
 
+def test_named_reference_reindexes_source_orientation_for_destination_section(tmp_path):
+    from slmcore import PositionReferenceStore
+    from slmcore.core.cgh.feedback import orient_localization
+
+    store = PositionReferenceStore(tmp_path / "position_references")
+
+    runtime_a = _runtime(serial="SER-A")
+    session_a = SLMSession(runtime=runtime_a,position_reference_store=store)
+    session_a.calibration.active_plane = lambda _section:"sample"
+    localization_a = _attach_reference_localization(runtime_a)
+    session_a.feedback.set_feedback_orientation("sec_0","rotate_180")
+    reference = session_a.feedback.add_position_reference("sec_0","488 reference")
+    assert reference.metadata["feedback_orientation"] == "rotate_180"
+
+    runtime_b = _runtime(serial="SER-B")
+    session_b = SLMSession(runtime=runtime_b,position_reference_store=store)
+    session_b.calibration.active_plane = lambda _section:"sample"
+    localization_b = _attach_reference_localization(runtime_b)
+    session_b.feedback.set_feedback_orientation("sec_0","flip_vertical")
+    session_b.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="488 reference",
+    )
+
+    positions,metadata = session_b.feedback._resolve_position_reference("sec_0")
+    assert metadata["name"] == "488 reference"
+    expected = orient_localization(localization_b,"flip_vertical")
+    np.testing.assert_allclose(positions,expected.measured_positions_px)
+
+    session_a.dispose()
+    session_b.dispose()
+
+
 def _fov_calibration_for_runtime(runtime,name,displacement=(0.01,-0.02)):
     from slmcore import FOVPositionCalibration
 
