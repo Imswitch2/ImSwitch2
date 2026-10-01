@@ -1223,3 +1223,26 @@ def test_the_processor_leaves_its_input_untouched_through_a_workflow_style_run()
     with pytest.raises(ScriptError):
         PythonStepProcessor().apply(source, {"code": "data[data > 2] = 0\nout = data", "ports": "out"})
     np.testing.assert_array_equal(source.data, np.arange(12.0).reshape(3, 4))
+
+
+# -- empty outputs ---------------------------------------------------------------------
+
+def test_an_empty_output_is_refused_with_its_port_and_shape():
+    """The interleave on a stack too short for it: the second output would be empty."""
+    short = ArrayProcessingResult("short", np.ones((2, 4, 4)), ["Z", "Y", "X"])
+    code = (
+        "group = (np.arange(data.shape[0]) // 3) % 2\n"
+        "outputs = {'a': data[group == 0], 'b': data[group == 1]}\n"
+    )
+    with pytest.raises(ScriptError, match=r"output 'b' is empty \(shape \(0, 4, 4\)\)"):
+        run_script(code, [short], ("a", "b"))
+
+
+@pytest.mark.parametrize("code", [
+    "out = np.zeros((0, 4))",
+    "out = make_labels(np.zeros((4, 0), dtype=int))",
+    "out = make_result(np.zeros(0), axes=['Frame'])",
+])
+def test_empty_arrays_are_refused_whatever_their_kind(code):
+    with pytest.raises(ScriptError, match="is empty"):
+        run_script(code, [_grid()], ("out",))

@@ -81,6 +81,15 @@ def test_the_console_hands_out_read_only_inputs_and_publishes_independent_result
     assert rec.data[0, 0, 0] == 0
 
 
+def test_the_console_refuses_to_publish_an_empty_array():
+    rec = _result()
+    live = _List([rec], rec)
+    session = live.session()
+    with pytest.raises(ScriptError, match="is empty"):
+        session.publish(rec.data[:0])
+    assert live.published == []
+
+
 def test_data_follows_the_selection_and_falls_back_to_the_current_result():
     a, b, c = _result("a"), _result("b", shape=(3, 4, 4)), _result("c")
     live = _List([a, b], c)

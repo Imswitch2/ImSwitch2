@@ -389,6 +389,14 @@ def result_from_value(
             f"{what} is a single number, not an array: print() it, "
             f"or output it as a one-element array"
         )
+    if array.size == 0:
+        # Almost always a selection that picked nothing (the wrong axis, a
+        # stack shorter than the code assumed); as a result it would only
+        # surface later, as an empty layer or a zero-size file.
+        raise ScriptError(
+            f"{what} is empty (shape {tuple(array.shape)}): "
+            f"the code selected nothing along at least one axis"
+        )
     array = _independent(array, [getattr(reference, "data", None), *sources])
     axes = described.axes if described.axes is not None else (
         tuple(str(label) for label in axes) if axes is not None else None

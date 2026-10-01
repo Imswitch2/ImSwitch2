@@ -1164,6 +1164,9 @@ numeric array (boolean, integer or float) or the result of ``make_result`` /
   with an existing one.
 
 A single number is not an array: ``print()`` it, or output ``np.array([value])``.
+An empty array is refused too, naming the port and its shape: it nearly always
+means a selection picked nothing, such as the wrong axis or a stack shorter than
+the code assumed.
 
 Things to know
 --------------
