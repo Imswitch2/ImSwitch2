@@ -39,7 +39,7 @@ class ParamDisplayLevel(str,Enum):
 def make_display_name(param_name: str) -> str:
     """Convert an internal parameter key into a user-facing label."""
     units = {"mm","um","nm","px","degrees","deg","rad","radians"}
-    acronyms = {"fov":"FOV","slm":"SLM","cgh":"CGH","roi":"ROI"}
+    acronyms = {"fov":"FOV","slm":"SLM","cgh":"CGH","roi":"ROI","fft":"FFT"}
 
     if (
         " " in param_name

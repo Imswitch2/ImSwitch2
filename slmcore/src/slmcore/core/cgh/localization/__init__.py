@@ -1,7 +1,7 @@
 """Reusable image localization, lattice registration and target guidance."""
 
 from .api import localize_lattice,localize_spots
-from .parameters import LOCALIZATION_PARAMS
+from .parameters import LOCALIZATION_PARAMS,normalize_localization_parameter_input
 from .policy import suggest_localization_sources
 from .reference import TargetLocalizationReference
 from .guidance import (
@@ -36,6 +36,7 @@ __all__ = [
     "LatticeRegistration",
     "LatticeRegistrationOptions",
     "LOCALIZATION_PARAMS",
+    "normalize_localization_parameter_input",
     "LocalizationGuidance",
     "LocalizationResult",
     "SpotDetectionOptions",

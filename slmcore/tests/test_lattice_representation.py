@@ -78,7 +78,7 @@ def test_unknown_stagger_is_inferred_before_registration():
         LatticeRegistrationOptions(lattice_candidate_search_mode="fast"),
     )
     assert result.matched_count == indices.shape[1]
-    assert result.diagnostics["search_path"] == "image_inferred_lattice"
+    assert result.diagnostics["search_path"] == "finite_grid"
     assert result.diagnostics["stagger_source"] == "image"
     assert abs(float(result.diagnostics["resolved_stagger"])-0.27) < 0.03
     assert result.rms_residual_px < 0.2

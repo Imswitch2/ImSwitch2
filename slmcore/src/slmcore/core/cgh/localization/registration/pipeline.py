@@ -29,7 +29,7 @@ from .correlation import (
 )
 from .refinement import _build_result,_fit_score,_refine_registration
 from .search import _search_fft_registration
-from .stagger import _infer_unknown_stagger_model
+from .finite import _infer_finite_grid_initializer
 
 def register_lattice(
     detections: DetectedSpots,
@@ -40,14 +40,14 @@ def register_lattice(
     initial_linear: np.ndarray | None=None,
     initial_translation: np.ndarray | None=None,
 ) -> LatticeRegistration:
-    """Register indexed lattice points with guided search + global fallbacks.
+    """Register indexed lattice points using finite topology and/or FFT search.
 
-    ``expected_period_px`` is treated as strong search guidance, never as a
-    fixed final geometry.  When present, a period-filtered FFT search is tried
-    first.  If it cannot produce a strong fit, registration automatically falls
-    back to the target-independent fast search and finally to the broad/full
-    search.  The logical model (including a known stagger) is retained through
-    every fallback.
+    ``auto`` prefers finite-grid row/column topology because a known finite
+    ``Nx x Ny`` target contains information that an infinite Bravais lattice
+    does not.  If that topology cannot establish a near-complete fit, the
+    existing guided/global FFT search remains available as a fallback.
+    ``finite_grid`` and ``fft_lattice`` explicitly force either strategy for
+    diagnosis and difficult datasets.
     """
     points = np.asarray(detections.positions_px,dtype=np.float64)
     if points.shape[1] < 3:
@@ -58,45 +58,10 @@ def register_lattice(
     logical = np.asarray(model.logical_positions,dtype=np.float64)
     tree = cKDTree(points.T)
     correlation = _CorrelationWorkspace(detections.processed_image)
+    registration_mode = str(options.registration_mode)
 
-
-    # Unknown stagger is not equivalent to zero stagger.  Resolve the finite
-    # alternating-row representation directly from detected row structure
-    # before target-specific registration.  The inferred affine transform is
-    # also an excellent initializer, so the common case avoids FFT/template
-    # search entirely.
-    if not bool(model.diagnostics.get("stagger_known",False)):
-        inferred = _infer_unknown_stagger_model(detections,model)
-        if inferred is not None:
-            model,inferred_linear,inferred_translation,inference = inferred
-            logical = np.asarray(model.logical_positions,dtype=np.float64)
-            fitted = _refine_registration(
-                model,points,inferred_linear,inferred_translation,options,tree=tree,
-            )
-            inferred_fit_sufficient = (
-                fitted is not None
-                and _fast_fit_sufficient(fitted,logical.shape[1])
-                and (
-                    options.expected_period_px is None
-                    or _guided_fit_sufficient(
-                        fitted,logical.shape[1],options
-                    )
-                )
-            )
-            if inferred_fit_sufficient:
-                fitted["initializer_source"] = "image_inferred_lattice"
-                fitted["correlation_score"] = None
-                fitted["search_path"] = "image_inferred_lattice"
-                fitted["fallback_used"] = False
-                fitted["stagger_inference"] = inference
-                return _registration_result(
-                    model,detections,fitted,options,False,
-                )
-            # Keep the inferred representation for the normal guided/global
-            # fallback search even when the direct refinement is incomplete.
-
-    # Explicit geometry reuse remains the strongest possible initializer for
-    # generic callers.  Feedback's exact-reuse workflow bypasses this function.
+    # Explicit geometry reuse remains the strongest initializer.  Feedback's
+    # exact-reuse workflow normally bypasses this function entirely.
     if _compatible_previous(previous,model):
         fitted = _refine_registration(
             model,points,
@@ -113,9 +78,8 @@ def register_lattice(
                 model,detections,fitted,options,True,
             )
 
-    # Explicit detector-space affine geometry, when supplied by a generic
-    # caller, skips FFT geometry search.  Feedback no longer constructs this
-    # from target rotation/skew.
+    # Explicit detector-space affine geometry supplied by a generic caller also
+    # remains authoritative and skips automatic geometry discovery.
     if initial_linear is not None:
         linear = np.asarray(initial_linear,dtype=np.float64)
         if linear.shape != (2,2):
@@ -148,9 +112,53 @@ def register_lattice(
                 model,detections,fitted,options,False,
             )
 
-    # Build the ordered search plan.  Period guidance is attempted first, but
-    # global fallbacks deliberately remove it so a stale calibration or manual
-    # value cannot make localization fail outright.
+    # Finite-grid topology is the normal first choice whenever it is allowed.
+    # Unlike FFT basis discovery, it keeps the finite target's row/column
+    # indexing canonical and therefore cannot prefer an equivalent ``b + a``
+    # primitive basis.  Known stagger is retained; unknown stagger is inferred
+    # by the same finite-row analysis.
+    finite_candidate = None
+    if registration_mode != "fft_lattice":
+        inferred = _infer_finite_grid_initializer(detections,model)
+        if inferred is not None:
+            model,finite_linear,finite_translation,inference = inferred
+            logical = np.asarray(model.logical_positions,dtype=np.float64)
+            fitted = _refine_registration(
+                model,points,finite_linear,finite_translation,options,tree=tree,
+            )
+            if fitted is not None:
+                fitted["initializer_source"] = "finite_grid"
+                fitted["correlation_score"] = None
+                fitted["search_path"] = "finite_grid"
+                fitted["fallback_used"] = False
+                fitted["finite_grid_inference"] = inference
+                if (
+                    registration_mode == "finite_grid"
+                    or _fast_fit_sufficient(fitted,logical.shape[1])
+                ):
+                    return _registration_result(
+                        model,detections,fitted,options,False,
+                    )
+                # A partial but numerically valid finite-topology fit remains a
+                # strong fallback.  Auto may still try FFT for a more complete
+                # solution, but a weaker periodic-basis fit must not erase this
+                # topology-preserving result.
+                finite_candidate = (
+                    _fit_score(fitted,options),fitted,model,
+                )
+            # In auto mode retain an image-resolved stagger model if finite
+            # topology found one, then let FFT attempt the difficult remainder.
+        if registration_mode == "finite_grid":
+            raise RuntimeError(
+                "Finite-grid registration could not establish the requested "
+                "row/column topology. Adjust spot detection or choose Auto/FFT "
+                "registration for a periodic-lattice fallback."
+            )
+
+    # FFT/Bravais-lattice discovery is now a fallback in Auto mode and remains
+    # directly selectable for diagnosis.  Preserve the historical guided ->
+    # global-fast -> global-full behavior here so existing difficult/partial
+    # datasets still have the broad numerical search available.
     search_plan = []
     if options.expected_period_px is not None:
         search_plan.append((
@@ -182,28 +190,38 @@ def register_lattice(
             True,
         ))
 
-    fallback_best = None
+    fallback_best = finite_candidate
+    search_errors = []
     for pass_index,(search_name,search_options,period_guided,allow_legacy) in enumerate(search_plan):
-        fitted = _search_fft_registration(
-            detections=detections,
-            model=model,
-            points=points,
-            tree=tree,
-            correlation=correlation,
-            options=search_options,
-            search_name=search_name,
-            period_guided=period_guided,
-            allow_legacy=allow_legacy,
-        )
+        try:
+            fitted = _search_fft_registration(
+                detections=detections,
+                model=model,
+                points=points,
+                tree=tree,
+                correlation=correlation,
+                options=search_options,
+                search_name=search_name,
+                period_guided=period_guided,
+                allow_legacy=allow_legacy,
+            )
+        except RuntimeError as error:
+            # A failed periodic search must not erase an already valid finite
+            # topology result. Keep trying the remaining FFT passes; if none
+            # succeeds, Auto returns the finite candidate below.
+            search_errors.append(error)
+            continue
         if fitted is None:
             continue
 
         fitted["search_path"] = search_name
-        fitted["fallback_used"] = bool(pass_index > 0)
+        fitted["fallback_used"] = bool(
+            registration_mode == "auto" or pass_index > 0
+        )
         score_options = options if period_guided else search_options
         score = _fit_score(fitted,score_options)
         if fallback_best is None or score > fallback_best[0]:
-            fallback_best = (score,fitted)
+            fallback_best = (score,fitted,model)
 
         if period_guided:
             if _guided_fit_sufficient(fitted,logical.shape[1],options):
@@ -219,22 +237,29 @@ def register_lattice(
                 )
             continue
 
-        # Full search is the final numerical fallback.  Return any valid fit it
-        # could establish, including intentionally partial localizations.
-        return _registration_result(
-            model,detections,fitted,options,False,
-        )
+        # Full FFT search is the final periodic candidate, but Auto may already
+        # hold a better finite-topology fit. Compare them instead of returning
+        # the periodic result unconditionally.
+        continue
 
     if fallback_best is not None:
         fitted = fallback_best[1]
-        fitted["fallback_used"] = True
+        result_model = fallback_best[2]
+        if fitted.get("search_path") != "finite_grid":
+            fitted["fallback_used"] = True
         return _registration_result(
-            model,detections,fitted,options,False,
+            result_model,detections,fitted,options,False,
         )
 
+    if search_errors:
+        raise RuntimeError(
+            "Could not register the detected spots to a stable 2D lattice; "
+            "adjust localization parameters or try another registration mode. "
+            f"Last FFT error: {search_errors[-1]}"
+        ) from search_errors[-1]
     raise RuntimeError(
         "Could not register the detected spots to a stable 2D lattice; "
-        "relax localization parameters or use the full candidate search."
+        "adjust localization parameters or try another registration mode."
     )
 
 def _guided_fit_sufficient(fitted,target_count,options):
@@ -250,7 +275,7 @@ def _guided_fit_sufficient(fitted,target_count,options):
     return _period_within_tolerance(
         lengths,
         expected,
-        max(float(options.period_tolerance_fraction),0.05),
+        float(options.period_tolerance_fraction),
     )
 
 def _fast_fit_sufficient(fitted,target_count):

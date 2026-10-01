@@ -36,7 +36,10 @@ class SpotDetectionOptions:
     """Numerical options for target-independent spot detection."""
 
     crop_threshold: float = 0.4
-    dilation_kernel_size: int = 3
+    crop_margin_px: int = 1
+    # Deprecated compatibility input. When supplied, detection converts the old
+    # kernel-size convention to its equivalent crop margin.
+    dilation_kernel_size: int | None = None
     blur_sigma: float = 1.0
     threshold_rel: float = 0.10
     min_distance_px: float | None = None
@@ -48,8 +51,10 @@ class SpotDetectionOptions:
     def __post_init__(self):
         if not 0.0 <= float(self.crop_threshold) <= 1.0:
             raise ValueError("crop_threshold must be in [0, 1]")
-        if int(self.dilation_kernel_size) < 1:
-            raise ValueError("dilation_kernel_size must be >= 1")
+        if int(self.crop_margin_px) < 0:
+            raise ValueError("crop_margin_px must be >= 0")
+        if self.dilation_kernel_size is not None and int(self.dilation_kernel_size) < 1:
+            raise ValueError("dilation_kernel_size must be >= 1 when provided")
         if float(self.blur_sigma) < 0.0:
             raise ValueError("blur_sigma must be >= 0")
         if not 0.0 <= float(self.threshold_rel) <= 1.0:
@@ -70,14 +75,17 @@ class SpotDetectionOptions:
 class LatticeRegistrationOptions:
     """Options for global affine lattice registration.
 
-    ``expected_period_px`` guides the FFT candidate search. A scalar means
-    approximately equal primitive periods; a two-tuple supplies separate expected
-    primitive lengths. The final affine fit remains free and registration can
-    fall back to an unconstrained global search. Lattice orientation remains free.
+    ``registration_mode`` controls the geometry initializer. ``auto`` prefers
+    finite-grid row/column topology when the finite target shape is known and
+    falls back to FFT lattice discovery; ``finite_grid`` forces finite topology;
+    ``fft_lattice`` forces the periodic FFT route. ``expected_period_px`` guides
+    FFT candidate selection and spot detection; the final affine fit may refine
+    the measured periods. Lattice orientation remains free.
     """
 
     expected_period_px: float | tuple[float, float] | None = None
     period_tolerance_fraction: float = 0.25
+    registration_mode: str = "auto"
     fft_exclude_fraction: float = 0.03
     fft_peak_count: int = 14
     lattice_candidate_search_mode: str = "fast"
@@ -102,6 +110,10 @@ class LatticeRegistrationOptions:
             object.__setattr__(self,"expected_period_px",period)
         if float(self.period_tolerance_fraction) < 0:
             raise ValueError("period_tolerance_fraction must be >= 0")
+        if str(self.registration_mode) not in ("auto","finite_grid","fft_lattice"):
+            raise ValueError(
+                "registration_mode must be 'auto', 'finite_grid' or 'fft_lattice'"
+            )
         if not 0.0 <= float(self.fft_exclude_fraction) < 0.5:
             raise ValueError("fft_exclude_fraction must be in [0, 0.5)")
         if int(self.fft_peak_count) < 2:

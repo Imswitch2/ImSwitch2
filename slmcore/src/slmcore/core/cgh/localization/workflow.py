@@ -69,7 +69,7 @@ def localize_measurement(
 
     detection_options = SpotDetectionOptions(
         crop_threshold=float(parameters["crop_threshold"]),
-        dilation_kernel_size=int(parameters["dilation_kernel_size"]),
+        crop_margin_px=int(parameters["crop_margin_px"]),
         blur_sigma=float(parameters["spot_blur_sigma"]),
         threshold_rel=float(parameters["spot_threshold_rel"]),
         min_distance_fraction=float(parameters["spot_min_distance_fraction"]),
@@ -79,6 +79,7 @@ def localize_measurement(
     registration_options = LatticeRegistrationOptions(
         expected_period_px=hints.expected_period_px,
         period_tolerance_fraction=float(parameters["period_tolerance_fraction"]),
+        registration_mode=str(parameters["registration_mode"]),
         fft_exclude_fraction=float(parameters["fft_exclude_fraction"]),
         fft_peak_count=int(parameters["fft_peak_count"]),
         lattice_candidate_search_mode=str(

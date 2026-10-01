@@ -13,7 +13,9 @@ from ..core.calibration.target_localization_calibration import (
     TargetLocalizationCalibrationCandidate,fit_target_localization_calibration,
 )
 from ..core.cgh.execution.status import CGHResultState
-from ..core.cgh.localization.parameters import LOCALIZATION_PARAMS
+from ..core.cgh.localization.parameters import (
+    LOCALIZATION_PARAMS,normalize_localization_parameter_input,
+)
 from ..core.cgh.localization.policy import suggest_localization_sources
 from ..core.cgh.localization.reference import TargetLocalizationReference
 from ..core.cgh.localization.workflow import localize_measurement
@@ -36,7 +38,7 @@ def _default_localization_parameters() -> dict[str,Any]:
 def _validated_localization_parameters(
     values: Mapping[str,Any],
 ) -> dict[str,Any]:
-    values = dict(values or {})
+    values = normalize_localization_parameter_input(values)
     unknown = set(values) - set(LOCALIZATION_PARAMS)
     if unknown:
         raise KeyError(

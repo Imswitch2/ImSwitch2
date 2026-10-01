@@ -26,6 +26,7 @@ from ..feedback.analysis import analyze_position
 from ..feedback.parameters import POSITION_CORRECTION_PARAMS
 from ..localization import (
     LOCALIZATION_PARAMS,
+    normalize_localization_parameter_input,
     LocalizationResult,
     localization_context,
     localize_measurement,
@@ -846,7 +847,7 @@ class CGHSession:
         self._require_any_feedback_capability(state)
         target = self._current_round_target(state,context)
         measurement = self._require_current_measurement()
-        normalized = _validated_values(LOCALIZATION_PARAMS,parameters)
+        normalized = _validated_values(LOCALIZATION_PARAMS,normalize_localization_parameter_input(parameters))
         return localize_measurement(
             measurement.acquisition,
             target_type=target.target_type,
@@ -882,7 +883,7 @@ class CGHSession:
                 "Localization candidate no longer matches the target lattice"
             )
 
-        normalized = _validated_values(LOCALIZATION_PARAMS,parameters)
+        normalized = _validated_values(LOCALIZATION_PARAMS,normalize_localization_parameter_input(parameters))
         if dict(localization.parameters) != normalized:
             raise ValueError(
                 "Accepted localization parameters do not match candidate parameters"

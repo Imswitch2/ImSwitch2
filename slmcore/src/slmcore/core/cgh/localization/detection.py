@@ -18,8 +18,9 @@ def crop_image(
     """Crop a 2D image automatically or reuse an explicit crop.
 
     Automatic cropping finds the thresholded bounding box directly and expands
-    that box by the same amount that the former binary-dilation step contributed
-    to its extent.  Only the final crop is converted/copied to float64.
+    it by ``crop_margin_px`` on every side. The deprecated
+    ``dilation_kernel_size`` input is still accepted for direct API callers and
+    converted to the equivalent margin. Only the final crop is copied to float64.
     """
     source = np.asarray(image)
     if source.ndim != 2:
@@ -44,17 +45,19 @@ def crop_image(
                 x1 = int(xx.min())
                 x2 = int(xx.max()) + 1
 
-                # Equivalent bounding-box expansion to binary_dilation with a
-                # square ``size x size`` structuring element and default origin.
-                size = int(options.dilation_kernel_size)
-                lower_margin = size // 2
-                upper_margin = (size - 1) // 2
+                if options.dilation_kernel_size is not None:
+                    # Backward compatibility for direct users of the former
+                    # kernel-size API. Normal UI/workflow callers now provide
+                    # the actual per-side crop margin directly.
+                    margin = int(options.dilation_kernel_size) // 2
+                else:
+                    margin = int(options.crop_margin_px)
 
                 coord = (
-                    max(0,y1 - lower_margin),
-                    min(height,y2 + upper_margin),
-                    max(0,x1 - lower_margin),
-                    min(width,x2 + upper_margin),
+                    max(0,y1 - margin),
+                    min(height,y2 + margin),
+                    max(0,x1 - margin),
+                    min(width,x2 + margin),
                 )
     else:
         coord = tuple(int(v) for v in crop_coord)

@@ -207,7 +207,7 @@ def _fft_basis_candidates(
         )
 
     if period_guided and options.expected_period_px is not None:
-        tolerance = max(float(options.period_tolerance_fraction),0.01)
+        tolerance = max(float(options.period_tolerance_fraction),0.0)
         candidates = [
             candidate
             for candidate in candidates
