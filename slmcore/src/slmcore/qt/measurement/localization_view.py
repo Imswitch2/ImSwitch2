@@ -193,6 +193,10 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
     ) -> None:
         self._workbench.set_result(result,parameters)
 
+    def set_ordering_editable(self,enabled: bool) -> None:
+        """Allow or freeze post-fit spot-order reinterpretation."""
+        self._workbench.result_view.set_ordering_editable(bool(enabled))
+
     def set_error(self,error: Any) -> None:
         self._workbench.set_error(error)
 

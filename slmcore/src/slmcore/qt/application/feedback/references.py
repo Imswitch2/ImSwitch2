@@ -62,6 +62,14 @@ class PositionReferenceCoordinator:
                 None if context.fit_geometry is None
                 else context.fit_geometry.to_dict()
             ),
+            "correspondence":selection.correspondence.value,
+            "correspondence_options":context.correspondence_options,
+            "correspondence_resolved":context.correspondence_resolved,
+            "correspondence_diagnostics":(
+                None
+                if context.correspondence_diagnostics is None
+                else dict(context.correspondence_diagnostics)
+            ),
             "plane_name":context.plane_name,
             "compatible":context.compatible,
             "compatibility_error":context.compatibility_error,
@@ -87,6 +95,7 @@ class PositionReferenceCoordinator:
         reference_name: str | None,
         editable_geometry: Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | None=None,
+        correspondence: str | None=None,
     ) -> None:
         """Flush editor changes before applying a reference selection mapping."""
         try:
@@ -97,6 +106,7 @@ class PositionReferenceCoordinator:
                 reference_name=reference_name,
                 editable_geometry=editable_geometry,
                 editable_locks=editable_locks,
+                correspondence=correspondence,
             )
         except Exception as error:
             self._report_error("Changing position reference failed",error)

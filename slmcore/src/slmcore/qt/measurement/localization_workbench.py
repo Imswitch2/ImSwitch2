@@ -18,6 +18,9 @@ from qtpy import QtCore,QtWidgets
 from ...core.cgh.localization.parameters import (
     LOCALIZATION_PARAMS,normalize_localization_parameter_input,
 )
+from ...core.cgh.localization import (
+    SpotOrdering,reorder_localization,spot_ordering_label,
+)
 from ...core.measurement import ImageMeasurement
 from ...core.engine.parameters.spec import ParamSpec
 from ..widgets.fields import ParamForm
@@ -104,6 +107,8 @@ class LocalizationWorkbenchContext:
 class LocalizationResultView(QtWidgets.QWidget):
     """Image view with localization overlays and compact diagnostics."""
 
+    sigSpotOrderingRequested = QtCore.Signal(str)
+
     def __init__(
         self,parent: QtWidgets.QWidget | None=None,
     ) -> None:
@@ -111,6 +116,8 @@ class LocalizationResultView(QtWidgets.QWidget):
         self._result = None
         self._acquisition_image = None
         self._auxiliary_images: dict[str, np.ndarray] = {}
+        self._index_labels: list[pg.TextItem] = []
+        self._ordering_editable = False
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0,0,0,0)
@@ -258,6 +265,26 @@ class LocalizationResultView(QtWidgets.QWidget):
         self.detail_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
         self.detail_label.setWordWrap(True)
         side_layout.addWidget(self.detail_label)
+
+        ordering_label = QtWidgets.QLabel("Spot ordering")
+        ordering_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
+        side_layout.addWidget(ordering_label)
+        self.spot_ordering_combo = QtWidgets.QComboBox()
+        self.spot_ordering_combo.setToolTip(
+            "Reinterpret the already fitted finite lattice without rerunning "
+            "spot detection or registration."
+        )
+        self.spot_ordering_combo.currentIndexChanged.connect(
+            self._on_spot_ordering_changed
+        )
+        side_layout.addWidget(self.spot_ordering_combo)
+        self.show_indices = QtWidgets.QCheckBox("Show spot indices")
+        self.show_indices.setChecked(False)
+        self.show_indices.setToolTip(
+            "Show the logical (i, j) identity assigned to each target spot."
+        )
+        self.show_indices.toggled.connect(self._apply_visibility)
+        side_layout.addWidget(self.show_indices)
 
         self.result_extras = QtWidgets.QWidget()
         self.result_extras_layout = QtWidgets.QVBoxLayout(self.result_extras)
@@ -464,7 +491,26 @@ class LocalizationResultView(QtWidgets.QWidget):
             detail_lines.append("Affine geometry: " + " · ".join(affine_details))
         if bool(diagnostics.get("reused_exact",False)):
             detail_lines.append("Exact previous localization reused")
+        ordering_mode = str(diagnostics.get("spot_ordering_mode") or "auto")
+        resolved_ordering = str(diagnostics.get("spot_ordering") or "canonical")
+        available_orderings = tuple(
+            str(item) for item in diagnostics.get(
+                "spot_ordering_available",("canonical",)
+            )
+        )
+        self._set_spot_ordering_options(
+            ordering_mode,resolved_ordering,available_orderings,
+        )
+        if ordering_mode == "auto":
+            detail_lines.append(
+                "Spot ordering: Auto → %s" % spot_ordering_label(resolved_ordering)
+            )
+        else:
+            detail_lines.append(
+                "Spot ordering: %s" % spot_ordering_label(resolved_ordering)
+            )
         self.detail_label.setText("\n".join(detail_lines))
+        self._refresh_index_labels(result,matched,inferred)
 
         self._apply_visibility()
         self.view_box.autoRange()
@@ -483,6 +529,69 @@ class LocalizationResultView(QtWidgets.QWidget):
         ):
             item.setData(x=[],y=[])
         self.residual_item.setData([],[])
+        self._clear_index_labels()
+
+    def set_ordering_editable(self,enabled: bool) -> None:
+        self._ordering_editable = bool(enabled)
+        self.spot_ordering_combo.setEnabled(
+            self._ordering_editable and self.spot_ordering_combo.count() > 0
+        )
+
+    def _set_spot_ordering_options(
+        self,mode: str,resolved: str,available: Sequence[str],
+    ) -> None:
+        selected = "auto" if str(mode) == "auto" else str(resolved)
+        blocker = QtCore.QSignalBlocker(self.spot_ordering_combo)
+        try:
+            self.spot_ordering_combo.clear()
+            self.spot_ordering_combo.addItem("Auto — Canonical","auto")
+            for token in available:
+                try:
+                    label = spot_ordering_label(token)
+                except Exception:
+                    continue
+                self.spot_ordering_combo.addItem(label,str(token))
+            index = self.spot_ordering_combo.findData(selected)
+            if index < 0:
+                index = self.spot_ordering_combo.findData("auto")
+            self.spot_ordering_combo.setCurrentIndex(max(0,index))
+        finally:
+            del blocker
+        self.spot_ordering_combo.setEnabled(
+            self._ordering_editable and self.spot_ordering_combo.count() > 0
+        )
+
+    def _on_spot_ordering_changed(self,_index: int) -> None:
+        if not self._ordering_editable:
+            return
+        token = str(self.spot_ordering_combo.currentData() or "auto")
+        self.sigSpotOrderingRequested.emit(token)
+
+    def _clear_index_labels(self) -> None:
+        for item in self._index_labels:
+            try:
+                self.view_box.removeItem(item)
+            except Exception:
+                pass
+        self._index_labels = []
+
+    def _refresh_index_labels(self,result: Any,matched: np.ndarray,inferred: np.ndarray) -> None:
+        self._clear_index_labels()
+        indices = np.asarray(getattr(result,"lattice_indices",()),dtype=np.int64)
+        measured = _points(getattr(result,"measured_positions_px",None))
+        expected = _points(getattr(result,"expected_positions_px",None))
+        if indices.ndim != 2 or indices.shape[0] != 2 or indices.shape[1] != expected.shape[1]:
+            return
+        for column in range(indices.shape[1]):
+            point = measured[:,column] if bool(matched[column] or inferred[column]) else expected[:,column]
+            item = pg.TextItem(
+                text="(%d,%d)" % (int(indices[0,column]),int(indices[1,column])),
+                anchor=(0.0,1.0),
+            )
+            item.setPos(float(point[0]),float(point[1]))
+            item.setVisible(False)
+            self.view_box.addItem(item)
+            self._index_labels.append(item)
 
     def _apply_visibility(self,*_args: Any) -> None:
         localization_mode = (
@@ -492,6 +601,7 @@ class LocalizationResultView(QtWidgets.QWidget):
         for checkbox in (
             self.show_detected,self.show_expected,
             self.show_measured,self.show_inferred,self.show_residuals,
+            self.show_indices,
         ):
             checkbox.setEnabled(localization_mode)
 
@@ -519,6 +629,9 @@ class LocalizationResultView(QtWidgets.QWidget):
         self.residual_item.setVisible(
             localization_mode and self.show_residuals.isChecked()
         )
+        show_indices = localization_mode and self.show_indices.isChecked()
+        for item in self._index_labels:
+            item.setVisible(show_indices)
 
 
 class LocalizationWorkbench(QtWidgets.QWidget):
@@ -768,6 +881,9 @@ class LocalizationWorkbench(QtWidgets.QWidget):
         self.run_button.clicked.connect(self.request_run)
 
         self.result_view = LocalizationResultView()
+        self.result_view.sigSpotOrderingRequested.connect(
+            self._on_spot_ordering_requested
+        )
         self._action_row = None
         self._action_insert_index = 1
         self._lower_layout: QtWidgets.QVBoxLayout | None = None
@@ -1001,6 +1117,7 @@ class LocalizationWorkbench(QtWidgets.QWidget):
                 self._committed_parameters,invalidate_candidate=False,
             )
         self.result_view.set_result(result)
+        self.result_view.set_ordering_editable(False)
         self.state_label.setText("Accepted localization is current.")
         self.state_label.setStyleSheet("color: %s;" % _OK_COLOR)
         self._refresh_geometry_display()
@@ -1159,6 +1276,7 @@ class LocalizationWorkbench(QtWidgets.QWidget):
         self._candidate_measurement_revision = source_revision
         self.set_busy(False)
         self.result_view.set_result(result)
+        self.result_view.set_ordering_editable(True)
         self._refresh_geometry_display()
 
         if self.candidate_is_current:
@@ -1168,6 +1286,26 @@ class LocalizationWorkbench(QtWidgets.QWidget):
             self.state_label.setStyleSheet("color: %s;" % _OK_COLOR)
         else:
             self._mark_stale()
+        self._emit_candidate_state()
+
+    def _on_spot_ordering_requested(self,token: str) -> None:
+        if self._candidate is None or not self.candidate_is_current:
+            return
+        try:
+            if str(token) == "auto":
+                updated = reorder_localization(
+                    self._candidate,SpotOrdering.CANONICAL,automatic=True,
+                )
+            else:
+                updated = reorder_localization(
+                    self._candidate,SpotOrdering.normalize(token),automatic=False,
+                )
+        except Exception as error:
+            self.set_error(error)
+            return
+        self._candidate = updated
+        self.result_view.set_result(updated)
+        self.result_view.set_ordering_editable(True)
         self._emit_candidate_state()
 
     def set_error(self,error: Any) -> None:

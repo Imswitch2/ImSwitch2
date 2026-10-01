@@ -3,6 +3,10 @@
 from .api import localize_lattice,localize_spots
 from .parameters import LOCALIZATION_PARAMS,normalize_localization_parameter_input
 from .policy import suggest_localization_sources
+from .ordering import (
+    SpotOrdering,available_spot_orderings,canonicalize_registration,
+    reorder_localization,spot_ordering_label,spot_ordering_permutation,
+)
 from .reference import TargetLocalizationReference
 from .guidance import (
     LocalizationGuidance,
@@ -40,7 +44,10 @@ __all__ = [
     "LocalizationGuidance",
     "LocalizationResult",
     "SpotDetectionOptions",
+    "SpotOrdering",
     "TargetLocalizationReference",
+    "available_spot_orderings",
+    "canonicalize_registration",
     "crop_image",
     "detect_spots",
     "localization_context",
@@ -53,6 +60,9 @@ __all__ = [
     "rectangular_lattice_indices",
     "resolve_localization_guidance",
     "register_lattice",
+    "reorder_localization",
+    "spot_ordering_label",
+    "spot_ordering_permutation",
     "reuse_localization",
     "suggest_localization_sources",
 ]

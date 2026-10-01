@@ -13,6 +13,10 @@ from .model import (
     RoundEvaluation,
 )
 from ..measurement_metrics import IntensityAnalysis
+from .correspondence import (
+    ReferenceCorrespondence,ReferenceCorrespondenceResolution,
+    reference_correspondence_options,resolve_reference_correspondence,
+)
 from .orientation import (
     FeedbackOrientation,
     orient_localization,
@@ -51,6 +55,8 @@ __all__ = [
     "FeedbackMeasurement",
     "FeedbackStatus",
     "FeedbackOrientation",
+    "ReferenceCorrespondence",
+    "ReferenceCorrespondenceResolution",
     "FOVPositionCalibration",
     "GEOMETRY_ORIENTATION_PROTOCOL",
     "GeometryOrientationAnalysis",
@@ -77,5 +83,7 @@ __all__ = [
     "orient_localization",
     "orientation_permutation",
     "orientation_reindex_permutation",
+    "reference_correspondence_options",
     "reference_positions_for_localization",
+    "resolve_reference_correspondence",
 ]

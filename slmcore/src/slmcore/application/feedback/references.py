@@ -10,11 +10,13 @@ import numpy as np
 
 from ...core.cgh.feedback import (
     EditablePositionReferenceGeometry,FeedbackCapability,PositionReference,
-    PositionReferenceMode,editable_position_reference_geometry,
+    PositionReferenceMode,ReferenceCorrespondence,
+    editable_position_reference_geometry,
     editable_reference_center_px,editable_reference_positions,
     fit_center_reference_geometry,localization_positions_full_px,
     orient_localization,orientation_reindex_permutation,
-    reference_positions_for_localization,
+    reference_correspondence_options,reference_positions_for_localization,
+    resolve_reference_correspondence,
 )
 from ...core.cgh.localization import LocalizationResult
 from ..position_reference_store import (
@@ -55,6 +57,7 @@ class PositionReferenceSelection:
     reference_name: str | None=None
     editable_geometry: EditablePositionReferenceGeometry | None=None
     editable_locks: frozenset[str]=frozenset()
+    correspondence: ReferenceCorrespondence=ReferenceCorrespondence.AUTO
 
     def __post_init__(self) -> None:
         mode = PositionReferenceMode.normalize(self.mode)
@@ -67,12 +70,14 @@ class PositionReferenceSelection:
         if geometry is not None and not isinstance(geometry,EditablePositionReferenceGeometry):
             geometry = EditablePositionReferenceGeometry.from_mapping(geometry)
         locks = _normalize_editable_locks(self.editable_locks)
+        correspondence = ReferenceCorrespondence.normalize(self.correspondence)
         if mode is PositionReferenceMode.REFERENCE and reference_name is None:
             raise ValueError("Named position-reference mode requires a name")
         object.__setattr__(self,"mode",mode)
         object.__setattr__(self,"reference_name",reference_name)
         object.__setattr__(self,"editable_geometry",geometry)
         object.__setattr__(self,"editable_locks",locks)
+        object.__setattr__(self,"correspondence",correspondence)
 
 @dataclass(frozen=True)
 class PositionReferenceContext:
@@ -89,6 +94,9 @@ class PositionReferenceContext:
     create_allowed: bool=False
     create_unavailable_reason: str=""
     fit_geometry: EditablePositionReferenceGeometry | None=None
+    correspondence_options: tuple[str,...]=()
+    correspondence_resolved: str="canonical"
+    correspondence_diagnostics: Mapping[str,Any] | None=None
 
 class PositionReferenceResolutionMetadata(TypedDict,total=False):
     """Description of the detector-space reference used for position feedback."""
@@ -100,6 +108,8 @@ class PositionReferenceResolutionMetadata(TypedDict,total=False):
     plane_name: str
     created_at: str
     lifetime: str
+    correspondence: dict[str,Any]
+    correspondence_options: tuple[str,...]
 
 class PositionReferencePreview(TypedDict):
     """Detector-space reference preview with legacy kxy displacement diagnostics."""
@@ -179,6 +189,7 @@ class PositionReferenceService(FeedbackComponent):
             selection = PositionReferenceSelection(
                 editable_geometry=selection.editable_geometry,
                 editable_locks=selection.editable_locks,
+                correspondence=selection.correspondence,
             )
             self._position_reference_selections[key] = selection
         return selection
@@ -202,9 +213,10 @@ class PositionReferenceService(FeedbackComponent):
             inspection.measurement is not None
             and inspection.measurement.localization is not None
         )
+        resolution_metadata = {}
         try:
             if has_localization:
-                self._resolve_position_reference(section)
+                _positions,resolution_metadata = self._resolve_position_reference(section)
         except Exception as error:
             compatible = False
             compatibility_error = str(error)
@@ -239,6 +251,19 @@ class PositionReferenceService(FeedbackComponent):
             create_allowed=not bool(create_reason),
             create_unavailable_reason=create_reason,
             fit_geometry=fit_geometry,
+            correspondence_options=tuple(
+                resolution_metadata.get("correspondence_options",())
+            ),
+            correspondence_resolved=str(
+                resolution_metadata.get("correspondence",{}).get(
+                    "resolved","canonical"
+                )
+            ),
+            correspondence_diagnostics=(
+                None
+                if not resolution_metadata.get("correspondence")
+                else dict(resolution_metadata.get("correspondence") or {})
+            ),
         )
 
     def set_position_reference(
@@ -249,6 +274,7 @@ class PositionReferenceService(FeedbackComponent):
         reference_name: str | None=None,
         editable_geometry: EditablePositionReferenceGeometry | Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
+        correspondence: ReferenceCorrespondence | str | None=None,
     ) -> PositionReferenceSelection:
         """Select a reference for this plane without persisting or applying a correction."""
         self._require_editor_mode()
@@ -259,6 +285,14 @@ class PositionReferenceService(FeedbackComponent):
             editable_geometry = previous.editable_geometry
         if editable_locks is None:
             editable_locks = previous.editable_locks
+        if correspondence is None:
+            correspondence = (
+                previous.correspondence
+                if normalized_mode is PositionReferenceMode.REFERENCE
+                and previous.mode is PositionReferenceMode.REFERENCE
+                and str(previous.reference_name or "") == str(reference_name or "")
+                else ReferenceCorrespondence.AUTO
+            )
         if normalized_mode is PositionReferenceMode.EDITABLE and editable_geometry is None:
             inspection = self._runtime.get_section_feedback_inspection(section)
             measurement = inspection.measurement
@@ -275,6 +309,7 @@ class PositionReferenceService(FeedbackComponent):
             reference_name=reference_name,
             editable_geometry=editable_geometry,
             editable_locks=_normalize_editable_locks(editable_locks),
+            correspondence=correspondence,
         )
         plane = self._active_feedback_plane(section)
         if selection.mode is PositionReferenceMode.REFERENCE:
@@ -316,6 +351,7 @@ class PositionReferenceService(FeedbackComponent):
                 locks={name:(name in locks) for name in _EDITABLE_POSITION_REFERENCE_LOCK_FIELDS},
             ),
             editable_locks=locks,
+            correspondence=previous.correspondence,
         )
         plane = self._active_feedback_plane(section)
         self._position_reference_selections[(section,plane)] = selection
@@ -386,6 +422,7 @@ class PositionReferenceService(FeedbackComponent):
                 reference_name=reference.name,
                 editable_geometry=previous.editable_geometry,
                 editable_locks=previous.editable_locks,
+                correspondence=ReferenceCorrespondence.AUTO,
             )
         )
         self._section_changed(section)
@@ -537,6 +574,9 @@ class PositionReferenceService(FeedbackComponent):
                 source_orientation,
                 self._feedback_orientation(section),
             )]
+        positions,correspondence = resolve_reference_correspondence(
+            localization,positions,selection.correspondence,
+        )
         return positions,{
             "mode":selection.mode.value,
             "label":reference.name,
@@ -544,6 +584,10 @@ class PositionReferenceService(FeedbackComponent):
             "plane_name":reference.plane_name,
             "created_at":reference.created_at,
             "lifetime":record.lifetime.value,
+            "correspondence":correspondence.to_dict(),
+            "correspondence_options":tuple(
+                item.value for item in reference_correspondence_options(localization)
+            ),
         }
 
     def _position_reference_create_reason(self,section_key: str) -> str:
@@ -593,6 +637,7 @@ class PositionReferenceService(FeedbackComponent):
         self._position_reference_selections[key] = PositionReferenceSelection(
             mode=PositionReferenceMode.EDITABLE,
             editable_geometry=editable_position_reference_geometry(oriented),
+            correspondence=selection.correspondence,
         )
 
     def dispose(self) -> None:

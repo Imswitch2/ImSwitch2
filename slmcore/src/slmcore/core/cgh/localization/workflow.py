@@ -15,6 +15,7 @@ import numpy as np
 from ...measurement import ImageMeasurement
 from ..targets.resolution import TargetResolution
 from .api import localize_lattice
+from .ordering import canonicalize_registration
 from .guidance import (
     _target_lattice_size_hint,
     _validated_lattice_indices,
@@ -99,6 +100,10 @@ def localize_measurement(
         detection_options=detection_options,
         registration_options=registration_options,
     )
+    # Registration determines the physical fit.  Normalize only the discrete
+    # finite-grid identity convention afterwards so equivalent fits cannot
+    # randomly flip their spot numbering between acquisitions.
+    registration = canonicalize_registration(registration)
 
     linear = np.asarray(registration.affine_linear,dtype=np.float64)
     translation = np.asarray(registration.affine_translation,dtype=np.float64)
@@ -140,6 +145,21 @@ def localize_measurement(
         "registration_search_path":registration.diagnostics.get("search_path"),
         "registration_fallback_used":bool(
             registration.diagnostics.get("fallback_used",False)
+        ),
+        "spot_ordering_mode":registration.diagnostics.get(
+            "spot_ordering_mode","auto"
+        ),
+        "spot_ordering":registration.diagnostics.get(
+            "spot_ordering","canonical"
+        ),
+        "spot_ordering_registration_transform":registration.diagnostics.get(
+            "spot_ordering_registration_transform","canonical"
+        ),
+        "spot_ordering_available":tuple(
+            registration.diagnostics.get("spot_ordering_available",("canonical",))
+        ),
+        "ordering_logical_positions":registration.diagnostics.get(
+            "ordering_logical_positions"
         ),
         "detected_spot_count":int(registration.detections.positions_px.shape[1]),
         "matched_count":int(np.count_nonzero(registration.matched_mask)),

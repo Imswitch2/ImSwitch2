@@ -147,6 +147,7 @@ class FeedbackActionRouter:
                 reference_name=values.get("reference_name"),
                 editable_geometry=values.get("editable_geometry"),
                 editable_locks=values.get("editable_locks"),
+                correspondence=values.get("correspondence"),
             )
         elif request is MeasurementsAction.POSITION_REFERENCE_FIT_CENTER:
             self._references.fit_position_reference_center(section_key)

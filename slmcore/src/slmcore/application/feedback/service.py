@@ -300,6 +300,7 @@ class SLMFeedbackService:
         reference_name: str | None=None,
         editable_geometry: EditablePositionReferenceGeometry | Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
+        correspondence: Any | None=None,
     ) -> PositionReferenceSelection:
         return self._references.set_position_reference(
             section_key,
@@ -307,6 +308,7 @@ class SLMFeedbackService:
             reference_name=reference_name,
             editable_geometry=editable_geometry,
             editable_locks=editable_locks,
+            correspondence=correspondence,
         )
 
     def fit_position_reference_center(
