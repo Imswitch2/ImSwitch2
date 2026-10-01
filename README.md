@@ -77,7 +77,7 @@ This is a clean-slate continuation of the [ImSwitch](https://github.com/ImSwitch
 
 ```bash
 # 1. Clone and install (core install — UI + file I/O, no hardware drivers)
-git clone https://github.com/<your-fork>/Imswitch2.git
+git clone https://github.com/Imswitch2/ImSwitch2.git
 cd Imswitch2
 pip install -e .
 
