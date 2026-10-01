@@ -1052,6 +1052,35 @@ workflow file, *Run workflow over files…* applies it to a folder, and replay
 reproduces it.  For exploring before recording, **Tools → Console** runs the
 same kind of code over the results list (:ref:`below <improcess-console>`).
 
+Which tool for which job
+------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 54
+
+   * - You want to
+     - Use
+   * - Try something on the results you have open, look at it, adjust
+     - The :ref:`console <improcess-console>`: nothing is recorded until you
+       say so, and ``data`` follows the selection.
+   * - Do it again on other files, in a workflow, with the code recorded and
+       replayable
+     - The **Python step**: the code is a parameter, so it travels with the
+       result and with a workflow file.
+   * - Use it often, with its own name and a form of widgets, or hand it to
+       someone
+     - A drop-in plugin (*Drop-in analysis plugins*, below).  A snippet that
+       earns it becomes one.
+   * - Drive the hardware, a scan or an acquisition, or automate across modules
+     - ImScripting (:doc:`scripting`).
+   * - Use a tool from an installed napari plugin
+     - :doc:`improcess-napari-plugins`.
+
+When a built-in processor does the job, use that: it has a form, validation of
+its parameters and a name in the provenance.  The :ref:`recipes
+<improcess-recipes>` below are jobs none of them does.
+
 The panel
 ---------
 
@@ -1123,6 +1152,29 @@ numeric array (boolean, integer or float) or the result of ``make_result`` /
   them), and the error otherwise names the port and both dimensionalities;
 * an output is named ``<input name> (<port>)`` unless ``name=`` says
   otherwise.
+
+Things to know
+--------------
+
+* **Integer data wraps around.**  ``data`` has the recording's own type, and
+  numpy does not widen it: on a 16-bit stack, ``data - 200`` turns a pixel of
+  100 into 65436, with no error.  Convert first (``data.astype(np.float32)``);
+  every shipped recipe does.
+* **Every run starts fresh.**  Names one run sets are not there in the next, and
+  the code is the whole record of what was done.  (The console is the
+  opposite: its namespace persists.)
+* **Axis names.**  ``axes`` lists them in the order of ``data``.  A recording
+  that does not name its axes reads as ``Frame, Y, X``, so ``axis("Z")`` on it
+  raises an error that lists the names; ``print(axes)`` once, or use the index.
+* **Only arrays come out.**  A step makes numeric arrays, not tables or curves.
+  A one-dimensional output is accepted and listed, but the viewer needs at least
+  two axes to draw it, so report a single number or a short list with
+  ``print()``, which the **Output** pane shows.
+* **Imports.**  ``import scipy.ndimage`` works (scipy ships with ImSwitch).  The
+  provenance records the code and ImSwitch's version, not the versions of the
+  modules it imported, so a replay on another installation can differ if they do.
+* **Memory.**  The inputs are in memory, and a conversion to float makes a
+  second copy: a stack that barely fits will not fit in a step that converts it.
 
 Errors and printed output
 -------------------------
@@ -1261,8 +1313,8 @@ panel) and runs nothing, so you choose its inputs and output ports.  There,
 ``outputs = {...}`` replaces ``publish(...)``, and the panel says so when the code
 contains ``publish(``.
 
-Example
--------
+A first example
+---------------
 
 Three slices at a time along the first axis, alternating between outputs ``a``
 and ``b`` (ports ``a, b``)::
@@ -1279,6 +1331,124 @@ with the input's axes.  Use ``axis("Z")`` instead of ``0`` when the file names
 its axes.  As a workflow step, with a filter on ``split.a`` and saves of both
 branches, it is ``examples/improcess_workflows/python_step_interleave.yaml``
 (see :doc:`improcess-workflows`).
+
+.. _improcess-recipes:
+
+Recipes
+-------
+
+ImSwitch ships a handful of jobs that no processor does and a short script does
+well.  Each is a **snippet**: ImSwitch copies them into
+``~/ImSwitchConfig/improcess_snippets`` the first time it starts after you update,
+so **Load snippet…** lists them, in the panel and for the console's editor (copy
+the text across).  A copy you have edited is kept; delete the file and restart to
+get the current one back.  The same code is also a workflow file in
+``examples/improcess_workflows/``, ``python_step_<recipe>.yaml``, to run over a
+folder with ``python -m imswitch.improcess.workflows run``; it is generated from
+the snippet (``tools/make_python_recipe_workflows.py``), and a test fails if the
+two disagree.  Each opens with what it does and why a script, has its settings
+at the top, and checks its input and says what is wrong when it does not fit.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Recipe
+     - What it does
+     - Why not a processor
+   * - ``normalize_frames``
+     - Flatten brightness changes between frames.  Lamp flicker or bleaching: every plane is divided by its own median.
+     - Math applies one constant to the whole result.
+   * - ``temporal_bin``
+     - Average every n frames.  Temporal binning, with the frame spacing stretched to match.
+     - Resize works on Y/X; Projection collapses an axis to one image.
+   * - ``best_focus``
+     - Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; prints the scores.
+     - No processor chooses a plane by looking at the data.
+   * - ``snake_mosaic``
+     - Assemble a tile scan into one image.  Puts the tiles of a serpentine scan back in grid order; butt-joined, no blending.
+     - Stack combine joins stacks along an axis, not in a grid.
+   * - ``ratio_mask``
+     - Ratio of two channels, empty where the denominator is dim.  A ratio image and a ``labels`` mask of the pixels used: two outputs.
+     - Image calculator writes 0 where it cannot divide.
+   * - ``despeckle``
+     - Replace hot pixels and touch nothing else.  Only outliers become the local median; every other pixel is bit-identical.
+     - Filter's median blurs every pixel.
+   * - ``autocrop``
+     - Crop to the bright region, plus a margin.  The ranges come from the data, so a batch crops each file to its own region.
+     - Stack subset needs the ranges typed in.
+   * - ``crosstalk``
+     - Remove bleed-through between channels.  A measured mixing matrix, inverted and applied across all channels at once.
+     - No processor mixes channels.
+
+``normalize_frames``
+~~~~~~~~~~~~~~~~~~~~
+
+Flatten brightness changes between frames.  Lamp flicker or bleaching: every plane is divided by its own median.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/normalize_frames.py
+   :language: python
+
+``temporal_bin``
+~~~~~~~~~~~~~~~~
+
+Average every n frames.  Temporal binning, with the frame spacing stretched to match.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/temporal_bin.py
+   :language: python
+
+``best_focus``
+~~~~~~~~~~~~~~
+
+Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; prints the scores.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/best_focus.py
+   :language: python
+
+``snake_mosaic``
+~~~~~~~~~~~~~~~~
+
+Assemble a tile scan into one image.  Puts the tiles of a serpentine scan back in grid order; butt-joined, no blending.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/snake_mosaic.py
+   :language: python
+
+``ratio_mask``
+~~~~~~~~~~~~~~
+
+Ratio of two channels, empty where the denominator is dim.  A ratio image and a ``labels`` mask of the pixels used: two outputs.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/ratio_mask.py
+   :language: python
+
+``despeckle``
+~~~~~~~~~~~~~
+
+Replace hot pixels and touch nothing else.  Only outliers become the local median; every other pixel is bit-identical.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/despeckle.py
+   :language: python
+
+``autocrop``
+~~~~~~~~~~~~
+
+Crop to the bright region, plus a margin.  The ranges come from the data, so a batch crops each file to its own region.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/autocrop.py
+   :language: python
+
+``crosstalk``
+~~~~~~~~~~~~~
+
+Remove bleed-through between channels.  A measured mixing matrix, inverted and applied across all channels at once.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/crosstalk.py
+   :language: python
+
+Write your own the same way: start from the recipe closest to the job, keep the
+settings at the top, and convert to float before doing arithmetic.  A recipe that
+you use every day belongs in a drop-in plugin; one that is a one-off belongs in
+**Save as snippet…**.
 
 Active reconstructor
 ====================

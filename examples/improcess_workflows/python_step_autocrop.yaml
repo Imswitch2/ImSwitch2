@@ -1,0 +1,55 @@
+# Crop to the bright region, with a margin.
+# The region is wherever any plane gets brighter than halfway between the darkest
+# and the brightest pixel. A batch crops every file to its own region.
+# Why a script: Stack subset needs the ranges typed in; this finds them in the data.
+#
+# Run it on a synthetic recording (12 frames):
+#   python -c "import sys; sys.path.insert(0, 'examples/improcess_workflows'); \
+#     from _synthetic import write_synthetic_recording as w; w('cells.h5', frames=12)"
+#   python -m imswitch.improcess.workflows run python_step_autocrop.yaml \
+#       --input cells.h5 --out results/
+# or paste the code of the step into Tools -> Python step (it is also in
+# Load snippet... as 'autocrop').
+#
+# Derived from imswitch/_data/user_defaults/improcess_snippets/autocrop.py by
+# tools/make_python_recipe_workflows.py: edit the snippet, then run the tool.
+name: python-autocrop
+schema: 1
+description: Crop to the bright region, with a margin.
+steps:
+- step: source
+  id: raw
+- step: reconstruct
+  id: rec
+  reconstructor: view-only
+  params: {}
+  inputs:
+  - raw
+- step: process
+  id: script
+  processor: python
+  params:
+    ports: out
+    code: |
+      # Crop to the bright region, with a margin.
+      # The region is wherever any plane gets brighter than halfway between the darkest
+      # and the brightest pixel. A batch crops every file to its own region.
+      # Why a script: Stack subset needs the ranges typed in; this finds them in the data.
+      margin = 8                                     # pixels kept around the region
+
+      peak = data.max(axis=tuple(range(data.ndim - 2))) if data.ndim > 2 else data   # brightest value at each pixel
+      bright = peak > (peak.min() + peak.max()) / 2
+      if not bright.any():
+          raise ValueError("nothing is brighter than the halfway level, so there is nothing to crop to")
+      rows, cols = np.nonzero(bright)
+      y0, y1 = max(rows.min() - margin, 0), min(rows.max() + margin + 1, peak.shape[0])
+      x0, x1 = max(cols.min() - margin, 0), min(cols.max() + margin + 1, peak.shape[1])
+      print(f"cropped to rows {y0}:{y1}, columns {x0}:{x1} of {peak.shape}")
+      out = data[..., y0:y1, x0:x1].copy()
+  inputs:
+  - rec
+- step: save
+  id: save_out
+  input: script.out
+  fmt: tiff
+  path_template: '{out_dir}/{source_stem}_autocrop{ext}'

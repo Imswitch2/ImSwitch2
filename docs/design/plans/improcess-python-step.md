@@ -339,3 +339,26 @@ pattern"), reusing its pieces by moving them to `imcommon.model`
   have their own tests with real widgets and real threads.
 - **Still open.** A long call into compiled code (one numpy operation) cannot be
   interrupted until it returns; the Multicolor panel is still synchronous.
+
+## 9. Recipes (2026-10-01)
+
+Eight jobs no processor does ship as snippets in
+`imswitch/_data/user_defaults/improcess_snippets/` (installed by the existing
+user-defaults sync, so *Load snippet...* lists them with no setup) and as workflow
+files in `examples/improcess_workflows/`. The snippet is the single source: the
+workflow file is generated from it (`tools/make_python_recipe_workflows.py`), and
+`test_python_step_recipes.py` fails when they disagree, checks each recipe's
+numbers against a known answer, runs every workflow end to end, and requires the
+docs and the examples README to mention each recipe. Decisions worth keeping:
+
+- Recipes convert to float before arithmetic: `data` has the recording's dtype and
+  16-bit arithmetic wraps silently (documented under *Things to know*).
+- A recipe that needs a particular shape (two channels, a tile grid, a focus
+  stack) checks it and says what is wrong; none fails with an index error.
+- `despeckle` uses 8 noise widths, chosen by measuring false positives on pure
+  Gaussian and Poisson noise (5 replaced genuine pixels at about 30 per million).
+- Outputs stay at two or more dimensions: a one-dimensional result is accepted but
+  the viewer cannot draw it, so numbers are reported with `print`.
+- `tools/update_user_defaults_history.py` rebuilds the hash history from git; in a
+  shallow clone that silently drops older hashes, so the eight new entries were
+  added to the committed file instead of regenerating it.

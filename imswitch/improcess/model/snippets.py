@@ -70,19 +70,26 @@ def load_snippet(name: str) -> tuple[str, str]:
     ``FileNotFoundError`` for a snippet that does not exist and ``ValueError``
     for a name that cannot be one.
     """
-    from imswitch.improcess.processors.python_step.context import DEFAULT_PORTS
-
     path = _path_for(name)
     if not path.is_file():
         raise FileNotFoundError(f"no snippet called {name!r} in {path.parent}")
     with open(path, encoding="utf-8", newline="") as handle:
-        text = handle.read()
+        return parse_snippet(handle.read())
+
+
+def parse_snippet(text: str) -> tuple[str, str]:
+    """``(code, ports)`` of a snippet's text: the ``# ports:`` first line, if any, is the ports.
+
+    Pure, so a tool that reads the shipped snippets (the one that writes their
+    workflow files) splits them exactly as the panel does.
+    """
+    from imswitch.improcess.processors.python_step.context import DEFAULT_PORTS
+
     lines = text.splitlines(keepends=True)
     if lines:
         match = _HEADER.match(lines[0].rstrip("\r\n"))
         if match:
-            ports = match.group(1).strip() or DEFAULT_PORTS
-            return "".join(lines[1:]), ports
+            return "".join(lines[1:]), match.group(1).strip() or DEFAULT_PORTS
     return text, DEFAULT_PORTS
 
 
@@ -106,4 +113,4 @@ def save_snippet(name: str, code: str, ports: str, *, overwrite: bool = True) ->
     return path
 
 
-__all__ = ["list_snippets", "load_snippet", "save_snippet", "snippets_directory"]
+__all__ = ["list_snippets", "load_snippet", "parse_snippet", "save_snippet", "snippets_directory"]

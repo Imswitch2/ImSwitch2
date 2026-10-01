@@ -10,9 +10,24 @@ receipts. The guide is `docs/improcess-workflows.rst`.
 | `batch_view_only_project_save.py` / `.yaml` | A folder of recordings → max projection → blur → OME-TIFF, one row per file in a summary CSV. | yes (no arguments) |
 | `split_process_merge_diamond.py` / `.yaml` | Split a stack, process each slice with different settings, merge; refers to the split's slices by port (`split.C0`). | yes (no arguments) |
 | `python_step_interleave.yaml` | A Python step: three slices at a time alternate between two outputs (`split.a`, `split.b`); one is filtered, both are saved. The code is written in block style (`code: |`), so the file reads like a script. | yes (`--input` the synthetic recording) |
+| `python_step_normalize_frames.yaml` | A Python step: Divide every plane by its own median (lamp flicker, bleaching). Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_temporal_bin.yaml` | A Python step: Average every 4 frames into one; the frame spacing is stretched to match. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_best_focus.yaml` | A Python step: Pick the sharpest plane of a focus stack and print every plane's score. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_snake_mosaic.yaml` | A Python step: Assemble a serpentine tile scan (3 × 4) into one image. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_ratio_mask.yaml` | A Python step: Ratio of two channels, left empty where the denominator is dim; also saves the mask of pixels used. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_despeckle.yaml` | A Python step: Replace only hot pixels by the local median; every other pixel is untouched. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_autocrop.yaml` | A Python step: Crop to the bright region plus a margin; each file in a batch gets its own crop. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_crosstalk.yaml` | A Python step: Remove channel bleed-through with a measured mixing matrix. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
 | `monalisa_reconstruct_chain.yaml` | MoNaLISA reconstruction → background subtraction → Z projection, two saves. Scan geometry comes from the recording's attributes. | needs a MoNaLISA recording |
 | `consolidate_two_sources.yaml` | Two reconstructions consolidated into one, bound from a two-column manifest. | needs MoNaLISA recordings |
 | `_synthetic.py` | Writes the synthetic recording the runnable examples use. | — |
+
+The `python_step_<recipe>.yaml` files are generated from the snippets in
+`imswitch/_data/user_defaults/improcess_snippets/`, which ImSwitch also installs
+into `~/ImSwitchConfig/improcess_snippets` so that **Load snippet…** in the Python
+step panel lists them. Edit the snippet, then run
+`python tools/make_python_recipe_workflows.py`; a test fails if they disagree.
+Each file's header says why a script does the job and how to try it.
 
 ## Run
 

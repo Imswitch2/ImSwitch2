@@ -1,0 +1,55 @@
+# Pick the sharpest plane of a focus stack.
+# Sharpness is the variance of each plane's Laplacian: a plane in focus has
+# more fine detail. The plane numbers and their scores are printed.
+# Why a script: no processor chooses a plane by looking at the data; Projection
+# collapses the axis with a statistic (max, mean, ...) instead of picking one plane.
+#
+# Run it on a synthetic recording (12 frames):
+#   python -c "import sys; sys.path.insert(0, 'examples/improcess_workflows'); \
+#     from _synthetic import write_synthetic_recording as w; w('cells.h5', frames=12)"
+#   python -m imswitch.improcess.workflows run python_step_best_focus.yaml \
+#       --input cells.h5 --out results/
+# or paste the code of the step into Tools -> Python step (it is also in
+# Load snippet... as 'best_focus').
+#
+# Derived from imswitch/_data/user_defaults/improcess_snippets/best_focus.py by
+# tools/make_python_recipe_workflows.py: edit the snippet, then run the tool.
+name: python-best-focus
+schema: 1
+description: Pick the sharpest plane of a focus stack.
+steps:
+- step: source
+  id: raw
+- step: reconstruct
+  id: rec
+  reconstructor: view-only
+  params: {}
+  inputs:
+  - raw
+- step: process
+  id: script
+  processor: python
+  params:
+    ports: out
+    code: |
+      # Pick the sharpest plane of a focus stack.
+      # Sharpness is the variance of each plane's Laplacian: a plane in focus has
+      # more fine detail. The plane numbers and their scores are printed.
+      # Why a script: no processor chooses a plane by looking at the data; Projection
+      # collapses the axis with a statistic (max, mean, ...) instead of picking one plane.
+      from scipy import ndimage
+
+      if data.ndim != 3:
+          raise ValueError(f"expects a (plane, Y, X) stack, got axes {axes}; split other axes off first")
+      sharpness = np.array([ndimage.laplace(plane.astype(np.float32)).var() for plane in data])
+      best = int(np.argmax(sharpness))
+      print("sharpness per plane:", sharpness.round(1))
+      print("sharpest plane:", best)
+      out = make_result(data[best].copy(), axes=axes[1:], scales=scales[1:], name=f"{results[0].name} (plane {best})")
+  inputs:
+  - rec
+- step: save
+  id: save_out
+  input: script.out
+  fmt: tiff
+  path_template: '{out_dir}/{source_stem}_best_focus{ext}'

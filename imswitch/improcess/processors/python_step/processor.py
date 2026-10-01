@@ -97,7 +97,7 @@ class PythonStepProcessor(Processor):
 
         snippet_row = QtWidgets.QHBoxLayout()
         load_button = QtWidgets.QPushButton("Load snippet…")
-        load_button.setToolTip("Replace the code and ports with a saved snippet")
+        load_button.setToolTip("Replace the code and ports with a saved snippet (ImSwitch ships a few recipes)")
         save_button = QtWidgets.QPushButton("Save as snippet…")
         save_button.setToolTip("Keep this code and its ports in the snippet folder")
         snippet_row.addWidget(QtWidgets.QLabel("Code"))
