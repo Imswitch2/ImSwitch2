@@ -9,6 +9,9 @@ from ...core.cgh.execution.status import CGHResultState
 from ...core.measurement import ImageMeasurement
 from .contracts import AutomaticFeedbackState
 
+
+AUTOMATIC_MAX_MISSING_FRACTION = 0.10
+
 if TYPE_CHECKING:
     from ...core.engine.runtime import SLMRuntime
     from .contracts import SLMFeedbackCallbacks
@@ -251,21 +254,27 @@ class AutomaticFeedbackRunner:
             )
             run.stage = "localizing"
             self._emit_state()
-            localized = False
-            if run.reuse_previous_localization and previous_available:
+            if run.reuse_previous_localization:
+                if not previous_available:
+                    raise RuntimeError(
+                        "Previous localization reuse was requested, but no "
+                        "previous localization is available."
+                    )
                 try:
                     self._reuse_localization(
                         run.section_key,raise_errors=True,
                     )
-                    localized = True
                 except Exception as error:
-                    self._report_warning(
-                        "Automatic feedback",
-                        "Previous localization could not be reused; running "
-                        "localization instead.\n%s" % error,
-                    )
-            if not localized:
-                self._localize_and_commit(run.section_key)
+                    raise RuntimeError(
+                        "Previous localization could not be reused. Automatic "
+                        "feedback will not fall back to fresh localization when "
+                        "reuse is enabled."
+                    ) from error
+            else:
+                self._localize_and_commit(
+                    run.section_key,
+                    infer_missing_fraction=AUTOMATIC_MAX_MISSING_FRACTION,
+                )
 
             if run.stop_requested:
                 self._finish(cancelled=True)

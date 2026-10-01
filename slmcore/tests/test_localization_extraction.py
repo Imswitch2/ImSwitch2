@@ -93,3 +93,50 @@ def test_infer_missing_localization_preserves_match_provenance():
     np.testing.assert_array_equal(
         localization.measured_positions_px[:,1],[100.0,100.0],
     )
+
+
+def _localization_with_missing(total: int,missing: int) -> LocalizationResult:
+    indices = np.vstack((np.arange(total,dtype=int),np.zeros(total,dtype=int)))
+    positions = np.vstack((np.arange(total,dtype=float),np.zeros(total,dtype=float)))
+    matched = np.ones(total,dtype=bool)
+    if missing:
+        matched[-missing:] = False
+    return LocalizationResult(
+        target_type="multi_foci_vector",
+        target_params={},
+        parameters={},
+        lattice_indices=indices,
+        crop_coord=(0,10,0,max(10,total)),
+        cropped_image=np.zeros((10,max(10,total))),
+        expected_positions_px=positions,
+        measured_positions_px=positions,
+        period_x_px=1.0,
+        period_y_px=1.0,
+        offset_x_px=0.0,
+        offset_y_px=0.0,
+        diagnostics={
+            "matched_mask":tuple(bool(value) for value in matched),
+            "matched_count":int(np.count_nonzero(matched)),
+            "missing_count":int(missing),
+        },
+    )
+
+
+def test_automatic_missing_inference_accepts_up_to_ten_percent():
+    from slmcore.application.feedback.localization import LocalizationService
+
+    localization = _localization_with_missing(10,1)
+    inferred = LocalizationService._infer_missing_within_fraction(localization,0.10)
+
+    assert inferred.diagnostics["matched_count"] == 9
+    assert inferred.diagnostics["inferred_count"] == 1
+    assert inferred.diagnostics["missing_count"] == 0
+
+
+def test_automatic_missing_inference_rejects_more_than_ten_percent():
+    import pytest
+    from slmcore.application.feedback.localization import LocalizationService
+
+    localization = _localization_with_missing(10,2)
+    with pytest.raises(RuntimeError,match="exceeding the 10.0% automatic inference limit"):
+        LocalizationService._infer_missing_within_fraction(localization,0.10)

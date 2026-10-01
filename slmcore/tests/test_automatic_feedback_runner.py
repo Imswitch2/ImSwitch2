@@ -31,14 +31,16 @@ class _Service:
     can_run_automatic_feedback = True
     automatic_feedback_unavailable_reason = ""
 
-    def __init__(self,*,reuse_fails=False):
+    def __init__(self,*,reuse_fails=False,previous_available=True):
         self.application_session = _Session()
         self.reuse_fails = reuse_fails
+        self.previous_available = previous_available
         self.acquisitions = []
         self.cancel_count = 0
         self.commit_count = 0
         self.reuse_count = 0
         self.localize_count = 0
+        self.localize_infer_limits = []
         self.adapt_count = 0
         self.errors = []
         self.warnings = []
@@ -68,7 +70,7 @@ class _Service:
 
     def commit_measurement(self,section_key,measurement,**kwargs):
         self.commit_count += 1
-        return True
+        return self.previous_available
 
     def reuse_localization(self,section_key,*,raise_errors=False):
         self.reuse_count += 1
@@ -76,15 +78,16 @@ class _Service:
             raise RuntimeError("incompatible")
         return object()
 
-    def localize_and_commit(self,section_key):
+    def localize_and_commit(self,section_key,*,infer_missing_fraction=None):
         self.localize_count += 1
+        self.localize_infer_limits.append(infer_missing_fraction)
 
     def apply_intensity_feedback(self,section_key,*,raise_errors=False):
         self.adapt_count += 1
         return True,object()
 
 
-def test_one_requested_round_does_not_acquire_an_extra_measurement():
+def test_reuse_failure_stops_without_falling_back_to_localization():
     service = _Service(reuse_fails=True)
     runner = AutomaticFeedbackRunner(service)
 
@@ -95,17 +98,70 @@ def test_one_requested_round_does_not_acquire_an_extra_measurement():
 
     on_result,_ = service.acquisitions[0]
     on_result(object())
+
+    assert not runner.active
     assert service.commit_count == 1
     assert service.reuse_count == 1
+    assert service.localize_count == 0
+    assert service.adapt_count == 0
+    assert service.errors
+    assert "could not be reused" in str(service.errors[-1][1])
+
+
+def test_reuse_mode_never_runs_fresh_localization_across_rounds():
+    service = _Service()
+    runner = AutomaticFeedbackRunner(service)
+
+    assert runner.start(
+        "sec_0",rounds=3,source="cam",reuse_previous_localization=True,
+    )
+    for round_index in range(3):
+        service.acquisitions[round_index][0](object())
+        assert service.reuse_count == round_index+1
+        assert service.localize_count == 0
+        service.application_session.cgh_callback(True,None)
+
+    assert not runner.active
+    assert service.reuse_count == 3
+    assert service.localize_count == 0
+    assert service.errors == []
+    assert service.finished[-1][1] == "Automatic feedback completed (3 round(s))."
+
+
+def test_reuse_mode_requires_previous_localization():
+    service = _Service(previous_available=False)
+    runner = AutomaticFeedbackRunner(service)
+
+    assert runner.start(
+        "sec_0",rounds=1,source="cam",reuse_previous_localization=True,
+    )
+    service.acquisitions[0][0](object())
+
+    assert not runner.active
+    assert service.reuse_count == 0
+    assert service.localize_count == 0
+    assert service.errors
+    assert "no previous localization" in str(service.errors[-1][1]).lower()
+
+
+def test_fresh_automatic_localization_uses_ten_percent_inference_limit():
+    service = _Service()
+    runner = AutomaticFeedbackRunner(service)
+
+    assert runner.start(
+        "sec_0",rounds=1,source="cam",reuse_previous_localization=False,
+    )
+    service.acquisitions[0][0](object())
+
+    assert service.reuse_count == 0
     assert service.localize_count == 1
+    assert service.localize_infer_limits == [0.10]
     assert service.adapt_count == 1
 
     service.application_session.cgh_callback(True,None)
-
     assert not runner.active
     assert len(service.acquisitions) == 1
     assert service.errors == []
-    assert service.finished[-1][1] == "Automatic feedback completed (1 round(s))."
 
 
 def test_stop_during_acquisition_cancels_immediately():

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any,Callable,Mapping,TYPE_CHECKING
 
+import numpy as np
+
 from ...core.cgh.execution.status import CGHResultState
 from ...core.cgh.feedback import IntensityAnalysis
 from ...core.cgh.localization import LocalizationResult,infer_missing_localization
@@ -159,13 +161,66 @@ class LocalizationService(FeedbackComponent):
             self._callbacks.on_localization_error(section_key,error)
             return None
 
-    def localize_and_commit(self,section_key: str) -> None:
+    def localize_and_commit(
+        self,section_key: str,*,infer_missing_fraction: float | None=None,
+    ) -> LocalizationResult:
         status = self._runtime.get_section_feedback_status(section_key)
         parameters = dict(status.localization_params)
         candidate,_metrics = self.localization_candidate(section_key,parameters)
+        if infer_missing_fraction is not None:
+            candidate = self._infer_missing_within_fraction(
+                candidate,infer_missing_fraction,
+            )
         self.accept_localization(
             section_key,candidate,parameters,raise_errors=True,
         )
+        return candidate
+
+    @staticmethod
+    def _infer_missing_within_fraction(
+        localization: LocalizationResult,max_missing_fraction: float,
+    ) -> LocalizationResult:
+        """Infer unresolved sites only within an explicit automatic limit."""
+        limit = float(max_missing_fraction)
+        if not 0.0 <= limit <= 1.0:
+            raise ValueError("infer_missing_fraction must be between 0 and 1")
+
+        total = int(localization.lattice_indices.shape[1])
+        if total <= 0:
+            return localization
+        diagnostics = dict(localization.diagnostics or {})
+        matched_value = diagnostics.get("matched_mask")
+        if matched_value is None:
+            # Older localization results were complete by construction.
+            return localization
+
+        matched = np.asarray(matched_value,dtype=bool)
+        if matched.shape != (total,):
+            raise RuntimeError("Localization matched-mask shape is inconsistent")
+        inferred_value = diagnostics.get("inferred_mask")
+        inferred = (
+            np.zeros(total,dtype=bool)
+            if inferred_value is None
+            else np.asarray(inferred_value,dtype=bool)
+        )
+        if inferred.shape != (total,):
+            raise RuntimeError("Localization inferred-mask shape is inconsistent")
+        if np.any(matched & inferred):
+            raise RuntimeError("Localization matched and inferred masks overlap")
+        unresolved = ~(matched | inferred)
+        missing = int(np.count_nonzero(unresolved))
+        if missing == 0:
+            return localization
+
+        missing_fraction = float(missing) / float(total)
+        if missing_fraction > limit:
+            raise RuntimeError(
+                "Automatic feedback localization is incomplete: "
+                f"{missing}/{total} spots are unresolved "
+                f"({100.0*missing_fraction:.1f}%), exceeding the "
+                f"{100.0*limit:.1f}% automatic inference limit."
+            )
+        return infer_missing_localization(localization)
 
     def update_parameters(
         self,

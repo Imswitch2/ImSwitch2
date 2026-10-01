@@ -613,8 +613,12 @@ class SLMFeedbackService:
     ) -> LocalizationResult | None:
         return self._localization.reuse_localization(section_key,raise_errors=raise_errors)
 
-    def localize_and_commit(self,section_key: str) -> None:
-        return self._localization.localize_and_commit(section_key)
+    def localize_and_commit(
+        self,section_key: str,*,infer_missing_fraction: float | None=None,
+    ) -> LocalizationResult:
+        return self._localization.localize_and_commit(
+            section_key,infer_missing_fraction=infer_missing_fraction,
+        )
 
     def update_parameters(
         self,
