@@ -15,6 +15,7 @@ actually produced after it.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from dataclasses import dataclass, field
@@ -265,7 +266,9 @@ class Workflow:
     def to_yaml(self) -> str:
         import yaml
 
-        return yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True)
+        return yaml.dump(
+            self.to_dict(), Dumper=_block_style_dumper(), sort_keys=False, allow_unicode=True,
+        )
 
     @classmethod
     def from_yaml(cls, text: str) -> "Workflow":
@@ -288,6 +291,30 @@ class Workflow:
         if path.suffix.lower() in (".yaml", ".yml"):
             return cls.from_yaml(text)
         return cls.from_json(text)
+
+
+@functools.lru_cache(maxsize=1)
+def _block_style_dumper():
+    """A ``SafeDumper`` that writes multi-line strings in block style (``|``).
+
+    A parameter that holds code (a Python step's ``code``) then reads in the
+    file as the lines it is, not as one quoted line full of ``\\n``. Strings
+    without a newline keep the default style. PyYAML falls back to a quoted
+    scalar for text it cannot write as a block (a tab, trailing spaces), so a
+    value always loads back equal. A subclass, so ``yaml.safe_dump`` elsewhere
+    is unaffected.
+    """
+    import yaml
+
+    class BlockStyleDumper(yaml.SafeDumper):
+        pass
+
+    def represent_str(dumper, value):
+        style = "|" if "\n" in value else None
+        return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+    BlockStyleDumper.add_representer(str, represent_str)
+    return BlockStyleDumper
 
 
 # --------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 Date: 2026-09-30
 
-Status: Proposed (feasibility checked with a running prototype; nothing implemented). Implementation brief for an agent: `docs/agent_tasks/improcess_python_step.md`.
+Status: Implemented 2026-09-30 on `feat/improcess-python-step`: Phases A and B (the step, panel, `code` field, block-style YAML, shared code editor, snippets, the notice before a file's Python code runs), Phase C (the console) and Phase D (processor runs on a worker thread with cancel and live output). Implementation brief: `docs/agent_tasks/improcess_python_step.md`; see *Implementation notes* at the end.
 
 ## Summary
 
@@ -256,3 +256,150 @@ recorded, exported, batched and replayed.
   records ImSwitch's version, not scipy's. Recording the versions of
   modules a script imported is possible (`sys.modules` before and after)
   and would make the record complete.
+
+## 7. Implementation notes (Phases A and B, 2026-09-30)
+
+What was built follows the design; where it differs or decides something the
+design left open:
+
+- **`make_labels` builds `LabelsResult`** (`model/labels_result.py`, kind
+  `labels`), not `SegmentationResult`. The latter is fixed to `("Y", "X")` and
+  needs a full `SegmentationAnalysis`, so it cannot honour `axes=` / `scales=`
+  or a stack of labels; `LabelsResult` is the same kind, takes any
+  dimensionality and is what an imported labels layer already becomes.
+- **The compile filename is `<python step>`**, not `<python step 'split'>`: a
+  processor is not told its step's id. `run_script(..., step_name=)` names it
+  for a caller that knows one. The `SyntaxError` line is the error's own.
+- **`python` joins the kind allow-lists** in `test_result_kind_matrix.py`
+  (labels and composite), with the reason beside them: its code decides what
+  the values mean.
+- **The hook is `notify_param_widget`**, a module-level function in
+  `ResultProcessorController` rather than a method, because the existing
+  controller tests bind `runProcessor` onto a stand-in object.
+- **`SystemExit` from the script is an error**, not the end of the program; a
+  `KeyboardInterrupt` is not caught.
+- **Not done, on purpose:** what a script printed *before* it failed is not
+  shown (the hook receives only the one-line failure message); `data` is the
+  input's own array, not a read-only copy (the docs say to copy it before
+  changing it in place); the versions of imported modules are not recorded
+  (open question above).
+
+## 8. Implementation notes (Phases C and D, 2026-09-30)
+
+**Phase C, the console.** As designed, with these decisions the design left open:
+
+- **Editor and console.** The dock is a code editor (the shared
+  `PythonCodeEditor`) above pyqtgraph's console, both in one namespace. The editor
+  is what *Send to Python step* sends; pyqtgraph's console alone has no multi-line
+  editor, and feeding pasted code through its line-by-line REPL breaks on a blank
+  line inside a block. **Run** (Ctrl+Enter) compiles the text as a whole.
+- **The namespace** is the step's less `outputs` / `out` (nothing reads them in a
+  console) plus `current()`, `selected()`, `publish()`. `data` and the names with
+  it are bound to the selection (the current result when nothing is selected),
+  rebound only when the selection *changes* and before a command, never while a
+  `publish` runs: rebinding on every command would undo the user's own
+  `data = data[0]`. A result that is not in memory stays lazy
+  (`build_namespace(materialise=False)`); the step still reads its input once.
+- **`publish`** takes `like=` (the result axes and calibration are inherited from;
+  by default the first bound result) next to `name`, `axes`, `scales`, and shares
+  the step's output rules (`result_from_value`).
+- **Provenance.** An `opaque` node with *no inputs*: the console cannot know which
+  lines made the array, so it claims no lineage; the selection at the time is kept
+  as a label (`selected_when_published`). A step run on such a result chains on the
+  node and is reported not replayable, with the reason.
+- **Send to Python step** fills the step's code field through a new
+  `set_values` hook and `ResultProcessorWidget.setParameterValues`, runs nothing,
+  and tells the person `publish(...)` becomes `outputs = {...}` in a step.
+
+**Phase D, worker-thread runs.** As the design's §3.5 proposed ("the ScriptExecutor
+pattern"), reusing its pieces by moving them to `imcommon.model`
+(`routeThisThreadsOutputTo`, `interruptThread`; `CancelToken` was already there):
+
+- **Where.** Every panel that publishes through `ResultProcessorController` (the
+  generic ones and the hand-built Segmentation, PSF resolution and Colocalization
+  panels, which now have a Cancel button through a shared `RunState`), the image
+  toolbar's processor operations, and workflow runs. Not converted: the
+  **Multicolor** panel, which computes inside its own widget methods rather than
+  through `Processor.apply`, and the toolbar's **Duplicate**, which is a copy.
+- **Cancel** asks (token; a processor may call `checkpoint()`), then after 1.5 s
+  injects `OperationCancelled` into the thread, again every second if it was
+  caught. A cancelled run publishes nothing, even if it finished first. Shutdown is
+  the one bounded wait; a thread that will not stop is parked, not destroyed.
+- **Workflows** interrupt the thread only while a *processor* step runs: a save
+  (staged, atomic) or a reconstruction is left to finish, so a file is never left
+  half published. `run()` turns a cancellation raised inside a step into the same
+  `RunError` ("split: cancelled", report attached) the between-steps check gives.
+- **Streaming** is opt-in: a parameter widget that declares `output_appended`
+  gets what the processor prints, from this thread only (routing is per thread, not
+  a swap of `sys.stdout`, so the GUI thread's prints are neither captured nor lost).
+  The framework's own failure log is kept out of it.
+- **Inline fallback.** A controller without a runner, or an image toolbar whose view
+  is not a real window, runs inline as before. That is what lets the existing
+  synchronous tests stand, and what a headless caller gets; the asynchronous paths
+  have their own tests with real widgets and real threads.
+- **Still open.** A long call into compiled code (one numpy operation) cannot be
+  interrupted until it returns; the Multicolor panel is still synchronous.
+
+## 9. Recipes (2026-10-01)
+
+Eight jobs no processor does shipped first (a ninth, `signal_trace`, followed with the curves of §10) as snippets in
+`imswitch/_data/user_defaults/improcess_snippets/` (installed by the existing
+user-defaults sync, so *Load snippet...* lists them with no setup) and as workflow
+files in `examples/improcess_workflows/`. The snippet is the single source: the
+workflow file is generated from it (`tools/make_python_recipe_workflows.py`), and
+`test_python_step_recipes.py` fails when they disagree, checks each recipe's
+numbers against a known answer, runs every workflow end to end, and requires the
+docs and the examples README to mention each recipe. Decisions worth keeping:
+
+- Recipes convert to float before arithmetic: `data` has the recording's dtype and
+  16-bit arithmetic wraps silently (documented under *Things to know*).
+- A recipe that needs a particular shape (two channels, a tile grid, a focus
+  stack) checks it and says what is wrong; none fails with an index error.
+- `despeckle` uses 8 noise widths, chosen by measuring false positives on pure
+  Gaussian and Poisson noise (5 replaced genuine pixels at about 30 per million).
+- Outputs of one dimension are curves (see below, 2026-10-01); this note used to say
+  the opposite, that a one-dimensional result was accepted but could not be drawn and
+  numbers should be reported with `print`. That was wrong: the image viewer cannot
+  draw one, the Graph panel can.
+- `tools/update_user_defaults_history.py` rebuilds the hash history from git; in a
+  shallow clone that silently drops older hashes, so the new entries were
+  added to the committed file instead of regenerating it.
+
+## 10. One-dimensional outputs are curves (2026-10-01)
+
+A script's one-dimensional output (a value per frame, per plane) used to become an
+image result with nothing to show: a blank Graph panel, an empty viewer, and a TIFF
+save that failed. The Graph panel is where a curve belongs, and the machinery was
+already there (`kind = "curve"`, `plot_payloads()`, the Graph dock raised on
+production, as for FRC). Decisions:
+
+- `CurveResult` (`model/curve_result.py`) is an `ArrayProcessingResult` of kind
+  `curve`: one named axis, `x = index * scale`. Evenly sampled by construction; an
+  irregular axis is a table.
+- `result_from_value` returns it for any 1-D, non-labels output, from a step and from
+  the console's `publish`. A 0-D output gets its own error (print it, or make a
+  one-element array); a 1-D output from a 3-D input still has to name its axis, and
+  the error now shows the call (`axes=["Frame"]`). No axis is guessed from the length.
+- The x axis carries a unit only when it has one: a calibrated spatial axis the
+  result's pixel unit, a time axis seconds (as the OME writer assumes), anything else
+  none. A result has one `scale_unit` for all its axes, so printing it unconditionally
+  would caption a frame axis in micrometres.
+- Saves: CSV (axis column, value column, and the provenance companion as for FRC),
+  HDF5, Zarr. TIFF is refused up front by `supported_formats`, not by a writer error.
+- Curves are not offered to any processor, including the Python step: the kind matrix
+  pins that no processor accepts a `curve`, and loosening a pinned invariant for a
+  convenience was not worth it. A workflow that feeds one into a later step passes
+  validation (a script's output kind is not known statically) and stops at run time
+  with the framework's "does not accept result ... kind 'curve'". The console can read
+  a selected curve.
+- Recipes: `best_focus` gained a second port, `sharpness`, and `signal_trace` returns
+  two curves. The workflow generator needs to be told which ports are curves
+  (`CURVE_PORTS`) to save them as CSV; a test fails if that list and what the scripts
+  produce disagree.
+- Found by running it in a real window: `graphPanel` is off by default, so the Graph
+  dock did not exist and "reveal the Graph dock for curves" revealed nothing (FRC
+  curves included); the controller now asks the view to open the panel, as a pushed
+  plot does. And a Graph opened after startup was not wired to the Results dock, so
+  its Push to table did nothing; `ensureRuntimeAnalysisWidget` now wires it like the
+  other result-pushing panels. Both are small, pre-existing, and not specific to the
+  Python step; the curve is what made them visible.

@@ -122,13 +122,17 @@ LOCALIZATION_PROCESSOR_IDS = {"smlm-render", "smlm-filter", "smlm-drift", "smlm-
 #: is how a mask gets applied. The gate exists to keep a metrics *table* away
 #: from an image processor, not to stop a mask reaching the image it was drawn
 #: on. The other entries genuinely reinterpret the values as labels.
-LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator"}
+#:
+#: ``python`` is here because its code decides what the values mean: it is the
+#: escape hatch for the transformation no processor covers, and ``make_labels``
+#: exists so its outputs can be labels too.
+LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator", "python"}
 
 
 def test_non_image_results_are_never_offered_to_image_processors():
     """The load-bearing property: table/curve/rgb results match no processor;
-    labels results match only the morphology post-processing and the
-    calculator, and localization results match only the SMLM table/render
+    labels results match only the morphology post-processing, the
+    calculator and the Python step, and localization results match only the SMLM table/render
     processors."""
     results = _representative_results()
     # The one processor that consumes tables on purpose: the explicit
@@ -176,7 +180,8 @@ def test_composite_results_accepted_by_stack_and_channel_processors():
     }
     # Composite data is the source intensity stack (C, Y, X): axis/stack
     # operations and channel comparisons stay meaningful; drift correction
-    # would need a T axis and this composite has none.
+    # would need a T axis and this composite has none. The Python step takes
+    # any array-backed result: what to do with its axes is the code's business.
     assert accepted == {
         "stack-subset",
         "projection",
@@ -184,6 +189,7 @@ def test_composite_results_accepted_by_stack_and_channel_processors():
         "channel-split",
         "make-rgb",
         "colocalization",
+        "python",
     }
 
 

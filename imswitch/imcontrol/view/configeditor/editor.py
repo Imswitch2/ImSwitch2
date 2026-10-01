@@ -300,6 +300,7 @@ IMPROCESS_PROCESSOR_FALLBACK = [
     "multicolor-registration",
     "projection",
     "psf-resolution",
+    "python",
     "resize",
     "segmentation",
     "smlm-drift",

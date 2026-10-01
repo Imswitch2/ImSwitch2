@@ -149,7 +149,7 @@ class CommunicationChannel(SignalInterface):
         ReconstructionViewController, ReconstructorManagerController,
         ResultProcessorController
     Listeners: GraphController, ImProcessMainController, ImageToolbarController,
-        ResultProcessorController, SmlmRenderController
+        PythonConsoleController, ResultProcessorController, SmlmRenderController
     """
 
     sigResultProduced = Signal(object, str)
@@ -168,8 +168,9 @@ class CommunicationChannel(SignalInterface):
 
     Emitters: ImProcessMainController, ImageToolbarController,
         LiveReconstructionController, MemoryLiveController, MoNaLISAController,
-        NapariEndpointController, ReconstructorManagerController,
-        ResultProcessorController, WorkflowController
+        NapariEndpointController, PythonConsoleController,
+        ReconstructorManagerController, ResultProcessorController,
+        WorkflowController
     Listeners: ImProcessMainController, ReconstructionViewController
     """
 
@@ -242,7 +243,8 @@ class CommunicationChannel(SignalInterface):
     removed, or ctrl-clicked into the selection.
 
     Emitters: ReconstructionViewController
-    Listeners: ImProcessMainController, ResultProcessorController
+    Listeners: ImProcessMainController, PythonConsoleController,
+        ResultProcessorController
     """
 
     sigSmlmRenderSettingsChanged = Signal(object, object, object)

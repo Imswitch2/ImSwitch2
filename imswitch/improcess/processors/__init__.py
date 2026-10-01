@@ -23,6 +23,7 @@ from .math_ops import MathProcessor
 from .multicolor_apply import MulticolorApplyProcessor
 from .multicolor_registration import MulticolorRegistrationProcessor
 from .projection import ProjectionProcessor
+from .python_step import PythonStepProcessor
 from .psf_resolution import PSFResolutionProcessor
 from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
@@ -53,6 +54,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
     'projection': ProjectionProcessor,
+    'python': PythonStepProcessor,
     'psf-resolution': PSFResolutionProcessor,
     'resize': ResizeProcessor,
     'segmentation': SegmentationProcessor,
@@ -240,6 +242,7 @@ __all__ = [
     "MulticolorRegistrationProcessor",
     "DenoiseProcessor",
     "ProjectionProcessor",
+    "PythonStepProcessor",
     "PSFResolutionProcessor",
     "ResizeProcessor",
     "SegmentationProcessor",

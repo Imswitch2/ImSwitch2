@@ -115,6 +115,34 @@
    "3c0bdc5593905cd58200640f7b119efb8795cfba5609528bc4f43bf97ebc5948",
    "92f092f6619b177e7e2171e521ed9be134ff0e0eefc0a08fead135cf3f27de5d"
   ],
+  "improcess_snippets/autocrop.py": [
+   "44930296629e6a081f23e6cae5f25ffc1bf1fd1cfdea43cac47762e2c53c8223"
+  ],
+  "improcess_snippets/best_focus.py": [
+   "01d05f43238046a2ff117bcb592250cfac504d057ae363f0a39864a419fbd7a1",
+   "6c1173fce010fda66f9d3a7eba98b8528bdfcf64d84388ba059acb406bd3aef2"
+  ],
+  "improcess_snippets/crosstalk.py": [
+   "6c232af6530d134f6e764b16178fa1f5327580542fafa5eeef3e587291095ef1"
+  ],
+  "improcess_snippets/despeckle.py": [
+   "6efbc430ca3f9a8f9b64ccc002e77cdec0b5690cf65e786b65487a0882b82c30"
+  ],
+  "improcess_snippets/normalize_frames.py": [
+   "55d874094d3bd25421f91c373ea47b06564485d6c741198b6d59947aa9cfdcb5"
+  ],
+  "improcess_snippets/ratio_mask.py": [
+   "549331ccedd63232e1cdaa48671d1cf2983d59ab3a293047a2636c882723e980"
+  ],
+  "improcess_snippets/signal_trace.py": [
+   "627ede593eda3552c9ef79348899085e9b97e8f938608f799c0816663c436cd5"
+  ],
+  "improcess_snippets/snake_mosaic.py": [
+   "f4a929584160759da9a9b0ff6f521acbcf0727b98b8801fc6b4518cdc7c17df2"
+  ],
+  "improcess_snippets/temporal_bin.py": [
+   "3fe3aad7a7a984edf72d360667d1b7039c1f836d48fa51d4fe595c7702f6ae96"
+  ],
   "scripts/example_import.py": [
    "1cecec798864cf5bb35a4b8416e6941c79a7c0e54345809ea4bd5ed84ab2fb96",
    "bd31b6f7f101518feeef870f3be90e468b8fcac095d47777b8c0091499bb596f",

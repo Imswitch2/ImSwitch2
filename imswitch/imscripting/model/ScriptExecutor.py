@@ -1,5 +1,3 @@
-import ctypes
-import sys
 import threading
 import time
 import traceback
@@ -9,8 +7,8 @@ from imswitch.imcommon.framework import (
     FrameworkUtils, Signal, SignalInterface, Thread, Timer, Worker
 )
 from imswitch.imcommon.model import (
-    CancelToken, OperationCancelled, clearCurrentCancelToken, initLogger,
-    setCurrentCancelToken,
+    CancelToken, OperationCancelled, ThreadRoutingStream, clearCurrentCancelToken,
+    initLogger, interruptThread, routeThisThreadsOutputTo, setCurrentCancelToken,
 )
 from .actions import getActionsScope
 from .ScriptRunResult import ScriptRunResult, ScriptRunStatus
@@ -307,15 +305,7 @@ class ExecutionThread(Worker):
         ident = self._threadIdent
         if ident is None or not self._inScript:
             return False
-        accepted = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-            ctypes.c_ulong(ident), ctypes.py_object(OperationCancelled)
-        )
-        if accepted > 1:
-            # More than one thread state matched: undo, this must never
-            # poison another thread.
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(ident), None)
-            return False
-        return accepted == 1
+        return interruptThread(ident)
 
     def execute(self, scriptPath, code, result):
         """Execute script code with per-run output capture and structured result."""
@@ -404,74 +394,10 @@ class ExecutionThread(Worker):
         return self._currentResult
 
 
-class _ThreadRoutingStream:
-    """A ``sys.stdout``/``sys.stderr`` replacement that routes each thread's
-    writes to a registered sink and everything else to the stream it
-    wrapped. Installed once per process, lazily, and never removed: it
-    delegates to the original stream, so leaving it in place is harmless,
-    while a foreign replacement of ``sys.stdout`` made later (the pyqtgraph
-    console swaps it around its own commands) is simply wrapped anew by the
-    next run."""
-
-    def __init__(self, fallback):
-        self._fallback = fallback
-        self._sinks = {}
-        self._lock = threading.Lock()
-
-    def register(self, threadIdent, sink):
-        with self._lock:
-            self._sinks[threadIdent] = sink
-
-    def unregister(self, threadIdent):
-        with self._lock:
-            self._sinks.pop(threadIdent, None)
-
-    def _target(self):
-        return self._sinks.get(threading.get_ident(), self._fallback)
-
-    def write(self, text):
-        return self._target().write(text)
-
-    def writelines(self, lines):
-        target = self._target()
-        for line in lines:
-            target.write(line)
-
-    def flush(self):
-        target = self._target()
-        flush = getattr(target, 'flush', None)
-        if callable(flush):
-            flush()
-
-    def __getattr__(self, name):
-        return getattr(self._fallback, name)
-
-
-class _routeThisThreadsOutputTo:
-    """Context manager: route this thread's stdout/stderr writes to ``sink``."""
-
-    def __init__(self, sink):
-        self._sink = sink
-        self._routers = ()
-
-    def __enter__(self):
-        ident = threading.get_ident()
-        routers = []
-        for streamName in ('stdout', 'stderr'):
-            stream = getattr(sys, streamName)
-            if not isinstance(stream, _ThreadRoutingStream):
-                stream = _ThreadRoutingStream(stream)
-                setattr(sys, streamName, stream)
-            stream.register(ident, self._sink)
-            routers.append(stream)
-        self._routers = tuple(routers)
-        return self
-
-    def __exit__(self, *_exc):
-        ident = threading.get_ident()
-        for router in self._routers:
-            router.unregister(ident)
-        return False
+# The routing moved to imcommon so ImProcess's worker runs can share it; the
+# names stay importable from here.
+_ThreadRoutingStream = ThreadRoutingStream
+_routeThisThreadsOutputTo = routeThisThreadsOutputTo
 
 
 class SignaledStringIO(StringIO):

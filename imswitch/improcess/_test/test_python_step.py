@@ -1,0 +1,1248 @@
+"""The Python step: the script context's rules (Qt-free), the processor, and
+the step inside a workflow."""
+
+import ast
+import os
+import time
+from pathlib import Path
+
+import h5py
+import numpy as np
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from imswitch.improcess.model.array_result import ArrayProcessingResult  # noqa: E402
+from imswitch.improcess.model.provenance import graph_of, output_node  # noqa: E402
+from imswitch.improcess.model.save_protocol import ProvenanceDocument  # noqa: E402
+from imswitch.improcess.processors.python_step import PythonStepProcessor  # noqa: E402
+from imswitch.improcess.processors.python_step import context as python_context  # noqa: E402
+from imswitch.improcess.processors.python_step.context import (  # noqa: E402
+    DEFAULT_CODE,
+    DEFAULT_PORTS,
+    ScriptError,
+    build_namespace,
+    parse_ports,
+    run_script,
+)
+from imswitch.improcess.workflows.steps import Ref  # noqa: E402
+from imswitch.improcess.workflows import (  # noqa: E402
+    Process,
+    Reconstruct,
+    RunError,
+    Save,
+    Source,
+    Workflow,
+    bootstrap_registry,
+    run,
+    validate,
+    workflow_from_provenance,
+)
+
+
+def _stack(shape=(12, 4, 4), labels=("Z", "Y", "X"), scales=None, unit="px", name="rec"):
+    data = np.arange(int(np.prod(shape)), dtype=np.float32).reshape(shape)
+    return ArrayProcessingResult(
+        name, data, list(labels), axis_scales=scales, scale_unit=unit,
+    )
+
+
+def _slice_stack(count=12, size=4):
+    """Plane ``i`` holds the value ``i`` everywhere: slices are easy to name."""
+    data = np.broadcast_to(np.arange(count, dtype=np.float32)[:, None, None], (count, size, size))
+    return ArrayProcessingResult("rec", np.array(data), ["Z", "Y", "X"])
+
+
+# -- the context is Qt-free ---------------------------------------------------
+
+def test_the_context_module_imports_nothing_from_qt():
+    tree = ast.parse(Path(python_context.__file__).read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+    assert not [name for name in imported if name.split(".")[0] in {"qtpy", "PyQt5", "PyQt6", "PySide2", "PySide6"}]
+
+
+# -- ports --------------------------------------------------------------------
+
+def test_default_ports_and_template():
+    assert DEFAULT_PORTS == "out"
+    assert DEFAULT_CODE.rstrip().splitlines()[-1] == 'outputs = {"out": data}'
+    assert DEFAULT_CODE.lstrip().startswith("#")
+    compile(DEFAULT_CODE, "<template>", "exec")
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("", ("out",)),
+    (None, ("out",)),
+    ("   ", ("out",)),
+    (" , ,", ("out",)),
+    ("a", ("a",)),
+    ("a, b", ("a", "b")),
+    ("  a ,b,, c-1 , d_2", ("a", "b", "c-1", "d_2")),
+])
+def test_parse_ports_splits_strips_and_drops_empties(text, expected):
+    assert parse_ports(text) == expected
+
+
+@pytest.mark.parametrize("text, named", [
+    ("a b", "a b"),
+    ("a, b.c", "b.c"),
+    ("ok, spl/it", "spl/it"),
+    ("é", "é"),
+])
+def test_parse_ports_refuses_a_bad_name_and_names_it(text, named):
+    with pytest.raises(ValueError, match=named):
+        parse_ports(text)
+
+
+def test_parse_ports_refuses_a_duplicate_and_names_it():
+    with pytest.raises(ValueError, match="'a'"):
+        parse_ports("a, b, a")
+
+
+# -- the namespace ------------------------------------------------------------
+
+def test_the_namespace_has_exactly_the_documented_names():
+    first = _stack(scales=[2.0, 0.5, 0.5], unit="um")
+    second = _stack(name="other")
+    namespace = build_namespace([first, second])
+    assert set(namespace) == {
+        "np", "data", "inputs", "axes", "scales", "unit", "axis", "results",
+        "make_result", "make_labels", "outputs", "out",
+    }
+    assert namespace["np"] is np
+    assert np.array_equal(namespace["data"], first.data)
+    assert [a.shape for a in namespace["inputs"]] == [(12, 4, 4), (12, 4, 4)]
+    assert namespace["axes"] == ["Z", "Y", "X"]
+    assert namespace["scales"] == [2.0, 0.5, 0.5]
+    assert namespace["unit"] == "um"
+    assert namespace["results"] == [first, second]
+    assert namespace["outputs"] is None and namespace["out"] is None
+
+
+def test_data_is_materialised_from_a_lazy_source():
+    class Lazy:
+        shape = (3, 2, 2)
+        ndim = 3
+
+        def __array__(self, dtype=None, copy=None):
+            return np.ones(self.shape, dtype=dtype or np.float32)
+
+    lazy = ArrayProcessingResult("lazy", Lazy(), ["Z", "Y", "X"])
+    data = build_namespace([lazy])["data"]
+    assert isinstance(data, np.ndarray) and data.shape == (3, 2, 2)
+
+
+def test_axis_finds_a_label_or_passes_an_index_through():
+    axis = build_namespace([_stack()])["axis"]
+    assert axis("Z") == 0 and axis("X") == 2
+    assert axis("y") == 1
+    assert axis(1) == 1 and axis(np.int64(2)) == 2
+    assert axis(-1) == 2
+    for bad in ("T", 3, -4, 1.5, True, None):
+        with pytest.raises(ValueError, match="Z, Y, X"):
+            axis(bad)
+
+
+# -- outputs ------------------------------------------------------------------
+
+def test_a_bare_out_becomes_the_single_port():
+    (result,), printed = run_script("out = data * 2", [_stack()], ("out",))
+    assert printed == ""
+    assert np.array_equal(result.data, _stack().data * 2)
+    assert result.name == "rec (out)"
+    assert result.axis_labels == ["Z", "Y", "X"]
+    assert result.metadata == {"operation": "python", "port": "out"}
+
+
+def test_a_bare_array_in_outputs_is_accepted_for_the_single_port_only():
+    (result,), _ = run_script("outputs = data + 1", [_stack()], ("out",))
+    assert np.array_equal(result.data, _stack().data + 1)
+    with pytest.raises(ScriptError, match="must be a dict") as caught:
+        run_script("outputs = data", [_stack()], ("a", "b"))
+    assert caught.value.line is None
+
+
+def test_out_fills_a_single_port_of_any_name_but_not_several():
+    (result,), _ = run_script("out = data", [_stack()], ("only",))
+    assert result.metadata["port"] == "only"
+    with pytest.raises(ScriptError, match="single output port"):
+        run_script("out = data", [_stack()], ("a", "b"))
+
+
+def test_dict_outputs_come_back_in_the_declared_order():
+    results, _ = run_script(
+        'outputs = {"b": data + 1, "a": data + 2}', [_stack()], ("a", "b"),
+    )
+    assert [r.metadata["port"] for r in results] == ["a", "b"]
+    assert np.array_equal(results[0].data, _stack().data + 2)
+    assert np.array_equal(results[1].data, _stack().data + 1)
+    assert [r.name for r in results] == ["rec (a)", "rec (b)"]
+
+
+def test_setting_neither_outputs_nor_out_is_an_error():
+    with pytest.raises(ScriptError, match="neither 'outputs' nor 'out'"):
+        run_script("x = 1", [_stack()], ("out",))
+
+
+def test_missing_and_extra_ports_are_named_with_the_declared_list():
+    with pytest.raises(ScriptError) as missing:
+        run_script('outputs = {"a": data}', [_stack()], ("a", "b"))
+    assert "missing b" in str(missing.value) and "(a, b)" in str(missing.value)
+    with pytest.raises(ScriptError) as extra:
+        run_script('outputs = {"a": data, "c": data}', [_stack()], ("a",))
+    assert "not declared: c" in str(extra.value) and "(a)" in str(extra.value)
+    with pytest.raises(ScriptError) as both:
+        run_script('outputs = {"c": data}', [_stack()], ("a", "b"))
+    assert "missing a, b" in str(both.value) and "not declared: c" in str(both.value)
+
+
+def test_a_different_dimensionality_needs_make_result():
+    with pytest.raises(ScriptError) as caught:
+        run_script('outputs = {"out": data.max(axis=0)}', [_stack()], ("out",))
+    message = str(caught.value)
+    assert "'out'" in message and "2 dimensions" in message and "3 (Z, Y, X)" in message
+    assert "make_result" in message
+
+    (result,), _ = run_script(
+        'outputs = {"out": make_result(data.max(axis=0), axes=["Y", "X"], name="mip")}',
+        [_stack(scales=[2.0, 0.5, 0.25], unit="um")], ("out",),
+    )
+    assert result.axis_labels == ["Y", "X"]
+    assert result.data.shape == (4, 4)
+    assert result.name == "mip"
+    # the calibration of the axes that survived comes along; the unit always does
+    assert result.axis_scales == [0.5, 0.25] and result.scale_unit == "um"
+
+
+def test_make_result_scales_override_and_axes_must_match_the_array():
+    (result,), _ = run_script(
+        'out = make_result(data[0], axes=["Y", "X"], scales=[1.5, 2.5])', [_stack()], ("out",),
+    )
+    assert result.axis_scales == [1.5, 2.5]
+    with pytest.raises(ScriptError, match="name 3 dimensions but the array has 2"):
+        run_script('out = make_result(data[0], axes=["Z", "Y", "X"])', [_stack()], ("out",))
+    with pytest.raises(ScriptError, match="1 scales for 2 dimensions"):
+        run_script('out = make_result(data[0], axes=["Y", "X"], scales=[1.0])', [_stack()], ("out",))
+
+
+def test_the_same_dimensionality_inherits_axes_scales_and_unit():
+    (result,), _ = run_script(
+        "out = data[::2]", [_stack(scales=[2.0, 0.5, 0.5], unit="um")], ("out",),
+    )
+    assert result.data.shape == (6, 4, 4)
+    assert result.axis_labels == ["Z", "Y", "X"]
+    assert result.axis_scales == [2.0, 0.5, 0.5] and result.scale_unit == "um"
+    low, high = result.display_levels
+    assert low <= float(result.data.min()) and high >= float(result.data.max())
+
+
+def test_an_output_that_is_not_a_numeric_array_is_refused():
+    for value in ('"text"', "{1: 2}", "object()"):
+        with pytest.raises(ScriptError, match="'out' must be a numeric array"):
+            run_script(f"out = {value}", [_stack()], ("out",))
+
+
+def test_make_labels_builds_a_labels_result():
+    from imswitch.improcess.model.result import result_kind
+
+    (result,), _ = run_script(
+        'out = make_labels((data > 100).astype(np.uint8), name="mask")', [_stack()], ("out",),
+    )
+    assert result_kind(result) == "labels"
+    assert result.name == "mask"
+    assert result.axis_labels == ["Z", "Y", "X"]
+    assert result.data.dtype.kind in "iu" and set(np.unique(result.data)) <= {0, 1}
+
+    (whole,), _ = run_script("out = make_labels(data // 50)", [_stack()], ("out",))
+    assert whole.data.dtype.kind in "iu" and whole.name == "rec (out)"
+    with pytest.raises(ScriptError, match="whole numbers"):
+        run_script("out = make_labels(data / 7)", [_stack()], ("out",))
+
+
+# -- stdout and errors --------------------------------------------------------
+
+def test_print_and_stderr_output_is_captured_in_order():
+    code = 'import sys\nprint("one")\nprint("two", file=sys.stderr)\nout = data\n'
+    (result,), printed = run_script(code, [_stack()], ("out",))
+    assert printed == "one\ntwo\n"
+    assert result.metadata["port"] == "out"
+
+
+def test_a_name_error_reports_its_line():
+    code = "x = 1\ny = x + undefined_name\nout = y\n"
+    with pytest.raises(ScriptError) as caught:
+        run_script(code, [_stack()], ("out",))
+    error = caught.value
+    assert error.line == 2
+    assert str(error) == "line 2: NameError: name 'undefined_name' is not defined"
+    assert "\n" not in str(error)
+    assert 'File "<python step>", line 2, in <module>' in error.traceback_text
+    assert "y = x + undefined_name" in error.traceback_text
+    assert error.traceback_text.splitlines()[-1] == "NameError: name 'undefined_name' is not defined"
+
+
+def test_a_syntax_error_reports_its_own_line():
+    code = "a = 1\nb = 2\nc = (3 +\n"
+    with pytest.raises(ScriptError) as caught:
+        run_script(code, [_stack()], ("out",))
+    assert caught.value.line is not None and caught.value.line >= 3
+    assert str(caught.value).startswith(f"line {caught.value.line}: SyntaxError: ")
+    assert "SyntaxError" in caught.value.traceback_text
+
+    with pytest.raises(ScriptError) as plain:
+        run_script("x = 1\ndef f(:\n    pass\n", [_stack()], ("out",))
+    assert plain.value.line == 2
+
+
+def test_the_traceback_keeps_only_the_scripts_own_frames():
+    code = "def pick(i):\n    return np.take(data, [100], axis=0)\nout = pick(0)\n"
+    with pytest.raises(ScriptError) as caught:
+        run_script(code, [_stack()], ("out",))
+    error = caught.value
+    assert error.line == 2          # the innermost frame of the user's code
+    frames = [line for line in error.traceback_text.splitlines() if line.lstrip().startswith("File ")]
+    assert len(frames) == 2 and all("<python step>" in line for line in frames)
+    assert "numpy" not in error.traceback_text
+    assert str(error).startswith("line 2: IndexError")
+
+
+def test_exit_is_an_error_not_the_end_of_the_program():
+    with pytest.raises(ScriptError, match="line 2: SystemExit: the code called exit"):
+        run_script("x = 1\nraise SystemExit(0)\n", [_stack()], ("out",))
+
+
+def test_a_named_step_shows_in_the_traceback_frames():
+    with pytest.raises(ScriptError) as caught:
+        run_script("1 / 0", [_stack()], ("out",), step_name="split")
+    assert "<python step 'split'>" in caught.value.traceback_text
+    assert caught.value.line == 1
+
+
+def test_running_needs_an_input():
+    with pytest.raises(ScriptError, match="at least one input"):
+        run_script("out = 1", [], ("out",))
+
+
+def test_the_original_exception_is_kept_for_the_log():
+    with pytest.raises(ScriptError) as caught:
+        run_script("raise KeyError('k')", [_stack()], ("out",))
+    assert isinstance(caught.value.__cause__, KeyError)
+
+
+# -- the example in the design ------------------------------------------------
+
+INTERLEAVE_CODE = """\
+ax = axis("Z")
+group = (np.arange(data.shape[ax]) // 3) % 2
+outputs = {
+    "a": np.take(data, np.flatnonzero(group == 0), axis=ax),
+    "b": np.take(data, np.flatnonzero(group == 1), axis=ax),
+}
+"""
+
+
+def test_three_slices_at_a_time_alternate_between_two_outputs():
+    (a, b), _ = run_script(INTERLEAVE_CODE, [_slice_stack()], ("a", "b"))
+    assert a.data.shape == (6, 4, 4) and b.data.shape == (6, 4, 4)
+    assert a.data[:, 0, 0].tolist() == [0, 1, 2, 6, 7, 8]
+    assert b.data[:, 0, 0].tolist() == [3, 4, 5, 9, 10, 11]
+    assert a.axis_labels == b.axis_labels == ["Z", "Y", "X"]
+    assert (a.name, b.name) == ("rec (a)", "rec (b)")
+
+
+# -- the processor ------------------------------------------------------------
+
+def test_the_processor_declares_what_the_brief_says():
+    processor = PythonStepProcessor()
+    assert (processor.id, processor.name, processor.category) == ("python", "Python step", "Scripting")
+    assert processor.kinds == ("image", "labels", "composite")
+    assert (processor.min_inputs, processor.max_inputs) == (1, None)
+    assert processor.preserves_grid is None and processor.accepts_roi is False
+    assert processor.params_version == 1
+    assert PythonStepProcessor.default_params() == {"code": DEFAULT_CODE, "ports": DEFAULT_PORTS}
+    fields = {field.key: field for field in PythonStepProcessor.param_spec()}
+    assert (fields["code"].type, fields["code"].label) == ("code", "Code")
+    assert (fields["ports"].type, fields["ports"].label) == ("text", "Output ports")
+    assert "outputs" in fields["ports"].help
+    assert processor.applies_to(_stack())
+
+
+def test_it_is_a_built_in_the_registry_and_catalogue_list():
+    from imswitch.improcess.processors import available_processor_ids
+
+    assert "python" in available_processor_ids()
+    registry = bootstrap_registry(user_plugins=False)
+    assert registry.get_processor("python").id == "python"
+
+
+def test_output_spec_declares_the_ports_and_none_for_unparseable_names():
+    processor = PythonStepProcessor()
+    assert processor.output_spec({"ports": "a, b"}).ports == ("a", "b")
+    assert processor.output_spec({}).ports == ("out",)
+    assert processor.output_spec(None).ports == ("out",)
+    broken = processor.output_spec({"ports": "a b, c"})
+    assert broken.ports == () and broken.pattern is None
+    assert not broken.matches("c") and not broken.matches("a b")
+
+
+def test_apply_runs_the_code_and_names_the_outputs_by_port():
+    processor = PythonStepProcessor()
+    output = processor.apply(_slice_stack(), {"code": INTERLEAVE_CODE, "ports": "a, b"})
+    assert output.keys == ("a", "b")
+    assert [r.data.shape for r in output.results] == [(6, 4, 4), (6, 4, 4)]
+    assert not any("python_step" in r.metadata for r in output.results)   # nothing printed
+
+
+def test_apply_keeps_what_was_printed_on_every_output_cut_to_4000_characters():
+    processor = PythonStepProcessor()
+    code = 'print("hello")\noutputs = {"a": data, "b": data}\n'
+    output = processor.apply(_stack(), {"code": code, "ports": "a, b"})
+    assert [r.metadata["python_step"]["stdout"] for r in output.results] == ["hello\n", "hello\n"]
+    long = processor.apply(_stack(), {"code": 'print("x" * 9000)\nout = data', "ports": "out"})
+    assert len(long.results[0].metadata["python_step"]["stdout"]) == 4000
+
+
+def test_apply_reads_a_multi_input_run_from_params_results():
+    first, second = _stack(name="one"), _stack(name="two")
+    output = PythonStepProcessor().apply(
+        first, {"code": "out = inputs[0] + inputs[1]", "ports": "out", "results": [first, second]},
+    )
+    assert np.array_equal(output.results[0].data, first.data + second.data)
+    assert output.results[0].name == "one (out)"
+    alone = PythonStepProcessor().apply(first, {"code": "out = data * len(inputs)", "ports": "out"})
+    assert np.array_equal(alone.results[0].data, first.data)        # no results key: just the one
+
+
+def test_a_bad_port_name_raises_the_real_error_from_apply():
+    with pytest.raises(ValueError, match="'a b'"):
+        PythonStepProcessor().apply(_stack(), {"code": "out = data", "ports": "a b"})
+
+
+def test_it_accepts_images_labels_and_composites_but_not_tables():
+    processor = PythonStepProcessor()
+
+    class _Kind(ArrayProcessingResult):
+        pass
+
+    for kind, expected in (("image", True), ("labels", True), ("composite", True), ("table", False), ("rgb", False)):
+        result = _Kind("r", np.zeros((4, 4), np.float32), ["Y", "X"])
+        result.kind = kind
+        assert processor.accepts(result) is expected, kind
+    assert processor.check_inputs([_stack(), _stack(), _stack()]) == (True, "")
+    assert processor.check_inputs([])[0] is False
+
+
+# -- the step in a workflow ---------------------------------------------------
+
+#: The interleave example as a workflow step writes it: axis 0 of the recording.
+INTERLEAVE_AX0 = INTERLEAVE_CODE.replace('ax = axis("Z")', "ax = 0")
+
+
+@pytest.fixture(scope="module")
+def registry():
+    return bootstrap_registry(user_plugins=False)
+
+
+def _planes_h5(path, count=12, size=8):
+    """A recording whose plane ``i`` holds the value ``i``: slices are easy to name."""
+    planes = np.broadcast_to(np.arange(count, dtype=np.float32)[:, None, None], (count, size, size))
+    with h5py.File(str(path), "w") as handle:
+        dataset = handle.create_dataset("data", data=np.array(planes))
+        dataset.attrs["element_size_um"] = [1.0, 0.1, 0.1]
+        dataset.attrs["axes"] = "CYX"
+    return path
+
+
+def _interleave_workflow(raw, code=INTERLEAVE_AX0):
+    return Workflow("interleave", [
+        Source("raw", path=str(raw)),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("split", "python", {"code": code, "ports": "a, b"}, inputs=["rec"]),
+        Process("blur", "filter", {"radius": 1.0}, inputs=["split.a"]),
+        Save("out", input="split.b", fmt="hdf5"),
+    ])
+
+
+def test_a_python_step_validates_runs_chains_and_saves(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    workflow = _interleave_workflow(raw)
+    assert validate(workflow, registry) == []
+    with run(workflow, registry=registry, out_dir=tmp_path / "out") as report:
+        assert report.ok and report.steps_run == ["raw", "rec", "split", "blur", "out"]
+        assert sorted(report.ports_of("split")) == ["a", "b"]
+        assert report.result("split.a").data[:, 0, 0].tolist() == [0, 1, 2, 6, 7, 8]
+        assert report.result("split.b").data[:, 0, 0].tolist() == [3, 4, 5, 9, 10, 11]
+        assert report.result("blur").data.shape == (6, 8, 8)
+        saved = report.receipts[0].primary
+        assert saved.exists()
+    with h5py.File(str(saved), "r") as handle:
+        assert handle["data"][:, 0, 0].tolist() == [3, 4, 5, 9, 10, 11]
+
+
+def test_a_reference_to_a_port_the_step_does_not_declare_is_refused(registry, tmp_path):
+    workflow = _interleave_workflow(tmp_path / "scan.h5")
+    workflow.step("blur").inputs = [Ref("split", "c")]
+    messages = [str(issue) for issue in validate(workflow, registry)]
+    assert messages == ["blur: port 'c' is not one 'split' produces (a, b)"]
+    # and a port list that cannot be parsed declares none at all
+    workflow = _interleave_workflow(tmp_path / "scan.h5")
+    workflow.step("split").params["ports"] = "a b"
+    assert any("blur: port 'a' is not one 'split' produces" in str(issue) for issue in validate(workflow, registry))
+
+
+def test_the_recorded_node_carries_the_code_and_is_replayable(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    with run(_interleave_workflow(raw), registry=registry, out_dir=tmp_path / "out") as report:
+        node = output_node(report.result("split.a"))
+        assert node["plugin_id"] == "python"
+        assert node["params"]["code"] == INTERLEAVE_AX0         # the whole code, not a summary
+        assert node["params"]["ports"] == "a, b"
+        assert node["replayable"] is True
+        assert node["outputs"] == ["a", "b"]
+
+
+def test_replay_from_provenance_gives_the_same_code_back(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    with run(_interleave_workflow(raw), registry=registry, out_dir=tmp_path / "first") as report:
+        graph = graph_of(report.result("blur"))
+        original = np.array(report.result("blur").data)
+    replay = workflow_from_provenance(ProvenanceDocument(graph=graph), registry=registry).workflow
+    steps = [step for step in replay.steps if isinstance(step, Process) and step.processor == "python"]
+    assert len(steps) == 1
+    assert steps[0].params["code"] == INTERLEAVE_AX0
+    assert steps[0].params["ports"] == "a, b"
+    with run(replay, registry=registry, out_dir=tmp_path / "second") as again:
+        blurred = [key for key in again.results if key.endswith(".out")][-1]
+        assert np.array_equal(again.result(blurred).data, original)
+
+
+def test_a_failing_script_names_the_step_and_the_line(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    workflow = _interleave_workflow(raw, code="x = 1\ny = x + missing\n")
+    with pytest.raises(RunError) as caught:
+        run(workflow, registry=registry, out_dir=tmp_path / "out")
+    message = str(caught.value)
+    assert message.startswith("split:") and "line 2: NameError" in message and "missing" in message
+    report = caught.value.report
+    assert report.failed_step == "split" and report.steps_run == ["raw", "rec"]
+    report.close()
+
+
+def test_outputs_that_break_the_rules_fail_the_step_with_the_rule(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    workflow = _interleave_workflow(raw, code='outputs = {"a": data}\n')
+    with pytest.raises(RunError, match="missing b") as caught:
+        run(workflow, registry=registry, out_dir=tmp_path / "out")
+    caught.value.report.close()
+
+
+def test_a_two_input_step_sees_both_inputs(registry, tmp_path):
+    raw = _planes_h5(tmp_path / "scan.h5", count=4)
+    code = "assert len(inputs) == 2 and len(results) == 2\nout = inputs[0] + inputs[1]\n"
+    workflow = Workflow("two", [
+        Source("raw", path=str(raw)),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("both", "python", {"code": code}, inputs=["rec", "rec"]),
+    ])
+    assert validate(workflow, registry) == []
+    with run(workflow, registry=registry, out_dir=tmp_path / "out") as report:
+        assert report.ports_of("both") == ["out"]          # one run over both, not one per input
+        assert report.result("both").data[:, 0, 0].tolist() == [0, 2, 4, 6]
+
+
+# -- the panel ----------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def qapp():
+    from qtpy import QtWidgets
+
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+class _Signal:
+    def __init__(self):
+        self.emitted = []
+
+    def emit(self, *args):
+        self.emitted.append(args)
+
+
+class _Logger:
+    def __init__(self):
+        self.exceptions = []
+
+    def exception(self, *args):
+        self.exceptions.append(args)
+
+
+def _panel(widget):
+    """``ResultProcessorController.runProcessor`` over a real panel, the way the
+    existing controller tests bind it, with the communication channel stubbed."""
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.ResultProcessorController import ResultProcessorController
+
+    comm = SimpleNamespace(sigResultProduced=_Signal(), sigCurrentResultChanged=_Signal())
+    controller = SimpleNamespace(_widget=widget, _commChannel=comm, _logger=_Logger())
+    return ResultProcessorController.runProcessor.__get__(controller), controller
+
+
+def _run_from_panel(widget, run_processor, code, ports="out"):
+    widget.paramWidget.codeEditor.setText(code)
+    widget.paramWidget.portsEdit.setText(ports)
+    run_processor([_stack()], widget.parameterValues())
+
+
+def test_the_panel_shows_what_was_printed_then_the_error_then_clears(qapp):
+    from imswitch.improcess.view.ResultProcessorWidget import ResultProcessorWidget
+
+    widget = ResultProcessorWidget(PythonStepProcessor())
+    run_processor, controller = _panel(widget)
+    pane = widget.paramWidget.outputPane
+
+    _run_from_panel(widget, run_processor, 'print("shape", data.shape)\nprint("done")\nout = data\n')
+    assert pane.toPlainText() == "shape (12, 4, 4)\ndone"
+    assert [args[1] for args in controller._commChannel.sigResultProduced.emitted] == ["rec (out)"]
+    assert widget.statusLabel.text() == "Created rec (out)."
+
+    _run_from_panel(widget, run_processor, "x = 1\ny = x + undefined_name\nout = y\n")
+    assert pane.toPlainText() == "line 2: NameError: name 'undefined_name' is not defined"
+    assert widget.statusLabel.text() == "line 2: NameError: name 'undefined_name' is not defined"
+    assert len(controller._commChannel.sigResultProduced.emitted) == 1      # nothing new published
+
+    _run_from_panel(widget, run_processor, "out = data\n")
+    assert pane.toPlainText() == ""                                         # a good run clears the error
+
+
+def test_the_panel_shows_a_syntax_error_and_a_bad_port_name(qapp):
+    from imswitch.improcess.view.ResultProcessorWidget import ResultProcessorWidget
+
+    widget = ResultProcessorWidget(PythonStepProcessor())
+    run_processor, _controller = _panel(widget)
+    _run_from_panel(widget, run_processor, "a = 1\nb = (\n")
+    assert "SyntaxError" in widget.paramWidget.outputPane.toPlainText()
+    _run_from_panel(widget, run_processor, "out = data\n", ports="a b")
+    assert "'a b'" in widget.paramWidget.outputPane.toPlainText()
+
+
+def test_a_widget_whose_after_run_raises_does_not_stop_publishing(qapp):
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.ResultProcessorController import notify_param_widget
+
+    def broken(results, failures):
+        raise RuntimeError("widget bug")
+
+    logger = _Logger()
+    panel = SimpleNamespace(processor=PythonStepProcessor(), paramWidget=SimpleNamespace(after_run=broken))
+    notify_param_widget(panel, [], [], logger)             # does not raise
+    assert len(logger.exceptions) == 1 and "python" in logger.exceptions[0][1:]
+
+    # and a widget that declares no hook, or no parameter widget at all, is left alone
+    notify_param_widget(SimpleNamespace(paramWidget=SimpleNamespace()), [], [], logger)
+    notify_param_widget(SimpleNamespace(), [], [], logger)
+    assert len(logger.exceptions) == 1
+
+
+# -- the shipped example ------------------------------------------------------
+
+_EXAMPLES = Path(__file__).resolve().parents[3] / "examples" / "improcess_workflows"
+
+
+def test_the_shipped_interleave_example_runs_on_the_synthetic_recording(registry, tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_improcess_synthetic", _EXAMPLES / "_synthetic.py")
+    synthetic = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(synthetic)
+    recording = synthetic.write_synthetic_recording(tmp_path / "cells.h5", frames=12, size=32)
+    with h5py.File(str(recording), "r") as handle:
+        frames = np.array(handle["data"])
+
+    workflow = Workflow.load(_EXAMPLES / "python_step_interleave.yaml")
+    assert validate(workflow, registry) == []
+    assert "code: |" in (_EXAMPLES / "python_step_interleave.yaml").read_text()
+    with run(workflow, registry=registry, bindings={"raw": str(recording)}, out_dir=tmp_path / "out") as report:
+        assert np.array_equal(report.result("split.a").data, frames[[0, 1, 2, 6, 7, 8]])
+        assert np.array_equal(report.result("split.b").data, frames[[3, 4, 5, 9, 10, 11]])
+        assert report.result("blur").data.shape == (6, 32, 32)
+        written = sorted(receipt.primary.name for receipt in report.receipts)
+    assert written == ["cells_interleave_a.ome.tif", "cells_interleave_b.ome.tif"]
+    assert all((tmp_path / "out" / name).exists() for name in written)
+
+
+# -- the shared code editor ---------------------------------------------------
+
+_EDITOR_MODULE = "imswitch.imcommon.view.guitools.CodeEditor"
+
+
+@pytest.fixture
+def without_qsci(monkeypatch):
+    """``CodeEditor`` imported again as if QScintilla were not installed."""
+    import importlib
+    import sys
+
+    from imswitch.imcommon.view import guitools
+
+    monkeypatch.setitem(sys.modules, "PyQt5.Qsci", None)
+    monkeypatch.setattr(guitools, "CodeEditor", guitools.CodeEditor)    # put the attribute back afterwards
+    monkeypatch.delitem(sys.modules, _EDITOR_MODULE)                    # put the module back afterwards
+    return importlib.import_module(_EDITOR_MODULE)
+
+
+def test_the_shared_editor_is_the_qscintilla_one_when_it_is_installed(qapp):
+    from qtpy import QtCore
+
+    from imswitch.imcommon.view import guitools
+    from imswitch.imscripting.view import EditorView
+
+    editor = guitools.PythonCodeEditor()
+    assert guitools.CodeEditor.QSCI_AVAILABLE
+    assert isinstance(editor, guitools.CodeEditor.Qsci.QsciScintilla)
+    assert EditorView.Scintilla is guitools.PythonCodeEditor       # ImScripting keeps its name for it
+    seen = []
+    editor.textChanged.connect(lambda: seen.append(editor.text()))
+    text = "a = 1\nif a:\n    b = 2\n"
+    editor.setText(text)
+    assert editor.text() == text and seen
+    assert editor.selectedText() == ""
+    assert isinstance(editor, QtCore.QObject)
+
+
+def test_without_qscintilla_the_editor_falls_back_to_a_plain_text_box(qapp, without_qsci):
+    from qtpy import QtWidgets
+
+    assert without_qsci.Qsci is None and without_qsci.QSCI_AVAILABLE is False
+    editor = without_qsci.PythonCodeEditor()
+    assert isinstance(editor, QtWidgets.QPlainTextEdit)
+    seen = []
+    editor.textChanged.connect(lambda: seen.append(1))
+    text = "a = 1\nif a:\n\tb = 2   \n\nc = 3"
+    editor.setText(text)
+    assert editor.text() == text and seen
+    editor.selectAll()
+    assert editor.selectedText() == text                            # newlines, not U+2029
+    assert editor.tabStopDistance() > 0
+
+
+def test_the_step_widget_uses_the_shared_editor_and_reads_its_text(qapp):
+    from imswitch.imcommon.view.guitools import PythonCodeEditor
+    from imswitch.improcess.processors.python_step.processor import PythonStepProcessor as Step
+
+    widget = Step().make_param_widget(None)
+    assert isinstance(widget.codeEditor, PythonCodeEditor)
+    assert widget.get_values() == Step.default_params()
+    widget.codeEditor.setText("x = 1\n    y = 2\n")
+    assert widget.get_values()["code"] == "x = 1\n    y = 2\n"       # as typed, inner whitespace kept
+    widget.codeEditor.setText("a = 1\r\nb = 2\r\n")                   # what QScintilla types on Windows
+    assert widget.get_values()["code"] == "a = 1\nb = 2\n"
+
+
+def test_the_step_widget_also_works_with_the_fallback_editor(qapp, without_qsci, monkeypatch):
+    from imswitch.improcess.processors.python_step import processor as step_module
+
+    monkeypatch.setattr(step_module, "PythonCodeEditor", without_qsci.PythonCodeEditor)
+    widget = step_module.PythonStepProcessor().make_param_widget(None)
+    assert type(widget.codeEditor) is without_qsci.PythonCodeEditor
+    assert widget.get_values() == step_module.PythonStepProcessor.default_params()
+    widget.codeEditor.setText("out = data + 1\n")
+    assert widget.get_values() == {"code": "out = data + 1\n", "ports": "out"}
+    widget.after_run([], [(None, "line 1: NameError: nope")])
+    assert widget.outputPane.toPlainText() == "line 1: NameError: nope"
+
+
+# -- snippets -----------------------------------------------------------------
+
+@pytest.fixture
+def snippet_folder(tmp_path, monkeypatch):
+    from imswitch.imcommon.model import dirtools
+
+    monkeypatch.setattr(dirtools.UserFileDirs, "Root", str(tmp_path))
+    return tmp_path / "improcess_snippets"
+
+
+def test_the_snippet_folder_sits_in_the_user_files_and_is_made_on_demand(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    assert snippets.snippets_directory(create=False) == str(snippet_folder)
+    assert not snippet_folder.exists()
+    assert snippets.list_snippets() == []                    # listing does not create it
+    assert not snippet_folder.exists()
+    assert snippets.snippets_directory() == str(snippet_folder) and snippet_folder.is_dir()
+
+
+def test_a_snippet_round_trips_its_code_and_ports(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    code = 'ax = 0\n\ngroup = (np.arange(data.shape[ax]) // 3) % 2\n\toutputs = {}  \n'
+    path = snippets.save_snippet("three at a time", code, "a, b")
+    assert path == snippet_folder / "three at a time.py"
+    text = path.read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "# ports: a, b"           # the header is the first line
+    assert text == "# ports: a, b\n" + code                  # and nothing else is added
+    assert snippets.load_snippet("three at a time") == (code, "a, b")
+    assert snippets.load_snippet("three at a time.py") == (code, "a, b")    # the suffix is optional
+
+
+def test_list_snippets_gives_the_sorted_stems_of_py_files_only(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    snippets.save_snippet("zeta", "out = data\n", "out")
+    snippets.save_snippet("Alpha", "out = data\n", "out")
+    snippets.save_snippet("mid", "out = data\n", "out")
+    (snippet_folder / "notes.txt").write_text("not a snippet")
+    (snippet_folder / "sub.py").mkdir()                      # a folder is not a snippet
+    assert snippets.list_snippets() == ["Alpha", "mid", "zeta"]
+
+
+def test_a_snippet_without_a_header_gets_the_default_ports(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    snippet_folder.mkdir()
+    (snippet_folder / "plain.py").write_text("out = data * 2\n", encoding="utf-8")
+    assert snippets.load_snippet("plain") == ("out = data * 2\n", "out")
+    (snippet_folder / "hand.py").write_text("#Ports:a,b\nout = 1\n", encoding="utf-8")
+    assert snippets.load_snippet("hand") == ("out = 1\n", "a,b")          # a hand-written header counts
+    (snippet_folder / "later.py").write_text("x = 1\n# ports: a, b\n", encoding="utf-8")
+    assert snippets.load_snippet("later") == ("x = 1\n# ports: a, b\n", "out")   # only the first line
+    (snippet_folder / "empty.py").write_text("", encoding="utf-8")
+    assert snippets.load_snippet("empty") == ("", "out")
+    (snippet_folder / "bare.py").write_text("# ports:\nx = 1\n", encoding="utf-8")
+    assert snippets.load_snippet("bare") == ("x = 1\n", "out")
+
+
+def test_a_code_line_that_looks_like_a_header_is_kept_through_a_round_trip(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    code = "# ports: not, a, header\nout = data\n"
+    snippets.save_snippet("tricky", code, "a")
+    assert snippets.load_snippet("tricky") == (code, "a")
+
+
+def test_blank_ports_are_saved_as_the_default_and_line_endings_survive(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    snippets.save_snippet("blank", "out = data\r\nprint(1)\r\n", "  ")
+    assert snippets.load_snippet("blank") == ("out = data\r\nprint(1)\r\n", "out")
+    with pytest.raises(ValueError, match="one line"):
+        snippets.save_snippet("multi", "x = 1\n", "a,\nb")
+
+
+@pytest.mark.parametrize("name", ["", "   ", ".", "..", "../escape", "sub/dir", "sub\\dir", ".hidden", "a*b", "what?", "x:y"])
+def test_a_snippet_name_cannot_leave_the_folder_or_break_the_file_system(snippet_folder, name):
+    from imswitch.improcess.model import snippets
+
+    with pytest.raises(ValueError, match="snippet name"):
+        snippets.save_snippet(name, "x = 1\n", "out")
+    with pytest.raises(ValueError, match="snippet name"):
+        snippets.load_snippet(name)
+    assert not list(snippet_folder.parent.rglob("*.py"))
+
+
+def test_loading_a_missing_snippet_and_saving_without_overwrite_say_so(snippet_folder):
+    from imswitch.improcess.model import snippets
+
+    with pytest.raises(FileNotFoundError, match="nothing"):
+        snippets.load_snippet("nothing")
+    snippets.save_snippet("keep", "x = 1\n", "out")
+    with pytest.raises(FileExistsError, match="keep"):
+        snippets.save_snippet("keep", "x = 2\n", "out", overwrite=False)
+    assert snippets.load_snippet("keep")[0] == "x = 1\n"
+    snippets.save_snippet("keep", "x = 3\n", "out")                        # the default replaces
+    assert snippets.load_snippet("keep")[0] == "x = 3\n"
+
+
+def _patch_dialogs(monkeypatch, *, item=None, text=None, confirm=True):
+    """Stand-ins for the dialogs; each records the call it got."""
+    from qtpy import QtWidgets
+
+    calls = {"item": [], "text": [], "question": []}
+
+    def get_item(parent, title, label, items, *args):
+        calls["item"].append(list(items))
+        return (item, item is not None)
+
+    def get_text(parent, title, label, *args):
+        calls["text"].append(title)
+        return (text or "", text is not None)
+
+    def question(parent, title, message, *args):
+        calls["question"].append(message)
+        return QtWidgets.QMessageBox.Yes if confirm else QtWidgets.QMessageBox.No
+
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getItem", staticmethod(get_item))
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getText", staticmethod(get_text))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(question))
+    return calls
+
+
+def test_the_panel_saves_the_editor_and_ports_as_a_snippet_and_loads_it_back(qapp, snippet_folder, monkeypatch):
+    from imswitch.improcess.model import snippets
+
+    widget = PythonStepProcessor().make_param_widget(None)
+    widget.codeEditor.setText(INTERLEAVE_AX0)
+    widget.portsEdit.setText("a, b")
+
+    calls = _patch_dialogs(monkeypatch, text="interleave")
+    widget.saveButton.click()
+    assert calls["text"] == ["Save snippet"] and calls["question"] == []
+    assert snippets.load_snippet("interleave") == (INTERLEAVE_AX0, "a, b")
+    assert "Saved snippet 'interleave'" in widget.outputPane.toPlainText()
+
+    widget.codeEditor.setText("something else\n")
+    widget.portsEdit.setText("zzz")
+    calls = _patch_dialogs(monkeypatch, item="interleave")
+    widget.loadButton.click()
+    assert calls["item"] == [["interleave"]]
+    assert widget.get_values() == {"code": INTERLEAVE_AX0, "ports": "a, b"}
+    assert "Loaded snippet 'interleave'" in widget.outputPane.toPlainText()
+
+
+def test_the_panel_asks_before_replacing_a_snippet(qapp, snippet_folder, monkeypatch):
+    from imswitch.improcess.model import snippets
+
+    snippets.save_snippet("keep", "old = 1\n", "out")
+    widget = PythonStepProcessor().make_param_widget(None)
+    widget.codeEditor.setText("new = 2\n")
+
+    calls = _patch_dialogs(monkeypatch, text="keep", confirm=False)
+    widget.saveButton.click()
+    assert len(calls["question"]) == 1 and "keep" in calls["question"][0]
+    assert snippets.load_snippet("keep")[0] == "old = 1\n"
+
+    _patch_dialogs(monkeypatch, text="keep", confirm=True)
+    widget.saveButton.click()
+    assert snippets.load_snippet("keep")[0] == "new = 2\n"
+
+
+def test_the_panel_leaves_everything_alone_when_a_dialog_is_cancelled_or_fails(qapp, snippet_folder, monkeypatch):
+    from imswitch.improcess.model import snippets
+
+    widget = PythonStepProcessor().make_param_widget(None)
+    widget.codeEditor.setText("mine = 1\n")
+    widget.portsEdit.setText("a")
+
+    widget.loadButton.click()                                   # no snippets yet: a hint, not a dialog
+    assert "No snippets yet" in widget.outputPane.toPlainText()
+
+    _patch_dialogs(monkeypatch, text=None)                      # cancelled
+    widget.saveButton.click()
+    assert snippets.list_snippets() == []
+
+    _patch_dialogs(monkeypatch, text="../escape")               # an unusable name
+    widget.saveButton.click()
+    assert "snippet name" in widget.outputPane.toPlainText()
+    assert snippets.list_snippets() == []
+
+    snippets.save_snippet("there", "x = 1\n", "out")
+    _patch_dialogs(monkeypatch, item=None)                      # cancelled
+    widget.loadButton.click()
+    assert widget.get_values() == {"code": "mine = 1\n", "ports": "a"}
+
+    _patch_dialogs(monkeypatch, item="gone")                    # deleted meanwhile
+    widget.loadButton.click()
+    assert "Could not load snippet 'gone'" in widget.outputPane.toPlainText()
+    assert widget.get_values() == {"code": "mine = 1\n", "ports": "a"}
+
+
+# -- the notice before a file's Python code runs ------------------------------
+
+class _Window:
+    """A real QWidget standing in for the main view, recording status messages."""
+
+    @staticmethod
+    def make():
+        from qtpy import QtWidgets
+
+        class Window(QtWidgets.QWidget):
+            def __init__(self):
+                super().__init__()
+                self.messages = []
+
+            def showStatusMessage(self, message, timeout_ms=6000):
+                self.messages.append(message)
+
+        return Window()
+
+
+def _workflow_controller(view, produced=None):
+    from types import SimpleNamespace
+
+    from imswitch.improcess.controller.WorkflowController import WorkflowController
+
+    comm = SimpleNamespace(
+        sigResultProduced=SimpleNamespace(emit=lambda result, name: (produced or []).append(result)),
+        getAllResults=lambda: [],
+    )
+    return WorkflowController(
+        comm, view, SimpleNamespace(getActiveResult=lambda: None),
+        registry_factory=lambda: bootstrap_registry(user_plugins=False),
+    )
+
+
+def _ask_recorder(monkeypatch, answer):
+    from imswitch.imcommon.view import guitools
+
+    asked = []
+
+    def ask(widget, title, question):
+        asked.append((title, question))
+        return answer
+
+    monkeypatch.setattr(guitools, "askYesNoQuestion", ask)
+    return asked
+
+
+def test_a_workflow_file_with_python_steps_asks_first_and_stops_when_refused(qapp, registry, tmp_path, monkeypatch):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    path = _interleave_workflow(raw).save(tmp_path / "interleave.yaml")
+    view = _Window.make()
+    controller = _workflow_controller(view)
+    asked = _ask_recorder(monkeypatch, False)
+
+    assert controller.runWorkflow(str(path), out_dir=str(tmp_path / "out"), overwrite=True) is False
+    assert controller._thread is None and not (tmp_path / "out").exists()     # nothing started
+    assert len(asked) == 1 and asked[0][0] == "Run Python code?"
+    assert "interleave.yaml" in asked[0][1] and "split" in asked[0][1]
+    assert view.messages and "Not run" in view.messages[-1] and "Python code" in view.messages[-1]
+    assert "split" in view.messages[-1]
+
+
+def test_a_confirmed_python_workflow_runs_and_publishes(qapp, registry, tmp_path, monkeypatch):
+    raw = _planes_h5(tmp_path / "scan.h5")
+    path = _interleave_workflow(raw).save(tmp_path / "interleave.yaml")
+    controller = _workflow_controller(_Window.make())
+    asked = _ask_recorder(monkeypatch, True)
+
+    assert controller.runWorkflow(str(path), out_dir=str(tmp_path / "out"), overwrite=True) is True
+    assert len(asked) == 1
+    assert controller.cancelRun(10000) is True
+
+
+def test_the_notice_is_asked_once_for_a_batch_over_files(qapp, registry, tmp_path, monkeypatch):
+    workflow = Workflow("interleave", [
+        Source("raw"),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("split", "python", {"code": INTERLEAVE_AX0, "ports": "a, b"}, inputs=["rec"]),
+    ])
+    path = workflow.save(tmp_path / "interleave.yaml")
+    files = [str(_planes_h5(tmp_path / f"scan{i}.h5")) for i in range(2)]
+    controller = _workflow_controller(_Window.make())
+    asked = _ask_recorder(monkeypatch, True)
+
+    assert controller.runWorkflowOverFiles(str(path), files=files, out_dir=str(tmp_path / "out"), overwrite=True) is True
+    assert len(asked) == 1
+    assert controller.cancelRun(10000) is True
+
+
+def test_no_notice_without_python_steps_without_a_file_or_without_a_window(qapp, registry, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    raw = _planes_h5(tmp_path / "scan.h5")
+    asked = _ask_recorder(monkeypatch, False)
+
+    plain = Workflow("plain", [Source("raw", path=str(raw)), Reconstruct("rec", "view-only", inputs=["raw"])])
+    plain_path = plain.save(tmp_path / "plain.yaml")
+    controller = _workflow_controller(_Window.make())
+    assert controller.runWorkflow(str(plain_path), out_dir=str(tmp_path / "out1"), overwrite=True) is True
+    assert controller.cancelRun(10000) is True
+
+    # the editor's own workflow (no file) shows its code itself, so it is not asked
+    workflow = _interleave_workflow(raw)
+    assert controller._confirmPythonSteps(workflow, None) is True
+
+    # no window to ask in: a stand-in view, as headless callers and tests use
+    headless = _workflow_controller(SimpleNamespace(showStatusMessage=lambda m, timeout_ms=6000: None))
+    assert headless._confirmPythonSteps(workflow, str(tmp_path / "interleave.yaml")) is True
+    assert asked == []
+
+
+# -- outputs built outside a step (the console's publish) ----------------------
+
+def test_result_from_value_follows_the_same_rules_as_a_steps_outputs():
+    from imswitch.improcess.processors.python_step.context import make_labels, make_result, result_from_value
+
+    reference = _stack(scales=[2.0, 0.5, 0.25], unit="um")
+    same = result_from_value(reference.data * 2, reference, what="the array", default_name="d")
+    assert same.name == "d" and same.axis_labels == ["Z", "Y", "X"]
+    assert same.axis_scales == [2.0, 0.5, 0.25] and same.scale_unit == "um"
+
+    # the keyword arguments fill in what a make_result left unset, and never override it
+    flat = result_from_value(reference.data[0], reference, name="mip", axes=["Y", "X"])
+    assert (flat.name, flat.axis_labels, flat.axis_scales) == ("mip", ["Y", "X"], [0.5, 0.25])
+    own = result_from_value(make_result(reference.data[0], axes=["Y", "X"], name="own"), reference, name="kw")
+    assert own.name == "own"
+
+    labels = result_from_value(make_labels(np.ones((4, 4), np.uint8)), None, axes=["Y", "X"])
+    assert labels.kind == "labels" and labels.axis_labels == ["Y", "X"]
+
+    with pytest.raises(ScriptError, match="the array has 2 dimensions but the input has 3"):
+        result_from_value(reference.data[0], reference, what="the array")
+
+
+def test_result_from_value_without_a_reference_needs_axes():
+    from imswitch.improcess.processors.python_step.context import result_from_value
+
+    with pytest.raises(ScriptError, match="no input to take its axes from"):
+        result_from_value(np.zeros((4, 4)), None, what="the published array")
+    made = result_from_value(np.zeros((4, 4)), None, axes=["Y", "X"], scales=[0.1, 0.1])
+    assert made.axis_labels == ["Y", "X"] and made.axis_scales == [0.1, 0.1] and made.scale_unit == "px"
+
+
+def test_a_lazy_result_stays_lazy_in_the_console_namespace_and_is_read_in_a_step():
+    class Lazy:
+        shape = (3, 2, 2)
+        ndim = 3
+        reads = 0
+
+        def __array__(self, dtype=None, copy=None):
+            Lazy.reads += 1
+            return np.ones(self.shape, dtype=dtype or np.float32)
+
+        def __getitem__(self, key):
+            return np.ones(self.shape, np.float32)[key]
+
+    lazy_result = ArrayProcessingResult("lazy", Lazy(), ["Z", "Y", "X"])
+    console = build_namespace([lazy_result], materialise=False)
+    assert isinstance(console["data"], Lazy) and Lazy.reads == 0
+    assert console["data"][0].shape == (2, 2)
+    step = build_namespace([lazy_result])
+    assert isinstance(step["data"], np.ndarray) and Lazy.reads == 1
+    # an array already in memory is not read again: a read-only view of it either way
+    stack = _stack()
+    for materialise in (False, True):
+        view = build_namespace([stack], materialise=materialise)["data"]
+        assert np.shares_memory(view, stack.data) and not view.flags.writeable
+
+
+# -- what a run captures is this thread's output only -------------------------
+
+def test_a_run_does_not_swallow_what_other_threads_print_meanwhile(capsys):
+    import threading
+
+    def other():
+        time.sleep(0.05)
+        print("printed by another thread")            # the real stdout, not the run's capture
+
+    thread = threading.Thread(target=other)
+    thread.start()
+    code = "import time\nprint('mine')\ntime.sleep(0.3)\nprint('still mine')\nout = data\n"
+    (_result,), printed = run_script(code, [_stack()], ("out",))
+    thread.join(5)
+    assert printed == "mine\nstill mine\n"
+    assert "printed by another thread" in capsys.readouterr().out
+
+
+def test_what_the_code_prints_is_also_passed_to_an_outer_route_as_it_happens():
+    import io
+
+    from imswitch.imcommon.model import currentRoute, routeThisThreadsOutputTo
+
+    streamed = io.StringIO()
+    with routeThisThreadsOutputTo(streamed):
+        (_result,), printed = run_script("print('live')\nprint('more')\nout = data", [_stack()], ("out",))
+        assert currentRoute() is streamed                  # the outer route is back after the run
+    assert printed == "live\nmore\n" and streamed.getvalue() == "live\nmore\n"
+
+
+def test_a_failing_script_still_leaves_the_outer_route_in_place_and_streams_what_it_printed():
+    import io
+
+    from imswitch.imcommon.model import currentRoute, routeThisThreadsOutputTo
+
+    streamed = io.StringIO()
+    with routeThisThreadsOutputTo(streamed):
+        with pytest.raises(ScriptError):
+            run_script("print('before')\nraise ValueError('x')", [_stack()], ("out",))
+        assert currentRoute() is not None
+    assert streamed.getvalue() == "before\n"
+    assert currentRoute() is None
+
+
+def test_a_cancellation_is_not_a_script_error_and_user_code_cannot_swallow_it():
+    from imswitch.imcommon.model import OperationCancelled
+
+    code = (
+        "from imswitch.imcommon.model import OperationCancelled\n"
+        "try:\n    raise OperationCancelled('stop')\nexcept Exception:\n    swallowed = True\nout = data\n"
+    )
+    with pytest.raises(OperationCancelled):              # an `except Exception` in the script does not catch it
+        run_script(code, [_stack()], ("out",))
+
+
+# -- the inputs are read-only, the outputs independent ---------------------------------------
+
+def _grid(name="in"):
+    return ArrayProcessingResult(name, np.arange(12.0).reshape(3, 4), ["Y", "X"])
+
+
+@pytest.mark.parametrize("code", [
+    "data[0] = 5\nout = data",
+    "inputs[0] += 1\nout = data",
+    "data.sort(axis=0)\nout = data",
+    "np.multiply(data, 2, out=data)\nout = data",
+])
+def test_the_code_cannot_change_its_input(code):
+    source = _grid()
+    before = source.data.copy()
+    with pytest.raises(ScriptError) as caught:
+        run_script(code, [source], ("out",))
+    assert caught.value.line == 1
+    assert "read-only" in str(caught.value) and "data.copy()" in str(caught.value)
+    np.testing.assert_array_equal(source.data, before)
+
+
+def test_a_copy_can_be_changed_and_the_input_stays_as_it_was():
+    source = _grid()
+    (result,), _ = run_script("work = data.copy()\nwork[0] = -1\nout = work", [source], ("out",))
+    assert result.data[0, 0] == -1 and source.data[0, 0] == 0
+
+
+@pytest.mark.parametrize("code", [
+    "out = data",
+    "out = data[::2]",
+    "out = inputs[1]",
+    "out = results[0].data",
+    "out = results[1].data[:, 1:]",
+])
+def test_an_output_never_shares_its_pixels_with_an_input(code):
+    first, second = _grid("first"), _grid("second")
+    (result,), _ = run_script(code, [first, second], ("out",))
+    assert result.data.flags.writeable
+    assert not np.shares_memory(result.data, first.data)
+    assert not np.shares_memory(result.data, second.data)
+
+
+def test_the_processor_leaves_its_input_untouched_through_a_workflow_style_run():
+    source = _grid()
+    with pytest.raises(ScriptError):
+        PythonStepProcessor().apply(source, {"code": "data[data > 2] = 0\nout = data", "ports": "out"})
+    np.testing.assert_array_equal(source.data, np.arange(12.0).reshape(3, 4))
+
+
+# -- empty outputs ---------------------------------------------------------------------
+
+def test_an_empty_output_is_refused_with_its_port_and_shape():
+    """The interleave on a stack too short for it: the second output would be empty."""
+    short = ArrayProcessingResult("short", np.ones((2, 4, 4)), ["Z", "Y", "X"])
+    code = (
+        "group = (np.arange(data.shape[0]) // 3) % 2\n"
+        "outputs = {'a': data[group == 0], 'b': data[group == 1]}\n"
+    )
+    with pytest.raises(ScriptError, match=r"output 'b' is empty \(shape \(0, 4, 4\)\)"):
+        run_script(code, [short], ("a", "b"))
+
+
+@pytest.mark.parametrize("code", [
+    "out = np.zeros((0, 4))",
+    "out = make_labels(np.zeros((4, 0), dtype=int))",
+    "out = make_result(np.zeros(0), axes=['Frame'])",
+])
+def test_empty_arrays_are_refused_whatever_their_kind(code):
+    with pytest.raises(ScriptError, match="is empty"):
+        run_script(code, [_grid()], ("out",))

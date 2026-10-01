@@ -1,0 +1,51 @@
+# Flatten frame-to-frame brightness changes (lamp flicker, bleaching).
+# Each Y/X plane is divided by its own median and brought back to the stack's
+# mean level.
+# Why a script: Math applies one constant to the whole result; this needs a
+# different factor for every plane.
+#
+# Run it on a synthetic recording (12 frames):
+#   python -c "import sys; sys.path.insert(0, 'examples/improcess_workflows'); \
+#     from _synthetic import write_synthetic_recording as w; w('cells.h5', frames=12)"
+#   python -m imswitch.improcess.workflows run python_step_normalize_frames.yaml \
+#       --input cells.h5 --out results/
+# or paste the code of the step into Tools -> Python step (it is also in
+# Load snippet... as 'normalize_frames').
+#
+# Derived from imswitch/_data/user_defaults/improcess_snippets/normalize_frames.py by
+# tools/make_python_recipe_workflows.py: edit the snippet, then run the tool.
+name: python-normalize-frames
+schema: 1
+description: Flatten frame-to-frame brightness changes (lamp flicker, bleaching).
+steps:
+- step: source
+  id: raw
+- step: reconstruct
+  id: rec
+  reconstructor: view-only
+  params: {}
+  inputs:
+  - raw
+- step: process
+  id: script
+  processor: python
+  params:
+    ports: out
+    code: |
+      # Flatten frame-to-frame brightness changes (lamp flicker, bleaching).
+      # Each Y/X plane is divided by its own median and brought back to the stack's
+      # mean level.
+      # Why a script: Math applies one constant to the whole result; this needs a
+      # different factor for every plane.
+      data32 = data.astype(np.float32)               # uint16 arithmetic would wrap around
+      level = np.median(data32, axis=(-2, -1), keepdims=True)    # one number per plane
+      level = np.maximum(level, 1e-6)                # a black plane stays black, not NaN
+      out = data32 / level * level.mean()
+      print(f"plane levels ran from {level.min():.1f} to {level.max():.1f}; all are now {level.mean():.1f}")
+  inputs:
+  - rec
+- step: save
+  id: save_out
+  input: script.out
+  fmt: tiff
+  path_template: '{out_dir}/{source_stem}_normalize_frames{ext}'

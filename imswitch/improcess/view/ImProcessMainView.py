@@ -29,6 +29,7 @@ from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
 from .SmlmRenderWidget import SmlmRenderWidget
 from .ProfileWidget import ProfileWidget
+from .PythonConsoleWidget import PythonConsoleWidget
 from .PSFResolutionWidget import PSFResolutionWidget
 from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
@@ -1043,7 +1044,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 # Any of these may be opened first, and the wiring runs in
                 # both directions, so it is redone whenever one arrives.
                 self._wireROIManagerToDependentWidgets()
-            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager'):
+            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager', 'graph'):
+                # 'graph' too: its Push to table was wired only when the panel
+                # was built at startup, so a Graph opened later (the default)
+                # pushed its rows nowhere.
                 self._connectResultPusher(widget)
             if spec.widget_kind == 'graph':
                 self._wireGraphToDependentWidgets()
@@ -1457,6 +1461,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 spec.processor_id or spec.id
             ),
             'graph': lambda: GraphWidget(),
+            'console': lambda: PythonConsoleWidget(),
             'profile': lambda: ProfileWidget(viewer),
             'metadata': lambda: MetadataWidget(),
             'segmentation': lambda: SegmentationWidget(

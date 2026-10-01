@@ -1,9 +1,13 @@
 import uuid
 
-from PyQt5 import Qsci
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
+
+from imswitch.imcommon.view.guitools import PythonCodeEditor
 
 from .guitools import BetterPushButton
+
+#: The editor moved to imcommon so ImProcess's Python step can share it.
+Scintilla = PythonCodeEditor
 
 
 class EditorView(QtWidgets.QTabWidget):
@@ -158,30 +162,6 @@ class EditorInstanceView(QtWidgets.QWidget):
         stopped. """
         self.stopButton.setEnabled(not stopping)
         self.stopButton.setText('Stopping…' if stopping else 'Stop')
-
-
-class Scintilla(Qsci.QsciScintilla):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        self.setMargins(1)
-        self.setMarginWidth(0, '00000000')
-        self.setMarginType(0, Qsci.QsciScintilla.NumberMargin)
-
-        self.setTabWidth(4)
-        self.setIndentationGuides(True)
-        self.setAutoIndent(True)
-
-        self.setScrollWidth(1)
-        self.setScrollWidthTracking(True)
-
-        font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
-        font.setPointSize(11)
-
-        lexer = Qsci.QsciLexerPython()
-        lexer.setFont(font)
-        lexer.setDefaultFont(font)
-        self.setLexer(lexer)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

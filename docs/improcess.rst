@@ -521,8 +521,9 @@ accept kind ``image`` unless noted; ``stack-subset``, ``projection``,
 intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
 ``smlm-drift``, ``smlm-group``) accept only ``localization``.
 ``label-morphology`` accepts only ``labels``, ``image-calculator`` accepts
-``image`` and ``labels``, and ``table-to-localizations`` accepts only
-``table``.
+``image`` and ``labels``, ``python`` (the :ref:`Python step
+<improcess-python-step>`) accepts ``image``, ``labels`` and ``composite``, and
+``table-to-localizations`` accepts only ``table``.
 
 .. list-table::
    :header-rows: 1
@@ -620,6 +621,12 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
        have; a ``px`` result combines with a calibrated one.
      - ``ArrayProcessingResult`` from pixel-wise arithmetic; division by zero
        yields zero. The toolbar dialog is the normal two-input entry point.
+   * - ``python``
+     - Scripting
+     - Any ``image``, ``labels`` or ``composite`` result, one or several; the
+       code decides what the axes mean.
+     - One result per output port the step declares (``out`` by default),
+       named in ``ports``; see :ref:`improcess-python-step`.
    * - ``drift-correct``
      - Restoration
      - Any result whose ``axis_labels`` contain ``T``.
@@ -714,6 +721,8 @@ or ``rgb`` result would come out as a plain ``image``.  The axis processors
 are therefore not offered for those two kinds.  RGB results are
 visualization and export artifacts (autoscaled ``uint8`` display values, not
 calibrated intensities), so no analysis processor accepts them either.
+
+.. _improcess-result-graph:
 
 Result graph panel
 ==================
@@ -1037,6 +1046,484 @@ The usual workflow is:
 The same functionality is available as registered processors:
 ``multicolor-registration`` extracts and optionally saves the transform, while
 ``multicolor-apply`` applies a saved HDF5 transform to later data.
+
+.. _improcess-python-step:
+
+Python step
+===========
+
+The Python step is the built-in processor ``python`` (category *Scripting*): a
+few lines of Python that turn the selected result, or several, into new
+results.  It is the escape hatch for the one-off transformation no processor
+covers — three slices at a time alternating between two outputs, say — where
+writing a drop-in plugin (*Drop-in analysis plugins*, below) would be more
+work than the job.  Open it from **Tools → Python step**.
+
+The code is an ordinary parameter of the step (next to the output port names),
+so everything a processor gets comes with it: the result's provenance records
+the whole code, **File → Export workflow of current result…** writes it into a
+workflow file, *Run workflow over files…* applies it to a folder, and replay
+reproduces it.  For exploring before recording, **Tools → Console** runs the
+same kind of code over the results list (:ref:`below <improcess-console>`).
+
+Which tool for which job
+------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 54
+
+   * - You want to
+     - Use
+   * - Try something on the results you have open, look at it, adjust
+     - The :ref:`console <improcess-console>`: nothing is recorded until you
+       say so, and ``data`` follows the selection.
+   * - Do it again on other files, in a workflow, with the code recorded and
+       replayable
+     - The **Python step**: the code is a parameter, so it travels with the
+       result and with a workflow file.
+   * - Use it often, with its own name and a form of widgets, or hand it to
+       someone
+     - A drop-in plugin (*Drop-in analysis plugins*, below).  A snippet that
+       earns it becomes one.
+   * - Drive the hardware, a scan or an acquisition, or automate across modules
+     - ImScripting (:doc:`scripting`).
+   * - Use a tool from an installed napari plugin
+     - :doc:`improcess-napari-plugins`.
+
+When a built-in processor does the job, use that: it has a form, validation of
+its parameters and a name in the provenance.  The :ref:`recipes
+<improcess-recipes>` below are jobs none of them does.
+
+The panel
+---------
+
+The panel is a code editor (ImScripting's Python editor when QScintilla is
+installed, a plain monospaced box otherwise), an **Output ports** line, and a
+read-only **Output** pane.  Like every processor that takes several results,
+it runs once over the inputs checked in the list, in the order listed.
+**Load snippet…** and **Save as snippet…** (below) keep code between sessions.
+**Run** starts the code on a thread of its own, so the window stays alive; while
+it runs, **Cancel** replaces **Run** (:ref:`below <improcess-runs>`).
+
+The *Output ports* line names the results the code will produce, separated by
+commas; it defaults to ``out``.  Names use letters, digits, ``_`` and ``-``,
+the same as a step reference, and a later step in a workflow refers to them as
+``step.port`` (``split.a``), checked before the run.
+
+What the code sees
+------------------
+
+The code starts with these names, and no others:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 72
+
+   * - Name
+     - What it is
+   * - ``np``
+     - numpy.
+   * - ``data``
+     - The first input's array.  A lazily loaded result is read into memory.
+       It is **read-only**: the input is a result in the list, recorded as it
+       is, so a write into it (``data[0] = 0``, ``data *= 2``) is an error at
+       that line.  Change a copy instead (``work = data.copy()``).
+   * - ``inputs``
+     - The array of every input, in the order listed; read-only like ``data``.
+   * - ``axes``, ``scales``, ``unit``
+     - The first input's axis labels, pixel scales and scale unit.
+   * - ``axis(label_or_index)``
+     - The index of an axis: ``axis("Z")`` (any capitalisation), or the index
+       itself when given a number.  An unknown axis is an error listing the
+       labels.
+   * - ``results``
+     - The input result objects themselves, for their metadata.  Read them;
+       do not change them.
+   * - ``make_result(array, *, axes=None, scales=None, name=None)``
+     - An output with axes you name, for an array whose number of dimensions
+       differs from the input's.
+   * - ``make_labels(array, *, axes=None, scales=None, name=None)``
+     - The same for a label image (``labels`` kind, as segmentation makes):
+       integers, or floats holding whole numbers.
+   * - ``outputs``, ``out``
+     - What the code sets, below.
+
+Outputs
+-------
+
+Set ``outputs`` to a dict from port name to array, with one entry for every
+declared port and no others.  With a single port, ``out = array`` is enough,
+and so is ``outputs = array`` for the default port ``out``.  The run checks
+this and says which ports are
+missing and which are not declared, with the declared list.  Each entry is a
+numeric array (boolean, integer or float) or the result of ``make_result`` /
+``make_labels``:
+
+* an array with the **same number of dimensions** as the first input inherits
+  its axis labels, scales and unit, whatever its shape;
+* any other array must come through ``make_result(array, axes=["Y", "X"])``;
+  the scales of axes it shares with the input come along (``scales=`` sets
+  them), and the error otherwise names the port and both dimensionalities;
+* a **one-dimensional** array is a *curve*, not an image: it comes through
+  ``make_result(values, axes=["Frame"])`` (naming the axis; ``scales=[0.5]``
+  calibrates it) unless the input is one-dimensional itself, and it is drawn in
+  the :ref:`Graph panel <improcess-graph-curves>`;
+* an output is named ``<input name> (<port>)`` unless ``name=`` says
+  otherwise;
+* an output that is an input, or a slice of one (``out = data``,
+  ``out = data[::2]``), is copied, so a new result never shares its pixels
+  with an existing one.
+
+A single number is not an array: ``print()`` it, or output ``np.array([value])``.
+An empty array is refused too, naming the port and its shape: it nearly always
+means a selection picked nothing, such as the wrong axis or a stack shorter than
+the code assumed.
+
+Things to know
+--------------
+
+* **Integer data wraps around.**  ``data`` has the recording's own type, and
+  numpy does not widen it: on a 16-bit stack, ``data - 200`` turns a pixel of
+  100 into 65436, with no error.  Convert first (``data.astype(np.float32)``);
+  every shipped recipe does.
+* **Every run starts fresh.**  Names one run sets are not there in the next, and
+  the code is the whole record of what was done.  (The console is the
+  opposite: its namespace persists.)
+* **Axis names.**  ``axes`` lists them in the order of ``data``.  A recording
+  that does not name its axes reads as ``Frame, Y, X``, so ``axis("Z")`` on it
+  raises an error that lists the names; ``print(axes)`` once, or use the index.
+* **Only numeric arrays come out.**  A step makes arrays, not tables.  One with
+  two or more dimensions is an image (or labels); a one-dimensional one is a
+  curve, shown in the **Graph** panel, which opens when the run ends, instead of
+  the image viewer, which has nothing to draw for it (see
+  :ref:`improcess-graph-curves`).  Several numbers that belong together as rows
+  of a table are still ``print()`` territory, which the **Output** pane shows.
+* **Imports.**  ``import scipy.ndimage`` works (scipy ships with ImSwitch).  The
+  provenance records the code and ImSwitch's version, not the versions of the
+  modules it imported, so a replay on another installation can differ if they do.
+* **Memory.**  The inputs are in memory, and a conversion to float makes a
+  second copy: a stack that barely fits will not fit in a step that converts it.
+
+.. _improcess-graph-curves:
+
+One-dimensional outputs: curves
+-------------------------------
+
+A measurement per frame, per plane or per time point is one-dimensional, and its
+place is the :ref:`Graph panel <improcess-result-graph>`, not the image viewer.  A
+step (or the console) that outputs a one-dimensional array makes a *curve* result,
+the kind FRC makes:
+
+* the Graph panel plots it against its axis, at ``index × scale`` along it
+  (``scales=[0.5]`` for a frame every half second), and opens when the run ends;
+  the viewer clears, since it has no pixels to show;
+* the axis is captioned with its unit only when it has one: a calibrated ``Z``,
+  ``Y`` or ``X`` axis takes the pixel unit, a ``T`` axis is in seconds, and an
+  uncalibrated axis, or one called ``Frame`` or ``Index``, has none;
+* **Push to table** in the Graph panel puts one summary row (points, range, mean)
+  in the Results dock; **Measure Δx** works on it as on any graph;
+* it saves as **CSV** (two columns, the axis then the values, with a
+  ``.provenance.json`` beside it), **HDF5** or **Zarr**, and not as TIFF: asking
+  for TIFF is refused before anything is written, and a workflow's ``save`` step
+  for a curve says ``fmt: csv``;
+* no processor takes a curve as input (as for FRC's), so a curve is where a
+  chain of steps ends.  A later step given one stops the run with ``'python'
+  does not accept result … (kind 'curve' …)``; the workflow's validation cannot
+  see that beforehand, because it does not know what a script will output.  The
+  console can read a selected curve (``data`` is its values), to post-process it
+  by hand.
+
+The sampling is even, by construction: ``x`` is the index times one scale.  A
+measurement against an irregular axis (stage positions, say) is a table, not a
+curve.
+
+Errors and printed output
+-------------------------
+
+An error in the code is reported as one line with the line of *your* code it
+came from — ``line 3: NameError: name 'x' is not defined`` — in the panel's
+status line and the **Output** pane, and in a workflow run's error next to the
+step's id; the log has the full traceback, in which your code's frames are the
+ones in ``<python step>``.  A syntax error reports its own line.  Nothing is
+published when a run fails.
+
+What the code prints (and writes to ``stderr``) appears in the **Output** pane
+*as it prints*, while the run is still going, and stays there when the run
+fails (the error is added below it) or is cancelled.  Only this run's own
+output is captured: what the rest of the application prints meanwhile is not.  Up
+to 4000 characters of it are also kept in each output's metadata under
+``python_step``.
+
+Snippets
+--------
+
+**Save as snippet…** writes the code and the ports line to
+``~/ImSwitchConfig/improcess_snippets/<name>.py`` (asking before it replaces
+one); **Load snippet…** puts a saved one back into the editor.  A snippet is a
+plain Python file whose first line may name the ports::
+
+    # ports: a, b
+    ax = 0
+    ...
+
+That line is the only part that is not the code, and it is removed on load.  A
+snippet that turns out to be useful beyond one session can become a drop-in
+plugin by the template in *Drop-in analysis plugins*; nothing forces that step.
+
+Trust
+-----
+
+The code runs in-process with full Python: like a drop-in plugin or an
+ImScripting script, **not sandboxed**, with the same access as ImSwitch.  A
+workflow file can therefore carry code that runs when it is run:
+**File → Run workflow…** (and the variants that run a file) asks once, naming
+the Python steps, before it runs a file that contains any; the workflow
+editor, which hands over a workflow it is showing you, does not ask, and shows
+a step's code in its form.  Only run files you trust.
+
+The code runs where processors run: on a worker thread from this panel and from
+the toolbar, and on the workflow worker thread from the editor and the File
+menu; :ref:`it can be cancelled <improcess-runs>`.
+
+.. _improcess-runs:
+
+Runs, Cancel and live output
+----------------------------
+
+A processor run from a panel (this one, and every other processor panel,
+Segmentation, PSF resolution and Colocalization included; the Multicolor panel,
+which does its own computing, is the exception) and from the image toolbar
+(project, split, merge, combine, calculator, composite, RGB, crop) happens
+on a thread of its own, so a slow one no longer freezes the window.  The results
+are published, on the GUI thread, when the run ends.  One run at a time per panel;
+a second request is refused with a message, not queued.  The toolbar takes one
+operation at a time as well.
+
+While a panel runs, **Run** is off (however the selection changes meanwhile) and
+**Cancel** is on.  Cancelling discards everything the run had made: nothing
+half-finished reaches the results list.  It works in steps:
+
+#. **Cancel** asks.  A processor that calls
+   ``imswitch.imcommon.model.checkpoint()`` (in a loop, say) stops at its next one.
+#. One that does not is **interrupted**: after a second and a half an
+   ``OperationCancelled`` is raised inside its thread, and again every second if
+   the code caught it.  It is a ``BaseException``, so an ``except Exception`` in a
+   script cannot swallow it; a bare ``except:`` can, and is asked again.  The
+   interruption lands at the next line of Python, so a long call into compiled code
+   (a large numpy operation) finishes first.
+#. At application exit a run that is still going is stopped the same way, and a
+   thread that will not stop is left alone rather than destroyed while running.
+
+A Python step is interrupted like any other processor; a script that never
+looks at the clock is stopped within about two seconds.  A workflow run can be
+cancelled *inside* a step the same way (the editor's **Cancel run**, and quitting
+the application): only while a **processor** step is running.  A save, a
+reconstruction or a source being opened finishes first and the run stops after
+it, so no file is left half published.  The command line is cancelled with
+Ctrl+C, as before.
+
+.. _improcess-console:
+
+The console
+-----------
+
+**Tools → Console** opens a dock with a code editor above the Python console (the
+same one ImScripting has): one-line commands with history below, code of more than
+a line above.  Both run in one namespace, on the GUI thread, like every console
+command: a long script freezes the window until it returns, which is what the
+Python step is for.
+
+The namespace is the step's (``np``, ``data``, ``inputs``, ``axes``, ``scales``,
+``unit``, ``axis()``, ``results``, ``make_result()``, ``make_labels()``) bound to
+what is selected in the results list, or to the current result when nothing is;
+``outputs`` and ``out`` are not there, since nothing reads them.  A result that is
+not loaded into memory stays the lazy array it is (``np.asarray(data)`` reads it),
+so following the selection never reads a whole recording; one that is in memory is
+read-only, as in the step, and a published array never shares its pixels with
+a result in the list.  These names are rebound
+when the selection *changes* and before a command runs, and only then: what you
+assigned to another name is never touched, and neither is ``data`` while the
+selection stays the same, so ``data = data[0]`` survives until you select something
+else.  Three functions reach the list itself:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Name
+     - What it does
+   * - ``current()``
+     - The result shown now, or ``None``.
+   * - ``selected()``
+     - The results selected in the list, in list order.
+   * - ``publish(array_or_result, *, name=None, axes=None, scales=None, like=None)``
+     - Adds a result to the list and returns it.  An array of the dimensionality of
+       ``like`` (by default the first result ``data`` is bound to) inherits its axes,
+       scales and unit; any other says its ``axes`` (``make_result`` and
+       ``make_labels`` work too), by the same rules as a step's outputs.
+
+**Run** (Ctrl+Enter) runs the selected lines, or all of the code, with what it
+prints and any error (with its line in the editor) shown in the console pane.
+
+A result made with ``publish`` records an **opaque** provenance node, "made in the
+console", with no inputs and no replay: the console cannot know which of the lines
+typed into it made the array, and claiming a lineage would be a guess.  What was
+selected when it was published is kept as a label, which is context, not a claim.
+A step run on such a result chains on that node and cannot be replayed either, and
+the error says why.  The recorded form is the Python step:
+**Send to Python step** puts the editor's text in the step's code field (opening the
+panel) and runs nothing, so you choose its inputs and output ports.  There,
+``outputs = {...}`` replaces ``publish(...)``, and the panel says so when the code
+contains ``publish(``.
+
+A first example
+---------------
+
+Three slices at a time along the first axis, alternating between outputs ``a``
+and ``b`` (ports ``a, b``)::
+
+    ax = 0
+    group = (np.arange(data.shape[ax]) // 3) % 2
+    outputs = {
+        "a": np.take(data, np.flatnonzero(group == 0), axis=ax),
+        "b": np.take(data, np.flatnonzero(group == 1), axis=ax),
+    }
+
+On a 12-slice stack ``a`` holds slices 0–2 and 6–8 and ``b`` the rest, each
+with the input's axes.  Use ``axis("Z")`` instead of ``0`` when the file names
+its axes.  As a workflow step, with a filter on ``split.a`` and saves of both
+branches, it is ``examples/improcess_workflows/python_step_interleave.yaml``
+(see :doc:`improcess-workflows`).
+
+.. _improcess-recipes:
+
+Recipes
+-------
+
+ImSwitch ships a handful of jobs that no processor does and a short script does
+well.  Each is a **snippet**: ImSwitch copies them into
+``~/ImSwitchConfig/improcess_snippets`` the first time it starts after you update,
+so **Load snippet…** lists them, in the panel and for the console's editor (copy
+the text across).  A copy you have edited is kept; delete the file and restart to
+get the current one back.  The same code is also a workflow file in
+``examples/improcess_workflows/``, ``python_step_<recipe>.yaml``, to run over a
+folder with ``python -m imswitch.improcess.workflows run``; it is generated from
+the snippet (``tools/make_python_recipe_workflows.py``), and a test fails if the
+two disagree.  Each opens with what it does and why a script, has its settings
+at the top, and checks its input and says what is wrong when it does not fit.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Recipe
+     - What it does
+     - Why not a processor
+   * - ``normalize_frames``
+     - Flatten brightness changes between frames.  Lamp flicker or bleaching: every plane is divided by its own median.
+     - Math applies one constant to the whole result.
+   * - ``temporal_bin``
+     - Average every n frames.  Temporal binning, with the frame spacing stretched to match.
+     - Resize works on Y/X; Projection collapses an axis to one image.
+   * - ``best_focus``
+     - Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; a second output is the score of every plane, a curve in the Graph panel.
+     - No processor chooses a plane by looking at the data.
+   * - ``signal_trace``
+     - Follow the bright signal through a recording.  Per frame: the mean signal above its own background, relative to the first frame, and how many pixels are signal: two curves.
+     - Multi Measure reads one fixed region; the signal moves and grows.
+   * - ``snake_mosaic``
+     - Assemble a tile scan into one image.  Puts the tiles of a serpentine scan back in grid order; butt-joined, no blending.
+     - Stack combine joins stacks along an axis, not in a grid.
+   * - ``ratio_mask``
+     - Ratio of two channels, empty where the denominator is dim.  A ratio image and a ``labels`` mask of the pixels used: two outputs.
+     - Image calculator writes 0 where it cannot divide.
+   * - ``despeckle``
+     - Replace hot pixels and touch nothing else.  Only outliers become the local median; every other pixel is bit-identical.
+     - Filter's median blurs every pixel.
+   * - ``autocrop``
+     - Crop to the bright region, plus a margin.  The ranges come from the data, so a batch crops each file to its own region.
+     - Stack subset needs the ranges typed in.
+   * - ``crosstalk``
+     - Remove bleed-through between channels.  A measured mixing matrix, inverted and applied across all channels at once.
+     - No processor mixes channels.
+
+``normalize_frames``
+~~~~~~~~~~~~~~~~~~~~
+
+Flatten brightness changes between frames.  Lamp flicker or bleaching: every plane is divided by its own median.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/normalize_frames.py
+   :language: python
+
+``temporal_bin``
+~~~~~~~~~~~~~~~~
+
+Average every n frames.  Temporal binning, with the frame spacing stretched to match.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/temporal_bin.py
+   :language: python
+
+``best_focus``
+~~~~~~~~~~~~~~
+
+Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; a second output, ``sharpness``, is the score of every plane along the stack, drawn in the Graph panel with its peak at the focus.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/best_focus.py
+   :language: python
+
+``signal_trace``
+~~~~~~~~~~~~~~~~
+
+Follow the bright signal through a recording.  Each frame's background is its median and signal is what lies more than ``k`` robust standard deviations above it.  ``level`` is the mean signal above background relative to the first frame (1.0 is unchanged, 0.5 is bleached to half) and ``area`` is how many pixels count as signal; both are curves along the frame axis.  A frame that loses all its signal is a gap in ``level``, not a made-up number.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/signal_trace.py
+   :language: python
+
+``snake_mosaic``
+~~~~~~~~~~~~~~~~
+
+Assemble a tile scan into one image.  Puts the tiles of a serpentine scan back in grid order; butt-joined, no blending.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/snake_mosaic.py
+   :language: python
+
+``ratio_mask``
+~~~~~~~~~~~~~~
+
+Ratio of two channels, empty where the denominator is dim.  A ratio image and a ``labels`` mask of the pixels used: two outputs.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/ratio_mask.py
+   :language: python
+
+``despeckle``
+~~~~~~~~~~~~~
+
+Replace hot pixels and touch nothing else.  Only outliers become the local median; every other pixel is bit-identical.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/despeckle.py
+   :language: python
+
+``autocrop``
+~~~~~~~~~~~~
+
+Crop to the bright region, plus a margin.  The ranges come from the data, so a batch crops each file to its own region.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/autocrop.py
+   :language: python
+
+``crosstalk``
+~~~~~~~~~~~~~
+
+Remove bleed-through between channels.  A measured mixing matrix, inverted and applied across all channels at once.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/crosstalk.py
+   :language: python
+
+Write your own the same way: start from the recipe closest to the job, keep the
+settings at the top, and convert to float before doing arithmetic.  A recipe that
+you use every day belongs in a drop-in plugin; one that is a one-off belongs in
+**Save as snippet…**.
 
 Active reconstructor
 ====================
@@ -1876,6 +2363,31 @@ Widget agreement (checked)
     Machine-dependent widget defaults (a model path found at import time)
     go in ``default_params_volatile`` so the value comparison skips them.
 
+Widget hooks (optional)
+    Methods the processor panel calls on the widget ``make_param_widget``
+    returns, when it declares them.  ``setResult(result, rois)`` is called
+    whenever the selected result changes, for a widget whose parameters
+    depend on its input (a row per axis, say).  ``set_values(dict)`` lets
+    another part of the application fill the widget in (the console hands
+    code to the Python step this way); it takes the keys it is given and
+    leaves the rest.  Around a run: ``before_run()`` when it starts;
+    ``output_appended(text)`` with what the processor prints, as it prints it
+    (declaring it is what asks for the output to be streamed); and
+    ``after_run(results, failures)`` once it has ended, with the results it
+    produced and the ``(input, message)`` pairs of the inputs it failed on
+    (one saying ``"Cancelled."`` when it was cancelled).  An exception raised in
+    any of them is logged and does not stop the run or the results being
+    published.
+
+Running and cancelling
+    ``apply`` is run on a worker thread by every panel, the toolbar and the
+    workflow runner: no Qt objects, and nothing that must run on the GUI thread.
+    A loop that may run long can call ``imswitch.imcommon.model.checkpoint()``
+    to stop at a point of its choosing when the person cancels; without it the
+    run is interrupted after a moment, which lands at the next line of Python, so
+    clean up in ``finally`` and let ``OperationCancelled`` (a ``BaseException``)
+    pass.  What a cancelled run made is discarded.
+
 ``extra_param_keys`` (optional)
     Keys a workflow may set beyond the defaults, for a setting no widget
     default names (MoNaLISA's ``scan_params``).  It only *permits* a key; it
@@ -1885,7 +2397,8 @@ Widget agreement (checked)
     A class method returning one
     :class:`~imswitch.improcess.model.param_spec.ParamField` per key of
     ``default_params()``: its type (``int``, ``float``, ``bool``, ``text``,
-    ``select``, ``multiselect``, ``path``, ``json``), the choices behind a
+    ``code``, ``select``, ``multiselect``, ``path``, ``json``; a ``code`` field
+    is multi-line text that a form shows in a code editor), the choices behind a
     combo box, the bounds, step and unit of a spin box, a label, a tooltip,
     a group, and whether ``None`` is a value ("from the recording").  It is
     what the workflow editor builds a step's form from, what
