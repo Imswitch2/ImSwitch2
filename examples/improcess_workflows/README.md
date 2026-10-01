@@ -12,7 +12,8 @@ receipts. The guide is `docs/improcess-workflows.rst`.
 | `python_step_interleave.yaml` | A Python step: three slices at a time alternate between two outputs (`split.a`, `split.b`); one is filtered, both are saved. The code is written in block style (`code: |`), so the file reads like a script. | yes (`--input` the synthetic recording) |
 | `python_step_normalize_frames.yaml` | A Python step: Divide every plane by its own median (lamp flicker, bleaching). Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
 | `python_step_temporal_bin.yaml` | A Python step: Average every 4 frames into one; the frame spacing is stretched to match. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
-| `python_step_best_focus.yaml` | A Python step: Pick the sharpest plane of a focus stack and print every plane's score. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_best_focus.yaml` | A Python step: Pick the sharpest plane of a focus stack; a second output is every plane's sharpness, a curve saved as CSV. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
+| `python_step_signal_trace.yaml` | A Python step: Follow the bright signal through a recording; two curves per frame, its level relative to the first frame and its area, saved as CSV. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
 | `python_step_snake_mosaic.yaml` | A Python step: Assemble a serpentine tile scan (3 × 4) into one image. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
 | `python_step_ratio_mask.yaml` | A Python step: Ratio of two channels, left empty where the denominator is dim; also saves the mask of pixels used. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
 | `python_step_despeckle.yaml` | A Python step: Replace only hot pixels by the local median; every other pixel is untouched. Derived from the snippet of the same name. | yes (`--input` a synthetic recording, see the file header) |
@@ -28,6 +29,8 @@ into `~/ImSwitchConfig/improcess_snippets` so that **Load snippet…** in the Py
 step panel lists them. Edit the snippet, then run
 `python tools/make_python_recipe_workflows.py`; a test fails if they disagree.
 Each file's header says why a script does the job and how to try it.
+A one-dimensional output is a curve: the files that make one save it with `fmt: csv`
+(a curve cannot be written as TIFF) and the GUI draws it in the Graph panel.
 
 ## Run
 

@@ -710,6 +710,8 @@ are therefore not offered for those two kinds.  RGB results are
 visualization and export artifacts (autoscaled ``uint8`` display values, not
 calibrated intensities), so no analysis processor accepts them either.
 
+.. _improcess-result-graph:
+
 Result graph panel
 ==================
 
@@ -1150,8 +1152,14 @@ numeric array (boolean, integer or float) or the result of ``make_result`` /
 * any other array must come through ``make_result(array, axes=["Y", "X"])``;
   the scales of axes it shares with the input come along (``scales=`` sets
   them), and the error otherwise names the port and both dimensionalities;
+* a **one-dimensional** array is a *curve*, not an image: it comes through
+  ``make_result(values, axes=["Frame"])`` (naming the axis; ``scales=[0.5]``
+  calibrates it) unless the input is one-dimensional itself, and it is drawn in
+  the :ref:`Graph panel <improcess-graph-curves>`;
 * an output is named ``<input name> (<port>)`` unless ``name=`` says
   otherwise.
+
+A single number is not an array: ``print()`` it, or output ``np.array([value])``.
 
 Things to know
 --------------
@@ -1166,15 +1174,50 @@ Things to know
 * **Axis names.**  ``axes`` lists them in the order of ``data``.  A recording
   that does not name its axes reads as ``Frame, Y, X``, so ``axis("Z")`` on it
   raises an error that lists the names; ``print(axes)`` once, or use the index.
-* **Only arrays come out.**  A step makes numeric arrays, not tables or curves.
-  A one-dimensional output is accepted and listed, but the viewer needs at least
-  two axes to draw it, so report a single number or a short list with
-  ``print()``, which the **Output** pane shows.
+* **Only numeric arrays come out.**  A step makes arrays, not tables.  One with
+  two or more dimensions is an image (or labels); a one-dimensional one is a
+  curve, shown in the **Graph** panel, which opens when the run ends, instead of
+  the image viewer, which has nothing to draw for it (see
+  :ref:`improcess-graph-curves`).  Several numbers that belong together as rows
+  of a table are still ``print()`` territory, which the **Output** pane shows.
 * **Imports.**  ``import scipy.ndimage`` works (scipy ships with ImSwitch).  The
   provenance records the code and ImSwitch's version, not the versions of the
   modules it imported, so a replay on another installation can differ if they do.
 * **Memory.**  The inputs are in memory, and a conversion to float makes a
   second copy: a stack that barely fits will not fit in a step that converts it.
+
+.. _improcess-graph-curves:
+
+One-dimensional outputs: curves
+-------------------------------
+
+A measurement per frame, per plane or per time point is one-dimensional, and its
+place is the :ref:`Graph panel <improcess-result-graph>`, not the image viewer.  A
+step (or the console) that outputs a one-dimensional array makes a *curve* result,
+the kind FRC makes:
+
+* the Graph panel plots it against its axis, at ``index × scale`` along it
+  (``scales=[0.5]`` for a frame every half second), and opens when the run ends;
+  the viewer clears, since it has no pixels to show;
+* the axis is captioned with its unit only when it has one: a calibrated ``Z``,
+  ``Y`` or ``X`` axis takes the pixel unit, a ``T`` axis is in seconds, and an
+  uncalibrated axis, or one called ``Frame`` or ``Index``, has none;
+* **Push to table** in the Graph panel puts one summary row (points, range, mean)
+  in the Results dock; **Measure Δx** works on it as on any graph;
+* it saves as **CSV** (two columns, the axis then the values, with a
+  ``.provenance.json`` beside it), **HDF5** or **Zarr**, and not as TIFF: asking
+  for TIFF is refused before anything is written, and a workflow's ``save`` step
+  for a curve says ``fmt: csv``;
+* no processor takes a curve as input (as for FRC's), so a curve is where a
+  chain of steps ends.  A later step given one stops the run with ``'python'
+  does not accept result … (kind 'curve' …)``; the workflow's validation cannot
+  see that beforehand, because it does not know what a script will output.  The
+  console can read a selected curve (``data`` is its values), to post-process it
+  by hand.
+
+The sampling is even, by construction: ``x`` is the index times one scale.  A
+measurement against an irregular axis (stage positions, say) is a table, not a
+curve.
 
 Errors and printed output
 -------------------------
@@ -1363,8 +1406,11 @@ at the top, and checks its input and says what is wrong when it does not fit.
      - Average every n frames.  Temporal binning, with the frame spacing stretched to match.
      - Resize works on Y/X; Projection collapses an axis to one image.
    * - ``best_focus``
-     - Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; prints the scores.
+     - Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; a second output is the score of every plane, a curve in the Graph panel.
      - No processor chooses a plane by looking at the data.
+   * - ``signal_trace``
+     - Follow the bright signal through a recording.  Per frame: the mean signal above its own background, relative to the first frame, and how many pixels are signal: two curves.
+     - Multi Measure reads one fixed region; the signal moves and grows.
    * - ``snake_mosaic``
      - Assemble a tile scan into one image.  Puts the tiles of a serpentine scan back in grid order; butt-joined, no blending.
      - Stack combine joins stacks along an axis, not in a grid.
@@ -1400,9 +1446,17 @@ Average every n frames.  Temporal binning, with the frame spacing stretched to m
 ``best_focus``
 ~~~~~~~~~~~~~~
 
-Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; prints the scores.
+Pick the sharpest plane of a focus stack.  By the variance of each plane's Laplacian; a second output, ``sharpness``, is the score of every plane along the stack, drawn in the Graph panel with its peak at the focus.
 
 .. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/best_focus.py
+   :language: python
+
+``signal_trace``
+~~~~~~~~~~~~~~~~
+
+Follow the bright signal through a recording.  Each frame's background is its median and signal is what lies more than ``k`` robust standard deviations above it.  ``level`` is the mean signal above background relative to the first frame (1.0 is unchanged, 0.5 is bleached to half) and ``area`` is how many pixels count as signal; both are curves along the frame axis.  A frame that loses all its signal is a gap in ``level``, not a made-up number.
+
+.. literalinclude:: ../imswitch/_data/user_defaults/improcess_snippets/signal_trace.py
    :language: python
 
 ``snake_mosaic``

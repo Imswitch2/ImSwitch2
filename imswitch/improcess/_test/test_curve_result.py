@@ -237,3 +237,39 @@ def test_a_workflow_runs_a_script_to_a_curve_and_saves_it_as_csv(tmp_path):
     np.testing.assert_allclose(
         np.loadtxt(written, delimiter=",", skiprows=1), np.column_stack([np.arange(5), np.arange(5)])
     )
+
+
+def test_the_console_publishes_a_curve_and_can_read_one_back():
+    from imswitch.improcess.processors.python_step.console import ConsoleSession
+
+    stack, made = _stack(), []
+    session = ConsoleSession(selected=lambda: [stack], current=lambda: stack, publish=lambda result, name: made.append(result))
+    namespace = session.namespace
+    curve = session.publish(np.asarray(namespace["data"]).mean(axis=(1, 2)), axes=["Frame"], name="mean")
+    assert isinstance(curve, CurveResult) and made == [curve] and curve.name == "mean"
+    # selecting the curve rebinds `data` to its one dimension: a console can post-process what a step made
+    shown = [curve]
+    session = ConsoleSession(selected=lambda: shown, current=lambda: curve, publish=lambda result, name: made.append(result))
+    assert session.namespace["data"].shape == (6,) and session.namespace["axes"] == ["Frame"]
+    with pytest.raises(ScriptError, match="single number"):
+        session.publish(float(np.asarray(session.namespace["data"]).max()))
+
+
+def test_a_step_given_a_curve_stops_the_run_and_says_why(tmp_path):
+    """A curve ends a chain: validation cannot know a script's output kind, the run can."""
+    from imswitch.improcess.workflows import Process, Reconstruct, RunError, Source, Workflow, bootstrap_registry, run, validate
+
+    registry = bootstrap_registry(user_plugins=False)
+    raw = tmp_path / "frames.h5"
+    with h5py.File(str(raw), "w") as handle:
+        handle.create_dataset("data", data=np.zeros((5, 8, 8), np.float32)).attrs["axes"] = "CYX"
+    workflow = Workflow("chain", [
+        Source("raw", path=str(raw)),
+        Reconstruct("rec", "view-only", inputs=["raw"]),
+        Process("a", "python", {"code": 'out = make_result(data.mean(axis=(1, 2)), axes=["Frame"])', "ports": "out"}, inputs=["rec"]),
+        Process("b", "python", {"code": "out = data * 2", "ports": "out"}, inputs=["a.out"]),
+    ])
+    assert validate(workflow, registry) == []
+    with pytest.raises(RunError, match=r"b: 'python' does not accept result .*kind 'curve'"):
+        with run(workflow, registry=registry, out_dir=tmp_path / "out"):
+            pass

@@ -13,6 +13,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from imswitch.improcess.model.array_result import ArrayProcessingResult  # noqa: E402
+from imswitch.improcess.model import result_kind  # noqa: E402
+from imswitch.improcess.model.curve_result import CurveResult  # noqa: E402
 from imswitch.improcess.model.snippets import parse_snippet  # noqa: E402
 from imswitch.improcess.processors.python_step.context import parse_ports, run_script  # noqa: E402
 from imswitch.improcess.workflows import Workflow, bootstrap_registry, run, validate  # noqa: E402
@@ -23,7 +25,7 @@ EXAMPLES = REPO / "examples" / "improcess_workflows"
 
 RECIPES = [
     "autocrop", "best_focus", "crosstalk", "despeckle",
-    "normalize_frames", "ratio_mask", "snake_mosaic", "temporal_bin",
+    "normalize_frames", "ratio_mask", "signal_trace", "snake_mosaic", "temporal_bin",
 ]
 
 
@@ -118,17 +120,69 @@ def test_temporal_bin_averages_groups_and_stretches_the_frame_spacing():
     assert out.data.shape == (2, 4, 4) and "dropped 2" in printed
 
 
-def test_best_focus_picks_the_sharpest_plane_and_says_which():
+def test_best_focus_picks_the_sharpest_plane_says_which_and_draws_the_scores():
     from scipy import ndimage
 
     noise = np.random.default_rng(0).random((32, 32)).astype(np.float32)
     planes = np.stack([ndimage.gaussian_filter(noise, sigma=abs(i - 3) * 1.5 + 0.01) for i in range(5)])
-    (out,), printed = _run("best_focus", _result(planes, "ZYX", scales=[2.0, 0.1, 0.1], name="stack"))
+    (out, sharpness), printed = _run("best_focus", _result(planes, "ZYX", scales=[2.0, 0.1, 0.1], name="stack"))
     assert np.array_equal(out.data, planes[3])
     assert out.name == "stack (plane 3)" and out.axis_labels == ["Y", "X"] and out.axis_scales == [0.1, 0.1]
     assert "sharpest plane: 3" in printed
+    # the score of every plane comes out as a curve along Z, calibrated like the stack, peaking at the focus
+    assert isinstance(sharpness, CurveResult) and sharpness.name == "stack (sharpness)"
+    assert sharpness.axis_labels == ["Z"] and sharpness.axis_scales == [2.0] and sharpness.x_label() == "Z"
+    assert sharpness.data.shape == (5,) and int(np.argmax(sharpness.data)) == 3
+    np.testing.assert_allclose(sharpness.x_values, [0.0, 2.0, 4.0, 6.0, 8.0])
     with pytest.raises(Exception, match="expects a \\(plane, Y, X\\) stack"):
         _run("best_focus", _result(np.zeros((2, 3, 8, 8)), "TZYX"))
+
+
+def _disk(size, centre, radius, height):
+    yy, xx = np.mgrid[:size, :size]
+    return np.where((yy - centre[0]) ** 2 + (xx - centre[1]) ** 2 <= radius ** 2, height, 0.0)
+
+
+def test_signal_trace_follows_signal_that_moves_and_fades_where_a_fixed_region_loses_it():
+    """A disk drifts across the frame while its brightness falls by a fifth each frame."""
+    size, radius = 64, 6
+    centres = [(32, 12 + 8 * i) for i in range(6)]
+    heights = [100.0 * 0.8 ** i for i in range(6)]
+    frames = np.stack([20.0 + _disk(size, c, radius, h) for c, h in zip(centres, heights)]).astype(np.float32)
+    (level, area), printed = _run("signal_trace", _result(frames, "TYX", scales=[0.5, 0.1, 0.1], unit="um", name="cells"))
+
+    pixels = int(_disk(size, centres[0], radius, 1).sum())
+    assert isinstance(level, CurveResult) and isinstance(area, CurveResult)
+    assert level.name == "cells (level)" and area.name == "cells (area)"
+    np.testing.assert_allclose(level.data, [0.8 ** i for i in range(6)], rtol=1e-5)
+    assert area.data.tolist() == [pixels] * 6
+    # the frame axis is the curve's x, calibrated, and not captioned in the pixel size's unit
+    assert level.axis_labels == ["T"] and level.axis_scales == [0.5] and level.x_label() == "T (s)"
+    assert "signal area: %d px in the first frame, %d px in the last" % (pixels, pixels) in printed
+    # what a region drawn on the first frame would have measured: nothing, once the disk has left it
+    fixed = frames[:, 28:37, 6:19].mean(axis=(1, 2))
+    assert fixed[-1] < 0.1 * fixed[0] + 20 and level.data[-1] > 0.3
+
+
+def test_signal_trace_says_when_it_cannot_compare_and_what_it_expects():
+    flat = np.full((4, 16, 16), 7.0, np.float32)
+    with pytest.raises(Exception, match="the first frame has no signal above its background"):
+        _run("signal_trace", _result(flat, "TYX"))
+    with pytest.raises(Exception, match="expects a \\(frame, Y, X\\) recording"):
+        _run("signal_trace", _result(np.zeros((8, 8)), "YX"))
+    # a frame that loses all its signal is a gap in the curve, not an error or a made-up number
+    frames = np.stack([20.0 + _disk(32, (16, 16), 4, 50.0), np.full((32, 32), 20.0)]).astype(np.float32)
+    (level, area), _ = _run("signal_trace", _result(frames, "TYX"))
+    assert level.data[0] == 1.0 and np.isnan(level.data[1]) and area.data[1] == 0
+
+
+def test_signal_trace_on_integer_data_gives_the_same_answer_as_on_float_data():
+    """The background subtraction goes negative on uint16 unless the recipe converts first."""
+    rng = np.random.default_rng(3)
+    counts = (rng.normal(300, 5, (5, 24, 24)) + np.stack([_disk(24, (12, 12), 4, 400.0 - 40 * i) for i in range(5)])).astype(np.uint16)
+    (a_level, a_area), _ = _run("signal_trace", _result(counts, "TYX"))
+    (f_level, f_area), _ = _run("signal_trace", _result(counts.astype(np.float32), "TYX"))
+    assert np.allclose(a_level.data, f_level.data) and np.array_equal(a_area.data, f_area.data)
 
 
 def test_snake_mosaic_puts_every_other_row_back_in_order():
@@ -300,16 +354,18 @@ def _synthetic(tmp_path, frames):
 
 @pytest.mark.parametrize("name, shapes", [
     ("autocrop", {"out": None}),
-    ("best_focus", {"out": (96, 96)}),
+    ("best_focus", {"out": (96, 96), "sharpness": (12,)}),
     ("crosstalk", {"out": (2, 96, 96)}),
     ("despeckle", {"out": (12, 96, 96)}),
     ("normalize_frames", {"out": (12, 96, 96)}),
     ("ratio_mask", {"ratio": (96, 96), "valid": (96, 96)}),
+    ("signal_trace", {"level": (12,), "area": (12,)}),
     ("snake_mosaic", {"out": (3 * 96, 4 * 96)}),
     ("temporal_bin", {"out": (3, 96, 96)}),
 ])
 def test_each_workflow_validates_and_runs_on_the_synthetic_recording(registry, tmp_path, name, shapes):
     tool = _tool()
+    curves = set(tool.CURVE_PORTS.get(name, ()))
     recording = _synthetic(tmp_path, tool.TRY_FRAMES.get(name, tool.DEFAULT_TRY_FRAMES))
     workflow = Workflow.load(EXAMPLES / f"python_step_{name}.yaml")
     assert validate(workflow, registry) == []
@@ -319,8 +375,17 @@ def test_each_workflow_validates_and_runs_on_the_synthetic_recording(registry, t
             produced = report.result(f"script.{port}")
             if shape is not None:
                 assert produced.data.shape == shape, port
-        written = sorted(path.name for receipt in report.receipts for path in receipt.files if path.suffix == ".tif")
+            # the tool saves exactly the curve ports as CSV: if the script's idea of what is a
+            # curve and the tool's drift apart, a curve would be saved as a TIFF and fail
+            assert (result_kind(produced) == "curve") == (port in curves), port
+        written = [receipt.primary.name for receipt in report.receipts]
     assert len(written) == len(shapes) and all((tmp_path / "out" / file).exists() for file in written)
+    assert sorted(file for file in written if file.endswith(".csv")) == sorted(
+        f"cells_{name}_{port}.csv" for port in curves
+    )
+    for port in curves:
+        table = np.loadtxt(tmp_path / "out" / f"cells_{name}_{port}.csv", delimiter=",", skiprows=1)
+        assert table.shape == (shapes[port][0], 2) and np.array_equal(table[:, 0], np.arange(shapes[port][0]))
 
 
 def test_a_workflow_file_runs_over_a_folder_and_each_file_gets_its_own_crop(registry, tmp_path):

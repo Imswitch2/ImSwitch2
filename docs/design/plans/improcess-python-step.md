@@ -342,7 +342,7 @@ pattern"), reusing its pieces by moving them to `imcommon.model`
 
 ## 9. Recipes (2026-10-01)
 
-Eight jobs no processor does ship as snippets in
+Eight jobs no processor does shipped first (a ninth, `signal_trace`, followed with the curves of §10) as snippets in
 `imswitch/_data/user_defaults/improcess_snippets/` (installed by the existing
 user-defaults sync, so *Load snippet...* lists them with no setup) and as workflow
 files in `examples/improcess_workflows/`. The snippet is the single source: the
@@ -357,8 +357,42 @@ docs and the examples README to mention each recipe. Decisions worth keeping:
   stack) checks it and says what is wrong; none fails with an index error.
 - `despeckle` uses 8 noise widths, chosen by measuring false positives on pure
   Gaussian and Poisson noise (5 replaced genuine pixels at about 30 per million).
-- Outputs stay at two or more dimensions: a one-dimensional result is accepted but
-  the viewer cannot draw it, so numbers are reported with `print`.
+- Outputs of one dimension are curves (see below, 2026-10-01); this note used to say
+  the opposite, that a one-dimensional result was accepted but could not be drawn and
+  numbers should be reported with `print`. That was wrong: the image viewer cannot
+  draw one, the Graph panel can.
 - `tools/update_user_defaults_history.py` rebuilds the hash history from git; in a
-  shallow clone that silently drops older hashes, so the eight new entries were
+  shallow clone that silently drops older hashes, so the new entries were
   added to the committed file instead of regenerating it.
+
+## 10. One-dimensional outputs are curves (2026-10-01)
+
+A script's one-dimensional output (a value per frame, per plane) used to become an
+image result with nothing to show: a blank Graph panel, an empty viewer, and a TIFF
+save that failed. The Graph panel is where a curve belongs, and the machinery was
+already there (`kind = "curve"`, `plot_payloads()`, the Graph dock raised on
+production, as for FRC). Decisions:
+
+- `CurveResult` (`model/curve_result.py`) is an `ArrayProcessingResult` of kind
+  `curve`: one named axis, `x = index * scale`. Evenly sampled by construction; an
+  irregular axis is a table.
+- `result_from_value` returns it for any 1-D, non-labels output, from a step and from
+  the console's `publish`. A 0-D output gets its own error (print it, or make a
+  one-element array); a 1-D output from a 3-D input still has to name its axis, and
+  the error now shows the call (`axes=["Frame"]`). No axis is guessed from the length.
+- The x axis carries a unit only when it has one: a calibrated spatial axis the
+  result's pixel unit, a time axis seconds (as the OME writer assumes), anything else
+  none. A result has one `scale_unit` for all its axes, so printing it unconditionally
+  would caption a frame axis in micrometres.
+- Saves: CSV (axis column, value column, and the provenance companion as for FRC),
+  HDF5, Zarr. TIFF is refused up front by `supported_formats`, not by a writer error.
+- Curves are not offered to any processor, including the Python step: the kind matrix
+  pins that no processor accepts a `curve`, and loosening a pinned invariant for a
+  convenience was not worth it. A workflow that feeds one into a later step passes
+  validation (a script's output kind is not known statically) and stops at run time
+  with the framework's "does not accept result ... kind 'curve'". The console can read
+  a selected curve.
+- Recipes: `best_focus` gained a second port, `sharpness`, and `signal_trace` returns
+  two curves. The workflow generator needs to be told which ports are curves
+  (`CURVE_PORTS`) to save them as CSV; a test fails if that list and what the scripts
+  produce disagree.

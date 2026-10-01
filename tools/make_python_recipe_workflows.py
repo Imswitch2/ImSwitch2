@@ -24,6 +24,11 @@ EXAMPLES = REPO / "examples" / "improcess_workflows"
 TRY_FRAMES = {"crosstalk": 2, "ratio_mask": 2}
 DEFAULT_TRY_FRAMES = 12
 
+#: The output ports that are curves, not images. A step does not declare what an
+#: output will be -- one-dimensional means curve -- so the generated workflow has
+#: to be told, to save these as CSV (a curve cannot be a TIFF).
+CURVE_PORTS = {"best_focus": ("sharpness",), "signal_trace": ("level", "area")}
+
 
 def workflow_path(recipe: str) -> Path:
     return EXAMPLES / f"python_step_{recipe}.yaml"
@@ -54,16 +59,26 @@ def workflow_text(recipe: str) -> str:
         Reconstruct("rec", "view-only", inputs=["raw"]),
         Process("script", "python", {"ports": ports_text, "code": code}, inputs=["rec"]),
     ]
+    curves = CURVE_PORTS.get(recipe, ())
+    unknown = [port for port in curves if port not in ports]
+    if unknown:
+        raise SystemExit(f"{recipe}: CURVE_PORTS names {unknown}, which the snippet does not declare ({', '.join(ports)})")
     for port in ports:
         suffix = recipe if len(ports) == 1 else f"{recipe}_{port}"
         steps.append(Save(
-            f"save_{port}", input=f"script.{port}", fmt="tiff",
+            f"save_{port}", input=f"script.{port}", fmt="csv" if port in curves else "tiff",
             path_template=f"{{out_dir}}/{{source_stem}}_{suffix}{{ext}}",
         ))
     workflow = Workflow(f"python-{slug}", steps, description=about[0] if about else "")
 
     frames = TRY_FRAMES.get(recipe, DEFAULT_TRY_FRAMES)
     header = [f"# {line}".rstrip() for line in about]
+    if curves:
+        header += [
+            "#",
+            f"# {' and '.join(repr(port) for port in curves)} {'is a curve' if len(curves) == 1 else 'are curves'}:"
+            " saved as CSV here, drawn in the Graph panel in the GUI.",
+        ]
     header += [
         "#",
         f"# Run it on a synthetic recording ({frames} frames):",
