@@ -21,8 +21,10 @@ owns the layer and hands out tokens:
 * ``release`` disconnects every callback that owner registered, which is the
   only teardown hook available — panels have no close event to hang it on.
 
-``ViewerToolManager`` is kept as the implementation underneath, unchanged, so
-imcontrol's ``ImageWidget`` keeps working exactly as before.
+``ViewerToolManager`` is kept as the implementation underneath, unchanged.
+imcontrol's ``ImageWidget`` takes its manager from this service too, so its
+Viewer Tools buttons and the Line Profile panel (the shared Profile widget)
+drive one manager on one layer.
 """
 
 from __future__ import annotations

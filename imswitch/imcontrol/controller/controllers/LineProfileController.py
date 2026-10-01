@@ -20,44 +20,12 @@ from ..basecontrollers import ImConWidgetController
 class LineProfileController(ImConWidgetController):
     """Linked to LineProfileWidget.
 
-    Listens to ViewerToolManager.sigShapesChanged and updates the plot only
-    when the active tool is 'line' (line profile) or 'rectangle' (integrated
-    intensity).  Crosshair/grid/pan mode changes are intentionally ignored.
+    The panel is the shared Profile widget, which draws through the viewer's
+    tool broker, samples the image and follows new frames on its own; there
+    is nothing left for a controller to relay. It used to translate
+    ViewerToolManager shape changes into plot updates, which is also why the
+    profile only changed when the shape did and never with the image.
+
+    Viewer Tools' drawing buttons reach the panel through
+    ``ViewerToolsController``, which is handed the widget directly.
     """
-
-    def __init__(self, *args, imageToolManager=None, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        if imageToolManager is None:
-            return
-
-        self._toolManager = imageToolManager
-        self._toolManager.sigShapesChanged.connect(self._onShapesChanged)
-
-    # ------------------------------------------------------------------
-    def _onShapesChanged(self):
-        mode = self._toolManager.get_mode()
-
-        if mode == 'line':
-            endpoints = self._findFirstLine()
-            self._widget.sigLineChanged.emit(endpoints)
-
-        elif mode == 'rectangle':
-            bounds = self._findFirstRectangle()
-            self._widget.sigRectangleChanged.emit(bounds)
-
-        # crosshair / grid / pan → do nothing
-
-    def _findFirstLine(self):
-        shape_types = self._toolManager.get_shape_types()
-        for i, stype in enumerate(shape_types):
-            if stype == 'line':
-                return self._toolManager.get_line_endpoints(i)
-        return None
-
-    def _findFirstRectangle(self):
-        shape_types = self._toolManager.get_shape_types()
-        for i, stype in enumerate(shape_types):
-            if stype == 'rectangle':
-                return self._toolManager.get_rectangle_bounds(i)
-        return None

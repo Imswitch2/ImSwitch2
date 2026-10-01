@@ -377,7 +377,8 @@ selection.
 * *Interacting/measuring tools* (ROI Manager, ROI stats, Profile) operate on
   the *active napari layer* and display their measurements in place; they do
   not create results.  All of them resolve their source layer through the
-  shared ``imswitch.improcess.layer_selection`` helper, so what counts as an
+  shared ``imswitch.imcommon.algorithms.layer_selection`` helper (also
+  importable as ``imswitch.improcess.layer_selection``), so what counts as an
   image source cannot drift between tools.  They also re-measure when the
   selected result changes: the ROI stays where it is and the numbers follow
   the result now under it, rather than lingering from the previous one.
@@ -386,7 +387,18 @@ The Profile tool can draw line and rectangle ROIs, plot the sampled profile,
 and optionally overlay fitted curves.  Available profile fits are no fit,
 single Gaussian, two independent Gaussians with center-distance reporting,
 and a single exponential decay/rise model.  Fit metrics are included when the
-profile is pushed to the results table or saved as CSV.
+profile is pushed to the results table or saved with *Save summary…*; *Save
+data…* writes the plotted curves themselves as CSV.
+
+*Layer* says which image is profiled, and the plot title names it.  *Active*
+is the layer selected in napari's layer list, kept while you draw (drawing
+selects the *Viewer Tools* layer rather than an image); choosing a layer by
+name keeps profiling it whatever is selected, and *All visible layers* plots
+one curve per visible image layer, each sampled in its own pixel size and
+offset.  The panel is shared with imcontrol's *Line Profile* panel — one
+widget, ``imswitch.imcommon.view.guitools.ProfileWidget`` — so a fix to one is
+a fix to both; imcontrol adds live redrawing and an *Intensity vs T* trace (see
+:doc:`gui`).
 
 The *Source* list chooses between the shape drawn in the panel (*Drawn*) and
 a named ROI from the ROI manager, which is re-plotted when the selected

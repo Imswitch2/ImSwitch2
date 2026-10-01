@@ -244,9 +244,11 @@ One tool is active at a time, and choosing any tool, **Pan** included, clears
 what the previous one drew:
 
 * **Pan** — pan and zoom the image; nothing is drawn.
-* **Rectangle ROI** and **Line** — draw a rectangle or a line on the viewer's
-  *Viewer Tools* layer.  Only the latest rectangle and the latest line are
-  kept.  They are what the Line Profile panel measures.
+* **Rectangle ROI**, **Line** and **ROI Intensity vs T** — draw a rectangle or
+  a line for the Line Profile panel.  These buttons select the panel's own
+  modes of the same names, and the panel's buttons are mirrored here, so
+  either set can be used; only the latest shape is kept.  **ROI Intensity vs
+  T** is shown only when the Line Profile panel is loaded.
 * **Crosshair** — each click in the viewer places a yellow crosshair across the
   whole view at that point, replacing the previous one.
 * **Grid** — five horizontal and five vertical yellow lines at 1/4, 3/8, 1/2,
@@ -261,24 +263,43 @@ what the previous one drew:
 Line profile
 ------------
 
-Plots the intensity along a line, or the mean projections of a rectangle,
-drawn with the Viewer Tools panel.  ``LineProfile`` in ``availableWidgets``
-loads it, by default below *Viewer Tools* in the left column; list
-``ViewerTools`` and ``Image`` as well.
+Plots profiles of the live image: the intensity along a line, the mean
+projections of a rectangle, or the mean inside a rectangle over time.
+``LineProfile`` in ``availableWidgets`` loads it, by default below *Viewer
+Tools* in the left column; list ``Image`` as well.  It is the same panel as
+ImProcess's *Profile* panel (see :doc:`improcess`), so the two behave alike.
 
-* With **Line** active, the plot is the intensity sampled along the line
-  against distance in pixels.  **Width (n)** averages *n* samples taken across
-  the line, weighted towards the line itself (Gaussian weights, σ = *n*/4);
-  use odd values.
-* With **Rectangle ROI** active, the plot shows two curves against distance
-  from the rectangle's edge: *x* (red), the mean of each column, and *y*
-  (green), the mean of each row.
+Draw with the panel's mode buttons or with the Viewer Tools panel:
 
-The profile is taken from the layer selected in napari's layer list, or from
-the first visible image when no image layer is selected, so on a setup with
-several detectors select the one to measure.  The plot is recalculated when a
-line or rectangle is drawn and when **Width (n)** changes, not with every new
-frame: draw the shape again to update it.
+* **Line** — the intensity sampled along the line against distance, in
+  micrometres when the detector's pixel size is set and in pixels otherwise.
+  **Width** averages that many samples taken across the line,
+  weighted towards the line itself (Gaussian weights, σ = width/4); use odd
+  values.
+* **Rectangle** — two curves against distance from the rectangle's edge:
+  *x*, the mean of each column, and *y*, the mean of each row.
+* **Intensity vs T** — the mean intensity inside the rectangle (the whole
+  frame until one is drawn) against time, sampled every **Every** seconds
+  (1 s by default).  Drawing a new rectangle, changing the layer or
+  **Restart** starts the trace again from t = 0; **Pause** stops sampling
+  and resumes on the same time axis.  An exponential fit over the trace is a
+  bleaching curve.
+* **Z profile** — the mean over the rectangle (or the whole frame) through
+  the stack axis of a 3D layer, such as a scan result.
+
+**Layer** says which image is measured, and the plot title names it.
+*Active* follows the layer selected in napari's layer list and keeps it
+while you draw (drawing selects the *Viewer Tools* layer); pick a layer by
+name to keep measuring it whatever is selected, or **All visible layers** for
+one curve per visible layer, each in its own pixel size — useful to compare
+detectors.
+
+With **Live** ticked the plot follows the live view, redrawn a few times a
+second as frames arrive; untick it to freeze the current profile.  Redrawing
+waits while the **Measure Δx** markers are being dragged.  **Fit** overlays a
+Gaussian, two Gaussians or an exponential; **Save summary…** writes one row
+per curve (length, min, max, mean and the fit parameters) and **Save data…**
+the plotted curves themselves, both as CSV.
 
 .. image:: ./images/auto/LineProfileWidget.png
    :align: center
