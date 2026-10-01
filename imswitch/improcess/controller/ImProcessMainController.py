@@ -937,7 +937,13 @@ class ImProcessMainController(MainController):
             self._appendResultTableRecords(result)
         if kind == "curve" and self._resultHasPlotPayloads(result):
             try:
-                self.__mainView.raiseDockByTitle('Graph')
+                if not self.__mainView.raiseDockByTitle('Graph'):
+                    # The Graph is a runtime panel and is not there until it is
+                    # opened (``graphPanel`` is off by default): a curve made
+                    # before that would be drawn nowhere. Ask for the panel the
+                    # way a pushed plot does, then bring it forward.
+                    self.__mainView.sigLoadProcessorRequested.emit('graph')
+                    self.__mainView.raiseDockByTitle('Graph')
             except Exception:
                 self.__logger.debug(
                     "Could not reveal the Graph dock", exc_info=True

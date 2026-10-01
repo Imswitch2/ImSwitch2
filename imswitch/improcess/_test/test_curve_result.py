@@ -129,6 +129,25 @@ def test_a_curve_saves_as_csv_with_the_axis_beside_the_values(tmp_path):
     assert "schema" in json.loads(companion_json_path(tmp_path / "trace.csv").read_text())
 
 
+def test_the_csv_holds_readable_numbers_that_read_back_exactly(tmp_path):
+    exact = CurveResult("f64", np.array([0.1, 1 / 3, 2.0]), ["Frame"], axis_scales=[0.1])
+    exact.save(tmp_path / "f64.csv")
+    lines = (tmp_path / "f64.csv").read_text().splitlines()
+    assert lines[1:] == ["0,0.1", "0.1,0.3333333333333333", "0.2,2.0"]          # no 18-digit exponents
+    np.testing.assert_array_equal(np.loadtxt(tmp_path / "f64.csv", delimiter=",", skiprows=1)[:, 1], exact.data)
+
+    single = CurveResult("f32", np.array([1.0358881, 2.0], dtype=np.float32), ["Frame"])
+    single.save(tmp_path / "f32.csv")
+    assert (tmp_path / "f32.csv").read_text().splitlines()[1:] == ["0,1.0358881", "1,2.0"]   # float32's own digits
+    np.testing.assert_array_equal(
+        np.loadtxt(tmp_path / "f32.csv", delimiter=",", skiprows=1)[:, 1].astype(np.float32), single.data
+    )
+
+    counts = CurveResult("area", np.array([113, 7]), ["Frame"])
+    counts.save(tmp_path / "area.csv")
+    assert (tmp_path / "area.csv").read_text().splitlines()[1:] == ["0,113", "1,7"]
+
+
 def test_a_name_with_a_comma_does_not_split_the_csv_header(tmp_path):
     _curve(name='mean, "bright" pixels').save(tmp_path / "t.csv")
     assert (tmp_path / "t.csv").read_text().splitlines()[0] == 'Frame,"mean, ""bright"" pixels"'
@@ -273,3 +292,62 @@ def test_a_step_given_a_curve_stops_the_run_and_says_why(tmp_path):
     with pytest.raises(RunError, match=r"b: 'python' does not accept result .*kind 'curve'"):
         with run(workflow, registry=registry, out_dir=tmp_path / "out"):
             pass
+
+
+def test_a_curve_made_before_the_graph_panel_is_open_opens_it():
+    """``graphPanel`` is off by default, so the dock does not exist yet: without asking
+    for it the curve would be drawn nowhere."""
+    docks, asked = {"loaded": False}, []
+
+    def raise_dock(title):
+        asked.append(("raise", title))
+        return docks["loaded"]
+
+    def load(panel):
+        asked.append(("load", panel))
+        docks["loaded"] = True
+
+    shown = SimpleNamespace(
+        appendResultTableRecords=lambda columns, records: None,
+        raiseDockByTitle=raise_dock,
+        sigLoadProcessorRequested=SimpleNamespace(emit=load),
+    )
+    controller = ImProcessMainController.__new__(ImProcessMainController)
+    controller._ImProcessMainController__mainView = shown
+    controller._ImProcessMainController__logger = SimpleNamespace(debug=lambda *a, **k: None, exception=lambda *a, **k: None)
+
+    controller._routeResultToAnalysisPanels(_curve())
+    assert asked == [("raise", "Graph"), ("load", "graph"), ("raise", "Graph")]
+
+    asked.clear()                                    # once it is open it is only raised, never loaded again
+    controller._routeResultToAnalysisPanels(_curve())
+    assert asked == [("raise", "Graph")]
+
+
+def test_a_graph_opened_after_startup_pushes_its_rows_to_the_results_table(qapp):
+    """The default session has no Graph at startup; opening it later must leave
+    Push to table wired, or the button does nothing."""
+    from pyqtgraph.dockarea import DockArea
+
+    from imswitch.improcess.view.ImProcessMainView import ImProcessMainView
+
+    appended = []
+    view = QtWidgets.QMainWindow()
+    view.docks, view._runtimeAnalysisToolIds, view._runtimeAnalysisDockAnchor = {}, set(), None
+    view.dockArea = DockArea()
+    view._reconstructionDock = None
+    view._logger = SimpleNamespace(warning=lambda *a, **k: None, exception=lambda *a, **k: None, debug=lambda *a, **k: None)
+    view._showStatusMessage = lambda *a, **k: None
+    view._runtimeAnalysisToolSpecs = lambda: ImProcessMainView._runtimeAnalysisToolSpecs(view)
+    view._runtimeAnalysisToolFactory = lambda spec: GraphWidget
+    view._connectResultPusher = lambda widget: ImProcessMainView._connectResultPusher(view, widget)
+    view._onResultPushed = lambda columns, records: appended.append((columns, records))
+    for name in ("_wireGraphToDependentWidgets", "_wireROIManagerToDependentWidgets", "_addDockVisibilityAction",
+                 "_safeRaiseDock", "_syncDockVisibilityActions"):
+        setattr(view, name, lambda *a, **k: None)
+
+    assert ImProcessMainView.ensureRuntimeAnalysisWidget(view, "graph") == "Graph"
+    view.graphWidget.setPlotPayloads(_curve().plot_payloads())
+    view.graphWidget._pushMeasurement()
+
+    assert len(appended) == 1 and appended[0][1][0]["plot"] == "trace" and appended[0][1][0]["n_points"] == 4

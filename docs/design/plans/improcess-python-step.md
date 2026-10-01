@@ -396,3 +396,10 @@ production, as for FRC). Decisions:
   two curves. The workflow generator needs to be told which ports are curves
   (`CURVE_PORTS`) to save them as CSV; a test fails if that list and what the scripts
   produce disagree.
+- Found by running it in a real window: `graphPanel` is off by default, so the Graph
+  dock did not exist and "reveal the Graph dock for curves" revealed nothing (FRC
+  curves included); the controller now asks the view to open the panel, as a pushed
+  plot does. And a Graph opened after startup was not wired to the Results dock, so
+  its Push to table did nothing; `ensureRuntimeAnalysisWidget` now wires it like the
+  other result-pushing panels. Both are small, pre-existing, and not specific to the
+  Python step; the curve is what made them visible.

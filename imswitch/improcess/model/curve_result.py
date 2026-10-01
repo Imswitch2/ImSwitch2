@@ -111,14 +111,17 @@ class CurveResult(ArrayProcessingResult):
         """Two columns, the axis then the value; the header names both."""
         unit = self.x_unit()
         x_name = str(self.axis_labels[0]) + (f" [{unit}]" if unit else "")
-        table = np.column_stack([self.x_values, np.asarray(self.data, dtype=np.float64)])
-        np.savetxt(
-            str(path),
-            table,
-            delimiter=",",
-            header=f"{_csv_field(x_name)},{_csv_field(self.name)}",
-            comments="",
-        )
+        values = np.asarray(self.data)
+        if values.dtype.kind == "b":
+            values = values.astype(np.uint8)
+        # Each value is written as the shortest text that reads back as the same
+        # number *of its own type*: a float32 curve says 1.0358881, not the
+        # eighteen digits of exponent notation ``savetxt`` gives every number.
+        # The axis is a calibration, so twelve digits is more than it can mean.
+        lines = [f"{_csv_field(x_name)},{_csv_field(self.name)}"]
+        # ``!s``: str() keeps a float32's own digits where format() widens it to a double.
+        lines += [f"{x:.12g},{value!s}" for x, value in zip(self.x_values, values)]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _csv_field(text: str) -> str:
