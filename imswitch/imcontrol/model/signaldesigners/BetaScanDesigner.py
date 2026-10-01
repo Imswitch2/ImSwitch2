@@ -1,14 +1,39 @@
 import numpy as np
 
-from .basesignaldesigners import ScanDesigner, ScanInfoContract
+from .basesignaldesigners import (
+    ScanDesigner, ScanInfoContract, scan_voltage_range_refusal,
+)
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
+#: Fast-axis ramp and settle inside each pixel dwell, in seconds. These were
+#: literals inside the pixel loop; a stage that needs longer declares
+#: ``move_time``/``settle_time`` in ``scanDesignerParams``.
+DEFAULT_MOVE_TIME_S = 0.002
+DEFAULT_SETTLE_TIME_S = 0.002
+
+
 class BetaScanDesigner(ScanDesigner):
     """ Scan designer for X/Y/Z stages that move a sample.
+
     Designer params:
+
     - ``return_time`` -- time to wait between lines for the stage to return to
       the first position of the next line, in seconds.
+    - ``move_time`` -- how long the fast axis takes to ramp from one pixel to
+      the next, in seconds (default 2 ms).
+    - ``settle_time`` -- how long it rests at the new pixel before the next
+      dwell starts, in seconds (default 2 ms).
+    - ``position_anchor`` -- how ``Center`` is interpreted when a runtime
+      position snapshot is available. ``"center"`` (default) centers the ROI
+      on ``position_before_scan + Center``; ``"start"`` starts the ROI at
+      ``position_before_scan + Center``.
+
+    The ramp and the settle occupy the end of every dwell window, so a dwell
+    that is not longer than their sum leaves no stationary time at all and
+    the ramps fold back over the previous pixels; such a dwell is refused. A
+    dwell that leaves less than half its length stationary is warned about:
+    a camera exposing for the whole dwell integrates the move.
     """
 
     def __init__(self, *args, **kwargs):
@@ -21,10 +46,69 @@ class BetaScanDesigner(ScanDesigner):
                                     'axis_centerpos',
                                     'return_time']
 
+    def checkSignalLength(self, scanParameters, setupInfo):
+        return not self.signalLengthRefusal(scanParameters, setupInfo)
+
+    def signalLengthRefusal(self, scanParameters, setupInfo):
+        """Honour ``maxScanTimeMin`` from the dwell and the pixel counts.
+
+        The cap was read by the Galvo designer alone, and declared only by
+        setups that use this one -- a double no-op.
+        """
+        seconds = self.estimateScanSeconds(scanParameters, setupInfo)
+        limit = getattr(setupInfo.scan, 'maxScanTimeMin', None)
+        if limit and seconds > 60 * float(limit):
+            return (
+                f'Scan would take {seconds / 60:.1f} min, above the '
+                f'{limit:g} min cap (scan.maxScanTimeMin).'
+            )
+        return ''
+
+    def estimateScanSeconds(self, scanParameters, setupInfo):
+        """Wall-clock length of the scan these parameters describe."""
+        positions = []
+        for length, step in zip(scanParameters['axis_length'],
+                                scanParameters['axis_step_size']):
+            positions.append(
+                1 if not length else pixels_for_length_step(float(length), float(step))
+            )
+        while len(positions) < 3:
+            positions.append(1)
+        fast, middle, slow = positions[:3]
+        linesteps = max(1, int(scanParameters.get('n_linesteps', 1)))
+        lines = middle * slow * linesteps
+        return (fast * lines * float(scanParameters['sequence_time'])
+                + lines * float(scanParameters.get('return_time', 0) or 0))
+
     def checkSignalComp(self, scanParameters, setupInfo, scanInfo):
         """ Check analog scanning signals so that they are inside the range of
-        the acceptable scanner voltages."""
-        return True  # TODO
+        the acceptable scanner voltages.
+
+        Every EMITTED waveform is checked, including axes held at a single
+        position: unlike GalvoScanDesigner (which omits inactive axes from its
+        signal dict, so parking is free), Beta drives parked axes to their
+        center for the whole scan -- an out-of-range center is a real
+        out-of-range output. ``scanInfo['minmaxes']`` carries one [min, max]
+        per emitted signal, in ``target_device`` (fast, middle, slow) order.
+        Positioners without ``minVolt``/``maxVolt`` are skipped rather than
+        rejected, since older stage configs omit them.
+        """
+        return not self.signalCompatibilityRefusal(
+            scanParameters, setupInfo, scanInfo
+        )
+
+    def signalCompatibilityRefusal(self, scanParameters, setupInfo, scanInfo):
+        """Return an actionable reason when the scan leaves voltage limits."""
+        minmaxes = scanInfo.get('minmaxes') if scanInfo else None
+        if not minmaxes:
+            return ''
+        targets = scanParameters['target_device']
+        for i in range(min(len(targets), len(minmaxes))):
+            name = targets[i]
+            refusal = scan_voltage_range_refusal(setupInfo, name, minmaxes[i])
+            if refusal:
+                return refusal
+        return ''
 
     def make_signal(self, parameterDict, setupInfo):
         n_linesteps = int(parameterDict.get("n_linesteps", 1))
@@ -45,11 +129,71 @@ class BetaScanDesigner(ScanDesigner):
                 raise ValueError(f'{self.__class__.__name__} does not support multi-axis'
                                  f' positioners')
 
-        convFactors = [
-            positioner.managerProperties.get('conversionFactor', 1)
-            for positioner in setupInfo.positioners.values() if positioner.forScanning
-        ]
+        # Conversion factors looked up per target device NAME. target_device is
+        # GUI-dim-ordered (fast, middle, slow) and need not match the
+        # setupInfo.positioners order -- the previous positional indexing
+        # silently applied another device's factor when scan dims were
+        # reordered (e.g. a Z piezo on dim 0 under a galvo-first setup got the
+        # galvo's factor: 17x range shrink under example_sted). See
+        # docs/galvo-designer-single-axis-findings.md, defect 4.
+        scanningProps = {
+            name: positioner.managerProperties
+            for name, positioner in setupInfo.positioners.items()
+            if positioner.forScanning
+        }
+        unknown = [dev for dev in parameterDict['target_device']
+                   if dev not in scanningProps]
+        if unknown:
+            raise ValueError(
+                f'{self.__class__.__name__}: target device(s) {unknown} not '
+                f'found among forScanning positioners '
+                f'({sorted(scanningProps)})'
+            )
+        convFactors = [scanningProps[dev].get('conversionFactor', 1)
+                       for dev in parameterDict['target_device']]
+        
+        # Runtime position snapshot supplied by the scan controller.
+        # Values are in positioner units (typically µm), so convert them to the
+        # voltage-domain units used by the generated scan waveforms.
+        positionsBeforeScan = parameterDict.get('axis_position_before_scan')
+        hasPositionSnapshot = positionsBeforeScan is not None
 
+        positionAnchor = parameterDict.get('position_anchor', 'center')
+        if positionAnchor not in ('center', 'start'):
+            raise ValueError(
+                f'{self.__class__.__name__}: invalid position_anchor '
+                f'{positionAnchor!r}; expected "center" or "start"'
+            )
+        if positionAnchor == 'start' and not hasPositionSnapshot:
+            raise ValueError(
+                f'{self.__class__.__name__}: position_anchor="start" requires '
+                'axis_position_before_scan'
+            )
+
+        if hasPositionSnapshot:
+            if len(positionsBeforeScan) != 3:
+                raise ValueError(
+                    f'{self.__class__.__name__}: axis_position_before_scan must '
+                    'contain one entry per target device'
+                )
+
+            for i in range(3):
+                if len(positionsBeforeScan[i]) != 1:
+                    raise ValueError(
+                        f'{self.__class__.__name__} does not support multi-axis '
+                        'positioners'
+                    )
+
+            fast_axis_position_before_scan = positionsBeforeScan[0][0] / convFactors[0]
+            middle_axis_position_before_scan = positionsBeforeScan[1][0] / convFactors[1]
+            slow_axis_position_before_scan = positionsBeforeScan[2][0] / convFactors[2]
+
+        else:
+            # Backward compatibility for direct/legacy callers that do not yet provide the runtime position snapshot.
+            fast_axis_position_before_scan = None
+            middle_axis_position_before_scan = None
+            slow_axis_position_before_scan = None
+        
         # Retrieve sizes
         [fast_axis_size, middle_axis_size, slow_axis_size] = \
             [(parameterDict['axis_length'][i] / convFactors[i]) for i in range(3)]
@@ -58,12 +202,22 @@ class BetaScanDesigner(ScanDesigner):
         [fast_axis_step_size, middle_axis_step_size, slow_axis_step_size] = \
             [(parameterDict['axis_step_size'][i] / convFactors[i]) for i in range(3)]
 
-        # Retrieve center positions. The scan is centered on axis_centerpos (like
-        # GalvoScanDesigner) so the ROI 'Center' actually moves stage scans;
-        # previously fast_axis_start = startpos - center = 0 made Center inert and
-        # every scan ran from 0 (see scan-beta-center-ignored).
-        [fast_axis_center, middle_axis_center, slow_axis_center] = \
-            [(parameterDict['axis_centerpos'][i] / convFactors[i]) for i in range(3)]
+        # For Beta stage scans, Center is a relative offset from the positioner
+        # position immediately before the scan.
+        fast_axis_center_offset = parameterDict['axis_centerpos'][0] / convFactors[0]
+        middle_axis_center_offset = parameterDict['axis_centerpos'][1] / convFactors[1]
+        slow_axis_center_offset = parameterDict['axis_centerpos'][2] / convFactors[2]
+
+        if hasPositionSnapshot:
+            fast_axis_center = fast_axis_position_before_scan + fast_axis_center_offset
+            middle_axis_center = middle_axis_position_before_scan + middle_axis_center_offset
+            slow_axis_center = slow_axis_position_before_scan + slow_axis_center_offset
+        else:
+            # Legacy/direct-call fallback: without a runtime position snapshot,
+            # retain the previous absolute-Center semantics.
+            fast_axis_center = fast_axis_center_offset
+            middle_axis_center = middle_axis_center_offset
+            slow_axis_center = slow_axis_center_offset
 
         # Canonical pixel count = round(size / step) via the shared helper, so the
         # number of scanned lines matches the GUI "Pixels (#)" display and the
@@ -76,14 +230,37 @@ class BetaScanDesigner(ScanDesigner):
         slow_axis_positions = 1 if slow_axis_size == 0 else \
             pixels_for_length_step(slow_axis_size, slow_axis_step_size)
 
-        # First-pixel position of each axis so the N pixels (pitch = step) are
-        # centered on the axis center. Downstream ramp/flyback/wrap logic is
-        # start-anchored on these, so centering happens purely here.
-        fast_axis_start = fast_axis_center - (fast_axis_positions - 1) * fast_axis_step_size / 2.0
-        middle_axis_start = middle_axis_center - (middle_axis_positions - 1) * middle_axis_step_size / 2.0
-        slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
+        # First-pixel position of each axis. By default the ROI is centered on
+        # position_before_scan + Center. ``position_anchor="start"`` instead
+        # places the first pixel directly at position_before_scan + Center.
+        if hasPositionSnapshot and positionAnchor == 'start':
+            fast_axis_start = fast_axis_position_before_scan + fast_axis_center_offset
+            middle_axis_start = middle_axis_position_before_scan + middle_axis_center_offset
+            slow_axis_start = slow_axis_position_before_scan + slow_axis_center_offset
+        else:
+            fast_axis_start = fast_axis_center - (fast_axis_positions - 1) * fast_axis_step_size / 2.0
+            middle_axis_start = middle_axis_center - (middle_axis_positions - 1) * middle_axis_step_size / 2.0
+            slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
 
         sampleRate = setupInfo.scan.sampleRate
+        moveTime = float(parameterDict.get('move_time', DEFAULT_MOVE_TIME_S))
+        settleTime = float(parameterDict.get('settle_time', DEFAULT_SETTLE_TIME_S))
+        dwell = float(parameterDict['sequence_time'])
+        if dwell <= moveTime + settleTime:
+            raise ValueError(
+                f'{self.__class__.__name__}: a {dwell * 1e3:g} ms dwell is not '
+                f'longer than the {moveTime * 1e3:g} ms move plus '
+                f'{settleTime * 1e3:g} ms settle the stage needs between pixels, '
+                f'so the fast axis would never be stationary. Lengthen the dwell '
+                f'or declare shorter move_time/settle_time for this stage.'
+            )
+        stationary = dwell - moveTime - settleTime
+        if stationary < dwell / 2:
+            self._logger.warning(
+                f'Only {stationary * 1e3:g} ms of each {dwell * 1e3:g} ms dwell is '
+                f'stationary: the move and settle take {(moveTime + settleTime) * 1e3:g} ms, '
+                f'so a detector exposing for the whole dwell integrates the move.'
+            )
         sequenceSamples = parameterDict['sequence_time'] * sampleRate
         returnSamples = parameterDict['return_time'] * sampleRate
         if not sequenceSamples.is_integer():
@@ -104,11 +281,11 @@ class BetaScanDesigner(ScanDesigner):
         rampValues = axis_pixel_positions(
             fast_axis_positions, fast_axis_step_size, start=fast_axis_start)
         self._logger.debug(rampValues)
+        smooth = int(np.ceil(moveTime * sampleRate))
+        settling = int(np.ceil(settleTime * sampleRate))
         for s in range(fast_axis_positions):
             start = s * sequenceSamples
             end = s * sequenceSamples + sequenceSamples
-            smooth = int(np.ceil(0.002 * sampleRate))
-            settling = int(np.ceil(0.002 * sampleRate))
             rampSignal[start: end] = rampValues[s]
             if s != fast_axis_positions - 1:
                 if (end - smooth - settling) > 0:
@@ -121,7 +298,11 @@ class BetaScanDesigner(ScanDesigner):
         fullLineSignal = np.concatenate((rampSignal, returnRamp))
 
         fastAxisSignal = np.tile(fullLineSignal, middle_axis_positions * n_linesteps * slow_axis_positions)
-
+        if hasPositionSnapshot and returnSamples > 0:
+            fastAxisSignal[-returnSamples:] = self.__smoothRamp(
+                rampValues[-1],fast_axis_position_before_scan,returnSamples
+            )
+        
         # Make middle axis signal
         colValues = axis_pixel_positions(
             middle_axis_positions, middle_axis_step_size, start=middle_axis_start)
@@ -148,6 +329,12 @@ class BetaScanDesigner(ScanDesigner):
                                                                                        returnSamples)
 
         middleAxisSignal = np.tile(fullSquareSignal, slow_axis_positions)
+        # On the final line of the complete scan, return the middle axis to its
+        # pre-scan position instead of wrapping back to the first ROI position.
+        if hasPositionSnapshot and returnSamples > 0:
+            middleAxisSignal[-returnSamples:] = self.__smoothRamp(
+                colValues[-1],middle_axis_position_before_scan,returnSamples,
+            )
 
         # Make slow axis signal
         sliceSamples = slow_axis_positions * colSamples
@@ -165,6 +352,12 @@ class BetaScanDesigner(ScanDesigner):
                 fullCubeSignal[(s + 1) * colSamples - returnSamples:(s + 1) * colSamples] = \
                     self.__smoothRamp(sliceValues[s], slow_axis_start, returnSamples)
         slowAxisSignal = fullCubeSignal
+        # The final slice returns to the pre-scan position rather than wrapping
+        # back to the first slow-axis ROI position.
+        if hasPositionSnapshot and returnSamples > 0:
+            slowAxisSignal[-returnSamples:] = self.__smoothRamp(
+                sliceValues[-1],slow_axis_position_before_scan,returnSamples,
+            )
 
         if slow_axis_size > 0:
             sig_dict = {parameterDict['target_device'][0]: fastAxisSignal,
@@ -207,6 +400,14 @@ class BetaScanDesigner(ScanDesigner):
             n_linesteps=n_linesteps,
             positions=positions,
             return_time=parameterDict['return_time'],
+            # One [min, max] per EMITTED signal, aligned with sig_dict /
+            # target_device order, so checkSignalComp checks exactly what will
+            # be written to the AO channels (parked axes included -- they are
+            # driven to their scan position) and nothing that will not.
+            minmaxes=[[float(np.min(s)), float(np.max(s))] for s in
+                      ((fastAxisSignal, middleAxisSignal, slowAxisSignal)
+                       if slow_axis_size > 0 else
+                       (fastAxisSignal, middleAxisSignal))],
         )
         scanInfoDict = contract.to_dict()
 

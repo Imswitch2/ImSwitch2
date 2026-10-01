@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "description": "Optional path to a 2-column calibration CSV.  When present, a",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:optional(in)",
+        "docs:string"
+      ]
+    }
+  },
+  "title": "NidaqLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "NidaqLaserManager",
+    "LaserManager"
+  ]
+}

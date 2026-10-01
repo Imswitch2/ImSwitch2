@@ -1,0 +1,10 @@
+{
+  "category": "flipMirrors",
+  "device": {
+    "managerName": "ThorlabsMFFMockManager",
+    "managerProperties": {
+      "initial_state": null,
+      "state_names": null
+    }
+  }
+}

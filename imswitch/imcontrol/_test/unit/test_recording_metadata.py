@@ -111,3 +111,121 @@ def test_element_size_um_zyx_for_hdf5():
     # 2D snap: z defaults to 1.0
     m2 = build_ome_image_meta('Cam', MODE_SNAP, 1, pixel_size_yx_um=(0.2, 0.1))
     assert m2.element_size_um() == [1.0, 0.2, 0.1]
+
+# --- 1-axis (single-line) scans: the YX-compat + provenance contract ----------
+# See docs/galvo-designer-single-axis-findings.md, phase C item 6.
+
+
+def test_axes_for_single_line_scan_stay_compat_yx():
+    """A Z-only profile records as compatibility YX (one line, SizeY=1);
+    the scanned physical axis is preserved separately as provenance."""
+    # getDimsScan for a 1-axis scan: N pixels on the scanned dim, 1 elsewhere
+    assert axes_for_recording(MODE_SCAN, 1, (20, 1, 1)) == ['y', 'x']
+
+
+def test_build_single_line_scan_meta_shape_and_scale():
+    m = build_ome_image_meta(
+        'APD', MODE_SCAN, n_frames=1, scan_dims=(20, 1, 1),
+        pixel_size_yx_um=(0.5, 0.5), dtype=np.uint16)
+    assert m.axes_string == 'YX'
+    # the fast axis carries the scan step; the singleton y is padded with it
+    assert m.scale == [0.5, 0.5]
+    md = m.tiff_metadata(shape=(1, 20))
+    assert md['axes'] == 'YX'
+    assert md['PhysicalSizeX'] == 0.5 and md['PhysicalSizeY'] == 0.5
+
+
+def test_scan_axis_provenance_is_write_only_metadata():
+    """The provenance helper names the scanned devices and their physical
+    axes; a Z-only scan yields (['ND-PiezoZ'], ['Z']). Deliberately no
+    ImProcess reader exists for these fields."""
+    from types import SimpleNamespace
+    from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
+
+    positioners = {
+        'ND-GalvoX': SimpleNamespace(axes=['X']),
+        'ND-PiezoZ': SimpleNamespace(axes=['Z']),
+        'Weird': SimpleNamespace(axes=[]),
+    }
+    devices, physical = scan_axis_provenance(
+        ['ND-PiezoZ', 'None', 'None'], positioners)
+    assert devices == ['ND-PiezoZ']
+    assert physical == ['Z']
+
+    devices, physical = scan_axis_provenance(
+        ['ND-GalvoX', 'ND-PiezoZ', 'Weird'], positioners)
+    assert devices == ['ND-GalvoX', 'ND-PiezoZ', 'Weird']
+    assert physical == ['X', 'Z', '?']
+
+    assert scan_axis_provenance([], positioners) == ([], [])
+    assert scan_axis_provenance(['None'], {}) == ([], [])
+
+
+def test_annotation_text_serializes_numpy_at_any_depth():
+    """Shared-attribute values may be NumPy arrays/scalars, nested in lists
+    or dicts; they must JSON-encode instead of raising (a snapshot or stream
+    finalize must never fail over metadata)."""
+    import json
+
+    import numpy as np
+
+    from imswitch.imcommon.model.ome_metadata import _annotation_text
+
+    assert json.loads(_annotation_text(np.array([1, 2]))) == [1, 2]
+    assert json.loads(_annotation_text(np.float32(0.5))) == 0.5
+    assert json.loads(_annotation_text(
+        {'roi': np.array([0, 4]), 'gain': np.int64(3),
+         'flags': [np.bool_(True), b'ok']}
+    )) == {'roi': [0, 4], 'gain': 3, 'flags': [True, 'ok']}
+    # Unknown objects fall back to str() rather than failing the recording.
+    class _Odd:
+        def __str__(self):
+            return 'odd'
+    assert json.loads(_annotation_text([_Odd()])) == ['odd']
+
+
+def test_scan_axis_provenance_drops_collapsed_axes():
+    """An assigned axis whose length/step collapses to a single step emits no
+    waveform (GalvoScanDesigner active-axis collapse), so provenance must not
+    claim it was scanned. Regression: collapsed X + active Z used to claim
+    both X and Z."""
+    from types import SimpleNamespace
+    from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
+
+    positioners = {
+        'ND-GalvoX': SimpleNamespace(axes=['X']),
+        'ND-PiezoZ': SimpleNamespace(axes=['Z']),
+        'ND-GalvoY': SimpleNamespace(axes=['Y']),
+    }
+
+    # Collapsed X (one step) followed by active Z: only Z is claimed.
+    devices, physical = scan_axis_provenance(
+        ['ND-GalvoX', 'ND-PiezoZ'], positioners,
+        axis_lengths=[0.4, 10.0], axis_step_sizes=[1.0, 0.5])
+    assert devices == ['ND-PiezoZ']
+    assert physical == ['Z']
+
+    # The 1-length/1-step dummy entries build_analog appends for non-scan
+    # axes are filtered by the same rule.
+    devices, physical = scan_axis_provenance(
+        ['ND-PiezoZ', 'ND-GalvoX', 'ND-GalvoY'], positioners,
+        axis_lengths=[10.0, 1.0, 1.0], axis_step_sizes=[0.5, 1.0, 1.0])
+    assert devices == ['ND-PiezoZ']
+    assert physical == ['Z']
+
+    # Both axes active: both claimed, in dim order.
+    devices, physical = scan_axis_provenance(
+        ['ND-GalvoX', 'ND-PiezoZ'], positioners,
+        axis_lengths=[10.0, 10.0], axis_step_sizes=[0.5, 0.5])
+    assert devices == ['ND-GalvoX', 'ND-PiezoZ']
+    assert physical == ['X', 'Z']
+
+    # No lengths/steps given: legacy behavior, every assigned device kept.
+    devices, _ = scan_axis_provenance(['ND-GalvoX', 'ND-PiezoZ'], positioners)
+    assert devices == ['ND-GalvoX', 'ND-PiezoZ']
+
+    # An entry beyond the length/step lists is kept (misaligned caller).
+    devices, _ = scan_axis_provenance(
+        ['ND-GalvoX', 'ND-PiezoZ'], positioners,
+        axis_lengths=[10.0], axis_step_sizes=[0.5])
+    assert devices == ['ND-GalvoX', 'ND-PiezoZ']

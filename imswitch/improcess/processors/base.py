@@ -10,28 +10,125 @@ from imswitch.improcess.model.result import ProcessingResult, result_kind
 
 
 @dataclass(frozen=True)
+class OutputSpec:
+    """Which output ports a processor run will produce.
+
+    ``ports`` names them when they are known before the run (``("out",)``,
+    ``("signal", "background")``); ``pattern`` is a regular expression for
+    ports that depend on the data (a channel split yields ``C0, C1, …`` for
+    as many channels as the input has). A workflow validated before running
+    accepts a reference to a port that matches either; after the run the
+    ports actually produced are checked against the spec.
+    """
+
+    ports: tuple[str, ...] | None = ("out",)
+    pattern: str | None = None
+
+    def matches(self, port: str) -> bool:
+        if self.ports is not None and port in self.ports:
+            return True
+        if self.pattern is not None:
+            import re
+
+            return re.fullmatch(self.pattern, str(port)) is not None
+        return False
+
+    def describe(self) -> str:
+        parts = []
+        if self.ports:
+            parts.append(", ".join(self.ports))
+        if self.pattern:
+            parts.append(f"/{self.pattern}/")
+        return " or ".join(parts) or "(none)"
+
+
+@dataclass(frozen=True)
 class ProcessorOutput:
-    """One or more ProcessingResults returned by a processor."""
+    """One or more ProcessingResults returned by a processor.
+
+    ``keys`` names the outputs, one per result, in order. They are the
+    **output ports** recorded in the provenance graph, so a later step can say
+    "the background from that subtraction" rather than "one of its results".
+    A processor with several outputs should name them; unnamed ones fall back
+    to ``out0, out1, …``, which are distinct but say nothing.
+    """
 
     results: tuple[ProcessingResult, ...]
+    keys: tuple[str, ...] | None = None
 
-    def __init__(self, results):
+    def __init__(self, results, keys=None):
         normalized = tuple(results)
         if not all(isinstance(result, ProcessingResult) for result in normalized):
             raise TypeError("ProcessorOutput results must be ProcessingResult objects")
+        named = tuple(str(key) for key in keys) if keys is not None else None
+        if named is not None:
+            if len(named) != len(normalized):
+                raise ValueError(
+                    f"ProcessorOutput got {len(named)} keys for {len(normalized)} results"
+                )
+            if len(set(named)) != len(named):
+                raise ValueError(f"ProcessorOutput keys are not unique: {named}")
         object.__setattr__(self, "results", normalized)
+        object.__setattr__(self, "keys", named)
 
 
-def normalize_processor_output(output) -> tuple[ProcessingResult, ...]:
-    """Normalize a processor return value to a tuple of results."""
+def attach_provenance(
+    results, source, processor, params=None, inputs=(), ports=None, restriction=None
+) -> tuple[ProcessingResult, ...]:
+    """Record on each result what it was derived from.
+
+    Two kinds of provenance, attached together because they answer two halves
+    of the same question. The spatial identity says which pixels the result
+    shares with its source; the processing footprint says what was done to get
+    there, and travels into the saved file's metadata.
+
+    Applied centrally rather than in every processor: there are twenty-odd of
+    them, and provenance that depends on each author remembering to add a line
+    is provenance that is mostly missing. A processor only has to declare
+    ``preserves_grid``; if it declares nothing, the output gets its own
+    coordinate space, which is the answer that cannot mislead.
+    """
+    from imswitch.improcess.model.footprint import record_step
+
+    results = tuple(results)
+    # The footprint is recorded even for a source-less run: "cropped with these
+    # ranges" is worth keeping whether or not the input is still identifiable.
+    record_step(results, source, processor, params, inputs, ports, restriction)
+    if source is None:
+        return results
+    same_grid = bool(getattr(processor, "preserves_grid", None))
+    for result in results:
+        adopt = getattr(result, "adopt_identity_from", None)
+        if callable(adopt):
+            adopt(source, same_grid=same_grid)
+    return results
+
+
+def normalize_processor_output(
+    output, source=None, processor=None, params=None, inputs=(), restriction=None
+) -> tuple[ProcessingResult, ...]:
+    """Normalize a processor return value to a tuple of results.
+
+    When ``source`` and ``processor`` are given, provenance is attached here so
+    every processor inherits it without having to opt in. ``params`` are what
+    the run was asked for, and become the footprint step's settings.
+    ``restriction`` is the ROI restriction the run path applied around the
+    processor, recorded on the step by the runner rather than as a parameter.
+    """
     if isinstance(output, ProcessorOutput):
-        return output.results
+        return attach_provenance(
+            output.results, source, processor, params, inputs, output.keys, restriction
+        )
     if isinstance(output, ProcessingResult):
-        return (output,)
+        return attach_provenance(
+            (output,), source, processor, params, inputs, None, restriction
+        )
     if isinstance(output, (list, tuple)):
         results = tuple(output)
         if all(isinstance(result, ProcessingResult) for result in results):
-            return results
+            return attach_provenance(
+                results, source, processor, params, inputs, None, restriction
+            )
     raise TypeError(
         "Processor output must be a ProcessingResult, ProcessorOutput, "
         "or a sequence of ProcessingResult objects"
@@ -51,10 +148,25 @@ class Processor(ABC):
     - Max-projection along an axis
     - FLIM lifetime overlay (requires FLIM metadata)
     """
+
+    def __new__(cls, *args, **kwargs):
+        # A processor without an id used to load as "unnamed": its footprint
+        # said every step was `unnamed`, and a second such plugin was dropped
+        # by the duplicate-id guard with a warning naming an id nobody typed.
+        # Checked where a processor is made -- every registration and every
+        # run makes one -- rather than where a class is defined, so a shared
+        # intermediate base class, never registered itself, needs no id.
+        if cls.id == "unnamed":
+            raise TypeError(
+                f"{cls.__module__}.{cls.__qualname__} must set a stable `id` "
+                f"(a short slug such as 'my-filter'); the inherited 'unnamed' "
+                f"placeholder is not one"
+            )
+        return super().__new__(cls)
     
     # Class attributes (override in subclasses)
     name: str = "Unnamed Processor"  # Human-readable
-    id: str = "unnamed"  # Stable identifier for config + registry
+    id: str = "unnamed"  # Stable identifier for config + registry; every concrete subclass sets it
     category: str = "Other"  # Human-readable grouping for runtime tools/docs
     #: Semantic result kinds this processor accepts (ProcessingResult.kind).
     #: Checked by accepts() BEFORE the shape/axis gate, so a table result with
@@ -74,6 +186,116 @@ class Processor(ABC):
     #: because ``apply`` is a pure function of one result.
     min_inputs: int = 1
     max_inputs: int | None = 1
+    #: Whether this processor's output sits on the *same pixel grid* as its
+    #: input, so an ROI drawn on one measures the same features on the other.
+    #: True for filters, thresholds, projections along a non-spatial axis;
+    #: False for anything that crops, resamples, rescales or reprojects.
+    #: ``None`` means "not declared", and the output then gets a fresh
+    #: coordinate space — the safe answer, because wrongly claiming a shared
+    #: grid makes ROIs measure the wrong pixels.
+    preserves_grid: bool | None = None
+    #: Whether this processor can be run over an ROI rather than a whole frame
+    #: (P-R). Opt-in, because the answer is not universal: a drift correction
+    #: over a cropped region is a different measurement, not a cheaper one, and
+    #: offering it would invite a result nobody can interpret.
+    #:
+    #: The restriction is applied **around** the processor by the run path —
+    #: `apply` still receives an ordinary result — so declaring this is the
+    #: whole of what a processor has to do.
+    accepts_roi: bool = False
+    #: Which restriction modes make sense here, in the order offered. A filter
+    #: usually wants `mask` first (its output stays pixel-aligned); anything
+    #: whose cost scales with the frame usually wants `crop`.
+    roi_modes: tuple[str, ...] = ("crop", "mask")
+    #: Version of this processor's parameter contract. Bump it when a key is
+    #: renamed, removed or changes meaning, and teach :meth:`migrate_params`
+    #: the way from the old shape; a recorded run then still replays.
+    params_version: int = 1
+    #: Keys of :meth:`default_params` whose widget default depends on the
+    #: machine (an installed model list, say) and so are not compared by the
+    #: defaults-vs-widget sync test.
+    default_params_volatile: tuple[str, ...] = ()
+
+    @classmethod
+    def default_params(cls) -> dict:
+        """The parameters a fresh widget would hand ``apply``.
+
+        What a headless run starts from, so a workflow can name only the
+        settings it changes. Pinned to the widget by a test: the dict here
+        and ``make_param_widget(...).get_values()`` must agree.
+        """
+        return {}
+
+    #: Parameter keys accepted beyond those in :meth:`default_params` (an
+    #: optional setting no widget default names). ``None`` means "anything",
+    #: for a processor that genuinely takes free-form parameters.
+    extra_param_keys: tuple[str, ...] | None = ()
+
+    @classmethod
+    def param_keys(cls) -> frozenset[str] | None:
+        """Every parameter key a workflow may set, or ``None`` for unchecked.
+
+        A key outside this set is a validation error, not a silent no-op:
+        a typo in a workflow file must fail before the run, and a
+        processor with no parameters accepts none.
+        """
+        if cls.extra_param_keys is None:
+            return None
+        return frozenset(cls.default_params()) | frozenset(cls.extra_param_keys)
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        """Field-level description of :meth:`default_params`, one
+        :class:`~imswitch.improcess.model.param_spec.ParamField` per key.
+
+        What a form builder, the ``workflows list`` catalogue and the workflow
+        editor read. The framework default derives each field from the
+        default value's type (a number, a flag, free text, JSON), which is
+        enough for a plain form; override it to say what the widget knows --
+        the choices behind a combo box, the bounds and unit of a spin box,
+        the tooltip -- with the same keys and the same defaults. A test pins
+        the two together
+        (:func:`~imswitch.improcess.model.param_spec.spec_problems`).
+        """
+        from imswitch.improcess.model.param_spec import spec_from_defaults
+
+        return spec_from_defaults(cls.default_params())
+
+    def encode_params(self, params: dict | None) -> tuple[dict, list[str]]:
+        """``(encoded, reasons)``: params as lossless JSON, or why not.
+
+        The default is the strict encoder; a processor whose parameters carry
+        objects (an ROI record, a model handle) overrides this to write them
+        down in a form :meth:`decode_params` can read back, and returns a
+        reason for anything it cannot.
+        """
+        from imswitch.improcess.model.provenance import encode_params
+
+        return encode_params(params)
+
+    def decode_params(self, encoded: dict | None, context=None) -> dict:
+        """Inverse of :meth:`encode_params`."""
+        from imswitch.improcess.model.provenance import decode_strict
+
+        return dict(decode_strict(dict(encoded or {})))
+
+    def migrate_params(self, encoded: dict | None, from_version: int) -> dict:
+        """Bring params recorded under an older ``params_version`` up to date.
+
+        The default is identity; a processor that bumped its version overrides
+        this. Raising ``ValueError`` says the old shape cannot be migrated.
+        """
+        return dict(encoded or {})
+
+    def output_spec(self, params: dict | None = None, input_specs=None) -> OutputSpec:
+        """The output ports a run with ``params`` will produce.
+
+        One port, ``"out"``, unless the processor says otherwise. A processor
+        with several outputs names them (``("signal", "background")``); one
+        whose outputs depend on the data gives a ``pattern`` instead. This is
+        what lets a workflow be validated before it runs.
+        """
+        return OutputSpec(ports=("out",))
 
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.
@@ -134,7 +356,9 @@ class Processor(ABC):
         """
         Return the parameter editor widget shown in the processing chain panel.
         
-        Should expose a `get_values() -> dict` method.
+        Should expose a `get_values() -> dict` method. A widget may also declare
+        `after_run(results, failures)`, which the panel calls once a run has ended
+        (to show what the processor printed, or why it failed).
         """
         ...
     

@@ -5,8 +5,13 @@ from .DetectorManager import DetectorManager, DetectorAction, DetectorNumberPara
 
 
 class AVManager(DetectorManager):
-    """ DetectorManager that deals with TheImagingSource cameras and the
-    parameters for frame extraction from them.
+    """ The no-hardware camera: serves synthetic frames from ``MockCameraTIS``.
+
+    No video driver is bundled -- the Allied Vision interface this manager once
+    wrapped was removed upstream in 2022 -- so every ``cameraListIndex`` loads
+    the mock. It is what the shipped no-hardware setups and tests use, and it
+    says so in its model name, so a recording made from it cannot be mistaken
+    for one from a real camera.
 
     Manager properties:
 

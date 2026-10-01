@@ -10,9 +10,9 @@ The contract is small enough to fit in your head; most of the work is
 choosing the right driver shape and writing a mock that lets the
 manager be tested without hardware.
 
-Before you start, skim ``docs/design/ARCHITECTURE.md`` for the
-"Pulse Generator Subsystem" section so the abstraction-level decisions
-already made are clear.
+Before you start, skim the `Pulse Generator Subsystem
+<https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/ARCHITECTURE.md#pulse-generator-subsystem>`_ section of the repository's architecture note so the
+abstraction-level decisions already made are clear.
 
 
 When to add a new backend
@@ -60,11 +60,23 @@ Required methods              Contract
                               ``blocking=False`` via a worker thread.
 ``stop()``                    Abort.  Safe to call when idle.  Emit
                               ``sigSequenceDone``.
+``setAnalog(ch, voltage)``    Override when ``supports_analog`` is true; the
+                              default raises ``NotImplementedError``.
 ============================  ================================================
 
-You also get a default ``snap()`` for free (program a 2-step sequence,
-run once blocking) — override only if your backend has a faster
-one-shot path.
+If a running sequence fails (the device errors or stops answering), emit
+``sigSequenceFailed(message)`` instead of ``sigSequenceDone``.
+
+The base class also provides, and you may override:
+
+* ``snap()`` — program a 2-step sequence and run it once, blocking.
+  Override only if your backend has a faster one-shot path.
+* ``connected`` — ``True`` by default.  Override it if the backend can
+  fall back to an in-process mock, so consumers can show the degraded
+  state.
+* ``finalize()`` — a no-op by default.  ``MasterController`` calls it at
+  shutdown; override it to stop a running sequence and close the
+  connection.
 
 
 Worked example: skeleton of a new backend
@@ -138,10 +150,11 @@ Say you're adding an NI digital-out backend.  Create
         def stop(self):
             ...
 
-For a complete reference implementation see
-``TeensyPulseManager.py``.  Its threading model (worker-thread for
-non-blocking ``run``, sigSequenceDone emission) is the canonical
-pattern.
+For complete reference implementations see ``TeensyPulseManager.py``
+and ``PulseStreamerManager.py`` in the same folder.  The Teensy
+backend's threading model (worker-thread for non-blocking ``run``,
+sigSequenceDone emission) is the canonical pattern;
+``PulseStreamerManager`` shows a backend that supports analog output.
 
 
 Step-by-step
@@ -163,8 +176,8 @@ Step-by-step
    investment — it lets you ship the manager green even before the
    hardware arrives.
 
-3. **Implement the abstracts.**  Use ``TeensyPulseManager`` as a
-   template.  Pay particular attention to:
+3. **Implement the abstracts.**  Use ``TeensyPulseManager`` (or
+   ``PulseStreamerManager``) as a template.  Pay particular attention to:
 
    * **Capability properties must reflect the *connected* backend**,
      not just hardcoded values.  A v3 Teensy reports 3 channels and
@@ -194,18 +207,37 @@ Step-by-step
 5. **Wire** ``MasterController``.
 
    Construct the manager iff ``setupInfo.<your_field>`` is set, expose
-   via ``lowLevelManagers['pulseGeneratorManager']``.  Only one
+   via ``lowLevelManagers['pulseGeneratorManager']``.  Today
+   ``MasterController`` builds only ``TeensyPulseManager`` (from
+   ``teensyPulse``), so this means extending that code.  Only one
    pulse generator can be active per setup at a time — this is by
    design and matches how consumers (laser managers, snap actions)
    look up the dependency.
 
+   Pulse generators are loaded by this bespoke code, not by the device
+   plugin registry, so a backend cannot ship as an external plugin; it
+   lives in ``imswitch/imcontrol/model/managers/pulsegen/``.  A new
+   ``*Manager.py`` file there is picked up by the manager inventory
+   tests, which fail until you:
+
+   * add ``("pulse_generator", "<YourManager>")`` to the ``legacy_only``
+     set asserted in ``imswitch/imcontrol/_test/unit/test_setup_metadata.py``;
+   * regenerate the configuration-editor schemas with
+     ``python tools/extract_manager_schemas.py --write`` and update the
+     manager count in ``test_configeditor_schemas_match_source.py``;
+   * add the manager to ``UNDOCUMENTED`` in ``test_devices_docs_drift.py``
+     (or give it a card under ``docs/devices/``).
+
 6. **Add contract tests.**
 
-   The fastest path is to subclass the helper in
-   ``test_pulsegenerator_base.py``: it has a ``NullPulseGenerator``
-   you can take inspiration from, plus 18 contract tests that every
-   backend should pass.  Replace ``NullPulseGenerator`` with your
-   mock and re-run.
+   ``imswitch/imcontrol/_test/unit/test_pulsegenerator_base.py`` holds
+   18 contract tests that every backend should pass.  They are plain
+   test functions that each construct a ``NullPulseGenerator`` (an
+   in-memory backend defined in that module); there is no fixture or
+   base class to subclass.  Copy the module, replace
+   ``NullPulseGenerator`` with your backend running on its mock driver,
+   adapt the assertions that read ``NullPulseGenerator``'s own
+   bookkeeping to your mock's, and run all the tests.
 
 
 Common pitfalls
@@ -233,4 +265,4 @@ Cross-references
 
 - :doc:`wire-teensy` — concrete recipe for the existing Teensy backend.
 - :doc:`/adding-device-support` — generic guide for adding any device manager.
-- ``docs/design/ARCHITECTURE.md`` — full subsystem context.
+- `Pulse Generator Subsystem <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/ARCHITECTURE.md#pulse-generator-subsystem>`_ in the repository's architecture note — full subsystem context.

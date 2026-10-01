@@ -1,6 +1,7 @@
 import numpy as np
 
 from ..basecontrollers import ImConWidgetController
+from imswitch.imcontrol.model.ulenses_localizer import localizer
 
 
 class ULensesController(ImConWidgetController):
@@ -18,6 +19,40 @@ class ULensesController(ImConWidgetController):
         # Connect ULensesWidget signals
         self._widget.sigULensesClicked.connect(self.updateGrid)
         self._widget.sigUShowLensesChanged.connect(self.toggleULenses)
+        self._widget.sigLocalizeBtnClicked.connect(self.localize)
+
+    def localize(self):
+        """Localize the uLens grid in the current detector image."""
+        try:
+            _, _, px, upx, upy = self._widget.getParameters()
+            if px <= 0:
+                raise ValueError("Pixel size must be positive")
+
+            img_frame = self._commChannel.get_image()
+            loc_res = localizer(
+                img_frame,
+                xp_guess=upx / px,
+                yp_guess=upy / px,
+            )
+        except Exception as e:
+            self._logger.warning(
+                f"Auto localization failed - use manual mode: {e}"
+            )
+            return
+
+        x_period = round(loc_res.xp * px, 2)
+        x_offset = round(loc_res.xo, 2)
+        y_period = round(loc_res.yp * px, 2)
+        y_offset = round(loc_res.yo, 2)
+
+        self._widget.setParameters(
+            x=x_offset,
+            y=y_offset,
+            px=px,
+            upx=x_period,
+            upy=y_period,
+        )
+        self.updateGrid()
 
     def updateGrid(self):
         """ Updates plot with new parameters. """

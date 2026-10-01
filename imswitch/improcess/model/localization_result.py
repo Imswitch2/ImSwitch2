@@ -3,8 +3,8 @@
 ``LocalizationResult`` is the source of truth for the SMLM pipeline: it wraps
 the canonical localization recarray (see
 :mod:`~imswitch.improcess.model.localization_schema`) and everything else —
-the in-house renderer, table processors, the napari-storm export — is a
-derived view of it.
+the in-house renderer, table processors, the Picasso export, the embedded
+napari-storm viewer — is a derived view of it.
 
 ``ProcessingResult`` demands a viewable ``data`` array, but a coordinate table
 has no natural image. Rather than leave the viewer blank, the result exposes a
@@ -132,7 +132,7 @@ class LocalizationResult(ProcessingResult):
             locs: Localization recarray (canonical schema) or a mapping/array
                 coercible to it via :func:`as_localizations`.
             pixel_size_nm: Camera pixel size of the source stack, in nm. Used
-                for the napari-storm pixel view and as a floor for the preview.
+                for the pixel-native Picasso export and as a floor for the preview.
             z_step_nm: Axial sampling in nm for 3D data (optional).
             dims: "2D" or "3D". Auto-detected from z values when omitted.
             source_name: Name of the stack the localizations came from.
@@ -216,7 +216,10 @@ class LocalizationResult(ProcessingResult):
         """Column order for the shared ResultsTableWidget."""
         columns = list(LOCALIZATION_COLUMNS)
         if self.dims == "2D":
-            columns = [c for c in columns if c not in ("z_nm", "sigma_z_nm")]
+            columns = [
+                c for c in columns
+                if c not in ("z_nm", "sigma_z_nm", "lp_z_nm")
+            ]
         return columns
 
     def table_records(self) -> list[dict[str, Any]]:
@@ -260,21 +263,47 @@ class LocalizationResult(ProcessingResult):
 
     # -- persistence ------------------------------------------------------
 
-    def save(self, path: Path, fmt: str = "csv") -> None:
+
+    supported_formats = ("csv", "hdf5", "picasso")
+
+    def plan_save(self, path: Path, fmt: str):
+        from imswitch.improcess.model.save_protocol import SavePlan, companion_json_path
+
         path = Path(path)
-        if fmt in ("csv",):
-            self._save_csv(path)
-        elif fmt in ("hdf5", "h5", "hdf"):
-            self._save_hdf5(path)
-        elif fmt in ("picasso", "napari-storm"):
+        if fmt == "csv":
+            # CSV has no metadata slot and its first line is the column header
+            # contract; the provenance rides in a listed companion.
+            return SavePlan(path, fmt, (companion_json_path(path),))
+        if fmt == "picasso":
+            if path.suffix.lower() not in (".hdf5", ".h5"):
+                path = path.with_suffix(".hdf5")
+            return SavePlan(path, fmt, (path.with_suffix(".yaml"),))
+        return SavePlan(path, fmt)
+
+    def write_files(self, plan, document) -> None:
+        from imswitch.improcess.model.save_protocol import embed_hdf5_path, write_companion_json
+
+        if plan.fmt == "csv":
+            self._save_csv(plan.primary)
+            write_companion_json(plan.primary, document)
+        elif plan.fmt == "hdf5":
+            self._save_hdf5(plan.primary)
+            embed_hdf5_path(plan.primary, document)
+        elif plan.fmt == "picasso":
             # Deferred import to avoid a model -> analysis import cycle.
             from imswitch.improcess.analysis.smlm_export import export_picasso_hdf5
 
-            export_picasso_hdf5(self, path)
+            export_picasso_hdf5(self, plan.primary)
+            embed_hdf5_path(plan.primary, document)
+            info = plan.companions[0]
+            if not info.exists():
+                # The YAML sidecar is best-effort in the exporter; the plan
+                # promised it, so an empty one is written rather than none.
+                info.write_text("", encoding="utf-8")
         else:
             raise ValueError(
                 f"LocalizationResult supports CSV, HDF5, or picasso/napari-storm, "
-                f"got {fmt!r}"
+                f"got {plan.fmt!r}"
             )
 
     @classmethod

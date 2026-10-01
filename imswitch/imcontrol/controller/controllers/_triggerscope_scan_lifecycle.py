@@ -49,6 +49,12 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
         self._triggerScopeRepeatPending = False
         self._triggerScopeCompletionPublishing = False
         self._triggerScopeTerminalLock = threading.RLock()
+        # Exact request completions (plan A-05): set while an external
+        # request that asked for one is being dispatched, bound after the run
+        # is reserved, resolved from this run's terminal.
+        self._externalTriggerScopeCompletion = None
+        self._triggerScopeBoundCompletions = []
+        self._triggerScopeRunOutcome = None
         self._scanStopRequested = False
 
         self._master.scanManager.sigScanStarted.connect(
@@ -80,21 +86,25 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                 or activeRun.releaseRequested
             )
         ):
-            self._logger.debug(
+            reason = (
                 'Ignoring a TriggerScope continuation while the current run '
                 'is stopped or still releasing.'
             )
+            self._logger.debug(reason)
             self.isRunning = activeIteration is not None
             self._setTriggerScopeScanButtonChecked(self.isRunning)
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
             return False
         if localRun is not None and activeRun is localRun:
             if activeIteration is not None or not sigScanStartingEmitted:
-                self._logger.warning(
+                reason = (
                     'Ignoring duplicate TriggerScope scan start from the '
                     'active owner.'
                 )
+                self._logger.warning(reason)
                 self.isRunning = activeIteration is not None
                 self._setTriggerScopeScanButtonChecked(self.isRunning)
+                ScanLifecycleMixin._recordScanStartRejection(self, reason)
                 return False
         elif localRun is not None:
             # A released token retained by a stale UI callback is never reused.
@@ -108,15 +118,20 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             # A broadcast start is intentionally won by exactly one scan
             # controller. The other candidates were refused before touching
             # hardware, so this is contention rather than a scan failure.
-            self._logger.debug(
+            reason = (
                 'TriggerScope scan start was refused because another scan '
-                'run owns the coordinator: %s',
-                error,
+                f'run owns the coordinator: {error}'
             )
+            self._logger.debug(reason)
             self.isRunning = False
             self._setTriggerScopeScanButtonChecked(False)
+            ScanLifecycleMixin._recordScanStartRejection(self, reason)
             return False
         self._triggerScopeRunToken = runToken
+        completion = self.__dict__.get('_externalTriggerScopeCompletion')
+        if completion is not None:
+            completion.bind(runToken)
+            self.__dict__.setdefault('_triggerScopeBoundCompletions', []).append(completion)
         if isNewRun:
             self._scanStopRequested = False
 
@@ -193,6 +208,9 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                 and self._scanCoordinator.runForOwner(self) is runToken
                 and not runToken.releaseRequested
             ):
+                self._triggerScopeRunOutcome = (
+                    False, f'TriggerScope refused the scan iteration: {error}'
+                )
                 self._releaseTriggerScopeRun(runToken)
             return False
         return True
@@ -232,12 +250,19 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
         """
         self._triggerScopeRepeatPending = False
         if self._triggerScopeStartingPublished:
+            self._triggerScopeRunOutcome = (
+                False, self._lastScanStartRejection or 'The scan was not started.'
+            )
             self._releaseTriggerScopeRun(runToken)
         else:
             with self._triggerScopeTerminalLock:
                 if self._triggerScopeRunToken is runToken:
                     self._triggerScopeRunToken = None
             self._scanCoordinator.releaseRun(runToken)
+            self._resolveTriggerScopeCompletions(
+                runToken, False,
+                self._lastScanStartRejection or 'The scan was not started.',
+            )
         self.isRunning = False
         self._scanStopRequested = False
         self.doingNonFinalPartOfSequence = False
@@ -303,6 +328,10 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                 self._scanStopRequested = False
                 self.doingNonFinalPartOfSequence = False
                 self._setTriggerScopeScanButtonChecked(False)
+                self._triggerScopeRunOutcome = (
+                    not stopRequested,
+                    'Scan was aborted.' if stopRequested else '',
+                )
                 self._releaseTriggerScopeRun(runToken)
         finally:
             self._triggerScopeCompletionPublishing = False
@@ -323,6 +352,7 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                 self._scanStopRequested = False
                 self.doingNonFinalPartOfSequence = False
                 self._setTriggerScopeScanButtonChecked(False)
+                self._triggerScopeRunOutcome = (False, 'Scan was aborted.')
                 self._releaseTriggerScopeRun(runToken)
             return
         if not self._triggerScopeRepeatRequested():
@@ -335,9 +365,13 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                     self._scanStopRequested
                     or not self.doingNonFinalPartOfSequence
                 ):
+                    aborted = bool(self._scanStopRequested)
                     self._scanStopRequested = False
                     self.doingNonFinalPartOfSequence = False
                     self._setTriggerScopeScanButtonChecked(False)
+                    self._triggerScopeRunOutcome = (
+                        not aborted, 'Scan was aborted.' if aborted else ''
+                    )
                     self._releaseTriggerScopeRun(runToken)
             finally:
                 self._triggerScopeCompletionPublishing = False
@@ -386,11 +420,17 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             'current iteration will finish and no continuation will follow.'
         )
 
-    def _failTriggerScopeScan(self):
+    def _failTriggerScopeScan(self, message=None):
         """Resolve an arm failure or explicit local force-stop exactly once."""
+        hasSpecificMessage = message is not None
+        message = str(message or 'Scan failed or was stopped.')
         with self._triggerScopeTerminalLock:
             runToken = self._triggerScopeRunToken
             if runToken is None:
+                if hasSpecificMessage:
+                    ScanLifecycleMixin._recordScanStartRejection(
+                        self, message
+                    )
                 self.isRunning = False
                 self._setTriggerScopeScanButtonChecked(False)
                 self._setTriggerScopeAbortPending(False)
@@ -406,6 +446,7 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             if token is not None:
                 self._scanCoordinator.resolve(token, FINISH_ABORT)
             self._scanStopRequested = False
+            self._triggerScopeRunOutcome = (False, message)
             self._releaseTriggerScopeRun(runToken)
             return True
 
@@ -420,6 +461,10 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
 
         callbackLock = threading.Lock()
         callbackDelivered = False
+        # __dict__.get, not getattr: on a QObject shell without __init__ (test
+        # doubles) getattr raises instead of returning the default.
+        outcome = self.__dict__.get('_triggerScopeRunOutcome') or (True, '')
+        self._triggerScopeRunOutcome = None
 
         def publishEnded():
             nonlocal callbackDelivered
@@ -435,6 +480,7 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                     'Failed to publish the TriggerScope scan-run end signal',
                     exc_info=True,
                 )
+            self._resolveTriggerScopeCompletions(runToken, *outcome)
             try:
                 self._triggerScopeAutoStopRecording()
             except Exception:
@@ -456,6 +502,78 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             # delivered elsewhere.
             return False
         return True
+
+    def _resolveTriggerScopeCompletions(self, runToken, successful, message=''):
+        """Resolve the exact request completions bound to ``runToken``."""
+        bound = self.__dict__.get('_triggerScopeBoundCompletions') or []
+        matched = [c for c in bound if getattr(c, 'runToken', None) is runToken]
+        for completion in matched:
+            bound.remove(completion)
+            try:
+                completion.resolve(runToken, bool(successful), message)
+            except Exception:
+                self._logger.error(
+                    'Failed to resolve a TriggerScope scan request completion',
+                    exc_info=True,
+                )
+
+    def _runTriggerScopeScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
+        """Shared ``runScanExternal`` for the TriggerScope family.
+
+        Arms exactly as before (Repeat off, run-level start already
+        published by the dispatcher). When the active request asked for an
+        exact completion (the script/remote API does; scan-mode Recording
+        does not, and keeps its legacy global-signal path), this reports
+        acceptance or the recorded refusal to the workflow service and hands
+        it a completion that this run's terminal resolves."""
+        workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        wantsExact = getattr(workflow, 'active_request_wants_exact_completion', None)
+        wantsExact = bool(wantsExact()) if callable(wantsExact) else False
+        self._lastScanStartRejection = None
+        completion = None
+        if wantsExact:
+            from ..WorkflowServices import ScanRequestCompletion
+            completion = ScanRequestCompletion(self)
+        self._externalTriggerScopeCompletion = completion
+        try:
+            self._widget.setRepeatEnabled(False)
+            self.runScanAdvanced(
+                recalculateSignals=recalculateSignals,
+                isNonFinalPartOfSequence=isNonFinalPartOfSequence,
+                sigScanStartingEmitted=True,
+            )
+        finally:
+            self._externalTriggerScopeCompletion = None
+            runToken = (
+                completion.runToken
+                if completion is not None else
+                self._scanCoordinator.runForOwner(self)
+            )
+            accepted = runToken is not None
+            message = '' if accepted else (
+                self._lastScanStartRejection
+                or 'TriggerScope scan controller refused the request or '
+                   'failed to arm.'
+            )
+            report = getattr(workflow, 'report_scan_request_result', None)
+            if callable(report):
+                try:
+                    report(
+                        self, accepted, message,
+                        runToken if accepted else None,
+                        completion if accepted and completion is not None else None,
+                    )
+                except Exception:
+                    self._logger.error(
+                        'Failed to report the TriggerScope scan request result',
+                        exc_info=True,
+                    )
+            if completion is not None:
+                bound = self.__dict__.setdefault(
+                    '_triggerScopeBoundCompletions', []
+                )
+                if not accepted and completion in bound:
+                    bound.remove(completion)
 
     def _deliverOnControllerThread(self, callback):
         try:

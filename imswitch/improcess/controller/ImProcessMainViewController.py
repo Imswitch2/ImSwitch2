@@ -1,10 +1,10 @@
 from .DataFrameController import DataFrameController
-from .WatcherFrameController import WatcherFrameController
 from .LiveModeController import LiveModeController
 from .MemoryLiveController import MemoryLiveController
 from .ReconstructionViewController import ReconstructionViewController
 from .GraphController import GraphController
 from .MetadataController import MetadataController
+from .SmlmRenderController import SmlmRenderController
 from .ScanParamsController import ScanParamsController
 from .WidefieldStarssBatchController import WidefieldStarssBatchController
 from .FileIOController import FileIOController
@@ -16,7 +16,6 @@ from .basecontrollers import ImProcessWidgetController
 class ImProcessMainViewController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._commChannel.extension = self._widget.extension
 
         self.dataFrameController = self._factory.createController(
             DataFrameController, self._widget.dataFrame
@@ -24,14 +23,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.reconstructionController = self._factory.createController(
             ReconstructionViewController, self._widget.reconstructionWidget
         )
-        self.watcherFrameController = self._factory.createController(
-            WatcherFrameController, self._widget.watcherFrame
-        )
         self.liveModeController = self._factory.createController(
-            LiveModeController, self._widget.watcherFrame, mainController=self
+            LiveModeController, self._widget.directoryWatcherFrame, main_controller=self
         )
         self.memoryLiveController = self._factory.createController(
-            MemoryLiveController, self._widget.watcherFrame, mainController=self
+            MemoryLiveController, self._widget.directoryWatcherFrame, mainController=self
         )
         self.wfsBatchController = self._factory.createController(
             WidefieldStarssBatchController, self._widget, mainController=self
@@ -48,6 +44,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
         if self._widget.metadataWidget is not None:
             self.metadataController = self._factory.createController(
                 MetadataController, self._widget.metadataWidget
+            )
+        self.smlmRenderController = None
+        if getattr(self._widget, "smlmRenderWidget", None) is not None:
+            self.smlmRenderController = self._factory.createController(
+                SmlmRenderController, self._widget.smlmRenderWidget
             )
         self.scanParamsController = self._factory.createController(
             ScanParamsController, self._widget.scanParamsDialog
@@ -69,14 +70,15 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._commChannel.sigSaveFolderChanged.connect(self.fileIOController.saveFolderChanged)
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
         self._commChannel.sigScanParamsUpdated.connect(self.monalisaController.scanParamsUpdated)
-        self._commChannel.sigReconstruct.connect(self.reconstructorManager.reconstruct)
 
         self._widget.sigSaveReconstruction.connect(lambda: self.fileIOController.saveCurrent('reconstruction'))
         self._widget.sigSaveReconstructionAll.connect(lambda: self.fileIOController.saveAll('reconstruction'))
         self._widget.sigSaveCoeffs.connect(lambda: self.fileIOController.saveCurrent('coefficients'))
         self._widget.sigSaveCoeffsAll.connect(lambda: self.fileIOController.saveAll('coefficients'))
-        self._widget.sigSetDataFolder.connect(self.fileIOController.setDataFolder)
-        self._widget.sigSetSaveFolder.connect(self.fileIOController.setSaveFolder)
+        self._widget.sigOpenFolderPreferences.connect(self.fileIOController.openFolderPreferences)
+        self._widget.folderPreferencesDialog.sigSaveRequested.connect(
+            self.fileIOController.saveFolderPreferences
+        )
 
         self._widget.sigReconstuctCurrent.connect(self.reconstructorManager.reconstructCurrent)
         self._widget.sigCancelReconstruction.connect(
@@ -125,7 +127,14 @@ class ImProcessMainViewController(ImProcessWidgetController):
             and hasattr(self._widget.parTree, "load_from_attrs")
         ):
             try:
-                self._widget.parTree.load_from_attrs(dataObj.attrs or {})
+                # Pass the source too: a widget that can read the resolved
+                # acquisition layout should not re-parse the same attributes.
+                try:
+                    self._widget.parTree.load_from_attrs(
+                        dataObj.attrs or {}, dataObj
+                    )
+                except TypeError:
+                    self._widget.parTree.load_from_attrs(dataObj.attrs or {})
             except Exception as exc:
                 self._logger.warning(f"Could not load reconstructor params from metadata: {exc}")
 

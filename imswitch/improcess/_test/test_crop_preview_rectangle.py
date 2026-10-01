@@ -1,5 +1,10 @@
 """Crop dialog X/Y rectangle-preview geometry (pure, Qt-free)."""
-from imswitch.improcess.view.StackSubsetDialog import crop_preview_rectangle
+import math
+
+from imswitch.improcess.view.StackSubsetDialog import (
+    crop_preview_rectangle,
+    crop_preview_scale,
+)
 
 
 def test_rectangle_from_xy_ranges():
@@ -22,3 +27,20 @@ def test_none_without_xy_axes():
 def test_none_when_xy_values_absent():
     labels = ["Y", "X"]
     assert crop_preview_rectangle(labels, {0: (1, 5)}) is None   # X (axis 1) missing
+
+
+def test_scale_is_the_y_and_x_axis_scales_picked_by_label():
+    labels = ["T", "Z", "Y", "X"]
+    assert crop_preview_scale(labels, [5.0, 0.3, 0.1, 0.12]) == (0.1, 0.12)
+
+
+def test_scale_follows_the_labels_not_the_trailing_axes():
+    # Y and X are not the last two here; taking scales[-2:] would give Z/C.
+    assert crop_preview_scale(["Y", "X", "C"], [0.1, 0.2, 1.0]) == (0.1, 0.2)
+
+
+def test_scale_falls_back_to_pixels_when_unusable():
+    assert crop_preview_scale(["Y", "X"], []) == (1.0, 1.0)
+    assert crop_preview_scale(["T", "Z"], [1.0, 1.0]) == (1.0, 1.0)
+    assert crop_preview_scale(["Y", "X"], [0.0, 0.1]) == (1.0, 1.0)
+    assert crop_preview_scale(["Y", "X"], [math.nan, 0.1]) == (1.0, 1.0)

@@ -59,11 +59,10 @@ class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
             self._widget.setConnected(False)
             return
 
-        self._manager = getattr(stand_manager, "_subManager", None)
-
-        if self._manager is None:
-            self._widget.setConnected(False)
-            return
+        # Use the public StandManager capability facade. The concrete Leica
+        # driver remains behind StandManager and can share its hardware layer
+        # with the Leica Z positioner without controller coupling.
+        self._manager = stand_manager
 
         self._cube_slot_to_name = self._manager.getAvailableCubes()
         self._cube_name_to_slot = {

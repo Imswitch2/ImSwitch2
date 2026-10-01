@@ -5,6 +5,7 @@ import weakref
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.view.ResultInputList import ResultInputListWidget
+from imswitch.improcess.view.runstate import RunState
 
 #: "Apply to" scopes offered for single-input processors.
 SCOPE_CURRENT = "current"
@@ -31,6 +32,9 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     on. A list is always emitted, even for one result, so the controller has a
     single code path; it still accepts a bare result from custom panels."""
 
+    sigCancelRequested = QtCore.Signal()
+    """**Cancel** was pressed while a run was going."""
+
     def __init__(self, processor, parent=None):
         super().__init__(parent)
         self.processor = processor
@@ -48,6 +52,14 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         self.runButton.setEnabled(False)
 
         self.paramWidget = processor.make_param_widget(self)
+        # The widget exists now, on the GUI thread: the one safe place to
+        # compare it with the plugin's headless declaration. A mismatch is
+        # remembered on the class, so results made here record why they
+        # cannot be replayed.
+        from imswitch.imcommon.model import initLogger
+        from imswitch.improcess.model.plugin_contract import warn_contract_problems
+
+        warn_contract_problems(initLogger(self, tryInheritParent=False), processor, self.paramWidget)
 
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
@@ -82,8 +94,41 @@ class ResultProcessorWidget(QtWidgets.QWidget):
             layout.addLayout(form)
 
         layout.addWidget(self.paramWidget)
+
+        # ROI restriction (P-R). Offered only to processors that declared they
+        # accept one, so a processor that ignores ROIs can never be handed a
+        # cropped input by a UI that guessed.
+        self.roiCombo = None
+        self.roiModeCombo = None
+        if getattr(processor, "accepts_roi", False):
+            self.roiCombo = QtWidgets.QComboBox()
+            self.roiCombo.setToolTip(
+                "Run over a region instead of the whole image. The ROIs come "
+                "from the ROI manager's active set."
+            )
+            self.roiModeCombo = QtWidgets.QComboBox()
+            for mode in getattr(processor, "roi_modes", ("crop", "mask")):
+                self.roiModeCombo.addItem(
+                    {
+                        "crop": "Crop to the region",
+                        "mask": "Mask outside the region",
+                    }.get(mode, mode),
+                    mode,
+                )
+            self.roiModeCombo.setToolTip(
+                "Crop puts the region on its own smaller grid; Mask keeps the "
+                "whole frame so the output stays pixel-aligned with the input."
+            )
+            roiForm = QtWidgets.QFormLayout()
+            roiForm.addRow("Region", self.roiCombo)
+            roiForm.addRow("", self.roiModeCombo)
+            layout.addLayout(roiForm)
+            self._refreshROIChoices()
+
         layout.addWidget(self.statusLabel)
         layout.addWidget(self.runButton)
+        self._runState = RunState(self.runButton, layout, self.sigCancelRequested.emit)
+        self.cancelButton = self._runState.cancelButton
         layout.addStretch()
         self.setLayout(layout)
 
@@ -99,6 +144,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
     def setCurrentResult(self, result) -> None:
         self._currentResult = result
+        self._retargetParamWidget(result)
         if self.isMultiInput():
             self._refreshMultiInput()
             return
@@ -108,7 +154,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         if result is None or not hasattr(result, "processor_input_choices"):
             self.statusLabel.setText("No compatible result selected.")
-            self.runButton.setEnabled(False)
+            self._setRunEnabled(False)
             self.inputCombo.blockSignals(False)
             return
 
@@ -186,12 +232,145 @@ class ResultProcessorWidget(QtWidgets.QWidget):
             return SCOPE_CURRENT
         return str(self.scopeCombo.currentData() or SCOPE_CURRENT)
 
+    def setParameterValues(self, values: dict) -> bool:
+        """Put ``values`` in the parameter widget, if it lets them be set.
+
+        Opt-in, like ``setResult``: a widget that declares ``set_values(dict)``
+        takes the keys it is given and leaves the rest (the console uses it to
+        hand code to the Python step). Returns whether the widget took them.
+        """
+        setter = getattr(self.paramWidget, "set_values", None)
+        if not callable(setter):
+            return False
+        setter(dict(values))
+        return True
+
     def parameterValues(self) -> dict:
         getter = getattr(self.paramWidget, "get_values", None)
-        return dict(getter() if callable(getter) else {})
+        values = dict(getter() if callable(getter) else {})
+        restriction = self.roiRestriction()
+        if restriction is not None:
+            from imswitch.improcess.analysis.roi_restriction import ROI_PARAM
+
+            values[ROI_PARAM] = restriction
+        return values
+
+    # -- ROI restriction (P-R) --------------------------------------------
+
+    def setROIManagerWidget(self, panel) -> None:
+        """The ROI manager whose active set this panel may restrict to.
+
+        Late-bound and optional: both panels are runtime-loaded, in either
+        order, and a processor must still run without one.
+        """
+        self._roiManagerWidget = panel
+        self._refreshROIChoices()
+
+    def _retargetParamWidget(self, result) -> None:
+        """Tell a parameter widget which result it is now editing.
+
+        Most parameter widgets are the same whatever the input, so this is
+        opt-in: a widget that needs the result -- one showing a row per axis,
+        say -- declares ``setResult`` and gets told. Without it such a widget
+        would keep showing the previous result's axes, and a crop typed
+        against those would apply to the wrong extent.
+        """
+        setter = getattr(self.paramWidget, "setResult", None)
+        if not callable(setter):
+            return
+        try:
+            setter(result, self._visibleROIs())
+        except Exception:
+            # A parameter widget that cannot show this result leaves the panel
+            # usable; the status line and the run itself still report properly.
+            # This is a view with no logger of its own, and raising here would
+            # take down every result switch.
+            self.statusLabel.setText(
+                "Could not show parameters for this result."
+            )
+
+    def _visibleROIs(self) -> list:
+        panel = getattr(self, "_roiManagerWidget", None)
+        if panel is None:
+            return []
+        try:
+            return [roi for roi in panel.rois() if roi.visible]
+        except Exception:
+            return []
+
+    def _refreshROIChoices(self) -> None:
+        if self.roiCombo is None:
+            return
+        panel = getattr(self, "_roiManagerWidget", None)
+        rois = []
+        if panel is not None:
+            try:
+                rois = [roi for roi in panel.rois() if roi.visible]
+            except Exception:
+                rois = []
+
+        current = self.roiCombo.currentData()
+        self.roiCombo.blockSignals(True)
+        self.roiCombo.clear()
+        self.roiCombo.addItem("Whole image", None)
+        if rois:
+            self.roiCombo.addItem(f"All {len(rois)} ROIs", "*")
+        for roi in rois:
+            self.roiCombo.addItem(roi.name, roi.uid)
+        index = self.roiCombo.findData(current)
+        self.roiCombo.setCurrentIndex(max(0, index))
+        self.roiCombo.blockSignals(False)
+        self.roiCombo.setEnabled(bool(rois))
+        if not rois:
+            self.roiCombo.setToolTip(
+                "No ROIs available. Draw some in the ROI manager, or leave "
+                "this as Whole image."
+            )
+
+    def roiRestriction(self):
+        """The restriction this panel is configured for, or None."""
+        if self.roiCombo is None:
+            return None
+        choice = self.roiCombo.currentData()
+        if choice is None:
+            return None
+        panel = getattr(self, "_roiManagerWidget", None)
+        if panel is None:
+            return None
+        try:
+            rois = [roi for roi in panel.rois() if roi.visible]
+            roi_set = panel.active_set()
+        except Exception:
+            return None
+        if choice != "*":
+            rois = [roi for roi in rois if roi.uid == choice]
+        if not rois:
+            return None
+
+        from imswitch.improcess.analysis.roi_restriction import ROIRestriction
+
+        return ROIRestriction(
+            rois=tuple(rois),
+            mode=str(self.roiModeCombo.currentData() or "crop"),
+            set_uid=getattr(roi_set, "uid", ""),
+            set_name=getattr(roi_set, "name", ""),
+            set_revision=int(getattr(roi_set, "revision", 0) or 0),
+        )
 
     def setStatusText(self, text: str) -> None:
         self.statusLabel.setText(text)
+
+    # -- a run in progress --------------------------------------------------------
+
+    def isRunning(self) -> bool:
+        return self._runState.running
+
+    def setRunning(self, running: bool) -> None:
+        """Show that a run is going (Run off, Cancel on) or that it ended."""
+        self._runState.setRunning(running)
+
+    def _setRunEnabled(self, allowed: bool) -> None:
+        self._runState.setRunEnabled(allowed)
 
     # -- internals --------------------------------------------------------
 
@@ -202,7 +381,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
     def _refreshSingleInput(self, has_choices: bool) -> None:
         inputs = self.selectedInputs()
-        self.runButton.setEnabled(bool(inputs))
+        self._setRunEnabled(bool(inputs))
         if not has_choices and not inputs:
             self.statusLabel.setText(
                 f"{self.processor.name} does not apply to the current result."
@@ -216,13 +395,15 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     def _refreshMultiInput(self) -> None:
         inputs = self.inputWidget.checked_results()
         ok, reason = _check_inputs(self.processor, inputs)
-        self.runButton.setEnabled(ok)
+        self._setRunEnabled(ok)
         if ok:
             self.statusLabel.setText(f"Will run on {len(inputs)} results.")
         else:
             self.statusLabel.setText(reason)
 
     def _run(self) -> None:
+        if self._runState.running:
+            return
         inputs = self.selectedInputs()
         if not inputs:
             self.setStatusText("No processor input selected.")

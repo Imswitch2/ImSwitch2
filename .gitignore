@@ -197,7 +197,7 @@ __marimo__/
 
 # ImSwitch-specific ignores (from upstream)
 imswitch/imcontrol/model/managers/lasers/KatanaLaserManager.py
-imswitch/imcontrol/model/managers/stands/LeicaDMIManager.py
+imswitch/imcontrol/model/interfaces/LeicaDMIHardware_private.py
 allfocusimages.npy
 allfocusvals.npy
 allfocuspositions.npy

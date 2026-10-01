@@ -1,20 +1,11 @@
 """
 Test config editor widget→section helper functionality.
 """
-import importlib.util
-import sys
-from pathlib import Path
-
 import pytest
 
 pytest.importorskip("PyQt5")
 
-# Import the config editor module by file path
-_SCRIPT_PATH = Path(__file__).resolve().parents[4] / "utility_scripts" / "imswitch_config_editor.py"
-spec = importlib.util.spec_from_file_location("imswitch_config_editor", _SCRIPT_PATH)
-editor = importlib.util.module_from_spec(spec)
-sys.modules["imswitch_config_editor"] = editor
-spec.loader.exec_module(editor)
+from imswitch.imcontrol.view.configeditor import editor
 
 
 def test_widget_section_map_built_from_schemas():

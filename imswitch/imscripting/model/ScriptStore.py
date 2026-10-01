@@ -1,3 +1,4 @@
+import locale
 from dataclasses import dataclass
 from typing import Optional
 
@@ -18,7 +19,9 @@ class ScriptEntry:
         if not self.isSavedToFile():
             raise RuntimeError('Cannot save, no file path set in entry')
 
-        with open(self.filePath, 'w', newline='\n') as file:
+        # UTF-8 on every platform: the default is the locale's encoding, which
+        # on Windows (cp1252) turned the "µ" of a shipped script into "Âµ".
+        with open(self.filePath, 'w', encoding='utf-8', newline='\n') as file:
             file.write(self.code)
 
         self.unsaved = False
@@ -26,10 +29,20 @@ class ScriptEntry:
     @classmethod
     def loadFromFile(cls, filePath):
         """ Creates a ScriptEntry from the file at the specified path. """
-        with open(filePath) as file:
-            code = file.read()
+        return cls(filePath=filePath, code=_readText(filePath))
 
-        return cls(filePath=filePath, code=code)
+
+def _readText(filePath):
+    """ Reads a script as UTF-8, the encoding Python source defaults to and
+    the one ImSwitch ships and saves scripts in. A file that is not valid
+    UTF-8 was most likely saved by an older ImSwitch in the locale's
+    encoding (cp1252 on Windows), so that is tried next. """
+    with open(filePath, 'rb') as file:
+        data = file.read()
+    try:
+        return data.decode('utf-8-sig')  # -sig: drop a BOM, e.g. from Notepad
+    except UnicodeDecodeError:
+        return data.decode(locale.getpreferredencoding(False), errors='replace')
 
 
 class ScriptStore:

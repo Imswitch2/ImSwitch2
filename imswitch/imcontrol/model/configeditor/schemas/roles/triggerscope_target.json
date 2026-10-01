@@ -1,0 +1,16 @@
+{
+  "role": "triggerscope_target",
+  "title": "TriggerScope DAC target",
+  "applies_to": ["positioners", "lasers", "detectors", "rotators"],
+  "consumer": "imswitch.imcontrol.model.managers.TriggerScopeManager",
+  "when": {"field": "analogChannel", "starts_with": "Triggerscope/DAC"},
+  "requires": [],
+  "reads": [
+    {"key": "minVolt", "fallback": "-10 V"},
+    {"key": "maxVolt", "fallback": "10 V"}
+  ],
+  "properties": {
+    "minVolt": {"x-imswitch-kind": "number", "description": "Lowest voltage TriggerScope may drive on this DAC channel (default -10 V)."},
+    "maxVolt": {"x-imswitch-kind": "number", "description": "Highest voltage TriggerScope may drive on this DAC channel (default 10 V)."}
+  }
+}

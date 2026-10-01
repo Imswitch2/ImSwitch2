@@ -470,3 +470,36 @@ def test_hdf5_live_source_caps_reads_at_frames_committed(tmp_hdf5_path):
     assert source.poll() == []
     assert source.is_complete() is False
     source.close()
+
+
+def test_hdf5_live_poll_stops_at_the_byte_budget_and_resumes(tmp_hdf5_path, monkeypatch):
+    """A poll used to return every unread frame in one call, so a live source
+    pointed at a finished recording materialised the whole recording before
+    its first chunk was processed. The budget ends the poll; the cursor stays
+    put; the next poll carries on from there."""
+    from imswitch.improcess.live import sources
+
+    data = np.arange(10 * 4 * 5, dtype=np.uint16).reshape(10, 4, 5)
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        f.attrs["rec_mode"] = "recording"
+        det_group = f.create_group("CAM")
+        dataset = det_group.create_dataset("data", data=data, chunks=(1, 4, 5))
+        dataset.attrs["detector_name"] = "CAM"
+        dataset.attrs["recording:dataset_path"] = "/CAM/data"
+        dataset.attrs["writing"] = False
+        f.flush()
+        f.swmr_mode = True
+
+    frame_bytes = 4 * 5 * 2
+    monkeypatch.setattr(sources, "LIVE_POLL_MAX_BYTES", 3 * frame_bytes)
+
+    source = Hdf5LiveSource(detector_name="CAM", chunk_size=1)
+    source.open(tmp_hdf5_path)
+    polls = []
+    while not source.is_complete():
+        polls.append(source.poll())
+
+    assert [len(chunks) for chunks in polls] == [3, 3, 3, 1]
+    chunks = [chunk for poll in polls for chunk in poll]
+    assert [(c.start, c.end) for c in chunks] == [(i, i + 1) for i in range(10)]
+    np.testing.assert_array_equal(np.concatenate([c.data for c in chunks]), data)

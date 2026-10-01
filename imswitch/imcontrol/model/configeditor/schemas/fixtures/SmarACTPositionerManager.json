@@ -1,0 +1,10 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "SmarACTPositionerManager",
+    "managerProperties": {
+      "axis_lookup_table": {},
+      "holdTime": 1
+    }
+  }
+}

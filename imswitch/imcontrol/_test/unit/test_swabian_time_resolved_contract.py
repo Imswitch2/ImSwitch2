@@ -258,3 +258,71 @@ def test_abort_withholds_ack_when_scan_worker_cannot_be_stopped(
     assert manager._scanWorker is worker
     assert manager._activeScanGeneration == 7
     assert manager._preparedScanGeneration == 7
+
+
+# ---------------------------------------------------------------------------
+# The raw-chunk contract, and the histogram window's default
+# ---------------------------------------------------------------------------
+
+
+def _frame(manager, *, is_final, value=2.0):
+    ny, nx = manager._image_display.shape[1:]
+    intensity = np.full((ny, nx), 10.0, dtype=np.float32)
+    lifetime_s = np.full((ny, nx), value * 1e-9, dtype=np.float32)
+    manager._on_frame_ready(intensity, lifetime_s, is_final, None, None, value)
+
+
+def test_flim_declares_its_raw_frame_deferred():
+    """A FLIM image is whole only when the worker's final frame lands."""
+    assert _make_manager().rawFrameIsDeferred is True
+
+
+def test_recording_receives_the_finished_image_once_not_the_previews():
+    """The worker previews every second with is_final False; a recording used
+    to be satisfied by the first preview, one second into a minute's scan."""
+    manager = _make_manager()
+    manager.startAcquisition()
+
+    _frame(manager, is_final=False, value=1.0)
+    payload = manager.drainChunk()
+    assert payload.display.shape == (1, 64, 64)
+    assert payload.raw.size == 0, "a preview reached the recording"
+
+    _frame(manager, is_final=False, value=1.5)
+    assert manager.drainChunk().raw.size == 0
+
+    _frame(manager, is_final=True, value=3.0)
+    payload = manager.drainChunk()
+    assert payload.raw.shape == (1, 64, 64)
+    assert float(payload.raw[0, 0, 0]) == 3.0
+    assert manager.drainChunk().raw.size == 0, "the finished image was delivered twice"
+
+
+def test_an_aborted_scan_delivers_no_raw_frame():
+    manager = _make_manager()
+    manager.startAcquisition()
+    _frame(manager, is_final=True, value=3.0)
+    manager.finishScan('abort', acknowledge=lambda *a, **k: None)
+    assert manager.drainChunk().raw.size == 0
+
+
+def test_the_histogram_window_spans_one_laser_period_unless_declared():
+    from imswitch.imcontrol.model.managers.detectors.SwabianTimeTaggerManager import (
+        histogram_bins_for_period,
+    )
+    assert histogram_bins_for_period(32, 80.0) == 391  # 12.5 ns / 32 ps, rounded up
+    assert _make_manager()._n_bins == 391
+    assert _make_manager({"n_bins": 64})._n_bins == 64
+    assert _make_manager({"laser_rep_rate_mhz": 40.0, "binwidth_ps": 50})._n_bins == 500
+
+
+def test_a_declared_window_shorter_than_the_period_is_warned_about(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        _make_manager({"n_bins": 64})
+    assert any("covers 16% of the 12.50 ns laser period" in r.getMessage()
+               for r in caplog.records), [r.getMessage() for r in caplog.records]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _make_manager()
+    assert not any("laser period" in r.getMessage() for r in caplog.records)

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "cameraSerial": {
+      "description": "Camera serial number.  If ``null`` the SDK opens the first available camera.  Any value starting with ``\"MOCK_\"`` forces the mock fallback for headless testing.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:string"
+      ]
+    },
+    "defaults": {
+      "additionalProperties": true,
+      "description": "Optional sub-dict of default parameter values; see below.",
+      "properties": {
+        "exposure_us": {
+          "x-imswitch-kind": "integer",
+          "x-imswitch-source": [
+            "code:default:integer",
+            "code:optional(get)"
+          ]
+        },
+        "frame_rate": {
+          "x-imswitch-kind": "integer",
+          "x-imswitch-source": [
+            "code:default:integer",
+            "code:optional(get)"
+          ]
+        },
+        "gain": {
+          "x-imswitch-kind": "integer",
+          "x-imswitch-source": [
+            "code:default:integer",
+            "code:optional(get)"
+          ]
+        },
+        "operation_mode": {
+          "x-imswitch-kind": "string",
+          "x-imswitch-source": [
+            "code:default:string",
+            "code:optional(get)"
+          ]
+        },
+        "trigger_polarity": {
+          "x-imswitch-kind": "string",
+          "x-imswitch-source": [
+            "code:default:string",
+            "code:optional(get)"
+          ]
+        }
+      },
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:default:object",
+        "code:optional(get)",
+        "code:sub-keys"
+      ]
+    },
+    "dllLocation": {
+      "description": "Path (relative to the working directory on Windows) to the Thorlabs TSI DLLs.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "flushFrameLimit": {
+      "description": "Most frames drained from the SDK's queue in one flush before acquisition restarts; raise it if stale frames survive a restart on a fast camera.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "frameBufferDepth": {
+      "description": "Frames the SDK ring buffer holds between the camera and the acquisition loop. What the depth buys is tolerance to latency spikes (a GC pause, an HDF5 resize, a writer block) of up to ``depth / framerate`` seconds; the camera is re-armed at this depth on every trigger-mode change.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:int()",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "ThorCamTSIManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ThorCamTSIManager",
+    "DetectorManager"
+  ]
+}

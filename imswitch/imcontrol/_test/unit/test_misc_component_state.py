@@ -50,7 +50,8 @@ class TestPositionerController:
             axes=['X', 'Y', 'Z'],
             move=MagicMock(),
             setPosition=MagicMock(),
-            joystick=False
+            joystick=False,
+            hide=False
         )
         
         # Create manager that supports both iteration and getitem
@@ -71,8 +72,18 @@ class TestPositionerController:
         ctrl.componentName = 'Positioner'
         ctrl.stateSchemaVersion = 1
         ctrl._stage_mock = stage_mock  # Store for test access
-        
+        # Settings __init__ would set; they are part of the saved state.
+        ctrl._isCoarseMode = False
+        ctrl._coarseStepMultiplier = 5.0
+        ctrl._liveUpdateIntervalMs = 300
+        ctrl._liveUpdateEnabled = {'Stage': False}
+        ctrl._joystickAutoReenable = True
+        ctrl._joystickAutoReenableDelayS = 5.0
+
         # Bind actual methods
+        ctrl._isPositionerShownInWidget = lambda pManager: PositionerController._isPositionerShownInWidget(
+            ctrl, pManager
+        )
         ctrl.getComponentState = lambda: PositionerController.getComponentState(ctrl)
         ctrl.applyComponentState = lambda state, applyMode: PositionerController.applyComponentState(
             ctrl, state, applyMode=applyMode
@@ -104,7 +115,16 @@ class TestPositionerController:
         )
         assert isinstance(warnings, list)
         controller._widget.setStepSize.assert_called()
-    
+        restored = controller.applySettings.call_args.args[0]
+        assert restored == {
+            'liveUpdateIntervalMs': state['live_update_interval_ms'],
+            'liveUpdateEnabled': state['live_update_enabled'],
+            'coarseStepMultiplier': state['coarse_step_multiplier'],
+            'joystickAutoReenable': state['joystick_auto_reenable'],
+            'joystickAutoReenableDelayS': state['joystick_auto_reenable_delay_s'],
+        }
+        controller.setStepMode.assert_called_once_with(state['coarse_mode'])
+
     def test_no_movement_startup_restore(self, controller):
         """Verify NO stage movement in STARTUP_RESTORE mode."""
         state = controller.getComponentState()
@@ -406,6 +426,43 @@ class TestRecordingController:
             applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
         )
         assert hazards == []
+
+    def test_output_folder_is_not_persisted(self, controller):
+        """The folder defaults to today's date, so it must stay out of state.
+
+        Persisting it pinned every later session to the day the snapshot was
+        taken, and the widget rebuilds the dated default on every startup.
+        """
+        state = controller.getComponentState()
+
+        assert 'recFolder' not in state
+        controller._widget.getRecFolder.assert_not_called()
+
+    def test_legacy_missing_folder_is_ignored_without_warning(self, controller):
+        """A folder from an older state file is neither applied nor complained about.
+
+        Recordings create their output folder on demand, so a folder that does
+        not exist yet was never a problem worth a warning.
+        """
+        state = controller.getComponentState()
+        state['recFolder'] = '/nonexistent/folder/from/an/older/state/file'
+
+        warnings = controller.applyComponentState(
+            state,
+            applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+        )
+
+        assert not any('folder' in warning.lower() for warning in warnings)
+        controller._widget.setRecFolder.assert_not_called()
+
+    def test_describe_omits_the_folder(self, controller):
+        """The inspector does not advertise a setting that is no longer saved."""
+        state = controller.getComponentState()
+        state['recFolder'] = '/some/old/folder'
+
+        description = controller.describeComponentState(state)
+
+        assert not any('folder' in line for line in description)
 
 
 class TestBeadRecController:

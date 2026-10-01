@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "posRangeUm": {
+      "description": "Allowed position range in µm, ``[min, max]``.  ``setPosition``",
+      "x-imswitch-kind": "array",
+      "x-imswitch-source": [
+        "code:default:array",
+        "code:optional(get)"
+      ]
+    },
+    "rs232device": {
+      "description": "Name of the RS-232 channel registered in ``rs232sManager``.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ],
+      "x-imswitch-widget": "ref"
+    },
+    "settleTimeoutS": {
+      "description": "Maximum time in seconds to wait for settling before raising",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:optional(get)"
+      ]
+    },
+    "settleToleranceUm": {
+      "description": "Maximum deviation in µm to consider the stage settled.",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:optional(get)"
+      ]
+    },
+    "waitForSettle": {
+      "description": "If true, poll the device after each move until the readback is",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "rs232device"
+  ],
+  "title": "JenaPiezoZManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "JenaPiezoZManager",
+    "PositionerManager"
+  ]
+}

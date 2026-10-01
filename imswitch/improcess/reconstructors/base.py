@@ -8,8 +8,141 @@ from typing import Any, Callable
 import numpy as np
 from qtpy import QtWidgets
 
+from imswitch.imcommon.model.acquisition_layout import (
+    REGISTERED_PAYLOAD_KINDS,
+    LayoutIssue,
+)
 from imswitch.improcess.model import DataObj
+from imswitch.improcess.model.acquisition_layout_resolver import (
+    AcquisitionLayoutResolutionError,
+    ResolvedAcquisitionLayout,
+)
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
+
+
+@dataclass(frozen=True)
+class AcquisitionRequirements:
+    """Declarative acquisition semantics required by one reconstructor."""
+
+    payload_kinds: frozenset[str]
+    required_loop_kinds: frozenset[str] = frozenset()
+    allowed_extra_loops: str = "reject"
+    requires_calibrated_loops: frozenset[str] = frozenset()
+    allow_ambiguous: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload_kinds", frozenset(self.payload_kinds))
+        object.__setattr__(self, "required_loop_kinds", frozenset(self.required_loop_kinds))
+        object.__setattr__(
+            self,
+            "requires_calibrated_loops",
+            frozenset(self.requires_calibrated_loops),
+        )
+        if not self.payload_kinds:
+            raise ValueError("AcquisitionRequirements.payload_kinds cannot be empty")
+        if self.allowed_extra_loops not in {"reject", "select", "split", "reduce"}:
+            raise ValueError(
+                "allowed_extra_loops must be reject, select, split, or reduce"
+            )
+
+
+class AcquisitionPreflightError(ValueError):
+    """A strict reconstructor cannot safely consume the resolved acquisition."""
+
+    def __init__(self, message: str, issues: tuple[LayoutIssue, ...]) -> None:
+        super().__init__(message)
+        self.issues = issues
+
+
+def preflight_acquisition_layout(
+    resolved: ResolvedAcquisitionLayout,
+    requirements: AcquisitionRequirements,
+) -> tuple[LayoutIssue, ...]:
+    """Compare one resolved layout with plugin-declared requirements."""
+    issues = list(resolved.issues)
+    layout = resolved.layout
+    if layout.payload_kind not in requirements.payload_kinds:
+        issues.append(
+            LayoutIssue(
+                "error",
+                "UNSUPPORTED_ACQUISITION_PAYLOAD",
+                f"This reconstructor accepts {sorted(requirements.payload_kinds)}, "
+                f"not {layout.payload_kind!r}",
+                "payload_kind",
+            )
+        )
+
+    if layout.payload_kind not in REGISTERED_PAYLOAD_KINDS:
+        issues.append(
+            LayoutIssue(
+                "error",
+                "UNVALIDATED_ACQUISITION_PAYLOAD",
+                f"Payload kind {layout.payload_kind!r} has no registered strict validator",
+                "payload_kind",
+            )
+        )
+
+    incomplete_codes = {"FRAME_COUNT_MISMATCH", "LOOP_AXIS_COUNT_MISMATCH"}
+    if any(issue.code in incomplete_codes for issue in resolved.issues):
+        issues.append(
+            LayoutIssue(
+                "error",
+                "INCOMPLETE_ACQUISITION_LAYOUT",
+                "The stored data does not contain the complete declared acquisition layout",
+                "shape",
+            )
+        )
+
+    loop_kinds = {loop.kind for loop in layout.event_loops}
+    missing = requirements.required_loop_kinds - loop_kinds
+    for kind in sorted(missing):
+        issues.append(
+            LayoutIssue(
+                "error",
+                "MISSING_REQUIRED_ACQUISITION_LOOP",
+                f"Required acquisition loop {kind!r} is missing",
+                "event_loops",
+                kind,
+            )
+        )
+
+    if requirements.allowed_extra_loops == "reject":
+        for kind in sorted(loop_kinds - requirements.required_loop_kinds):
+            issues.append(
+                LayoutIssue(
+                    "error",
+                    "UNSUPPORTED_EXTRA_ACQUISITION_LOOP",
+                    f"Acquisition loop {kind!r} requires a selection or a compatible reconstructor",
+                    "event_loops",
+                    kind,
+                )
+            )
+
+    for kind in sorted(requirements.requires_calibrated_loops):
+        matching = [loop for loop in layout.event_loops if loop.kind == kind]
+        if not matching:
+            continue
+        if any(loop.step is None or loop.unit is None for loop in matching):
+            issues.append(
+                LayoutIssue(
+                    "error",
+                    "UNCALIBRATED_ACQUISITION_LOOP",
+                    f"Acquisition loop {kind!r} requires a physical step and unit",
+                    "event_loops",
+                    kind,
+                )
+            )
+
+    if not requirements.allow_ambiguous and not resolved.is_usable:
+        issues.append(
+            LayoutIssue(
+                "error",
+                "AMBIGUOUS_ACQUISITION_LAYOUT",
+                "Acquisition semantics are low-confidence; choose or persist a layout override",
+                "AcquisitionLayout",
+            )
+        )
+    return tuple(issues)
 
 
 class Reconstructor(ABC):
@@ -41,14 +174,15 @@ class Reconstructor(ABC):
     """
 
     default_save_subdir: str = "rec"
-    """Subdirectory name the WatcherFrame uses for reconstructed outputs.
+    """Subdirectory name a save path should use for reconstructed outputs.
 
-    The file watcher writes one output per watched input under
-    ``{watched_dir}/{default_save_subdir}/``. Override per modality to pick a
-    plugin-appropriate folder name (e.g. ``"deskew"`` for SNOUTY) or to keep
-    multiple watchers coexisting without overwriting each other. ``"rec"`` is
-    the historical MoNaLISA default and is kept here so behavior is
-    unchanged for plugins that don't override.
+    Declarative metadata only: the batch file watcher that consumed it was
+    removed with the rest of the old watch-and-run path, so nothing reads it
+    today. It is retained as part of the plugin contract for a future save
+    path, which would write outputs under
+    ``{output_dir}/{default_save_subdir}/``. Override per modality to pick a
+    plugin-appropriate folder name (e.g. ``"deskew"`` for SNOUTY). ``"rec"``
+    is the historical MoNaLISA default.
     """
 
     supports_consolidation: bool = False
@@ -60,6 +194,123 @@ class Reconstructor(ABC):
     processing.
     """
 
+    acquisition_requirements: AcquisitionRequirements | None = None
+    """Opt-in strict acquisition gate; ``None`` preserves legacy behaviour."""
+
+    #: Version of this reconstructor's parameter contract; see
+    #: :attr:`~imswitch.improcess.processors.base.Processor.params_version`.
+    params_version: int = 1
+    #: Keys of :meth:`default_params` whose widget default is machine-dependent.
+    default_params_volatile: tuple[str, ...] = ()
+
+    @classmethod
+    def default_params(cls) -> dict:
+        """The parameters a fresh widget would hand ``process``; pinned to the
+        widget by a test."""
+        return {}
+
+    #: Parameter keys accepted beyond :meth:`default_params` (MoNaLISA's
+    #: ``scan_params`` is filled from the file, not a widget). ``None`` means
+    #: "anything".
+    extra_param_keys: tuple[str, ...] | None = ()
+
+    @classmethod
+    def param_keys(cls) -> frozenset[str] | None:
+        """Every parameter key a workflow may set, or ``None`` for unchecked."""
+        if cls.extra_param_keys is None:
+            return None
+        return frozenset(cls.default_params()) | frozenset(cls.extra_param_keys)
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        """Field-level description of :meth:`default_params`, one
+        :class:`~imswitch.improcess.model.param_spec.ParamField` per key.
+
+        What a form builder, the ``workflows list`` catalogue and the workflow
+        editor read. The framework default derives each field from the
+        default value's type (a number, a flag, free text, JSON), which is
+        enough for a plain form; override it to say what the widget knows --
+        the choices behind a combo box, the bounds and unit of a spin box,
+        the tooltip -- with the same keys and the same defaults. A test pins
+        the two together
+        (:func:`~imswitch.improcess.model.param_spec.spec_problems`).
+        """
+        from imswitch.improcess.model.param_spec import spec_from_defaults
+
+        return spec_from_defaults(cls.default_params())
+
+    def encode_params(self, params: dict | None) -> tuple[dict, list[str]]:
+        """``(encoded, reasons)``: params as lossless JSON, or why not."""
+        from imswitch.improcess.model.provenance import encode_params
+
+        return encode_params(params)
+
+    def decode_params(self, encoded: dict | None, context=None) -> dict:
+        """Inverse of :meth:`encode_params`."""
+        from imswitch.improcess.model.provenance import decode_strict
+
+        return dict(decode_strict(dict(encoded or {})))
+
+    def migrate_params(self, encoded: dict | None, from_version: int) -> dict:
+        """Bring params recorded under an older ``params_version`` up to date."""
+        return dict(encoded or {})
+
+    def prepare_params(self, data_obj, params: dict | None) -> dict:
+        """Complete ``params`` from the data before a headless run.
+
+        The GUI fills some parameters from the file behind the user's back
+        (MoNaLISA's scan geometry comes from the acquisition attributes). A
+        headless run has no controller to do that, so a reconstructor that
+        needs it does it here. The default returns the params unchanged.
+        """
+        return dict(params or {})
+
+    accepted_layouts: tuple[str, ...] | None = None
+    """On-disk layouts the live path may hand this plugin, or ``None``.
+
+    ``None`` means no restriction, which is the right default: most plugins
+    care about the *shape* of the data, not how it was filed. The values are
+    the ``LAYOUT_*`` constants in
+    :mod:`~imswitch.improcess.live.source_type` -- named here as plain
+    strings because that module reads sources, which read this one, and the
+    dependency may only run one way.
+
+    Consulted through :meth:`accepts_raw_source`; override that instead for
+    anything this pair cannot express.
+    """
+
+    requires_frame_stacks: bool = False
+    """Set ``True`` when a timepoint must be a *stack* of frames.
+
+    A scanning reconstructor reassembles ``nx * ny`` raw frames into one
+    image, so a recording contributing a single frame per timepoint gives it
+    nothing to work with. This is independent of being a timelapse: a camera
+    lapse is fifty timepoints of one frame each.
+    """
+
+    def accepts_raw_source(self, source_type) -> bool:
+        """Whether this plugin can reconstruct a recording of this shape.
+
+        Asked by the live path *before* a reader is built, so an unusable
+        recording is skipped rather than opened and then abandoned.
+
+        The default answers from :attr:`accepted_layouts` and
+        :attr:`requires_frame_stacks`, which covers the declarative cases.
+        Override for a constraint those cannot state -- but prefer declaring,
+        so the answer stays inspectable without calling anything.
+
+        Args:
+            source_type: The recording's ``RawSourceType``.
+        """
+        layouts = self.accepted_layouts
+        if layouts is not None and getattr(source_type, "layout", None) not in layouts:
+            return False
+        if (
+            self.requires_frame_stacks
+            and not getattr(source_type, "has_frame_stacks", False)
+        ):
+            return False
+        return True
 
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -145,7 +396,59 @@ class Reconstructor(ABC):
 
     def inspect_source(self, data_obj: DataObj) -> "SourceInspection | None":
         """Describe source-dependent choices without materializing pixels."""
-        return None
+        return self.inspect_acquisition(data_obj)
+
+    def inspect_acquisition(self, data_obj: DataObj) -> "SourceInspection | None":
+        """Return the generic semantic preflight for an opted-in plugin."""
+        requirements = self.acquisition_requirements
+        if requirements is None:
+            return None
+        try:
+            resolved = data_obj.acquisition_layout
+        except AcquisitionLayoutResolutionError as exc:
+            return SourceInspection(
+                source_kind=getattr(data_obj, "sourceKind", "image"),
+                issues=tuple(exc.issues),
+            )
+        except AttributeError:
+            resolved = None
+        if not isinstance(resolved, ResolvedAcquisitionLayout):
+            # A source that cannot describe its acquisition is not an error by
+            # itself; the plugin still has to decide whether it can proceed on
+            # explicit parameters alone. Report it so the choice stays visible
+            # instead of raising out of a preflight the plugin opted into.
+            return SourceInspection(
+                source_kind=getattr(data_obj, "sourceKind", "image"),
+                issues=(
+                    LayoutIssue(
+                        "warning",
+                        "NO_RESOLVED_ACQUISITION_LAYOUT",
+                        "This source does not expose a resolved acquisition layout",
+                        "AcquisitionLayout",
+                    ),
+                ),
+            )
+        issues = preflight_acquisition_layout(resolved, requirements)
+        metadata = {
+            "acquisition_layout_source": resolved.source,
+            "acquisition_layout_confidence": resolved.confidence,
+            "acquisition_payload_kind": resolved.layout.payload_kind,
+        }
+        return SourceInspection(
+            source_kind=getattr(data_obj, "sourceKind", "image"),
+            metadata=metadata,
+            issues=issues,
+        )
+
+    def validate_source(self, data_obj: DataObj) -> "SourceInspection | None":
+        """Raise before pixel processing when opted-in preflight has errors."""
+        inspection = self.inspect_acquisition(data_obj)
+        if inspection is None:
+            return None
+        errors = tuple(issue for issue in inspection.issues if issue.severity == "error")
+        if errors:
+            raise AcquisitionPreflightError(errors[0].message, errors)
+        return inspection
 
 
 @dataclass(frozen=True)
@@ -165,6 +468,17 @@ class SourceInspection:
     choices: dict[str, tuple[SourceChoice, ...]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     warning: str | None = None
+    issues: tuple[LayoutIssue, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "issues", tuple(self.issues))
+        if not self.issues:
+            return
+        highest = next(
+            (issue for issue in self.issues if issue.severity == "error"),
+            self.issues[0],
+        )
+        object.__setattr__(self, "warning", highest.message)
 
 
 RECONSTRUCTION_PHASES = (
@@ -283,6 +597,7 @@ class StackInfo:
     detector_name: str | None = None
     dataset_path: str | None = None
     source_format: str | None = None
+    acquisition_layout: ResolvedAcquisitionLayout | None = None
 
 
 @dataclass(frozen=True)
@@ -335,6 +650,25 @@ class StreamingSession(ABC):
     def result(self) -> ProcessingResult:
         """Return a snapshot of the current reconstruction."""
         ...
+
+    def live_plane(self) -> "tuple[int, np.ndarray] | None":
+        """One timepoint's output slice, for an incremental viewer update.
+
+        Returns ``(timepoint_index, plane)`` where ``plane`` is a **copy** of
+        that timepoint's slice of the output, keeping every axis (so the
+        timepoint axis has length 1 and the caller can assign it straight into
+        an identically-shaped buffer).
+
+        This is the cheap path for live updates: the viewer keeps its own
+        accumulating buffer and writes each plane into it, instead of receiving
+        a fresh copy of the whole growing volume on every refresh. The copy is
+        what keeps the boundary hard -- the session never hands out memory it
+        goes on writing to.
+
+        Returning ``None`` (the default) means the session cannot do
+        incremental updates, and callers fall back to :meth:`result`.
+        """
+        return None
 
     def finish(self) -> ProcessingResult:
         """Finalize processing and return the final result."""

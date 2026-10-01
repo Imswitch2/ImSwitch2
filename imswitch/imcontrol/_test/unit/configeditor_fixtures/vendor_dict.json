@@ -1,0 +1,23 @@
+{
+  "why": "Pass-through dicts: keys inside a template-known nested dict that no template lists, a whole dict no schema knows, and pyserial kwargs handed to a driver. All verbatim.",
+  "setup": {
+    "detectors": {
+      "orca": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "HamamatsuManager",
+        "managerProperties": {
+          "cameraListIndex": 0,
+          "hamamatsu": {"readout_speed": 3, "vendor_only_flag": true, "vendor_table": [1, 2.5, "x", null]},
+          "extraDict": {"a": {"b": null, "c": [1, 2]}, "d": "5"}
+        },
+        "vendorTop": {"nested": {"deep": 1.0}}
+      }
+    },
+    "rs232devices": {
+      "aaaotf": {
+        "managerName": "RS232Manager",
+        "managerProperties": {"port": "ASRL4::INSTR", "encoding": "ascii", "recv_termination": "\n", "send_termination": "\r \n", "baudrate": 57600, "bytesize": 8, "parity": "none", "stopbits": 1, "rtscts": "false", "dsrdtr": "false", "xonxoff": "false", "write_timeout": 0.5}
+      }
+    }
+  }
+}

@@ -4,7 +4,6 @@
 
 from logging import debug, info, warning
 from time import sleep, time
-from future.utils import raise_from
 
 from ..gcs2.gcs2commands import GCS2Commands
 from .. import GCS21Commands
@@ -349,9 +348,9 @@ class GCSRaise(object):  # Too few public methods pylint: disable=R0903
         expected = ', '.join([gcserror.translate_error(errval) for errval in self.__expected])
         msg = 'expected %s%r but raised was %s' % ('' if self.__mustraise else 'no error or ', expected, gcsmsg)
         if exctype is not None:
-            raise_from(ValueError(msg), exctype(excvalue))
+            raise ValueError(msg) from exctype(excvalue)
         else:
-            raise_from(ValueError(msg), Exception)
+            raise ValueError(msg) from Exception
 
         return True
 

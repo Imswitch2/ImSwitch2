@@ -8,6 +8,10 @@ own another kind-to-section mapping.
 
 from dataclasses import dataclass
 
+#: The package the in-tree managers live in; ``MultiManager`` imports an
+#: unregistered one as ``<this>.<legacy_manager_directory>.<ManagerName>``.
+CORE_MANAGERS_PACKAGE = "imswitch.imcontrol.model.managers"
+
 
 @dataclass(frozen=True)
 class SetupKindMetadata:

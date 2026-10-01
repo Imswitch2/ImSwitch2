@@ -6,9 +6,11 @@ from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model.managers import LeasePurpose
 from ..basecontrollers import ImConWidgetController
+from .._fresh_frame import FRESH_FRAME_TIMEOUT_S, grab_fresh_frame
 
 _Z_AXIS = 'Z'
-_SETTLE_S = 0.15
+_SETTLE_S = 0.15  # default post-move settle; autofocus.settleTimeMs overrides it
+_FRESH_FRAME_CONSUMER_KEY = 'autofocus'
 _CLOSE_JOIN_TIMEOUT_S = 2.0
 # How long a starting scan waits for autofocus to let go of the Z axis. Bounded
 # because blocking a scan indefinitely on a wedged positioner call is worse than
@@ -258,6 +260,7 @@ class AutofocusController(ImConWidgetController):
             positioner = self._master.positionersManager[self.positioner]
             detector = self._master.detectorsManager[self.camera]
 
+            settle_s = self._settleSeconds()
             current_z = positioner.position[_Z_AXIS]
             n_intervals = max(2, int(np.ceil(rangez / resolutionz)))
             z_positions = np.linspace(
@@ -271,9 +274,24 @@ class AutofocusController(ImConWidgetController):
                 if self._focusCancel.is_set():
                     return
                 positioner.setPosition(z, _Z_AXIS)
-                if self._focusCancel.wait(_SETTLE_S):
+                if self._focusCancel.wait(settle_s):
                     return
-                img = detector.getLatestFrameShared().astype(np.float64)
+                # A frame that started exposing after the move, not the newest
+                # buffered one (which, at an exposure longer than the settle,
+                # is the previous Z position's).
+                frame, fresh = grab_fresh_frame(
+                    detector, _FRESH_FRAME_CONSUMER_KEY,
+                    should_stop=self._focusCancel.is_set, logger=self._logger,
+                )
+                if self._focusCancel.is_set() or frame is None:
+                    return
+                if not fresh:
+                    self._logger.warning(
+                        f'Autofocus: no fresh frame within '
+                        f'{FRESH_FRAME_TIMEOUT_S:g} s at Z = {z:.2f}; using the '
+                        f'newest buffered frame, which may predate the move.'
+                    )
+                img = np.asarray(frame).astype(np.float64)
                 gx = np.diff(img, axis=1)
                 gy = np.diff(img, axis=0)
                 focus_vals.append(float(np.var(gx) + np.var(gy)))
@@ -336,6 +354,14 @@ class AutofocusController(ImConWidgetController):
                     # Bare controller shells used by tests are not always
                     # initialized as QObjects. Production controllers are.
                     pass
+
+    def _settleSeconds(self):
+        """The declared post-move settle, or the module default without one."""
+        try:
+            declared = getattr(self._setupInfo.autofocus, 'settleTimeMs', None)
+        except Exception:
+            declared = None
+        return _SETTLE_S if declared is None else float(declared) / 1000.0
 
     @QtCore.Slot(object, object)
     def _updatePlot(self, z_positions, focus_vals):

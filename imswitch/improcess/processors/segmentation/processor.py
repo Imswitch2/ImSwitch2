@@ -8,6 +8,7 @@ from qtpy import QtWidgets
 from imswitch.improcess.analysis.segmentation import segment_image
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors._extraction import axis_labels_for_data
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import SegmentationResult
@@ -19,6 +20,64 @@ class SegmentationProcessor(Processor):
     name = "Segmentation"
     id = "segmentation"
     category = "Segmentation"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
+    # Restricting to a region is meaningful here (P-R), and cropping is
+    # offered first: segmenting one region is usually the point, and the
+    # smaller grid is what the caller wants to look at.
+    accepts_roi = True
+    roi_modes = ('crop', 'mask')
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'threshold_method': 'otsu',
+        'threshold_value': 0.0,
+        'min_area': 10,
+        'smooth_sigma': 0.0,
+        'background_radius': 0.0,
+        'morphology_radius': 0,
+        'fill_holes': False,
+        'clear_border': False,
+        'local_block_size': 51,
+        'local_offset': 0.0,
+        'watershed_min_distance': 5,
+        't_index': 0,
+        'z_index': 0,
+        'c_index': 0,
+        'axis_indices': ''}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'threshold_method', 'select', 'otsu', label='Method',
+                options=('otsu', 'manual', 'triangle', 'yen', 'local', 'watershed'),
+            ),
+            ParamField('threshold_value', 'float', 0.0, label='Manual value', decimals=6),
+            ParamField('min_area', 'int', 10, label='Min area', min=1),
+            ParamField(
+                'smooth_sigma', 'float', 0.0, label='Smooth sigma', min=0, max=1000, decimals=3,
+            ),
+            ParamField(
+                'background_radius', 'float', 0.0, label='Top-hat radius', min=0, max=10000,
+                decimals=1,
+            ),
+            ParamField('morphology_radius', 'int', 0, label='Morph radius', min=0, max=9999),
+            ParamField('fill_holes', 'bool', False, label='Fill holes'),
+            ParamField('clear_border', 'bool', False, label='Clear border'),
+            ParamField('local_block_size', 'int', 51, label='Local block', min=3, max=9999, step=2),
+            ParamField('local_offset', 'float', 0.0, label='Local offset', decimals=6),
+            ParamField(
+                'watershed_min_distance', 'int', 5, label='Watershed distance', min=1, max=9999,
+            ),
+            ParamField('t_index', 'int', 0, label='T index', min=0, max=999999),
+            ParamField('z_index', 'int', 0, label='Z index', min=0, max=999999),
+            ParamField('c_index', 'int', 0, label='C index', min=0, max=999999),
+            ParamField(
+                'axis_indices', 'text', '', label='Other axes', help='e.g. Dataset=0, Base=1',
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -150,6 +209,7 @@ class SegmentationProcessor(Processor):
             watershed_min_distance=int(params.get("watershed_min_distance", 5)),
         )
         analysis.metadata["source_plane_indices"] = dict(plane_indices)
+        # The mask is pixel-for-pixel aligned with the image it segmented.
         return SegmentationResult(
             name=f"{result.name} (segmentation)",
             analysis=analysis,
@@ -157,7 +217,7 @@ class SegmentationProcessor(Processor):
             axis_scales=axis_scales,
             scale_unit=result.scale_unit,
             source_image=np.asarray(image),
-        )
+        ).adopt_identity_from(result, same_grid=True)
 
     @staticmethod
     def _extract_2d(result: ProcessingResult, params: dict | None = None) -> tuple[np.ndarray, dict]:

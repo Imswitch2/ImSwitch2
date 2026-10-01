@@ -1,0 +1,9 @@
+{
+  "category": "slms",
+  "device": {
+    "managerName": "HamamatsuSLMdviManager",
+    "managerProperties": {
+      "mockermode": true
+    }
+  }
+}

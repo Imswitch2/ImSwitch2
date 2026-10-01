@@ -96,9 +96,15 @@ class ScanParamsDialog(QtWidgets.QDialog):
             self.dim2DimEdit.setCurrentIndex(self.dim2DimEdit.findText(parDict['dimensions'][2]))
             self.dim0Changed()
 
-            self.dim0DirEdit.setCurrentIndex(self.dim0DirEdit.findText(parDict['directions'][0]))
-            self.dim1DirEdit.setCurrentIndex(self.dim1DirEdit.findText(parDict['directions'][0]))
-            self.dim2DirEdit.setCurrentIndex(self.dim2DirEdit.findText(parDict['directions'][0]))
+            # One combo per axis. All three used to be set from directions[0],
+            # so a negative second or third axis pre-filled from the recorded
+            # layout was shown -- and read back on OK -- as positive. A list
+            # shorter than three axes (older callers and saved state carried
+            # two) means what it always did: every axis takes the first.
+            directions = self._per_axis_directions(parDict.get('directions'))
+            self.dim0DirEdit.setCurrentIndex(self.dim0DirEdit.findText(directions[0]))
+            self.dim1DirEdit.setCurrentIndex(self.dim1DirEdit.findText(directions[1]))
+            self.dim2DirEdit.setCurrentIndex(self.dim2DirEdit.findText(directions[2]))
 
 
 
@@ -116,6 +122,15 @@ class ScanParamsDialog(QtWidgets.QDialog):
         except Exception as e:
             self.dim0Changed()
             raise e
+
+    def _per_axis_directions(self, directions):
+        """Three axis directions from whatever a caller handed over."""
+        values = [str(value) for value in (directions or []) if value is not None]
+        if not values:
+            values = [self.p_text]
+        while len(values) < 3:
+            values.append(values[0])
+        return values[:3]
 
     def dim0Changed(self):
         currText = self.dim0DimEdit.currentText()

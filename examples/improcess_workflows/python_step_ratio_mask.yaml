@@ -1,0 +1,68 @@
+# Ratio of two channels, left empty where the denominator is too dim to trust.
+# Channel 0 divided by channel 1 along the channel axis. Where channel 1 is below
+# `floor` times its own maximum the ratio is NaN (shown empty), and `valid` marks
+# the pixels that were used.
+# Why a script: Image calculator divides two whole results and writes 0 where it
+# cannot; here the unusable pixels must stay out of the ratio, not read as 0.
+#
+# Run it on a synthetic recording (2 frames):
+#   python -c "import sys; sys.path.insert(0, 'examples/improcess_workflows'); \
+#     from _synthetic import write_synthetic_recording as w; w('cells.h5', frames=2)"
+#   python -m imswitch.improcess.workflows run python_step_ratio_mask.yaml \
+#       --input cells.h5 --out results/
+# or paste the code of the step into Tools -> Python step (it is also in
+# Load snippet... as 'ratio_mask').
+#
+# Derived from imswitch/_data/user_defaults/improcess_snippets/ratio_mask.py by
+# tools/make_python_recipe_workflows.py: edit the snippet, then run the tool.
+name: python-ratio-mask
+schema: 1
+description: Ratio of two channels, left empty where the denominator is too dim to
+  trust.
+steps:
+- step: source
+  id: raw
+- step: reconstruct
+  id: rec
+  reconstructor: view-only
+  params: {}
+  inputs:
+  - raw
+- step: process
+  id: script
+  processor: python
+  params:
+    ports: ratio, valid
+    code: |
+      # Ratio of two channels, left empty where the denominator is too dim to trust.
+      # Channel 0 divided by channel 1 along the channel axis. Where channel 1 is below
+      # `floor` times its own maximum the ratio is NaN (shown empty), and `valid` marks
+      # the pixels that were used.
+      # Why a script: Image calculator divides two whole results and writes 0 where it
+      # cannot; here the unusable pixels must stay out of the ratio, not read as 0.
+      ax = 0                                         # the channel axis; print(axes) lists the names
+      floor = 0.1                                    # fraction of channel 1's maximum below which a pixel is left out
+
+      top = np.take(data, 0, axis=ax).astype(np.float32)
+      bottom = np.take(data, 1, axis=ax).astype(np.float32)
+      valid = bottom > floor * bottom.max()
+      ratio = np.full(top.shape, np.nan, np.float32)
+      np.divide(top, bottom, out=ratio, where=valid)
+      print(f"{valid.mean():.1%} of pixels used; median ratio {np.nanmedian(ratio):.3f}")
+      kept = [label for i, label in enumerate(axes) if i != ax]
+      outputs = {
+          "ratio": make_result(ratio, axes=kept),
+          "valid": make_labels(valid.astype(np.uint8), axes=kept),
+      }
+  inputs:
+  - rec
+- step: save
+  id: save_ratio
+  input: script.ratio
+  fmt: tiff
+  path_template: '{out_dir}/{source_stem}_ratio_mask_ratio{ext}'
+- step: save
+  id: save_valid
+  input: script.valid
+  fmt: tiff
+  path_template: '{out_dir}/{source_stem}_ratio_mask_valid{ext}'

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "microstepsPerStep": {
+      "description": "Microstep subdivision.  Total counts per turn = ``stepsPerTurn × microstepsPerStep``.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer"
+      ]
+    },
+    "motorListIndex": {
+      "description": "Index of the device in the XIMC-enumerated motor list.  ``0`` for the first detected device.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer"
+      ]
+    },
+    "stepsPerTurn": {
+      "description": "Full motor steps per 360° (e.g. 200 for a 1.8°/step motor).",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer"
+      ]
+    },
+    "ximcLibLocation": {
+      "description": "Filesystem path to the bundled XIMC vendor library.  Often a network drive — if the path becomes unreachable the manager falls back to the mock.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    }
+  },
+  "required": [
+    "microstepsPerStep",
+    "motorListIndex",
+    "stepsPerTurn",
+    "ximcLibLocation"
+  ],
+  "title": "StandaRotatorManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "StandaRotatorManager",
+    "RotatorManager"
+  ]
+}

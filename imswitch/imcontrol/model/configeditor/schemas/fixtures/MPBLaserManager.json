@@ -1,0 +1,15 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "MPBLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "rampDownDurationS": 1.5,
+      "rampDownDwellS": 1.5,
+      "rampDownEnabled": true,
+      "rampDownSteps": 1,
+      "rs232device": "example",
+      "useMockOnFailure": true
+    }
+  }
+}

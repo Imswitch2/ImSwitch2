@@ -22,7 +22,13 @@ class SuperScanWidget(Widget):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self, instanceName='ScanWidget')
 
-        self.setMinimumHeight(200)
+        # No minimum height of its own: docks stack vertically and a
+        # splitter's minimum is the sum of its children's, so a panel that
+        # insists on 200 px makes the window that much taller to open --
+        # and a few of them together make it taller than the screen, at
+        # which point Qt keeps the window at its minimum and the bottom is
+        # cut off. The scan parameters below scroll instead.
+        self.setMinimumSize(0, 0)
 
         self.scanInLiveviewWar = QtWidgets.QMessageBox()
         self.scanInLiveviewWar.setInformativeText(
@@ -59,6 +65,50 @@ class SuperScanWidget(Widget):
         self.saveScanBtn.clicked.connect(self.sigSaveScanClicked)
         self.loadScanBtn.clicked.connect(self.sigLoadScanClicked)
         self.scanButton.clicked.connect(self.sigRunScanClicked)
+
+    def confirmUnreferencedScan(self, unreferenced):
+        lines = [
+            self._formatUnreferencedScanAxis(positionerName, axis)
+            for positionerName, axis in unreferenced
+        ]
+
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setWindowTitle('Unreferenced positioners')
+        box.setText(
+            'This scan uses open-loop positioners that have not been referenced:'
+            '\n\n'
+            + '\n'.join(lines)
+        )
+        box.setInformativeText(
+            'Their displayed positions may not correspond to the currently '
+            'applied hardware voltage.\n\n'
+            'Reference them from the Positioner widget before scanning, or '
+            'continue using the current software positions.'
+        )
+
+        suppressCheck = QtWidgets.QCheckBox(
+            "Don't show this warning again this session"
+        )
+        if hasattr(box, 'setCheckBox'):
+            box.setCheckBox(suppressCheck)
+        else:
+            layout = box.layout()
+            if layout is not None:
+                layout.addWidget(
+                    suppressCheck, layout.rowCount(), 0, 1, layout.columnCount()
+                )
+
+        continueButton = box.addButton('Continue', QtWidgets.QMessageBox.AcceptRole)
+        cancelButton = box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(cancelButton)
+        box.setEscapeButton(cancelButton)
+        box.exec_()
+
+        return box.clickedButton() == continueButton, suppressCheck.isChecked()
+
+    def _formatUnreferencedScanAxis(self, positionerName, axis):
+        return f'{positionerName} — {axis}'
 
     @abstractmethod
     def initControls(self, positionerNames, TTLDeviceNames, TTLTimeUnits):
@@ -146,7 +196,7 @@ class ScanWidgetBase(SuperScanWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.seqTimePar = QtWidgets.QLineEdit('1')  # ms
+        self.seqTimePar = QtWidgets.QLineEdit('10')  # ms; a stage needs its move and settle inside each dwell
 
         self.scanPar = {
                         'seqTime': self.seqTimePar

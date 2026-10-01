@@ -1,4 +1,4 @@
-"""Format-agnostic live source contracts and in-memory batch fallback."""
+"""Format-agnostic live source contracts and the in-memory stack wrapper."""
 
 import os
 import re
@@ -10,15 +10,75 @@ import h5py
 import numpy as np
 import zarr
 
+from imswitch.imcommon.model.logging import initLogger
+from imswitch.imcommon.model.acquisition_metadata import (
+    RecordingLifecycleMarkers,
+    normalize_recording_lifecycle,
+)
+from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.acquisition_layout_resolver import (
+    ResolvedAcquisitionLayout,
+    resolve_acquisition_layout,
+)
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     dataset_names,
+    decode_layout_attrs,
     default_axis_labels,
+    flatten_metadata_attrs,
     is_zarr_array as _is_zarr_array,
     is_zarr_group as _is_zarr_group,
     resolve_image,
 )
 from imswitch.improcess.reconstructors.base import Chunk, StackInfo
+
+
+def _axis_labels_from_attrs(attrs: dict[str, Any], ndim: int) -> tuple[str, ...] | None:
+    value = attrs.get(
+        "ngff:axes",
+        attrs.get("axes", attrs.get("_ARRAY_DIMENSIONS", attrs.get("tiff:axes"))),
+    )
+    if isinstance(value, str):
+        value = tuple(value) if len(value) == ndim else None
+    if not isinstance(value, (list, tuple)) or len(value) != ndim:
+        return None
+    labels = []
+    for item in value:
+        if isinstance(item, dict):
+            item = item.get("name")
+        if item is None:
+            return None
+        labels.append(str(item))
+    return tuple(labels)
+
+
+def _resolve_stack_layout(
+    attrs: dict[str, Any],
+    *,
+    shape: tuple[int, ...],
+    detector: str | None,
+    source_path: str | None,
+    dataset_path: str | None,
+    axis_labels: tuple[str, ...] | None = None,
+) -> ResolvedAcquisitionLayout:
+    labels = axis_labels or _axis_labels_from_attrs(attrs, len(shape))
+    resolution_shape = shape
+    if shape and _optional_bool(attrs.get("writing")) is True:
+        planned = (
+            _optional_int(attrs.get("recording:planned_frames"))
+            or _optional_int(attrs.get("recording:expected_frames"))
+            or _optional_int(attrs.get("recording:frames_per_stack"))
+        )
+        resolution_shape = (max(1, int(planned or shape[0] or 1)), *shape[1:])
+    return resolve_acquisition_layout(
+        attrs,
+        shape=resolution_shape,
+        detector=str(detector or attrs.get("detector_name") or "unknown"),
+        axis_labels=labels,
+        axis_metadata_explicit=labels is not None,
+        source_path=source_path,
+        dataset_path=dataset_path,
+    )
 
 
 def _coerce_positive_int(value: Any) -> int | None:
@@ -43,6 +103,32 @@ def _coerce_positive_int(value: Any) -> int | None:
     if not np.isfinite(number) or number <= 0:
         return None
     return max(1, int(number))
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, (bytes, np.bytes_)):
+        value = value.decode(errors="ignore")
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+    return bool(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _numeric_vector(value: Any, min_len: int) -> np.ndarray | None:
@@ -127,15 +213,65 @@ def _zarr_store_streamable(path: Any) -> bool:
         return False
 
 
-def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
-    """Return frames per MoNaLISA scan stack from recorder metadata.
+def _positions_for_length_step(length: float, step: float) -> int:
+    """Canonical ImSwitch position count: ``round(length / step)``, at least 1.
 
-    ``recording:frames_per_stack`` wins, followed by explicit ``ScanTTL:Nx`` /
-    ``ScanTTL:Ny`` counts. Otherwise derive the X/Y scan counts from
-    ImControl's scan-size convention, where ``axis_length`` is a physical
-    length and the number of positions is ``ceil(length / step_size)``.
-    Metadata is read from flat attrs or a nested ``ImswitchData`` block so both
-    the ImSwitch2 structured layout and legacy ImSwitch-1 Zarr work.
+    ImControl unified every axis-count computation onto ``round`` precisely
+    because a mix of ``round``/``int``/``ceil`` made the GUI pixel count, the
+    recorded dimensions and the real number of scanned lines disagree for
+    non-divisible ratios. This module kept ``ceil``: a 0.52 um axis at 0.05 um
+    made the live reader wait for 11 positions where the scan produced 10, so
+    the stack never completed.
+    """
+    step = abs(float(step))
+    if step == 0:
+        return 1
+    return max(1, int(round(abs(float(length)) / step)))
+
+
+def _frames_per_stack_from_layout(resolved: Any) -> int | None:
+    """Frames per scan stack according to the resolved layout, or ``None``.
+
+    The resolver that gives :class:`StackInfo` its layout also decides how many
+    frames one stack holds, rather than this module re-deriving it from the
+    same attributes with its own arithmetic.
+    """
+    from imswitch.imcommon.model.acquisition_layout import (
+        recorded_frames_per_time_point,
+    )
+
+    layout = getattr(resolved, "layout", None)
+    if layout is None or not resolved.is_usable:
+        return None
+    kinds = {loop.kind for loop in layout.event_loops}
+    if "scan_x" not in kinds or "scan_y" not in kinds:
+        return None
+    # A stack is what one time point produces -- conditions, a Z axis, a
+    # repeat loop and a gated detector's spans included. ``scan_x * scan_y``
+    # dropped all of those, so the reader waited for the wrong frame count.
+    try:
+        return recorded_frames_per_time_point(layout)
+    except ValueError as error:
+        # A layout that has no single stack size -- time repeated inside a
+        # spatial axis, or a gated selection that differs between time points
+        # -- is not something this reader can follow, and guessing a number
+        # would make it slice frames from several time points into one stack.
+        initLogger("LiveSource").warning(
+            f"This recording has no single stack size, so the live reader "
+            f"cannot follow it from its layout: {error}"
+        )
+        return None
+
+
+def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
+    """Frames per MoNaLISA scan stack for a source with no resolvable layout.
+
+    Prefer :func:`_frames_per_stack_from_layout`; this is the fallback for
+    sources the resolver cannot describe. ``recording:frames_per_stack`` wins,
+    then explicit ``ScanTTL:Nx``/``Ny``, then the canonical position count from
+    ``axis_length``/``axis_step_size``. Metadata is read from flat attrs or a
+    nested ``ImswitchData`` block so both the ImSwitch2 structured layout and
+    legacy ImSwitch-1 Zarr work.
     """
     explicit = _coerce_positive_int(_meta_lookup(attrs, "recording:frames_per_stack"))
     if explicit is not None:
@@ -153,15 +289,41 @@ def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
     if step_sizes[0] == 0 or step_sizes[1] == 0:
         return None
 
-    nx_s = max(1, int(np.ceil(abs(lengths[0]) / abs(step_sizes[0]))))
-    ny_s = max(1, int(np.ceil(abs(lengths[1]) / abs(step_sizes[1]))))
-    return nx_s * ny_s
+    return (
+        _positions_for_length_step(lengths[0], step_sizes[0])
+        * _positions_for_length_step(lengths[1], step_sizes[1])
+    )
+
+
+#: How much frame data one ``poll()`` may hand back. A poll used to return
+#: every unread frame in one call, so a live source pointed at a recording
+#: that had already finished materialised the whole recording before the
+#: first chunk was processed -- and the lapse sources walked every timepoint
+#: in the same call. The streaming path exists so that memory stays bounded;
+#: this is the read-side twin of the detector queue's byte budget, and like
+#: it the frame count follows from the frame. The cursor stays where the
+#: budget ran out, so the next poll continues from there.
+LIVE_POLL_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _chunk_nbytes(data: Any) -> int:
+    nbytes = getattr(data, "nbytes", None)
+    if nbytes is None:
+        nbytes = np.asarray(data).nbytes
+    return int(nbytes)
 
 
 class LiveSource(ABC):
     """Polls a growing source and yields new raw-frame chunks."""
 
-    idles_between_stacks: bool = False
+    #: Whether the stream legitimately goes quiet between logical stacks. The
+    #: live stall watchdog (300 s by default) finalises a quiet stream as a
+    #: crashed writer, so it is only right for a source that streams
+    #: continuously -- and a source that streams continuously has to say so.
+    #: The default used to be the other way round, switched off by a flag each
+    #: new source author had to remember; forgetting it turned a slow
+    #: timelapse into a silently short reconstruction.
+    idles_between_stacks: bool = True
 
     @abstractmethod
     def open(self, path_or_handle: Any) -> StackInfo:
@@ -192,6 +354,10 @@ class InMemoryStackWrapper:
         dataset_name: str,
         data: np.ndarray,
         attrs: dict[str, Any] | None = None,
+        *,
+        axis_labels: list[str] | None = None,
+        axis_scales: list[float] | None = None,
+        scale_unit: str | None = None,
     ):
         self.name = name
         self._datasetName = dataset_name
@@ -202,18 +368,57 @@ class InMemoryStackWrapper:
 
         # Mirror the DataObj axis/scale metadata contract so pass-through
         # reconstructors (e.g. View-only) get the same labels/calibration on the
-        # live batch-fallback path as on a batch load. Without these, their
+        # in-memory wrapper path as on a batch load. Without these, their
         # process() raises AttributeError on the in-memory wrapper.
         ndim = self._data.ndim
         fallback_scales, fallback_unit = axis_scales_from_element_size(self._attrs, ndim)
-        self._axis_labels = default_axis_labels(ndim)
-        self._axis_scales = fallback_scales or [1.0] * ndim
-        self._scale_unit = fallback_unit or "px"
+        # Decode eagerly so a self-contradictory schema fails at construction
+        # with a precise message, then publish the same ResolvedAcquisitionLayout
+        # contract DataObj exposes. Handing plugins a bare AcquisitionLayout here
+        # broke every consumer that reads .source/.confidence off the attribute.
+        declared_layout = decode_layout_attrs(self._attrs)
+        layout_axes = (
+            list(declared_layout.storage_axes)
+            if declared_layout is not None
+            and len(declared_layout.storage_axes) == ndim
+            else None
+        )
+        self._acquisitionLayout = None
+        self._acquisitionLayoutAxes = tuple(axis_labels) if axis_labels else None
+        self._axis_labels = list(axis_labels or layout_axes or default_axis_labels(ndim))
+        self._axis_scales = list(axis_scales or fallback_scales or [1.0] * ndim)
+        self._scale_unit = scale_unit or fallback_unit or "px"
+        self.recording_lifecycle = normalize_recording_lifecycle(
+            self._attrs,
+            RecordingLifecycleMarkers(
+                writing=_optional_bool(self._attrs.get("writing")),
+                frames_committed=_optional_int(self._attrs.get("recording:frames_committed")),
+            ),
+        )
         self._source_info = {
             "dataset_name": dataset_name,
             "dataset_path": self._attrs.get("recording:dataset_path"),
             "source_format": self._attrs.get("recording:source_format"),
         }
+
+    @property
+    def acquisition_layout(self) -> ResolvedAcquisitionLayout:
+        """Resolve lazily and cache, exactly as ``DataObj`` does.
+
+        Resolution is deferred so a layout that conflicts with the array
+        surfaces where a plugin asks for it, not while the live pipeline is
+        wrapping a buffer.
+        """
+        if self._acquisitionLayout is None:
+            self._acquisitionLayout = _resolve_stack_layout(
+                self._attrs,
+                shape=tuple(self._data.shape),
+                detector=self._datasetName,
+                source_path=None,
+                dataset_path=self._attrs.get("recording:dataset_path"),
+                axis_labels=self._acquisitionLayoutAxes,
+            )
+        return self._acquisitionLayout
 
     @property
     def datasetName(self) -> str:
@@ -265,6 +470,8 @@ class InMemoryStackWrapper:
 
 class ZarrLiveSource(LiveSource):
     """Polls a growing Zarr array for new frames."""
+
+    idles_between_stacks = False  # one growing array; quiet means the writer stopped
 
     def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
         """
@@ -327,8 +534,22 @@ class ZarrLiveSource(LiveSource):
         # scan-size guess (which is sensitive to the size-vs-endpoint length
         # convention); only fall back to the ScanStage-derived count for a
         # still-writing store with no explicit metadata.
+        dataset_path = attrs.get('recording:dataset_path') or self._default_dataset_path()
+        resolved = _resolve_stack_layout(
+            attrs,
+            shape=tuple(self._array.shape),
+            detector=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
+            source_path=self._path,
+            dataset_path=dataset_path,
+        )
+
+        # The resolved layout decides the stack size; the older attribute
+        # parses below remain only for sources it cannot describe.
+        recorded_fps = _frames_per_stack_from_layout(resolved)
         explicit_fps = _coerce_positive_int(_meta_lookup(attrs, "recording:frames_per_stack"))
-        if explicit_fps is not None:
+        if recorded_fps is not None:
+            frames_per_stack = recorded_fps
+        elif explicit_fps is not None:
             frames_per_stack = explicit_fps
         elif not self._writing and self._expected_frames is not None:
             frames_per_stack = self._expected_frames
@@ -342,8 +563,9 @@ class ZarrLiveSource(LiveSource):
             expected_frames=self._expected_frames,
             frames_per_stack=frames_per_stack,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
-            dataset_path=attrs.get('recording:dataset_path') or self._default_dataset_path(),
+            dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'ZARR',
+            acquisition_layout=resolved,
         )
 
     def poll(self) -> list[Chunk]:
@@ -358,6 +580,7 @@ class ZarrLiveSource(LiveSource):
             return []
 
         chunks = []
+        queued = 0
         while self._cursor < readable_length:
             start = self._cursor
             end = min(start + self._chunk_size, readable_length)
@@ -366,6 +589,9 @@ class ZarrLiveSource(LiveSource):
             chunks.append(Chunk(data=data, start=start, end=end))
 
             self._cursor = end
+            queued += _chunk_nbytes(data)
+            if queued >= LIVE_POLL_MAX_BYTES:
+                break
 
         return chunks
 
@@ -416,24 +642,16 @@ class ZarrLiveSource(LiveSource):
                 raise ValueError(f"Detector group '{detector_name}' has no 'data' array")
             raise ValueError(f"Detector '{detector_name}' not found in Zarr store")
 
-        image = resolve_image(self._root, detector_name)
+        image = resolve_image(
+            self._root,
+            detector_name,
+            validate_layout_metadata=False,
+        )
         self._array = image.array
         self._array_path = tuple(image.array_path.split('/')) if image.array_path else ()
         attrs = self._read_attrs()
         attrs.update(image.attrs)
         return image.array, attrs
-
-    def _flatten_metadata(self, group: Any, attrs: dict[str, Any], prefix: str) -> None:
-        """Recursively flatten metadata group into attrs dict with category prefixes."""
-        for key in group.attrs.keys():
-            flat_key = f"{prefix}{key}" if prefix else key
-            attrs[flat_key] = group.attrs[key]
-
-        for subgroup_name in group.keys():
-            subgroup = group[subgroup_name]
-            if _is_zarr_group(subgroup):
-                new_prefix = f"{subgroup_name}:" if not prefix else f"{prefix}{subgroup_name}:"
-                self._flatten_metadata(subgroup, attrs, new_prefix)
 
     def _open_root(self, path_or_handle: Any) -> Any:
         if _is_zarr_group(path_or_handle) or _is_zarr_array(path_or_handle):
@@ -462,26 +680,38 @@ class ZarrLiveSource(LiveSource):
         if _is_zarr_group(self._root):
             attrs.update(dict(self._root.attrs))
 
-            if len(self._array_path) == 2:
-                detector_group = self._root[self._array_path[0]]
+            if self._array_path:
+                detector_group = self._root
+                for component in self._array_path[:-1]:
+                    detector_group = detector_group[component]
                 attrs.update(dict(self._array.attrs))
-                if 'metadata' in detector_group:
-                    self._flatten_metadata(detector_group['metadata'], attrs, prefix='')
+                if _is_zarr_group(detector_group) and "metadata" in detector_group:
+                    attrs.update(flatten_metadata_attrs(detector_group["metadata"]))
                 return attrs
 
         attrs.update(dict(self._array.attrs))
         return attrs
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
-        expected_frames = self._coerce_int(attrs.get('recording:expected_frames'))
+        # _meta_lookup, not attrs.get: legacy ImSwitch-1 stores nest these
+        # under an ``ImswitchData`` attr, where a top-level read never sees
+        # them -- a finished store's ``writing=False`` included.
+        expected_frames = self._coerce_int(_meta_lookup(attrs, "recording:planned_frames"))
+        if expected_frames is None:
+            expected_frames = self._coerce_int(_meta_lookup(attrs, "recording:expected_frames"))
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
-        committed = self._coerce_int(attrs.get('recording:frames_committed'))
-        if committed is not None:
-            self._frames_committed = committed
-
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        lifecycle = normalize_recording_lifecycle(
+            attrs,
+            RecordingLifecycleMarkers(
+                writing=_optional_bool(_meta_lookup(attrs, "writing")),
+                frames_committed=self._coerce_int(_meta_lookup(attrs, "recording:frames_committed")),
+                live_writer_attached=True,
+            ),
+        )
+        self._frames_committed = lifecycle.frames_committed
+        self._writing = lifecycle.writer_state == "writing"
 
     def _readable_length(self) -> int:
         if self._array is None:
@@ -541,6 +771,32 @@ def _lapse_index_template(path: str):
     return folder, name[:start], width, name[end:], int(match.group(1))
 
 
+def _highest_lapse_index_span(template, first_index: int) -> int:
+    """How many timepoint slots the files on disk span, gaps included.
+
+    Returns ``highest_index - first_index + 1`` by scanning the folder for
+    names matching the template, so a skipped timepoint does not truncate the
+    range. Falls back to ``1`` when there is no template or the folder cannot
+    be listed.
+    """
+    if template is None:
+        return 1
+    folder, prefix, _width, suffix, _ = template
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 1
+
+    highest = first_index
+    for name in names:
+        if not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        digits = name[len(prefix):len(name) - len(suffix)]
+        if digits.isdigit():
+            highest = max(highest, int(digits))
+    return highest - first_index + 1
+
+
 class ZarrMultiFileLapseSource(LiveSource):
     """Stream a per-file timelapse (one ``.zarr`` per timepoint) as one stream.
 
@@ -550,6 +806,12 @@ class ZarrMultiFileLapseSource(LiveSource):
     session's ``time_index = start // frames_per_stack`` routes each file into
     its own timepoint, accumulating one multi-timepoint result. Later timepoint
     files (live recording) are picked up by re-deriving the next index path.
+
+    ``position`` is the timepoint's **true** index (relative to the first
+    file), not a count of files streamed. An acquisition can skip a timepoint
+    -- t0, t1, t2, t4 -- and keeping the true index is what leaves t3's slot
+    untouched in the session's pre-zeroed output, so it shows as blank and the
+    viewer's timepoint slider jumps straight from t2 to t4.
     """
 
     # Multiple timepoints stream through one worker run; between timepoints the
@@ -557,8 +819,13 @@ class ZarrMultiFileLapseSource(LiveSource):
     # stall watchdog must not treat that gap as a crashed writer.
     idles_between_stacks = True
 
-    def __init__(self, first_path, detector_name=None, chunk_size=None,
-                 num_timepoints=None):
+    def __init__(
+        self,
+        first_path,
+        detector_name=None,
+        chunk_size=None,
+        num_timepoints=None,
+    ) -> None:
         self._first_path = str(first_path)
         self._detector_name = detector_name
         self._chunk_size = chunk_size
@@ -566,8 +833,9 @@ class ZarrMultiFileLapseSource(LiveSource):
         self._inner: ZarrLiveSource | None = None
         self._template = None
         self._first_index = 0
-        self._position = 0  # 0-based timepoint position
+        self._position = 0  # 0-based TRUE timepoint index (gaps preserved)
         self._frames_per_stack = 1
+        self._logger = initLogger(self, tryInheritParent=False)
 
     def open(self, path_or_handle: Any) -> StackInfo:
         first = str(path_or_handle) if path_or_handle is not None else self._first_path
@@ -598,6 +866,7 @@ class ZarrMultiFileLapseSource(LiveSource):
             detector_name=info.detector_name,
             dataset_path=info.dataset_path,
             source_format=info.source_format or "ZARR",
+            acquisition_layout=info.acquisition_layout,
         )
 
     def poll(self) -> list[Chunk]:
@@ -617,14 +886,42 @@ class ZarrMultiFileLapseSource(LiveSource):
         # flush ordering makes shape-visible imply data-visible, but Zarr
         # cannot.
         if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
-            next_path = self._build_path(self._position + 1)
-            if (next_path is not None and os.path.exists(next_path)
-                    and _zarr_store_streamable(next_path)):
+            nxt = self._next_available_position()
+            if nxt is not None:
+                if nxt != self._position + 1:
+                    missing = ", ".join(str(p) for p in range(self._position + 1, nxt))
+                    self._logger.warning(
+                        f"Timepoint(s) {missing} never appeared but timepoint {nxt} "
+                        f"did; leaving the gap blank and continuing at {nxt}"
+                    )
                 self._inner.close()
-                self._position += 1
+                self._position = nxt
                 self._inner = ZarrLiveSource(self._detector_name, self._chunk_size)
-                self._inner.open(next_path)
+                self._inner.open(self._build_path(nxt))
         return chunks
+
+    def _next_available_position(self) -> int | None:
+        """The next timepoint to stream, or ``None`` to keep waiting.
+
+        Normally that is simply the next index. When the next index is absent
+        but a LATER one already exists, the acquisition skipped that timepoint
+        -- the recorder writes in order, so a later file existing means the
+        earlier one is never coming -- and we jump to the first index present.
+        The skipped position is never streamed, so the session's pre-zeroed
+        output keeps a blank slot there.
+
+        If the first present store exists but is not safe to stream yet
+        (mid-write without a commit barrier), wait for it rather than looking
+        further ahead: it is the next real timepoint, just not ready.
+        """
+        for position in range(self._position + 1, self._num_timepoints):
+            path = self._build_path(position)
+            if path is None or not os.path.exists(path):
+                continue
+            if not _zarr_store_streamable(path):
+                return None
+            return position
+        return None
 
     def is_complete(self) -> bool:
         if self._inner is None:
@@ -651,13 +948,13 @@ class ZarrMultiFileLapseSource(LiveSource):
         return os.path.join(folder, f"{prefix}{index:0{width}d}{suffix}")
 
     def _count_present_timepoints(self) -> int:
-        count = 1
-        while True:
-            path = self._build_path(count)
-            if path is None or not os.path.exists(path):
-                break
-            count += 1
-        return count
+        """Timepoint slots to allocate when the metadata does not say.
+
+        Taken from the HIGHEST index on disk rather than a contiguous walk: a
+        skipped timepoint would end that walk early and cap the range, so every
+        later file would be silently dropped.
+        """
+        return _highest_lapse_index_span(self._template, self._first_index)
 
 
 class ZarrLapseSource(LiveSource):
@@ -741,6 +1038,7 @@ class ZarrLapseSource(LiveSource):
         
         frame_shape = self._current_array.shape[-2:]
         
+        dataset_path = attrs.get('recording:dataset_path')
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._current_array.dtype,
@@ -748,8 +1046,19 @@ class ZarrLapseSource(LiveSource):
             expected_frames=expected_frames,
             frames_per_stack=self._frames_per_stack,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or self._resolved_detector_name,
-            dataset_path=attrs.get('recording:dataset_path'),
+            dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'ZARR',
+            acquisition_layout=_resolve_stack_layout(
+                attrs,
+                shape=tuple(self._current_array.shape),
+                detector=(
+                    attrs.get('recording:detector_name')
+                    or attrs.get('detector_name')
+                    or self._resolved_detector_name
+                ),
+                source_path=self._path,
+                dataset_path=dataset_path,
+            ),
         )
 
     def poll(self) -> list[Chunk]:
@@ -758,7 +1067,8 @@ class ZarrLapseSource(LiveSource):
             return []
         
         chunks = []
-        
+        queued = 0
+
         while True:
             # Refresh current array and re-enumerate scan groups to detect new ones
             self._refresh_current_array()
@@ -808,7 +1118,10 @@ class ZarrLapseSource(LiveSource):
             
             self._local_cursor = end_local
             self._global_cursor = end_global
-            
+            queued += _chunk_nbytes(data)
+            if queued >= LIVE_POLL_MAX_BYTES:
+                break
+
             # If we haven't filled a full chunk, stop polling (wait for more data)
             if end_local - start_local < self._chunk_size and end_local < readable_length:
                 break
@@ -932,7 +1245,7 @@ class ZarrLapseSource(LiveSource):
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
         """Update internal state from attributes."""
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        self._writing = self._coerce_bool(_meta_lookup(attrs, 'writing'), default=self._writing)
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:
@@ -955,6 +1268,8 @@ class ZarrLapseSource(LiveSource):
 class Hdf5LiveSource(LiveSource):
     """Polls a growing HDF5 dataset for new frames (SWMR protocol)."""
 
+    idles_between_stacks = False  # one growing array; quiet means the writer stopped
+
     def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
         """
         Args:
@@ -971,7 +1286,7 @@ class Hdf5LiveSource(LiveSource):
         self._chunk_size = 1
         self._expected_frames: int | None = None
         self._frames_committed: int | None = None
-        self._stream_complete = False
+        self._stream_complete: bool | None = None
         self._committed_ds = None
         self._complete_ds = None
         self._writing = True
@@ -1022,9 +1337,21 @@ class Hdf5LiveSource(LiveSource):
 
         frame_shape = self._dataset.shape[-2:]
         all_attrs = {**attrs, **dataset_attrs}
-        self._refresh_state_from_attrs(all_attrs)
         self._refresh_barrier_state()
-        frames_per_stack = _derive_scan_frames_per_stack(all_attrs)
+        self._refresh_state_from_attrs(all_attrs)
+        dataset_path = all_attrs.get('recording:dataset_path') or self._dataset_path
+        resolved = _resolve_stack_layout(
+            all_attrs,
+            shape=tuple(self._dataset.shape),
+            detector=all_attrs.get('recording:detector_name') or detector_name,
+            source_path=self._path,
+            dataset_path=dataset_path,
+        )
+        # The resolved layout decides the stack size; the older attribute parse
+        # remains only for sources it cannot describe.
+        frames_per_stack = _frames_per_stack_from_layout(resolved)
+        if frames_per_stack is None:
+            frames_per_stack = _derive_scan_frames_per_stack(all_attrs)
 
         return StackInfo(
             frame_shape=frame_shape,
@@ -1033,8 +1360,9 @@ class Hdf5LiveSource(LiveSource):
             expected_frames=self._expected_frames,
             frames_per_stack=frames_per_stack,
             detector_name=all_attrs.get('recording:detector_name') or detector_name,
-            dataset_path=all_attrs.get('recording:dataset_path') or self._dataset_path,
+            dataset_path=dataset_path,
             source_format=all_attrs.get('recording:source_format') or 'HDF5',
+            acquisition_layout=resolved,
         )
 
     def poll(self) -> list[Chunk]:
@@ -1043,14 +1371,15 @@ class Hdf5LiveSource(LiveSource):
             return []
 
         self._dataset.refresh()
-        self._refresh_state_from_attrs(self._read_dataset_attrs())
         self._refresh_barrier_state()
+        self._refresh_state_from_attrs(self._read_dataset_attrs())
         readable_length = self._readable_length()
 
         if self._cursor >= readable_length:
             return []
 
         chunks = []
+        queued = 0
         while self._cursor < readable_length:
             start = self._cursor
             end = min(start + self._chunk_size, readable_length)
@@ -1059,6 +1388,9 @@ class Hdf5LiveSource(LiveSource):
             chunks.append(Chunk(data=data, start=start, end=end))
 
             self._cursor = end
+            queued += _chunk_nbytes(data)
+            if queued >= LIVE_POLL_MAX_BYTES:
+                break
 
         return chunks
 
@@ -1068,8 +1400,8 @@ class Hdf5LiveSource(LiveSource):
             return True
 
         self._dataset.refresh()
-        self._refresh_state_from_attrs(self._read_dataset_attrs())
         self._refresh_barrier_state()
+        self._refresh_state_from_attrs(self._read_dataset_attrs())
         current_length = self._dataset.shape[0]
 
         if self._expected_frames is not None:
@@ -1201,29 +1533,32 @@ class Hdf5LiveSource(LiveSource):
             if parent_path in self._file:
                 parent = self._file[parent_path]
                 if isinstance(parent, h5py.Group) and 'metadata' in parent:
-                    self._flatten_metadata(parent['metadata'], attrs, prefix='')
+                    attrs.update(flatten_metadata_attrs(parent["metadata"]))
 
         return attrs
 
-    def _flatten_metadata(self, group: h5py.Group, attrs: dict[str, Any], prefix: str) -> None:
-        """Recursively flatten metadata group into attrs dict with category prefixes."""
-        for key in group.attrs.keys():
-            flat_key = f"{prefix}{key}" if prefix else key
-            attrs[flat_key] = group.attrs[key]
-
-        for subgroup_name in group.keys():
-            subgroup = group[subgroup_name]
-            if isinstance(subgroup, h5py.Group):
-                new_prefix = f"{subgroup_name}:" if not prefix else f"{prefix}{subgroup_name}:"
-                self._flatten_metadata(subgroup, attrs, new_prefix)
-
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
         """Update internal state from attributes."""
-        expected_frames = self._coerce_int(attrs.get('recording:expected_frames'))
+        # _meta_lookup, not attrs.get: legacy ImSwitch-1 stores nest these
+        # under an ``ImswitchData`` attr, where a top-level read never sees
+        # them -- a finished store's ``writing=False`` included.
+        expected_frames = self._coerce_int(_meta_lookup(attrs, "recording:planned_frames"))
+        if expected_frames is None:
+            expected_frames = self._coerce_int(_meta_lookup(attrs, "recording:expected_frames"))
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        lifecycle = normalize_recording_lifecycle(
+            attrs,
+            RecordingLifecycleMarkers(
+                writing=_optional_bool(_meta_lookup(attrs, "writing")),
+                frames_committed=self._frames_committed,
+                stream_complete=self._stream_complete,
+                live_writer_attached=True,
+            ),
+        )
+        self._frames_committed = lifecycle.frames_committed
+        self._writing = lifecycle.writer_state == "writing"
 
     def _readable_length(self) -> int:
         """Return the number of frames that can be read.
@@ -1284,8 +1619,9 @@ class Hdf5MultiFileLapseSource(LiveSource):
         self._inner: Hdf5LiveSource | None = None
         self._template = None
         self._first_index = 0
-        self._position = 0  # 0-based timepoint position
+        self._position = 0  # 0-based TRUE timepoint index (gaps preserved)
         self._frames_per_stack = 1
+        self._logger = initLogger(self, tryInheritParent=False)
 
     def open(self, path_or_handle: Any) -> StackInfo:
         first = str(path_or_handle) if path_or_handle is not None else self._first_path
@@ -1316,6 +1652,7 @@ class Hdf5MultiFileLapseSource(LiveSource):
             detector_name=info.detector_name,
             dataset_path=info.dataset_path,
             source_format=info.source_format or "HDF5",
+            acquisition_layout=info.acquisition_layout,
         )
 
     def poll(self) -> list[Chunk]:
@@ -1325,15 +1662,36 @@ class Hdf5MultiFileLapseSource(LiveSource):
         offset = self._position * self._frames_per_stack
         chunks = [Chunk(c.data, c.start + offset, c.end + offset) for c in self._inner.poll()]
 
-        # Current timepoint fully read: advance to the next file if it exists.
+        # Current timepoint fully read: advance to the next file that exists.
+        # A skipped timepoint is jumped over (see the Zarr sibling); its slot
+        # stays blank because its true index is never streamed.
         if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
-            next_path = self._build_path(self._position + 1)
-            if next_path is not None and os.path.exists(next_path):
+            nxt = self._next_available_position()
+            if nxt is not None:
+                if nxt != self._position + 1:
+                    missing = ", ".join(str(p) for p in range(self._position + 1, nxt))
+                    self._logger.warning(
+                        f"Timepoint(s) {missing} never appeared but timepoint {nxt} "
+                        f"did; leaving the gap blank and continuing at {nxt}"
+                    )
                 self._inner.close()
-                self._position += 1
+                self._position = nxt
                 self._inner = Hdf5LiveSource(self._detector_name, self._chunk_size)
-                self._inner.open(next_path)
+                self._inner.open(self._build_path(nxt))
         return chunks
+
+    def _next_available_position(self) -> int | None:
+        """The next timepoint to stream, or ``None`` to keep waiting.
+
+        As in the Zarr sibling, but advancing on plain existence: SWMR flush
+        ordering makes a shape-visible HDF5 dataset data-visible too, so there
+        is no separate streamability gate to clear.
+        """
+        for position in range(self._position + 1, self._num_timepoints):
+            path = self._build_path(position)
+            if path is not None and os.path.exists(path):
+                return position
+        return None
 
     def is_complete(self) -> bool:
         if self._inner is None:
@@ -1360,13 +1718,11 @@ class Hdf5MultiFileLapseSource(LiveSource):
         return os.path.join(folder, f"{prefix}{index:0{width}d}{suffix}")
 
     def _count_present_timepoints(self) -> int:
-        count = 1
-        while True:
-            path = self._build_path(count)
-            if path is None or not os.path.exists(path):
-                break
-            count += 1
-        return count
+        """Timepoint slots to allocate when the metadata does not say.
+
+        See :meth:`ZarrMultiFileLapseSource._count_present_timepoints`.
+        """
+        return _highest_lapse_index_span(self._template, self._first_index)
 
 
 class Hdf5LapseSource(LiveSource):
@@ -1456,6 +1812,7 @@ class Hdf5LapseSource(LiveSource):
         
         frame_shape = self._current_dataset.shape[-2:]
         
+        dataset_path = attrs.get('recording:dataset_path') or self._current_dataset_path
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._current_dataset.dtype,
@@ -1463,8 +1820,19 @@ class Hdf5LapseSource(LiveSource):
             expected_frames=expected_frames,
             frames_per_stack=self._frames_per_stack,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or self._resolved_detector_name,
-            dataset_path=attrs.get('recording:dataset_path'),
+            dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'HDF5',
+            acquisition_layout=_resolve_stack_layout(
+                attrs,
+                shape=tuple(self._current_dataset.shape),
+                detector=(
+                    attrs.get('recording:detector_name')
+                    or attrs.get('detector_name')
+                    or self._resolved_detector_name
+                ),
+                source_path=self._path,
+                dataset_path=dataset_path,
+            ),
         )
 
     def poll(self) -> list[Chunk]:
@@ -1473,7 +1841,8 @@ class Hdf5LapseSource(LiveSource):
             return []
         
         chunks = []
-        
+        queued = 0
+
         while True:
             # Refresh current dataset and re-enumerate scan groups to detect new ones
             self._refresh_current_dataset()
@@ -1523,7 +1892,10 @@ class Hdf5LapseSource(LiveSource):
             
             self._local_cursor = end_local
             self._global_cursor = end_global
-            
+            queued += _chunk_nbytes(data)
+            if queued >= LIVE_POLL_MAX_BYTES:
+                break
+
             # If we haven't filled a full chunk, stop polling (wait for more data)
             if end_local - start_local < self._chunk_size and end_local < readable_length:
                 break
@@ -1554,8 +1926,36 @@ class Hdf5LapseSource(LiveSource):
                 
                 if not self._writing and self._local_cursor >= readable_length:
                     return True
-        
+
+        # A timepoint that finalized as stopped_early is the last one: an
+        # interrupted acquisition writes no further groups. Without this the
+        # source waits for timepoints that will never be written, and the only
+        # way out was the stall timeout, which reports a deliberate stop as a
+        # crashed writer after a delay.
+        if self._stopped_early_group_is_drained():
+            return True
+
         return False
+
+    def _stopped_early_group_is_drained(self) -> bool:
+        """Whether the group being read was cut short and has been consumed."""
+        if not self._scan_groups or self._current_group_index >= len(self._scan_groups):
+            return False
+        try:
+            self._refresh_current_dataset()
+            group = self._file[self._scan_groups[self._current_group_index]]
+            _, attrs = self._open_detector_dataset(group, self._resolved_detector_name)
+        except Exception:
+            return False
+        outcome = attrs.get("recording:completion_outcome")
+        if isinstance(outcome, bytes):
+            outcome = outcome.decode()
+        if str(outcome) != "stopped_early":
+            return False
+        self._refresh_state_from_attrs(attrs)
+        if self._writing:
+            return False
+        return self._local_cursor >= int(self._current_dataset.shape[0])
 
     def close(self) -> None:
         """Release source resources."""
@@ -1644,7 +2044,7 @@ class Hdf5LapseSource(LiveSource):
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
         """Update internal state from attributes."""
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        self._writing = self._coerce_bool(_meta_lookup(attrs, 'writing'), default=self._writing)
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:

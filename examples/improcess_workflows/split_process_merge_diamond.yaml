@@ -1,0 +1,14 @@
+# A diamond: split, process each slice differently, merge. Ports name the
+# slices (split.C0, split.C1); the stack-split declares them as a pattern.
+#   python -m imswitch.improcess.workflows run split_process_merge_diamond.yaml \
+#       --input cells.h5 --out results/
+name: split-process-merge
+schema: 1
+steps:
+  - {step: source, id: raw}
+  - {step: reconstruct, id: rec, reconstructor: view-only, inputs: [raw]}
+  - {step: process, id: split, processor: stack-split, params: {axis: C}, inputs: [rec]}
+  - {step: process, id: smooth, processor: filter, params: {method: gaussian, radius: 2.0}, inputs: [split.C0]}
+  - {step: process, id: sharp, processor: filter, params: {method: median, radius: 1.0}, inputs: [split.C1]}
+  - {step: process, id: merge, processor: channel-merge, inputs: [smooth, sharp]}
+  - {step: save, id: out, input: merge, fmt: hdf5, path_template: "{out_dir}/{source_stem}_diamond{ext}"}

@@ -89,6 +89,14 @@ def _widget_for_viewer(viewer):
     widget.localOffsetSpin = _Spin(0.0)
     widget.watershedDistanceSpin = _Spin(5)
     widget.summaryLabel = _Summary()
+    # parameterValues() asks the region chooser whether a restriction was
+    # requested, so a widget built without one cannot answer at all.
+    from types import SimpleNamespace as _NS
+
+    widget._roiManagerWidget = None
+    widget._rois = []
+    widget.roiCombo = _NS(currentData=lambda: None)
+    widget.roiModeCombo = _NS(currentData=lambda: "mask")
     return widget
 
 

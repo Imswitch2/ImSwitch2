@@ -20,6 +20,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 MORPHOLOGY_OPERATIONS = (
@@ -59,7 +60,28 @@ class LabelMorphologyProcessor(Processor):
     name = "Label morphology"
     id = "label-morphology"
     category = "Segmentation"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
     kinds = ("labels",)
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'operation': 'fill-holes', 'radius': 1}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'operation', 'select', 'fill-holes', label='Operation',
+                options=('fill-holes', 'erode', 'dilate', 'open', 'close', 'watershed-split'),
+            ),
+            ParamField(
+                'radius', 'int', 1, label='Radius',
+                help='Structuring-element radius for erode/dilate/open/close; minimum object distance for watershed splitting',
+                min=1, max=100,
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

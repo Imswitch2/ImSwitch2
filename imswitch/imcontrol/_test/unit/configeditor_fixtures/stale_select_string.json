@@ -1,0 +1,18 @@
+{
+  "why": "A \"9600\" the old editor wrote into a numeric select, and a \"90\" rotation. Untouched, they stay strings; only picking an entry writes the entry's kind.",
+  "setup": {
+    "rs232devices": {
+      "stage": {
+        "managerName": "RS232Manager",
+        "managerProperties": {"port": "COM3", "baudrate": "9600", "recv_termination": "\n"}
+      }
+    },
+    "detectors": {
+      "apd": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "APDManager",
+        "managerProperties": {"ctrInputLine": "Dev1/ctr0", "terminal": "PFI0", "displayRotation": "90"}
+      }
+    }
+  }
+}

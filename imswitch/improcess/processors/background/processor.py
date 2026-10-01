@@ -20,6 +20,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor, ProcessorOutput
 
 
@@ -29,6 +30,36 @@ class SubtractBackgroundProcessor(Processor):
     name = "Subtract background"
     id = "subtract-background"
     category = "Restoration"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
+    # Restricting to a region is meaningful here (P-R): the operation is
+    # per-pixel or local, so running it over one cell answers the same
+    # question as running it over the frame, only about that cell.
+    accepts_roi = True
+    roi_modes = ('mask', 'crop')
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'radius': 50.0, 'output_background': False}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'radius', 'float', 50.0, label='Ball radius',
+                help='Rolling-ball radius in pixels; should exceed the largest foreground feature',
+                min=1, max=10000, decimals=1,
+            ),
+            ParamField('output_background', 'bool', False, label='Also output the background'),
+        )
+
+    def output_spec(self, params: dict | None = None, input_specs=None):
+        from imswitch.improcess.processors.base import OutputSpec
+
+        if (params or {}).get("output_background", False):
+            return OutputSpec(ports=("signal", "background"))
+        return OutputSpec(ports=("out",))
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -83,7 +114,8 @@ class SubtractBackgroundProcessor(Processor):
         if not params.get("output_background", False):
             return output
         return ProcessorOutput(
-            [output, _result(f"{result.name} (background r={radius:g})", background)]
+            [output, _result(f"{result.name} (background r={radius:g})", background)],
+            keys=("signal", "background"),
         )
 
 

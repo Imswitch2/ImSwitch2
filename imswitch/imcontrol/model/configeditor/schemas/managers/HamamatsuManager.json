@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "cameraListIndex": {
+      "description": "Index of the camera in the DCAM-enumerated list (0-based), or any string to force the mock fallback. Shipped setups use both; nothing narrower is accepted.",
+      "type": [
+        "integer",
+        "string"
+      ],
+      "x-imswitch-kind": [
+        "integer",
+        "string"
+      ],
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer",
+        "example:string",
+        "override"
+      ]
+    },
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "hamamatsu": {
+      "description": "Dictionary of DCAM API property name → value pairs applied via ``setPropertyValue`` at startup.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:mapping-use",
+        "code:required",
+        "example:object"
+      ]
+    }
+  },
+  "required": [
+    "cameraListIndex",
+    "hamamatsu"
+  ],
+  "title": "HamamatsuManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "HamamatsuManager",
+    "DetectorManager"
+  ]
+}

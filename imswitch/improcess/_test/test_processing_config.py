@@ -23,6 +23,7 @@ from imswitch.improcess.model.processing_config import (
     is_roi_stats_panel_enabled,
     is_segmentation_panel_enabled,
     live_stall_timeout_s,
+    live_viewer_update_interval_s,
     plugin_ids_from_config,
 )
 
@@ -319,3 +320,24 @@ def test_live_stall_timeout_negative_disables():
     timeout, was_explicit = live_stall_timeout_s({"liveStallTimeoutS": -10})
     assert timeout is None
     assert was_explicit is True
+
+
+def test_live_viewer_update_interval_absent_defaults():
+    """Key absent -> 0.2 s (5 Hz)."""
+    assert live_viewer_update_interval_s({}) == 0.2
+
+
+def test_live_viewer_update_interval_explicit_value():
+    """A positive value is used verbatim."""
+    assert live_viewer_update_interval_s({"liveViewerUpdateIntervalS": 0.5}) == 0.5
+
+
+def test_live_viewer_update_interval_zero_means_every_frame():
+    """0 is a valid setting (refresh / D2H on every frame)."""
+    assert live_viewer_update_interval_s({"liveViewerUpdateIntervalS": 0}) == 0.0
+
+
+def test_live_viewer_update_interval_negative_falls_back():
+    """Negative / non-numeric values fall back to the default."""
+    assert live_viewer_update_interval_s({"liveViewerUpdateIntervalS": -1}) == 0.2
+    assert live_viewer_update_interval_s({"liveViewerUpdateIntervalS": "fast"}) == 0.2

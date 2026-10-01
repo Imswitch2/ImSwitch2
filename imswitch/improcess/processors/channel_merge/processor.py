@@ -16,6 +16,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 from imswitch.improcess.processors.combine import combine_compatibility
 
@@ -32,8 +33,28 @@ class ChannelMergeProcessor(Processor):
     name = "Merge channels"
     id = "channel-merge"
     category = "Dimensions and channels"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
     min_inputs = 2
     max_inputs = None
+
+    @classmethod
+    def default_params(cls) -> dict:
+        # ``name`` and ``axis_label`` are set by the toolbar dialog rather
+        # than the parameter widget, but they are parameters all the same:
+        # a workflow must be able to set them, and a typo must be caught.
+        return {"name": "Merged channels", "axis_label": CHANNEL_AXIS_LABEL}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('name', 'text', 'Merged channels', label='Result name'),
+            ParamField(
+                'axis_label', 'text', 'C', label='Channel axis label',
+                help='Label of the new channel axis the inputs are stacked along',
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -54,7 +75,7 @@ class ChannelMergeProcessor(Processor):
         layout.addStretch()
 
         def get_values():
-            return {}
+            return dict(self.default_params())
 
         widget.get_values = get_values
         return widget
@@ -66,7 +87,7 @@ class ChannelMergeProcessor(Processor):
         return merge_results(
             results,
             name=params.get("name") or "Merged channels",
-            axis_label=str(params.get("axis_label", CHANNEL_AXIS_LABEL)),
+            axis_label=str(params.get("axis_label") or CHANNEL_AXIS_LABEL),
         )
 
 

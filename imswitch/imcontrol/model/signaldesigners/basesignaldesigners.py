@@ -97,6 +97,100 @@ def validate_scan_info_contract(scanInfoDict: dict) -> bool:
     return True
 
 
+def _fmt_scan_number(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(value) < 5e-13:
+        value = 0.0
+    text = f'{value:.6g}'
+    return '0' if text == '-0' else text
+
+
+def _fmt_scan_signed_number(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(value) < 5e-13:
+        value = 0.0
+    sign = '+' if value >= 0 else '-'
+    return sign + _fmt_scan_number(abs(value))
+
+
+def _scan_positioner_label(positionerName, positionerInfo):
+    axes = list(getattr(positionerInfo, 'axes', None) or [])
+    if axes:
+        return f'{positionerName} ({axes[0]})'
+    return str(positionerName)
+
+
+def scan_voltage_range_refusal(setupInfo, positionerName, voltageRange):
+    """Return an actionable voltage-range refusal for one scan waveform."""
+    if positionerName in (None, 'None') or 'Mock' in str(positionerName):
+        return ''
+    try:
+        positionerInfo = setupInfo.positioners[positionerName]
+    except (AttributeError, KeyError, TypeError):
+        return ''
+    props = getattr(positionerInfo, 'managerProperties', None) or {}
+    minVolt = props.get('minVolt')
+    maxVolt = props.get('maxVolt')
+    if minVolt is None and maxVolt is None:
+        return ''
+    try:
+        requiredMin, requiredMax = [float(v) for v in voltageRange]
+        minVolt = None if minVolt is None else float(minVolt)
+        maxVolt = None if maxVolt is None else float(maxVolt)
+    except (TypeError, ValueError):
+        return ''
+
+    belowMin = minVolt is not None and requiredMin < minVolt
+    aboveMax = maxVolt is not None and requiredMax > maxVolt
+    if not belowMin and not aboveMax:
+        return ''
+
+    label = _scan_positioner_label(positionerName, positionerInfo)
+    rangeMinText = '-inf' if minVolt is None else _fmt_scan_number(minVolt)
+    rangeMaxText = '+inf' if maxVolt is None else _fmt_scan_number(maxVolt)
+    prefix = (
+        'Signal voltages outside scanner range: '
+        f'{label} scan would require '
+        f'{_fmt_scan_number(requiredMin)}...{_fmt_scan_number(requiredMax)} V, '
+        f'outside configured {rangeMinText}...{rangeMaxText} V range. '
+    )
+
+    if minVolt is not None and maxVolt is not None:
+        requiredSpan = requiredMax - requiredMin
+        allowedSpan = maxVolt - minVolt
+        if requiredSpan > allowedSpan:
+            return prefix + (
+                f'The scan span is {_fmt_scan_number(requiredSpan)} V, wider '
+                f'than the configured {_fmt_scan_number(allowedSpan)} V range; '
+                'reduce the scan extent.'
+            )
+
+    if belowMin:
+        shiftVolt = minVolt - requiredMin
+    else:
+        shiftVolt = maxVolt - requiredMax
+
+    conversionFactor = props.get('conversionFactor', 1)
+    try:
+        shiftPosition = float(shiftVolt) * float(conversionFactor)
+    except (TypeError, ValueError):
+        shiftPosition = shiftVolt
+    unit = props.get('positionUnit') or props.get('unit') or 'um'
+    shiftText = _fmt_scan_signed_number(shiftPosition)
+    direction = 'positive' if float(shiftPosition) >= 0 else 'negative'
+    return prefix + (
+        f'Move the positioner by at least {shiftText} {unit}, apply a '
+        f'{direction} Center offset of at least {shiftText} {unit}, or reduce '
+        'the scan extent.'
+    )
+
+
 class SignalDesigner(ABC):
     """Parent class for any type of SignalDesigner. Any child should define
     self._expected_parameters and its own make_signal method."""
@@ -148,6 +242,24 @@ class ScanDesigner(SignalDesigner, ABC):
         """ Check that the signal would not be too large (to be stored in
         the RAM and to be generated and run inside a reasonable time). """
         return True
+
+    def signalLengthRefusal(self, scanParameters, setupInfo):
+        """ Why the scan is too long to run, or ``''`` when it is not.
+
+        Designers with a specific reason (a time cap, a sample limit)
+        override this and derive ``checkSignalLength`` from it; the default
+        keeps a designer that only answers yes/no working. """
+        if self.checkSignalLength(scanParameters, setupInfo):
+            return ''
+        return ('Signal too long: try scanning a smaller ROI, faster, or with '
+                'a larger pixel size.')
+
+    def signalCompatibilityRefusal(self, scanParameters, setupInfo, scanInfo):
+        """Why the scan waveform cannot be emitted, or ``''`` when it can."""
+        if self.checkSignalComp(scanParameters, setupInfo, scanInfo):
+            return ''
+        return ('Signal voltages outside scanner ranges: try scanning a '
+                'smaller ROI or a slower scan.')
 
     @abstractmethod
     def make_signal(self, parameterDict, setupInfo):

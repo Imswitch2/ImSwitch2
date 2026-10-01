@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from imswitch.imcommon.algorithms.roi import ROIRecord
+from imswitch.improcess.analysis.roi_jobs import MeasurementCache
 from imswitch.improcess.analysis.roi_manager import ROIManagerModel, replaced
 
 
@@ -56,10 +57,13 @@ def _collide(model):
 @pytest.mark.parametrize(
     "mutate, changed",
     [
-        (lambda m: (m.rename("cell", "nucleus"), _fully_populated_roi()), {"name"}),
-        (lambda m: (m.set_visible("cell", False), _fully_populated_roi()), {"visible"}),
-        (lambda m: (m.duplicate("cell"), _fully_populated_roi()), {"name"}),
-        (_collide, {"name"}),
+        # Renaming touches nothing that affects measurement, so revision holds.
+        (lambda m: (m.rename("cell", "nucleus"), m.get("nucleus")), {"name"}),
+        # Visibility does affect what is measured, so revision advances.
+        (lambda m: (m.set_visible("cell", False), None), {"visible", "revision"}),
+        # A copy is a different ROI, however identical its geometry.
+        (lambda m: (m.duplicate("cell"), None), {"name", "uid"}),
+        (_collide, {"name", "uid"}),
     ],
     ids=["rename", "set_visible", "duplicate", "add-collision"],
 )
@@ -71,8 +75,10 @@ def test_every_mutation_preserves_all_record_fields(mutate, changed):
     drop it on rename/duplicate/visibility/collision paths.
     """
     model = ROIManagerModel([_fully_populated_roi()])
+    stored = model.get("cell")
 
     result, expected = mutate(model)
+    expected = expected if expected is not None else stored
 
     for field in dataclasses.fields(ROIRecord):
         if field.name in changed:
@@ -80,6 +86,30 @@ def test_every_mutation_preserves_all_record_fields(mutate, changed):
         assert getattr(result, field.name) == getattr(expected, field.name), (
             f"{field.name} was not preserved across the mutation"
         )
+
+
+def test_identity_survives_a_rename_and_a_copy_gets_its_own():
+    model = ROIManagerModel([_fully_populated_roi()])
+    original_uid = model.get("cell").uid
+
+    renamed = model.rename("cell", "nucleus")
+    copy = model.duplicate("nucleus")
+
+    assert original_uid, "the model must assign an identity on ingest"
+    assert renamed.uid == original_uid, "renaming must not change identity"
+    assert copy.uid != original_uid, "a duplicate is a different ROI"
+
+
+def test_revision_advances_only_for_measurement_affecting_changes():
+    """Renaming 200 ROIs must not invalidate 200 cached measurements."""
+    model = ROIManagerModel([_fully_populated_roi()])
+    start = model.get("cell").revision
+
+    renamed = model.rename("cell", "nucleus")
+    assert renamed.revision == start
+
+    hidden = model.set_visible("nucleus", False)
+    assert hidden.revision == start + 1
 
 
 def test_replaced_is_the_single_mutation_helper():
@@ -211,3 +241,57 @@ def test_error_rows_survive_serialisation():
     assert row["name"] == "outside"
     assert row["measured"] is False
     assert row["note"]
+
+
+# --------------------------------------------------------------------------
+# P-3.5 — the cache is opt-in, and never guesses
+# --------------------------------------------------------------------------
+
+def test_cache_key_refuses_to_key_on_an_unknown_token():
+    """No token means the image may have changed; caching would be a guess."""
+    from imswitch.improcess.analysis.roi_jobs import cache_key
+
+    roi = ROIRecord("cell", "rectangle", (0, 4, 0, 4), uid="u1")
+    assert cache_key("frame", "", (("Z", 1),), roi, 0) is None
+    assert cache_key("frame", "token", (("Z", 1),), roi, 0) is not None
+
+
+def test_cache_key_separates_planes_configurations_and_revisions():
+    from dataclasses import replace as dataclass_replace
+
+    from imswitch.improcess.analysis.roi_jobs import cache_key
+
+    roi = ROIRecord("cell", "rectangle", (0, 4, 0, 4), uid="u1")
+    base = cache_key("frame", "token", (("Z", 1),), roi, 0)
+
+    assert cache_key("frame", "token", (("Z", 2),), roi, 0) != base
+    assert cache_key("other", "token", (("Z", 1),), roi, 0) != base
+    assert cache_key("frame", "token2", (("Z", 1),), roi, 0) != base
+    assert cache_key("frame", "token", (("Z", 1),), roi, 1) != base
+    moved = dataclass_replace(roi, revision=roi.revision + 1)
+    assert cache_key("frame", "token", (("Z", 1),), moved, 0) != base
+    # A rename deliberately does not bump the revision, so it costs nothing.
+    renamed = dataclass_replace(roi, name="renamed")
+    assert cache_key("frame", "token", (("Z", 1),), renamed, 0) == base
+
+
+def test_compute_stats_uses_a_cached_row_rather_than_measuring_again():
+    model = ROIManagerModel([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
+    image = np.arange(256, dtype=float).reshape(16, 16)
+    cache = MeasurementCache()
+
+    def key_for(roi):
+        return ("k", roi.uid)
+
+    first = model.compute_stats(
+        image, selection=("mean",), cache=cache, cache_key_for=key_for
+    )
+    assert len(cache) == 1
+
+    # A different image behind the same key must come back with the cached
+    # answer — which is what proves the second pass did not measure.
+    second = model.compute_stats(
+        np.zeros_like(image), selection=("mean",), cache=cache, cache_key_for=key_for
+    )
+    assert second[0].values["mean"] == first[0].values["mean"]
+    assert second[0].stats.mean == pytest.approx(first[0].values["mean"])

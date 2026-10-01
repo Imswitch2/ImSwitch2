@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "PHYS_FACTOR": {
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "SPEED": {
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "rs232device": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:ref",
+        "code:required"
+      ],
+      "x-imswitch-widget": "ref"
+    }
+  },
+  "required": [
+    "rs232device"
+  ],
+  "title": "ESP32StageManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ESP32StageManager",
+    "PositionerManager"
+  ]
+}

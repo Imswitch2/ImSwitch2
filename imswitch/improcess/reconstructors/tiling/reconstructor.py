@@ -26,12 +26,10 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import tifffile as tiff
 from qtpy import QtWidgets
 
 from imswitch.imcommon.algorithms.tile_mosaic import (
@@ -55,6 +53,7 @@ from imswitch.imcommon.algorithms.tile_mosaic import (
 )
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import (
     Reconstructor,
     ReconstructionContext,
@@ -76,26 +75,20 @@ class TilingMosaicResult(ProcessingResult):
         self.provenance = provenance
         self.output_origin_yx = tuple(output_origin_yx)
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        if fmt != "tiff":
+
+    supported_formats = ("tiff",)
+
+    def write_files(self, plan, document) -> None:
+        if plan.fmt != "tiff":
             raise ValueError(
-                f'TilingMosaicResult only supports fmt="tiff", got "{fmt}"'
+                f'TilingMosaicResult only supports fmt="tiff", got "{plan.fmt}"'
             )
-        data = np.asarray(self.data)
-        metadata = {"axes": "".join(self.axis_labels)}
-        if self.provenance is not None:
-            metadata["Description"] = json.dumps(
-                self.provenance_summary(), sort_keys=True
-            )
-        scales = self.axis_scales or []
-        by_label = dict(zip(self.axis_labels, scales))
-        for label, key in (("X", "PhysicalSizeX"), ("Y", "PhysicalSizeY"),
-                           ("Z", "PhysicalSizeZ")):
-            if label in by_label:
-                metadata[key] = float(by_label[label])
-                metadata[f"{key}Unit"] = "µm"
-        tiff.imwrite(str(path), data, ome=True, metadata=metadata)
+        from imswitch.improcess.model.result_io import save_image_result
+
+        # The mosaic's own provenance summary keeps its top-level keys in the
+        # OME Description, as every mosaic written so far has had.
+        extra = dict(self.provenance_summary() or {})
+        save_image_result(self, plan.primary, "tiff", extra=extra, document=document)
 
     def provenance_summary(self) -> dict | None:
         """Return a serializable record suitable for save metadata and UI."""
@@ -397,6 +390,68 @@ class TilingReconstructor(Reconstructor):
     default_save_subdir = "mosaic"
     accepted_source_kinds = ("image", "tiling-manifest")
     execution_policy = "worker"
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'refine': True,
+        'blend': True,
+        'shading_correction': False,
+        'max_shift_px': None,
+        'project': False,
+        'stage_positions': True,
+        'detector': None,
+        'alignment_diagnostic': False,
+        'channel': None,
+        'project_z': False}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'refine', 'bool', True, label='Refine alignment',
+                help="Cross-correlate every overlapping pair of tiles and solve for\nall positions at once, instead of trusting the recorded stage\npositions. Slower than the live preview's one-neighbour pass,\nbut a single bad match cannot displace the rest of the run.",
+            ),
+            ParamField(
+                'blend', 'bool', True, label='Mean overlaps',
+                help='Average overlapping pixels. Unchecked, later tiles overwrite\nearlier ones, which leaves visible seams but no ghosting.',
+            ),
+            ParamField(
+                'shading_correction', 'bool', False, label='Correct vignetting',
+                help='Estimate the illumination profile from the run itself and divide\nit out of every tile.\n\nShading is fixed to the detector — the same corner is dim in\nevery tile — while the sample is not, so averaging the tiles in\ndetector coordinates lets the specimen cancel and leaves the\nillumination. No shape is assumed, so one-sided falloff is\nhandled as readily as a radial one.\n\nNeeds enough tiles for the sample to average out, and is skipped\nwith a reason in the log when the estimate cannot be trusted.\nCosts one extra read pass over the tiles.',
+            ),
+            ParamField(
+                'max_shift_px', 'float', None, label='Max shift',
+                help='Reject corrections larger than this many pixels, which are usually false matches on repeating structure; empty or 0 derives a limit from the tile size',
+                min=0.0, max=100000.0, nullable=True,
+            ),
+            ParamField(
+                'project', 'bool', False, label='Max-project Z',
+                help='Collapse a volumetric run to one plane per tile before stitching',
+            ),
+            ParamField(
+                'stage_positions', 'bool', True, label='Start from stage positions',
+                help="Lay the tiles out from the stage coordinates the run commanded,\nrather than the pixel positions it saved. The saved positions\ninclude whatever the live 'Align tiles' pass did during\nacquisition, and a bad live correction cannot be undone here:\nthe tiles are correlated where those positions say they overlap.\nUncheck to reassemble exactly the layout that was saved.",
+            ),
+            ParamField(
+                'detector', 'text', None, label='Output source',
+                help="Detector whose tiles make the mosaic; empty uses the run's alignment detector",
+                nullable=True,
+            ),
+            ParamField(
+                'alignment_diagnostic', 'bool', False, label='Alignment diagnostic',
+                help='Also produce the alignment diagnostic result', advanced=True,
+            ),
+            ParamField(
+                'channel', 'text', None, label='Channel',
+                help="Index of the one channel to keep; empty or 'all' keeps every channel",
+                nullable=True,
+            ),
+            ParamField(
+                'project_z', 'bool', False, label='Max-project Z (recorded spelling)',
+                help='The same switch under the name older runs recorded; either one turns it on',
+                advanced=True,
+            ),
+        )
 
     def __init__(self):
         super().__init__()

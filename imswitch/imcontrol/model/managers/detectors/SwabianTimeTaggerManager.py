@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import threading
 import time
@@ -13,8 +14,8 @@ from imswitch.imcontrol.model.timeresolved import (
 )
 from .._scan_execution import PARTICIPANTS_KEY
 from .DetectorManager import (
-    DetectorManager, DetectorNumberParameter, DetectorListParameter,
-    scanPixelSizesToZYX)
+    ChunkPayload, DetectorManager, DetectorNumberParameter, DetectorListParameter,
+    scanPixelSizesToZYX, _EMPTY_CHUNK)
 
 try:
     import TimeTagger
@@ -28,6 +29,18 @@ except ImportError:
 
 
 _SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
+
+
+#: A TCSPC window shorter than this fraction of the laser period is warned
+#: about: the decay is cut off, and the moment and phasor fits read the cut as
+#: a short lifetime.
+MIN_WINDOW_FRACTION_OF_PERIOD = 0.8
+
+
+def histogram_bins_for_period(binwidth_ps, laser_rep_rate_mhz) -> int:
+    """Bins of ``binwidth_ps`` that span one period of ``laser_rep_rate_mhz``."""
+    period_ps = 1e6 / max(1e-9, float(laser_rep_rate_mhz))
+    return max(1, int(math.ceil(period_ps / max(1e-9, float(binwidth_ps)))))
 
 
 class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
@@ -85,12 +98,27 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._line_trigger = float(
             props.get('line_trigger', tl.get(str(self._line_ch), 0.5))
         )
-        self._n_bins = int(props.get('n_bins', 64))
         self._binwidth_ps = int(props.get('binwidth_ps', 32))
+        self._laser_rep_rate_mhz = float(props.get('laser_rep_rate_mhz', 80.0))
+        # The histogram window and the laser period are one physical fact
+        # expressed twice, so only one of them is a free default. The window
+        # used to default to 64 bins of 32 ps -- 2.048 ns against the 12.5 ns
+        # period this same constructor declares -- and a decay cut off at a
+        # sixth of its period reads as a short lifetime: the moment and phasor
+        # fits reported 0.84-0.95 ns for anything from 2 to 6 ns, plausibly,
+        # with the intensity image looking right and no warning anywhere.
+        # Undeclared, the window now spans one laser period.
+        declared_bins = props.get('n_bins')
+        if declared_bins is None:
+            self._n_bins = histogram_bins_for_period(
+                self._binwidth_ps, self._laser_rep_rate_mhz
+            )
+        else:
+            self._n_bins = int(declared_bins)
         self._t0_ps = int(props.get('t0_ps', 0))
         self._min_counts_per_pixel = int(props.get('min_counts_per_pixel', 20))
         self._fit_method = str(props.get('fit_method', 'moment'))
-        self._laser_rep_rate_mhz = float(props.get('laser_rep_rate_mhz', 80.0))
+        self._warnIfWindowTruncatesTheDecay()
         self._accumulate_mode = False
         self._accum_sum: np.ndarray | None = None    # (Ny, Nx) float64, sum of valid lifetimes
         self._accum_count: np.ndarray | None = None  # (Ny, Nx) int32, number of valid scans per pixel
@@ -166,6 +194,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._image_display = np.zeros((1, 64, 64), dtype=np.float32)
         self._image_intensity = np.zeros((1, 64, 64), dtype=np.float32)
         self._newFrameReady = False
+        # The raw frame a recording saves is the finished lifetime image, which
+        # exists once per scan: when the worker's final frame lands. Before
+        # that there is nothing to save; after it is delivered, nothing again.
+        self._rawReady = False
+        self._rawDelivered = True
+        self._image_raw = None
         self.__pixel_sizes = [1, 1]
 
         # Latest aggregated TCSPC decay (summed over valid pixels) and the
@@ -239,6 +273,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._fit_method = str(value)
         elif name == 'laser_rep_rate_mhz':
             self._laser_rep_rate_mhz = float(value)
+            self._warnIfWindowTruncatesTheDecay()
         elif name == 'accumulate_mode':
             self._accumulate_mode = (str(value).lower() == 'on')
             if not self._accumulate_mode:
@@ -374,6 +409,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._validate_time_resolved_scan_shape(outer_axes, outer_dims)
 
         self._newFrameReady = False
+        self._rawReady = False
+        self._rawDelivered = True
+        self._image_raw = None
         self._image_display = np.zeros((1, Ny, Nx), dtype=np.float32)
         self._image_intensity = np.zeros((1, Ny, Nx), dtype=np.float32)
         with self._tr_lock:
@@ -617,6 +655,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 # another iteration over unknown hardware.  Withhold the ack;
                 # the coordinator's own bounded finalizer will fail closed.
                 return
+            # An aborted scan has no finished image; whatever the latch holds
+            # is a partial one and must not reach a recording.
+            self._rawReady = False
+            self._image_raw = None
             if generation is not None:
                 with self._finishAckLock:
                     self._finishedScanGenerations.add(generation)
@@ -779,6 +821,13 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             self._image_display[0] = displayed
         else:
             self._image_display[0] = lifetime_ns
+
+        if is_final:
+            # This scan's own finished image, not the accumulated overlay the
+            # display may be showing: a recording saves the measurement.
+            self._image_raw = lifetime_ns[np.newaxis].astype(np.float32, copy=True)
+            self._rawReady = True
+            self._rawDelivered = False
 
         self._newFrameReady = True
         self.updateLatestFrame(True)
@@ -963,6 +1012,48 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         return True
 
     @property
+    def rawFrameIsDeferred(self):
+        return True
+
+    def drainChunk(self):
+        """Display every tick; the finished lifetime image once, when whole.
+
+        The worker publishes a preview every ``LIVE_PREVIEW_S`` with
+        ``is_final`` False and ``getChunk`` hands each one to the screen. A
+        recording reading the raw stream used to receive those previews too,
+        and since a scan-driven detector is planned for exactly one frame the
+        recording was satisfied by the first preview -- one second into a
+        scan of a minute -- and closed as *complete* with the rest of the
+        lines still zero, with no log line anywhere. The raw half now stays
+        empty until the final frame has landed, then yields it exactly once,
+        the shape APD and PMT already implement.
+        """
+        display = self.getChunk()
+        raw = _EMPTY_CHUNK
+        if (self._rawReady and not self._rawDelivered
+                and self._image_raw is not None):
+            self._rawDelivered = True
+            self._rawReady = False
+            raw = self._image_raw
+            self._image_raw = None
+        return ChunkPayload(display=display, raw=raw)
+
+    def _warnIfWindowTruncatesTheDecay(self):
+        window_ps = self._n_bins * self._binwidth_ps
+        period_ps = 1e6 / max(1e-9, self._laser_rep_rate_mhz)
+        if window_ps < MIN_WINDOW_FRACTION_OF_PERIOD * period_ps:
+            self._logger.warning(
+                f'TCSPC window {window_ps / 1000:.2f} ns ({self._n_bins} bins x '
+                f'{self._binwidth_ps} ps) covers {100 * window_ps / period_ps:.0f}% '
+                f'of the {period_ps / 1000:.2f} ns laser period at '
+                f'{self._laser_rep_rate_mhz:g} MHz. A decay cut off that early '
+                f'reads as a shorter lifetime in the moment and phasor fits; '
+                f'declare n_bins >= '
+                f'{histogram_bins_for_period(self._binwidth_ps, self._laser_rep_rate_mhz)} '
+                f'or leave it undeclared to span the period.'
+            )
+
+    @property
     def pixelSizeUm(self):
         return scanPixelSizesToZYX(self.__pixel_sizes)
 
@@ -1027,7 +1118,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             Ny = int(scan_dims[scan_axes.index('y')])
         else:
             Nx = int(scan_dims[-1])
-            Ny = int(scan_dims[-2])
+            # a 1-axis scan is a single line: no second dimension to read
+            Ny = int(scan_dims[-2]) if len(scan_dims) >= 2 else 1
         outer_axes = [a for a in scan_axes if a not in ('y', 'x')]
         outer_dims = [int(scan_dims[scan_axes.index(a)]) for a in outer_axes]
         return Nx, Ny, S, outer_axes, outer_dims

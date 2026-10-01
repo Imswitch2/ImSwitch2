@@ -1,0 +1,64 @@
+{
+  "controller": "ScanControllerBase",
+  "scanWidgetType": "Base",
+  "analogParameterDict": {
+    "target_device": [
+      "X",
+      "Y",
+      "Z"
+    ],
+    "axis_length": [
+      1.0,
+      1.0,
+      0.1
+    ],
+    "axis_step_size": [
+      0.1,
+      0.1,
+      0.1
+    ],
+    "axis_centerpos": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "axis_startpos": [
+      [
+        0
+      ],
+      [
+        0
+      ],
+      [
+        0
+      ]
+    ],
+    "sequence_time": 0.01
+  },
+  "digitalParameterDict": {
+    "target_device": [
+      "Camera"
+    ],
+    "TTL_start": [
+      [
+        0.0
+      ]
+    ],
+    "TTL_end": [
+      [
+        0.005
+      ]
+    ],
+    "sequence_time": 0.01
+  },
+  "positionersScan": [
+    "X",
+    "Y",
+    "Z"
+  ],
+  "mode": {
+    "repeatEnabled": false,
+    "scanMode": true,
+    "contLaserMode": false
+  }
+}

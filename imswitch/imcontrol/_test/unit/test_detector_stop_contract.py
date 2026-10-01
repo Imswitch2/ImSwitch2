@@ -24,18 +24,6 @@ from imswitch.imcontrol.model.managers.detectors.SwabianTimeTaggerManager import
     SwabianTimeTaggerManager,
 )
 from imswitch.imcontrol.model.managers.detectors.AVManager import AVManager
-from imswitch.imcontrol.model.managers.detectors.BaslerManager import (
-    BaslerManager,
-)
-from imswitch.imcontrol.model.managers.detectors.ESP32CamManager import (
-    ESP32CamManager,
-)
-from imswitch.imcontrol.model.managers.detectors.GXPIPYManager import (
-    GXPIPYManager,
-)
-from imswitch.imcontrol.model.managers.detectors.JetsonCamManager import (
-    JetsonCamManager,
-)
 from imswitch.imcontrol.model.managers.detectors.PiCamManager import PiCamManager
 from imswitch.imcontrol.model.managers.detectors.TISManager import TISManager
 
@@ -263,10 +251,6 @@ def test_pmt_internal_completion_path_still_swallows():
     ('managerClass', 'loggerAttribute'),
     [
         (AVManager, '_AVManager__logger'),
-        (BaslerManager, '_BaslerManager__logger'),
-        (ESP32CamManager, '_ESP32CamManager__logger'),
-        (GXPIPYManager, '_GXPIPYManager__logger'),
-        (JetsonCamManager, '_JetsonCamManager__logger'),
         (PiCamManager, '_PiCamManager__logger'),
         (TISManager, '_TISManager__logger'),
     ],

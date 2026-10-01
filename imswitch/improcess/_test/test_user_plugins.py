@@ -10,6 +10,7 @@ import textwrap
 
 import pytest
 
+import imswitch.improcess.plugins as plugins
 import imswitch.improcess.processors as processors
 from imswitch.improcess.plugins.user_plugins import (
     discover_processor_plugins,
@@ -59,10 +60,10 @@ def _write(directory, name, source):
 
 @pytest.fixture(autouse=True)
 def _reset_user_plugins():
-    """Keep the module-level user-plugin table from leaking between tests."""
-    processors.clear_user_plugins()
+    """Keep the module-level user-plugin tables from leaking between tests."""
+    plugins.clear_user_plugins()
     yield
-    processors.clear_user_plugins()
+    plugins.clear_user_plugins()
 
 
 # --- discovery -------------------------------------------------------------

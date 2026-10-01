@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "rs232device": {
+      "description": "Name of the RS-232 channel registered in ``rs232sManager``.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:optional(try/except Exception)",
+        "example:string"
+      ],
+      "x-imswitch-widget": "ref"
+    }
+  },
+  "title": "PiezoconceptZManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PiezoconceptZManager",
+    "PositionerManager"
+  ]
+}

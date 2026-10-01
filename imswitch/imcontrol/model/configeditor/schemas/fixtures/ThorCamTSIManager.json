@@ -1,0 +1,20 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "ThorCamTSIManager",
+    "managerProperties": {
+      "cameraPixelSizeUm": null,
+      "cameraSerial": "example",
+      "defaults": {
+        "exposure_us": 1,
+        "frame_rate": 1,
+        "gain": 1,
+        "operation_mode": "example",
+        "trigger_polarity": "example"
+      },
+      "dllLocation": "example",
+      "flushFrameLimit": 1,
+      "frameBufferDepth": 1
+    }
+  }
+}

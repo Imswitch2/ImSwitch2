@@ -1,0 +1,8 @@
+{
+  "properties": {
+    "protocolProfile": {
+      "description": "Command profile for the AA AOTF driver. Omitted, null or empty selects the default; any other value must name a known profile (AAAOTFLaserManager raises DeviceInitializationError otherwise). Profiles are those registered by imswitch.imcontrol.model.managers.lasers.aa_aotf_protocols.build_profiles().",
+      "enum": ["aa.compatibility", "aa.frequency-startup", "", null]
+    }
+  }
+}

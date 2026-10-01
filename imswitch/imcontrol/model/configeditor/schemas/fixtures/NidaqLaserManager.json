@@ -1,0 +1,9 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "NidaqLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example"
+    }
+  }
+}

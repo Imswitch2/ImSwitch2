@@ -33,7 +33,13 @@ class TriggerScopeScanWidget(Widget):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.setMinimumHeight(200)
+        # No minimum height of its own: docks stack vertically and a
+        # splitter's minimum is the sum of its children's, so a panel that
+        # insists on 200 px makes the window that much taller to open --
+        # and a few of them together make it taller than the screen, at
+        # which point Qt keeps the window at its minimum and the bottom is
+        # cut off. Each mode page scrolls its own parameter form.
+        self.setMinimumSize(0, 0)
 
         # ---- embedded mode panels ----
         self.lsPage = LightSheetMulticolorWidget(self._options)

@@ -13,6 +13,7 @@ from imswitch.improcess.analysis.multicolor import (
     output_axis_scales,
 )
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import MulticolorApplyResult
@@ -24,6 +25,19 @@ class MulticolorApplyProcessor(Processor):
     name = "Multicolor Apply"
     id = "multicolor-apply"
     category = "Registration"
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'alignment_path': ''}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'alignment_path', 'path', '', label='Alignment file',
+                help='alignment .h5 written by Multicolor registration',
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

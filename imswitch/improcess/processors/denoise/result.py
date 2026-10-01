@@ -1,11 +1,9 @@
 """Denoised processing result."""
 
-from pathlib import Path
 from typing import Any
 
 import h5py
 import numpy as np
-import tifffile as tiff
 
 from imswitch.improcess.model.result import ProcessingResult
 
@@ -30,26 +28,27 @@ class DenoisedResult(ProcessingResult):
         self.crop_size = crop_size
         self.pad = pad
 
-    def save(self, path: Path, fmt: str = 'tiff') -> None:
-        """Save the denoised array as TIFF (default) or HDF5."""
-        if fmt.lower() in ('tiff', 'tif'):
-            tiff.imwrite(
-                str(path),
-                np.asarray(self.data, dtype=np.float32),
-                imagej=True,
-                resolution=(1, 1),
-                metadata={
-                    'spacing': 1,
-                    'unit': self.scale_unit,
-                    'axes': ''.join(self.axis_labels),
-                    'denoise_model_name': self.model_name,
-                    'denoise_model_type': self.model_type,
-                    'denoise_crop_size': self.crop_size,
-                    'denoise_pad': self.pad,
-                },
-            )
-        elif fmt.lower() in ('hdf5', 'h5', 'hdf'):
-            with h5py.File(str(path), 'w') as f:
+
+    supported_formats = ("tiff", "hdf5")
+
+    def _extra(self) -> dict:
+        return {
+            'denoise_model_name': self.model_name,
+            'denoise_model_type': self.model_type,
+            'denoise_crop_size': self.crop_size,
+            'denoise_pad': self.pad,
+        }
+
+    def write_files(self, plan, document) -> None:
+        """OME-TIFF through the shared writer, or the HDF5 layout of old."""
+        if plan.fmt == 'tiff':
+            from imswitch.improcess.model.result_io import save_image_result
+
+            save_image_result(self, plan.primary, 'tiff', extra=self._extra(), document=document)
+        elif plan.fmt == 'hdf5':
+            from imswitch.improcess.model.save_protocol import embed_hdf5
+
+            with h5py.File(str(plan.primary), 'w') as f:
                 f.create_dataset(
                     'denoised',
                     data=np.asarray(self.data, dtype=np.float32),
@@ -58,14 +57,14 @@ class DenoisedResult(ProcessingResult):
                 f.attrs['axis_labels'] = ''.join(self.axis_labels)
                 f.attrs['axis_scales'] = np.asarray(self.axis_scales, dtype=float)
                 f.attrs['scale_unit'] = self.scale_unit
-                f.attrs['denoise_model_name'] = self.model_name
-                f.attrs['denoise_model_type'] = self.model_type
-                f.attrs['denoise_crop_size'] = self.crop_size
-                f.attrs['denoise_pad'] = self.pad
+                for key, value in self._extra().items():
+                    f.attrs[key] = value
+                embed_hdf5(f, document)
         else:
             raise ValueError(
-                f"DenoisedResult supports TIFF or HDF5, got {fmt!r}"
+                f"DenoisedResult supports TIFF or HDF5, got {plan.fmt!r}"
             )
+
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

@@ -34,6 +34,7 @@ from imswitch.imcontrol.view.widgets.TilingWidget import (
     MODE_TRIGGERED,
 )
 from ..basecontrollers import ImConWidgetController
+from .._fresh_frame import grab_fresh_frame
 
 _SETTLE_S = 0.15  # stage settle time after each move (seconds)
 _CLOSE_JOIN_TIMEOUT_S = 2.0
@@ -155,6 +156,10 @@ class _RecordingDispatcher:
             else:
                 self._awaiting = None
         if awaiting is not None:
+            # The session asked first, so the request it holds is its own,
+            # not the one tiling built for this tile: carry over what the
+            # point's recording should say about where it was.
+            awaiting.attributes = dict(getattr(request, 'attributes', {}) or {})
             # Mirror the terminal rather than assume one. Releasing the gate
             # on an unresolved request would arm the point without the stage
             # having reported arrival -- the single thing this handshake is
@@ -314,7 +319,8 @@ class _TriggeredTileSource:
         """
         controller = self._controller
         request = PositioningRequest(
-            self._pointIndex, timeout_s=controller._scanTimeoutS()
+            self._pointIndex, timeout_s=controller._scanTimeoutS(),
+            attributes=self.__dict__.get('pointAttributes') or {},
         )
         request.resolve()
         self._pointIndex += 1
@@ -826,6 +832,13 @@ class TilingController(ImConWidgetController):
                 gx += dx
                 gy += dy
 
+                # The same identity a snapshot tile carries, so a payload
+                # recorded for this tile says which tile it is and where the
+                # stage was commanded -- not only the manifest beside it.
+                tileSource.pointAttributes = self._tileAttrs(
+                    gx, gy,
+                    (origin_xy[0] + gx * step_um, origin_xy[1] + gy * step_um),
+                )
                 frame, wasFresh = tileSource.acquire()
                 if frame is None:
                     self._logger.error(
@@ -1541,7 +1554,15 @@ class TilingController(ImConWidgetController):
                                           folder)
         manager = self._master.recordingManager
         try:
-            recording.setPositioningProvider(dispatcher.provider)
+            try:
+                # Each item of this session is a tile, not a timepoint; the
+                # recording's acquisition layout says so.
+                recording.setPositioningProvider(
+                    dispatcher.provider, partitionKind='tile'
+                )
+            except TypeError:
+                # A host predating partition kinds still runs the session.
+                recording.setPositioningProvider(dispatcher.provider)
             recording.setCycleTerminalCallback(dispatcher.onPointFinished)
             manager.sigRecordingEndedDetailed.connect(
                 dispatcher.onWriterFinalised)
@@ -2033,55 +2054,15 @@ class TilingController(ImConWidgetController):
     def _grabSettledFrame(self, detector):
         """Return ``(frame, was_fresh)`` for a tile, avoiding in-motion frames.
 
-        With a free-running camera, ``getLatestFrameShared()`` hands back
-        whatever is newest in the buffer — which, at a typical exposure, is
-        routinely a frame that began exposing while the stage was still moving,
-        or that belongs to the previous tile. Either produces a mosaic that is
-        silently misregistered rather than visibly broken.
-
-        The handshake: open a "frames after now" boundary, then require *two*
-        frames past it. The first may have started exposing before the
-        boundary; the second provably started after it, so it cannot contain
-        any of the move. The newest frame received is returned.
-
-        Falls back to the latest buffered frame (with ``was_fresh=False``) if
-        the camera produces nothing in time, so a slow camera degrades to the
-        old behaviour instead of aborting the run.
+        See :mod:`imswitch.imcontrol.controller._fresh_frame` for the
+        handshake; it is shared with autofocus.
         """
-        try:
-            detector.startChunkConsumer(_CHUNK_CONSUMER_KEY)
-        except Exception as e:
-            self._logger.warning(
-                f'Tiling: could not open a fresh-frame boundary ({e}); '
-                'falling back to the latest buffered frame.'
-            )
-            return self._latestFrame(detector), False
-
-        received = 0
-        newest = None
-        deadline = time.monotonic() + _FRESH_FRAME_TIMEOUT_S
-        while received < 2:
-            if self._stopRequested or getattr(self, '_closed', False):
-                break
-            try:
-                frames = detector.readChunk(_CHUNK_CONSUMER_KEY)
-            except Exception as e:
-                # Includes ChunkConsumerOverflowError: more frames arrived than
-                # the broker retained, which still means frames are flowing.
-                self._logger.debug(f'Tiling: chunk read interrupted ({e})')
-                break
-            if frames is not None and len(frames) > 0:
-                received += len(frames)
-                newest = frames[-1]
-                continue
-            if time.monotonic() > deadline:
-                break
-            time.sleep(_FRAME_POLL_S)
-
-        if received >= 2 and newest is not None:
-            return np.asarray(newest), True
-
-        return self._latestFrame(detector), False
+        return grab_fresh_frame(
+            detector, _CHUNK_CONSUMER_KEY,
+            timeout_s=_FRESH_FRAME_TIMEOUT_S, poll_s=_FRAME_POLL_S,
+            should_stop=lambda: self._stopRequested or getattr(self, '_closed', False),
+            logger=self._logger, release=False,
+        )
 
     @staticmethod
     def _latestFrame(detector):

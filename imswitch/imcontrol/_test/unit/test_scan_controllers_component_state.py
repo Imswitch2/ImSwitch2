@@ -67,6 +67,7 @@ class TestTriggerScopeGalvoDetectionController:
         widget.getOnLaser = Mock(return_value='Laser1')
         widget.getOffLaser = Mock(return_value='Laser2')
         widget.getRoLaser = Mock(return_value='Laser1')
+        widget.getCameraTTL = Mock(return_value='')
         widget.getRoScanDevice = Mock(return_value='X')
         widget.getGalvoScanDevice = Mock(return_value='Y')
         widget.getCycleScanDevice = Mock(return_value='Z')

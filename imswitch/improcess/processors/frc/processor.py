@@ -9,6 +9,7 @@ from imswitch.improcess.analysis.frc import frc_two_image, single_image_frc
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors._axis_split import shape_for_result
 from imswitch.improcess.processors._extraction import extract_2d_plane, resolve_axis
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import FRCResult
@@ -25,6 +26,44 @@ class FRCProcessor(Processor):
     #: the common case, so the second input is optional rather than absent.
     min_inputs = 1
     max_inputs = 2
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'mode': 'single-image',
+        'compare_axis': 'Auto',
+        'index_a': 0,
+        'index_b': 1,
+        'single_image_split': 'checkerboard',
+        'window': 'hann',
+        'pixel_size': 1.0,
+        'resolution_unit': 'px'}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'mode', 'select', 'single-image', label='Mode',
+                help='Two-image FRC compares two planes of one result, or one plane from each of two checked results',
+                options=('single-image', 'two-image'),
+            ),
+            ParamField(
+                'compare_axis', 'select', 'Auto', label='Compare axis',
+                help='Axis the plane indices count along; ignored for an input that is already a single plane',
+                options=('Auto', 'T', 'C', 'Z', 'D0', 'D1', 'D2'),
+            ),
+            ParamField('index_a', 'int', 0, label='Index A', min=0, max=999999),
+            ParamField('index_b', 'int', 1, label='Index B', min=0, max=999999),
+            ParamField(
+                'single_image_split', 'select', 'checkerboard', label='Single-image split',
+                options=('checkerboard', 'odd-even'),
+            ),
+            ParamField('window', 'select', 'hann', label='Window', options=('hann', 'none')),
+            ParamField('pixel_size', 'float', 1.0, label='Pixel size', min=0, decimals=6),
+            ParamField(
+                'resolution_unit', 'select', 'px', label='Resolution unit',
+                options=('px', 'nm', 'um'),
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

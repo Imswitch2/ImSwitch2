@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a laser entry in a setup file, as imswitch.imcontrol.model.SetupInfo.LaserInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "analogChannel": {
+      "default": null,
+      "description": "Channel for analog communication. ``null`` if the device is digital or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/ao{analogChannel}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.analogChannel: Optional[Union[str, int]]"
+      ]
+    },
+    "digitalLine": {
+      "default": null,
+      "description": "Line for digital communication. ``null`` if the device is analog or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/port0/line{digitalLine}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.digitalLine: Optional[Union[str, int]]"
+      ]
+    },
+    "freqRangeInit": {
+      "default": 0,
+      "description": "Initial value of frequency modulation. Don't fill if laser doesn't support it.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:LaserInfo.freqRangeInit: Optional[int]"
+      ]
+    },
+    "freqRangeMax": {
+      "default": 0,
+      "description": "Minimum value of frequency modulation. Don't fill if laser doesn't support it.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:LaserInfo.freqRangeMax: Optional[int]"
+      ]
+    },
+    "freqRangeMin": {
+      "default": 0,
+      "description": "Minimum value of frequency modulation. Don't fill if laser doesn't support it.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:LaserInfo.freqRangeMin: Optional[int]"
+      ]
+    },
+    "managerName": {
+      "description": "Manager class name.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "default": {},
+      "description": "Properties to be read by the manager. Empty when omitted.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerProperties: Dict[str, Any]"
+      ]
+    },
+    "powerDevice": {
+      "default": null,
+      "description": "Name of the laser device that sets this one's emission power, when the two are separate hardware.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:LaserInfo.powerDevice: Optional[str]"
+      ]
+    },
+    "valueRangeMax": {
+      "description": "maximum value of the laser. ``null`` if laser doesn't setting a value.",
+      "type": [
+        "integer",
+        "number",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "integer",
+        "number"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:LaserInfo.valueRangeMax: Optional[Union[int, float]]"
+      ]
+    },
+    "valueRangeMin": {
+      "description": "Minimum value of the laser. ``null`` if laser doesn't setting a value.",
+      "type": [
+        "integer",
+        "number",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "integer",
+        "number"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:LaserInfo.valueRangeMin: Optional[Union[int, float]]"
+      ]
+    },
+    "valueRangeStep": {
+      "default": 1.0,
+      "description": "The default step size of the value range that the laser can be set to.",
+      "type": "number",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "dataclass:LaserInfo.valueRangeStep: float"
+      ]
+    },
+    "wavelength": {
+      "description": "Laser wavelength in nanometres.",
+      "type": [
+        "integer",
+        "number"
+      ],
+      "x-imswitch-kind": [
+        "integer",
+        "number"
+      ],
+      "x-imswitch-source": [
+        "dataclass:LaserInfo.wavelength: Union[int, float]"
+      ]
+    }
+  },
+  "required": [
+    "managerName",
+    "valueRangeMax",
+    "valueRangeMin",
+    "wavelength"
+  ],
+  "title": "laser device entry (LaserInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "LaserInfo",
+    "DeviceInfo"
+  ],
+  "x-imswitch-info-class": "LaserInfo"
+}

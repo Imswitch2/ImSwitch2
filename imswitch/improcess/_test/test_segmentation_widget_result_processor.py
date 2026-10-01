@@ -42,11 +42,6 @@ def _make_widget():
     widget._roiManagerWidget = None
     widget._last_analysis = None
     widget._currentResult = None
-    widget._preview_timer = SimpleNamespace(
-        setSingleShot=lambda x: None,
-        setInterval=lambda x: None,
-        timeout=SimpleNamespace(connect=lambda fn: None),
-    )
     widget._dims_connection = None
     widget._layer_selection_connection = None
     
@@ -56,6 +51,23 @@ def _make_widget():
         setEnabled=lambda x: None,
     )
     widget.summaryLabel = SimpleNamespace(setText=lambda x: None, text="")
+    # The region chooser and the preview's histogram: setCurrentResult now
+    # re-offers the ROIs and drops a preview measured against the old result.
+    widget._rois = []
+    widget.roiCombo = SimpleNamespace(
+        currentData=lambda: None, blockSignals=lambda x: None,
+        clear=lambda: None, addItem=lambda *a, **k: None,
+        findData=lambda d: -1, setCurrentIndex=lambda i: None,
+        setEnabled=lambda x: None,
+    )
+    widget.roiModeCombo = SimpleNamespace(
+        currentData=lambda: "mask", setEnabled=lambda x: None,
+    )
+    widget.histogramPlot = SimpleNamespace(
+        clear=lambda: None, plot=lambda *a, **k: None, addItem=lambda i: None,
+    )
+    widget._thresholdLine = None
+    widget._last_preview_threshold = None
     widget.methodCombo = SimpleNamespace(currentText=lambda: "otsu")
     widget.thresholdSpin = SimpleNamespace(value=lambda: 0.0)
     widget.minAreaSpin = SimpleNamespace(value=lambda: 10)

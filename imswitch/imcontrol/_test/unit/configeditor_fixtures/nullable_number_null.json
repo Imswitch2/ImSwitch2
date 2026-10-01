@@ -1,0 +1,20 @@
+{
+  "why": "A nullable number, string and untyped key each hold null; the form shows an empty box and must give null back, not 0, '' or {}.",
+  "setup": {
+    "lasers": {
+      "aotf": {
+        "analogChannel": null, "digitalLine": null,
+        "managerName": "AAAOTFLaserManager",
+        "managerProperties": {"rs232device": "aaaotf", "channel": 1, "frequencyMHz": null},
+        "wavelength": 561, "valueRangeMin": 0, "valueRangeMax": 1023, "valueRangeStep": 1
+      }
+    },
+    "detectors": {
+      "cam": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "ThorCamTSIManager",
+        "managerProperties": {"cameraSerial": null, "cameraPixelSizeUm": null}
+      }
+    }
+  }
+}

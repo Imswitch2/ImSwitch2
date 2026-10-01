@@ -1,7 +1,11 @@
 # SMLM Localization Port — Detailed Plan
 
 **Roadmap:** Milestone 15 (Single-Molecule Localization Microscopy).
-**Status:** planning (2026-07-02).
+**Status:** planning (2026-07-02). Phases 1–6 implemented 2026-07; the
+render boundary below was superseded 2026-09 by an *embedded* napari-storm
+viewer (`feat/napari-storm-viewer`, `view/NapariStormDisplay.py`) that reads
+the nm table in place — the export handoff remains as the file path. See
+`docs/improcess.rst`, "Localization point clouds (napari-storm)".
 **Scope of this document:** localization + in-house rendering. Drift
 correction (COMET), grouping, and advanced filtering are named as future
 phases but are explicitly out of the initial scope.
@@ -113,6 +117,9 @@ Design rules:
 - **The render boundary is the ImProcess/napari-storm split.** In-house =
   table→image (histogram/Gaussian) in the embedded viewer. Premium =
   export→napari-storm GPU particles. No runtime dependency on napari-storm.
+  *(Superseded 2026-09: napari-storm 2.1 exposes a host-free planner and a
+  renderer that opens on an existing viewer, so the premium path is now
+  embedded behind an optional extra rather than an export. See status.)*
 
 ## 4. Phases
 

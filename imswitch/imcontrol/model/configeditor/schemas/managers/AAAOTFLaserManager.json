@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "description": "Optional path to a 2-column CSV (raw, measured).  If present, a",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:optional(in)",
+        "docs:string"
+      ]
+    },
+    "channel": {
+      "description": "AOTF channel index (1-based) this manager drives.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:required",
+        "example:integer"
+      ]
+    },
+    "frequencyMHz": {
+      "description": "Optional fixed RF frequency to restore at startup. Requires",
+      "x-imswitch-kind": "number",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number"
+      ]
+    },
+    "protocolProfile": {
+      "description": "Command profile for the AA AOTF driver. Omitted, null or empty selects the default; any other value must name a known profile (AAAOTFLaserManager raises DeviceInitializationError otherwise). Profiles are those registered by imswitch.imcontrol.model.managers.lasers.aa_aotf_protocols.build_profiles().",
+      "enum": [
+        "aa.compatibility",
+        "aa.frequency-startup",
+        "",
+        null
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string",
+        "override"
+      ]
+    },
+    "rs232device": {
+      "description": "Name of the RS232 channel (key into ``rs232sManager``).",
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ],
+      "x-imswitch-widget": "ref"
+    },
+    "toggleTrueExternal": {
+      "description": "Whether the channel should default to external (``true``) or",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:optional(in)",
+        "docs:boolean"
+      ]
+    },
+    "ttlToggling": {
+      "description": "If ``true``, flip to the opposite control mode briefly during",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:optional(in)",
+        "docs:boolean"
+      ]
+    },
+    "useMockOnFailure": {
+      "description": "When the controller does not answer the startup commands (a pyvisa",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "channel",
+    "rs232device"
+  ],
+  "title": "AAAOTFLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "AAAOTFLaserManager",
+    "LaserManager"
+  ]
+}

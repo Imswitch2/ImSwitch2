@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "device": {
+      "description": "PI controller model identifier (e.g. ``\"C-663.11\"``).  If",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    },
+    "runtime_timeout_ms": {
+      "description": "Positive runtime command timeout in milliseconds, applied to both",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:optional(get)"
+      ]
+    },
+    "usb_description": {
+      "description": "Optional explicit USB description string.  If omitted the",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:string"
+      ]
+    }
+  },
+  "title": "PIStageManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PIStageManager",
+    "PositionerManager"
+  ]
+}

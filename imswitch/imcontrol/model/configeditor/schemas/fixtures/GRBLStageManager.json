@@ -1,0 +1,11 @@
+{
+  "category": "positioners",
+  "device": {
+    "managerName": "GRBLStageManager",
+    "managerProperties": {
+      "PHYS_TO_GRBL_FAC": "example",
+      "PHYS_TO_GRBL_FAC_Z": "example",
+      "rs232device": "example"
+    }
+  }
+}

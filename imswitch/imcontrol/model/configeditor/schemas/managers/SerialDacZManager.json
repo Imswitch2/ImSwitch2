@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "baudrate": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "clamp_voltage": {
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "command_timeout": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "dac_command": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "initial_position": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "max_voltage": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "min_voltage": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "offset_voltage": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "port": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "prompt": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "safe_voltage_on_close": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "timeout": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "volts_per_um": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "SerialDacZManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "SerialDacZManager",
+    "PositionerManager"
+  ]
+}

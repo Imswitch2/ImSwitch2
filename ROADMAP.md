@@ -382,9 +382,10 @@ dependency).
 **Goal:** Make ImSwitch2 a first-class SMLM platform end to end — acquire a
 blinking image stack, localize single emitters into a coordinate table with
 properties, process that table (drift correction, grouping, filtering), and
-render it in-house — while treating the external
-[napari-storm](https://github.com/napari-storm/napari-storm) plugin as the
-premium GPU point-cloud renderer via a clean data handoff, not a dependency.
+render it in-house — with the external
+[napari-storm](https://pypi.org/project/napari-storm/) package as the
+optional premium GPU point-cloud viewer: embedded behind a lazy import and the
+`storm` extra, never a hard dependency.
 
 **Detailed plan:**
 [docs/design/plans/smlm-localization-port.md](docs/design/plans/smlm-localization-port.md)
@@ -414,8 +415,9 @@ initial scope.
   "render" is a pure-numpy step that turns the coordinate table back into an
   image — 2D/3D **histogram binning** or **fixed-Gaussian splatting**. The
   rendered volume is a normal image `ProcessingResult` the embedded napari
-  viewer already displays (3D via the dims slider). napari-storm stays the
-  separate, cutting-edge GPU particle renderer, fed the same recarray.
+  viewer already displays (3D via the dims slider). napari-storm is the
+  optional cutting-edge GPU particle renderer, fed the same recarray in place
+  when the `storm` extra is installed and `napariStormViewer` is on.
 
 **Surface-level plan (refined in the plan doc):**
 
@@ -446,6 +448,18 @@ initial scope.
   dark-frame tolerance) — each a `Processor` on `LocalizationResult`
   (`analysis/smlm_tables.py` pure-numpy core), gated by the `localization`
   result kind.
+- ✅ **napari-storm embedded viewer** (2026-09, `feat/napari-storm-viewer`).
+  napari-storm is on PyPI (2.1.0) and installed by the `storm` extra; with
+  `napariStormViewer` on, `LocalizationResult`s draw as GPU summed Gaussians
+  through a retained display channel (`view/NapariStormDisplay.py`) that
+  reads our nm recarray in place, gated by headless contract tests against
+  the released package. Render-controls panel (`smlmRenderPanel`): width
+  mode, colour-by-depth, render range, appearance.
+- ✅ **Localization import + precision columns** (2026-09). ThunderSTORM
+  CSV, Picasso HDF5 and mapped generic CSV open straight into the results
+  list (`analysis/smlm_import.py`, `LocalizationImportDialog`); schema gained
+  `lp_*_nm` localization precision beside `sigma_*_nm` PSF width, filled by
+  the localizer via Thompson/Mortensen and preferred for rendering.
 - ⬜ **Future phases (out of initial scope):** COMET/RCC all-pairs drift
   refinement (GPU-optional), 3D (astigmatism/PSF) fitting,
   throughput-oriented (vectorized/GPU) localization.
@@ -533,7 +547,7 @@ XYZ stage scanning.
 - ⬜ Auto cell-detection inside the tiling workflow drives navigation
   correctly, using the same shared segmentation kernel as ImProcess and WFS.
 - ⬜ Scripted unattended runs from
-  `imswitch/_data/user_defaults/scripts/wfs/`.
+  `imswitch/_data/user_defaults/scripts/workflows/wfs/`.
 
 ### 13.E — SNOUTY lightsheet setup
 
@@ -663,7 +677,7 @@ Major UI / workflow modernization. Headline items:
   software gated-STED and tau-STED, with `SwabianTimeTaggerManager` as the
   first backend via
   `api.imcontrol.buildWorkflowFacade(time_resolved_detector_name=...)`.
-  Mock facade + unit tests, example scripts under `scripts/timeresolved/`,
+  Mock facade + unit tests, example scripts under `scripts/workflows/timeresolved/`,
   and docs
   ([plan](docs/design/plans/time-resolved-detector-workflows.md),
   `docs/scripting-time-resolved-workflows.rst`). Software foundation
@@ -694,7 +708,7 @@ and are covered by `test_microscope_facade.py`. Workflows ported with
 no-hardware tests: `WidefieldStarss`, `ZStack`, `CWSTARSS`,
 `Calibration`, plus the composite workflows `Tiling`, `DefocusScan`,
 `SerialCWSTARSS`, `MultiWellTiling`. Scripting examples ship under
-`imswitch/_data/user_defaults/scripts/wfs/`. A scripting-cookbook page
+`imswitch/_data/user_defaults/scripts/workflows/wfs/`. A scripting-cookbook page
 will land alongside Milestone 13.D's hardware revalidation.
 
 ---

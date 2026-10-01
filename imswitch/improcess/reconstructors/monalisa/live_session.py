@@ -23,6 +23,41 @@ except ImportError:
     cp = None
 
 
+
+def directions_from_orientation(orientation: str) -> list[str]:
+    """``['+'|'-', ...]`` per dialog axis (x, y, z, t) from a detected orientation.
+
+    Orientation strings are ``"+x+y"``-style: each axis letter is preceded by
+    its sign, in either order (``"+y-x"`` is a transposed candidate). Only the
+    sign per axis is reported here; z and t are never mirrored by this path.
+    """
+    signs = {"x": "+", "y": "+"}
+    for index, char in enumerate(orientation):
+        if char in signs and index > 0 and orientation[index - 1] in "+-":
+            signs[char] = orientation[index - 1]
+    return [signs["x"], signs["y"], "+", "+"]
+
+
+def expected_orientation_signs(layout) -> dict[str, str] | None:
+    """Per-axis sign the recorded layout implies, or ``None`` without a layout.
+
+    Derived from ``physical_orientation_flips`` -- the one place the layout's
+    ``direction`` is interpreted -- for the ``scan_x``/``scan_y`` loops.
+    """
+    if layout is None:
+        return None
+    from imswitch.imcommon.model.acquisition_layout import physical_orientation_flips
+
+    flips = physical_orientation_flips(layout)
+    signs = {}
+    for loop in layout.event_loops:
+        if loop.kind == "scan_x":
+            signs["x"] = "-" if loop.id in flips else "+"
+        elif loop.kind == "scan_y":
+            signs["y"] = "-" if loop.id in flips else "+"
+    return signs or None
+
+
 class MonalisaLiveSession(StreamingSession):
     """
     Streaming reconstruction session for MoNaLISA fast-Gauss live pipeline.
@@ -39,6 +74,9 @@ class MonalisaLiveSession(StreamingSession):
         self.ny_s = None
         self.nx_c = None
         self.ny_c = None
+        self.num_linesteps = 1
+        self.detected_orientation = None
+        self.num_frames_per_condition = None
         self.num_frames_in_stack = None
         self.use_gpu = False
         self.bleaching_correction = False
@@ -46,6 +84,114 @@ class MonalisaLiveSession(StreamingSession):
         self.name = ""
         self.scan_params = {}
         self.output_pixel_size_nm = None
+        # GPU streaming path: accumulate the in-flight timepoint's output on the
+        # device and copy back to ``reconstructed`` only at the viewer-refresh
+        # cadence (see result()) or when the timepoint rolls over. Frames arrive
+        # in order so exactly one timepoint is ever "hot".
+        self._hot_plane = None
+        self._hot_time_index = 0
+        self._hot_plane_dirty = False
+        self._frame_inds_gpu = None
+        # Timepoint currently being written; see live_plane().
+        self._current_timepoint = 0
+
+    @staticmethod
+    def _geometry_from_recorded_layout(stack_info):
+        """``(nx_s, ny_s, timepoints, linesteps)`` from the resolved layout.
+
+        ``None`` when there is no usable layout, or when an *inferred* one
+        describes a frame order this path cannot assemble.
+
+        This is the same resolved contract the offline path consumes, so live
+        and batch reconstruction of one recording cannot disagree about the
+        frame order -- and it is the resolver, not this module, that decides
+        what the stage metadata means.
+
+        The streaming path assembles one contiguous stack per timepoint;
+        line-step conditions interleaved per line are part of that stack and
+        are de-interleaved by ``num_linesteps``. A recording that *declares*
+        anything else -- conditions laid out any other way, a reversed or
+        serpentine fast axis, a gated detector, a Z loop -- is refused rather
+        than silently reshaped into timepoints. The same shape merely
+        *inferred* from legacy metadata is declined instead, so a file that
+        used to open still opens through the older ladder below.
+        """
+        from imswitch.imcommon.model.acquisition_layout import UnconsumedLoopError
+
+        from .coeffs_to_image import (
+            linestep_conditions_interleave_per_line,
+            placement_from_layout,
+        )
+
+        resolved = getattr(stack_info, "acquisition_layout", None)
+        if resolved is None or not resolved.is_usable:
+            return None
+        layout = resolved.layout
+        try:
+            placement = placement_from_layout(layout)
+        except UnconsumedLoopError as error:
+            if resolved.is_authoritative:
+                raise ValueError(str(error)) from error
+            return None
+        if placement is None:
+            return None
+
+        unsupported = []
+        if (
+            placement.n_conditions > 1
+            and not linestep_conditions_interleave_per_line(layout)
+        ):
+            unsupported.append(
+                f"{placement.n_conditions} line-step conditions that are not "
+                f"interleaved per line"
+            )
+        if placement.slices > 1:
+            unsupported.append(f"{placement.slices} Z slices")
+        if any(rule.order != "forward" for rule in layout.traversal):
+            unsupported.append("a reversed or serpentine fast axis")
+        if layout.recorded_event_spans is not None:
+            unsupported.append("a detector gated to part of the scan")
+        if unsupported:
+            if not resolved.is_authoritative:
+                return None
+            raise ValueError(
+                "Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and "
+                "cannot represent " + ", ".join(unsupported) + ". Use the "
+                "MoNaLISA reconstruction method, which places every frame by "
+                "its recorded coordinate."
+            )
+        return (
+            placement.cols,
+            placement.rows,
+            placement.n_time,
+            placement.n_conditions,
+        )
+
+    def _cross_check_orientation_against_layout(self, orientation, resolved) -> None:
+        """Warn when the data-detected orientation contradicts the layout.
+
+        The detection is authoritative for this path; the layout's sign is
+        what every metadata-placing consumer uses, so a disagreement means
+        either a mis-detection on a featureless first stack or a wrong
+        ``isPositiveDirection`` in the setup file -- both worth a line in the
+        log before the images from two methods come out mirrored.
+        """
+        layout = getattr(resolved, "layout", None)
+        if layout is None or not getattr(resolved, "is_usable", False):
+            return
+        expected = expected_orientation_signs(layout)
+        if not expected:
+            return
+        detected = dict(zip(("x", "y"), directions_from_orientation(orientation)[:2]))
+        mismatched = [axis for axis, sign in expected.items() if detected.get(axis) != sign]
+        if mismatched:
+            self._logger.warning(
+                f"Detected scan orientation {orientation!r} disagrees with the "
+                f"recorded layout on axis {', '.join(mismatched)} (layout says "
+                f"{expected}); using the detected orientation. If the layout is "
+                f"right, check the first stack; if the detection is right, check "
+                f"isPositiveDirection in the setup file."
+            )
 
     def begin(self, init_obj, params: dict) -> StreamPlan:
         """
@@ -90,25 +236,56 @@ class MonalisaLiveSession(StreamingSession):
             axis_startpos = np.array(imswitch_meta["ScanStage:axis_startpos"]).flatten()
             axis_length = np.array(imswitch_meta["ScanStage:axis_length"]).flatten()
             axis_step_size = np.array(imswitch_meta["ScanStage:axis_step_size"]).flatten()
+            self.num_linesteps = (
+                self._coerce_positive_int(imswitch_meta.get("ScanTTL:n_linesteps"))
+                or 1
+            )
             step_x_nm, step_y_nm = self.scan_stage_step_size_nm(
                 imswitch_meta, axis_step_size
             )
-            self.nx_s, self.ny_s = self._resolve_scan_steps(
-                axis_startpos,
-                axis_length,
-                axis_step_size,
-                imswitch_meta,
-                init_obj.stack_info,
-                data.shape[0],
+            # The resolver decides what the stage metadata means. The ladder
+            # below re-derives the same thing with its own arithmetic and is
+            # only for sources the resolver cannot describe.
+            resolved_geometry = self._geometry_from_recorded_layout(
+                init_obj.stack_info
             )
+            if resolved_geometry is not None:
+                (
+                    self.nx_s,
+                    self.ny_s,
+                    recorded_timepoints,
+                    recorded_linesteps,
+                ) = resolved_geometry
+                # The layout outranks the ScanTTL attribute it may have been
+                # derived from.
+                self.num_linesteps = recorded_linesteps
+            else:
+                recorded_timepoints = None
+                self.nx_s, self.ny_s = self._resolve_scan_steps(
+                    axis_startpos,
+                    axis_length,
+                    axis_step_size,
+                    imswitch_meta,
+                    init_obj.stack_info,
+                    data.shape[0],
+                )
         except KeyError as e:
             raise ValueError(f"Missing required scan geometry key: {e}") from e
 
-        self.num_frames_in_stack = self.nx_s * self.ny_s
-        num_time_points = self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
+        self.num_frames_per_condition = self.nx_s * self.ny_s
+        self.num_frames_in_stack = (
+            self.num_frames_per_condition * self.num_linesteps
+        )
+        num_time_points = (
+            recorded_timepoints
+            if recorded_timepoints is not None
+            else self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
+        )
+        num_output_conditions = num_time_points * self.num_linesteps
 
         self._logger.info(
             f"Scan geometry: nx_s={self.nx_s}, ny_s={self.ny_s}, "
+            f"linesteps={self.num_linesteps}, "
             f"frames_per_stack={self.num_frames_in_stack}, timepoints={num_time_points}"
         )
 
@@ -152,14 +329,20 @@ class MonalisaLiveSession(StreamingSession):
             use_gpu=self.use_gpu,
         )
 
-        if working_data.shape[0] < self.num_frames_in_stack:
+        orientation_indices = self._condition_frame_indices(0)
+        if (
+            orientation_indices.size < self.num_frames_per_condition
+            or working_data.shape[0] <= int(orientation_indices[-1])
+        ):
             self._logger.warning(
                 f"First chunk has only {working_data.shape[0]} frames, need {self.num_frames_in_stack} "
                 f"for orientation detection; using default orientation '+x+y'"
             )
             orientation = "+x+y"
         else:
-            chunk_for_orientation = working_data[: self.num_frames_in_stack]
+            # A contiguous nx*ny prefix mixes line-step conditions. Select one
+            # complete condition from the interleaved first stack instead.
+            chunk_for_orientation = working_data[orientation_indices]
             if self.use_gpu and CUPY_AVAILABLE:
                 chunk_for_orientation = cp.array(chunk_for_orientation)
             proc_pixels = self.processor.process_chunk(chunk_for_orientation)
@@ -167,6 +350,15 @@ class MonalisaLiveSession(StreamingSession):
                 loc_result.nx_c, loc_result.ny_c, self.nx_s, self.ny_s, proc_pixels
             )
             self._logger.info(f"Detected scan orientation: {orientation}")
+
+        # Orientation is decided from the data, not from metadata: the eight
+        # candidates already include every mirror, so a negative stage
+        # direction is resolved here empirically and the layout's sign must
+        # NOT be applied on top. The layout is a cross-check.
+        self.detected_orientation = orientation
+        self._cross_check_orientation_against_layout(
+            orientation, getattr(init_obj.stack_info, "acquisition_layout", None)
+        )
 
         self.processor.update_frame_inds(
             loc_result.nx_c, loc_result.ny_c, self.nx_s, self.ny_s, orientation
@@ -182,15 +374,29 @@ class MonalisaLiveSession(StreamingSession):
         self.output_pixel_size_nm = (step_y_nm, step_x_nm)
 
         self.reconstructed = np.zeros(
-            (1, 1, num_time_points, 1, recon_rows, recon_cols), dtype=np.float32
+            (1, 1, num_output_conditions, 1, recon_rows, recon_cols),
+            dtype=np.float32,
         )
+
+        if self.use_gpu and CUPY_AVAILABLE:
+            # One flat device plane for the current timepoint (same layout as
+            # ``reconstructed[0, 0, t, 0].reshape(-1)``) plus a device copy of
+            # the scatter map, so per-frame accumulation never leaves the GPU.
+            self._hot_plane = cp.zeros(recon_rows * recon_cols, dtype=cp.float32)
+            self._hot_time_index = 0
+            self._hot_plane_dirty = False
+            self._frame_inds_gpu = cp.asarray(self.processor.frame_inds)
 
         self.scan_params = {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
-            "directions": ["+", "+", "+", "+"],
-            "steps": [self.nx_s, self.ny_s, 1, num_time_points],
+            # What was actually used to assemble the image, not a placeholder.
+            "directions": directions_from_orientation(orientation),
+            "steps": [self.nx_s, self.ny_s, 1, num_output_conditions],
             "step_sizes": [float(step_x_nm), float(step_y_nm), 1.0, 1.0],
-            "unidirectional": False,
+            "n_linesteps": self.num_linesteps,
+            # This path assembles contiguous stacks: a unidirectional raster,
+            # never a snake scan (a serpentine layout is refused above).
+            "unidirectional": True,
         }
 
         self._logger.info(
@@ -250,31 +456,138 @@ class MonalisaLiveSession(StreamingSession):
 
     def _push_single_stack_chunk(self, chunk: np.ndarray, start: int, end: int) -> None:
         """Scatter a chunk that is guaranteed not to cross a scan-stack boundary."""
-        # start/end are GLOBAL frame indices across timepoints (the lapse source
-        # streams scan0, scan1, ... as one continuous range). frame_inds is
-        # per-stack (length num_frames_in_stack), so derive the timepoint from
-        # the global start and index frame_inds with the LOCAL position within
-        # the stack. A chunk never spans a stack boundary (sources read within
-        # one stack/group), so a single time_index applies to the whole chunk.
-        time_index = start // self.num_frames_in_stack
-        if time_index >= self.reconstructed.shape[2]:
-            self._logger.warning(
-                f"Time index {time_index} exceeds allocated timepoints; skipping chunk"
-            )
-            return
-
-        local_start = start % self.num_frames_in_stack
-        local_end = local_start + (end - start)
-
         if self.bleaching_correction:
             chunk = self._apply_bleaching_correction(chunk)
 
+        if self.num_linesteps == 1:
+            # One condition per stack, so a chunk lands entirely inside one
+            # output plane -- the invariant the GPU hot plane relies on.
+            #
+            # start/end are GLOBAL frame indices across timepoints (the lapse
+            # source streams scan0, scan1, ... as one continuous range).
+            # frame_inds is per-stack (length num_frames_in_stack), so derive
+            # the timepoint from the global start and index frame_inds with
+            # the LOCAL position within the stack.
+            time_index = start // self.num_frames_in_stack
+            if time_index >= self.reconstructed.shape[2]:
+                self._logger.warning(
+                    f"Time index {time_index} exceeds allocated timepoints; "
+                    "skipping chunk"
+                )
+                return
+
+            # The timepoint currently being filled; live_plane() hands this
+            # one to the viewer. Frames arrive in order, so it only ever
+            # moves forward.
+            self._current_timepoint = time_index
+
+            local_start = start % self.num_frames_in_stack
+            local_end = local_start + (end - start)
+
+            if self.use_gpu and CUPY_AVAILABLE:
+                self._push_gpu(chunk, time_index, local_start, local_end)
+                return
+
+            proc_pixels = self.processor.process_chunk(chunk)
+            pixel_indices = self.processor.frame_inds[local_start:local_end]
+            flat_recon = self.reconstructed[0, 0, time_index, 0].reshape(-1)
+            flat_recon[pixel_indices.ravel()] = proc_pixels.ravel()
+            return
+
+        # TODO: line-interleaved scans take a device->host copy per chunk.
+        # The GPU hot plane cannot apply as written: it holds ONE device
+        # plane and assumes a chunk touches one output plane, but here
+        # consecutive frames alternate between num_linesteps planes, so it
+        # would flush and zero on nearly every frame. Generalising it means
+        # holding num_linesteps device planes keyed by output index and
+        # flushing them when the acquisition index rolls over -- which also
+        # needs live_plane() to say whether a "timepoint" is one condition
+        # or the whole group.
+
         chunk_gpu = cp.array(chunk) if self.use_gpu and CUPY_AVAILABLE else chunk
         proc_pixels = self.processor.process_chunk(chunk_gpu)
-        pixel_indices = self.processor.frame_inds[local_start:local_end]
 
-        flat_recon = self.reconstructed[0, 0, time_index, 0].reshape(-1)
-        flat_recon[pixel_indices.ravel()] = proc_pixels.ravel()
+        # Advanced-scan frames are grouped by repeated line, not by complete
+        # condition image: [line0/A][line0/B][line1/A][line1/B] ...
+        global_indices = np.arange(start, end, dtype=np.int64)
+        local_indices = global_indices % self.num_frames_in_stack
+        acquisition_indices = global_indices // self.num_frames_in_stack
+        fast_indices = local_indices % self.nx_s
+        expanded_lines = local_indices // self.nx_s
+        linestep_indices = expanded_lines % self.num_linesteps
+        middle_indices = expanded_lines // self.num_linesteps
+        physical_indices = middle_indices * self.nx_s + fast_indices
+        output_indices = acquisition_indices * self.num_linesteps + linestep_indices
+
+        # live_plane() reads this; without it the viewer would sit on plane
+        # 0 for the whole run. Clamped so it can never name a plane that was
+        # never allocated, and guarded because an empty chunk has no max.
+        if output_indices.size:
+            self._current_timepoint = min(
+                int(output_indices.max()), self.reconstructed.shape[2] - 1
+            )
+
+        for output_index in np.unique(output_indices):
+            if output_index >= self.reconstructed.shape[2]:
+                self._logger.warning(
+                    f"Time/condition index {output_index} exceeds allocated output; "
+                    "skipping frames"
+                )
+                continue
+            mask = output_indices == output_index
+            pixel_indices = self.processor.frame_inds[physical_indices[mask]]
+            flat_recon = self.reconstructed[0, 0, output_index, 0].reshape(-1)
+            flat_recon[pixel_indices.ravel()] = proc_pixels[mask].ravel()
+
+    def _condition_frame_indices(self, linestep: int) -> np.ndarray:
+        """Return one condition's indices from a line-interleaved stack."""
+        line_starts = (
+            np.arange(self.ny_s, dtype=np.int64)
+            * self.nx_s
+            * self.num_linesteps
+            + int(linestep) * self.nx_s
+        )
+        return (
+            line_starts[:, np.newaxis]
+            + np.arange(self.nx_s, dtype=np.int64)[np.newaxis, :]
+        ).reshape(-1)
+
+    def _push_gpu(
+        self,
+        chunk: np.ndarray,
+        time_index: int,
+        local_start: int,
+        local_end: int,
+    ) -> None:
+        """Scatter a chunk into the on-device hot plane for ``time_index``.
+
+        Only one timepoint is ever in flight (frames arrive in order), so a
+        single device plane suffices: when the timepoint advances, flush the
+        finished plane to the host buffer (one D2H) and zero it for reuse. The
+        per-frame path stays entirely on the GPU -- no ``asnumpy`` here.
+        """
+        if time_index != self._hot_time_index:
+            self._flush_hot_plane()
+            self._hot_plane.fill(0)
+            self._hot_time_index = time_index
+
+        chunk_gpu = cp.asarray(chunk)
+        proc_pixels = self.processor.process_chunk_gpu(chunk_gpu)
+        pixel_indices = self._frame_inds_gpu[local_start:local_end]
+        self._hot_plane[pixel_indices.ravel()] = proc_pixels.ravel()
+        self._hot_plane_dirty = True
+
+    def _flush_hot_plane(self) -> None:
+        """Copy the current GPU hot plane back to the host buffer (one D2H).
+
+        No-op unless the plane has unsynced writes. Driven at the viewer-refresh
+        cadence via :meth:`result`, and once per timepoint on rollover.
+        """
+        if not self._hot_plane_dirty or self._hot_plane is None:
+            return
+        dst = self.reconstructed[0, 0, self._hot_time_index, 0]
+        dst.reshape(-1)[:] = cp.asnumpy(self._hot_plane)
+        self._hot_plane_dirty = False
 
     def _resolve_gaussian_sigma_px(self, params: dict) -> float:
         """Fit-Gaussian sigma in pixels.
@@ -412,7 +725,7 @@ class MonalisaLiveSession(StreamingSession):
 
         if stack_frames is not None:
             for nx_s, ny_s in unique_candidates:
-                if nx_s * ny_s == stack_frames:
+                if nx_s * ny_s * self.num_linesteps == stack_frames:
                     return nx_s, ny_s
 
         if unique_candidates:
@@ -430,11 +743,12 @@ class MonalisaLiveSession(StreamingSession):
 
     @staticmethod
     def _scan_steps_from_size(
-        axis_length: np.ndarray, axis_step_size: np.ndarray
+        axis_length: np.ndarray,
+        axis_step_size: np.ndarray,
     ) -> tuple[int, int] | None:
         try:
             dx, dy = float(axis_step_size[0]), float(axis_step_size[1])
-            if dx == 0 or dy == 0:
+            if dx == 0.0 or dy == 0.0:
                 return None
             nx_s = max(1, int(np.ceil(abs(float(axis_length[0])) / abs(dx))))
             ny_s = max(1, int(np.ceil(abs(float(axis_length[1])) / abs(dy))))
@@ -596,6 +910,29 @@ class MonalisaLiveSession(StreamingSession):
         scale = reference_energy / safe_energies
         return corrected * scale[:, np.newaxis, np.newaxis].astype(np.float32)
 
+    def live_plane(self) -> tuple[int, np.ndarray] | None:
+        """The in-flight timepoint's slice, copied, for an incremental redraw.
+
+        Costs one plane (``Y*X`` floats) instead of the whole growing volume
+        that :meth:`result` copies, so the per-refresh cost stays flat as the
+        timelapse gets longer.
+
+        On the GPU path the device hot plane is synced first, so the returned
+        slice includes everything reconstructed so far for this timepoint.
+        """
+        if self.reconstructed is None:
+            return None
+
+        if self.use_gpu and CUPY_AVAILABLE:
+            self._flush_hot_plane()
+
+        index = self._current_timepoint
+        if not 0 <= index < self.reconstructed.shape[2]:
+            return None
+        # Keep every axis (T has length 1) so the viewer can assign this
+        # straight into the matching slice of its own buffer.
+        return index, self.reconstructed[:, :, index:index + 1].copy()
+
     def result(self) -> MonalisaProcessingResult:
         """
         Return a snapshot of the current reconstruction.
@@ -605,6 +942,12 @@ class MonalisaLiveSession(StreamingSession):
         """
         if self.reconstructed is None:
             raise RuntimeError("Session not initialized; call begin() first")
+
+        # GPU path: the in-flight timepoint lives on the device -- sync it back
+        # here so the snapshot is current. This call is the viewer-cadence D2H
+        # (the process worker throttles result() to viewer_update_interval_s).
+        if self.use_gpu and CUPY_AVAILABLE:
+            self._flush_hot_plane()
 
         return MonalisaProcessingResult(
             name=self.name,
@@ -621,6 +964,8 @@ class MonalisaLiveSession(StreamingSession):
                 del self.processor.x_interp
                 del self.processor.y_interp
                 del self.processor.lsq_weights
+            self._hot_plane = None
+            self._frame_inds_gpu = None
             cp.get_default_memory_pool().free_all_blocks()
 
 

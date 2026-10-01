@@ -22,6 +22,10 @@ def load_processing_config(logger: Any = None) -> dict[str, Any]:
         from imswitch.imcontrol.model.SetupInfo import SetupInfo
 
         options, _ = configfiletools.loadOptions()
+        # Same per-machine limits imcontrol adopts at its startup; ImProcess
+        # running alone still reads them from the same file.
+        from imswitch.imcommon.model import memory_limits
+        memory_limits.configure(getattr(options, 'memory', None), logger=logger)
         setup_info = configfiletools.loadSetupInfo(options, SetupInfo)
         catch_all = getattr(setup_info, "_catchAll", None) or {}
         processing_config = catch_all.get("processing", {}) or {}
@@ -61,7 +65,12 @@ def is_actions_panel_enabled(processing_config: dict[str, Any]) -> bool:
 
 
 def is_file_watcher_panel_enabled(processing_config: dict[str, Any]) -> bool:
-    """Return whether the ImProcess File watcher dock should be shown at startup."""
+    """Return whether the ImProcess Directory watcher dock should be shown at startup.
+
+    The JSON key stays ``fileWatcherPanel`` (rather than following the panel's
+    rename to "Directory watcher") so existing setup files and imcontrol's
+    config editor keep working.
+    """
     return bool(processing_config.get("fileWatcherPanel", True))
 
 
@@ -125,6 +134,21 @@ def is_metadata_panel_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("metadataPanel", False))
 
 
+def is_napari_storm_viewer_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether localization results render through napari-storm.
+
+    Off by default and additionally gated on the optional ``storm`` extra
+    being installed; without either, localization results keep the
+    low-resolution histogram preview they carry themselves.
+    """
+    return bool(processing_config.get("napariStormViewer", False))
+
+
+def is_smlm_render_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the SMLM point-cloud render-controls panel should be shown."""
+    return bool(processing_config.get("smlmRenderPanel", False))
+
+
 def is_multicolor_panel_enabled(processing_config: dict[str, Any]) -> bool:
     """Return whether the optional ImProcess multicolor alignment panel should be shown."""
     return bool(processing_config.get("multicolorPanel", False))
@@ -174,3 +198,25 @@ def live_stall_timeout_s(processing_config: dict[str, Any]) -> tuple[float | Non
             return (None, True)
     except (TypeError, ValueError):
         return (300.0, True)
+
+
+def live_viewer_update_interval_s(processing_config: dict[str, Any]) -> float:
+    """Minimum wall-clock seconds between live-viewer refreshes.
+
+    In the GPU streaming path this is also the GPU->host (D2H) transfer
+    cadence: the reconstruction accumulates on the GPU and is copied back to
+    the host buffer only when a viewer refresh is due (or a timepoint
+    completes). A smaller value gives a more responsive viewer at the cost of
+    more frequent D2H copies; ``0`` refreshes on every frame.
+
+    Default (key absent): 0.2 seconds (5 Hz). Negative or non-numeric values
+    fall back to the default.
+    """
+    key = "liveViewerUpdateIntervalS"
+    if key not in processing_config:
+        return 0.2
+    try:
+        value = float(processing_config[key])
+    except (TypeError, ValueError):
+        return 0.2
+    return value if value >= 0.0 else 0.2

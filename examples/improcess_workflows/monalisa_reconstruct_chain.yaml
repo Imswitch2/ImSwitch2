@@ -1,0 +1,33 @@
+# MoNaLISA: reconstruct a recording, subtract background, project, save.
+# Needs a real MoNaLISA recording written by ImControl (the scan geometry is
+# read from its acquisition attributes; scan_params may be given explicitly
+# to override). Parameters not listed keep the widget defaults
+# (`python -m imswitch.improcess.workflows list` prints them).
+#   python -m imswitch.improcess.workflows run monalisa_reconstruct_chain.yaml \
+#       --input scan_0001.h5 --out results/
+name: monalisa-chain
+schema: 1
+steps:
+  - {step: source, id: raw}
+  - step: reconstruct
+    id: rec
+    reconstructor: monalisa
+    params:
+      reconstruction_method: Fast Gauss MoNaLISA
+      device: CPU
+      pixel_size_nm: 77
+      psf_fwhm_nm: 220
+      bg_modelling: Constant
+    inputs: [raw]
+  - step: process
+    id: bg
+    processor: subtract-background
+    params: {radius: 30.0, output_background: false}
+    inputs: [rec]
+  - step: process
+    id: proj
+    processor: projection
+    params: {axis: Z, mode: max}
+    inputs: [bg]
+  - {step: save, id: recon, input: rec, fmt: tiff, path_template: "{out_dir}/{source_stem}_monalisa{ext}"}
+  - {step: save, id: out, input: proj, fmt: tiff, path_template: "{out_dir}/{source_stem}_monalisa_bg_maxz{ext}"}

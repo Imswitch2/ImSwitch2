@@ -11,6 +11,7 @@ from imswitch.improcess.analysis.smlm_render import render_xy, render_xyz
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 
@@ -21,6 +22,36 @@ class SmlmRenderProcessor(Processor):
     id = "smlm-render"
     category = "Localization"
     kinds = ("localization",)
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'render_type': 'histogram',
+        'pixel_size_nm': 10.0,
+        'fwhm_nm': 20.0,
+        'render_3d': False,
+        'z_pixel_size_nm': 20.0}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'render_type', 'select', 'histogram', label='Render',
+                options=('histogram', 'fixed_gaussian'),
+            ),
+            ParamField(
+                'pixel_size_nm', 'float', 10.0, label='Output pixel', min=0.1, max=1000,
+                decimals=2, suffix='nm/px',
+            ),
+            ParamField(
+                'fwhm_nm', 'float', 20.0, label='Gaussian FWHM', min=0.1, max=10000, decimals=2,
+                suffix='nm',
+            ),
+            ParamField('render_3d', 'bool', False, label='Render 3D volume'),
+            ParamField(
+                'z_pixel_size_nm', 'float', 20.0, label='Z pixel', min=0.1, max=5000, decimals=2,
+                suffix='nm/px',
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

@@ -86,6 +86,8 @@ def test_projection_result_saves_hdf5(tmp_path):
     result.save(out_path, "hdf5")
 
     with h5py.File(out_path, "r") as h5:
-        assert "projection" in h5
-        assert h5.attrs["mode"] == "max"
-        assert h5.attrs["axis_label"] == "T"
+        # One dataset name across every image result: a reader should not have
+        # to know which processor made a file to find its pixels.
+        assert "data" in h5
+        assert h5.attrs["projection_mode"] == "max"
+        assert h5.attrs["projection_axis_label"] == "T"

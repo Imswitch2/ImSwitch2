@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a detector entry in a setup file, as imswitch.imcontrol.model.SetupInfo.DetectorInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "analogChannel": {
+      "default": null,
+      "description": "Channel for analog communication. ``null`` if the device is digital or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/ao{analogChannel}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.analogChannel: Optional[Union[str, int]]"
+      ]
+    },
+    "digitalLine": {
+      "default": null,
+      "description": "Line for digital communication. ``null`` if the device is analog or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/port0/line{digitalLine}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.digitalLine: Optional[Union[str, int]]"
+      ]
+    },
+    "forAcquisition": {
+      "default": false,
+      "description": "Whether the detector is used for acquisition.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:DetectorInfo.forAcquisition: bool"
+      ]
+    },
+    "forFocusLock": {
+      "default": false,
+      "description": "Whether the detector is used for focus lock.",
+      "type": "boolean",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "dataclass:DetectorInfo.forFocusLock: bool"
+      ]
+    },
+    "managerName": {
+      "description": "Manager class name.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "default": {},
+      "description": "Properties to be read by the manager. Empty when omitted.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerProperties: Dict[str, Any]"
+      ]
+    }
+  },
+  "required": [
+    "managerName"
+  ],
+  "title": "detector device entry (DetectorInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "DetectorInfo",
+    "DeviceInfo"
+  ],
+  "x-imswitch-info-class": "DetectorInfo"
+}

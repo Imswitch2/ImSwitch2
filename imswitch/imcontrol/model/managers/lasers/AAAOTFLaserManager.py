@@ -8,6 +8,14 @@ from .aa_aotf_protocols.frequency_startup import validate_frequency_mhz
 from ._protocol import DeviceInitializationError, ProtocolError
 
 
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
 class AAAOTFLaserManager(LaserManager):
     """ LaserManager for controlling one channel of an AA Opto-Electronic
     acousto-optic modulator/tunable filter through RS232 communication.
@@ -34,17 +42,27 @@ class AAAOTFLaserManager(LaserManager):
       to modify the laser power through ImSwitch. Default: False/null
     - ``ttlToggling`` -- bool describing if the channel should default to
       an extrenal control after setting a power value, to allow fast ttl
-      toggling from another source. 
+      toggling from another source.
+    - ``useMockOnFailure`` -- when the controller does not answer at startup,
+      continue with this channel in mock mode (nothing further is sent to it)
+      instead of aborting ImSwitch. A best-effort channel OFF is sent first.
+      Default: true. Set to false when a missing AOTF must be a startup error.
+      Configuration errors (unknown profile, bad channel or frequency) abort
+      startup either way.
     """
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
+        self._isMock = False
         self._channel = self._parse_channel(
             laserInfo.managerProperties['channel'], name
         )
         self._rs232manager = lowLevelManagers['rs232sManager'][
             laserInfo.managerProperties['rs232device']
         ]
+        self._use_mock_on_failure = _as_bool(
+            laserInfo.managerProperties.get('useMockOnFailure', True)
+        )
 
         self._profiles = build_profiles()
         requested = laserInfo.managerProperties.get('protocolProfile')
@@ -92,9 +110,6 @@ class AAAOTFLaserManager(LaserManager):
                     f'frequencyMHz. Use "aa.frequency-startup".'
                 )
 
-            self._run('prepare_frequency_programming')
-            self._run('set_channel_frequency', self._frequency_mhz)
-
         if 'toggleTrueExternal' in laserInfo.managerProperties:
             self._toggleTrueExternal = laserInfo.managerProperties['toggleTrueExternal']
         else:
@@ -104,20 +119,30 @@ class AAAOTFLaserManager(LaserManager):
         else:
             self._ttlToggling = False
 
-        if self._toggleTrueExternal:
-            if self._ttlToggling:
-                #self.blankingOnInternal()
-                self.internalControl()
+        # Everything above is configuration and raises on a bad setup file.
+        # From here on the controller is talked to, and a controller that does
+        # not answer must not take ImSwitch down with it.
+        try:
+            if self._frequency_mhz is not None:
+                self._run('prepare_frequency_programming')
+                self._run('set_channel_frequency', self._frequency_mhz)
+
+            if self._toggleTrueExternal:
+                if self._ttlToggling:
+                    #self.blankingOnInternal()
+                    self.internalControl()
+                else:
+                    #self.blankingOnInternal()
+                    self.externalControl()
             else:
-                #self.blankingOnInternal()
-                self.externalControl()
-        else:
-            if self._ttlToggling:
-                #self.blankingOnExternal()
-                self.externalControl()
-            else:
-                #self.blankingOnInternal()
-                self.internalControl()
+                if self._ttlToggling:
+                    #self.blankingOnExternal()
+                    self.externalControl()
+                else:
+                    #self.blankingOnInternal()
+                    self.internalControl()
+        except ProtocolError as exc:
+            self._startWithoutController(name, exc)
 
         self._lut = None
         self._value_units = 'arb'
@@ -158,7 +183,17 @@ class AAAOTFLaserManager(LaserManager):
         manager's existing behavior: the old direct ``query()`` calls also
         surfaced connection exceptions to their caller. Swallowing one here
         would let a failed hardware command look successful to the GUI.
+
+        In mock mode nothing is sent: the controller did not answer at
+        startup, and every further command would only wait out its own
+        timeout.
         """
+        if self._isMock:
+            self.__logger.debug(
+                f'Mock mode: AA channel {self._channel} {operation_name} '
+                f'not sent.'
+            )
+            return True
         operation = getattr(self._profile, operation_name, None)
         if operation is None:
             self.__logger.error(
@@ -179,6 +214,46 @@ class AAAOTFLaserManager(LaserManager):
                 f'AA channel {self._channel}: refusing {operation_name} with '
                 f'an invalid value: {exc}'
             )
+            return False
+        return True
+
+    def _startWithoutController(self, name, exc):
+        """Continue in mock mode after the startup exchange failed.
+
+        A timeout means the outcome is unknown, not that nothing arrived: a
+        controller whose replies are lost -- a wrong receive termination, for
+        one -- still executes what it is sent. So a channel OFF is attempted
+        first, and its outcome is what the log reports. With
+        ``useMockOnFailure`` false this is a startup error instead.
+        """
+        off_acknowledged = self._bestEffortChannelOff()
+        message = (
+            f'AA laser {name!r}: the controller did not complete the startup '
+            f'exchange ({type(exc).__name__}: {exc.message}). Best-effort '
+            f'channel OFF '
+            f'{"was acknowledged" if off_acknowledged else "was not acknowledged"}.'
+        )
+        if not self._use_mock_on_failure:
+            raise DeviceInitializationError(
+                f'{message} Check the rs232device port and line endings, or '
+                f'set managerProperties.useMockOnFailure to true to start '
+                f'without it.'
+            ) from exc
+        log = self.__logger.warning if off_acknowledged else self.__logger.critical
+        log(
+            f'{message} Continuing in mock mode: nothing more is sent to '
+            f'channel {self._channel}. Set managerProperties.useMockOnFailure '
+            f'to false to make this a startup error.'
+        )
+        self._isMock = True
+
+    def _bestEffortChannelOff(self) -> bool:
+        """Send channel OFF directly, bypassing ``_run`` and its logging."""
+        try:
+            self._profile.set_channel_enabled(
+                self._rs232manager, self._channel, False
+            )
+        except Exception:
             return False
         return True
 

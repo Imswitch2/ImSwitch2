@@ -1,0 +1,23 @@
+# Read the Docs build requirements.
+#
+# The package itself is NOT installed: conf.py puts the repository root on
+# sys.path. What is listed is exactly what the autodoc-documented modules
+# (managers, SetupInfo, signal designers) import at module level, found by
+# importing them in a bare venv and adding one missing module at a time.
+# PyQt5 is real rather than mocked because the framework layer combines Qt
+# classes with its own metaclass, which Sphinx's mock objects cannot do.
+sphinx>=7,<9
+sphinx-rtd-theme>=3
+numpy
+scipy
+matplotlib
+dataclasses-json
+typing-extensions
+PyQt5
+qtpy
+qdarkstyle
+coloredlogs
+h5py
+zarr
+tifffile
+pillow

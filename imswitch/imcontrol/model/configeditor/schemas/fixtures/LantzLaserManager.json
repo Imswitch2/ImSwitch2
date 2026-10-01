@@ -1,0 +1,10 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "LantzLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "digitalPorts": []
+    }
+  }
+}

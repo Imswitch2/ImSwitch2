@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "homeOnInit": {
+      "description": "If true, home the motor at startup before reading the initial position.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "snr": {
+      "description": "Kinesis serial number printed on the device (e.g. ``\"55000194\"``).",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    },
+    "unitsPerDegree": {
+      "description": "Encoder counts per degree.  Override only if your firmware revision drifts from the stock K10CR1 value.",
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "snr"
+  ],
+  "title": "KinesisRotatorManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "KinesisRotatorManager",
+    "RotatorManager"
+  ]
+}

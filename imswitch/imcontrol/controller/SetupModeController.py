@@ -339,7 +339,7 @@ class SetupModeController:
         if value not in values:
             values.append(value)
 
-    @APIExport()
+    @APIExport(runOnUIThread=True)
     def loadSetupMode(self, name, componentNames=None):
         """Apply a saved setup mode.
 

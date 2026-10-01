@@ -4,9 +4,9 @@ import os
 from imswitch.imcommon.model import initLogger, dirtools
 from .PositionerManager import PositionerManager
 
-# Where the last commanded position of each TriggerScope axis is remembered
-# between ImSwitch sessions. One JSON object keyed by positioner name -> axis.
-_PERSISTENCE_FILENAME = 'triggerscope_positions.json'
+# Pre-generalization TriggerScope persistence. Kept as a read-only migration
+# source so existing users retain their last commanded position after upgrade.
+_LEGACY_PERSISTENCE_FILENAME = 'triggerscope_positions.json'
 
 
 class TriggerScopePositionerManager(PositionerManager):
@@ -47,28 +47,51 @@ class TriggerScopePositionerManager(PositionerManager):
     - ``maxVolt`` -- maximum allowed DAC voltage
     """
 
+    requiresReference: bool = True
+    persistsLastPosition: bool = True
+
     def __init__(self, positionerInfo, name, **lowLevelManagers):
         if len(positionerInfo.axes) != 1:
             raise RuntimeError(
                 f'{self.__class__.__name__} only supports one axis,'
                 f' {len(positionerInfo.axes)} provided.'
             )
+
         self.__logger = initLogger(self, instanceName=name)
         self._triggerScopeManager = lowLevelManagers['triggerScopeManager']
         self._conversionFactor = positionerInfo.managerProperties['conversionFactor']
         self._minVolt = positionerInfo.managerProperties['minVolt']
         self._maxVolt = positionerInfo.managerProperties['maxVolt']
-        self._persistenceFile = os.path.join(
-            dirtools.UserFileDirs.Config, _PERSISTENCE_FILENAME
+        self._defaultReferenceVoltage = positionerInfo.managerProperties.get(
+            'defaultReferenceVoltage'
         )
+        if self._defaultReferenceVoltage is not None:
+            if not self._minVolt <= self._defaultReferenceVoltage <= self._maxVolt:
+                raise ValueError(
+                    f'defaultReferenceVoltage {self._defaultReferenceVoltage} V for '
+                    f'"{name}" is outside [{self._minVolt}, {self._maxVolt}] V.'
+                )
         super().__init__(positionerInfo, name, initialPosition={
             axis: 0 for axis in positionerInfo.axes
         })
 
-        # Re-adopt the last known position WITHOUT moving the DAC. The board is
-        # still holding that voltage from the previous session, so this restores
-        # the software's view of the hardware rather than guessing or homing.
-        self._restorePersistedPosition()
+        # Migrate the old TriggerScope-only store once if the new generic store
+        # has no value for this axis. No DAC command is issued.
+        if not self.isPositionRestored(self.axes[0]):
+            self._restoreLegacyPersistedPosition()
+
+    @property
+    def defaultReferenceVoltage(self):
+        return self._defaultReferenceVoltage
+
+    @property
+    def defaultReferencePosition(self):
+        if self._defaultReferenceVoltage is None:
+            return None
+        return self._defaultReferenceVoltage * self._conversionFactor
+
+    def positionToVoltage(self, position):
+        return position / self._conversionFactor
 
     def move(self, dist, axis):
         self.setPosition(self._position[self.axes[0]] + dist, axis)
@@ -78,7 +101,7 @@ class TriggerScopePositionerManager(PositionerManager):
         # actually commanded (not the requested one). The board has no readback,
         # so this is the only way to keep the tracked position consistent with
         # the hardware instead of drifting outside the valid range.
-        voltage = position / self._conversionFactor
+        voltage = self.positionToVoltage(position)
         clampedVoltage = min(max(voltage, self._minVolt), self._maxVolt)
         if clampedVoltage != voltage:
             self.__logger.warning(
@@ -91,67 +114,64 @@ class TriggerScopePositionerManager(PositionerManager):
             target=self.name,
             voltage=clampedVoltage
         )
-        self._position[self.axes[0]] = clampedVoltage * self._conversionFactor
-        self._persistPosition()
+        self._recordCommandedPosition(
+            self.axes[0], clampedVoltage * self._conversionFactor
+        )
 
     def closeEvent(self):
         pass
 
-    # ------------------------------------------------------------------
-    # Position persistence (no motion is ever issued from these)
-    # ------------------------------------------------------------------
-
-    def _restorePersistedPosition(self):
-        """ Restore the tracked position from disk without commanding the DAC.
-
-        The stored value is clamped to the axis' current ``[minVolt, maxVolt]``
-        range in case the setup changed since it was written. No ``setAnalog``
-        call is made — the board is assumed to still hold this voltage.
-        """
-        stored = self._loadPersistedPosition()
-        if stored is None:
-            return
-        voltage = stored / self._conversionFactor
+    def _normalizePersistedPosition(self, axis, position):
+        """Clamp a remembered software position to the current voltage range."""
+        voltage = float(position) / self._conversionFactor
         clampedVoltage = min(max(voltage, self._minVolt), self._maxVolt)
-        self._position[self.axes[0]] = clampedVoltage * self._conversionFactor
-        self.__logger.debug(
-            'Restored last known position %s for "%s" without moving the DAC '
-            '(the board is assumed to still hold this voltage from the previous '
-            'session).', self._position[self.axes[0]], self.name
+        return clampedVoltage * self._conversionFactor
+
+    def _restoreLegacyPersistedPosition(self):
+        """Migrate the old TriggerScope-only persistence file without motion."""
+        path = os.path.join(
+            dirtools.UserFileDirs.Config, _LEGACY_PERSISTENCE_FILENAME
+        )
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            stored = data[self.name][self.axes[0]]
+        except (FileNotFoundError, KeyError, ValueError, OSError):
+            return
+
+        position = self._normalizePersistedPosition(self.axes[0], stored)
+        self._adoptPersistedPosition(self.axes[0], position, persist=True)
+        self.__logger.info(
+            'Migrated persisted position %s for "%s" from %s without moving '
+            'the DAC.', position, self.name, path,
         )
 
-    def _loadPersistedPosition(self):
-        """ Return the persisted position for this axis, or ``None`` if absent
-        or unreadable. """
-        try:
-            with open(self._persistenceFile, 'r') as f:
-                data = json.load(f)
-            return data[self.name][self.axes[0]]
-        except (FileNotFoundError, KeyError, ValueError, OSError):
-            return None
+    def reference(self, axis=None, position=None):
+        if axis is None:
+            axis = self.axes[0]
 
-    def _persistPosition(self):
-        """ Write the current tracked position to disk, merging with any other
-        positioners already recorded in the file. Failures are non-fatal. """
-        try:
-            os.makedirs(os.path.dirname(self._persistenceFile), exist_ok=True)
-            try:
-                with open(self._persistenceFile, 'r') as f:
-                    data = json.load(f)
-                if not isinstance(data, dict):
-                    data = {}
-            except (FileNotFoundError, ValueError, OSError):
-                data = {}
-            data.setdefault(self.name, {})[self.axes[0]] = \
-                self._position[self.axes[0]]
-            with open(self._persistenceFile, 'w') as f:
-                json.dump(data, f, indent=2)
-        except OSError:
-            self.__logger.warning(
-                'Could not persist position for "%s" to %s; the position will '
-                'not survive a restart.', self.name, self._persistenceFile,
-                exc_info=True
+        if axis not in self.axes:
+            raise ValueError(
+                f'Axis {axis} not available. Available axes: {self.axes}'
             )
+
+        if position is None:
+            if self._defaultReferenceVoltage is None:
+                raise ValueError(
+                    f'No defaultReferenceVoltage is configured for "{self.name}".'
+                )
+            position = self.defaultReferencePosition
+
+        voltage = self.positionToVoltage(position)
+
+        if not self._minVolt <= voltage <= self._maxVolt:
+            raise ValueError(
+                f'Reference position {position} maps to {voltage:.3f} V, '
+                f'outside [{self._minVolt}, {self._maxVolt}] V.'
+            )
+
+        self.setPosition(position, axis)
+        self.markReferenced(axis)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

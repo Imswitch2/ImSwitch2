@@ -114,16 +114,36 @@ class ScanManagerTriggerScope(SuperScanManager):
     def _chanDAC(self, deviceName):
         return self._ts.deviceInfo[deviceName]['DACChannel']
 
-    def _lineTTL(self, deviceName):
-        return self._ts.deviceInfo[deviceName]['TTLLine']
+    def _lineTTL(self, deviceName, role=None):
+        """The TriggerScope TTL line a device is wired to.
+
+        A device only appears in the registry when its setup entry names a
+        ``Triggerscope/TTL<n>`` line, so a missing one is a configuration
+        answer, not a lookup failure. It used to surface as a bare ``KeyError``
+        raised part-way through uploading a scan's parameters, which says
+        nothing about what to do -- and the case it fires on is a real one: a
+        camera the firmware triggers can be named for recording purposes
+        without ImSwitch knowing its line, but the modes that *program* that
+        line need it.
+        """
+        try:
+            return self._ts.deviceInfo[deviceName]['TTLLine']
+        except KeyError:
+            named = f'{role} ' if role else ''
+            raise ValueError(
+                f'The {named}device {deviceName!r} has no TriggerScope TTL '
+                f'line, so this scan cannot tell the firmware which line to '
+                f'drive for it. Give it "digitalLine": "Triggerscope/TTL<n>" '
+                f'in the setup file, or choose a device that has one.'
+            ) from None
 
     # ---- pLS-RESOLFT -------------------------------------------------
 
     def _runpLSRESOLFTScan(self, params):
         dp = params['deviceParameters']
-        self._setParam('onLaserTTLChan',   self._lineTTL(dp['onLaser']))
-        self._setParam('offLaserTTLChan',  self._lineTTL(dp['offLaser']))
-        self._setParam('roLaserTTLChan',   self._lineTTL(dp['roLaser']))
+        self._setParam('onLaserTTLChan',   self._lineTTL(dp['onLaser'], 'activation laser'))
+        self._setParam('offLaserTTLChan',  self._lineTTL(dp['offLaser'], 'depletion laser'))
+        self._setParam('roLaserTTLChan',   self._lineTTL(dp['roLaser'], 'readout laser'))
         self._setParam('roScanDACChan',    self._chanDAC(dp['roScanDevice']))
         self._setParam('cycleScanDACChan', self._chanDAC(dp['cycleScanDevice']))
         for key, value in params['scanParameters'].items():
@@ -135,12 +155,12 @@ class ScanManagerTriggerScope(SuperScanManager):
 
     def _runpLSRESOLFTMulticolorScan(self, params):
         dp = params['deviceParameters']
-        self._setParam('onLaserTTLChan',        self._lineTTL(dp['onLaser']))
-        self._setParam('offLaserTTLChan',       self._lineTTL(dp['offLaser']))
-        self._setParam('roLaserTTLChan',        self._lineTTL(dp['roLaser']))
+        self._setParam('onLaserTTLChan',        self._lineTTL(dp['onLaser'], 'activation laser'))
+        self._setParam('offLaserTTLChan',       self._lineTTL(dp['offLaser'], 'depletion laser'))
+        self._setParam('roLaserTTLChan',        self._lineTTL(dp['roLaser'], 'readout laser'))
         self._setParam('Laser2TTLChan',         self._lineTTL(dp['Laser2']))
         self._setParam('Laser3TTLChan',         self._lineTTL(dp['Laser3']))
-        self._setParam('CameraTTLChan',         self._lineTTL(dp['CameraTTL']))
+        self._setParam('CameraTTLChan',         self._lineTTL(dp['CameraTTL'], 'camera'))
         self._setParam('roScanDACChan',         self._chanDAC(dp['roScanDevice']))
         self._setParam('cycleScanDACChan',      self._chanDAC(dp['cycleScanDevice']))
         self._setParam('multicolorScanDACChan', self._chanDAC(dp['MulticolorScanDevice']))
@@ -153,9 +173,9 @@ class ScanManagerTriggerScope(SuperScanManager):
 
     def _runpLSRESOLFTGalvoScan(self, params):
         dp = params['deviceParameters']
-        self._setParam('onLaserTTLChan',   self._lineTTL(dp['onLaser']))
-        self._setParam('offLaserTTLChan',  self._lineTTL(dp['offLaser']))
-        self._setParam('roLaserTTLChan',   self._lineTTL(dp['roLaser']))
+        self._setParam('onLaserTTLChan',   self._lineTTL(dp['onLaser'], 'activation laser'))
+        self._setParam('offLaserTTLChan',  self._lineTTL(dp['offLaser'], 'depletion laser'))
+        self._setParam('roLaserTTLChan',   self._lineTTL(dp['roLaser'], 'readout laser'))
         self._setParam('roScanDACChan',    self._chanDAC(dp['roScanDevice']))
         self._setParam('galvoScanDACChan', self._chanDAC(dp['galvoScanDevice']))
         self._setParam('cycleScanDACChan', self._chanDAC(dp['cycleScanDevice']))
@@ -173,7 +193,7 @@ class ScanManagerTriggerScope(SuperScanManager):
         self._setParam('Laser3TTLChan',         self._lineTTL(dp['Laser3']))
         self._setParam('Laser4TTLChan',         self._lineTTL(dp['Laser4']))
         self._setParam('Laser5TTLChan',         self._lineTTL(dp['Laser5']))
-        self._setParam('CameraTTLChan',         self._lineTTL(dp['CameraTTL']))
+        self._setParam('CameraTTLChan',         self._lineTTL(dp['CameraTTL'], 'camera'))
         self._setParam('roScanDACChan',         self._chanDAC(dp['roScanDevice']))
         self._setParam('multicolorScanDACChan', self._chanDAC(dp['MulticolorScanDevice']))
         self._setParam('cycleScanDACChan',      self._chanDAC(dp['cycleScanDevice']))
@@ -218,10 +238,10 @@ class ScanManagerTriggerScope(SuperScanManager):
 
     def _runLSXYRScan(self, params):
         dp = params['deviceParameters']
-        self._setParam('onLaserTTLChan',     self._lineTTL(dp['onLaser']))
-        self._setParam('offLaserTTLChan',    self._lineTTL(dp['offLaser']))
-        self._setParam('roLaserTTLChan',     self._lineTTL(dp['roLaser']))
-        self._setParam('CameraTTLChan',      self._lineTTL(dp['CameraTTL']))
+        self._setParam('onLaserTTLChan',     self._lineTTL(dp['onLaser'], 'activation laser'))
+        self._setParam('offLaserTTLChan',    self._lineTTL(dp['offLaser'], 'depletion laser'))
+        self._setParam('roLaserTTLChan',     self._lineTTL(dp['roLaser'], 'readout laser'))
+        self._setParam('CameraTTLChan',      self._lineTTL(dp['CameraTTL'], 'camera'))
         self._setParam('roScanDACChan',      self._chanDAC(dp['roScanDevice']))
         self._setParam('cycleScanDACChan',   self._chanDAC(dp['cycleScanDevice']))
         self._setParam('rasterXScanDACChan', self._chanDAC(dp['rasterXScanDevice']))

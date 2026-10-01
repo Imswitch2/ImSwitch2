@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "port": {
+      "x-imswitch-source": [
+        "code:required"
+      ]
+    },
+    "posConvFac": {
+      "x-imswitch-source": [
+        "code:required"
+      ]
+    }
+  },
+  "required": [
+    "port",
+    "posConvFac"
+  ],
+  "title": "ElliptecManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "ElliptecManager"
+  ]
+}

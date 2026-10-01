@@ -1,0 +1,16 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "AAAOTFLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "channel": 1,
+      "frequencyMHz": 1.5,
+      "protocolProfile": "aa.compatibility",
+      "rs232device": "example",
+      "toggleTrueExternal": true,
+      "ttlToggling": true,
+      "useMockOnFailure": true
+    }
+  }
+}

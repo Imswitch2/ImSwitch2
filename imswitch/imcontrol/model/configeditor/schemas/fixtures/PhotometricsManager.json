@@ -1,0 +1,11 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "PhotometricsManager",
+    "managerProperties": {
+      "Photometrics": {},
+      "cameraListIndex": 1,
+      "cameraPixelSizeUm": null
+    }
+  }
+}

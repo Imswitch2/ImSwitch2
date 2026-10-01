@@ -36,10 +36,20 @@ class PointScanTTLCycleDesigner(TTLCycleDesigner):
         signal_dict = {}
 
         targets = parameterDict['target_device']
-        n_steps_dx = scanInfoDict['img_dims']
+        n_steps_dx = list(scanInfoDict['img_dims'])
         axis_count = len(n_steps_dx)
-        n_scan_samples_dx = scanInfoDict['scan_samples']
+        n_scan_samples_dx = list(scanInfoDict['scan_samples'])
         samples_total = scanInfoDict['scan_samples_total']
+        # A 1-axis scan is ONE line: give it a single d2 step so the per-line
+        # tiling below degenerates cleanly (tile count 0 + the final step),
+        # matching the detectors' (N, 1) normalization. The level-based
+        # scan_samples then lacks its per-frame entry; the frame is the whole
+        # signal minus the symmetric safety padding (scan_throw_startzero on
+        # both ends).
+        if len(n_steps_dx) == 1:
+            n_steps_dx.append(1)
+            n_scan_samples_dx.append(
+                samples_total - 2 * scanInfoDict['scan_throw_startzero'])
         scan_axes_order = scanInfoDict['axis_names']
         self.smooth_axes = scanInfoDict['smooth_axes']
         clock_len = 5  # length of line/frame clock pulses at the start of line/frame, in samples

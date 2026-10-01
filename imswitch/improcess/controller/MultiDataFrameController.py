@@ -4,6 +4,7 @@ import h5py
 
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import resolve_dataset_source
+from imswitch.improcess.model.image_sources import dataset_names
 from .basecontrollers import ImProcessWidgetController
 
 
@@ -23,7 +24,6 @@ class MultiDataFrameController(ImProcessWidgetController):
         )
         self._commChannel.sigDataFolderChanged.connect(self.dataFolderChanged)
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
-        self._commChannel.sigAddToMultiData.connect(self._addPathToMultiData)
 
         self._widget.sigAddDataClicked.connect(self.addDataClicked)
         self._widget.sigLoadCurrentDataClicked.connect(self.loadCurrData)
@@ -51,7 +51,12 @@ class MultiDataFrameController(ImProcessWidgetController):
         if not isinstance(data, h5py.File):
             data = h5py.File(data)
 
-        for datasetName in data.keys():
+        # The same discovery the on-disk path uses, rather than the container's
+        # root keys. A lapse recorded to memory as one file holds a group per
+        # timepoint (``scan0/Camera``), so root keys are group names that no
+        # reader can open, and every timepoint arrived in ImProcess as a row
+        # that fails when clicked.
+        for datasetName in dataset_names(data):
             self.makeAndAddDataObj(
                 name, datasetName, path=vFileItem.filePath if vFileItem.savedToDisk else None,
                 file=data
@@ -93,10 +98,6 @@ class MultiDataFrameController(ImProcessWidgetController):
         source = resolve_dataset_source(path)
         normalized = str(source.path)
         return normalized, os.path.basename(normalized) or normalized
-
-    def _addPathToMultiData(self, path, datasetName):
-        normalized, name = self._normalizedPathAndName(path)
-        self.makeAndAddDataObj(name, datasetName, path=normalized)
 
     def addDataClicked(self):
         paths = self._widget.requestFilePathsFromUser(self._dataFolder)

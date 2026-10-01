@@ -56,3 +56,21 @@ _stub_if_missing("matplotlib", [
     "figure",
     "pyplot",
 ])
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _memory_limits_start_from_the_literals():
+    """Every test sees the built-in memory limits unless it configures its own.
+
+    ``memory_limits.configure`` is process-global (the limits are per machine),
+    so a test that boots a module would otherwise leave its options in force
+    for every later test in the worker, and a test that patches one of the
+    literals would then be testing nothing.
+    """
+    from imswitch.imcommon.model import memory_limits
+    memory_limits.reset()
+    yield
+    memory_limits.reset()

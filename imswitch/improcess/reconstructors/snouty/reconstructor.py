@@ -6,6 +6,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import Reconstructor
 from ._pipeline import load_restack_deskew_timelapse
 from .params_widget import SnoutyParamsWidget
@@ -34,6 +35,54 @@ class SnoutyReconstructor(Reconstructor):
     file_extensions = ["hdf5", "h5", "tiff"]
     description = "Lightsheet deskew for SNOUTY/OPM/MS-RESOLFT data"
     
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'device': 'CPU',
+        'n_timepoints': 1,
+        'c_px': 100.0,
+        'alpha_deg': 30.0,
+        'dy': 210.0,
+        'sample_vx_size': 200.0,
+        'camera_offset': 100.0,
+        'flip_data': False,
+        'cycles': 1,
+        'planes_in_cycle': 1,
+        'restack': True}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('device', 'select', 'CPU', label='Device', options=('CPU', 'GPU')),
+            ParamField('n_timepoints', 'int', 1, label='Timepoints', min=1, max=9999),
+            ParamField(
+                'c_px', 'float', 100.0, label='Camera pixel size', min=1, max=10000, suffix='nm',
+                group='Geometry',
+            ),
+            ParamField(
+                'alpha_deg', 'float', 30.0, label='Tilt angle', min=0, max=90, suffix='°',
+                group='Geometry',
+            ),
+            ParamField(
+                'dy', 'float', 210.0, label='Scan step', min=1, max=10000, suffix='nm',
+                group='Geometry',
+            ),
+            ParamField(
+                'sample_vx_size', 'float', 200.0, label='Output voxel size', min=1, max=10000,
+                suffix='nm', group='Geometry',
+            ),
+            ParamField(
+                'camera_offset', 'float', 100.0, label='Camera offset', min=0, max=65535,
+                suffix='ADU', group='Acquisition',
+            ),
+            ParamField('flip_data', 'bool', False, label='Flip data', group='Acquisition'),
+            ParamField('cycles', 'int', 1, label='Cycles', min=1, max=9999, group='Acquisition'),
+            ParamField(
+                'planes_in_cycle', 'int', 1, label='Planes per cycle', min=1, max=9999,
+                group='Acquisition',
+            ),
+            ParamField('restack', 'bool', True, label='Restack', group='Acquisition'),
+        )
+
     def __init__(self):
         self._logger = initLogger('SnoutyReconstructor')
     
@@ -82,7 +131,9 @@ class SnoutyReconstructor(Reconstructor):
             logger=self._logger,
         )
 
-        if params.get('n_timepoints', 1) > 1:
+        # The pipeline may take the timepoint count from the recording rather
+        # than the widget, so what was actually reconstructed decides the rank.
+        if len(deskewed_timepoints) > 1:
             # Stack into 4D: (T, Z, Y, X)
             result_data = np.stack(deskewed_timepoints, axis=0)
         else:

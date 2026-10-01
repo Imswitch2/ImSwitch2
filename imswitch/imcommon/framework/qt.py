@@ -28,9 +28,13 @@ class Thread(QtCore.QThread, base.Thread, metaclass=QObjectMeta):
         if not self.__isWrappedCObjDeleted():
             super().quit()
 
-    def wait(self) -> None:
-        if not self.__isWrappedCObjDeleted():
+    def wait(self, timeoutMs=None) -> bool:
+        if self.__isWrappedCObjDeleted():
+            return True
+        if timeoutMs is None:
             super().wait()
+            return True
+        return bool(super().wait(max(0, int(timeoutMs))))
 
     def __isWrappedCObjDeleted(self) -> bool:
         try:
@@ -51,6 +55,10 @@ class Worker(QtCore.QObject, base.Worker, metaclass=QObjectMeta):
 class FrameworkUtils(base.FrameworkUtils):
     @staticmethod
     def processPendingEventsCurrThread():
-        QtCore.QAbstractEventDispatcher.instance(
+        dispatcher = QtCore.QAbstractEventDispatcher.instance(
             QtCore.QThread.currentThread()
-        ).processEvents(QtCore.QEventLoop.AllEvents)
+        )
+        if dispatcher is None:
+            # A plain Python thread has no Qt event dispatcher; nothing to pump.
+            return
+        dispatcher.processEvents(QtCore.QEventLoop.AllEvents)

@@ -2,7 +2,7 @@
 Module configuration
 ********************
 
-ImSwitch consists of multiple different modules:
+ImSwitch2 consists of three modules:
 
 +----------------------+-------------------+
 | Name                 | ID                |
@@ -14,9 +14,13 @@ ImSwitch consists of multiple different modules:
 | Scripting            | ``imscripting``   |
 +----------------------+-------------------+
 
-One can select which modules to enable through the "Set active modules…" option in the "Tools" menu
-of the menu bar. By default, the hardware control and scripting modules are enabled. Modules that
-are not enabled will not show up in the program.
+Choose which modules load with **Preferences → Set active modules…**;
+ImSwitch2 restarts to apply the choice.  A new installation loads all three.
+The choice is stored in ``config/modules.json`` in ``ImSwitchConfig``, and an
+existing file is never overwritten by an update, so a configuration folder
+from an older version keeps the modules it names until you change them here.
+Modules that are not enabled do not show up in the program.  Scripting is
+always loaded last, so that its scripts can reach every other module.
 
 .. image:: ./images/module-selection.png
     :align: center

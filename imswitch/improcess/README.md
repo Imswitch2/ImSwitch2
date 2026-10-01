@@ -108,8 +108,10 @@ class ProcessingResult(ABC):
                  view_modes=None, display_levels=None,
                  axis_scales=None, scale_unit="px"): ...
 
-    @abstractmethod
-    def save(self, path: Path, fmt: str) -> None: ...      # modality-specific serialization
+    supported_formats = ("tiff", "hdf5", "zarr")           # what save() accepts for this type
+    def plan_save(self, path, fmt) -> SavePlan: ...        # every file the save will produce
+    def write_files(self, plan, document) -> None: ...     # write them into the staging paths
+    def save(self, path, fmt=None, *, overwrite=False) -> SaveReceipt   # THE protocol: never override
 
     def plot_payloads(self) -> list[PlotPayload]:          # optional graph data
         return []
@@ -147,8 +149,14 @@ Optional extension points:
   lightweight `DisplayLayerProcessingResult` so a processor can target one named
   component instead of depending on napari's active layer.
 
-Concrete subclasses (e.g. `ViewOnlyResult`, `MonalisaProcessingResult`,
-`ProjectionResult`) only have to implement `save()`.
+Saving is one staged protocol for every type (`model/save_protocol.py`):
+`save()` plans, preflights, stages, embeds the provenance document, publishes
+companions then the primary by atomic link, and returns a `SaveReceipt`.
+Concrete subclasses never override `save()`; the array-backed ones inherit
+the OME writers, and a type with its own layout declares `supported_formats`
+and implements `plan_save` (every file, companions included) and
+`write_files` (write into the staging paths given, embedding the document
+where the container allows, or via a `.provenance.json` companion for CSV).
 
 ### 1.4 `StreamingReconstructor` / `StreamingSession` (optional)
 
@@ -246,7 +254,12 @@ now; entry-point discovery is a future item):
 
 `register_default_reconstructors(registry, filter_ids)` and
 `register_default_processors(registry, filter_ids)` instantiate and register the
-requested ids (or all, if `filter_ids is None`).
+requested ids (or all, if `filter_ids is None`), plus every user drop-in plugin
+of that kind: a `.py` file in the user plugins folder defining a `Processor` or
+`Reconstructor` subclass (see [`plugins/`](plugins/)) is installed into
+`_USER_PROCESSOR_CLASSES` / `_USER_RECONSTRUCTOR_CLASSES` by one scan
+(`imswitch.improcess.plugins.load_user_plugins()`), gated by its presence on
+disk rather than by config, with built-in ids winning any collision.
 
 ### 2.3 Startup: config vs standalone defaults
 
@@ -271,6 +284,12 @@ Beyond startup, processors can also be **runtime-loaded** on demand: the main
 controller calls `register_processor_by_id(registry, id)` when the user adds an
 analysis tool from the UI, and `_restore_runtime_processor` re-registers any
 processor that was loaded in a previous session (persisted layout state).
+Reconstructors likewise: **Tools → Load reconstructor** lists every known but
+unregistered reconstructor (`available_reconstructor_specs()` minus the
+registry), and `_load_runtime_reconstructor` calls
+`register_reconstructor_by_id(registry, id)` and has the reconstructor manager
+offer it in the picker and activate it (`reconstructorLoaded`). This is
+per-session; the setup file's `processing.reconstructors` makes it permanent.
 Runtime tool metadata lives in
 [`model/runtime_tools.py`](model/runtime_tools.py): processor-backed tools point
 at their processor id and widget kind, while panel-only tools such as
@@ -406,18 +425,31 @@ still fires without a final `sigResultProduced` payload. This keeps
 
 1. **Create a package** `reconstructors/<your_modality>/` with a
    `reconstructor.py` and `__init__.py` exporting the class.
-2. **Define a result type** (subclass `ProcessingResult`) implementing `save()`.
-   In `process()`, set `axis_labels` with the **last two axes = `Y, X`**, and
-   set `axis_scales` / `scale_unit` if you know the pixel size.
+2. **Pick a result type**: an existing class (`ArrayProcessingResult`,
+   `LabelsResult`, `LocalizationResult`, …) unless the modality needs its own
+   on-disk layout; then subclass `ProcessingResult` with `kind`,
+   `supported_formats`, `plan_save` and `write_files` — never an overridden
+   `save()` (see §1.3). In `process()`, set `axis_labels` with the **last two
+   axes = `Y, X`**, and set `axis_scales` / `scale_unit` if you know the pixel
+   size.
 3. **Subclass `Reconstructor`** and set `name`, `id`, `file_extensions`
    (and `is_pass_through` / `default_save_subdir` if relevant). Implement:
-   - `make_param_widget(parent)` — a `QWidget` exposing `get_values() -> dict`;
+   - `default_params()` — class method: exactly what a fresh widget hands
+     `process()`; required, even `{}` (the headless contract — a plugin that
+     inherits the framework default is GUI-only; see `model/plugin_contract.py`);
+   - `make_param_widget(parent)` — a `QWidget` exposing `get_values() -> dict`
+     with the same keys and defaults;
    - `make_metadata_dialog(parent)` — a `QDialog` or `None`;
-   - `process(data_obj, params)` — load the data, compute, return your result;
-   - optionally `make_overlay(...)`.
+   - `process(data_obj, params, context=None)` — load the data, compute,
+     return your result;
+   - optionally `prepare_params(data_obj, params)` to complete parameters
+     from the file headlessly, and `make_overlay(...)`.
 4. **Register it**: add `'<id>': YourReconstructor` to
    `_AVAILABLE_RECONSTRUCTOR_CLASSES` in
-   [`reconstructors/__init__.py`](reconstructors/__init__.py).
+   [`reconstructors/__init__.py`](reconstructors/__init__.py) — or, for a
+   plugin that does not live in the source tree, put the class in a `.py` file
+   in the user plugins folder (**Plugins → Add plugin file…**); drop-in
+   discovery finds reconstructors as it finds processors.
 5. **Enable it** in the setup JSON `processing.reconstructors` list (see §5), or
    rely on `auto_select_reconstructor` via `file_extensions` / modality tag.
 
@@ -434,13 +466,23 @@ wraps `data_obj.data`, and `_DEFAULT_AXIS_LABELS[-ndim:]` for labels.
    a deliberate design rule — see [`analysis/projections.py`](analysis/projections.py)
    for the model of correct N-D axis handling (`_normalize_axis`, label/scale
    propagation, dimension shrink).
-3. **Subclass `Processor`**, set `name` and `id`, and implement:
+3. **Subclass `Processor`**, set `name`, `id` and `kinds`, and implement:
+   - `default_params()` — class method: exactly what a fresh widget hands
+     `apply()`, every fallback `apply` reads included; required, even `{}`
+     (a plugin that inherits the framework default is GUI-only: workflows
+     refuse it and its results are recorded non-replayable);
    - `applies_to` — a cheap gate, e.g. `lambda r: "T" in r.axis_labels` or
      `lambda r: r.data.ndim >= 2`;
-   - `make_param_widget(parent)` — `QWidget` exposing `get_values() -> dict`;
+   - `make_param_widget(parent)` — `QWidget` exposing `get_values() -> dict`
+     with the same keys and defaults (the GUI checks this when it builds the
+     widget; `check_plugin_contract(cls)` does it in a test);
    - `apply(result, params)` — pure; return a **new** `ProcessingResult`.
      Resolve axes by label, not position, and respect the **last-2-axes = `Y,X`**
      convention; carry `axis_scales` / `scale_unit` through to the output.
+   - as needed: `min_inputs`/`max_inputs`/`check_inputs` (several inputs),
+     `output_spec` (several or data-dependent ports), `accepts_roi`/`roi_modes`
+     (region restriction), `preserves_grid` (pixel-aligned output),
+     `extra_param_keys` (keys no widget default names).
 4. **Register it**: add `'<id>': YourProcessor` to
    `_AVAILABLE_PROCESSOR_CLASSES` in
    [`processors/__init__.py`](processors/__init__.py).

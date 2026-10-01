@@ -1,0 +1,11 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "ESP32LEDMatrixManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "n_leds": 1,
+      "rs232device": "example"
+    }
+  }
+}

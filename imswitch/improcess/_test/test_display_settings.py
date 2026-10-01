@@ -60,6 +60,10 @@ def _controller(widget):
     controller = ReconstructionViewController.__new__(ReconstructionViewController)
     controller._widget = widget
     controller._commChannel = SimpleNamespace()
+    # Built with __new__, so nothing the base __init__ would have set exists;
+    # on a SignalInterface a missing attribute raises rather than defaulting.
+    controller._logger = SimpleNamespace(debug=lambda *a, **k: None,
+                                         warning=lambda *a, **k: None)
     return controller
 
 

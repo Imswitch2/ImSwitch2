@@ -1,6 +1,5 @@
 """Processor that extracts three-color strip registration from a bead volume."""
 
-from pathlib import Path
 from typing import Callable
 
 from qtpy import QtWidgets
@@ -12,10 +11,10 @@ from imswitch.improcess.analysis.multicolor import (
     extract_calibration_volume,
     output_axis_scales,
     parse_bounds,
-    save_alignment,
     split_axis_index,
 )
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import MulticolorRegistrationResult
@@ -27,6 +26,55 @@ class MulticolorRegistrationProcessor(Processor):
     name = "Multicolor Registration"
     id = "multicolor-registration"
     category = "Registration"
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'n_slices': 3,
+        'split_axis': 'X',
+        'bounds': '',
+        'mode': 'maxproj',
+        'reference_channel': 0,
+        'time_index': 0,
+        'bead_sigma': 1.5,
+        'bead_min_dist': 6,
+        'bead_thr_rel': 0.5,
+        'match_max_dist': 25.0,
+        'ransac_n_iter': 2000,
+        'ransac_inlier_px': 3.0}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('n_slices', 'int', 3, label='Slices', min=2, max=16),
+            ParamField('split_axis', 'select', 'X', label='Split axis', options=('X', 'Y', 'Z')),
+            ParamField(
+                'bounds', 'text', '', label='Bounds',
+                help='blank = equal slices, or b0,b1,...,bN',
+            ),
+            ParamField(
+                'mode', 'select', 'maxproj', label='Mode',
+                options=('maxproj', 'volume', 'descriptor_3d'),
+            ),
+            ParamField('reference_channel', 'int', 0, label='Reference channel', min=0, max=2),
+            ParamField('time_index', 'int', 0, label='Timepoint', min=0, max=999999),
+            ParamField(
+                'bead_sigma', 'float', 1.5, label='Bead sigma', min=0.01, max=100, decimals=3,
+            ),
+            ParamField('bead_min_dist', 'int', 6, label='Bead min dist', min=1, max=9999),
+            ParamField(
+                'bead_thr_rel', 'float', 0.5, label='Bead threshold', min=0, max=1, step=0.05,
+                decimals=3,
+            ),
+            ParamField(
+                'match_max_dist', 'float', 25.0, label='Match max dist', min=0.1, max=10000,
+                decimals=2,
+            ),
+            ParamField('ransac_n_iter', 'int', 2000, label='RANSAC iter', min=1, max=1000000),
+            ParamField(
+                'ransac_inlier_px', 'float', 3.0, label='RANSAC inlier px', min=0.01, max=1000,
+                decimals=2,
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
@@ -68,10 +116,6 @@ class MulticolorRegistrationProcessor(Processor):
         time_spin.setRange(0, 999999)
         time_spin.setValue(0)
         layout.addRow("Timepoint:", time_spin)
-
-        save_path_edit = QtWidgets.QLineEdit()
-        save_path_edit.setPlaceholderText("optional .h5 alignment path")
-        layout.addRow("Save alignment:", save_path_edit)
 
         bead_sigma_spin = QtWidgets.QDoubleSpinBox()
         bead_sigma_spin.setRange(0.01, 100.0)
@@ -116,7 +160,6 @@ class MulticolorRegistrationProcessor(Processor):
                 "mode": mode_combo.currentText(),
                 "reference_channel": reference_spin.value(),
                 "time_index": time_spin.value(),
-                "save_path": save_path_edit.text().strip(),
                 "bead_sigma": bead_sigma_spin.value(),
                 "bead_min_dist": bead_min_dist_spin.value(),
                 "bead_thr_rel": bead_threshold_spin.value(),
@@ -155,10 +198,15 @@ class MulticolorRegistrationProcessor(Processor):
             ransac_inlier_px=float(params.get("ransac_inlier_px", 3.0)),
         )
         preview = apply_alignment(volume, alignment)
-        save_path = str(params.get("save_path", "")).strip()
-        if save_path:
-            save_alignment(alignment, Path(save_path))
-            self._logger.info("Saved multicolor alignment: %s", save_path)
+        if str(params.get("save_path", "")).strip():
+            # The alignment used to be written from inside apply(). A
+            # processor that writes files is a side effect no save receipt
+            # can account for; the alignment is part of the result now and is
+            # written when the result is saved (HDF5 carries it in full).
+            self._logger.warning(
+                "'save_path' is no longer written by the multicolor registration "
+                "processor; save the result instead (HDF5 includes the alignment)."
+            )
 
         axis_scales = output_axis_scales(["Z", "Y", "X"], result.axis_scales[-3:])
         return MulticolorRegistrationResult(

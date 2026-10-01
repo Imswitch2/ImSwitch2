@@ -136,7 +136,10 @@ class SLMsWidget(Widget):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.setMinimumSize(200,200)
+        # No minimum of its own: a docked panel's minimum is added to the
+        # window's, and enough of them push it past the screen. The tab
+        # contents below carry the 200x200 instead, and the panel scrolls.
+        self.setMinimumSize(0, 0)
         self.__logger = initLogger(self)
 
         # create main layout
@@ -147,6 +150,7 @@ class SLMsWidget(Widget):
 
         # create slmTabs widget
         self.slmTabs = QtWidgets.QTabWidget()
+        self.slmTabs.setMinimumSize(200, 200)
         self.slmTabs.setTabPosition(QtWidgets.QTabWidget.North)
         self.slmTabs.setMovable(True)
         mainlayout.addWidget(self.slmTabs)

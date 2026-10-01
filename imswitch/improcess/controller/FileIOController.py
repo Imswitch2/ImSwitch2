@@ -8,8 +8,16 @@ from qtpy import QtWidgets
 
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
+from imswitch.imcommon.model import dirtools
+from imswitch.improcess.analysis.smlm_import import (
+    read_generic_csv,
+    read_localizations,
+    sniff_localization_format,
+)
+from imswitch.improcess.model import result_io
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
+    LOCALIZATIONS_SPEC,
     LOCATOR_DIRECTORY,
     TILING_MANIFEST_SPEC,
     file_dialog_filter,
@@ -17,8 +25,56 @@ from imswitch.improcess.model.dataset_sources import (
     resolve_dataset_source,
     specs_for_reconstructor,
 )
+from imswitch.improcess.model.folder_preferences import (
+    FolderPreferences,
+    load_folder_preferences,
+    save_folder_preferences,
+)
+from imswitch.improcess.model.lapse_source import (
+    TIME_LAPSE_SOURCE_KIND,
+    NotATimeLapse,
+    discover_time_lapse,
+    lapses_in_file,
+)
 from .MultiDataFrameController import MultiDataFrameController
 from .basecontrollers import ImProcessWidgetController
+
+#: What ``_loadTimeLapseAsCurrent`` answers for a file holding several lapses
+#: when no item of one was picked: the dataset picker has to ask first.
+_PICK_A_LAPSE_ITEM = 'pick-lapse-item'
+
+
+def _accepts_time_lapse(reconstructor) -> bool:
+    return TIME_LAPSE_SOURCE_KIND in tuple(
+        getattr(reconstructor, 'accepted_source_kinds', ()) or ()
+    )
+
+
+def _picked_dataset(source) -> str | None:
+    """The dataset a path picked *inside* a container names, or None.
+
+    ``lapse.zarr/scan4/Camera`` resolves to the container ``lapse.zarr``; the
+    rest is which item the user meant. None when the container itself was
+    picked.
+    """
+    try:
+        inside = Path(source.original_path).relative_to(Path(source.path))
+    except (TypeError, ValueError):
+        return None
+    return inside.as_posix() if inside.parts else None
+
+
+def _route_as_current(controller, data_obj) -> str:
+    """Make a source that DataObj did not open itself the current one."""
+    main = controller._main
+    if main._currentDataObj is not None:
+        main._currentDataObj.checkAndUnloadData()
+    main._currentDataObj = data_obj
+    if data_obj.sourceReady:
+        controller._commChannel.sigCurrentDataChanged.emit(data_obj)
+        controller._widget.raiseCurrentDataDock()
+        return 'current'
+    return 'empty'
 
 
 class FileIOController(ImProcessWidgetController):
@@ -36,8 +92,12 @@ class FileIOController(ImProcessWidgetController):
     def __init__(self, *args, mainController=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._main = mainController
-        self._dataFolder = None
-        self._saveFolder = None
+        # Kept between sessions in improcess_options.json (Preferences >
+        # Default folders…); None means the dialogs start where the system
+        # puts them.
+        folders = load_folder_preferences()
+        self._dataFolder = folders.dataFolder or None
+        self._saveFolder = folders.saveFolder or None
 
         # Multi-dataset controllers are only used by _loadFromPath
         self.multiDataFrameController = self._factory.createController(
@@ -46,6 +106,9 @@ class FileIOController(ImProcessWidgetController):
         self.pickDatasetsController = self._factory.createController(
             PickDatasetsController, self._widget.pickDatasetsDialog
         )
+        if self._dataFolder is not None:
+            # The add-data dialog starts in the saved folder too.
+            self._commChannel.sigDataFolderChanged.emit(self._dataFolder)
 
     def quickLoadData(self):
         dataPath = self._requestLoadPath()
@@ -184,11 +247,31 @@ class FileIOController(ImProcessWidgetController):
             ``'cancelled'``   — user dismissed the picker dialog,
             ``'empty'``       — no datasets in the file or none selected.
         """
+        # Recognised by content, before the suffix-based resolver runs: a
+        # Picasso .hdf5 and an image .hdf5 are the same name, and a
+        # localization .csv is not something DataObj can open at all.
+        localizationFormat = sniff_localization_format(dataPath)
+        if localizationFormat == 'generic-csv':
+            # An unrecognised table: only a localization file if the user says
+            # so, and only readable once they name the columns. Offered rather
+            # than assumed, and only where a table cannot be image data anyway.
+            if self._localizationSpecActive():
+                return self._loadMappedLocalizationsAsResult(dataPath)
+        elif localizationFormat is not None:
+            return self._loadLocalizationsAsResult(dataPath, localizationFormat)
+
         try:
             source = resolve_dataset_source(dataPath, allowed_specs=self._activeSourceSpecs())
             dataPath = str(source.path)
             if source.format_id == TILING_MANIFEST_SPEC.id:
                 return self._loadMetadataAsCurrent(source)
+            lapseItemToPick = False
+            if _accepts_time_lapse(getattr(self._main, '_activeReconstructor', None)):
+                outcome = self._loadTimeLapseAsCurrent(source)
+                if outcome == _PICK_A_LAPSE_ITEM:
+                    lapseItemToPick = True
+                elif outcome is not None:
+                    return outcome
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
             self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
@@ -207,6 +290,18 @@ class FileIOController(ImProcessWidgetController):
             datasetsToRoute = list(self.pickDatasetsController.getSelectedDatasets())
             if not datasetsToRoute:
                 return 'empty'
+
+        if lapseItemToPick and len(datasetsToRoute) == 1:
+            # The file holds several lapses; the item picked says which one.
+            try:
+                outcome = self._loadTimeLapseAsCurrent(source, datasetsToRoute[0])
+            except Exception as exc:
+                self._logger.error(
+                    f"Could not open the time lapse of {datasetsToRoute[0]}: {exc}"
+                )
+                outcome = None
+            if outcome is not None:
+                return outcome
 
         if prefer_as_current and len(datasetsToRoute) == 1:
             try:
@@ -229,6 +324,80 @@ class FileIOController(ImProcessWidgetController):
                 name, datasetName, path=dataPath
             )
         return 'multidata'
+
+    def _localizationSpecActive(self) -> bool:
+        """Whether the active reconstructor offers localization tables."""
+        specs = self._activeSourceSpecs() or []
+        return any(spec.id == LOCALIZATIONS_SPEC.id for spec in specs)
+
+    def _loadMappedLocalizationsAsResult(self, dataPath) -> str:
+        """Ask what the columns mean, then read the table as a result."""
+        from imswitch.improcess.view.LocalizationImportDialog import (
+            LocalizationImportDialog,
+        )
+
+        try:
+            kwargs = LocalizationImportDialog.get_import_kwargs(
+                dataPath, parent=self._widget
+            )
+        except Exception as exc:
+            self._logger.error(f"Could not inspect {dataPath}: {exc}")
+            return 'empty'
+        if kwargs is None:
+            return 'cancelled'
+
+        try:
+            result = read_generic_csv(dataPath, **kwargs)
+        except Exception as exc:
+            self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
+            return 'empty'
+        return self._publishLocalizations(result, dataPath, 'generic-csv')
+
+    def _loadLocalizationsAsResult(self, dataPath, localizationFormat) -> str:
+        """Open a coordinate table straight into the reconstruction list.
+
+        A localization table is a *result*, not data to reconstruct, so it
+        bypasses DataObj entirely and is published the same way a reconstructor
+        publishes its output.
+        """
+        try:
+            result = read_localizations(dataPath)
+        except Exception as exc:
+            self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
+            return 'empty'
+        return self._publishLocalizations(result, dataPath, localizationFormat)
+
+    def _publishLocalizations(self, result, dataPath, localizationFormat) -> str:
+        """Hand a freshly read localization table to the reconstruction list."""
+        if result.metadata.get('pixel_size_assumed'):
+            # The coordinates are exact; only the preview bin floor and any
+            # later pixel-native export depend on this. Say so rather than let
+            # a guess be mistaken for a measurement.
+            self._logger.warning(
+                f"{os.path.basename(dataPath)} declares no pixel size; assuming "
+                f"{result.pixel_size_nm:g} nm for preview and export"
+            )
+
+        reconstructionController = getattr(self._main, 'reconstructionController', None)
+        if reconstructionController is None:
+            self._logger.error(
+                "No reconstruction controller available to receive localizations"
+            )
+            return 'empty'
+
+        # The table is a result with no ImProcess step behind it; its
+        # provenance is the foreign file itself, fingerprinted, plus an
+        # opaque import node naming the format. A save then says where the
+        # localizations came from instead of recording an anonymous origin.
+        from imswitch.improcess.model.provenance import record_external_table
+
+        record_external_table(result, dataPath, table_format=localizationFormat)
+        reconstructionController.resultProduced(result, result.name)
+        self._logger.info(
+            f"Loaded {len(result)} localizations from {os.path.basename(dataPath)} "
+            f"({localizationFormat})"
+        )
+        return 'current'
 
     def _loadMetadataAsCurrent(self, source) -> str:
         """Inspect and route a non-array source without asking DataObj to open it."""
@@ -254,14 +423,54 @@ class FileIOController(ImProcessWidgetController):
             )
             return 'empty'
 
-        if self._main._currentDataObj is not None:
-            self._main._currentDataObj.checkAndUnloadData()
-        self._main._currentDataObj = data_obj
-        if data_obj.sourceReady:
-            self._commChannel.sigCurrentDataChanged.emit(data_obj)
-            self._widget.raiseCurrentDataDock()
-            return 'current'
-        return 'empty'
+        return _route_as_current(self, data_obj)
+
+    def _loadTimeLapseAsCurrent(self, source, dataset=None):
+        """Open the whole lapse ``source`` belongs to, or return None.
+
+        Only asked while a reconstructor that takes lapses is active, as the
+        tiling manifest is only resolved for one that takes manifests. Opening
+        the lapse reads the picked item's attributes and lists its siblings;
+        no sibling is opened. A file that is not a lapse -- a single recording,
+        a tiling tile -- returns None and opens as the image it is, with the
+        reason logged, so choosing the reconstructor never makes a file
+        unopenable.
+
+        The lapse is the one of the item picked: ``dataset``, or the path
+        picked inside the container (``lapse.zarr/scan4/Camera``). Where only
+        the file was picked and it holds more than one lapse, returns
+        ``_PICK_A_LAPSE_ITEM`` and the caller asks which item, rather than
+        opening the first lapse and leaving the others unreachable.
+        """
+        if dataset is None:
+            dataset = _picked_dataset(source)
+        try:
+            index = discover_time_lapse(source.path, dataset)
+            if dataset is None:
+                lapses = lapses_in_file(index)
+                if lapses > 1:
+                    self._logger.info(
+                        f"{Path(source.path).name} holds {lapses} time lapses; "
+                        "pick an item of the one to open."
+                    )
+                    return _PICK_A_LAPSE_ITEM
+        except NotATimeLapse as exc:
+            self._logger.info(f"Opening as a single image: {exc}")
+            return None
+        except Exception as exc:
+            self._logger.warning(
+                f"Could not read {source.original_path} as a time lapse: {exc}"
+            )
+            return None
+        data_obj = DataObj.fromMetadataSource(
+            index.name,
+            index.anchor.path,
+            TIME_LAPSE_SOURCE_KIND,
+            index,
+            originalPath=source.original_path,
+        )
+        self._logger.info(index.describe())
+        return _route_as_current(self, data_obj)
 
     def _loadAsCurrent(self, name, datasetName, dataPath, *, virtual: bool = False):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
@@ -275,7 +484,26 @@ class FileIOController(ImProcessWidgetController):
         if virtual:
             self._main._currentDataObj.checkAndOpenData()
         else:
-            self._main._currentDataObj.checkAndLoadData()
+            # Open decodes the dataset whole, which is what was asked for; a
+            # dataset larger than the processing working set is announced
+            # before that starts (the DataObj logs the same line), with the
+            # lazy alternative named. Not a refusal, and not a switch: which
+            # mean the pattern finder receives depends on the open path today,
+            # so Open keeps materialising until that is settled.
+            dataObj = self._main._currentDataObj
+            notice = None
+            try:
+                # The estimate opens the source handle itself if it must;
+                # what it never does is decode anything.
+                estimate = getattr(dataObj, 'materializationNotice', None)
+                notice = estimate() if callable(estimate) else None
+            except Exception as exc:
+                # The estimate is a courtesy; the load below reports its own
+                # failures the way it always has.
+                self._logger.debug(f'No materialisation estimate: {exc!r}')
+            if notice and hasattr(self._commChannel, 'sigStatusMessage'):
+                self._commChannel.sigStatusMessage.emit(notice)
+            dataObj.checkAndLoadData()
         ready = getattr(self._main._currentDataObj, 'sourceReady', None)
         if ready is None:
             ready = (
@@ -292,24 +520,55 @@ class FileIOController(ImProcessWidgetController):
     def saveFolderChanged(self, saveFolder):
         self._saveFolder = saveFolder
 
-    def setDataFolder(self):
-        dataFolder = guitools.askForFolderPath(self._widget)
-        if dataFolder:
-            self._commChannel.sigDataFolderChanged.emit(dataFolder)
+    def openFolderPreferences(self):
+        """Show the default-folders editor, seeded with the folders in force."""
+        dialog = self._widget.folderPreferencesDialog
+        dialog.setValues(FolderPreferences(dataFolder=self._dataFolder or '',
+                                           saveFolder=self._saveFolder or ''))
+        self._widget.showFolderPreferencesDialog()
 
-    def setSaveFolder(self):
-        saveFolder = guitools.askForFolderPath(self._widget)
-        if saveFolder:
-            self._commChannel.sigSaveFolderChanged.emit(saveFolder)
+    def saveFolderPreferences(self, values):
+        """Save the default folders to improcess_options.json and use them now.
+
+        Either may be empty, meaning no default. A folder that cannot be one
+        (a relative path, an existing file) keeps the dialog open with the
+        reason, as does a file that cannot be written.
+        """
+        dialog = self._widget.folderPreferencesDialog
+        folders = {}
+        for field, label in (('dataFolder', 'Open data from'),
+                             ('saveFolder', 'Save results to')):
+            try:
+                folders[field] = dirtools.checkedFolderPath(values.get(field), allowEmpty=True)
+            except ValueError as error:
+                dialog.setStatus(f'{label}: {error}')
+                return
+        try:
+            save_folder_preferences(FolderPreferences(**folders))
+        except OSError as error:
+            self._logger.error(f'Could not save the default folders: {error}', exc_info=True)
+            dialog.setStatus(f'Could not save the default folders: {error}')
+            return
+        self._commChannel.sigDataFolderChanged.emit(folders['dataFolder'] or None)
+        self._commChannel.sigSaveFolderChanged.emit(folders['saveFolder'] or None)
+        dialog.setStatus('')
+        dialog.accept()
 
     def saveCurrent(self, dataType):
         """ Saves the reconstructed image or coefficients from the current
         result to a user-specified destination. """
 
+        # Coefficients are a MoNaLISA-specific TIFF; a reconstruction can go
+        # into any container the shared writer supports, and the chosen
+        # filter's suffix is what decides which.
+        nameFilter = (
+            result_io.file_dialog_filter() if dataType == 'reconstruction'
+            else '*.tiff'
+        )
         filePath = guitools.askForFilePath(self._widget,
                                            caption=f'Save {dataType}',
                                            defaultFolder=self._saveFolder or self._dataFolder,
-                                           nameFilter='*.tiff', isSaving=True)
+                                           nameFilter=nameFilter, isSaving=True)
 
         if filePath:
             reconObj = self._main.reconstructionController.getActiveResult()
@@ -360,9 +619,22 @@ class FileIOController(ImProcessWidgetController):
                     raise ValueError(f'Invalid save data type "{dataType}"')
 
     def saveReconstruction(self, reconObj, filePath):
-        suffix = Path(filePath).suffix.lower().lstrip(".") or "tiff"
-        fmt = "tiff" if suffix in ("tif", "tiff") else suffix
-        reconObj.save(Path(filePath), fmt)
+        # Two-part suffixes (.ome.tif, .ome.zarr) are why this asks the writer
+        # rather than reading Path.suffix, which sees only the last part and
+        # would call an OME-Zarr directory a TIFF.
+        #
+        # The user picked this path in a dialog, so overwriting it is what
+        # they asked for; the staged protocol still writes atomically.
+        receipt = reconObj.save(
+            Path(filePath), result_io.format_for_path(filePath), overwrite=True
+        )
+        files = getattr(receipt, "files", None)
+        if files:
+            self._logger.info(
+                "Saved %s: %s", getattr(reconObj, "name", "result"),
+                ", ".join(str(f) for f in files),
+            )
+        return receipt
 
     def saveCoefficients(self, reconObj, filePath):
         coeffs = copy.deepcopy(reconObj.getCoeffs())

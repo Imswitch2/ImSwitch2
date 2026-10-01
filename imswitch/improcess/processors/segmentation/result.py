@@ -1,10 +1,8 @@
 """Segmentation processing result."""
 
-from pathlib import Path
 
 import h5py
 import numpy as np
-import tifffile
 
 from imswitch.improcess.analysis.segmentation import SegmentationAnalysis
 from imswitch.improcess.model.contrast import finite_range
@@ -77,10 +75,14 @@ class SegmentationResult(ProcessingResult):
         )
         return [context_layer, labels_layer]
 
-    def save(self, path: Path, fmt: str = "hdf5") -> None:
-        path = Path(path)
-        if fmt in ("hdf5", "h5", "hdf"):
-            with h5py.File(str(path), "w") as h5:
+
+    supported_formats = ("hdf5", "tiff")
+
+    def write_files(self, plan, document) -> None:
+        if plan.fmt == "hdf5":
+            from imswitch.improcess.model.save_protocol import embed_hdf5
+
+            with h5py.File(str(plan.primary), "w") as h5:
                 h5.create_dataset("labels", data=self.analysis.labels)
                 h5.create_dataset("mask", data=self.analysis.mask.astype(np.uint8))
                 regions = h5.create_group("regions")
@@ -123,10 +125,17 @@ class SegmentationResult(ProcessingResult):
                 for key, value in self.analysis.metadata.items():
                     if isinstance(value, (str, int, float, bool)):
                         h5.attrs[key] = value
-        elif fmt in ("tiff", "tif"):
-            tifffile.imwrite(str(path), self.analysis.labels.astype(np.int32))
+                embed_hdf5(h5, document)
+        elif plan.fmt == "tiff":
+            from imswitch.improcess.model.result_io import save_image_result
+
+            save_image_result(
+                self, plan.primary, "tiff",
+                extra={"labels": True, "threshold": float(self.analysis.threshold)},
+                document=document,
+            )
         else:
-            raise ValueError(f"Segmentation result supports HDF5 or TIFF, got {fmt!r}")
+            raise ValueError(f"Segmentation result supports HDF5 or TIFF, got {plan.fmt!r}")
 
     def plot_payloads(self) -> list[PlotPayload]:
         if not self.analysis.regions:

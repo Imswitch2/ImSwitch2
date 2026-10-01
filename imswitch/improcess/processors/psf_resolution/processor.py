@@ -7,6 +7,7 @@ from qtpy import QtWidgets
 from imswitch.improcess.analysis.psf_resolution import fit_psf_batch
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors._extraction import extract_2d_plane
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import PSFResolutionResult
@@ -18,6 +19,17 @@ class PSFResolutionProcessor(Processor):
     name = "PSF / Bead Resolution"
     id = "psf-resolution"
     category = "Measurement"
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'pixel_size': 1.0, 'unit': 'px'}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('pixel_size', 'float', 1.0, label='Pixel size', min=0, decimals=6),
+            ParamField('unit', 'select', 'px', label='Resolution unit', options=('px', 'nm', 'um')),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

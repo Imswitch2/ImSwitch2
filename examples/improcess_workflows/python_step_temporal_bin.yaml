@@ -1,0 +1,56 @@
+# Average every n frames into one (temporal binning).
+# The frame axis gets n times the spacing, so a time axis stays calibrated.
+# Frames left over after the last full group are dropped.
+# Why a script: Resize works on Y/X, and Projection collapses an axis to one image;
+# neither averages groups of neighbouring frames.
+#
+# Run it on a synthetic recording (12 frames):
+#   python -c "import sys; sys.path.insert(0, 'examples/improcess_workflows'); \
+#     from _synthetic import write_synthetic_recording as w; w('cells.h5', frames=12)"
+#   python -m imswitch.improcess.workflows run python_step_temporal_bin.yaml \
+#       --input cells.h5 --out results/
+# or paste the code of the step into Tools -> Python step (it is also in
+# Load snippet... as 'temporal_bin').
+#
+# Derived from imswitch/_data/user_defaults/improcess_snippets/temporal_bin.py by
+# tools/make_python_recipe_workflows.py: edit the snippet, then run the tool.
+name: python-temporal-bin
+schema: 1
+description: Average every n frames into one (temporal binning).
+steps:
+- step: source
+  id: raw
+- step: reconstruct
+  id: rec
+  reconstructor: view-only
+  params: {}
+  inputs:
+  - raw
+- step: process
+  id: script
+  processor: python
+  params:
+    ports: out
+    code: |
+      # Average every n frames into one (temporal binning).
+      # The frame axis gets n times the spacing, so a time axis stays calibrated.
+      # Frames left over after the last full group are dropped.
+      # Why a script: Resize works on Y/X, and Projection collapses an axis to one image;
+      # neither averages groups of neighbouring frames.
+      n = 4                                          # frames averaged into one
+      ax = 0                                         # the frame axis; print(axes) lists the names
+
+      moved = np.moveaxis(data.astype(np.float32), ax, 0)
+      usable = moved.shape[0] // n * n
+      binned = moved[:usable].reshape(usable // n, n, *moved.shape[1:]).mean(axis=1)
+      new_scales = list(scales)
+      new_scales[ax] = scales[ax] * n
+      out = make_result(np.moveaxis(binned, 0, ax), axes=axes, scales=new_scales)
+      print(f"{data.shape[ax]} frames -> {usable // n} (dropped {data.shape[ax] - usable})")
+  inputs:
+  - rec
+- step: save
+  id: save_out
+  input: script.out
+  fmt: tiff
+  path_template: '{out_dir}/{source_stem}_temporal_bin{ext}'

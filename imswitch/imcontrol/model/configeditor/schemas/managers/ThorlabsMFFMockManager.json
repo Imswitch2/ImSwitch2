@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "initial_state": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "state_names": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "ThorlabsMFFMockManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "MockThorlabsMFFManager"
+  ]
+}

@@ -142,6 +142,9 @@ class ScanRequestResult:
         # from a post-start failure that must still pair that start.
         self.startingPublished = False
         self.endingPublished = False
+        # Set by run_scan_prepared(exact_completion=True): receivers that do
+        # not otherwise report on requests bind and report an exact terminal.
+        self.exactCompletionRequested = False
 
     def report(self, owner, accepted: bool, message: str = '',
                runToken=None, completion=None) -> None:
@@ -241,6 +244,8 @@ class ScanWorkflowService(SignalInterface):
         recalculate_signals: bool,
         is_non_final_part_of_sequence: bool,
         notify_starting: bool = True,
+        preferred_source=None,
+        exact_completion: bool = False,
     ) -> ScanRequestResult:
         """Preflight, pre-arm, and dispatch one scan as one UI transaction.
 
@@ -251,7 +256,11 @@ class ScanWorkflowService(SignalInterface):
         real lifecycle.
         """
         def preflightNotifyAndRun():
-            source = self._resolved_scan_source()
+            source = self._resolved_scan_source(preferred_source)
+            if exact_completion:
+                # Ask every receiver (including ones that do not otherwise
+                # report on requests) for an exact completion terminal.
+                self._activeScanRequest.exactCompletionRequested = True
             getActiveSource = getattr(
                 self._comm_channel, 'getActiveScanSource', None
             )
@@ -424,14 +433,28 @@ class ScanWorkflowService(SignalInterface):
         except Exception:
             return threading.current_thread() is threading.main_thread()
 
-    def _resolved_scan_source(self):
-        """Resolve the one production scan target without unsafe fallback."""
+    def active_request_wants_exact_completion(self) -> bool:
+        """Whether the request being delivered asked receivers that do not
+        normally report to bind and report an exact completion."""
+        request = self._activeScanRequest
+        return bool(getattr(request, 'exactCompletionRequested', False))
+
+    def _resolved_scan_source(self, preferred_source=None):
+        """Resolve the one production scan target without unsafe fallback.
+
+        ``preferred_source`` is a widget key picking one controller on rigs
+        with several scanners; without it the channel's own resolution order
+        applies (explicit operator choice, the canonical Scan controller, a
+        lone capable controller, otherwise ambiguity fails closed)."""
         resolveSource = getattr(
             self._comm_channel, 'getRecordingScanSource', None
         )
         if not callable(resolveSource):
             return None
-        source = resolveSource()
+        if preferred_source:
+            source = resolveSource(preferredKey=preferred_source)
+        else:
+            source = resolveSource()
         if source is None:
             raise RuntimeError(
                 'Scan-source resolution returned no controller; refusing to '

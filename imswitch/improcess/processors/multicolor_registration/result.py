@@ -1,10 +1,8 @@
 """Result wrapper for multicolor registration calibration."""
 
-from pathlib import Path
 
 import h5py
 import numpy as np
-import tifffile
 
 from imswitch.improcess.analysis.multicolor import alignment_summary, save_alignment
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
@@ -44,11 +42,15 @@ class MulticolorRegistrationResult(ProcessingResult):
             scale_unit=scale_unit,
         )
 
-    def save(self, path: Path, fmt: str = "hdf5") -> None:
-        path = Path(path)
-        if fmt in ("hdf5", "h5", "hdf"):
-            save_alignment(self.alignment, path)
-            with h5py.File(str(path), "a") as h5:
+
+    supported_formats = ("hdf5", "tiff")
+
+    def write_files(self, plan, document) -> None:
+        if plan.fmt == "hdf5":
+            from imswitch.improcess.model.save_protocol import embed_hdf5
+
+            save_alignment(self.alignment, plan.primary)
+            with h5py.File(str(plan.primary), "a") as h5:
                 h5.create_dataset("aligned_preview", data=np.asarray(self.data), compression="gzip")
                 h5.attrs["summary"] = self.summary
                 h5.attrs["axis_labels"] = ",".join(self.axis_labels)
@@ -56,13 +58,12 @@ class MulticolorRegistrationResult(ProcessingResult):
                 for key, value in self.params.items():
                     if value is not None:
                         h5.attrs[f"param_{key}"] = value
-        elif fmt in ("tiff", "tif"):
-            tifffile.imwrite(
-                str(path),
-                np.asarray(self.data, dtype=np.float32),
-                imagej=True,
-                metadata={"axes": "CZYX", "summary": self.summary},
-                photometric="minisblack",
+                embed_hdf5(h5, document)
+        elif plan.fmt == "tiff":
+            from imswitch.improcess.model.result_io import save_image_result
+
+            save_image_result(
+                self, plan.primary, "tiff", extra={"summary": self.summary}, document=document
             )
         else:
-            raise ValueError(f"Multicolor registration supports HDF5 or TIFF, got {fmt!r}")
+            raise ValueError(f"Multicolor registration supports HDF5 or TIFF, got {plan.fmt!r}")

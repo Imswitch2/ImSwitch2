@@ -1,0 +1,116 @@
+{
+  "controller": "ScanControllerAdvanced",
+  "scanWidgetType": "Advanced",
+  "analogParameterDict": {
+    "target_device": [
+      "X",
+      "Y",
+      "Z"
+    ],
+    "axis_length": [
+      5.0,
+      5.0,
+      1.0
+    ],
+    "axis_step_size": [
+      0.1,
+      0.1,
+      1.0
+    ],
+    "axis_centerpos": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "axis_startpos": [
+      [
+        0.0
+      ],
+      [
+        0.0
+      ],
+      [
+        0.0
+      ]
+    ],
+    "scan_dim_target_device": [
+      "X",
+      "Y",
+      "None"
+    ],
+    "sequence_time": 2e-05,
+    "phase_delay": 0.0,
+    "d3step_delay": 0.0
+  },
+  "digitalParameterDict": {
+    "target_device": [
+      "405 (ON)",
+      "488 (EXC)"
+    ],
+    "n_linesteps": 1,
+    "Nx": 50,
+    "Ny": 50,
+    "linestep_enable": {
+      "405 (ON)": [
+        true
+      ],
+      "488 (EXC)": [
+        true
+      ]
+    },
+    "pulse_starts_s": {
+      "405 (ON)": [
+        []
+      ],
+      "488 (EXC)": [
+        []
+      ]
+    },
+    "pulse_ends_s": {
+      "405 (ON)": [
+        []
+      ],
+      "488 (EXC)": [
+        []
+      ]
+    },
+    "sequence_time": 2e-05,
+    "advanced_mode": false,
+    "linestep_power_percent": {
+      "405 (ON)": [
+        100.0
+      ],
+      "488 (EXC)": [
+        100.0
+      ]
+    },
+    "linestep_power_enabled": {
+      "405 (ON)": true,
+      "488 (EXC)": true
+    },
+    "intra_pixel_positioner_movement": false,
+    "positioner_target_device": [],
+    "positioner_linestep_enable": {},
+    "positioner_movement_starts_s": {},
+    "positioner_movement_ends_s": {},
+    "positioner_step_size_um": {},
+    "advanced_program_mode": "timing",
+    "advanced_sequence_rows": [
+      []
+    ],
+    "line_program_devices_enabled": false,
+    "advanced_device_lock_master": {
+      "405 (ON)": false,
+      "488 (EXC)": false
+    },
+    "advanced_device_lock_target": {}
+  },
+  "positionersScan": [
+    "X",
+    "Y",
+    "None"
+  ],
+  "mode": {
+    "repeatEnabled": false
+  }
+}

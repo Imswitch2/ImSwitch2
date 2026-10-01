@@ -1,11 +1,13 @@
 """Processing result abstractions for ImProcess reconstructors and processors."""
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from imswitch.imcommon.algorithms.spatial_frame import mint_uid
 
 from .plotting import PlotPayload
 
@@ -89,6 +91,11 @@ class DisplayLayerSpec:
     role: str = "primary"
     component: str | None = None
     layer_kwargs: dict[str, Any] | None = None
+    #: Identity of the pixel grid this layer is on. Display layers of one
+    #: result can sit on *different* grids (a mask and a differently-sized
+    #: overlay), so this is per-layer rather than inherited wholesale from the
+    #: parent result. ``None`` means "the parent result's grid".
+    coordinate_space_uid: str | None = None
 
 
 @dataclass
@@ -98,6 +105,26 @@ class ProcessorInputChoice:
     id: str
     label: str
     result: "ProcessingResult"
+
+
+@dataclass
+class SerializationView:
+    """The array a writer sees, which need not be the array the viewer sees.
+
+    MoNaLISA holds ``(Dataset, Base, T, Z, Y, X)`` in memory and has always
+    written a ``(T, Z, C, Y, X)`` hyperstack with ``C = Dataset x Base``; a
+    generic writer handed ``result.data`` would silently change that file
+    layout. A result that wants a different on-disk shape returns it here,
+    with the axes, scales and channel names that describe *that* array, and
+    the shared writer writes the view.
+    """
+
+    data: Any
+    axis_labels: list[str]
+    axis_scales: list[float]
+    scale_unit: str = "px"
+    channel_names: list[str] | None = None
+    extra: dict[str, Any] | None = None
 
 
 class ProcessingResult(ABC):
@@ -133,6 +160,12 @@ class ProcessingResult(ABC):
         display_levels: tuple[float, float] | None = None,
         axis_scales: list[float] | None = None,
         scale_unit: str = "px",
+        *,
+        result_uid: str | None = None,
+        dataset_uid: str | None = None,
+        coordinate_space_uid: str | None = None,
+        lineage: tuple[str, ...] = (),
+        identity_kind: str = "minted",
     ):
         """
         Args:
@@ -150,6 +183,23 @@ class ProcessingResult(ABC):
         self.axis_labels = axis_labels
         self.display_levels = display_levels
         self.display_colormap = "grayclip"
+        # Four identities, kept apart on purpose (see
+        # imcommon.algorithms.spatial_frame): the dataset a result came from,
+        # the result itself, the pixel grid it lives on, and what it derives
+        # from. `name` is a mutable display label and cannot serve as any of
+        # them — two unrelated results can share a name, and renaming one must
+        # not make it a different result.
+        self.result_uid = result_uid or mint_uid("result")
+        self.dataset_uid = dataset_uid or mint_uid("data")
+        self.coordinate_space_uid = coordinate_space_uid or mint_uid("space")
+        #: What ROI restricted this result, when one did (P-R). Empty for a
+        #: whole-frame run, so its absence means "the whole image" rather than
+        #: "unknown".
+        self.roi_provenance: dict[str, Any] = {}
+        self.lineage = tuple(lineage)
+        self.identity_kind = identity_kind
+        #: Receipts of every save of this result in this session, newest last.
+        self.artifacts: list = []
         self._display_layer_settings: dict[str, dict[str, Any]] = {}
         self.axis_scales = (
             axis_scales
@@ -163,6 +213,64 @@ class ProcessingResult(ABC):
             self.view_modes = [ViewMode("Standard", tuple(range(data.ndim)))]
         else:
             self.view_modes = view_modes
+
+    def adopt_identity_from(self, source: "ProcessingResult", *, same_grid: bool):
+        """Record that this result was derived from ``source``; returns self.
+
+        Applied after construction rather than threaded through every
+        subclass's ``__init__``: there are twenty-odd result types, and adding
+        five keyword arguments to each of them would be a large change that
+        every future result type would have to remember to repeat.
+
+        See :meth:`derived_identity` for what ``same_grid`` means — it is the
+        one judgement the caller has to make, and it is not cosmetic.
+
+        A source that cannot describe its identity (a plugin result that does
+        not derive from this class, say) leaves this result with the fresh
+        identity it was born with. Losing provenance is a real cost, but it is
+        a smaller one than a processor refusing to run.
+        """
+        describe = getattr(source, "derived_identity", None)
+        if not callable(describe):
+            return self
+        identity = describe(same_grid=same_grid)
+        self.dataset_uid = identity["dataset_uid"]
+        self.lineage = identity["lineage"]
+        self.identity_kind = identity["identity_kind"]
+        if identity["coordinate_space_uid"] is not None:
+            self.coordinate_space_uid = identity["coordinate_space_uid"]
+        return self
+
+    def mint_coordinate_space(self) -> None:
+        """Give this result a pixel grid of its own (P-R).
+
+        Called when an output cannot be on its source's grid however the
+        processor is declared — a crop, most obviously, which moves every pixel
+        index. Claiming a shared grid there makes every ROI measured on the
+        output read the wrong pixels, which is exactly what the identity is
+        for.
+        """
+        self.coordinate_space_uid = mint_uid("space")
+
+    def derived_identity(self, *, same_grid: bool) -> dict[str, Any]:
+        """Identity kwargs for a result derived from this one.
+
+        Pass ``same_grid=True`` when the output is pixel-aligned with this
+        result by construction — a projection, a filter, a threshold — so ROIs
+        drawn on one measure correctly on the other.  Pass ``False`` when the
+        pixel grid changes: a crop with an offset, a resample, a rescale.
+        Getting this wrong is not cosmetic; ``coordinate_space_uid`` is what
+        decides whether two results are considered the same grid at all.
+
+        ``dataset_uid`` is always inherited (the data still came from the same
+        acquisition) and ``lineage`` records which result this came from.
+        """
+        return {
+            "dataset_uid": self.dataset_uid,
+            "coordinate_space_uid": self.coordinate_space_uid if same_grid else None,
+            "lineage": (*self.lineage, self.result_uid),
+            "identity_kind": self.identity_kind,
+        }
 
     def setDispLevels(self, levels) -> None:
         """Compatibility hook for the legacy ReconstructionViewController."""
@@ -211,19 +319,62 @@ class ProcessingResult(ABC):
             for layer_id, settings in self._display_layer_settings.items()
         }
     
-    @abstractmethod
-    def save(self, path: Path, fmt: str) -> None:
+    #: Formats :meth:`save` accepts for this type (canonical ids: ``tiff``,
+    #: ``hdf5``, ``zarr``, ``csv``, ``picasso``, ``imagej``). Subclasses that
+    #: write something other than an image array override this.
+    supported_formats: tuple[str, ...] = ("tiff", "hdf5", "zarr")
+
+    def serialization_view(self) -> SerializationView:
+        """The array, axes, scales and channel names a writer should write.
+
+        The default is the result as displayed. Override when the on-disk
+        layout must differ from the in-memory one (see
+        :class:`SerializationView`).
         """
-        Save the result to disk.
-        
-        Args:
-            path: Output file path
-            fmt: Format string (e.g., "tiff", "hdf5", "zarr")
-        
-        The implementation is modality-specific: MoNaLISA saves 6D ImageJ TIFFs
-        with specific axis order, STED might save multi-channel TIFFs, etc.
+        data = self.data
+        ndim = int(getattr(data, "ndim", np.ndim(data)))
+        return SerializationView(
+            data=data,
+            axis_labels=list(self.axis_labels)[:ndim] if self.axis_labels else [],
+            axis_scales=[float(v) for v in list(self.axis_scales)[:ndim]],
+            scale_unit=str(self.scale_unit or "px"),
+        )
+
+    def plan_save(self, path: Path, fmt: str):
+        """Every file :meth:`write_files` will produce for ``path`` in ``fmt``.
+
+        The default is one file. A writer with companions (drift vectors, a
+        YAML info sidecar, a CSV's provenance companion) names them here so the
+        save protocol can stage, publish and receipt all of them together.
         """
-        ...
+        from imswitch.improcess.model.save_protocol import SavePlan
+
+        return SavePlan(Path(path), fmt)
+
+    def write_files(self, plan, document) -> None:
+        """Write every file in ``plan`` (already pointing into the staging
+        directory), embedding ``document`` where the container allows.
+
+        Subclasses implement this instead of ``save``. ``plan.primary`` and
+        ``plan.companions`` are the paths to write; ``document`` is the
+        :class:`~.save_protocol.ProvenanceDocument` describing the graph and
+        this very artifact.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement write_files"
+        )
+
+    def save(self, path: Path, fmt: str | None = None, *, overwrite: bool = False):
+        """Write the result through the staged save protocol; returns the receipt.
+
+        The receipt lists every file published. A subclass that overrides
+        ``save`` itself bypasses the protocol and its provenance guarantees;
+        implement :meth:`write_files` (and :meth:`plan_save` when there are
+        companions) instead.
+        """
+        from imswitch.improcess.model.save_protocol import save_result
+
+        return save_result(self, path, fmt, overwrite=overwrite)
 
     def plot_payloads(self) -> list[PlotPayload]:
         """Return optional graph payloads for the ImProcess graph widget."""
@@ -261,19 +412,38 @@ class ProcessingResult(ABC):
         """
         return []
 
+    def display_layer_data(self) -> list[np.ndarray]:
+        """Per-layer data arrays only, in the same order as :meth:`display_layers`.
+
+        Used by the viewer's fast live-update path: on a repeat streaming
+        update the layers already exist, so all it needs is the fresh pixel
+        data -- not a rebuilt :class:`DisplayLayerSpec` list with per-call
+        contrast recomputation. Return ``[]`` when :meth:`display_layers` does.
+        """
+        return []
+
     def applyDisplayLayerSettings(
         self,
         layers: list[DisplayLayerSpec],
     ) -> list[DisplayLayerSpec]:
         """Apply persisted per-layer display overrides to layer specs."""
         adjusted = []
-        for layer in layers:
+        for index, layer in enumerate(layers):
             layer_id = _display_layer_component_id(layer)
             settings = self._display_layer_settings.get(layer_id, {})
+            levels = settings.get("display_levels")
+            if levels is None and index == 0 and self.display_levels is not None:
+                # This result's own display_levels is a *default* for its
+                # first layer, not an override: a producer that measured a
+                # range for the whole result (MoNaLISA's reconstructor takes
+                # the 1st and 99.9th percentile) should have it honoured until
+                # that layer is given a contrast of its own -- after which the
+                # layer's wins, which is the point of remembering it.
+                levels = self.display_levels
             adjusted.append(
                 replace(
                     layer,
-                    display_levels=settings.get("display_levels", layer.display_levels),
+                    display_levels=levels if levels is not None else layer.display_levels,
                     colormap=settings.get("colormap", layer.colormap),
                     visible=settings.get("visible", layer.visible),
                 )
@@ -342,7 +512,7 @@ class DisplayLayerProcessingResult(ProcessingResult):
         layer: DisplayLayerSpec,
     ) -> "DisplayLayerProcessingResult":
         component = _display_layer_component_id(layer)
-        return cls(
+        wrapped = cls(
             name=f"{source_result.name}_{component}",
             data=layer.data,
             axis_labels=list(layer.axis_labels),
@@ -357,6 +527,15 @@ class DisplayLayerProcessingResult(ProcessingResult):
             # points/shapes pass through (matching no image processor).
             kind=layer.kind,
         )
+        # A component is a *view* of its parent, not new data: it must inherit
+        # the parent's identity, or an ROI drawn on the displayed result would
+        # be judged unrelated to the very component it was drawn over. The
+        # spec may override the coordinate space when a display layer sits on
+        # its own grid (a differently-sized overlay).
+        wrapped.adopt_identity_from(source_result, same_grid=True)
+        if getattr(layer, "coordinate_space_uid", None):
+            wrapped.coordinate_space_uid = layer.coordinate_space_uid
+        return wrapped
 
     def save(self, path: Path, fmt: str) -> None:
         raise ValueError(

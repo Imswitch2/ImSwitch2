@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import tifffile as tiff
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.reconstructors.base import Reconstructor
 
 from .analysis import WidefieldStarssParams, analyze_widefield_starss_pair
@@ -20,6 +20,40 @@ if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
 
 
+
+def _pairing_signature(layout):
+    """Everything that has to match for two stacks to be paired frame by frame."""
+    orders = {rule.loop_id: (rule.order, tuple(rule.parity_loops or ()))
+              for rule in (layout.traversal or ())}
+    return (
+        tuple(
+            (
+                loop.kind,
+                int(loop.count),
+                # Labels name the states, and their order is the order the
+                # frames arrive in. ("signal", "background") against
+                # ("background", "signal") is the same shape and the opposite
+                # pairing, which counts alone cannot see.
+                tuple(loop.labels or ()),
+                orders.get(loop.id, ("forward", ())),
+            )
+            for loop in layout.event_loops
+        ),
+        layout.recorded_event_spans,
+    )
+
+
+def _describe_signature(signature) -> str:
+    loops, spans = signature
+    parts = []
+    for kind, count, labels, _order in loops:
+        named = f"{kind}={count}"
+        if labels:
+            named += f" ({', '.join(labels)})"
+        parts.append(named)
+    return f"[{', '.join(parts)}]" + (" with a gated selection" if spans else "")
+
+
 class WidefieldStarssReconstructor(Reconstructor):
     """Analyze a WidefieldSTARSS H/V acquisition pair."""
 
@@ -27,6 +61,131 @@ class WidefieldStarssReconstructor(Reconstructor):
     id = "widefield-starss"
     file_extensions = ["tiff", "tif"]
     description = "Polarization demux, anisotropy maps, and per-region WFS metrics"
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'current_role': 'Auto',
+        'counterpart_path': None,
+        'h_suffix': '_h',
+        'v_suffix': '_v',
+        'convention': 'alternating',
+        'start_frame': 0,
+        'n_dark': 0,
+        'n_off': 0,
+        'sum_stacks': False,
+        'split_detection': False,
+        'split_y': None,
+        'anisotropy_mode': 'stokes',
+        'segmentation_mode': 'none',
+        'smooth_sigma': 2.0,
+        'intensity_threshold': None,
+        'segmentation_sigma': 2.0,
+        'min_size': 200,
+        'hole_size': 200,
+        'threshold_scale': 1.0,
+        'psf_sigma': 2.0,
+        'psf_min_distance': 5,
+        'psf_threshold_rel': 0.1,
+        'psf_radius': 3,
+        'batch_input_folder': None,
+        'batch_output_folder': None}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'current_role', 'select', 'Auto', label='Current file role',
+                options=('Auto', 'H', 'V'), group='Pairing',
+            ),
+            ParamField(
+                'counterpart_path', 'path', None, label='Counterpart path',
+                help='The other stack of the H/V pair; empty finds it by suffix', group='Pairing',
+                nullable=True,
+            ),
+            ParamField(
+                'h_suffix', 'text', '_h', label='H suffix',
+                help='Filename ending that marks the H stack (case-insensitive)', group='Pairing',
+            ),
+            ParamField(
+                'v_suffix', 'text', '_v', label='V suffix',
+                help='Filename ending that marks the V stack (case-insensitive)', group='Pairing',
+            ),
+            ParamField(
+                'convention', 'select', 'alternating', label='Convention',
+                options=('alternating', 'block'), group='Loading',
+            ),
+            ParamField(
+                'start_frame', 'int', 0, label='Start frame', min=0, max=1000000, group='Loading',
+            ),
+            ParamField('n_dark', 'int', 0, label='Dark frames', min=0, max=1000000, group='Loading'),
+            ParamField(
+                'n_off', 'int', 0, label='Off/background frames', min=0, max=1000000,
+                group='Loading',
+            ),
+            ParamField('sum_stacks', 'bool', False, label='Sum stacks', group='Loading'),
+            ParamField('split_detection', 'bool', False, label='Split detection', group='Analysis'),
+            ParamField(
+                'split_y', 'int', None, label='Split Y',
+                help='Row that splits the two detection halves; empty splits in the middle',
+                min=1, max=1000000, group='Analysis', nullable=True,
+            ),
+            ParamField(
+                'anisotropy_mode', 'select', 'stokes', label='Anisotropy mode',
+                options=('stokes', 'direct_0_90'), group='Analysis',
+            ),
+            ParamField(
+                'segmentation_mode', 'select', 'none', label='Segmentation mode',
+                options=('none', 'otsu', 'psf_peaks', 'line_psf'), group='Analysis',
+            ),
+            ParamField(
+                'smooth_sigma', 'float', 2.0, label='Smooth sigma', min=0.0, max=1000.0,
+                group='Analysis',
+            ),
+            ParamField(
+                'intensity_threshold', 'float', None, label='Intensity threshold',
+                help='Empty: no intensity threshold', group='Analysis', nullable=True,
+            ),
+            ParamField(
+                'segmentation_sigma', 'float', 2.0, label='Sigma', min=0.0, max=1000.0,
+                group='Segmentation',
+            ),
+            ParamField(
+                'min_size', 'int', 200, label='Min size', min=0, max=1000000,
+                group='Segmentation',
+            ),
+            ParamField(
+                'hole_size', 'int', 200, label='Hole size', min=0, max=1000000,
+                group='Segmentation',
+            ),
+            ParamField(
+                'threshold_scale', 'float', 1.0, label='Threshold scale', min=0.0, max=1000.0,
+                group='Segmentation',
+            ),
+            ParamField(
+                'psf_sigma', 'float', 2.0, label='PSF sigma', min=0.0, max=1000.0,
+                group='Segmentation',
+            ),
+            ParamField(
+                'psf_min_distance', 'int', 5, label='PSF min distance', min=1, max=1000000,
+                group='Segmentation',
+            ),
+            ParamField(
+                'psf_threshold_rel', 'float', 0.1, label='PSF threshold rel', min=0.0, max=1.0,
+                group='Segmentation',
+            ),
+            ParamField(
+                'psf_radius', 'int', 3, label='PSF radius', min=1, max=1000000,
+                group='Segmentation',
+            ),
+            ParamField(
+                'batch_input_folder', 'path', None, label='Batch input folder', group='Batch',
+                nullable=True, advanced=True,
+            ),
+            ParamField(
+                'batch_output_folder', 'path', None, label='Batch output folder', group='Batch',
+                nullable=True, advanced=True,
+            ),
+        )
 
     def __init__(self):
         self._logger = initLogger("WidefieldStarssReconstructor")
@@ -41,7 +200,9 @@ class WidefieldStarssReconstructor(Reconstructor):
         self, data_obj: "DataObj", params: dict, context=None
     ) -> WidefieldStarssResult:
         current_path = Path(data_obj.dataPath) if data_obj.dataPath else None
-        current_role, counterpart_path = self._resolve_pair_paths(current_path, params)
+        current_role, counterpart_path = self._resolve_pair_paths(
+            current_path, params, recorded_role=self._recorded_role(data_obj)
+        )
 
         preloaded = data_obj.dataLoaded
         try:
@@ -51,7 +212,16 @@ class WidefieldStarssReconstructor(Reconstructor):
             if not preloaded:
                 data_obj.checkAndUnloadData()
 
-        counterpart_stack = tiff.imread(str(counterpart_path))
+        counterpart_obj = self._open_counterpart(data_obj, counterpart_path)
+        counterpart_preloaded = counterpart_obj.dataLoaded
+        try:
+            counterpart_obj.checkAndLoadData()
+            counterpart_stack = np.asarray(counterpart_obj.data)
+        finally:
+            if not counterpart_preloaded:
+                counterpart_obj.checkAndUnloadData()
+
+        pairing = self._validate_pair(data_obj, counterpart_obj, current_stack, counterpart_stack)
         if current_role == "H":
             stack_h = current_stack
             stack_v = counterpart_stack
@@ -86,6 +256,7 @@ class WidefieldStarssReconstructor(Reconstructor):
         result_params["counterpart_path"] = str(counterpart_path)
         result_params["source_h_path"] = str(current_path if current_role == "H" else counterpart_path)
         result_params["source_v_path"] = str(counterpart_path if current_role == "H" else current_path)
+        result_params.update(pairing)
 
         name_base = current_path.stem if current_path is not None else data_obj.name
         return WidefieldStarssResult(
@@ -94,10 +265,119 @@ class WidefieldStarssReconstructor(Reconstructor):
             params=result_params,
         )
 
+    @staticmethod
+    def _open_counterpart(data_obj: "DataObj", counterpart_path: Path) -> "DataObj":
+        """Open the other polarization through the shared source pipeline.
+
+        Reading it straight off disk with tifffile skipped the source resolver
+        entirely, so the counterpart arrived with no axis labels, no
+        calibration and no acquisition layout, and nothing could compare the
+        two halves of the pair before analyzing them together.
+        """
+        from imswitch.improcess.model import DataObj
+
+        return DataObj(
+            counterpart_path.name,
+            data_obj.datasetName,
+            path=str(counterpart_path),
+        )
+
+    def _validate_pair(
+        self,
+        current: "DataObj",
+        counterpart: "DataObj",
+        current_stack: np.ndarray,
+        counterpart_stack: np.ndarray,
+    ) -> dict:
+        """Reject a pair that cannot describe one acquisition, and say why."""
+        if current_stack.shape != counterpart_stack.shape:
+            raise ValueError(
+                f"WidefieldSTARSS needs two stacks of the same shape, but this "
+                f"pair is {current_stack.shape} and {counterpart_stack.shape}. "
+                f"Anisotropy is computed pixel by pixel across the pair."
+            )
+
+        pairing: dict = {}
+        current_scales = list(getattr(current, "axis_scales", None) or [])
+        counterpart_scales = list(getattr(counterpart, "axis_scales", None) or [])
+        current_unit = getattr(current, "scale_unit", None)
+        counterpart_unit = getattr(counterpart, "scale_unit", None)
+        if (
+            current_scales
+            and counterpart_scales
+            and (
+                current_scales != counterpart_scales
+                or current_unit != counterpart_unit
+            )
+        ):
+            raise ValueError(
+                f"The two polarization stacks declare different calibrations "
+                f"({current_scales} {current_unit} against {counterpart_scales} "
+                f"{counterpart_unit}), so their pixels are not comparable."
+            )
+        if current_scales:
+            pairing["pixel_calibration"] = (tuple(current_scales), current_unit)
+
+        # Rejecting a pair is a refusal, so only declared layouts may do it.
+        recorded = [
+            resolved.layout
+            for resolved in (
+                getattr(current, "acquisition_layout", None),
+                getattr(counterpart, "acquisition_layout", None),
+            )
+            if resolved is not None and resolved.is_authoritative
+        ]
+        if len(recorded) == 2:
+            current_kinds = [loop.kind for loop in recorded[0].event_loops]
+            other_kinds = [loop.kind for loop in recorded[1].event_loops]
+            # Kinds alone said two stacks corresponded when they did not: a
+            # time=2, condition=6 acquisition and a time=3, condition=4 one
+            # have the same loop names and the same frame count, and pairing
+            # them frame by frame silently compares different states. What
+            # makes frame *n* of one stack the counterpart of frame *n* of the
+            # other is the whole event structure -- counts, the order they are
+            # traversed in, and which frames a gated detector actually kept.
+            current_shape = _pairing_signature(recorded[0])
+            other_shape = _pairing_signature(recorded[1])
+            if current_shape != other_shape:
+                raise ValueError(
+                    f"The two polarization stacks were acquired differently "
+                    f"({_describe_signature(current_shape)} against "
+                    f"{_describe_signature(other_shape)}), so frame n of one "
+                    f"is not the counterpart of frame n of the other."
+                )
+            pairing["acquisition_loops"] = tuple(current_kinds)
+        elif recorded:
+            self._logger.warning(
+                "Only one half of the WidefieldSTARSS pair carries a recorded "
+                "acquisition layout; the pair could not be cross-checked."
+            )
+        return pairing
+
+    @staticmethod
+    def _recorded_role(data_obj: "DataObj") -> str | None:
+        """The polarization role the acquisition wrote, if it wrote one."""
+        attrs = getattr(data_obj, "attrs", None) or {}
+        for key in (
+            "WidefieldStarss:polarization_role",
+            "ome:WidefieldStarss:polarization_role",
+        ):
+            value = attrs.get(key)
+            if value is None:
+                continue
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", "replace")
+            role = str(value).strip().upper()
+            if role in ("H", "V"):
+                return role
+        return None
+
     def _resolve_pair_paths(
         self,
         current_path: Path | None,
         params: dict,
+        *,
+        recorded_role: str | None = None,
     ) -> tuple[str, Path]:
         explicit = params.get("counterpart_path")
         role = params.get("current_role", "Auto")
@@ -115,7 +395,24 @@ class WidefieldStarssReconstructor(Reconstructor):
             current_path, h_suffix, v_suffix
         )
         if role == "Auto":
-            role = inferred_role
+            if recorded_role is not None:
+                role = recorded_role
+            elif inferred_role is not None:
+                # Filename parsing is a legacy fallback, not a statement by the
+                # recording. Say so: getting H and V the wrong way round
+                # inverts the anisotropy rather than failing visibly.
+                self._logger.warning(
+                    "WidefieldSTARSS role %s was inferred from the filename "
+                    "suffix, not from recorded metadata.", inferred_role
+                )
+                role = inferred_role
+            else:
+                raise ValueError(
+                    f"Could not determine whether {current_path.name!r} is the "
+                    f"H or V polarization: it carries no recorded role and its "
+                    f"name does not end in {h_suffix}/{v_suffix}. Set the "
+                    f"current file role explicitly."
+                )
         if role not in ("H", "V"):
             raise ValueError(f"Unsupported current file role: {role!r}")
 
@@ -135,7 +432,7 @@ class WidefieldStarssReconstructor(Reconstructor):
         path: Path,
         h_suffix: str = "_h",
         v_suffix: str = "_v",
-    ) -> tuple[str, Path | None]:
+    ) -> tuple[str | None, Path | None]:
         stem = path.stem
         suffix = path.suffix
         lower = stem.lower()
@@ -147,6 +444,9 @@ class WidefieldStarssReconstructor(Reconstructor):
             if own and lower.endswith(own.lower())
         ]
         if not matches:
-            return "H", None
+            # No suffix matched, so the role is unknown. Returning "H" made an
+            # unlabelled file silently the H half, which inverts the anisotropy
+            # when it was really V.
+            return None, None
         role, own, other = max(matches, key=lambda item: len(item[1]))
         return role, path.with_name(f"{stem[:-len(own)]}{other}{suffix}")

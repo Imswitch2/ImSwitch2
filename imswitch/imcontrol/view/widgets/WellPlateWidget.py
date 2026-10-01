@@ -69,7 +69,6 @@ class WellPlateWidget(Widget):
                 self.Wells[txt] = btn
             self.Wells[' '].setStyleSheet('background-color: none')
             wellLayout.addWidget(self.Wells[txt], pos[0], pos[1])
-        self.setLayout(wellLayout)
 
     def connect_wells(self):
         """ Connect well buttons to the stub handler. """

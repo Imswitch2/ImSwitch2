@@ -3,7 +3,11 @@
 from pyqtgraph.parametertree import Parameter, ParameterTree
 from qtpy import QtWidgets
 
-from .metadata import snouty_param_overrides_from_attrs, DEFAULT_PARAMS
+from .metadata import (
+    DEFAULT_PARAMS,
+    recorded_snouty_geometry,
+    snouty_param_overrides_from_attrs,
+)
 
 
 class SnoutyParamsWidget(QtWidgets.QWidget):
@@ -87,17 +91,31 @@ class SnoutyParamsWidget(QtWidgets.QWidget):
             'restack': acq.param('Restack').value()
         }
     
-    def load_from_attrs(self, attrs: dict) -> None:
+    def load_from_attrs(self, attrs: dict, data_obj=None) -> None:
         """
-        Load parameters from HDF5 attributes (metadata auto-detection).
+        Load parameters from dataset metadata (auto-detection).
 
         Called automatically by ImProcessMainViewController.currentDataChanged
         whenever a new data file is selected.
 
         Args:
-            attrs: DataObj.attrs dict (merged root + dataset HDF5 attributes)
+            attrs: DataObj.attrs dict (merged root + dataset HDF5 attributes),
+                used for the optical geometry, which is instrument calibration
+                rather than acquisition structure.
+            data_obj: Optional source. When given, the cycle/plane counts come
+                from its resolved acquisition layout instead of a second parse
+                of the same ``MS-RESOLFT_Scan`` attributes.
         """
         params = snouty_param_overrides_from_attrs(attrs)
+        if data_obj is not None:
+            recorded = recorded_snouty_geometry(data_obj)
+            if recorded is not None:
+                cycles, planes_in_cycle, _timepoints = recorded
+                params = {
+                    **params,
+                    'cycles': cycles,
+                    'planes_in_cycle': planes_in_cycle,
+                }
 
         # Update only fields that the selected dataset explicitly provides.
         # All other values remain as entered by the user.

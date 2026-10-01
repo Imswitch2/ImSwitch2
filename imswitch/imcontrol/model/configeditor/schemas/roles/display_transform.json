@@ -1,0 +1,20 @@
+{
+  "role": "display_transform",
+  "title": "Display orientation",
+  "applies_to": "detectors",
+  "consumer": "imswitch.imcontrol.controller.display_transform:display_transform_from_properties",
+  "when": {},
+  "requires": [],
+  "reads": [
+    {"key": "displayRotation"},
+    {"key": "displayFlipX"},
+    {"key": "displayFlipY"},
+    {"key": "displayTransform"}
+  ],
+  "properties": {
+    "displayRotation": {"x-imswitch-kind": "integer", "enum": [0, 90, 180, 270], "description": "Display-only rotation of the live image, in degrees; recorded data is not rotated."},
+    "displayFlipX": {"x-imswitch-kind": "boolean", "description": "Display-only horizontal mirror of the live image."},
+    "displayFlipY": {"x-imswitch-kind": "boolean", "description": "Display-only vertical mirror of the live image."},
+    "displayTransform": {"x-imswitch-kind": "object", "description": "The same three settings as one dict: {\"rotation\": 90, \"flipX\": false, \"flipY\": true}. Takes precedence over the flat keys."}
+  }
+}

@@ -19,6 +19,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 #: Operations taking the constant ``value`` parameter.
@@ -35,6 +36,31 @@ class MathProcessor(Processor):
     name = "Math"
     id = "math"
     category = "Math"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
+    # Restricting to a region is meaningful here (P-R): the operation is
+    # per-pixel or local, so running it over one cell answers the same
+    # question as running it over the frame, only about that cell.
+    accepts_roi = True
+    roi_modes = ('mask', 'crop')
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'operation': 'add', 'value': 1.0}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'operation', 'select', 'add', label='Operation',
+                options=('add', 'subtract', 'multiply', 'divide', 'gamma', 'invert', 'log', 'exp', 'square-root'),
+            ),
+            ParamField(
+                'value', 'float', 1.0, label='Value',
+                help='Constant for add/subtract/multiply/divide; exponent for gamma', decimals=4,
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

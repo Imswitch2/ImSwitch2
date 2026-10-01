@@ -1,0 +1,20 @@
+{
+  "why": "A string where the manager prefers an integer. The editor shows it as it is and leaves the complaint to validation; it never retypes or drops it.",
+  "setup": {
+    "lasers": {
+      "aotf": {
+        "analogChannel": null, "digitalLine": null,
+        "managerName": "AAAOTFLaserManager",
+        "managerProperties": {"rs232device": "aaaotf", "channel": "2"},
+        "wavelength": 561, "valueRangeMin": 0, "valueRangeMax": 1023, "valueRangeStep": 1
+      }
+    },
+    "detectors": {
+      "cam": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "ThorCamTSIManager",
+        "managerProperties": {"flushFrameLimit": "10"}
+      }
+    }
+  }
+}

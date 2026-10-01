@@ -103,8 +103,10 @@ class MemoryLiveController(ImProcessWidgetController):
                 attrs=attrs,
             )
             
-            result = reconstructor.process(wrapper, params)
-            
+            from imswitch.improcess.reconstructors.run import run_reconstruction
+
+            result = run_reconstruction(reconstructor, wrapper, params).result
+
             self._commChannel.sigResultProduced.emit(result, "Live (RAM)")
             self._logger.info(
                 f"Completed RAM reconstruction: {reconstructor.name} on {name}/{datasetName}"

@@ -64,7 +64,9 @@ class Thread(SignalInterface, ABC):
         pass
 
     @abstractmethod
-    def wait(self) -> None:
+    def wait(self, timeoutMs=None) -> bool:
+        """Join the thread. With ``timeoutMs`` the wait is bounded and the
+        return value says whether the thread finished in time."""
         pass
 
 

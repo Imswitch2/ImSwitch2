@@ -21,7 +21,7 @@ class EditorController(ImScrWidgetController):
 
         # Connect ScriptExecutor signals
         self.scriptExecutor.sigOutputAppended.connect(self._commChannel.sigOutputAppended)
-        self.scriptExecutor.sigExecutionFinished.connect(self._moduleCommChannel.sigExecutionFinished)
+        self.scriptExecutor.sigExecutionFinished.connect(self._onExecutionFinished)
 
         # Connect CommunicationChannel signals
         self._commChannel.sigNewFile.connect(self.newFile)
@@ -115,11 +115,16 @@ class EditorController(ImScrWidgetController):
         self.scriptExecutor.execute(self.scriptStore[instanceID].filePath, code)
 
     def stopExecution(self):
-        """ Stops the currently running script. Does nothing if no script is
-        running. """
+        """ Requests the currently running script to stop. Does nothing if no
+        script is running. Never blocks: the script ends at its next
+        cooperative wait (or is interrupted), and the editor shows
+        "Stopping…" until it has. """
 
         if not self.scriptExecutor.isExecuting():
             return
+
+        if self.scriptExecutor.isStopping():
+            return  # Already stopping; the watchdog escalates by itself
 
         if not guitools.askYesNoQuestion(self._widget,
                                          'Stop execution?',
@@ -127,6 +132,19 @@ class EditorController(ImScrWidgetController):
             return
 
         self.scriptExecutor.cancel()
+        self._widget.setStopping(True)
+
+    def _onExecutionFinished(self, result):
+        self._widget.setStopping(False)
+        # The module-level signal carries no payload (the old signal-to-signal
+        # connection dropped the result silently).
+        self._moduleCommChannel.sigExecutionFinished.emit()
+
+    def closeEvent(self):
+        """ Module close: stop a running script with a bound. The application
+        shutdown phase (ImScrMainController.prepareShutdown) normally runs
+        first; this is the fallback for a module closed on its own. """
+        self.scriptExecutor.shutdown()
 
     def textChanged(self, instanceID):
         if self.loadingFile or instanceID not in self.scriptStore:

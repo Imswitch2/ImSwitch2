@@ -13,20 +13,12 @@ class ScanManagerMoNaLISA(SuperScanManager):
         return self._TTLCycleDesigner.timeUnits
 
     def makeFullScan(self, scanParameters, TTLParameters, staticPositioner=False):
-        """ Generates stage and TTL scan signals. """
+        """ Generates stage and TTL scan signals. Raises
+        ScanDesignRefusedError when the designer refuses the scan. """
         self._checkScanDefined()
 
         if not staticPositioner:
-            scanSignalsDict, positions, scanInfoDict = self.getScanSignalsDict(scanParameters)
-            if not self._scanDesigner.checkSignalComp(
-                    scanParameters, self._setupInfo, scanInfoDict
-            ):
-                self._logger.error(
-                    'Signal voltages outside scanner ranges: try scanning a smaller ROI or a slower'
-                    ' scan.'
-                )
-                return
-
+            scanSignalsDict, scanInfoDict = self._designScanSignals(scanParameters)
             TTLCycleSignalsDict = self.getTTLCycleSignalsDict(TTLParameters, scanInfoDict)
         else:
             TTLCycleSignalsDict = self.getTTLCycleSignalsDict(TTLParameters)

@@ -1,0 +1,11 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "TriggerScopeLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "maxVolt": "example",
+      "minVolt": "example"
+    }
+  }
+}

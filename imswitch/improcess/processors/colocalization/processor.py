@@ -8,6 +8,7 @@ from qtpy import QtWidgets
 from imswitch.improcess.analysis.colocalization import colocalization_batch
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors._extraction import extract_2d_plane, resolve_axis
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import ColocalizationResult
@@ -20,6 +21,27 @@ class ColocalizationProcessor(Processor):
     id = "colocalization"
     category = "Measurement"
     kinds = ("image", "composite")
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'compare_axis': 'Auto',
+        'index_a': 0,
+        'index_b': 1,
+        'threshold_a': 0.0,
+        'threshold_b': 0.0}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'compare_axis', 'select', 'Auto', label='Compare axis',
+                options=('Auto', 'C', 'T', 'Z', 'D0', 'D1', 'D2'),
+            ),
+            ParamField('index_a', 'int', 0, label='Index A', min=0, max=999999),
+            ParamField('index_b', 'int', 1, label='Index B', min=0, max=999999),
+            ParamField('threshold_a', 'float', 0.0, label='Threshold A', decimals=6),
+            ParamField('threshold_b', 'float', 0.0, label='Threshold B', decimals=6),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

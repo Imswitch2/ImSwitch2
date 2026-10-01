@@ -6,10 +6,35 @@ from typing import Any
 
 import numpy as np
 
-# Above this many elements, a plain in-memory ndarray is downsampled before
-# computing percentiles/histograms so display-only operations stay cheap.
-_SAMPLE_ELEMENT_THRESHOLD = 64 * 1024 * 1024
+from imswitch.imcommon.model import memory_limits
+
+# A plain in-memory ndarray is downsampled before computing percentiles or
+# histograms once the working set the exact path allocates -- a float64 copy,
+# a finite mask and the compacted result, _WORKING_SET_BYTES_PER_ELEMENT per
+# element -- exceeds this budget. The threshold used to count ELEMENTS
+# (64 Mi), which is dtype-blind and measures the one quantity that does not
+# determine the cost: a 16-frame 2048x2048 uint16 stack, exactly at it, paid
+# a ~1 GiB transient for two numbers on the contrast slider.
+#
+# The literal is the default -- 1 GiB, the same as ``MemoryOptions`` -- and
+# ``memory.processingWorkingSetMB`` in ``imcontrol_options.json`` overrides it
+# per machine; the sample size follows it (see ``_sample_working_set_bytes`` /
+# ``_max_samples``): lowering the allowance must lower what gets read, or the
+# setting means nothing here.
+_SAMPLE_WORKING_SET_BYTES = 1024 * 1024 * 1024
+_WORKING_SET_BYTES_PER_ELEMENT = 8 + 1 + 8
 _MAX_SAMPLE_VALUES = 2_000_000
+
+
+def _sample_working_set_bytes() -> int:
+    """The working set in force: the configured setting, else the literal."""
+    return memory_limits.effectiveBytes('processingWorkingSetBytes', _SAMPLE_WORKING_SET_BYTES)
+
+
+def _max_samples() -> int:
+    """How many values a sample may hold within the working set in force."""
+    return max(1, min(_MAX_SAMPLE_VALUES,
+                      _sample_working_set_bytes() // _WORKING_SET_BYTES_PER_ELEMENT))
 
 
 def _flatten_finite(arr: np.ndarray) -> np.ndarray:
@@ -28,27 +53,98 @@ def _should_sample(data: Any) -> bool:
     materialized in full via ``np.asarray``/``__array__``.
     """
     if isinstance(data, np.ndarray):
-        return data.size > _SAMPLE_ELEMENT_THRESHOLD
+        return data.size * _WORKING_SET_BYTES_PER_ELEMENT > _sample_working_set_bytes()
     return True
+
+
+def _kept(size: int, stride: int) -> int:
+    """How many elements ``slice(0, size, stride)`` keeps."""
+    return len(range(0, int(size), max(1, int(stride))))
 
 
 def _group_stride(axis_sizes: tuple[int, ...], remaining_factor: float) -> int:
     """Pick one stride, applied uniformly across ``axis_sizes``, that reduces
-    the group's element count by roughly ``remaining_factor``."""
-    if not axis_sizes or remaining_factor <= 1:
+    the group's element count by roughly ``remaining_factor``.
+
+    Only axes longer than one count towards the exponent: a singleton axis
+    keeps its one element whatever the stride, and charging it a share of
+    the reduction left the other axes under-strided (a ``(1, 100, 100, 100)``
+    stack came back with three times its allowance)."""
+    reducible = [size for size in axis_sizes if size > 1]
+    if not reducible or remaining_factor <= 1:
         return 1
-    stride = int(np.ceil(remaining_factor ** (1.0 / len(axis_sizes))))
-    return max(1, min(stride, max(axis_sizes)))
+    stride = int(np.ceil(remaining_factor ** (1.0 / len(reducible))))
+    return max(1, min(stride, max(reducible)))
 
 
-def sample_values(data: Any, *, max_samples: int = _MAX_SAMPLE_VALUES) -> np.ndarray:
+def _strided_key(shape: tuple[int, ...], max_samples: int) -> tuple:
+    """A slice key over ``shape`` keeping at most ``max_samples`` elements.
+
+    Leading (non-spatial) axes are strided first so full image planes are
+    preferred over degrading in-plane resolution; the last two axes only if
+    that is not enough. The count is taken from what each slice actually
+    keeps, not from the stride arithmetic, and the spatial stride is raised
+    until the total fits -- the arithmetic is a first guess, the count is
+    the contract."""
+    max_samples = max(1, int(max_samples))
+    leading_shape = shape[:-2] if len(shape) > 2 else ()
+    spatial_shape = shape[-2:]
+
+    def kept(sizes, stride):
+        return int(np.prod([_kept(size, stride) for size in sizes])) if sizes else 1
+
+    def smallest_stride(sizes, fits):
+        """The smallest uniform stride over ``sizes`` for which ``fits`` holds.
+
+        What a stride keeps never grows as the stride grows, so a binary
+        search finds it; a stride equal to the longest axis keeps one element
+        per axis, which is the floor. A stride guessed from the reduction
+        factor alone missed whenever the axes could not all shrink by it --
+        ``(2, 1000000, 1, 1)`` kept 166 667 values against 61 680 allowed,
+        because the size-2 axis cannot give up a factor of six."""
+        if not sizes:
+            return 1
+        low, high = 1, max(1, max(sizes))
+        if fits(low):
+            return low
+        if not fits(high):
+            return high
+        while high - low > 1:
+            middle = (low + high) // 2
+            if fits(middle):
+                high = middle
+            else:
+                low = middle
+        return high
+
+    spatial_total = int(np.prod(spatial_shape))
+    # Leading axes first, as far as they alone can go: whole planes are kept
+    # for as long as that meets the allowance.
+    leading_stride = smallest_stride(
+        leading_shape, lambda s: kept(leading_shape, s) * spatial_total <= max_samples)
+    leading_kept = kept(leading_shape, leading_stride)
+    spatial_stride = smallest_stride(
+        spatial_shape, lambda s: leading_kept * kept(spatial_shape, s) <= max_samples)
+    key = tuple(slice(0, size, leading_stride) for size in leading_shape)
+    key += tuple(slice(0, size, spatial_stride) for size in spatial_shape)
+    return key
+
+
+def sample_values(data: Any, *, max_samples: int | None = None) -> np.ndarray:
     """Return a bounded flat sample of finite values without full materialization.
+
+    ``max_samples`` defaults to what the working set in force allows, so a
+    smaller ``processingWorkingSetMB`` reads fewer values rather than the same
+    two million under a smaller nominal budget.
 
     Reads a strided subset via a single ``__getitem__`` slice call. Leading
     (non-spatial) axes are downsampled first so full image planes are
     preferred over degrading in-plane resolution; the last two axes are only
     strided if downsampling the leading axes alone isn't enough.
     """
+    if max_samples is None:
+        max_samples = _max_samples()
+    max_samples = max(1, int(max_samples))
     shape = tuple(int(size) for size in (getattr(data, "shape", None) or ()))
     if not shape:
         return _flatten_finite(np.asarray(data))
@@ -60,18 +156,7 @@ def sample_values(data: Any, *, max_samples: int = _MAX_SAMPLE_VALUES) -> np.nda
     if total <= max_samples:
         key = tuple(slice(None) for _ in shape)
     else:
-        leading_shape = shape[:-2] if len(shape) > 2 else ()
-        spatial_shape = shape[-2:] if len(shape) >= 1 else ()
-
-        remaining = total / max_samples
-        leading_stride = _group_stride(leading_shape, remaining)
-        if leading_shape:
-            remaining = remaining / (leading_stride ** len(leading_shape))
-
-        spatial_stride = _group_stride(spatial_shape, remaining)
-
-        key = tuple(slice(0, size, leading_stride) for size in leading_shape)
-        key += tuple(slice(0, size, spatial_stride) for size in spatial_shape)
+        key = _strided_key(shape, max_samples)
 
     sampled = data[key] if hasattr(data, "__getitem__") else data
     return _flatten_finite(np.asarray(sampled))

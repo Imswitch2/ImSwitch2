@@ -6,7 +6,9 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view.guitools import naparitools
 from imswitch.improcess.model.contrast import safe_display_levels
+from imswitch.improcess.model.lazy_array import is_dask_array
 from . import guitools
+from .NapariStormDisplay import NapariStormDisplay
 
 
 def _spec_kind(spec) -> str:
@@ -27,6 +29,40 @@ def _spec_component(spec) -> str:
     return str(getattr(spec, "name", "layer"))
 
 
+#: Keys carrying spatial provenance, written onto every rendered layer.
+IDENTITY_KEYS = (
+    "result_uid",
+    "dataset_uid",
+    "coordinate_space_uid",
+    "identity_kind",
+    "lineage",
+    "plane_axes",
+    "view_mode",
+    "axes",
+)
+
+
+def _applyIdentityMetadata(layer, identity, *, overrides=None) -> None:
+    """Write spatial provenance onto a layer, or clear it when unknown.
+
+    Cleared rather than left stale when ``identity`` is None: metadata from a
+    previously displayed result would otherwise claim this image is something
+    it is not, which is worse than having no provenance at all.
+    """
+    if layer is None:
+        return
+    if not identity:
+        for key in IDENTITY_KEYS:
+            layer.metadata.pop(key, None)
+        return
+    for key in IDENTITY_KEYS:
+        if key in identity:
+            layer.metadata[key] = identity[key]
+    for key, value in (overrides or {}).items():
+        if value is not None:
+            layer.metadata[key] = value
+
+
 class ReconstructionView(QtWidgets.QFrame):
     """ Frame for showing the reconstructed image"""
 
@@ -36,9 +72,18 @@ class ReconstructionView(QtWidgets.QFrame):
     sigResultsRemoved = QtCore.Signal()
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
+    #: (layer metadata, (min, max)) -- a rendered layer's contrast changed,
+    #: however it was changed: our toolbar, napari's own slider, or a render.
+    sigImageLevelsChanged = QtCore.Signal(object, object)
 
     # Methods
-    def __init__(self, *args, showLayerControls: bool = True, **kwargs):
+    def __init__(
+        self,
+        *args,
+        showLayerControls: bool = True,
+        useNapariStormViewer: bool = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self)
 
@@ -51,8 +96,18 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer = self.napariViewer.add_image(
             np.zeros((1, 1)), rgb=False, name='Reconstruction', colormap='grayclip', protected=True
         )
+        self._watchLevels(self.imgLayer)
         self.setNapariLayerControlsVisible(showLayerControls)
         self._displayLayers = []
+        self._imgLayerIsDisplayAnchor = False
+        # Optional GPU point-cloud backend for localization results. Retained
+        # across selections, so it deliberately sits outside _displayLayers,
+        # which is cleared and rebuilt on every result change. None unless the
+        # config asks for it; the adapter then gates itself again on the
+        # optional package actually being installed.
+        self.napariStormDisplay = (
+            NapariStormDisplay(self.napariViewer) if useNapariStormViewer else None
+        )
         # Tracks which managed/protected layer is the selected result's canonical
         # output (may be a labels/points layer, not imgLayer) so the toolbar and
         # active-image accessors can target it by role rather than by identity.
@@ -191,16 +246,34 @@ class ReconstructionView(QtWidgets.QFrame):
             self.sigAxisStepChanged.emit(event.value)
 
     def addNewData(self, reconObj, name):
+        """Add an entry, de-duplicating the label with a ``.N`` suffix.
+
+        For producers that can legitimately emit results under a repeated name
+        (reconstructing the same file twice, say), so the entries stay tellable
+        apart. Callers whose name is already unique should use
+        :meth:`addNamedData` instead.
+        """
         ind = 0
         for i in range(self.reconList.count()):
             if name + '.' + str(ind) == self.reconList.item(i).data(0):
                 ind += 1
-        name = name + '.' + str(ind)
+        return self.addNamedData(reconObj, name + '.' + str(ind))
 
+    def addNamedData(self, reconObj, name):
+        """Add an entry labelled exactly ``name`` -- no de-duplicating suffix.
+
+        Used by the live path, where the run name (the timelapse folder) is
+        already unique per job, so a ``.0`` would be noise.
+
+        Returns:
+            The created ``QListWidgetItem``, so a caller can keep updating that
+            specific entry rather than whichever one happens to be selected.
+        """
         listItem = QtWidgets.QListWidgetItem(name)
         listItem.setData(1, reconObj)
         self.reconList.addItem(listItem)
         self.reconList.setCurrentItem(listItem)
+        return listItem
 
     def getCurrentItemIndex(self):
         currentItem = self.reconList.currentItem()
@@ -253,8 +326,95 @@ class ReconstructionView(QtWidgets.QFrame):
     def getImage(self):
         return self.imgLayer.data
 
-    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
+    def tryFastLiveUpdate(self, result, transposeOrder) -> bool:
+        """Attempt an in-place pixel swap for a repeat live-reconstruction update.
+
+        ImSwitch-1 style: no layer add/remove, no ``display_layers()`` rebuild
+        (that recomputes per-base contrast over the whole growing volume), no
+        axis-label / colormap / scale-bar reconfiguration -- just reassign each
+        existing layer's ``.data`` and ``refresh()``.
+
+        This is a "try" method: calling it *is* the update, and the return value
+        reports whether it happened. ``True`` means the layers now show
+        ``result``; ``False`` means nothing was touched and the caller should
+        fall back to the full :meth:`setDisplayLayers` / :meth:`setImage` path
+        (the layer structure or a shape no longer matches).
+
+        Every target is validated *before* any assignment, so a mismatch can
+        never leave the layers partially updated.
+        """
+        try:
+            arrays = (
+                list(result.display_layer_data())
+                if hasattr(result, "display_layer_data") else []
+            )
+        except Exception as exc:
+            self._logger.debug("tryFastLiveUpdate: display_layer_data() failed (%s)", exc)
+            return False
+
+        try:
+            if arrays:
+                anchor = getattr(self, "_imgLayerIsDisplayAnchor", False)
+                # display_layers() routes the first image-kind spec (base 0 for
+                # MoNaLISA) to imgLayer and the rest to _displayLayers, in order.
+                targets = ([self.imgLayer] if anchor else []) + list(self._displayLayers)
+                if len(arrays) != len(targets):
+                    return False
+                pairs = []
+                for layer, arr in zip(targets, arrays):
+                    arr = np.asarray(arr)
+                    if tuple(arr.shape) != tuple(np.shape(layer.data)):
+                        return False
+                    pairs.append((layer, arr))
+            else:
+                im = np.asarray(result.data).transpose(*transposeOrder)
+                if tuple(im.shape) != tuple(np.shape(self.imgLayer.data)):
+                    return False
+                pairs = [(self.imgLayer, im)]
+        except Exception as exc:
+            self._logger.debug("tryFastLiveUpdate: fell back (%s)", exc)
+            return False
+
+        for layer, arr in pairs:
+            try:
+                layer.data = arr
+                layer.refresh()
+            except Exception as exc:
+                self._logger.debug("tryFastLiveUpdate: layer.data swap failed (%s)", exc)
+                return False
+        return True
+
+    def moveDimStep(self, axis: int, step: int) -> None:
+        """Move one napari dims slider to ``step`` (clamped), e.g. the live
+        timepoint axis."""
+        try:
+            dims = self.napariViewer.dims
+            if 0 <= axis < dims.ndim:
+                hi = max(0, int(dims.range[axis][1]))
+                dims.set_current_step(axis, max(0, min(int(step), hi)))
+        except Exception as exc:
+            self._logger.debug("moveDimStep(%s, %s) failed: %s", axis, step, exc)
+
+    def _setScaleBarUnit(self, unit):
+        """Set the napari scale-bar unit, but only when it changed.
+
+        Skips redundant assignments (they fire on every live-reconstruction
+        redraw) and silences the napari >=0.6 ``FutureWarning`` about setting
+        ``ScaleBar.unit`` directly -- the deprecation is upstream's to resolve.
+        """
+        try:
+            if getattr(self.napariViewer.scale_bar, 'unit', None) == unit:
+                return
+        except Exception:
+            pass
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', FutureWarning)
+            self.napariViewer.scale_bar.unit = unit
+
+    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip",
+                 name=None, identity=None):
         self._clearDisplayLayers()
+        self._imgLayerIsDisplayAnchor = False
         # A prior labels/points-primary result may have hidden imgLayer; a plain
         # image result restores it as the (visible) primary again.
         self.imgLayer.visible = True
@@ -267,7 +427,21 @@ class ReconstructionView(QtWidgets.QFrame):
         else:
             self.imgLayer.name = 'Reconstruction'
         self.imgLayer.colormap = colormap
-        im = np.asarray(im)
+        if not is_dask_array(im):
+            # A dask array stays one: napari reads the plane on screen from it,
+            # where np.asarray would read every plane of a lazy result first.
+            im = np.asarray(im)
+        if im.ndim < 2:
+            # napari's image layer holds planes; a lower-rank array leaves its
+            # transform and units disagreeing about the rank and every later
+            # cursor move raises inside napari. Every caller should have
+            # refused already; this is the last gate before the layer.
+            self._logger.warning(
+                "setImage: %r has shape %s and cannot be shown as an image",
+                name or 'Reconstruction', im.shape,
+            )
+            self.clearImage()
+            return
         old_ndim = self.imgLayer.data.ndim
         new_ndim = im.ndim
         if axisScales is None:
@@ -305,13 +479,32 @@ class ReconstructionView(QtWidgets.QFrame):
                 self.imgLayer.metadata["source_result"] = str(name)
             else:
                 self.imgLayer.metadata.pop("source_result", None)
-            self.napariViewer.scale_bar.unit = "µm" if scaleUnit == "um" else scaleUnit
+            self._setScaleBarUnit("µm" if scaleUnit == "um" else scaleUnit)
+            # A single-image result has no components. Leaving the previous
+            # result's component behind made this layer claim to be one, and
+            # its display settings were then filed under a component name
+            # nothing would ever look for again.
+            self.imgLayer.metadata.pop("component", None)
+            # Spatial provenance travels with the layer, beside the scale and
+            # unit that were already written here, so anything measuring this
+            # image can read what it is measuring from one object.
+            _applyIdentityMetadata(self.imgLayer, identity)
         except Exception as exc:
             self._logger.debug("setImage: could not set scale_bar unit: %s", exc)
 
-    def setDisplayLayers(self, layerSpecs):
+    def setDisplayLayers(self, layerSpecs, identity=None):
         self._clearDisplayLayers()
-        specs = list(layerSpecs or [])
+        specs = []
+        for spec in list(layerSpecs or []):
+            data = spec.data
+            ndim = int(getattr(data, "ndim", np.ndim(data)))
+            if _spec_kind(spec) in ("image", "labels") and ndim < 2:
+                self._logger.warning(
+                    "setDisplayLayers: skipping %r (shape %s): an image layer needs two axes",
+                    spec.name, tuple(getattr(data, "shape", ()) or ()),
+                )
+                continue
+            specs.append(spec)
         if not specs:
             self.clearImage()
             return
@@ -327,6 +520,7 @@ class ReconstructionView(QtWidgets.QFrame):
              if _spec_kind(spec) == "image"),
             None,
         )
+        self._imgLayerIsDisplayAnchor = img_spec_index is not None
         self._primaryComponent = None
         self._primaryLayer = None
 
@@ -335,6 +529,16 @@ class ReconstructionView(QtWidgets.QFrame):
                 layer = self._applyImageSpecToImgLayer(spec)
             else:
                 layer = self._addManagedLayer(spec)
+            # A display layer can sit on its own pixel grid, so its own
+            # coordinate space wins over the parent result's.
+            _applyIdentityMetadata(
+                layer,
+                identity,
+                overrides={
+                    'coordinate_space_uid': getattr(spec, 'coordinate_space_uid', None),
+                    'component': _spec_component(spec),
+                },
+            )
             if layer is None:
                 continue
             if _spec_role(spec) == "primary":
@@ -356,7 +560,7 @@ class ReconstructionView(QtWidgets.QFrame):
                                  first.axis_labels, exc)
 
         try:
-            self.napariViewer.scale_bar.unit = (
+            self._setScaleBarUnit(
                 "µm" if first.scale_unit == "um" else first.scale_unit
             )
         except Exception as exc:
@@ -475,6 +679,7 @@ class ReconstructionView(QtWidgets.QFrame):
             )
             return None
 
+        self._watchLevels(layer)
         self._displayLayers.append(layer)
         return layer
 
@@ -509,6 +714,40 @@ class ReconstructionView(QtWidgets.QFrame):
                 context, old_ndim, new_ndim, exc,
             )
 
+    def _watchLevels(self, layer) -> None:
+        """Announce this layer's contrast whenever it changes.
+
+        Contrast is changed from three places -- our toolbar, napari's own
+        slider, and a render that applies a result's remembered levels -- and
+        only the first of those used to be noticed. Listening to the layer
+        itself catches all three, so what is on screen is recorded the moment
+        it changes rather than at some later moment that has to be arranged.
+        """
+        events = getattr(getattr(layer, 'events', None), 'contrast_limits', None)
+        if events is None:
+            # Not silent: a layer nobody can watch is a layer whose contrast
+            # is quietly not remembered, and that is the failure this exists
+            # to end.
+            self._logger.warning(
+                "Layer %r has no contrast_limits event; contrast changes made "
+                "on it cannot be remembered per result.",
+                getattr(layer, 'name', layer),
+            )
+            return
+        try:
+            events.connect(
+                lambda event, layer=layer: self._onLevelsChanged(layer)
+            )
+        except Exception as exc:
+            self._logger.warning("Could not watch contrast limits: %s", exc)
+
+    def _onLevelsChanged(self, layer) -> None:
+        metadata = dict(getattr(layer, 'metadata', None) or {})
+        levels = getattr(layer, 'contrast_limits', None)
+        if levels is None:
+            return
+        self.sigImageLevelsChanged.emit(metadata, tuple(float(v) for v in levels))
+
     def _clearDisplayLayers(self):
         for layer in list(getattr(self, "_displayLayers", [])):
             try:
@@ -522,6 +761,7 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer.visible = True
         self.imgLayer.name = 'Reconstruction'
         self.imgLayer.metadata.pop("source_result", None)
+        self.imgLayer.metadata.pop("component", None)
         self.imgLayer.data = np.zeros((1, 1))
         self._primaryLayer = self.imgLayer
         self._primaryComponent = None
@@ -536,7 +776,15 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer.contrast_limits_range = safe_display_levels(minimum, maximum)
 
     def getActiveImageLayer(self):
-        """Return the active image-like Napari layer, falling back to imgLayer."""
+        """Return the active image-like Napari layer, falling back to imgLayer.
+
+        "Image-like" means the data really is an array, not merely that the
+        layer has the two attributes. A point-cloud layer has ``contrast_limits``
+        *and* a ``data`` holding a tuple of geometry arrays, so attribute
+        presence alone let it through to every contrast tool built on this
+        accessor, where the tuple then failed whatever tried to take its min
+        and max.
+        """
         layer = None
         try:
             layer = self.napariViewer.layers.selection.active
@@ -544,8 +792,8 @@ class ReconstructionView(QtWidgets.QFrame):
             layer = None
         if (
             layer is not None
-            and hasattr(layer, "data")
             and hasattr(layer, "contrast_limits")
+            and isinstance(getattr(layer, "data", None), np.ndarray)
         ):
             return layer
         return self.imgLayer
@@ -566,12 +814,20 @@ class ReconstructionView(QtWidgets.QFrame):
             layer_id = self._imageLayerId(layer)
             if layer_id is None:
                 continue
+            levels = getattr(layer, "contrast_limits", None)
             states.append(
                 {
                     "id": layer_id,
                     "name": str(getattr(layer, "name", layer_id)),
                     "visible": bool(getattr(layer, "visible", True)),
                     "colormap": self._colormapName(layer),
+                    # Every layer's contrast, not only the active one's. The
+                    # two used to disagree: switching results remembered the
+                    # colormap of each layer and the levels of one.
+                    "display_levels": (
+                        tuple(float(v) for v in levels)
+                        if levels is not None else None
+                    ),
                     "metadata": dict(getattr(layer, "metadata", {}) or {}),
                 }
             )

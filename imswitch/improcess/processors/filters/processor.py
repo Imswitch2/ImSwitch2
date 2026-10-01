@@ -20,6 +20,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 FILTER_METHODS = ("gaussian", "median", "mean", "unsharp")
@@ -31,6 +32,36 @@ class FilterProcessor(Processor):
     name = "Filter"
     id = "filter"
     category = "Filters"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
+    # Restricting to a region is meaningful here (P-R): the operation is
+    # per-pixel or local, so running it over one cell answers the same
+    # question as running it over the frame, only about that cell.
+    accepts_roi = True
+    roi_modes = ('mask', 'crop')
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'method': 'gaussian', 'radius': 2.0, 'amount': 0.6}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'method', 'select', 'gaussian', label='Filter',
+                options=('gaussian', 'median', 'mean', 'unsharp'),
+            ),
+            ParamField(
+                'radius', 'float', 2.0, label='Radius/sigma',
+                help='Gaussian/unsharp sigma in pixels; median/mean kernel radius', min=0.1,
+                max=1000, decimals=2,
+            ),
+            ParamField(
+                'amount', 'float', 0.6, label='Unsharp amount',
+                help="Unsharp mask weight (like ImageJ's 0.1-0.9)", min=0.05, max=10, decimals=2,
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

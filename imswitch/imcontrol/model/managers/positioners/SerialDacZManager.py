@@ -4,6 +4,7 @@ import serial
 from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
 
+
 class SerialDacZManager(PositionerManager):
     """
     Serial DAC Z actuator.
@@ -20,7 +21,6 @@ class SerialDacZManager(PositionerManager):
                 f"{self.__class__.__name__} only supports one axis, "
                 f"{len(positionerInfo.axes)} provided."
             )
-
 
         self.__logger = initLogger(self, instanceName=name)
 
@@ -56,6 +56,36 @@ class SerialDacZManager(PositionerManager):
         self._prompt = props.get("prompt", ">>>").encode()
         self._dac_command = props.get("dac_command", "dac.SetDac({voltage})")
 
+        self._ser = None
+        self._is_available = False
+        self._connection_error = None
+
+        # Keep configuration/voltage errors explicit rather than treating them
+        # as a hardware connection failure.
+        initial_voltage = self._position_to_voltage(initial_position)
+
+        try:
+            self._connect_and_initialize(initial_position, initial_voltage)
+        except Exception as exc:
+            self._connection_error = str(exc)
+            self.__logger.warning(
+                f"Serial DAC Z manager unavailable on {self._port}: {exc}"
+            )
+            self._close_serial_safely()
+            return
+
+        self._is_available = True
+        self.__logger.info("Serial DAC Z manager initialized")
+
+    @property
+    def isAvailable(self) -> bool:
+        return self._is_available
+
+    @property
+    def connectionError(self):
+        return self._connection_error
+
+    def _connect_and_initialize(self, initial_position, initial_voltage):
         self.__logger.info(
             f"Opening serial DAC Z connection on {self._port} "
             f"at {self._baudrate} baud"
@@ -71,29 +101,45 @@ class SerialDacZManager(PositionerManager):
 
         self.__logger.debug("Trying to enter MicroPython REPL")
         repl_reply = self._enter_repl()
-        self.__logger.debug(f"MicroPython REPL reply:\n{repl_reply}")
+        self.__logger.debug(f"MicroPython REPL reply: {repl_reply!r}")
 
         self.__logger.debug(
             f"Sending initial position {initial_position} "
-            f"{self._axis} -> {self._position_to_voltage(initial_position)} V"
+            f"{self._axis} -> {initial_voltage} V"
         )
 
-        self._send_voltage(self._position_to_voltage(initial_position))
-
-        self.__logger.info("Serial DAC Z manager initialized")
+        self._send_voltage(initial_voltage)
 
     def move(self, dist, axis=None):
         self._check_axis(axis)
+        self._raise_if_unavailable()
+
         new_position = self._position[self._axis] + float(dist)
         return self.setPosition(new_position, self._axis)
 
     def setPosition(self, position, axis=None):
         self._check_axis(axis)
+        self._raise_if_unavailable()
 
         position = float(position)
         voltage = self._position_to_voltage(position)
-        self._send_voltage(voltage)
 
+        try:
+            self._send_voltage(voltage)
+        except Exception as exc:
+            self._connection_error = str(exc)
+            self._is_available = False
+            self.__logger.warning(
+                f"Serial DAC Z communication failed on {self._port}: {exc}"
+            )
+            self._close_serial_safely()
+            raise RuntimeError(
+                f"Serial DAC Z communication failed on {self._port}: {exc}"
+            ) from exc
+
+        # No readback is available, so this is the last successfully commanded
+        # position. Never advance it if communication failed above.
+        self._connection_error = None
         self._position[self._axis] = position
         return position
 
@@ -106,17 +152,36 @@ class SerialDacZManager(PositionerManager):
         return self._position
 
     def finalize(self):
-        try:
-            if self._safe_voltage_on_close is not None:
+        if self.isAvailable and self._safe_voltage_on_close is not None:
+            try:
                 self._send_voltage(self._safe_voltage_on_close)
-        except Exception:
-            pass
+            except Exception as exc:
+                self.__logger.warning(
+                    f"Failed to set safe voltage while closing Serial DAC Z "
+                    f"on {self._port}: {exc}"
+                )
 
+        self._close_serial_safely()
+
+    def _raise_if_unavailable(self):
+        if self.isAvailable:
+            return
+
+        detail = f": {self._connection_error}" if self._connection_error else ""
+        raise RuntimeError(
+            f"Serial DAC Z on {self._port} is unavailable{detail}"
+        )
+
+    def _close_serial_safely(self):
         try:
-            if hasattr(self, "_ser") and self._ser.is_open:
+            if self._ser is not None and self._ser.is_open:
                 self._ser.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.__logger.debug(
+                f"Failed to close serial DAC Z connection on {self._port}: {exc}"
+            )
+        finally:
+            self._is_available = False
 
     def _check_axis(self, axis):
         if axis is not None and axis != self._axis:
@@ -182,7 +247,7 @@ class SerialDacZManager(PositionerManager):
         self._ser.flush()
 
         reply = self._read_until_prompt()
-        self.__logger.debug(f"DAC command reply:\n{reply}")
+        self.__logger.debug(f"DAC command reply: {reply!r}")
 
         return reply
 

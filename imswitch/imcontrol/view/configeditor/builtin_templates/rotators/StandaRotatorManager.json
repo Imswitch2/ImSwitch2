@@ -1,0 +1,14 @@
+{
+  "display": "Standa Rotator Stage",
+  "category": "rotators",
+  "top": [
+    {"key": "analogChannel", "label": "Analog Channel", "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",   "label": "Digital Line",   "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []}
+  ],
+  "props": [
+    {"key": "motorListIndex",    "label": "Motor Index",      "default": 0,   "req": true, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "ximcLibLocation",   "label": "XIMC Library Path","type": "path", "default": "",  "req": true, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "stepsPerTurn",      "label": "Steps/Turn",       "default": 200, "req": true, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "microstepsPerStep", "label": "Microsteps/Step",  "default": 255, "req": true, "grp": "Basic", "tip": "", "opts": []}
+  ]
+}

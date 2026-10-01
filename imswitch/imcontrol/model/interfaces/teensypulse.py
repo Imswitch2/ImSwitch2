@@ -613,6 +613,8 @@ class MockTeensyPulseDriver:
             self._stop_requested = True
         if self._worker is not None:
             self._worker.join(timeout=2.0)
+            if self._worker.is_alive():
+                raise TeensyProtocolError('worker did not stop within 2 s')
 
     # -- test helpers ----------------------------------------------------
 

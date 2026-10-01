@@ -1,0 +1,22 @@
+{
+  "why": "A template-known nested dict with nothing the template lists inside, and one that is null. Neither holds a field the form can show; both must come back exactly.",
+  "setup": {
+    "detectors": {
+      "empty": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "TISManager",
+        "managerProperties": {"cameraListIndex": 1, "tis": {}}
+      },
+      "null": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "TISManager",
+        "managerProperties": {"cameraListIndex": 0, "tis": null}
+      },
+      "unlisted_only": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "TISManager",
+        "managerProperties": {"cameraListIndex": 0, "tis": {"vendor_only": 1}}
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "GRBLLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "channel": "example",
+      "rs232device": "example"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "role": "beta_scan_axis",
+  "title": "Scan axis (BetaScanDesigner)",
+  "applies_to": "positioners",
+  "consumer": "imswitch.imcontrol.model.signaldesigners.BetaScanDesigner",
+  "when": {
+    "all": [
+      {"setup": "scan.scanDesigner", "equals": "BetaScanDesigner"},
+      {"field": "forScanning", "equals": true}
+    ]
+  },
+  "requires": [],
+  "reads": [
+    {"key": "conversionFactor"},
+    {"key": "minVolt"},
+    {"key": "maxVolt"}
+  ],
+  "properties": {
+    "conversionFactor": {"x-imswitch-kind": "number", "description": "Micrometres per volt for this axis; BetaScanDesigner assumes 1 when it is absent."},
+    "minVolt": {"x-imswitch-kind": "number", "description": "Lowest voltage the designer may emit on this axis; without it the axis is not range-checked."},
+    "maxVolt": {"x-imswitch-kind": "number", "description": "Highest voltage the designer may emit on this axis; without it the axis is not range-checked."}
+  }
+}

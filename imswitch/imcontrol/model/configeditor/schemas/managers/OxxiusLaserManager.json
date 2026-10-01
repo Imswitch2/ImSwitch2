@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "laserType": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "port": {
+      "x-imswitch-source": [
+        "code:required"
+      ]
+    },
+    "prefix": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "port"
+  ],
+  "title": "OxxiusLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "OxxiusLaserManager",
+    "LaserManager"
+  ]
+}

@@ -70,25 +70,24 @@ class SnoutyProjectionsResult(ProcessingResult):
         
         self.params = params
     
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        """
-        Save SNOUTY projections result.
-        
-        Args:
-            path: Output file path
-            fmt: Format string ("tiff" only for now)
-        
-        TIFF format:
-            - ImageJ-compatible with axes "CYX" (3D) or "TCYX" (4D)
-            - The three projections map to the C (channel) axis
-        """
-        if fmt == "tiff":
-            self._save_tiff(path)
-        else:
+
+    supported_formats = ("tiff",)
+
+    def write_files(self, plan, document) -> None:
+        """OME-TIFF through the shared writer; the three projections are the
+        channel axis ("CYX" or "TCYX")."""
+        if plan.fmt != "tiff":
             raise ValueError(
-                f"SNOUTY projections result supports 'tiff' only, got '{fmt}'"
+                f"SNOUTY projections result supports 'tiff' only, got '{plan.fmt}'"
             )
-    
+        from imswitch.improcess.model.footprint import json_safe
+        from imswitch.improcess.model.result_io import save_image_result
+
+        save_image_result(
+            self, plan.primary, "tiff",
+            extra={"snouty_params": json_safe(dict(self.params))}, document=document,
+        )
+
     def _save_tiff(self, path: Path) -> None:
         """Save as ImageJ-compatible TIFF with projections as channels."""
         if self.data.ndim == 3:

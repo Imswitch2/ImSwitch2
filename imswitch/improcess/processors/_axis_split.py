@@ -91,6 +91,19 @@ def split_result(result: ProcessingResult, axis: int, *, operation: str) -> tupl
     return tuple(outputs)
 
 
+def split_port_keys(outputs) -> tuple[str, ...]:
+    """Provenance output ports for the results of :func:`split_result`.
+
+    ``C0, C1, …`` for a channel split, ``Z3`` for the fourth slice of a Z
+    split: the axis label plus the index along it, which is what a later step
+    needs to name "the third channel" in a way that survives renaming.
+    """
+    return tuple(
+        f"{result.metadata.get('split_axis', 'out')}{result.metadata.get('split_index', index)}"
+        for index, result in enumerate(outputs)
+    )
+
+
 def _explicit_axis_index(requested: str, labels: list[str], shape: tuple[int, ...]) -> int:
     if requested in labels:
         index = labels.index(requested)

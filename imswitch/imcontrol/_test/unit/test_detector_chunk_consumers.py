@@ -20,7 +20,7 @@ from imswitch.imcommon.framework import SignalInterface
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     ChunkConsumerOverflowError,
     DetectorManager,
-    MAX_QUEUED_CONSUMER_FRAMES,
+    MAX_QUEUED_CONSUMER_BYTES,
 )
 from imswitch.imcontrol.model.managers.detectors.APDManager import APDManager
 from imswitch.imcontrol.model.managers.detectors.PMTManager import PMTManager
@@ -171,16 +171,26 @@ def test_chunk_consumer_drain_refreshes_shared_latest_frame():
 
 
 def test_idle_consumer_queue_is_capped():
+    """The bound is memory, so the frame count it allows follows the frame."""
+    from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+        DetectorManager,
+    )
+
     det = _FakeDetector()
     det.readChunk('idle')  # registers, then never polls again
 
+    det.feed(1)
+    det.readChunk('active')
+    perFrame = DetectorManager._frameBytes(det._chunkConsumers['idle'][0])
+    fits = MAX_QUEUED_CONSUMER_BYTES // perFrame
+
     fed = 0
-    while fed <= MAX_QUEUED_CONSUMER_FRAMES + 10:
+    while fed <= fits + 10:
         det.feed(50)
         det.readChunk('active')
         fed += 50
 
-    assert len(det._chunkConsumers['idle']) <= MAX_QUEUED_CONSUMER_FRAMES
+    assert len(det._chunkConsumers['idle']) <= fits
     # active consumer was drained every time and is unaffected
     assert det._chunkConsumers['active'] == []
     with pytest.raises(ChunkConsumerOverflowError, match='stream is incomplete'):

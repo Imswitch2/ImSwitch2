@@ -2,8 +2,9 @@ Agent Task Templates
 ====================
 
 This page defines small, bounded task prompts for coding agents working on
-ImSwitch2. The goal is to make parallel agent work easier to review and safer
-to merge.
+ImSwitch2. The goal is to make agent work easier to review and safer to
+merge.  Run agent tasks one at a time, or give each its own git worktree:
+agents sharing one checkout overwrite each other's files and branches.
 
 General Rules
 -------------
@@ -12,13 +13,13 @@ Every agent task should be narrow enough to review in one pass. Prefer one
 file or one tightly related group of files. The agent must not merge, push, or
 deploy without human review.
 
-Agents must follow ``AGENTS.md``. In particular:
+Agents must follow the red-zone rules in :ref:`red-zone-work`. In particular:
 
-* no direct hardware execution,
-* no hardware timing changes unless explicitly requested,
-* no API-breaking changes without maintainer approval,
-* tests or documentation checks are required,
-* red-zone files require explicit risk notes.
+1. No direct hardware execution
+2. No hardware timing changes unless explicitly requested
+3. No API-breaking changes without maintainer approval
+4. Tests or documentation checks are required
+5. Red-zone files require explicit risk notes
 
 Standard Prompt Format
 ----------------------
@@ -56,7 +57,7 @@ Use this format for most small tasks:
 
    Commit instructions
    - Commit only files changed for this task.
-   - Use message: <type>: <short summary>
+   - Use message: <area>: <short summary>
 
 Doc-Only Task Template
 ----------------------
@@ -87,7 +88,7 @@ Doc-Only Task Template
 
    Sanity checks
    - git diff --check -- docs/path.rst docs/index.rst ROADMAP.md
-   - sphinx-build -b html docs /tmp/imswitch-docs-build, if Sphinx >=5 is available
+   - python -m sphinx -b html -W docs /tmp/imswitch-docs-build (Read the Docs fails on any warning)
 
    Commit instructions
    - Commit only documentation and roadmap changes.
@@ -212,11 +213,11 @@ Review Checklist for Returned Agent Work
 
 Before accepting an agent commit:
 
-* inspect ``git show --stat`` and ``git show`` for scope creep,
-* verify no unrelated files were changed,
-* check red-zone files and risk notes,
-* run focused tests,
-* run the no-hardware suite when shared behavior changed,
-* confirm docs links resolve and examples use current APIs,
-* decide whether to keep, amend, or revert the agent commit before stacking new
-  work on top.
+1. Inspect ``git show --stat`` and ``git show`` for scope creep
+2. Verify no unrelated files were changed
+3. Check red-zone files and risk notes
+4. Run focused tests
+5. Run the no-hardware suite when shared behavior changed
+6. Confirm docs links resolve and examples use current APIs
+7. Decide whether to keep, amend, or revert the agent commit before stacking
+   new work on top

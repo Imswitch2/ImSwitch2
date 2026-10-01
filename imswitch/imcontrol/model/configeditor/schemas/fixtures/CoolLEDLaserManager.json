@@ -1,0 +1,11 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "CoolLEDLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "channel_index": "example",
+      "rs232device": "example"
+    }
+  }
+}

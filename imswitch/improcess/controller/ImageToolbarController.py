@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import numpy as np
+from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
 from imswitch.improcess.model.result import result_kind
-from imswitch.improcess.processors.base import normalize_processor_output
+from imswitch.improcess.controller.processor_runner import ProcessorRunner
+from imswitch.improcess.processors.run import run_processor
 from imswitch.improcess.processors.channel_merge import ChannelMergeProcessor
 from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
 from imswitch.improcess.processors.combine import StackCombineProcessor
@@ -66,6 +68,14 @@ class ImageToolbarController:
         self._logger = initLogger(self, tryInheritParent=False)
         self._contrastDialog = None
         self._channelDialog = None
+        # Processor runs go to a thread of their own when the toolbar belongs to a
+        # real window, so a projection or a merge of a large stack does not freeze
+        # it; with a stand-in view (tests, headless use) they run inline.
+        self._runner = None
+        self._runDone = None
+        if isinstance(mainView, QtWidgets.QWidget):
+            self._runner = ProcessorRunner()
+            self._runner.sigFinished.connect(self._runFinished)
 
         mainView.sigImageAutoContrastRequested.connect(self.autoContrast)
         mainView.sigImageResetContrastRequested.connect(self.resetContrast)
@@ -242,7 +252,10 @@ class ImageToolbarController:
                 getattr(self._view, "reconstructionWidget", None), "napariViewer", None
             )
             params = StackSubsetDialog.get_params(
-                result, parent=self._view, napari_viewer=napari_viewer
+                result,
+                parent=self._view,
+                napari_viewer=napari_viewer,
+                rois=self._croppableROIs(),
             )
         except Exception:
             self._logger.exception("Could not collect crop/substack parameters")
@@ -250,6 +263,28 @@ class ImageToolbarController:
         if params is None:
             return
         self._runProcessor(StackSubsetProcessor(), result, params)
+
+    def _croppableROIs(self) -> list:
+        """Visible ROIs from the ROI manager, if it is open.
+
+        Only the ones that have a rectangle to offer: a crop is rectangular,
+        and a line or a point has no extent to crop to. Empty when the panel
+        is not open, which leaves the dialog exactly as it was.
+        """
+        panel = getattr(self._view, "roiManagerWidget", None)
+        if panel is None:
+            return []
+        try:
+            from imswitch.imcommon.algorithms.roi_geometry import roi_capabilities
+
+            return [
+                roi
+                for roi in panel.rois(visible_only=True)
+                if roi_capabilities(roi.roi_type).is_area
+            ]
+        except Exception:
+            self._logger.debug("Could not read ROIs for cropping", exc_info=True)
+            return []
 
     def maxProjection(self) -> None:
         self._runProcessorOverTargets(
@@ -271,16 +306,16 @@ class ImageToolbarController:
         )
         if params is None:
             return
-        try:
-            output = ChannelMergeProcessor().apply(params["results"][0], params)
-            results = normalize_processor_output(output)
-        except Exception as exc:
-            self._logger.exception("Could not merge the chosen channel results")
-            self._showMessage(f"Could not merge channels: {exc}")
-            return
-        if params.get("composite"):
-            results = self._asComposites(results)
-        self._publishResults(results)
+
+        def done(results, failures):
+            if failures:
+                self._showMessage(f"Could not merge channels: {failures[0][1]}")
+                return
+            if params.get("composite"):
+                results = self._asComposites(results)
+            self._publishResults(results)
+
+        self._startDialogRun(ChannelMergeProcessor(), params, done)
 
     def _asComposites(self, results):
         """Render merged channel stacks as coloured layers.
@@ -311,14 +346,14 @@ class ImageToolbarController:
         )
         if params is None:
             return
-        try:
-            output = StackCombineProcessor().apply(params["results"][0], params)
-            results = normalize_processor_output(output)
-        except Exception as exc:
-            self._logger.exception("Could not stack/combine the chosen results")
-            self._showMessage(f"Could not stack/combine: {exc}")
-            return
-        self._publishResults(results)
+
+        def done(results, failures):
+            if failures:
+                self._showMessage(f"Could not stack/combine: {failures[0][1]}")
+                return
+            self._publishResults(results)
+
+        self._startDialogRun(StackCombineProcessor(), params, done)
 
     def imageCalculator(self) -> None:
         # ImageJ-style: pick any two loaded results, not just the selection.
@@ -332,14 +367,14 @@ class ImageToolbarController:
         )
         if params is None:
             return
-        try:
-            output = ImageCalculatorProcessor().apply(params["results"][0], params)
-            results = normalize_processor_output(output)
-        except Exception as exc:
-            self._logger.exception("Could not run the image calculator")
-            self._showMessage(f"Could not run the image calculator: {exc}")
-            return
-        self._publishResults(results)
+
+        def done(results, failures):
+            if failures:
+                self._showMessage(f"Could not run the image calculator: {failures[0][1]}")
+                return
+            self._publishResults(results)
+
+        self._startDialogRun(ImageCalculatorProcessor(), params, done)
 
     def makeComposite(self) -> None:
         self._runProcessorOverTargets(
@@ -398,17 +433,13 @@ class ImageToolbarController:
         return [levels_by_channel.get(index) for index in channels]
 
     def _runProcessor(self, processor, result, params: dict) -> None:
-        try:
-            output = processor.apply(result, params)
-            results = normalize_processor_output(output)
-        except Exception as exc:
-            self._logger.exception(
-                "Could not run image toolbar processor %s",
-                getattr(processor, "id", type(processor).__name__),
-            )
-            self._showMessage(f"Could not run {processor.name}: {exc}")
-            return
-        self._publishResults(results)
+        def done(results, failures):
+            if failures:
+                self._showMessage(f"Could not run {processor.name}: {failures[0][1]}")
+                return
+            self._publishResults(results)
+
+        self._startRun(processor, [result], params, done)
 
     def _runProcessorOverTargets(self, processor, params: dict, action_id: str) -> None:
         """Run a parameterless op on every selected result, then publish once.
@@ -425,26 +456,63 @@ class ImageToolbarController:
         ]
         if not targets:
             return
-        results = []
-        failures = []
-        for target in targets:
-            try:
-                results.extend(normalize_processor_output(processor.apply(target, params)))
-            except Exception as exc:
-                self._logger.exception(
-                    "Could not run image toolbar processor %s on %s",
-                    getattr(processor, "id", type(processor).__name__),
-                    getattr(target, "name", "result"),
+
+        def done(results, failures):
+            if failures:
+                name = getattr(failures[0][0], "name", "one result")
+                self._showMessage(
+                    f"{processor.name} failed on {len(failures)} of {len(targets)} "
+                    f"results — '{name}': {failures[0][1]}"
                 )
-                failures.append((target, str(exc)))
-        if failures:
-            name = getattr(failures[0][0], "name", "one result")
-            self._showMessage(
-                f"{processor.name} failed on {len(failures)} of {len(targets)} "
-                f"results — '{name}': {failures[0][1]}"
-            )
-        if results:
-            self._publishResults(results)
+            if results:
+                self._publishResults(results)
+
+        self._startRun(processor, targets, params, done)
+
+    def _startDialogRun(self, processor, params: dict, done) -> None:
+        """Run a multi-input op whose dialog returned its inputs as ``params["results"]``."""
+        inputs = list(params["results"])
+        self._startRun(
+            processor, inputs, {key: value for key, value in params.items() if key != "results"}, done
+        )
+
+    def _startRun(self, processor, inputs, params: dict, done) -> None:
+        """Run ``processor`` over ``inputs``, then call ``done(results, failures)``.
+
+        On a thread of its own when there is a runner, one operation at a time
+        (``done`` then runs on the GUI thread, when the run ends); inline
+        otherwise. A failure is in ``failures`` either way, never raised.
+        """
+        runner = self._runner
+        if runner is None:
+            results, failures = run_processor(processor, inputs, params, self._logger)
+            done(results, failures)
+            return
+        if runner.isRunning():
+            self._showMessage("An image operation is still running.")
+            return
+        self._runDone = done
+        if runner.start(processor, inputs, params, self._logger):
+            self._showMessage(f"Running {processor.name}…")
+        else:
+            self._runDone = None
+            self._showMessage("An image operation is still running.")
+
+    def _runFinished(self, outcome) -> None:
+        done, self._runDone = self._runDone, None
+        if done is None:
+            return
+        if outcome.cancelled:
+            self._showMessage("The image operation was cancelled; nothing was published.")
+            return
+        try:
+            done(outcome.results, outcome.failures)
+        except Exception:
+            self._logger.exception("Could not finish the image operation")
+
+    def shutdown(self, wait_ms: int = 3000) -> bool:
+        """Stop a running operation and wait for its thread (application exit)."""
+        return True if self._runner is None else self._runner.shutdown(wait_ms)
 
     def _appliesTo(self, action_id: str, result) -> bool:
         """Whether one image-toolbar action can run on ``result``."""

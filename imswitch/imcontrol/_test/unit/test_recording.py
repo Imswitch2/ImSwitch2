@@ -1068,6 +1068,8 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     ctrl.recordingEnded()
     assert ctrl.lapseCurrent == 1
     assert widget.lapseNumUpdates == [1]
+    # One lapse point is not the end of the recording: nothing public yet.
+    assert commChannel.sigRecordingEnded.emit_calls == 0
     assert len(_FakeTimer.created) == 1
     cadenceTimer = _FakeTimer.created[-1]
     assert cadenceTimer.started_ms == 0  # getTimelapseFreq() * 1000
@@ -1093,10 +1095,12 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     assert widget.recButtonSets[-1] is False
     assert widget.fieldsEnabledCalls[-1] is True
     assert recMgr.start_calls == 2  # no third cycle
-    # Natural completion (not a soft stop): the manual sigRecordingEnded emit
-    # is soft-stop-only, matching RecordingManager suppressing it for
-    # ScanOnce/ScanLapse (see RecordingWorker._record's finally block).
-    assert commChannel.sigRecordingEnded.emit_calls == 0
+    # Natural completion publishes recordingEnded exactly once. The worker
+    # holds the legacy signal back in the scan modes, so this is the only
+    # place a script (or the joystick re-enable) can learn the recording --
+    # every lapse point, every file -- is finished. It used to be soft-stop
+    # only, and a script waiting for it after a completed lapse hung.
+    assert commChannel.sigRecordingEnded.emit_calls == 1
 
 
 def test_recording_arm_failure_aborts_without_starting_scan_and_pairs_lifecycle():
@@ -4025,6 +4029,12 @@ def test_hdf5_stream_preserves_linestep_axis(tmp_path):
         assert dataset.shape == (1, 2, 4, 5)
         assert dataset.attrs['axes'] == 'TCYX'
         np.testing.assert_array_equal(dataset[:], frames)
+        # The OME-XML must survive SizeC > 1: build_ome_xml used to supply
+        # one channel name against SizeC = n_linesteps, and the resulting
+        # IndexError silently dropped this attribute.
+        xml = file[detectorName].attrs['ome_xml']
+        assert 'SizeC="2"' in xml
+        assert xml.count(f'Name="{detectorName}"') == 2
 
 
 def test_detector_dtype_contract(tmp_path):
@@ -4299,7 +4309,7 @@ def test_detector_bitDepth_property():
 
 from imswitch.imcontrol.model.managers.RecordingManager import (
     HDF5Storer, StreamPayloadInfo, TiffStorer, WriterThread,
-    WRITER_QUEUE_MAXSIZE,
+    WRITER_QUEUE_MAX_BYTES,
     WRITE_BATCH_FRAMES,
 )
 
@@ -4502,21 +4512,51 @@ def test_writerthread_keeps_normal_single_camera_recording_logically_yx():
 
 
 def test_writerthread_backpressure_no_drop():
-    """A slow storer fills the bounded queue; blocking put must not drop frames."""
-    storer = _FakeStorer(writeDelay=0.003)  # writer slower than producer -> queue fills
+    """A slow storer fills the queue's budget; blocking must not drop frames.
+
+    The budget is bytes, so the frames are sized to fill it rather than
+    counted: bounding by queue *items* meant the buffer was whatever one poll
+    happened to return -- about one frame on a fast camera, so seven
+    milliseconds where the constant implied seconds.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import _framesNBytes
+
+    storer = _FakeStorer(writeDelay=0.003)  # writer slower than producer
     writer = _make_writer(storer)
     writer.start()
     writer.wait_for_open()
 
-    n = WRITER_QUEUE_MAXSIZE * 2 + 10  # forces the queue full -> enqueue blocks
+    frame = np.zeros((1, 512, 512), dtype=np.uint16)
+    # Twice the budget's worth, so enqueue must block and wait for the writer.
+    n = 2 * (WRITER_QUEUE_MAX_BYTES // _framesNBytes(frame)) + 10
     for i in range(n):
-        writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+        writer.enqueue_frames('CAM', np.full((1, 512, 512), i % 4096, dtype=np.uint16))
     writer.finish()
 
     received = np.concatenate(storer.writes['CAM'], axis=0)
     assert len(received) == n, f"Backpressure dropped frames: expected {n}, got {len(received)}"
     for i in range(n):
-        assert (received[i] == i).all(), f"Frame {i} out of order under backpressure"
+        assert (received[i] == i % 4096).all(), f"Frame {i} out of order under backpressure"
+
+
+def test_the_writer_buffer_is_a_memory_bound_not_an_item_count():
+    """One queued item is one poll's worth of frames, which is not a size."""
+    from imswitch.imcontrol.model.managers.RecordingManager import _framesNBytes
+
+    storer = _FakeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    try:
+        # A single chunk larger than the whole budget is admitted rather than
+        # deadlocking on room that can never appear.
+        huge = np.zeros((1, 1, WRITER_QUEUE_MAX_BYTES // 2 + 1024), dtype=np.uint16)
+        assert _framesNBytes(huge) > WRITER_QUEUE_MAX_BYTES
+        writer.enqueue_frames('CAM', huge)
+    finally:
+        writer.finish()
+
+    assert len(storer.writes['CAM']) == 1
 
 
 def test_writerthread_abort_calls_abortstream_not_finalize():
@@ -5320,3 +5360,271 @@ def test_waitForAcquisitionStarted_timeout(qtbot):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_the_writer_is_waited_on_while_it_is_still_draining():
+    """A fixed shutdown deadline asserts a disk speed nobody declared.
+
+    With a 512 MiB queue budget, "finish within 30 seconds" means "write at
+    least 17 MiB/s" -- and missing it did not merely warn: finish() raised,
+    the worker's cleanup aborted, and abortStream deleted a recording whose
+    frames had all been captured. A writer that is still draining is given as
+    long as it needs; only one that writes nothing at all is declared stuck.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        WRITER_STALL_TIMEOUT_S,
+    )
+
+    # Slow enough that a fixed 30 s deadline would have been a coin flip, but
+    # always making progress.
+    storer = _FakeStorer(writeDelay=0.002)
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+
+    for i in range(400):
+        writer.enqueue_frames('CAM', np.full((1, 64, 64), i % 4096, dtype=np.uint16))
+    writer.finish()
+
+    assert not writer.is_alive()
+    received = np.concatenate(storer.writes['CAM'], axis=0)
+    assert len(received) == 400, 'a slow but progressing writer lost frames'
+    assert WRITER_STALL_TIMEOUT_S > 0
+
+
+# ----------------------------------------------------------------------
+# The stall watchdog reads the detector's own cadence
+# ----------------------------------------------------------------------
+
+class _PacedCamera:
+    """A healthy camera that delivers one frame per ``period`` seconds.
+
+    ``declare`` publishes that period the way a real manager does, as a
+    detector parameter with a unit -- the same parameter the OME metadata
+    reads -- so the watchdog can know what cadence to expect.
+    """
+    shape = (4, 4)
+    dtype = np.dtype(np.uint16)
+    pixelSizeUm = [1.0, 0.1, 0.1]
+    isScanDriven = False
+
+    def __init__(self, period, declare):
+        from types import SimpleNamespace
+
+        self._period = period
+        self._t0 = None
+        self._delivered = 0
+        self.parameters = (
+            {'Set exposure time': SimpleNamespace(value=period, valueUnits='s')}
+            if declare else {}
+        )
+
+    def startAcquisition(self):
+        self._t0 = time.time()
+
+    def stopAcquisition(self):
+        pass
+
+    def startChunkConsumer(self, _key, kind=None):
+        pass
+
+    def releaseChunkConsumer(self, _key):
+        pass
+
+    def readChunk(self, _key):
+        if self._t0 is None:
+            return []
+        due = int((time.time() - self._t0) // self._period)
+        if due > self._delivered:
+            self._delivered += 1
+            return [np.zeros(self.shape, dtype=self.dtype)]
+        return []
+
+
+class _OneCamera:
+    def __init__(self, camera):
+        self.cam = camera
+
+    def __getitem__(self, name):
+        return self.cam
+
+    def acquire(self, detectorNames, purpose):
+        self.cam.startAcquisition()
+        return object()
+
+    def release(self, _handle):
+        self.cam.stopAcquisition()
+
+
+def _record_paced_camera(qtbot, tmp_path, camera, stallTimeout):
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        RecMode, RecordingManager, SaveFormat, SaveMode,
+    )
+
+    manager = RecordingManager(_OneCamera(camera))
+    failures, ended = [], []
+    manager.sigRecordingFailed.connect(failures.append)
+    manager.sigRecordingEndedDetailed.connect(ended.append)
+    manager.startRecording(
+        detectorNames=['Cam'],
+        recMode=RecMode.SpecFrames,
+        savename=str(tmp_path / 'paced'),
+        saveMode=SaveMode.RAM,
+        saveFormat=SaveFormat.HDF5,
+        attrs={'Cam': {}},
+        recFrames=3,
+        stallTimeout=stallTimeout,
+    )
+    # The worker reports on its own thread; its signals reach this one only
+    # while events are being processed, which qtbot's wait does and a sleep
+    # loop does not.
+    try:
+        qtbot.waitUntil(lambda: bool(failures or ended), timeout=6000)
+    except Exception:
+        pass
+    manager.endRecording(emitSignal=False, wait=True)
+    return failures, ended
+
+
+def test_a_slow_camera_that_declares_its_exposure_is_not_a_stall(qtbot, tmp_path):
+    """The allowance follows the cadence the detector itself publishes.
+
+    A flat wall-clock timeout killed any exposure longer than itself at frame
+    zero, deleted the file, and blamed scan TTL wiring in a mode with no scan.
+    The camera here frames slower than the floor and says so; it must finish.
+    """
+    # Floor 0.2 s, exposure 0.4 s: allowance becomes 3 x 0.4 = 1.2 s.
+    failures, ended = _record_paced_camera(
+        qtbot, tmp_path, _PacedCamera(period=0.4, declare=True), stallTimeout=0.2
+    )
+
+    assert not failures, failures
+    assert ended
+
+
+def test_a_slow_camera_that_declares_nothing_keeps_the_floor(qtbot, tmp_path):
+    """Nothing declared, nothing derived: the flat floor applies as before.
+
+    This is the same camera without the parameter, and it is the control that
+    shows the declaration is what made the difference above.
+    """
+    failures, _ended = _record_paced_camera(
+        qtbot, tmp_path, _PacedCamera(period=0.4, declare=False), stallTimeout=0.2
+    )
+
+    assert failures and 'stalled' in failures[0]
+    # And a non-scan mode is told about exposure, not about scan wiring.
+    assert 'numCamTTL' not in failures[0]
+    assert 'exposure' in failures[0]
+
+
+# ----------------------------------------------------------------------
+# Frames reach disk on time, not only on count
+# ----------------------------------------------------------------------
+
+def test_fewer_frames_than_a_batch_are_written_before_finalize():
+    """A batch flushes on age as well as on count.
+
+    With count as the only trigger, the file held nothing until either 32
+    frames had arrived or the recording finalized: 32 seconds of staleness at
+    one frame per second, and an empty file for the whole of any recording
+    shorter than the batch.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        WRITE_BATCH_FRAMES, WRITE_FLUSH_MAX_LATENCY_S,
+    )
+
+    storer = _FakeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    try:
+        for i in range(5):
+            writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+        assert 5 < WRITE_BATCH_FRAMES
+
+        deadline = time.time() + 4 * WRITE_FLUSH_MAX_LATENCY_S + 1.0
+        while time.time() < deadline and not storer.writes.get('CAM'):
+            time.sleep(0.02)
+
+        assert storer.writes.get('CAM'), (
+            'five frames sat in the batch with nothing on disk; only count '
+            'was flushing'
+        )
+        assert not storer.finalized
+    finally:
+        writer.finish()
+
+    received = np.concatenate(storer.writes['CAM'], axis=0)
+    assert len(received) == 5
+
+# ---------------------------------------------------------------------------
+# Progress-aware writer drain: a slow disk is not a stall (rig regression:
+# stopping a long scan recording aborted and deleted the file after 30 s).
+# ---------------------------------------------------------------------------
+
+def _enqueue_chunks(writer, nChunks, framesPerChunk=4):
+    for _ in range(nChunks):
+        writer.enqueue_frames('CAM', np.zeros((framesPerChunk, 2, 2), dtype=np.uint16))
+
+
+def test_writer_finish_waits_for_a_slow_but_progressing_drain(monkeypatch):
+    import importlib
+    rm = importlib.import_module('imswitch.imcontrol.model.managers.RecordingManager')
+    monkeypatch.setattr(rm, 'WRITER_STALL_TIMEOUT_S', 0.3)
+    storer = _FakeStorer(writeDelay=0.12)          # each batch write takes 120 ms
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    _enqueue_chunks(writer, nChunks=16, framesPerChunk=32)   # 16 batches ≈ 1.9 s total
+    t0 = time.monotonic()
+    writer.finish()                                 # must not time out at 0.3 s
+    assert time.monotonic() - t0 > 1.0
+    assert not writer.is_alive()
+    assert storer.finalized and not storer.aborted
+    assert sum(len(b) for b in storer.writes['CAM']) == 16 * 32
+
+
+def test_writer_finish_gives_up_only_on_a_real_stall(monkeypatch):
+    import importlib
+    rm = importlib.import_module('imswitch.imcontrol.model.managers.RecordingManager')
+    monkeypatch.setattr(rm, 'WRITER_STALL_TIMEOUT_S', 0.3)
+    import threading
+    release = threading.Event()
+
+    class _StuckStorer(_FakeStorer):
+        def writeFrames(self, detectorName, frames):
+            release.wait(5.0)                       # a hung storage backend
+            super().writeFrames(detectorName, frames)
+
+    storer = _StuckStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    _enqueue_chunks(writer, nChunks=2, framesPerChunk=32)
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError, match='no progress for 0.3 s while writing'):
+        writer.finish()
+    assert 0.3 <= time.monotonic() - t0 < 2.0
+    release.set()
+    writer.join(timeout=5.0)
+
+
+def test_writer_finalize_phase_has_its_own_longer_bound(monkeypatch):
+    import importlib
+    rm = importlib.import_module('imswitch.imcontrol.model.managers.RecordingManager')
+    monkeypatch.setattr(rm, 'WRITER_STALL_TIMEOUT_S', 0.2)
+    monkeypatch.setattr(rm, 'WRITER_FINALIZE_TIMEOUT_S', 2.0)
+
+    class _SlowFinalizeStorer(_FakeStorer):
+        def finalizeStream(self, *args, **kwargs):
+            time.sleep(0.6)                         # longer than the stall bound
+            super().finalizeStream(*args, **kwargs)
+
+    storer = _SlowFinalizeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+    _enqueue_chunks(writer, nChunks=1, framesPerChunk=2)
+    writer.finish()
+    assert storer.finalized and not storer.aborted

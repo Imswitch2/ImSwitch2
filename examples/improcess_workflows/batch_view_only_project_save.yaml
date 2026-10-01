@@ -1,0 +1,28 @@
+# Same workflow as batch_view_only_project_save.py, as a file:
+#   python -m imswitch.improcess.workflows run batch_view_only_project_save.yaml \
+#       --input recordings/*.h5 --out results/
+name: batch-project-blur
+schema: 1
+description: max projection over the stack axis, then a Gaussian blur
+steps:
+  - step: source
+    id: raw                      # bound per input by --input
+  - step: reconstruct
+    id: rec
+    reconstructor: view-only
+    inputs: [raw]
+  - step: process
+    id: proj
+    processor: projection
+    params: {axis: C, mode: max}
+    inputs: [rec]
+  - step: process
+    id: blur
+    processor: filter
+    params: {method: gaussian, radius: 1.5}
+    inputs: [proj]
+  - step: save
+    id: out
+    input: blur
+    fmt: tiff
+    path_template: "{out_dir}/{source_stem}_maxproj_blur{ext}"

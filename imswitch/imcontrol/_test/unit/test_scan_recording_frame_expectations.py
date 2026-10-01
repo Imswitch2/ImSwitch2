@@ -1,3 +1,4 @@
+import pytest
 """Scan recordings expect the right frame count per detector kind (rig finding).
 
 ``expected_frames`` was ``recFrames * numCamTTL.get(name, 1)`` for every
@@ -101,11 +102,21 @@ def test_non_scan_modes_are_untouched():
     assert worker._expectedFramesFor('Camera', 100, {'Camera': 1}) == 100
 
 
-def test_unknown_detector_falls_back_to_the_camera_answer():
-    """A detector the manager cannot resolve must not silently record one
-    frame; the previous behaviour is the safe default."""
+def test_undeclared_detector_is_refused_in_scan_modes():
+    """A detector the scan declares no pulse for cannot be tied to positions.
+
+    "One frame per position" used to be the fallback here AND in the layout
+    producer, so the gate compared a default with itself and a free-running
+    camera was recorded as a certain, complete scan. In scan modes the answer
+    is a refusal that names the detector; a plain frame-count recording has no
+    scan and keeps one frame per count.
+    """
     worker = _worker(RecMode.ScanOnce)
 
+    with pytest.raises(ValueError, match="declares no TTL pulse per position"):
+        worker._expectedFramesFor('Nonexistent', 42, {})
+
+    worker = _worker(RecMode.SpecFrames)
     assert worker._expectedFramesFor('Nonexistent', 42, {}) == 42
 
 

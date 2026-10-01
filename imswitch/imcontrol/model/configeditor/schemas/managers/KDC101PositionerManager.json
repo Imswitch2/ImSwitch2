@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "accConvFac": {
+      "description": "Encoder acceleration conversion factor.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:float()",
+        "code:required"
+      ]
+    },
+    "homeOnInit": {
+      "description": "If true, home the device during construction.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "port": {
+      "description": "Serial port for the KDC101 controller.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    },
+    "posConvFac": {
+      "description": "Encoder counts per ImSwitch position unit.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:float()",
+        "code:required"
+      ]
+    },
+    "positionUnit": {
+      "description": "Unit label passed to the Positioner widget, for example ``\"deg\"`` for",
+      "x-imswitch-aliases": [
+        "unit"
+      ],
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "unit": {
+      "description": "Unit label passed to the Positioner widget, for example ``\"deg\"`` for",
+      "x-imswitch-alias-of": "positionUnit",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "velConvFac": {
+      "description": "Encoder velocity conversion factor.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:float()",
+        "code:required"
+      ]
+    }
+  },
+  "required": [
+    "accConvFac",
+    "port",
+    "posConvFac",
+    "velConvFac"
+  ],
+  "title": "KDC101PositionerManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "KDC101PositionerManager",
+    "PositionerManager"
+  ]
+}

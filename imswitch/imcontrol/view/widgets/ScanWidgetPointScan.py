@@ -12,8 +12,13 @@ class ScanWidgetPointScan(SuperScanWidget):
         super().__init__(*args, **kwargs)
 
         self.seqTimePar = QtWidgets.QLineEdit('0.02')  # ms
-        self.phaseDelayPar = QtWidgets.QLineEdit('100')  # samples
-        self.d3StepDelayPar = QtWidgets.QLineEdit('0')  # samples
+        # Both delays are times in microseconds (the designer consumes d3 step
+        # delay as such; the detectors convert phase delay to their own sample
+        # rate). The phase delay is a rig calibration -- the galvo's response
+        # lag -- so it defaults to 0 like the Advanced panel, and a setup file
+        # declares the measured value in scanDesignerParams.phase_delay.
+        self.phaseDelayPar = QtWidgets.QLineEdit('0')  # µs
+        self.d3StepDelayPar = QtWidgets.QLineEdit('0')  # µs
 
         self.scanPar = {
                         'seqTime': self.seqTimePar,
@@ -134,13 +139,13 @@ class ScanWidgetPointScan(SuperScanWidget):
         currentRow += 1
         
         # Add detection phase delay parameter
-        self.grid.addWidget(QtWidgets.QLabel('Phase delay (samples):'), currentRow, 5)
+        self.grid.addWidget(QtWidgets.QLabel('Phase delay (µs):'), currentRow, 5)
         self.grid.addWidget(self.phaseDelayPar, currentRow, 6)
 
         currentRow += 1
         
         # Add scan d3 step delay parameter
-        self.grid.addWidget(QtWidgets.QLabel('D3 step delay (samples):'), currentRow, 5)
+        self.grid.addWidget(QtWidgets.QLabel('D3 step delay (µs):'), currentRow, 5)
         self.grid.addWidget(self.d3StepDelayPar, currentRow, 6)
 
         # Add space item to make the grid look nicer

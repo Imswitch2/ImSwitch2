@@ -1,0 +1,20 @@
+{
+  "why": "The strings \"null\", \"\" and \"5\" under string-kind keys: a text box once read \"null\" as null and the raw tab read \"5\" as 5.",
+  "setup": {
+    "lasers": {
+      "aotf": {
+        "analogChannel": null, "digitalLine": null,
+        "managerName": "AAAOTFLaserManager",
+        "managerProperties": {"rs232device": "aaaotf", "channel": 1, "calibCsvPath": "null"},
+        "wavelength": 561, "valueRangeMin": 0, "valueRangeMax": 1023, "valueRangeStep": 1
+      }
+    },
+    "detectors": {
+      "cam": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "ThorCamTSIManager",
+        "managerProperties": {"cameraSerial": "5", "dllLocation": ""}
+      }
+    }
+  }
+}

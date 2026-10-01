@@ -1,0 +1,12 @@
+{
+  "category": "rs232devices",
+  "device": {
+    "managerName": "KDC101Manager",
+    "managerProperties": {
+      "accConvFac": "example",
+      "port": "example",
+      "posConvFac": "example",
+      "velConvFac": "example"
+    }
+  }
+}

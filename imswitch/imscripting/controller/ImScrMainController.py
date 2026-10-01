@@ -1,5 +1,7 @@
 from imswitch.imcommon.controller import MainController
-from imswitch.imcommon.model import generateAPI, pythontools
+from imswitch.imcommon.model import (
+    apiGate, generateAPI, initLogger, pythontools, shutdownState,
+)
 from imswitch.imscripting.model import getActionsScope
 from .CommunicationChannel import CommunicationChannel
 from .ImScrMainViewController import ImScrMainViewController
@@ -52,6 +54,42 @@ class ImScrMainController(MainController):
         scope.update(getActionsScope(scope.copy()))
 
         return scope
+
+    #: Hard cap for draining a running script at application exit (Q-12).
+    SHUTDOWN_DRAIN_CAP_MS = 10000
+
+    def prepareShutdown(self):
+        """ Application shutdown phase, run before any module's closeEvent
+        (see imcommon.applaunch.shutdownModules): close the API gate so no
+        script or remote call can reach controllers any more, then drain the
+        script thread with a bound. The outcome is recorded in the shared
+        ShutdownState; imcontrol refuses to finalize hardware managers while
+        a script thread is still alive. """
+        logger = initLogger(self)
+        shutdownState.begin()
+        apiGate.close()
+        executor = self._scriptExecutor()
+        if executor is None:
+            shutdownState.recordScriptingDrain(True)
+            return True
+        running = executor.getCurrentResult()
+        drained = executor.shutdown(timeoutMs=self.SHUTDOWN_DRAIN_CAP_MS)
+        if drained:
+            shutdownState.recordScriptingDrain(True)
+        else:
+            script = getattr(running, 'script_path', None) or '(unsaved script)'
+            reason = (
+                f'The script {script} did not stop within '
+                f'{self.SHUTDOWN_DRAIN_CAP_MS / 1000:g} s'
+            )
+            logger.error(reason + '; hardware managers will not be finalized.')
+            shutdownState.recordScriptingDrain(False, reason)
+        return drained
+
+    def _scriptExecutor(self):
+        mainViewController = getattr(self, 'mainViewController', None)
+        editorController = getattr(mainViewController, 'editorController', None)
+        return getattr(editorController, 'scriptExecutor', None)
 
     def closeEvent(self):
         self.__factory.closeAllCreatedControllers()

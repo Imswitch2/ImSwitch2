@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from imswitch.imcommon.algorithms.roi_geometry import roi_bounds, roi_mask_local
+
 from .roi_manager import ROIRecord
 
 
@@ -139,35 +141,35 @@ def _extract_values(
     image_b: np.ndarray,
     roi: ROIRecord | tuple[int, int, int, int] | None,
 ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int] | None]:
-    a = np.asarray(image_a, dtype=np.float64)
-    b = np.asarray(image_b, dtype=np.float64)
+    # Not converted to float64 up front: this runs once per ROI, and casting
+    # two full images each time is the cost the local rasteriser removes.
+    # Slices are cast instead, at the point of use.
+    a = np.asarray(image_a)
+    b = np.asarray(image_b)
     if a.ndim != 2 or b.ndim != 2:
         raise ValueError(f"Colocalization expects two 2D images, got {a.shape} and {b.shape}")
     if a.shape != b.shape:
         raise ValueError(f"Colocalization images must have matching shapes, got {a.shape} and {b.shape}")
 
     bounds = None
-    if isinstance(roi, ROIRecord) and roi.pixels is not None:
-        coords = np.asarray(roi.pixels, dtype=np.int64).reshape((-1, 2))
-        inside = (
-            (coords[:, 0] >= 0)
-            & (coords[:, 0] < a.shape[0])
-            & (coords[:, 1] >= 0)
-            & (coords[:, 1] < a.shape[1])
-        )
-        coords = coords[inside]
-        av = a[coords[:, 0], coords[:, 1]]
-        bv = b[coords[:, 0], coords[:, 1]]
-        bounds = roi.bounds
+    if isinstance(roi, ROIRecord):
+        # Shared rasteriser for every shape. Previously only ROIs with an
+        # explicit pixel list were measured exactly; a polygon or an encoded
+        # segmentation mask fell through to the bounding rectangle and
+        # correlated the box instead of the region.
+        local, slices = roi_mask_local(roi, a.shape)
+        av = a[slices][local].astype(np.float64, copy=False)
+        bv = b[slices][local].astype(np.float64, copy=False)
+        bounds = roi_bounds(roi)
     else:
         bounds = roi.bounds if isinstance(roi, ROIRecord) else roi
         if bounds is None:
-            av = a.ravel()
-            bv = b.ravel()
+            av = a.ravel().astype(np.float64, copy=False)
+            bv = b.ravel().astype(np.float64, copy=False)
         else:
             r0, r1, c0, c1 = _clip_bounds(bounds, a.shape)
-            av = a[r0:r1, c0:c1].ravel()
-            bv = b[r0:r1, c0:c1].ravel()
+            av = a[r0:r1, c0:c1].ravel().astype(np.float64, copy=False)
+            bv = b[r0:r1, c0:c1].ravel().astype(np.float64, copy=False)
             bounds = (r0, r1, c0, c1)
 
     finite = np.isfinite(av) & np.isfinite(bv)

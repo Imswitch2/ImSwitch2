@@ -110,6 +110,60 @@ def test_make_session_returns_streaming_session():
     assert isinstance(session, StreamingSession)
 
 
+def test_live_session_deinterleaves_per_line_conditions():
+    """Fast Gauss scatters [line/A, line/B] blocks into separate outputs."""
+
+    class _IdentityProcessor:
+        frame_inds = np.arange(6, dtype=np.int64).reshape(6, 1)
+
+        @staticmethod
+        def process_chunk(chunk):
+            return np.asarray(chunk)
+
+    session = MonalisaReconstructor().make_session()
+    session.processor = _IdentityProcessor()
+    session.nx_s = 3
+    session.ny_s = 2
+    session.num_linesteps = 2
+    session.num_frames_per_condition = 6
+    session.num_frames_in_stack = 12
+    session.reconstructed = np.zeros((1, 1, 2, 1, 2, 3), dtype=np.float32)
+    frames = np.arange(12, dtype=np.float32).reshape(12, 1, 1)
+
+    session.push(frames, 0, 12)
+
+    np.testing.assert_array_equal(
+        session.reconstructed[0, 0, 0, 0],
+        np.array([[0, 1, 2], [6, 7, 8]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        session.reconstructed[0, 0, 1, 0],
+        np.array([[3, 4, 5], [9, 10, 11]], dtype=np.float32),
+    )
+
+
+def test_fast_gauss_geometry_treats_linesteps_as_one_interleaved_stack():
+    reconstructor = MonalisaReconstructor()
+    attrs = {
+        'ScanStage:axis_startpos': [0.0, 0.0, 0.0],
+        'ScanStage:axis_length': [0.9, 0.9, 1.0],
+        'ScanStage:axis_step_size': [0.05, 0.05, 1.0],
+        'ScanTTL:Nx': 18,
+        'ScanTTL:Ny': 18,
+        'ScanTTL:n_linesteps': 2,
+        'recording:frames_per_stack': 648,
+    }
+
+    geometry = reconstructor._fast_gauss_geometry_from_attrs(attrs, 648)
+
+    assert geometry is not None
+    assert geometry['frames_per_stack'] == 648
+    assert geometry['num_timepoints'] == 1
+    assert geometry['n_linesteps'] == 2
+    assert geometry['scan_params']['steps'] == [18, 18, 1, 2]
+    assert geometry['scan_params']['n_linesteps'] == 2
+
+
 def test_live_session_begin(synthetic_stack):
     """Test StreamingSession.begin with synthetic data."""
     stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
@@ -136,6 +190,104 @@ def test_live_session_begin(synthetic_stack):
     assert "Dataset" in plan.axis_labels
     assert "Base" in plan.axis_labels
     assert "T" in plan.axis_labels
+
+
+def _recorded_stack_info(frame_shape, layout, num_frames):
+    """StackInfo carrying a producer-authored layout, as the live sources do."""
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        ResolvedAcquisitionLayout,
+    )
+
+    return StackInfo(
+        frame_shape=frame_shape,
+        dtype=np.dtype(np.uint16),
+        expected_frames=num_frames,
+        acquisition_layout=ResolvedAcquisitionLayout(
+            layout=layout, source="explicit", confidence="certain"
+        ),
+    )
+
+
+def test_live_session_prefers_the_recorded_layout_over_stage_extents(synthetic_stack):
+    """Live and offline resolve one recording through the same contract.
+
+    The stage attrs here imply a 10x10 grid; the recording says 5x20. The
+    recording wins, so a live reconstruction cannot disagree with the batch
+    reconstruction of the same file.
+    """
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="detector_0",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", 20, step=0.05, unit="um"),
+            AcquisitionLoop("scan_x", "scan_x", 5, step=0.05, unit="um"),
+        ),
+        scan_source="ScanControllerAdvanced",
+    )
+    init_obj = StreamInit(
+        name="recorded",
+        dataset_name="detector_0",
+        data=stack,
+        attrs=attrs,
+        stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
+    )
+
+    session = MonalisaReconstructor().make_session()
+    session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+
+    assert (session.nx_s, session.ny_s) == (5, 20)
+
+
+def test_live_session_refuses_conditions_laid_out_per_image(synthetic_stack):
+    """The streaming path de-interleaves conditions per line, nothing else.
+
+    Conditions interleaved per line -- the Advanced producer's order -- are
+    part of the stack the session consumes (see
+    ``test_monalisa_linestep_layout_seam``). A recording that declares one
+    complete image per condition is a different frame order, and is refused
+    rather than quietly reshaped.
+    """
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="detector_0",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("linestep", "condition", 2, labels=("A", "B")),
+            AcquisitionLoop("scan_y", "scan_y", 5, step=0.05, unit="um"),
+            AcquisitionLoop("scan_x", "scan_x", 10, step=0.05, unit="um"),
+        ),
+        scan_source="ScanControllerAdvanced",
+    )
+    init_obj = StreamInit(
+        name="per-image-conditions",
+        dataset_name="detector_0",
+        data=stack,
+        attrs=attrs,
+        stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
+    )
+
+    session = MonalisaReconstructor().make_session()
+    with pytest.raises(ValueError, match="not interleaved per line"):
+        session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
 
 
 def test_live_session_treats_null_lapse_metadata_as_missing(synthetic_stack):
@@ -500,6 +652,70 @@ def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
     assert not np.all(result.data == 0)
 
 
+def test_fast_gauss_refuses_conditions_laid_out_per_image():
+    """The fast path de-interleaves conditions per line, nothing else.
+
+    An 18x18x2 scan whose conditions are interleaved per line is one 648-frame
+    stack the fast path now handles (``test_monalisa_linestep_layout_seam``);
+    reading it as two 324-frame time blocks was the bug this contract exists
+    to prevent. A recording that declares one complete image per condition is
+    a different order the path cannot reassemble, so it is refused rather than
+    quietly reshaped.
+    """
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+        encode_acquisition_layout,
+    )
+
+    rows = cols = 18
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="detector_0",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("linestep", "condition", 2, labels=("A", "B")),
+            AcquisitionLoop("scan_y", "scan_y", rows, step=0.05, unit="um"),
+            AcquisitionLoop("scan_x", "scan_x", cols, step=0.05, unit="um"),
+        ),
+        scan_source="ScanControllerAdvanced",
+    )
+    data_obj = InMemoryStackWrapper(
+        name="offline-fast-gauss-linesteps",
+        dataset_name="detector_0",
+        data=np.zeros((rows * cols * 2, 20, 20), dtype=np.uint16),
+        attrs={
+            "AcquisitionLayout:schema": ACQUISITION_LAYOUT_SCHEMA,
+            "AcquisitionLayout:json": encode_acquisition_layout(layout),
+            "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+            "ScanStage:axis_length": [0.9, 0.9, 1.0],
+            "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+            "writing": False,
+            "recording:completion_outcome": "complete",
+        },
+    )
+    params = {
+        "reconstruction_method": "Fast Gauss MoNaLISA",
+        "device": "CPU",
+        "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
+        "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
+        "bleaching_correction": False,
+        "scan_params": {
+            "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
+            "directions": ["pos", "pos", "pos"],
+            "steps": ["18", "18", "1", "2"],
+            "step_sizes": ["50", "50", "1", "1"],
+            "unidirectional": False,
+        },
+    }
+
+    with pytest.raises(ValueError, match="not interleaved per line"):
+        MonalisaReconstructor().process(data_obj, params)
+
+
 def test_fast_gauss_offline_uses_file_scan_metadata_when_params_mismatch(synthetic_stack):
     """Old files can carry the correct grid in ScanTTL even when the UI params differ."""
     stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
@@ -543,6 +759,63 @@ def test_fast_gauss_offline_uses_file_scan_metadata_when_params_mismatch(synthet
     assert result.output_pixel_size_nm == pytest.approx((50.0, 50.0))
     assert np.all(np.isfinite(result.data))
     assert not np.all(result.data == 0)
+
+
+def test_fast_gauss_offline_reconstructs_line_interleaved_conditions(synthetic_stack):
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    interleaved = np.empty((stack.shape[0] * 2, *stack.shape[1:]), dtype=np.float32)
+    for row in range(ny_s):
+        source = stack[row * nx_s:(row + 1) * nx_s]
+        target = row * nx_s * 2
+        interleaved[target:target + nx_s] = source
+        interleaved[target + nx_s:target + 2 * nx_s] = source * 2
+
+    imswitch_data = attrs['ImswitchData']
+    data_obj = InMemoryStackWrapper(
+        name='offline-fast-gauss-linesteps',
+        dataset_name='detector_0',
+        data=interleaved,
+        attrs={
+            'ScanStage:axis_startpos': imswitch_data['ScanStage:axis_startpos'],
+            'ScanStage:axis_length': imswitch_data['ScanStage:axis_length'],
+            'ScanStage:axis_step_size': imswitch_data['ScanStage:axis_step_size'],
+            'ScanStage:axis_step_size_unit': 'nm',
+            'ScanTTL:Nx': nx_s,
+            'ScanTTL:Ny': ny_s,
+            'ScanTTL:n_linesteps': 2,
+            'recording:frames_per_stack': interleaved.shape[0],
+            'recording:num_timepoints': 1,
+        },
+    )
+    params = {
+        'reconstruction_method': 'Fast Gauss MoNaLISA',
+        'device': 'CPU',
+        'fast_gauss_footprint_num_rects': DEFAULT_FOOTPRINT_NUM_RECTS,
+        'fast_gauss_gaussian_sigma_px': DEFAULT_GAUSSIAN_SIGMA_PX,
+        'bleaching_correction': False,
+        'row_offset': 5.0,
+        'col_offset': 5.0,
+        'row_period': 10.0,
+        'col_period': 10.0,
+        'scan_params': {
+            'dimensions': ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'],
+            'directions': ['pos', 'pos', 'pos'],
+            'steps': [str(nx_s), str(ny_s), '1', '1'],
+            'step_sizes': ['50', '50', '1', '1'],
+            'unidirectional': False,
+        },
+    }
+
+    result = MonalisaReconstructor().process(data_obj, params)
+
+    assert result.data.shape[:4] == (1, 1, 2, 1)
+    assert result.scan_params['n_linesteps'] == 2
+    np.testing.assert_allclose(
+        result.data[0, 0, 1, 0],
+        result.data[0, 0, 0, 0] * 2,
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
 
 def test_fast_gauss_offline_accepts_legacy_scan_dimension_labels(synthetic_stack):
@@ -770,6 +1043,68 @@ def test_gauss_processor_gpu_fallback():
     assert processor.pts_per_focus == len(get_rectangles_coords(2)[0])
 
 
+def _require_gpu():
+    """Skip unless cupy is importable AND a CUDA device is actually usable."""
+    cp = pytest.importorskip("cupy")
+    try:
+        float(cp.zeros(1).sum())
+    except Exception as exc:  # cupy installed but no working device
+        pytest.skip(f"no usable CUDA device: {exc}")
+    return cp
+
+
+def test_live_session_gpu_matches_cpu(synthetic_stack):
+    """The GPU hot-plane path reconstructs the same volume as the CPU path."""
+    _require_gpu()
+    stack, attrs, *_ = synthetic_stack
+    init_obj = StreamInit(
+        name="s", dataset_name="d", data=stack, attrs=attrs
+    )
+
+    cpu = MonalisaReconstructor().make_session()
+    cpu.begin(init_obj, params={"use_gpu": False})
+    cpu.push(stack[50:], 50, 100)
+    cpu_data = cpu.result().data
+    cpu.close()
+
+    gpu = MonalisaReconstructor().make_session()
+    gpu.begin(init_obj, params={"use_gpu": True})
+    gpu.push(stack[50:], 50, 100)
+    gpu_data = gpu.result().data
+    gpu.close()
+
+    assert gpu_data.shape == cpu_data.shape
+    np.testing.assert_allclose(
+        gpu_data, cpu_data, rtol=1e-3, atol=1e-3 * float(cpu_data.max())
+    )
+
+
+def test_live_session_gpu_defers_d2h_until_result(synthetic_stack):
+    """Per-frame pushes accumulate on the device; result() performs the D2H."""
+    _require_gpu()
+    stack, attrs, *_ = synthetic_stack
+    init_obj = StreamInit(
+        name="s", dataset_name="d", data=stack, attrs=attrs
+    )
+
+    session = MonalisaReconstructor().make_session()
+    session.begin(init_obj, params={"use_gpu": True})  # pushes timepoint 0
+
+    # begin() scattered the init stack into the device plane but did not copy
+    # it back yet -- the flush is lazy.
+    assert session._hot_plane_dirty is True
+
+    session.result()
+    assert session._hot_plane_dirty is False
+
+    # A further push re-dirties the plane; the next result() re-syncs it.
+    session.push(stack[50:], 50, 100)
+    assert session._hot_plane_dirty is True
+    session.result()
+    assert session._hot_plane_dirty is False
+    session.close()
+
+
 def test_make_gauss_processor_rejects_invalid_fast_gauss_options():
     """Fast-Gauss magic numbers are validated when supplied as parameters."""
     with pytest.raises(ValueError, match="num_rects"):
@@ -803,6 +1138,98 @@ def test_make_gauss_processor_rejects_invalid_fast_gauss_options():
             gaussian_sigma_px=0,
             use_gpu=False,
         )
+
+
+
+# --- incremental timepoint planes ------------------------------------------
+#
+# live_plane() is the cheap live-update path: the viewer keeps its own buffer
+# and each refresh writes one timepoint into it, instead of receiving a fresh
+# copy of the whole growing volume. The plane must be a COPY -- the session
+# goes on writing to `reconstructed` from the process thread.
+
+
+def test_live_plane_is_a_copy_not_a_view(synthetic_stack):
+    stack, attrs, *_ = synthetic_stack
+    session = MonalisaReconstructor().make_session()
+    session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
+                  params={"use_gpu": False})
+
+    index, plane = session.live_plane()
+
+    assert not np.shares_memory(plane, session.reconstructed)
+    assert plane.ndim == session.reconstructed.ndim   # keeps all axes
+    assert plane.shape[2] == 1                        # T axis length 1
+    assert 0 <= index < session.reconstructed.shape[2]
+
+
+def test_live_plane_before_begin_returns_none():
+    """Nothing to hand over until the output buffer exists."""
+    assert MonalisaReconstructor().make_session().live_plane() is None
+
+
+def test_planes_assemble_into_the_same_volume_as_result(synthetic_stack):
+    """Writing each plane into a viewer-side buffer reproduces result() exactly."""
+    stack, attrs, *_ = synthetic_stack
+    session = MonalisaReconstructor().make_session()
+    session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
+                  params={"use_gpu": False})
+
+    # The viewer's buffer is the first whole result -- a copy it then owns.
+    gui_buffer = session.result().data
+    assert not np.shares_memory(gui_buffer, session.reconstructed)
+
+    n_frames = stack.shape[0]
+    for i in range(n_frames, n_frames * 2):
+        session.push(stack[i % n_frames][None], i, i + 1)
+        if (i + 1) % 10 == 0:                     # as the viewer throttle would
+            index, plane = session.live_plane()
+            gui_buffer[:, :, index:index + 1] = plane
+
+    np.testing.assert_array_equal(gui_buffer, session.result().data)
+    session.close()
+
+
+# --- saving ----------------------------------------------------------------
+
+
+def test_saved_tiff_is_a_conformant_imagej_hyperstack(synthetic_stack, tmp_path):
+    """`bigtiff` and `imagej` together make tifffile warn and produce a file
+    ImageJ may refuse. Only one of them may be set."""
+    import warnings
+
+    import tifffile
+
+    stack, attrs, *_ = synthetic_stack
+    session = MonalisaReconstructor().make_session()
+    session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
+                  params={"use_gpu": False})
+
+    out = tmp_path / "s_recon.tif"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        # "tiff" is OME-TIFF through the shared writer; the ImageJ
+        # hyperstack is its own format.
+        session.result().save(out, "imagej")
+
+    nonconformant = [w for w in caught if "nonconformant" in str(w.message)]
+    assert nonconformant == [], [str(w.message) for w in nonconformant]
+
+    with tifffile.TiffFile(str(out)) as tf:
+        assert tf.is_bigtiff is False
+        assert tf.imagej_metadata["hyperstack"] is True
+    session.close()
+
+
+def test_save_rejects_unsupported_formats(synthetic_stack, tmp_path):
+    stack, attrs, *_ = synthetic_stack
+    session = MonalisaReconstructor().make_session()
+    session.begin(StreamInit(name="s", dataset_name="d", data=stack, attrs=attrs),
+                  params={"use_gpu": False})
+
+    with pytest.raises(ValueError, match="tiff"):
+        session.result().save(tmp_path / "s.zarr", "zarr")
+    session.close()
 
 
 def test_live_session_missing_scan_geometry():
@@ -863,3 +1290,56 @@ def test_live_session_invalid_data_shape():
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_live_session_orients_from_data_and_cross_checks_the_layout(synthetic_stack):
+    """Direction is not applied on top of the detected orientation.
+
+    The eight orientation candidates already include every mirror, so a
+    negative stage direction is resolved empirically; applying the layout's
+    sign as well would flip twice. The layout is a cross-check: a recording
+    that *claims* a negative Y while the data is plainly +y gets a warning,
+    the detected orientation is used, and the result says so.
+    """
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+        TraversalRule,
+    )
+
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="detector_0",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", ny_s, step=0.05, unit="um", direction=-1),
+            AcquisitionLoop("scan_x", "scan_x", nx_s, step=0.05, unit="um", direction=1),
+        ),
+        traversal=(TraversalRule("scan_y", "forward"), TraversalRule("scan_x", "forward")),
+        scan_source="ScanControllerPointScan",
+    )
+    init_obj = StreamInit(
+        name="negative-y",
+        dataset_name="detector_0",
+        data=stack,
+        attrs=attrs,
+        stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
+    )
+    session = MonalisaReconstructor().make_session()
+    warnings = []
+    session._logger.warning = lambda message, *args, **kwargs: warnings.append(str(message))
+
+    session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+
+    assert session.detected_orientation is not None
+    assert session.scan_params["unidirectional"] is True
+    detected_y = session.scan_params["directions"][1]
+    if detected_y == "+":
+        assert any("disagrees with the recorded layout" in w for w in warnings), warnings
+    else:
+        assert not any("disagrees" in w for w in warnings)
+    assert (session.nx_s, session.ny_s, session.num_linesteps) == (nx_s, ny_s, 1)

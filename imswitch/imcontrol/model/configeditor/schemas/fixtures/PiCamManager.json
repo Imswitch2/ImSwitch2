@@ -1,0 +1,12 @@
+{
+  "category": "detectors",
+  "device": {
+    "managerName": "PiCamManager",
+    "managerProperties": {
+      "cameraHost": "example",
+      "cameraPixelSizeUm": null,
+      "cameraPort": 1,
+      "picam": {}
+    }
+  }
+}

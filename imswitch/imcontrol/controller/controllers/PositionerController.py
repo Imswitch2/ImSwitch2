@@ -1,3 +1,4 @@
+import time
 from typing import Dict, List, Any
 
 from imswitch.imcommon.model import APIExport
@@ -23,16 +24,33 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
 
         self.settingAttr = False
         self._previousJoystickState = None
+        self._liveUpdateAvailable = {}
+        self._liveUpdateEnabled = {}
+        self._liveUpdateFailureCount = {}
+        self._liveUpdateRetryAfter = {}
+        self._pollBackoffSeconds = (1.0, 2.0, 5.0, 10.0)
+        self._coarseStepMultiplier = 5.0
+        self._isCoarseMode = False
+        self._joystickAutoReenable = True
+        self._joystickAutoReenableDelayS = 5.0
+        self._joystickAutoReenableTimers = {}
+        self._joystickAutoReenablePendingAxes = {}
+        self._joystickAutoReenableFailureCount = {}
+        self._joystickAutoReenablePollIntervalMs = 200
+        self._referenceBatchPlan = []
+        self._referenceBatchIndex = 0
+        self._referenceBatchRunning = False
+        self._referenceBatchAbortRequested = False
 
         self.__logger = initLogger(self, tryInheritParent=True)
 
         # Set up positioners
         for pName, pManager in self._master.positionersManager:
-            if not pManager.forPositioning:
+            if not self._isPositionerShownInWidget(pManager):
                 continue
 
-            if getattr(pManager, 'device', True) is None:
-                continue
+            self._liveUpdateAvailable[pName] = bool(getattr(pManager, 'liveUpdate', False))
+            self._liveUpdateEnabled[pName] = self._liveUpdateAvailable[pName]
 
             if pManager.joystick:
                 self._widget.addJoystick(pName)
@@ -50,10 +68,11 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 self.setSharedAttr(pName, axis, _positionAttr, pManager.position[axis])
                 if speed:
                     self.setSharedAttr(pName, axis, _positionAttr, pManager.speed)
-                # Push the manager's current position into the widget so the
-                # displayed value reflects the actual hardware state at
-                # startup — not just the initialPosition=0 placeholder.
-                self.updatePosition(pName, axis)
+
+            # Do one best-effort hardware refresh per positioner. Some managers
+            # (notably PIStageManager) refresh all axes in one transaction, so
+            # refreshing once per axis duplicates hardware traffic at startup.
+            self._pollPositionerPosition(pName, pManager, respectBackoff=False)
 
             if pManager.joystick:
                 # Set joystick checkbox status for first start
@@ -73,6 +92,16 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                     )
         
         self._widget.sigJoystickToggled.connect(self.requestJoystickStatus)
+        self._widget.sigSettingsClicked.connect(self.openSettingsDialog)
+        self._widget.sigSettingsChanged.connect(self.applySettings)
+        self._widget.sigStepModeChanged.connect(self.setStepMode)
+        self._widget.sigReferenceClicked.connect(self.openReferenceDialog)
+        self._widget.sigReferenceAxisClicked.connect(self._referencePositionerFromWidget)
+        self._widget.sigReferenceAllClicked.connect(self.referenceAllPositioners)
+        self._widget.sigAbortReferenceClicked.connect(self.abortReferenceBatch)
+        self._widget.setCoarseStepMultiplier(self._coarseStepMultiplier)
+        self._widget.setStepMode(self._isCoarseMode)
+        self._refreshReferenceStatus()
         self._updateLiveTimerState()
         self._refreshLiveUpdatedPositioners()
 
@@ -93,36 +122,563 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
     def _onManagerJoystickStatusChanged(self, pName, enabled):
         self.setJoystickCheckStatus(enabled)
 
+    def _isPositionerShownInWidget(self, pManager):
+        # Visibility is configuration-driven. A configured positioner stays in
+        # the UI even when its hardware is currently unavailable/mock so it can
+        # become usable after a runtime reconnect without rebuilding the widget.
+        return bool(
+            pManager.forPositioning
+            and not getattr(pManager, 'hide', False)
+        )
+
+    def _isLiveUpdateEnabled(self, positionerName, pManager=None):
+        if pManager is None:
+            pManager = self._master.positionersManager[positionerName]
+        return bool(
+            getattr(pManager, 'liveUpdate', False)
+            and self._liveUpdateAvailable.get(positionerName, False)
+            and self._liveUpdateEnabled.get(positionerName, False)
+        )
+
+    def openSettingsDialog(self):
+        positionerSettings = {}
+        for pName, pManager in self._master.positionersManager:
+            if not self._isPositionerShownInWidget(pManager):
+                continue
+            positionerSettings[pName] = {
+                'liveUpdateAvailable': self._liveUpdateAvailable.get(pName, False),
+                'liveUpdateEnabled': self._liveUpdateEnabled.get(pName, False),
+            }
+        self._widget.showSettingsDialog(
+            self._liveUpdateIntervalMs,
+            positionerSettings,
+            {
+                'coarseStepMultiplier': self._coarseStepMultiplier,
+                'joystickAvailable': self._getJoystickPositionerName() is not None,
+                'joystickAutoReenable': self._joystickAutoReenable,
+                'joystickAutoReenableDelayS': self._joystickAutoReenableDelayS,
+            },
+        )
+
+    def openReferenceDialog(self):
+        self._refreshReferenceStatus()
+        self._widget.showReferenceDialog()
+
+    def hasUnreferencedReferenceAxes(self):
+        return any(
+            not self._isAxisReferenced(pManager, axis)
+            for _, pManager, axis in self._iterReferenceAxes()
+        )
+
+    def openStartupReferenceDialogIfNeeded(self):
+        """Open the normal reference dialog once startup is visible, if useful.
+
+        This method never references or moves hardware. It only refreshes the
+        rows and presents the same explicit Reference / Reference all actions as
+        the manual Positioner-widget button.
+        """
+        referenceAxes = self._getReferenceAxesStatus()
+        self._widget.setReferenceAxesStatus(referenceAxes)
+        unreferenced = [
+            axisInfo for axisInfo in referenceAxes
+            if not axisInfo.get('referenced', False)
+        ]
+        if not unreferenced:
+            return False
+
+        restoredCount = sum(
+            1 for axisInfo in unreferenced
+            if (
+                axisInfo.get('displayedPositionRestored', False)
+                and axisInfo.get('displayedTargetLabel')
+            )
+        )
+        count = len(unreferenced)
+        axisWord = 'axis is' if count == 1 else 'axes are'
+        lines = [
+            f'{count} open-loop {axisWord} unreferenced.'
+        ]
+        if restoredCount:
+            restoredWord = 'position was' if restoredCount == 1 else 'positions were'
+            lines.append(
+                f'{restoredCount} displayed {restoredWord} restored from persisted '
+                'last commands. Persisted positions have not been verified '
+                'against hardware.'
+            )
+        lines.append('Do you want to reference them now?' if count != 1
+                     else 'Do you want to reference it now?')
+
+        self._widget.showReferenceDialog(startupHeader='\n\n'.join(lines))
+        return True
+
+    def _referencePositionerFromWidget(self, positionerName, axis, targetMode):
+        if self._isReferenceBatchRunning():
+            return False
+
+        pManager = self._master.positionersManager[positionerName]
+        position = None
+        if targetMode == 'displayed':
+            try:
+                position = pManager.position[axis]
+            except Exception as e:
+                self._widget.showReferenceError(
+                    positionerName,
+                    axis,
+                    f'Could not read displayed position: {e}',
+                )
+                return False
+        elif targetMode != 'default':
+            self._widget.showReferenceError(
+                positionerName,
+                axis,
+                f'Unknown reference target: {targetMode}',
+            )
+            return False
+        elif self._getDefaultReferencePosition(pManager) is None:
+            self._widget.showReferenceError(
+                positionerName,
+                axis,
+                'No default reference value is configured for this axis.',
+            )
+            return False
+
+        targetPosition = self._formatReferenceTarget(
+            pManager, position, targetMode=targetMode, axis=axis
+        )
+        if not self._widget.confirmReferencePositioner(positionerName, axis, targetPosition):
+            return False
+
+        return self.referencePositioner(positionerName, axis, position=position)
+
+    def referenceAllPositioners(self):
+        if self._isReferenceBatchRunning():
+            return False
+
+        try:
+            plan = self._buildReferenceBatchPlan()
+        except Exception as e:
+            self.__logger.error(f'Could not prepare reference-all plan: {e}', exc_info=True)
+            self._widget.showReferenceBatchError(f'Could not prepare reference-all plan: {e}')
+            return False
+
+        if not plan:
+            return False
+        if not self._widget.confirmReferenceBatch(plan):
+            return False
+
+        self._referenceBatchPlan = plan
+        self._referenceBatchIndex = 0
+        self._referenceBatchAbortRequested = False
+        self._referenceBatchRunning = True
+        self._widget.setReferenceBatchRunning(True)
+        self._continueReferenceBatch()
+        return True
+
+    def abortReferenceBatch(self):
+        if not self._isReferenceBatchRunning():
+            return False
+        self._referenceBatchAbortRequested = True
+        return True
+
+    def _continueReferenceBatch(self):
+        if not self._isReferenceBatchRunning():
+            return
+
+        if self._referenceBatchAbortRequested:
+            self._finishReferenceBatch()
+            return
+
+        if self._referenceBatchIndex >= len(self._referenceBatchPlan):
+            self._finishReferenceBatch()
+            return
+
+        item = self._referenceBatchPlan[self._referenceBatchIndex]
+        self._referenceBatchIndex += 1
+        succeeded = self.referencePositioner(
+            item['positionerName'],
+            item['axis'],
+            position=item['position'],
+        )
+        if not succeeded:
+            self._finishReferenceBatch()
+            return
+
+        self._scheduleReferenceBatchContinue(item['waitAfterS'])
+
+    def _scheduleReferenceBatchContinue(self, waitAfterS):
+        QTimer.singleShot(max(0, int(waitAfterS * 1000)), self._continueReferenceBatch)
+
+    def _finishReferenceBatch(self):
+        self._referenceBatchPlan = []
+        self._referenceBatchIndex = 0
+        self._referenceBatchRunning = False
+        self._referenceBatchAbortRequested = False
+        self._widget.setReferenceBatchRunning(False)
+        self._refreshReferenceStatus()
+
+    def _isReferenceBatchRunning(self):
+        return bool(getattr(self, '_referenceBatchRunning', False))
+
+    def _buildReferenceBatchPlan(self):
+        targetModes = self._widget.getReferenceTargetModes()
+        plan = []
+        for positionerName, pManager, axis in self._iterReferenceAxes():
+            targetMode = targetModes.get((positionerName, axis))
+            if targetMode is None:
+                targetMode = self._getPreferredReferenceTarget(pManager, axis)
+            position = None
+            if targetMode == 'displayed':
+                position = pManager.position[axis]
+            elif targetMode != 'default':
+                raise ValueError(
+                    f'Unknown reference target "{targetMode}" for '
+                    f'{positionerName} axis {axis}.'
+                )
+            elif self._getDefaultReferencePosition(pManager) is None:
+                raise ValueError(
+                    f'No default reference value is configured for '
+                    f'{positionerName} axis {axis}.'
+                )
+
+            plan.append({
+                'positionerName': positionerName,
+                'axis': axis,
+                'targetMode': targetMode,
+                'position': position,
+                'targetDescription': self._formatReferenceTarget(
+                    pManager, position, targetMode=targetMode, axis=axis
+                ),
+                'waitAfterS': self._getReferenceWaitAfterS(pManager),
+            })
+        return plan
+
+    def _getReferenceWaitAfterS(self, pManager):
+        try:
+            waitAfterS = float(getattr(pManager, 'referenceWaitAfterS', 0.3))
+        except (TypeError, ValueError):
+            waitAfterS = 0.3
+        return max(0.0, waitAfterS)
+
+    def referencePositioner(self, positionerName, axis, position=None):
+        """Reference one positioner axis and refresh the UI state."""
+        pManager = self._master.positionersManager[positionerName]
+        try:
+            pManager.reference(axis=axis, position=position)
+        except Exception as e:
+            self.__logger.error(
+                f'Could not reference {positionerName} axis {axis}: {e}',
+                exc_info=True,
+            )
+            self._widget.showReferenceError(positionerName, axis, str(e))
+            return False
+
+        refreshSucceeded = True
+        try:
+            self.updatePosition(positionerName, axis)
+        except Exception as e:
+            refreshSucceeded = False
+            self.__logger.warning(
+                f'Referenced {positionerName} axis {axis}, but could not refresh '
+                f'the displayed position: {e}',
+                exc_info=True,
+            )
+            self._widget.showReferenceError(
+                positionerName,
+                axis,
+                f'Referenced, but could not refresh displayed position: {e}',
+            )
+        self._refreshReferenceStatus()
+        return refreshSucceeded
+
+    def _refreshReferenceStatus(self):
+        self._widget.setReferenceAxesStatus(self._getReferenceAxesStatus())
+
+    def _getReferenceAxesStatus(self):
+        referenceAxes = []
+        for positionerName, pManager, axis in self._iterReferenceAxes():
+            displayedPositionRestored = self._isPositionRestored(pManager, axis)
+            displayedPosition = pManager.position[axis]
+            defaultPosition = self._getDefaultReferencePosition(pManager)
+            restoredMatchesDefault = (
+                displayedPositionRestored
+                and defaultPosition is not None
+                and self._referencePositionsEquivalent(
+                    displayedPosition, defaultPosition
+                )
+            )
+            referenceAxes.append({
+                'positionerName': positionerName,
+                'axis': axis,
+                'referenced': self._isAxisReferenced(pManager, axis),
+                'defaultTargetLabel': self._formatDefaultReferenceTarget(
+                    pManager,
+                    matchesLastCommand=restoredMatchesDefault,
+                ),
+                'displayedTargetLabel': (
+                    None
+                    if restoredMatchesDefault
+                    else self._formatDisplayedReferenceTarget(
+                        pManager,
+                        displayedPosition,
+                        restored=displayedPositionRestored,
+                    )
+                ),
+                'displayedPositionRestored': displayedPositionRestored,
+                'preferredTargetMode': self._getPreferredReferenceTarget(
+                    pManager, axis
+                ),
+            })
+        return referenceAxes
+
+    def _iterReferenceAxes(self):
+        for pName, pManager in self._master.positionersManager:
+            if not pManager.isReferenceActionable:
+                continue
+            for axis in pManager.axes:
+                yield pName, pManager, axis
+
+    def _isAxisReferenced(self, pManager, axis):
+        isAxisReferenced = getattr(pManager, 'isAxisReferenced', None)
+        if callable(isAxisReferenced):
+            return bool(isAxisReferenced(axis))
+        return bool(getattr(pManager, 'isReferenced', False))
+
+    def _isPositionRestored(self, pManager, axis):
+        isPositionRestored = getattr(pManager, 'isPositionRestored', None)
+        if not callable(isPositionRestored):
+            return False
+        try:
+            return bool(isPositionRestored(axis))
+        except (TypeError, ValueError):
+            return False
+
+    def _getPreferredReferenceTarget(self, pManager, axis):
+        defaultPosition = self._getDefaultReferencePosition(pManager)
+        if self._isPositionRestored(pManager, axis):
+            currentPosition = pManager.position[axis]
+            if defaultPosition is None or not self._referencePositionsEquivalent(
+                currentPosition, defaultPosition
+            ):
+                return 'displayed'
+        return 'default' if defaultPosition is not None else 'displayed'
+
+    @staticmethod
+    def _referencePositionsEquivalent(first, second):
+        try:
+            return abs(float(first) - float(second)) <= max(
+                1e-12, 1e-9 * max(abs(float(first)), abs(float(second)))
+            )
+        except (TypeError, ValueError):
+            return first == second
+
+    def _formatReferenceTarget(self, pManager, position, targetMode=None, axis=None):
+        if targetMode == 'displayed':
+            return self._formatDisplayedReferenceTarget(
+                pManager,
+                position,
+                restored=(
+                    axis is not None
+                    and self._isPositionRestored(pManager, axis)
+                ),
+            )
+        if position is None:
+            return self._formatDefaultReferenceTarget(pManager) or 'Default'
+        return self._formatReferenceValues(pManager, position)
+
+    def _formatDefaultReferenceTarget(
+        self, pManager, *, matchesLastCommand=False
+    ):
+        position = self._getDefaultReferencePosition(pManager)
+        if position is None:
+            return None
+        voltage = self._getDefaultReferenceVoltage(pManager, position)
+        values = self._formatReferenceValues(pManager, position, voltage)
+        if matchesLastCommand:
+            return f'Default ({values}, matches last command)'
+        return f'Default ({values})'
+
+    def _formatDisplayedReferenceTarget(self, pManager, position, *, restored=False):
+        prefix = 'Persisted last command' if restored else 'Displayed position'
+        return f'{prefix} ({self._formatReferenceValues(pManager, position)})'
+
+    def _formatReferenceValues(self, pManager, position, voltage=None):
+        positionText = self._formatPositionValue(pManager, position)
+        if voltage is None:
+            voltage = self._getReferenceVoltage(pManager, position)
+        if voltage is None:
+            return positionText
+        return f'{positionText}, {self._formatReferenceNumber(voltage)}V'
+
+    def _formatPositionValue(self, pManager, position):
+        unit = getattr(pManager, 'positionUnit', 'µm')
+        value = self._formatReferenceNumber(position)
+        if unit:
+            return f'{value}{unit}'
+        return value
+
+    def _formatReferenceNumber(self, value):
+        try:
+            return f'{float(value):.6g}'
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _getDefaultReferencePosition(self, pManager):
+        return self._getManagerValue(pManager, 'defaultReferencePosition')
+
+    def _getDefaultReferenceVoltage(self, pManager, defaultPosition):
+        voltage = self._getManagerValue(pManager, 'defaultReferenceVoltage')
+        if voltage is not None:
+            return voltage
+        return self._getReferenceVoltage(pManager, defaultPosition)
+
+    def _getReferenceVoltage(self, pManager, position):
+        converter = getattr(pManager, 'positionToVoltage', None)
+        if callable(converter):
+            try:
+                voltage = converter(position)
+            except (TypeError, ValueError):
+                voltage = None
+            if voltage is not None:
+                return voltage
+
+        conversionFactor = getattr(pManager, '_conversionFactor', None)
+        if conversionFactor is None:
+            managerProperties = getattr(
+                getattr(pManager, '_positionerInfo', None), 'managerProperties', {}
+            ) or {}
+            conversionFactor = managerProperties.get('conversionFactor')
+        if conversionFactor in (None, 0):
+            return None
+        try:
+            return position / conversionFactor
+        except (TypeError, ValueError):
+            return None
+
+    def _getManagerValue(self, pManager, attributeName):
+        value = getattr(pManager, attributeName, None)
+        if callable(value):
+            value = value()
+        return value
+
+    def applySettings(self, settings):
+        self._liveUpdateIntervalMs = max(100, int(settings.get(
+            'liveUpdateIntervalMs', self._liveUpdateIntervalMs
+        )))
+        self._liveUpdateTimer.setInterval(self._liveUpdateIntervalMs)
+
+        liveUpdateEnabled = settings.get('liveUpdateEnabled', {})
+        for pName in self._liveUpdateEnabled:
+            if pName in liveUpdateEnabled:
+                self._liveUpdateEnabled[pName] = bool(
+                    self._liveUpdateAvailable.get(pName, False)
+                    and liveUpdateEnabled[pName]
+                )
+
+        try:
+            multiplier = float(settings.get('coarseStepMultiplier', self._coarseStepMultiplier))
+        except (TypeError, ValueError):
+            multiplier = self._coarseStepMultiplier
+        self._coarseStepMultiplier = max(1.0, multiplier)
+        self._widget.setCoarseStepMultiplier(self._coarseStepMultiplier)
+
+        self._joystickAutoReenable = bool(settings.get(
+            'joystickAutoReenable', self._joystickAutoReenable
+        ))
+        try:
+            delay = float(settings.get(
+                'joystickAutoReenableDelayS', self._joystickAutoReenableDelayS
+            ))
+        except (TypeError, ValueError):
+            delay = self._joystickAutoReenableDelayS
+        self._joystickAutoReenableDelayS = max(0.1, delay)
+        if not self._joystickAutoReenable:
+            self._cancelAllJoystickAutoReenable()
+
+        self._updateLiveTimerState()
+        self._refreshLiveUpdatedPositioners()
+
+    def setStepMode(self, coarseMode):
+        self._isCoarseMode = bool(coarseMode)
+        self._widget.setStepMode(self._isCoarseMode)
+
+    def toggleStepMode(self):
+        self.setStepMode(not self._isCoarseMode)
+
+    def _getStepModeMultiplier(self):
+        return self._coarseStepMultiplier if self._isCoarseMode else 1.0
+
+    def toggleJoystick(self):
+        pName = self._getJoystickPositionerName()
+        if pName is None:
+            return
+        pManager = self._master.positionersManager[pName]
+        enabled = not bool(getattr(pManager, 'joystickStatus', False))
+        self.requestJoystickStatus(enabled, pName)
+        self.setJoystickCheckStatus(getattr(pManager, 'joystickStatus', enabled))
+
+    def _getJoystickPositionerName(self):
+        for pName, pManager in self._master.positionersManager:
+            if self._isPositionerShownInWidget(pManager) and getattr(pManager, 'joystick', False):
+                return pName
+        return None
+
     def _hasLiveUpdatePositioner(self):
-        for _, pManager in self._master.positionersManager:
-            if not pManager.forPositioning:
-                continue
-            if getattr(pManager, 'device', True) is None:
-                continue
-            if getattr(pManager, 'liveUpdate', False):
+        for pName, pManager in self._master.positionersManager:
+            if self._isPositionerShownInWidget(pManager) and self._isLiveUpdateEnabled(pName, pManager):
                 return True
         return False
-
 
     def _updateLiveTimerState(self):
         if self._hasLiveUpdatePositioner():
             if not self._liveUpdateTimer.isActive():
                 self._liveUpdateTimer.start()
-        else:
-            if self._liveUpdateTimer.isActive():
-                self._liveUpdateTimer.stop()
-
+        elif self._liveUpdateTimer.isActive():
+            self._liveUpdateTimer.stop()
 
     def _refreshLiveUpdatedPositioners(self):
         for pName, pManager in self._master.positionersManager:
-            if not pManager.forPositioning:
+            if not self._isPositionerShownInWidget(pManager):
                 continue
-            if getattr(pManager, 'device', True) is None:
-                continue
-            if not getattr(pManager, 'liveUpdate', False):
-                continue
+            if self._isLiveUpdateEnabled(pName, pManager):
+                self._pollPositionerPosition(pName, pManager)
 
-            self.updatePosition(pName, 'all')
+    def _pollPositionerPosition(self, positionerName, pManager, respectBackoff=True):
+        """Best-effort passive position refresh with per-positioner backoff.
+
+        Explicit calls to :meth:`updatePosition` deliberately remain strict; only
+        timer/startup-driven passive polling is allowed to absorb hardware errors.
+        """
+        now = time.monotonic()
+        if respectBackoff and now < self._liveUpdateRetryAfter.get(positionerName, 0.0):
+            return False
+
+        try:
+            self.updatePosition(positionerName, 'all')
+        except Exception as e:
+            failureCount = self._liveUpdateFailureCount.get(positionerName, 0) + 1
+            self._liveUpdateFailureCount[positionerName] = failureCount
+            delayS = self._pollBackoffSeconds[min(failureCount - 1, len(self._pollBackoffSeconds) - 1)]
+            self._liveUpdateRetryAfter[positionerName] = time.monotonic() + delayS
+            if failureCount <= len(self._pollBackoffSeconds) or failureCount % 10 == 0:
+                self.__logger.warning(
+                    f'Live position polling failed for {positionerName}; '
+                    f'retrying in {delayS:g} s (failure {failureCount}): {e}'
+                )
+            else:
+                self.__logger.debug(
+                    f'Live position polling still failing for {positionerName} '
+                    f'(failure {failureCount}): {e}'
+                )
+            return False
+
+        failureCount = self._liveUpdateFailureCount.pop(positionerName, 0)
+        self._liveUpdateRetryAfter.pop(positionerName, None)
+        if failureCount:
+            self.__logger.info(
+                f'Live position polling recovered for {positionerName} '
+                f'after {failureCount} failure(s).'
+            )
+        return True
 
     def setJoystickStatusAfterRec(self, pName):
         if self._previousJoystickState:
@@ -152,6 +708,7 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
             self._widget.joystickCheck.setChecked(True)
 
     def closeEvent(self):
+        self._cancelAllJoystickAutoReenable()
         if hasattr(self, '_liveUpdateTimer') and self._liveUpdateTimer.isActive():
             self._liveUpdateTimer.stop()
         self._master.positionersManager.execOnAll(
@@ -166,20 +723,32 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         return self._master.positionersManager.execOnAll(lambda p: p.speed)
 
     def move(self, positionerName, axis, dist):
-        """ Moves positioner by dist micrometers in the specified axis. """
-        self._master.positionersManager[positionerName].move(dist, axis)
-        self.updatePosition(positionerName, axis)
+        """Move positioner by ``dist`` in the specified axis."""
+        pManager = self._master.positionersManager[positionerName]
+        shouldAutoReenableJoystick = self._shouldAutoReenableJoystickAfterMove(pManager)
+        result = pManager.move(dist, axis)
+        if not self._isLiveUpdateEnabled(positionerName, pManager):
+            if not self._applyPositionResult(positionerName, axis, result):
+                self.updatePosition(positionerName, axis)
+        self._scheduleJoystickAutoReenable(positionerName, axis, shouldAutoReenableJoystick)
 
     def setPos(self, positionerName, axis, position):
-        """ Moves the positioner to the specified position in the specified axis. """
-        self._master.positionersManager[positionerName].setPosition(position, axis)
-        self.updatePosition(positionerName, axis)
+        """Move the positioner to an absolute position."""
+        pManager = self._master.positionersManager[positionerName]
+        shouldAutoReenableJoystick = self._shouldAutoReenableJoystickAfterMove(pManager)
+        result = pManager.setPosition(position, axis)
+        if not self._isLiveUpdateEnabled(positionerName, pManager):
+            if not self._applyPositionResult(positionerName, axis, result):
+                self.updatePosition(positionerName, axis)
+        self._scheduleJoystickAutoReenable(positionerName, axis, shouldAutoReenableJoystick)
 
     def stepUp(self, positionerName, axis):
-        self.move(positionerName, axis, self._widget.getStepSize(positionerName, axis))
+        stepSize = self._widget.getStepSize(positionerName, axis) * self._getStepModeMultiplier()
+        self.move(positionerName, axis, stepSize)
 
     def stepDown(self, positionerName, axis):
-        self.move(positionerName, axis, -self._widget.getStepSize(positionerName, axis))
+        stepSize = self._widget.getStepSize(positionerName, axis) * self._getStepModeMultiplier()
+        self.move(positionerName, axis, -stepSize)
 
     def setSpeedGUI(self):
         positionerName = self.getPositionerNames()[0]
@@ -191,19 +760,123 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         
     def updatePosition(self, positionerName, axis):
         pManager = self._master.positionersManager[positionerName]
-
         if hasattr(pManager, 'updatePosition'):
             pManager.updatePosition()
 
-        if axis == 'all':
-            for axisName in self._master.positionersManager[positionerName].axes:
-                newPos = self._master.positionersManager[positionerName].position[axisName]
+        axes = pManager.axes if axis == 'all' else [axis]
+        for axisName in axes:
+            newPos = pManager.position[axisName]
+            if self._isPositionerShownInWidget(pManager):
                 self._widget.updatePosition(positionerName, axisName, newPos)
-                self.setSharedAttr(positionerName, axisName, _positionAttr, newPos)
-        else:
-            newPos = self._master.positionersManager[positionerName].position[axis]
+            self.setSharedAttr(positionerName, axisName, _positionAttr, newPos)
+
+    def _applyPositionResult(self, positionerName, axis, result):
+        if not isinstance(result, dict) or axis not in result:
+            return False
+        newPos = result[axis]
+        pManager = self._master.positionersManager[positionerName]
+        if self._isPositionerShownInWidget(pManager):
             self._widget.updatePosition(positionerName, axis, newPos)
-            self.setSharedAttr(positionerName, axis, _positionAttr, newPos)
+        self.setSharedAttr(positionerName, axis, _positionAttr, newPos)
+        return True
+
+    def _shouldAutoReenableJoystickAfterMove(self, pManager):
+        return bool(
+            self._joystickAutoReenable
+            and getattr(pManager, 'joystick', False)
+            and getattr(pManager, 'isAvailable', True)
+            and hasattr(pManager, 'setJoystickEnabled')
+            and getattr(pManager, 'joystickStatus', False)
+        )
+
+    def _scheduleJoystickAutoReenable(self, positionerName, axis, shouldAutoReenable):
+        if not shouldAutoReenable:
+            return
+        pManager = self._master.positionersManager[positionerName]
+        if getattr(pManager, 'joystickStatus', False):
+            return
+        self._joystickAutoReenablePendingAxes.setdefault(positionerName, set()).add(axis)
+        timer = self._joystickAutoReenableTimers.get(positionerName)
+        if timer is None:
+            timer = QTimer()
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda pName=positionerName: self._checkJoystickAutoReenable(pName))
+            self._joystickAutoReenableTimers[positionerName] = timer
+        timer.start(int(self._joystickAutoReenableDelayS * 1000))
+
+    def _checkJoystickAutoReenable(self, positionerName):
+        if positionerName not in self._joystickAutoReenablePendingAxes:
+            return
+        if not self._joystickAutoReenable:
+            self._cancelJoystickAutoReenable(positionerName)
+            return
+        pManager = self._master.positionersManager[positionerName]
+        if getattr(pManager, 'joystickStatus', False) or not getattr(pManager, 'isAvailable', True):
+            self._cancelJoystickAutoReenable(positionerName)
+            return
+
+        try:
+            movementFinished = self._isMovementFinished(
+                pManager, self._joystickAutoReenablePendingAxes.get(positionerName, set())
+            )
+        except Exception as e:
+            self._retryJoystickAutoReenableAfterFailure(positionerName, e)
+            return
+
+        # ``None`` means that this manager does not expose movement-finished
+        # information. Keep the configured delay-only fallback in that case.
+        if movementFinished is False:
+            self._joystickAutoReenableFailureCount.pop(positionerName, None)
+            self._joystickAutoReenableTimers[positionerName].start(self._joystickAutoReenablePollIntervalMs)
+            return
+
+        try:
+            self.requestJoystickStatus(True, positionerName)
+        except Exception as e:
+            self._retryJoystickAutoReenableAfterFailure(positionerName, e)
+            return
+
+        self._cancelJoystickAutoReenable(positionerName)
+        self.setJoystickCheckStatus(getattr(pManager, 'joystickStatus', True))
+
+    def _retryJoystickAutoReenableAfterFailure(self, positionerName, error):
+        failureCount = self._joystickAutoReenableFailureCount.get(positionerName, 0) + 1
+        self._joystickAutoReenableFailureCount[positionerName] = failureCount
+        delayS = self._pollBackoffSeconds[min(failureCount - 1, len(self._pollBackoffSeconds) - 1)]
+        if failureCount == 1 or failureCount % 10 == 0:
+            self.__logger.warning(
+                f'Joystick auto-reenable communication failed for {positionerName}; '
+                f'retrying in {delayS:g} s (failure {failureCount}): {error}'
+            )
+        else:
+            self.__logger.debug(
+                f'Joystick auto-reenable still failing for {positionerName} '
+                f'(failure {failureCount}): {error}'
+            )
+        self._joystickAutoReenableTimers[positionerName].start(int(delayS * 1000))
+
+    def _isMovementFinished(self, pManager, axes):
+        query = getattr(pManager, 'isMovementFinished', None)
+        if not callable(query):
+            return None
+        for axis in axes:
+            axisFinished = query(axis)
+            if axisFinished is None:
+                return None
+            if not axisFinished:
+                return False
+        return True
+
+    def _cancelJoystickAutoReenable(self, positionerName):
+        timer = self._joystickAutoReenableTimers.get(positionerName)
+        if timer is not None and timer.isActive():
+            timer.stop()
+        self._joystickAutoReenablePendingAxes.pop(positionerName, None)
+        self._joystickAutoReenableFailureCount.pop(positionerName, None)
+
+    def _cancelAllJoystickAutoReenable(self):
+        for positionerName in list(self._joystickAutoReenableTimers):
+            self._cancelJoystickAutoReenable(positionerName)
 
 
 
@@ -306,10 +979,18 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 }
             }
         """
-        state = {'step_sizes': {}}
+        state = {
+            'step_sizes': {},
+            'coarse_mode': self._isCoarseMode,
+            'coarse_step_multiplier': self._coarseStepMultiplier,
+            'live_update_interval_ms': self._liveUpdateIntervalMs,
+            'live_update_enabled': dict(self._liveUpdateEnabled),
+            'joystick_auto_reenable': self._joystickAutoReenable,
+            'joystick_auto_reenable_delay_s': self._joystickAutoReenableDelayS,
+        }
         
         for pName, pManager in self._master.positionersManager:
-            if not pManager.forPositioning:
+            if not self._isPositionerShownInWidget(pManager):
                 continue
             
             state['step_sizes'][pName] = {}
@@ -358,7 +1039,7 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 continue
             
             pManager = self._master.positionersManager[pName]
-            if not pManager.forPositioning:
+            if not self._isPositionerShownInWidget(pManager):
                 continue
             
             for axis, step_size in axes_state.items():
@@ -371,6 +1052,18 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
                 except Exception as e:
                     warnings.append(f'Failed to restore step size for {pName}.{axis}: {e}')
         
+        settings = {
+            'liveUpdateIntervalMs': state.get('live_update_interval_ms', self._liveUpdateIntervalMs),
+            'liveUpdateEnabled': state.get('live_update_enabled', self._liveUpdateEnabled),
+            'coarseStepMultiplier': state.get('coarse_step_multiplier', self._coarseStepMultiplier),
+            'joystickAutoReenable': state.get('joystick_auto_reenable', self._joystickAutoReenable),
+            'joystickAutoReenableDelayS': state.get(
+                'joystick_auto_reenable_delay_s', self._joystickAutoReenableDelayS
+            ),
+        }
+        self.applySettings(settings)
+        self.setStepMode(bool(state.get('coarse_mode', False)))
+
         return warnings
     
     def describeComponentState(self, state: dict) -> list[str]:

@@ -38,10 +38,16 @@ def test_picasso_recarray_2d_fields_and_units():
     result = _result(pixel_size_nm=100.0)
     recs = to_picasso_recarray(result)
     # napari-storm reads these field names by attribute.
-    assert set(recs.dtype.names) == {"frame", "x", "y", "photons", "lpx", "lpy"}
+    assert set(recs.dtype.names) == {
+        "frame", "x", "y", "photons", "sx", "sy", "lpx", "lpy",
+    }
     # x/y are pixels = nm / pixel_size.
     np.testing.assert_allclose(recs.x, result.locs.x_nm / 100.0, rtol=1e-5)
-    np.testing.assert_allclose(recs.lpx, result.locs.sigma_x_nm / 100.0, rtol=1e-5)
+    # Picasso keeps PSF width and localization precision apart, and so do we:
+    # sx is the width, lpx the precision. Writing the width into lpx (as this
+    # once did) makes every consumer read a spot size as a position error.
+    np.testing.assert_allclose(recs.sx, result.locs.sigma_x_nm / 100.0, rtol=1e-5)
+    np.testing.assert_allclose(recs.lpx, result.locs.lp_x_nm / 100.0, rtol=1e-5)
 
 
 def test_picasso_recarray_3d_has_z_in_nm():

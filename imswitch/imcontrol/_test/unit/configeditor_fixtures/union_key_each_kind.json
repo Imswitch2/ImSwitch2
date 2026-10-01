@@ -1,0 +1,17 @@
+{
+  "why": "Hamamatsu cameraListIndex is an integer or, for the mock, a string (override type [integer, string]); both kinds must survive, so the widget is text, not an int box.",
+  "setup": {
+    "detectors": {
+      "orca": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "HamamatsuManager",
+        "managerProperties": {"cameraListIndex": 0, "hamamatsu": {"readout_speed": 3, "trigger_source": 1}}
+      },
+      "mock": {
+        "analogChannel": null, "digitalLine": null, "forAcquisition": true, "forFocusLock": false,
+        "managerName": "HamamatsuManager",
+        "managerProperties": {"cameraListIndex": "mock", "hamamatsu": {}}
+      }
+    }
+  }
+}

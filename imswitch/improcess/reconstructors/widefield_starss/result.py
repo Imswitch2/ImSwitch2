@@ -74,14 +74,46 @@ class WidefieldStarssResult(ProcessingResult):
             )
         return layers
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
+
+    supported_formats = ("tiff", "hdf5")
+
+    _CHANNEL_NAMES = ("r_smooth", "r_raw", "mask", "base_image")
+
+    def serialization_view(self):
+        from imswitch.improcess.model.result import SerializationView
+
+        return SerializationView(
+            data=np.asarray(self.data, dtype=np.float32),
+            axis_labels=["C", "Y", "X"],
+            axis_scales=[1.0, 1.0, 1.0],
+            scale_unit=str(self.scale_unit or "px"),
+            channel_names=list(self._CHANNEL_NAMES),
+        )
+
+    def plan_save(self, path: Path, fmt: str):
+        from imswitch.improcess.model.save_protocol import SavePlan
+
         path = Path(path)
-        if fmt in ("tiff", "tif"):
-            self._save_tiff(path)
-        elif fmt in ("hdf5", "h5", "hdf"):
-            self._save_hdf5(path)
+        if fmt == "tiff":
+            return SavePlan(path, fmt, (path.with_suffix(".regions.csv"),))
+        return SavePlan(path, fmt)
+
+    def write_files(self, plan, document) -> None:
+        if plan.fmt == "tiff":
+            from imswitch.improcess.model.result_io import save_image_result
+
+            save_image_result(
+                self, plan.primary, "tiff",
+                extra={"Labels": list(self._CHANNEL_NAMES)}, document=document,
+            )
+            self.analysis.regions.to_csv(plan.companions[0], index=False)
+        elif plan.fmt == "hdf5":
+            self._save_hdf5(plan.primary)
+            from imswitch.improcess.model.save_protocol import embed_hdf5_path
+
+            embed_hdf5_path(plan.primary, document)
         else:
-            raise ValueError(f"WidefieldSTARSS result supports TIFF or HDF5, got {fmt!r}")
+            raise ValueError(f"WidefieldSTARSS result supports TIFF or HDF5, got {plan.fmt!r}")
 
     def plot_payloads(self) -> list[PlotPayload]:
         regions = self.analysis.regions

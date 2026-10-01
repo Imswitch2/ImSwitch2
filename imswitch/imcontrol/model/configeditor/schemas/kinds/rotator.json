@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The top-level keys of a rotator entry in a setup file, as imswitch.imcontrol.model.SetupInfo.DeviceInfo declares them. managerProperties is described per manager under managers/. Keys the dataclass does not declare are kept but not read.",
+  "properties": {
+    "analogChannel": {
+      "default": null,
+      "description": "Channel for analog communication. ``null`` if the device is digital or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/ao{analogChannel}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.analogChannel: Optional[Union[str, int]]"
+      ]
+    },
+    "digitalLine": {
+      "default": null,
+      "description": "Line for digital communication. ``null`` if the device is analog or doesn't use NI-DAQ. If an integer is specified, it will be translated to \"Dev1/port0/line{digitalLine}\".",
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ],
+      "x-imswitch-kind": [
+        "string",
+        "integer"
+      ],
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.digitalLine: Optional[Union[str, int]]"
+      ]
+    },
+    "managerName": {
+      "description": "Manager class name.",
+      "type": "string",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerName: str"
+      ]
+    },
+    "managerProperties": {
+      "default": {},
+      "description": "Properties to be read by the manager. Empty when omitted.",
+      "type": "object",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "dataclass:DeviceInfo.managerProperties: Dict[str, Any]"
+      ]
+    }
+  },
+  "required": [
+    "managerName"
+  ],
+  "title": "rotator device entry (DeviceInfo)",
+  "type": "object",
+  "x-imswitch-classes": [
+    "DeviceInfo"
+  ],
+  "x-imswitch-info-class": "DeviceInfo"
+}

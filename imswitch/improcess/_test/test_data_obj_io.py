@@ -462,3 +462,229 @@ def test_view_only_uses_data_obj_axis_metadata(tmp_path) -> None:
     assert result.axis_scales == [1.0, 0.108, 0.108]
     assert result.scale_unit == "um"
     assert not data_obj.dataLoaded
+
+
+def test_view_only_labels_an_unexplained_frame_axis_frame(tmp_path):
+    """A plain 3D stack is Frame x Y x X, not channel data.
+
+    The rank-based default called the leading axis "C" for every unlabelled
+    three-dimensional file, which is a claim about the acquisition that
+    nothing in the file supports.
+    """
+    path = tmp_path / "unlabelled.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=np.zeros((7, 4, 5), dtype=np.uint16))
+    data_obj = DataObj("unlabelled.h5", "CAM", path=str(path))
+
+    result = ViewOnlyReconstructor().process(data_obj, {})
+
+    assert result.axis_labels == ["Frame", "Y", "X"]
+
+
+def test_view_only_keeps_axes_the_source_actually_declared(tmp_path):
+    """An explicit container axis order is evidence and must survive."""
+    path = tmp_path / "declared.h5"
+    with h5py.File(path, "w") as file:
+        dataset = file.create_dataset("CAM", data=np.zeros((3, 2, 4, 5), dtype=np.uint16))
+        dataset.attrs["axes"] = "TZYX"
+    data_obj = DataObj("declared.h5", "CAM", path=str(path))
+
+    result = ViewOnlyReconstructor().process(data_obj, {})
+
+    assert result.axis_labels == ["T", "Z", "Y", "X"]
+
+
+def test_view_only_reports_how_the_acquisition_was_interpreted(tmp_path):
+    """View-only is often the first place an unfamiliar file is opened."""
+    path = tmp_path / "unlabelled-inspect.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=np.zeros((7, 4, 5), dtype=np.uint16))
+    data_obj = DataObj("unlabelled-inspect.h5", "CAM", path=str(path))
+
+    inspection = ViewOnlyReconstructor().inspect_source(data_obj)
+
+    assert inspection is not None
+    assert inspection.metadata["acquisition_layout_confidence"] == "low"
+    assert inspection.warning  # the guess is stated, not buried in a log
+
+
+# ----------------------------------------------------------------------
+# What loading and previewing would cost, read without materialising
+# ----------------------------------------------------------------------
+
+
+class _LogLines:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, message, *_a, **_k):
+        self.warnings.append(str(message))
+
+    def debug(self, *_a, **_k):
+        pass
+
+    def error(self, *_a, **_k):
+        pass
+
+
+def test_decoded_bytes_comes_from_the_source_without_materializing(tmp_path) -> None:
+    path = tmp_path / "size.h5"
+    data = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=data, chunks=(1, 4, 5), compression="gzip")
+
+    data_obj = DataObj("size.h5", "CAM", path=str(path))
+
+    assert data_obj.decodedBytes() == data.nbytes
+    assert data_obj.meanPreviewBytes() == 4 * 5 * (12 + 2)     # accumulator, result, one uint16 plane
+    assert data_obj.planeReadIsBounded()
+    assert data_obj.sourceHasLazyPath()
+    assert not data_obj.dataMaterialized
+    assert data_obj.materializationNotice() is None      # fits the working set
+
+
+def test_a_load_above_the_working_set_is_announced_before_it_starts(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+
+    path = tmp_path / "big.h5"
+    data = np.zeros((3, 1024, 512), dtype=np.uint16)           # 3 MiB decoded
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=data, chunks=(1, 1024, 512), compression="gzip")
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    data_obj = DataObj("big.h5", "CAM", path=str(path))
+    log = _LogLines()
+    data_obj._DataObj__logger = log
+
+    notice = data_obj.materializationNotice()
+    assert notice is not None
+    assert "3.0 MiB" in notice and "1.0 MiB" in notice
+    assert "memory.processingWorkingSetMB in imcontrol_options.json" in notice
+    assert "Open virtual" in notice                         # HDF5 has a lazy path
+    assert not data_obj.dataMaterialized                    # saying it cost nothing
+
+    data_obj.checkAndLoadData()
+
+    assert log.warnings == [notice]                         # said, then loaded
+    assert data_obj.dataMaterialized
+    assert data_obj.materializationNotice() is None         # nothing left to warn about
+
+
+def test_the_mean_preview_notice_is_about_the_plane_not_the_plane_count(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+
+    path = tmp_path / "wide.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", shape=(2, 512, 512), dtype=np.uint16, chunks=(1, 512, 512))
+
+    data_obj = DataObj("wide.h5", "CAM", path=str(path))
+    assert data_obj.meanPreviewNotice() is None             # 3 MiB fits 256 MiB
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    notice = data_obj.meanPreviewNotice()
+    assert notice is not None
+    assert "3.5 MiB for one plane" in notice          # 512 x 512 x (12 + 2) bytes
+    assert "memory.processingWorkingSetMB" in notice
+
+
+def test_the_preview_estimate_covers_what_the_lazy_mean_actually_allocates(tmp_path) -> None:
+    """Measured, not argued: the lazy mean used to peak at 22 B/px against a
+    12 B/px estimate (a second float64 plane from ``accumulator / n``)."""
+    import tracemalloc
+
+    path = tmp_path / "peak.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=np.ones((4, 256, 256), np.uint16), chunks=(1, 256, 256))
+    data_obj = DataObj("peak.h5", "CAM", path=str(path))
+    estimate = data_obj.meanPreviewBytes()
+    assert estimate == 256 * 256 * 14
+    data_obj.data_handle                                       # open the source outside the trace
+
+    tracemalloc.start()
+    try:
+        mean = data_obj.getMeanData()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert mean.dtype == np.float32 and float(mean.mean()) == 1.0
+    assert peak <= estimate + 64 * 1024                         # the estimate is a ceiling
+
+
+def test_a_source_without_a_lazy_path_is_charged_the_whole_series_for_its_preview(tmp_path) -> None:
+    """A TIFF whose ``aszarr()`` failed serves every plane by a whole-series
+    read; its "plane" costs the decoded dataset, and so does the first plane."""
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.model import memory_limits
+
+    path = tmp_path / "nolazy.h5"
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", shape=(150, 128, 128), dtype=np.uint16, chunks=(1, 128, 128))
+    data_obj = DataObj("nolazy.h5", "CAM", path=str(path))
+    handle = data_obj.data_handle
+    handle.supports_lazy_indexing = False                     # what the TIFF fallback declares
+
+    assert not data_obj.sourceHasLazyPath()
+    assert not data_obj.planeReadIsBounded()
+    decoded = 150 * 128 * 128 * 2                              # 4.7 MiB
+    assert data_obj.meanPreviewBytes() == 128 * 128 * 14 + decoded
+
+    memory_limits.configure(SimpleNamespace(processingWorkingSetMB=1), logger=None)
+    notice = data_obj.meanPreviewNotice()
+    assert notice is not None
+    assert "no lazy path" in notice and "decodes the whole series" in notice
+    assert "memory.processingWorkingSetMB" in notice
+
+
+def _non_lazy_tiff(tmp_path, monkeypatch, shape):
+    """A TIFF opened the way the fallback opens it: no zarr view, whole-series reads."""
+    import tifffile
+
+    path = tmp_path / "nonlazy.tif"
+    tifffile.imwrite(path, np.ones(shape, np.uint16))
+
+    def no_zarr(self, *_args, **_kwargs):
+        raise RuntimeError("aszarr unavailable")
+
+    monkeypatch.setattr(tifffile.TiffPageSeries, "aszarr", no_zarr)
+    data_obj = DataObj("nonlazy.tif", "Image0", path=str(path))
+    data_obj.data_handle
+    monkeypatch.undo()
+    assert not data_obj.sourceHasLazyPath()
+    return data_obj
+
+
+def test_a_non_lazy_preview_peaks_inside_its_estimate(tmp_path, monkeypatch) -> None:
+    """Review round 7: estimated 0.84 MiB, peaked at 1.61 MiB -- the previous
+    plane was still bound, pinning its decoded series, while the next series
+    was decoded."""
+    import tracemalloc
+
+    data_obj = _non_lazy_tiff(tmp_path, monkeypatch, (20, 64, 64))
+    estimate = data_obj.meanPreviewBytes()
+
+    tracemalloc.start()
+    try:
+        mean = data_obj.getMeanData()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert float(mean.mean()) == 1.0
+    assert peak <= estimate
+
+
+def test_a_plane_from_a_non_lazy_source_does_not_keep_the_series_alive(tmp_path, monkeypatch) -> None:
+    data_obj = _non_lazy_tiff(tmp_path, monkeypatch, (20, 64, 64))
+
+    plane = data_obj.data_handle[3]
+
+    assert plane.shape == (64, 64)
+    assert plane.base is None or plane.base.nbytes <= plane.nbytes
+    whole = data_obj.data_handle[...]                  # a full read is not copied twice
+    assert whole.shape == (20, 64, 64)

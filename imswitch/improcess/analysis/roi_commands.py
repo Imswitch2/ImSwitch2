@@ -1,0 +1,393 @@
+"""Model changes as commands.
+
+Every mutation of the ROI list goes through a command object that knows how to
+undo itself.  The undo *stack* and its shortcuts come later; what this buys
+immediately is that there is exactly one audited path for changing the model,
+so an operation cannot quietly bypass the invariants the model maintains
+(unique names, assigned identities, preserved fields).
+
+Commands hold records, never pixels: an undo history must not pin image data.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from imswitch.imcommon.algorithms.roi import ROIRecord
+
+
+class Command(Protocol):
+    """Something done to the model that can be undone."""
+
+    label: str
+
+    def do(self, model) -> object:
+        ...
+
+    def undo(self, model) -> None:
+        ...
+
+
+@dataclass
+class AddROI:
+    """Add one ROI, remembering the name the model actually gave it."""
+
+    roi: ROIRecord
+    label: str = "Add ROI"
+    _added_name: str | None = None
+
+    def do(self, model):
+        added = model.add(self.roi)
+        self._added_name = added.name
+        return added
+
+    def undo(self, model) -> None:
+        if self._added_name is not None:
+            model.remove(self._added_name)
+            self._added_name = None
+
+
+@dataclass
+class DeleteROI:
+    """Delete one ROI, keeping the record and its position for undo."""
+
+    name: str
+    label: str = "Delete ROI"
+    _removed: ROIRecord | None = None
+    _index: int | None = None
+
+    def do(self, model):
+        rois = model.rois
+        for index, roi in enumerate(rois):
+            if roi.name == self.name:
+                self._removed, self._index = roi, index
+                break
+        model.remove(self.name)
+        return self._removed
+
+    def undo(self, model) -> None:
+        if self._removed is None:
+            return
+        # Restore in place: ROI order is user-visible and drives the overlay's
+        # colour cycle, so putting it back at the end would be a visible change.
+        rois = model.rois
+        index = self._index if self._index is not None else len(rois)
+        rois.insert(min(index, len(rois)), self._removed)
+        model.set_rois(rois)
+        self._removed = None
+
+
+@dataclass
+class RenameROI:
+    name: str
+    new_name: str
+    label: str = "Rename ROI"
+    _previous: str | None = None
+    _applied: str | None = None
+
+    def do(self, model):
+        self._previous = self.name
+        updated = model.rename(self.name, self.new_name)
+        self._applied = updated.name
+        return updated
+
+    def undo(self, model) -> None:
+        if self._applied and self._previous:
+            model.rename(self._applied, self._previous)
+            self._applied = None
+
+
+@dataclass
+class UpdateROI:
+    """Replace an ROI's geometry, keeping its identity."""
+
+    name: str
+    changes: dict
+    label: str = "Update ROI"
+    _before: ROIRecord | None = None
+
+    def do(self, model):
+        self._before = model.get(self.name)
+        return model.update(self.name, **self.changes)
+
+    def undo(self, model) -> None:
+        if self._before is None:
+            return
+        model.replace_record(self._before)
+        self._before = None
+
+
+@dataclass
+class SetVisible:
+    """Show or hide one ROI."""
+
+    name: str
+    visible: bool
+    label: str = "Set visibility"
+    _before: bool | None = None
+
+    def do(self, model):
+        roi = model.get(self.name)
+        self._before = None if roi is None else roi.visible
+        return model.set_visible(self.name, self.visible)
+
+    def undo(self, model) -> None:
+        if self._before is not None:
+            model.set_visible(self.name, self._before)
+            self._before = None
+
+
+@dataclass
+class ClearROIs:
+    """Remove every ROI, keeping them all for undo.
+
+    Clearing a set of hand-drawn regions is the most expensive thing to redo by
+    hand, so it is the operation that most needs to be undoable.
+    """
+
+    label: str = "Clear ROIs"
+    _removed: tuple = ()
+
+    def do(self, model):
+        self._removed = tuple(model.rois)
+        model.clear()
+        return None
+
+    def undo(self, model) -> None:
+        if self._removed:
+            model.set_rois(list(self._removed))
+            self._removed = ()
+
+
+@dataclass
+class RemoveSliceInfo:
+    """Detach every ROI from the slice it was captured on (ImageJ parity)."""
+
+    label: str = "Remove slice info"
+    _before: tuple = ()
+
+    def do(self, model):
+        self._before = tuple(
+            (roi.name, roi.position) for roi in model.rois if roi.position
+        )
+        for name, _position in self._before:
+            model.update(name, position=())
+        return None
+
+    def undo(self, model) -> None:
+        for name, position in self._before:
+            model.update(name, position=position)
+        self._before = ()
+
+
+@dataclass
+class ReplaceROIs:
+    """Swap a set of ROIs for the ROIs an operation produced.
+
+    Every P-5 operation reduces to this: the inputs it consumed (which may be
+    none, for an operation that only adds) and the outputs it produced. One
+    command rather than one per operation, because what has to be undone is
+    the same in each case, and an operation-specific inverse would be a second
+    place for the two to disagree.
+    """
+
+    consumed: tuple = ()
+    produced: tuple = ()
+    label: str = "ROI operation"
+    _before: tuple = ()
+
+    def do(self, model):
+        self._before = tuple(model.rois)
+        for name in self.consumed:
+            model.remove(name)
+        added = [model.add(roi) for roi in self.produced]
+        return added
+
+    def undo(self, model) -> None:
+        # Restored wholesale rather than by inverse steps: order is
+        # user-visible, and re-adding a consumed ROI would append it to the
+        # end rather than put it back where it was.
+        model.set_rois(list(self._before))
+        self._before = ()
+
+
+@dataclass
+class SetProperties:
+    """Change display-only fields on many ROIs at once.
+
+    One command rather than one per ROI, so restyling a fifty-ROI set is one
+    step of undo rather than fifty. Deliberately limited to fields that do not
+    affect a measurement — style, group, properties, visibility — because a
+    batch that could move geometry is a batch that can silently ruin a set.
+    """
+
+    names: tuple = ()
+    changes: dict = field(default_factory=dict)
+    label: str = "Set properties"
+    _before: tuple = ()
+
+    #: The only fields this command may touch.
+    ALLOWED = frozenset({"style", "group", "properties", "visible"})
+
+    def __post_init__(self):
+        unknown = set(self.changes) - self.ALLOWED
+        if unknown:
+            raise ValueError(
+                f"{sorted(unknown)} cannot be set in a batch; a batch change "
+                "must not be able to move geometry"
+            )
+
+    def do(self, model):
+        before = []
+        for name in self.names:
+            roi = model.get(name)
+            if roi is None:
+                continue
+            before.append(
+                (name, {key: getattr(roi, key) for key in self.changes})
+            )
+            model.update(name, **self.changes)
+        self._before = tuple(before)
+        return None
+
+    def undo(self, model) -> None:
+        for name, previous in self._before:
+            try:
+                model.update(name, **previous)
+            except KeyError:
+                continue
+        self._before = ()
+
+
+@dataclass
+class ImportROIs:
+    """Add a batch of ROIs, all of them or none.
+
+    A half-applied import is the worst outcome: the user cannot tell which of
+    the two hundred arrived, and undoing means finding them by hand. So the
+    model is restored wholesale if any record is rejected, and the conflict
+    policy is decided **before** anything is touched.
+
+    ``on_conflict`` — ``"rename"`` (the default; the model uniquifies), ``"skip"``
+    (keep what is already there) or ``"replace"`` (the incoming record wins).
+    """
+
+    rois: tuple = ()
+    on_conflict: str = "rename"
+    label: str = "Import ROIs"
+    _before: tuple = ()
+    #: Filled in by do(): what actually happened, for the panel to report.
+    added: int = 0
+    skipped: int = 0
+    replaced: int = 0
+
+    def do(self, model):
+        if self.on_conflict not in ("rename", "skip", "replace"):
+            raise ValueError(f"unknown conflict policy {self.on_conflict!r}")
+        self._before = tuple(model.rois)
+        self.added = self.skipped = self.replaced = 0
+        try:
+            for roi in self.rois:
+                existing = model.get(roi.name)
+                if existing is not None:
+                    if self.on_conflict == "skip":
+                        self.skipped += 1
+                        continue
+                    if self.on_conflict == "replace":
+                        model.add(roi, replace=True)
+                        self.replaced += 1
+                        continue
+                model.add(roi)
+                self.added += 1
+        except Exception:
+            # All or nothing: put the set back exactly as it was, then let the
+            # caller report the failure.
+            model.set_rois(list(self._before))
+            self._before = ()
+            raise
+        return None
+
+    def undo(self, model) -> None:
+        if self._before or self.added or self.replaced:
+            model.set_rois(list(self._before))
+            self._before = ()
+
+
+class CommandLog:
+    """Runs commands and keeps what is needed to undo them.
+
+    Bounded, because an unbounded history of a long session is a slow memory
+    leak. The UI for this arrives with the undo phase; the log itself lands
+    now so every mutation has been going through it from the start.
+    """
+
+    def __init__(self, model, *, limit: int = 100):
+        self._model = model
+        self._limit = int(limit)
+        self._done: list[Command] = []
+        self._undone: list[Command] = []
+
+    def run(self, command: Command):
+        result = command.do(self._model)
+        self._done.append(command)
+        if len(self._done) > self._limit:
+            del self._done[0]
+        # A new action invalidates anything that was undone past this point.
+        self._undone.clear()
+        return result
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._done)
+
+    @property
+    def can_redo(self) -> bool:
+        return bool(self._undone)
+
+    def undo(self) -> None:
+        if not self._done:
+            return
+        command = self._done.pop()
+        command.undo(self._model)
+        self._undone.append(command)
+
+    def redo(self) -> None:
+        if not self._undone:
+            return
+        command = self._undone.pop()
+        command.do(self._model)
+        self._done.append(command)
+
+    def labels(self) -> list[str]:
+        return [command.label for command in self._done]
+
+    @property
+    def undo_label(self) -> str:
+        """What undoing would undo, for the button that does it."""
+        return self._done[-1].label if self._done else ""
+
+    @property
+    def redo_label(self) -> str:
+        return self._undone[-1].label if self._undone else ""
+
+    def clear(self) -> None:
+        """Forget the history without touching the model."""
+        self._done.clear()
+        self._undone.clear()
+
+
+__all__ = [
+    "AddROI",
+    "ClearROIs",
+    "RemoveSliceInfo",
+    "SetVisible",
+    "Command",
+    "CommandLog",
+    "DeleteROI",
+    "ImportROIs",
+    "RenameROI",
+    "ReplaceROIs",
+    "SetProperties",
+    "UpdateROI",
+]

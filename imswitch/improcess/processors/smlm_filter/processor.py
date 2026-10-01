@@ -9,6 +9,7 @@ from qtpy import QtWidgets
 from imswitch.improcess.analysis.smlm_tables import filter_localizations
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 
@@ -33,6 +34,32 @@ class SmlmFilterProcessor(Processor):
     id = "smlm-filter"
     category = "Localization"
     kinds = ("localization",)
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {   'min_photons': 0.0,
+        'max_photons': 0.0,
+        'min_sigma_nm': 0.0,
+        'max_sigma_nm': 0.0,
+        'min_frame': 0,
+        'max_frame': 0}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('min_photons', 'float', 0.0, label='Min photons', min=0, decimals=1),
+            ParamField('max_photons', 'float', 0.0, label='Max photons', min=0, decimals=1),
+            ParamField(
+                'min_sigma_nm', 'float', 0.0, label='Min sigma', min=0, max=1000000, decimals=1,
+                suffix='nm',
+            ),
+            ParamField(
+                'max_sigma_nm', 'float', 0.0, label='Max sigma', min=0, max=1000000, decimals=1,
+                suffix='nm',
+            ),
+            ParamField('min_frame', 'float', 0, label='First frame', min=0, decimals=0),
+            ParamField('max_frame', 'float', 0, label='Last frame', min=0, decimals=0),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

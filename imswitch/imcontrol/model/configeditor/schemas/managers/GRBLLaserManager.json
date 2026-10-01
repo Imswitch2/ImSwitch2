@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "channel": {
+      "x-imswitch-source": [
+        "code:required"
+      ]
+    },
+    "rs232device": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-ref-category": "rs232devices",
+      "x-imswitch-source": [
+        "code:ref",
+        "code:required"
+      ],
+      "x-imswitch-widget": "ref"
+    }
+  },
+  "required": [
+    "channel",
+    "rs232device"
+  ],
+  "title": "GRBLLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "GRBLLaserManager",
+    "LaserManager"
+  ]
+}

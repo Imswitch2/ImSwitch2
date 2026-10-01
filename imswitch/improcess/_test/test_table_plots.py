@@ -135,3 +135,87 @@ def test_umap_without_package_raises_runtime_error():
         records = [{"a": rng.normal(), "b": rng.normal(), "c": rng.normal()} for _ in range(10)]
         with pytest.raises(RuntimeError, match="umap-learn"):
             build_plot_payloads(["a", "b", "c"], records, {"kind": "umap", "columns": ["a", "b", "c"]})
+
+
+# --------------------------------------------------------------------------
+# A-20 / P-4.8 — mixed units must not be plotted numerically
+# --------------------------------------------------------------------------
+
+def _mixed_rows():
+    return [
+        {"roi": "a", "area_cal": 2.0, "perimeter_cal": 4.0, "spatial_unit": "um"},
+        {"roi": "b", "area_cal": 3.0, "perimeter_cal": 6.0, "spatial_unit": "nm"},
+    ]
+
+
+def test_mixed_length_units_are_converted_to_the_smallest():
+    from imswitch.improcess.model.table_plots import harmonize_units
+
+    rows = harmonize_units(_mixed_rows(), ["perimeter_cal"])
+    assert [row["spatial_unit"] for row in rows] == ["nm", "nm"]
+    # 4 um is 4000 nm; the nm row is untouched.
+    assert rows[0]["perimeter_cal"] == pytest.approx(4000.0)
+    assert rows[1]["perimeter_cal"] == pytest.approx(6.0)
+
+
+def test_an_area_column_converts_by_the_square_of_the_ratio():
+    from imswitch.improcess.model.table_plots import harmonize_units
+
+    rows = harmonize_units(_mixed_rows(), ["area_cal"])
+    assert rows[0]["area_cal"] == pytest.approx(2.0 * 1000**2)
+
+
+def test_a_unit_that_cannot_be_converted_is_refused_by_name():
+    from imswitch.improcess.model.table_plots import harmonize_units
+
+    rows = [
+        {"area_cal": 1.0, "spatial_unit": "um"},
+        {"area_cal": 2.0, "spatial_unit": "arb"},
+    ]
+    with pytest.raises(ValueError, match="arb"):
+        harmonize_units(rows, ["area_cal"])
+
+
+def test_pixel_columns_are_never_converted():
+    from imswitch.improcess.model.table_plots import harmonize_units
+
+    rows = [
+        {"area_px": 16, "spatial_unit": "um"},
+        {"area_px": 16, "spatial_unit": "nm"},
+    ]
+    assert harmonize_units(rows, ["area_px"]) == rows
+
+
+def test_one_unit_throughout_is_left_alone():
+    from imswitch.improcess.model.table_plots import harmonize_units
+
+    rows = [{"area_cal": 1.0, "spatial_unit": "um"}, {"area_cal": 2.0, "spatial_unit": "um"}]
+    assert harmonize_units(rows, ["area_cal"]) is rows
+
+
+def test_build_plot_payloads_applies_the_unit_rule():
+    payloads = build_plot_payloads(
+        ["roi", "perimeter_cal", "spatial_unit"],
+        _mixed_rows(),
+        {"kind": "histogram", "column": "perimeter_cal"},
+    )
+    assert sorted(payloads[0].series[0].y) == pytest.approx([6.0, 4000.0])
+
+
+def test_pixels_and_micrometres_are_a_conflict_not_a_default():
+    """px is a unit too, and it is not convertible to um."""
+    from imswitch.improcess.model.table_plots import harmonize_units
+
+    rows = [
+        {"area_cal": 16.0, "spatial_unit": "px"},
+        {"area_cal": 4.0, "spatial_unit": "um"},
+    ]
+    with pytest.raises(ValueError, match="px"):
+        harmonize_units(rows, ["area_cal"])
+
+
+def test_a_table_measured_entirely_in_pixels_still_plots():
+    from imswitch.improcess.model.table_plots import harmonize_units
+
+    rows = [{"area_cal": 16.0, "spatial_unit": "px"}] * 2
+    assert harmonize_units(rows, ["area_cal"]) is rows

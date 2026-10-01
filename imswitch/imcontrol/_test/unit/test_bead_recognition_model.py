@@ -42,6 +42,7 @@ def test_result_record_metadata_excludes_image_pixels():
         source_path="/tmp/run_1.tif",
         timestamp=123.0,
         scaled=True,
+        pixel_size_um=(0.05, 0.05),
     )
 
     assert record.metadata() == {
@@ -50,6 +51,7 @@ def test_result_record_metadata_excludes_image_pixels():
         "source_path": "/tmp/run_1.tif",
         "timestamp": 123.0,
         "scaled": True,
+        "pixel_size_um": [0.05, 0.05],
     }
     assert "image" not in record.metadata()
 

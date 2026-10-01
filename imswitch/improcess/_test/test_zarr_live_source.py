@@ -446,3 +446,34 @@ def test_zarr_live_source_caps_reads_at_frames_committed(tmp_zarr_path):
     assert np.all(frames == 9)
     assert source.is_complete() is True
     source.close()
+
+
+def test_zarr_live_poll_stops_at_the_byte_budget_and_resumes(tmp_zarr_path, monkeypatch):
+    """A poll used to return every unread frame in one call, so a live source
+    pointed at a finished recording materialised the whole recording before
+    its first chunk was processed. The budget ends the poll; the cursor stays
+    put; the next poll carries on from there."""
+    from imswitch.improcess.live import sources
+
+    data = np.arange(10 * 4 * 5, dtype=np.uint16).reshape(10, 4, 5)
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    root.attrs["rec_mode"] = "recording"
+    det_group = root.create_group("CAM")
+    array = ZarrStorer._create_array(det_group, "data", data=data, chunks=(1, 4, 5))
+    array.attrs["detector_name"] = "CAM"
+    array.attrs["writing"] = False
+    array.attrs["axes"] = ["T", "Y", "X"]
+
+    frame_bytes = 4 * 5 * 2
+    monkeypatch.setattr(sources, "LIVE_POLL_MAX_BYTES", 3 * frame_bytes)
+
+    source = ZarrLiveSource(detector_name="CAM", chunk_size=1)
+    source.open(tmp_zarr_path)
+    polls = []
+    while not source.is_complete():
+        polls.append(source.poll())
+
+    assert [len(chunks) for chunks in polls] == [3, 3, 3, 1]
+    chunks = [chunk for poll in polls for chunk in poll]
+    assert [(c.start, c.end) for c in chunks] == [(i, i + 1) for i in range(10)]
+    np.testing.assert_array_equal(np.concatenate([c.data for c in chunks]), data)

@@ -1,0 +1,12 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "OxxiusLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "laserType": "example",
+      "port": "example",
+      "prefix": null
+    }
+  }
+}

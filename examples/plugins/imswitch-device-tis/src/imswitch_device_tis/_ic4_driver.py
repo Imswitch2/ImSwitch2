@@ -127,10 +127,10 @@ class IC4Camera:
             import imagingcontrol4 as ic4
         except ImportError as e:  # pragma: no cover - requires the vendor SDK
             raise ImportError(
-                "imagingcontrol4 not found. Install with: "
-                "pip install imswitch-device-tis[hardware]. Note this also "
-                "requires the IC4 GenTL Producer (USB3 Vision) to be installed "
-                "on the machine."
+                "imagingcontrol4 not found. Install it with: "
+                "pip install imagingcontrol4 (the plugin's hardware extra). "
+                "Note this also requires the IC4 GenTL Producer (USB3 Vision) "
+                "to be installed on the machine."
             ) from e
 
         self._ic4 = ic4

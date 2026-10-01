@@ -30,7 +30,15 @@ class ExternalManagerHint:
     note: str | None = None
     """Optional human-readable note (what it is, where it lives)."""
 
+    source: str | None = None
+    """Where the package lives in the ImSwitch2 repository, for a plugin that is
+    not published on PyPI. ``pip install <package>`` cannot find such a plugin,
+    so the install command installs it from a source checkout instead."""
+
     def install_command(self) -> str:
+        if self.source:
+            target = f"./{self.source}[{self.extra}]" if self.extra else f"./{self.source}"
+            return f'pip install "{target}"'
         target = f"{self.package}[{self.extra}]" if self.extra else self.package
         return f"pip install {target}"
 
@@ -40,10 +48,8 @@ class ExternalManagerHint:
 _ZHINST = ExternalManagerHint(
     package="imswitch-zhinst-devices",
     extra="hardware",
-    note=(
-        "Zurich Instruments lock-in detector; bundled under "
-        "examples/plugins/imswitch-zhinst-devices in the ImSwitch repository."
-    ),
+    note="Zurich Instruments lock-in detector.",
+    source="examples/plugins/imswitch-zhinst-devices",
 )
 
 #: Keyed by ``(kind, managerName)``. The name matches a setup ``managerName`` —
@@ -57,11 +63,8 @@ _ZHINST = ExternalManagerHint(
 _THORLABS = ExternalManagerHint(
     package="imswitch-device-thorlabs",
     extra="hardware",
-    note=(
-        "Thorlabs device support (TSI scientific cameras, Kinesis MLS203 "
-        "stages); bundled under examples/plugins/imswitch-device-thorlabs in "
-        "the ImSwitch repository."
-    ),
+    note="Thorlabs device support (TSI scientific cameras, Kinesis MLS203 stages).",
+    source="examples/plugins/imswitch-device-thorlabs",
 )
 
 # The Imaging Source cameras on IC Imaging Control 4. Unlike the entries above
@@ -73,11 +76,11 @@ _TIS = ExternalManagerHint(
     package="imswitch-device-tis",
     extra="hardware",
     note=(
-        "The Imaging Source camera support built on IC Imaging Control 4; "
-        "bundled under examples/plugins/imswitch-device-tis in the ImSwitch "
-        "repository. The hardware extra also requires the IC4 GenTL Producer "
+        "The Imaging Source camera support built on IC Imaging Control 4. "
+        "The hardware extra also requires the IC4 GenTL Producer "
         "(USB3 Vision) to be installed separately."
     ),
+    source="examples/plugins/imswitch-device-tis",
 )
 
 KNOWN_EXTERNAL_MANAGERS: dict[tuple[str, str], ExternalManagerHint] = {

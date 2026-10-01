@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "calibCsvPath": {
+      "x-imswitch-source": [
+        "code:optional(in)"
+      ]
+    },
+    "digitalPorts": {
+      "description": "Connection string forwarded to the driver constructor (e.g. a",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "pyMicroscopeDriver": {
+      "description": "Dotted ``module.Class`` to import from ``microscope.lights``",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "title": "PyMicroscopeLaserManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "PyMicroscopeLaserManager",
+    "LaserManager"
+  ]
+}

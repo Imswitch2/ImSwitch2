@@ -1,0 +1,11 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "ESP32LightSheetManager",
+    "managerProperties": {
+      "axis": "example",
+      "calibCsvPath": "example",
+      "rs232device": "example"
+    }
+  }
+}

@@ -21,6 +21,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 _INTERPOLATIONS = {"nearest": 0, "bilinear": 1, "cubic": 3}
@@ -40,6 +41,27 @@ class ResizeProcessor(Processor):
     name = "Scale/Resize"
     id = "resize"
     category = "Transform"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'factor': 0.5, 'interpolation': 'bilinear'}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'factor', 'float', 0.5, label='Factor',
+                help='Zoom factor for X and Y (0.5 halves, 2 doubles)', min=0.01, max=100,
+                decimals=3,
+            ),
+            ParamField(
+                'interpolation', 'select', 'bilinear', label='Interpolation',
+                options=('bilinear', 'nearest', 'cubic'),
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -107,6 +129,23 @@ class ConvertTypeProcessor(Processor):
     name = "Convert type"
     id = "convert-type"
     category = "Transform"
+
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'type': '8-bit', 'rescale': True}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'type', 'select', '8-bit', label='Type',
+                options=('8-bit', '16-bit', '32-bit float'),
+            ),
+            ParamField(
+                'rescale', 'bool', True, label='Scale data range to type range',
+                help="Map the finite data range onto the full integer range (like ImageJ's scaled conversions)",
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

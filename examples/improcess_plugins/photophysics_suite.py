@@ -13,7 +13,16 @@ from a camera recording, ported from the TestaLab MATLAB scripts
 
 The analysis operates on the intensity-vs-frame profile of the loaded stack
 (whole-frame sum or ROI mean), so it takes an image result and returns a
-``curve`` result rendered as a line plot and saved as an ascii/csv table.
+``curve`` result rendered as a line plot and saved as a CSV table with a
+provenance companion (``<name>.provenance.json``) through the shared save
+protocol.
+
+Every parameter ``apply`` reads is declared in :meth:`default_params`, the
+visible widget controls and the two that have none alike: ``tail`` (frames
+of the recording's dark tail used for the background) and ``roi``
+(``[y0, y1, x0, x1]`` in pixels, ``None`` for the whole frame; it is a plain
+list, so the strict provenance codec records it as it is). A workflow can
+set either; the provenance records both.
 
 Drop this file into ``~/ImSwitchConfig/improcess_plugins/`` to load it at ImProcess
 startup. Kept in the repo under ``examples/`` for development and testing until the
@@ -334,15 +343,24 @@ class PhotophysicsResult(ProcessingResult):
             row[key] = float(value) if isinstance(value, (int, float)) else value
         return [row]
 
-    def save(self, path, fmt="txt"):
+    # The staged save protocol: ``ProcessingResult.save`` plans, stages,
+    # publishes and receipts; this type only says which files it makes and
+    # writes them. Never override ``save`` itself -- that would skip the
+    # staging, the provenance companion and the receipt.
+    supported_formats = ("csv",)
+
+    def plan_save(self, path, fmt):
+        from imswitch.improcess.model.save_protocol import SavePlan, companion_json_path
+
         path = Path(path)
+        return SavePlan(path, fmt, (companion_json_path(path),))
+
+    def write_files(self, plan, document):
+        from imswitch.improcess.model.save_protocol import write_companion_json
+
         arr = np.asarray(self.data, dtype=float)
-        if fmt in ("txt", "ascii", "dat"):
-            np.savetxt(str(path), arr, header=" ".join(self.columns))
-        elif fmt == "csv":
-            np.savetxt(str(path), arr, header=",".join(self.columns), delimiter=",")
-        else:
-            raise ValueError(f"PhotophysicsResult saves txt/csv, got {fmt!r}")
+        np.savetxt(str(plan.primary), arr, header=",".join(self.columns), delimiter=",")
+        write_companion_json(plan.primary, document)
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +376,35 @@ class PhotophysicsProcessor(Processor):
     category = "Photophysics"
     kinds = ("image",)
 
+    @classmethod
+    def default_params(cls) -> dict:
+        """Every parameter ``apply`` reads, with the value a fresh widget hands it.
+
+        ``tail`` and ``roi`` have no visible control; they are still
+        parameters that change the output, so they are declared here and
+        returned by the widget, which is what makes them settable in a
+        workflow and recorded in the provenance.
+        """
+        return {
+            "mode": "fatigue",
+            "reduce": "sum",
+            "background": "tail_mean",
+            "bkg_value": 0.0,
+            "normalize": "first",
+            "tail": 500,
+            "roi": None,
+            "time_unit_ms": 1.0,
+            "window": 200,
+            "n_cycles": 0,
+            "peak_min_height_frac": 0.15,
+            "do_fit": True,
+            "powers": [0.0, 10.0, 25.0, 50.0, 100.0, 200.0],
+            "auto_detect": True,
+            "offset": 10,
+            "jump": 35,
+            "dpnts": 10,
+        }
+
     @property
     def applies_to(self):
         # Needs a frame stack (spatial axes + a frame axis).
@@ -366,6 +413,7 @@ class PhotophysicsProcessor(Processor):
     def make_param_widget(self, parent):
         from qtpy import QtWidgets
 
+        defaults = self.default_params()
         widget = QtWidgets.QWidget(parent)
         layout = QtWidgets.QFormLayout(widget)
 
@@ -433,6 +481,10 @@ class PhotophysicsProcessor(Processor):
             "background": background.currentText(),
             "bkg_value": float(bkg_value.value()),
             "normalize": normalize.currentText(),
+            # No control, but effective parameters all the same (see
+            # default_params); a workflow may override them.
+            "tail": int(defaults["tail"]),
+            "roi": defaults["roi"],
             "time_unit_ms": float(time_unit.value()),
             "window": int(off_window.value()),
             "n_cycles": int(n_cycles.value()),
@@ -447,6 +499,9 @@ class PhotophysicsProcessor(Processor):
         return widget
 
     def apply(self, result, params):
+        # The declared defaults are the fallbacks: what apply reads and what
+        # the provenance records are then the same thing.
+        params = {**self.default_params(), **dict(params or {})}
         mode = params.get("mode", "fatigue")
         profile = frame_profile(
             result.data, roi=params.get("roi"), reduce=params.get("reduce", "sum")

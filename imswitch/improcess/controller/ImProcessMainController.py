@@ -13,6 +13,7 @@ from .CommunicationChannel import CommunicationChannel
 from .GraphController import GraphController
 from .ImageToolbarController import ImageToolbarController
 from .ImProcessMainViewController import ImProcessMainViewController
+from .PythonConsoleController import PythonConsoleController
 from .ResultProcessorController import ResultProcessorController
 from .basecontrollers import ImProcessWidgetControllerFactory
 
@@ -21,6 +22,7 @@ from .basecontrollers import ImProcessWidgetControllerFactory
 # 'GuiLayout' so both modules can persist their layouts side by side when
 # enabled together.
 _GUI_LAYOUT_STATE_KEY = 'ImProcessGuiLayout'
+_ROI_MANAGER_STATE_KEY = 'ImProcessROIManager'
 
 
 class ImProcessMainController(MainController):
@@ -29,10 +31,19 @@ class ImProcessMainController(MainController):
         self.__moduleCommChannel = moduleCommChannel
         self.__logger = initLogger(self, tryInheritParent=False)
         self.__processingConfig = processingConfig
+        # Set before anything that can fail: closeEvent runs on a controller
+        # whose construction raised, and an AttributeError here hid the real
+        # startup error behind a second one.
+        self.__guiLayoutStateAdapter = None
+        self.__roiManagerStateAdapter = None
 
         # Connect view signals
         self.__mainView.sigClosing.connect(self.closeEvent)
         self.__mainView.sigLoadProcessorRequested.connect(self._load_runtime_processor)
+        if hasattr(self.__mainView, 'sigLoadReconstructorRequested'):
+            self.__mainView.sigLoadReconstructorRequested.connect(
+                self._load_runtime_reconstructor
+            )
         if hasattr(self.__mainView, 'sigReloadPluginsRequested'):
             self.__mainView.sigReloadPluginsRequested.connect(self._reload_user_plugins)
 
@@ -41,9 +52,15 @@ class ImProcessMainController(MainController):
         self._register_startup_runtime_processors()
         self.__mainView.createStartupRuntimeAnalysisWidgets()
         self._refresh_runtime_processor_choices()
+        self._refresh_reconstructor_choices()
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel()
+
+        # A widget controller that has something to say to the operator and
+        # no view of its own says it here; the main view owns the status bar.
+        if hasattr(self.__mainView, 'showStatusMessage'):
+            self.__commChannel.sigStatusMessage.connect(self.__mainView.showStatusMessage)
 
         # Bridge live results to imcontrol if enabled
         self.__commChannel.sigResultProduced.connect(self._onResultProduced)
@@ -62,7 +79,41 @@ class ImProcessMainController(MainController):
             self.__mainView,
             self.mainViewController.reconstructionController,
         )
+        self.napariEndpointController = None
+        try:
+            from .NapariEndpointController import NapariEndpointController
+
+            self.napariEndpointController = NapariEndpointController(
+                self.__commChannel,
+                self.__mainView,
+                self.mainViewController.reconstructionController,
+                processing_config=getattr(self, '_processingConfigLoaded', None),
+            )
+        except Exception:
+            # Endpoints are an extra on top of the viewer; a broken npe2
+            # environment must not keep ImProcess from starting.
+            self.__logger.exception("Could not set up napari endpoints")
+        self.workflowController = None
+        try:
+            from .WorkflowController import WorkflowController
+
+            self.workflowController = WorkflowController(
+                self.__commChannel,
+                self.__mainView,
+                self.mainViewController.reconstructionController,
+                processing_config=getattr(self, '_processingConfigLoaded', None),
+            )
+            if self.napariEndpointController is not None:
+                # An endpoint session's layers read a result's (lazy) data;
+                # the workflow controller must not close a source under them.
+                self.workflowController.addHolder(
+                    self.napariEndpointController.heldResultUids,
+                    changed=self.napariEndpointController.sigSessionsChanged,
+                )
+        except Exception:
+            self.__logger.exception("Could not set up workflow export/run")
         self._resultProcessorControllers = {}
+        self._consoleController = None
         # Runtime panels that publish their own results (multi-action producers
         # like Multicolor) expose sigResultProduced; we forward it to the comm
         # channel once. Tracks which panels have had that bridge connected.
@@ -70,6 +121,8 @@ class ImProcessMainController(MainController):
         # Measurement panels re-measuring on every result change; tracked by
         # widget identity so reopening a dock cannot double-connect.
         self._resultFollowers = set()
+        # ROI manager panels already given their shortcuts and autosave hook.
+        self._roiManagerPanels = set()
 
         # Configurable keyboard shortcuts (shared imcommon ShortcutManager,
         # Fiji-parity defaults, per-user JSON overrides). Never let shortcut
@@ -83,7 +136,7 @@ class ImProcessMainController(MainController):
         # Register the view's dock layout with the shared widget-state
         # persistence service so it is auto-restored at startup and auto-saved
         # at shutdown. Failures here must never block ImProcess from coming up.
-        self.__guiLayoutStateAdapter = None
+        # (Both adapters were initialised to None at the top of __init__.)
         try:
             from imswitch.imcommon.model import getWidgetStatePersistence
 
@@ -92,12 +145,26 @@ class ImProcessMainController(MainController):
             )
             persistence = getWidgetStatePersistence()
             persistence.register(_GUI_LAYOUT_STATE_KEY, self.__guiLayoutStateAdapter)
+            # Owned here, not by the panel: the ROI manager is runtime-loaded
+            # and is usually absent when startup state is restored, so a
+            # widget-registered adapter would silently drop the saved sets
+            # (A-09).
+            self.__roiManagerStateAdapter = _ROIManagerStateAdapter(
+                self.__mainView, logger=self.__logger,
+            )
+            persistence.register(
+                _ROI_MANAGER_STATE_KEY, self.__roiManagerStateAdapter
+            )
             try:
                 persistence.loadWidgetState(_GUI_LAYOUT_STATE_KEY, 'default')
             except Exception as e:
                 self.__logger.warning(
                     f'Failed to restore ImProcess dock layout: {e}'
                 )
+            try:
+                persistence.loadWidgetState(_ROI_MANAGER_STATE_KEY, 'default')
+            except Exception as e:
+                self.__logger.warning(f'Failed to restore ImProcess ROI sets: {e}')
         except Exception as e:
             self.__logger.debug(
                 f'Widget-state persistence unavailable for ImProcess layout: {e}'
@@ -121,24 +188,24 @@ class ImProcessMainController(MainController):
         """
         from imswitch.improcess.reconstructors.registry import get_registry
         from imswitch.improcess.reconstructors import register_default_reconstructors
-        from imswitch.improcess.processors import (
-            load_user_plugins,
-            register_default_processors,
-        )
+        from imswitch.improcess.processors import register_default_processors
+        from imswitch.improcess.plugins import load_user_plugins
 
         registry = get_registry()
         registry.clear()
 
         # Discover user drop-in analysis plugins first, so they are available to
-        # register_default_processors and every enumeration below. Tolerant: a
-        # broken plugin is logged and skipped, never blocking startup.
-        loaded_plugins, plugin_errors = load_user_plugins()
-        if loaded_plugins:
+        # register_default_processors / register_default_reconstructors and
+        # every enumeration below. Tolerant: a broken plugin is logged and
+        # skipped, never blocking startup.
+        loaded = load_user_plugins()
+        if loaded.ids:
             self.__logger.info(
-                f"Discovered {len(loaded_plugins)} user analysis plugin(s): "
-                f"{loaded_plugins}"
+                f"Discovered {len(loaded.ids)} user analysis plugin(s): "
+                f"processors={loaded.processors}, "
+                f"reconstructors={loaded.reconstructors}"
             )
-        for error in plugin_errors:
+        for error in loaded.errors:
             self.__logger.warning(
                 f"Skipped analysis plugin {error.path}: {error.message.splitlines()[-1]}"
             )
@@ -151,7 +218,10 @@ class ImProcessMainController(MainController):
         processing_config = self.__processingConfig
         if processing_config is None:
             processing_config = load_processing_config(self.__logger)
-        
+        # Kept for controllers built later that read their own keys from the
+        # same block (napari endpoints).
+        self._processingConfigLoaded = dict(processing_config or {})
+
         reconstructor_ids, processor_ids, has_plugin_config = plugin_ids_from_config(
             processing_config
         )
@@ -388,29 +458,35 @@ class ImProcessMainController(MainController):
         self._refresh_runtime_processor_choices()
 
     def _reload_user_plugins(self) -> None:
-        """Re-scan the drop-in plugins folder and refresh the tool list.
+        """Re-scan the drop-in plugins folder; refresh the tool list and the
+        reconstructor picker.
 
-        Newly added plugins appear in the 'Load tool' combo; removed ones drop
-        out. Re-registering with fresh instances means an edited plugin's new
+        Newly added plugins appear in the 'Load plugin' combo (processors) and
+        in the Parameters-dock picker (reconstructors); removed ones drop out.
+        Re-registering with fresh instances means an edited processor's new
         code is used the next time its panel is opened (an already-open panel
-        keeps the instance it was built with until closed and reopened).
+        keeps the instance it was built with until closed and reopened). An
+        edited reconstructor is swapped in at once, its parameter widget
+        rebuilt, unless a reconstruction is running -- then the reconstructors
+        are left alone, so a job never straddles two versions of one plugin.
         """
         from imswitch.improcess.reconstructors.registry import get_registry
-        from imswitch.improcess.processors import (
-            load_user_plugins,
-            register_processor_by_id,
-        )
+        from imswitch.improcess.processors import register_processor_by_id
+        from imswitch.improcess.plugins import load_user_plugins
 
-        loaded, errors = load_user_plugins()
-        self.__logger.info(f"Reloaded drop-in analysis plugins: {loaded}")
-        for error in errors:
+        loaded = load_user_plugins()
+        self.__logger.info(
+            f"Reloaded drop-in analysis plugins: processors={loaded.processors}, "
+            f"reconstructors={loaded.reconstructors}"
+        )
+        for error in loaded.errors:
             self.__logger.warning(
                 f"Skipped analysis plugin {error.path}: "
                 f"{error.message.splitlines()[-1]}"
             )
 
         registry = get_registry()
-        for processor_id in loaded:
+        for processor_id in loaded.processors:
             try:
                 register_processor_by_id(registry, processor_id)
             except Exception:
@@ -418,12 +494,177 @@ class ImProcessMainController(MainController):
                     f"Failed to (re)register plugin processor {processor_id!r}"
                 )
 
+        self._reload_user_reconstructors(registry, loaded.reconstructors)
         self._refresh_runtime_processor_choices()
+        self._refresh_reconstructor_choices()
+
+    def _refresh_reconstructor_choices(self) -> None:
+        """Offer every known-but-unregistered reconstructor in Tools -> Load
+        reconstructor: the built-ins the setup file did not name, plus any
+        drop-in that is discovered but not registered."""
+        from imswitch.improcess.reconstructors import available_reconstructor_specs
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        setter = getattr(self.__mainView, 'setAvailableReconstructors', None)
+        if not callable(setter):
+            return
+        loaded = {plugin.id for plugin in get_registry().reconstructors()}
+        setter(
+            [
+                (plugin_id, name, description)
+                for plugin_id, name, description in available_reconstructor_specs()
+                if plugin_id not in loaded
+            ]
+        )
+
+    def _load_runtime_reconstructor(self, plugin_id: str) -> None:
+        """Register a reconstructor for this session and make it active.
+
+        The counterpart of the processors' *Load tool* combo: a built-in the
+        setup file did not name (or a drop-in that is discovered but not
+        registered) is instantiated, offered in the Parameters-dock picker and
+        selected. Nothing is written to the setup file; to keep it across
+        sessions, add it to ``processing.reconstructors`` there.
+        """
+        from imswitch.improcess.reconstructors import register_reconstructor_by_id
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        registry = get_registry()
+        plugin = registry.get_reconstructor(plugin_id, raise_on_missing=False)
+        if plugin is None:
+            try:
+                plugin = register_reconstructor_by_id(registry, plugin_id)
+            except Exception:
+                self.__logger.exception(f"Failed to load reconstructor {plugin_id!r}")
+                self._show_status_message(
+                    f"Could not load reconstructor {plugin_id!r}; see the log for why"
+                )
+                self._refresh_reconstructor_choices()
+                return
+            self.__logger.info(
+                f"Runtime-loaded reconstructor: {plugin.id} ({plugin.name})"
+            )
+        else:
+            self.__logger.info(f"Reconstructor already loaded: {plugin_id}")
+
+        manager = getattr(
+            getattr(self, 'mainViewController', None), 'reconstructorManager', None
+        )
+        activated = (
+            bool(manager.reconstructorLoaded(plugin_id)) if manager is not None else False
+        )
+        if activated:
+            self._show_status_message(
+                f"Loaded {plugin.name}; it is now the active reconstructor"
+            )
+        else:
+            self._show_status_message(
+                f"Loaded {plugin.name}; select it in the Parameters dock once a "
+                "file it accepts is open"
+            )
+        self._refresh_reconstructor_choices()
+
+    def _reload_user_reconstructors(self, registry, loaded_ids) -> bool:
+        """Bring the registry's drop-in reconstructors in line with the folder.
+
+        Removed plugins are unregistered (the picker reads the registry, so a
+        stale entry would stay on offer), edited ones are re-registered with
+        a fresh instance, and unchanged ones keep the instance they have --
+        the version stamp is a digest of the file, so "unchanged" is exact
+        and an untouched plugin's parameter widget survives a reload. The
+        reconstructor manager then re-syncs the active reconstructor and the
+        picker.
+
+        Refused, with nothing touched, while a reconstruction is running: the
+        job holds the instance it started with, and swapping the registry
+        underneath it would leave the job, the picker and the active
+        reconstructor on different versions of one plugin. Returns whether
+        the reload happened.
+        """
+        from imswitch.improcess.model.plugin_versions import plugin_version
+        from imswitch.improcess.reconstructors import (
+            builtin_reconstructor_ids,
+            register_reconstructor_by_id,
+        )
+
+        if self._reconstruction_in_progress():
+            message = (
+                "A reconstruction is running; drop-in reconstructors were not "
+                "reloaded. Reload plugins again when it has finished."
+            )
+            self.__logger.warning(message)
+            self._show_status_message(message)
+            return False
+
+        builtin = set(builtin_reconstructor_ids())
+        wanted = set(loaded_ids)
+        for plugin in list(registry.reconstructors()):
+            if plugin.id not in builtin and plugin.id not in wanted:
+                registry.unregister_reconstructor(plugin.id)
+                self.__logger.info(
+                    f"Unregistered removed plugin reconstructor {plugin.id!r}"
+                )
+        for plugin_id in loaded_ids:
+            current = registry.get_reconstructor(plugin_id, raise_on_missing=False)
+            if (
+                current is not None
+                and plugin_version(current) == getattr(current, 'version', None)
+            ):
+                # Same file bytes as when it was registered: nothing to swap.
+                continue
+            try:
+                register_reconstructor_by_id(registry, plugin_id)
+                self.__logger.info(
+                    f"(Re)registered plugin reconstructor {plugin_id!r}"
+                )
+            except Exception:
+                self.__logger.exception(
+                    f"Failed to (re)register plugin reconstructor {plugin_id!r}"
+                )
+
+        manager = getattr(
+            getattr(self, 'mainViewController', None), 'reconstructorManager', None
+        )
+        if manager is not None:
+            manager.pluginsReloaded()
+        return True
+
+    def _reconstruction_in_progress(self) -> bool:
+        """Whether a reconstruction job or a live reconstruction is running."""
+        main_view_controller = getattr(self, 'mainViewController', None)
+        checks = (
+            getattr(
+                getattr(main_view_controller, 'reconstructorManager', None),
+                'isReconstructionRunning',
+                None,
+            ),
+            getattr(
+                getattr(main_view_controller, 'liveModeController', None),
+                'isLiveReconstructionRunning',
+                None,
+            ),
+        )
+        return any(callable(check) and bool(check()) for check in checks)
+
+    def _show_status_message(self, message: str) -> None:
+        show = getattr(self.__mainView, 'showStatusMessage', None)
+        if callable(show):
+            try:
+                show(message)
+            except Exception:
+                pass
 
     def _wire_runtime_result_processor(self, processor_id: str) -> None:
         widget = self.__mainView.getRuntimeAnalysisWidget(processor_id)
         if widget is None:
             return
+        if processor_id == "roi-manager":
+            # The panel exists now; hand it the state that was restored before
+            # it did (A-09). Idempotent — the stash is cleared once applied.
+            adapter = getattr(self, '_ImProcessMainController__roiManagerStateAdapter', None)
+            if adapter is not None:
+                adapter.applyStashTo(widget)
+            self._wire_roi_manager_panel(widget)
         if processor_id == "graph":
             if self.mainViewController.graphController is None:
                 self.mainViewController.graphController = self.__factory.createController(
@@ -434,6 +675,20 @@ class ImProcessMainController(MainController):
             # and GraphController only renders on future selection changes —
             # seed it so the graph is populated the moment it appears.
             self._seed_graph_controller()
+            return
+        if processor_id == "console":
+            if self._consoleController is None or self._consoleController._widget is not widget:
+                self._consoleController = self.__factory.createController(
+                    PythonConsoleController, widget
+                )
+                widget.sigSendToPythonStep.connect(self._sendCodeToPythonStep)
+            # Like Graph: usually opened after a result is chosen, and the
+            # controller only hears future changes, so say which one is current.
+            try:
+                current = self.mainViewController.reconstructionController.getActiveResult()
+            except Exception:
+                current = None
+            self._consoleController.seed(current)
             return
         if processor_id == "metadata":
             if self.mainViewController.metadataController is None:
@@ -470,6 +725,66 @@ class ImProcessMainController(MainController):
         # reconstruction silently changes underneath them.
         self._wire_result_follower(widget)
 
+    def _sendCodeToPythonStep(self, code: str) -> None:
+        """Open the Python step's panel with ``code`` in its editor (the console's button).
+
+        Nothing runs: the step is the recorded, replayable form of the code, and
+        the person sending it chooses the inputs and the output ports.
+        """
+        self._load_runtime_processor("python")
+        panel = self.__mainView.getRuntimeAnalysisWidget("python")
+        setter = getattr(panel, "setParameterValues", None)
+        if not callable(setter) or not setter({"code": code}):
+            self._show_status_message("Could not open the Python step.")
+            return
+        note = "Sent from the console; nothing has run yet."
+        if "publish(" in code:
+            note += " A step returns its results in outputs = {...} instead of publish(...)."
+        panel.setStatusText(note)
+        self._show_status_message("Code sent to the Python step.")
+
+    def _wire_roi_manager_panel(self, widget) -> None:
+        """Undo/redo shortcuts and crash-recovery autosave for the ROI panel.
+
+        Both are wired when the panel is built, not at startup: it is
+        runtime-loaded, so binding earlier would bind to nothing.
+        """
+        if id(widget) in self._roiManagerPanels:
+            return
+        self._roiManagerPanels.add(id(widget))
+
+        if self._shortcutManager is not None:
+            try:
+                from .shortcuts import register_roi_manager_shortcuts
+
+                register_roi_manager_shortcuts(
+                    self._shortcutManager, widget, owner=self.__mainView
+                )
+            except Exception:
+                self.__logger.debug(
+                    "Could not register ROI manager shortcuts", exc_info=True
+                )
+
+        signal = getattr(widget, "sigStateChanged", None)
+        if signal is not None:
+            signal.connect(self._autosaveROIState)
+
+    def _autosaveROIState(self) -> None:
+        """Persist the ROI sets between shutdowns, so a crash costs seconds.
+
+        Straight into the existing state store — the same place shutdown
+        writes — rather than a recovery file of its own, so there is one
+        payload and no question of which is newer (C-13/A-25).
+        """
+        try:
+            from imswitch.imcommon.model import getWidgetStatePersistence
+
+            getWidgetStatePersistence().saveWidgetState(
+                _ROI_MANAGER_STATE_KEY, 'default'
+            )
+        except Exception:
+            self.__logger.debug('Could not autosave ROI sets', exc_info=True)
+
     def _wire_result_follower(self, widget) -> None:
         """Have a panel recompute when the selected result changes.
 
@@ -481,6 +796,15 @@ class ImProcessMainController(MainController):
         if not callable(setter) or id(widget) in self._resultFollowers:
             return
         self.__commChannel.sigCurrentResultChanged.connect(widget.setCurrentResult)
+        # A follower that can list results must also hear about the *set*
+        # changing, not only the selection (C-11): loading a reconstruction
+        # while the panel is open would otherwise leave its picker showing the
+        # results that existed when it was opened.
+        available = getattr(type(widget), "setAvailableResults", None)
+        if callable(available):
+            self.__commChannel.sigResultsChanged.connect(
+                lambda w=widget: self._seed_runtime_result_processor(w)
+            )
         self._resultFollowers.add(id(widget))
         self._seed_runtime_result_processor(widget)
 
@@ -532,10 +856,13 @@ class ImProcessMainController(MainController):
                 comm_channel.sigCurrentResultChanged.emit(result)
 
             widget.sigResultProduced.connect(_forward)
-            if hasattr(widget, "setCurrentResult"):
-                comm_channel.sigCurrentResultChanged.connect(widget.setCurrentResult)
             self._panelResultBridges.add(id(widget))
-        self._seed_runtime_result_processor(widget)
+        # Publishing and following are not alternatives. The ROI manager does
+        # both — it produces a label image *and* measures whatever result is
+        # selected — and routing it here used to cost it the follower wiring
+        # entirely, so its across-results list went stale the moment it gained
+        # a publish path. `_wire_result_follower` is idempotent.
+        self._wire_result_follower(widget)
 
     def _seed_runtime_result_processor(self, widget) -> None:
         """Populate a newly opened processor dock with the loaded results.
@@ -610,7 +937,13 @@ class ImProcessMainController(MainController):
             self._appendResultTableRecords(result)
         if kind == "curve" and self._resultHasPlotPayloads(result):
             try:
-                self.__mainView.raiseDockByTitle('Graph')
+                if not self.__mainView.raiseDockByTitle('Graph'):
+                    # The Graph is a runtime panel and is not there until it is
+                    # opened (``graphPanel`` is off by default): a curve made
+                    # before that would be drawn nowhere. Ask for the panel the
+                    # way a pushed plot does, then bring it forward.
+                    self.__mainView.sigLoadProcessorRequested.emit('graph')
+                    self.__mainView.raiseDockByTitle('Graph')
             except Exception:
                 self.__logger.debug(
                     "Could not reveal the Graph dock", exc_info=True
@@ -728,6 +1061,120 @@ def _runtime_tool_display_title(spec) -> str:
     category = str(getattr(spec, "category", "") or "").strip()
     title = str(getattr(spec, "title", "") or getattr(spec, "id", ""))
     return f"{category}: {title}" if category else title
+
+
+class _ROIManagerStateAdapter:
+    """Persistence for the ROI manager's sets, owned by the controller (A-09).
+
+    The panel is runtime-loaded, so at startup it usually does not exist yet.
+    Two behaviours follow, and both matter:
+
+    * a restore that arrives before the panel is **stashed**, and applied when
+      the panel is next built;
+    * a save that cannot read a panel falls back to the **last state known** —
+      whether that came from a restore this session or from the last
+      successful read. Returning an empty state there is the silent data loss
+      this class exists to prevent, and there are two ways to reach it: never
+      opening the panel, and *closing* it, which leaves the attribute pointing
+      at a destroyed C++ object whose every method raises.
+
+    It deliberately does not force the panel open.
+    """
+
+    def __init__(self, view: Any, logger: Any = None) -> None:
+        self._view = view
+        self._logger = logger
+        self._stash: Dict[str, Any] | None = None
+        # The last state anyone knew about: a restore, or the last time the
+        # panel could be read. This is what a closed panel falls back to.
+        self._lastKnown: Dict[str, Any] | None = None
+
+    def _panel(self):
+        return getattr(self._view, 'roiManagerWidget', None)
+
+    def _fallback(self) -> Dict[str, Any]:
+        """What to save when the panel cannot be asked."""
+        return dict(self._lastKnown or self._stash or {})
+
+    def getWidgetState(self) -> Dict[str, Any]:
+        panel = self._panel()
+        if panel is None:
+            return self._fallback()
+        try:
+            payload = panel.roiState()
+        except Exception:
+            # A destroyed panel raises from every method, including this one.
+            # Saving what it last said beats saving nothing.
+            if self._logger is not None:
+                self._logger.debug('Could not read ROI manager state', exc_info=True)
+            return self._fallback()
+        self._lastKnown = payload
+
+        from imswitch.imcommon.model import dirtools
+        from imswitch.improcess.model.roi_persistence import (
+            should_spill,
+            spill_marker,
+            write_spill,
+        )
+
+        if not should_spill(payload):
+            return payload
+        try:
+            write_spill(payload, dirtools.UserFileDirs.Root)
+        except Exception:
+            # Falling back to the state store is slow but correct; failing to
+            # save at all because a file could not be written is not.
+            if self._logger is not None:
+                self._logger.warning(
+                    'Could not write the ROI spill file; keeping the sets in '
+                    'the state store instead',
+                    exc_info=True,
+                )
+            return payload
+        return spill_marker(payload)
+
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        if not isinstance(state, dict) or not state:
+            return
+        from imswitch.imcommon.model import dirtools
+        from imswitch.improcess.model.roi_persistence import ROIStateError, unpack
+
+        try:
+            sets, active, options, _dropped = unpack(state, dirtools.UserFileDirs.Root)
+        except ROIStateError as exc:
+            if self._logger is not None:
+                self._logger.warning(f'Could not restore ROI sets: {exc}')
+            return
+
+        from imswitch.improcess.model.roi_persistence import sets_payload
+
+        payload = sets_payload(sets, active, options)
+        self._lastKnown = payload
+        panel = self._panel()
+        if panel is None:
+            # Stashed, applied when the panel is next built.
+            self._stash = payload
+            return
+        try:
+            panel.setRoiState(payload)
+        except Exception:
+            if self._logger is not None:
+                self._logger.warning('Could not apply ROI sets', exc_info=True)
+
+    def applyStashTo(self, panel) -> None:
+        """Hand a freshly built panel the state that arrived before it existed."""
+        if self._stash is None or panel is None:
+            return
+        try:
+            panel.setRoiState(self._stash)
+        except Exception:
+            if self._logger is not None:
+                self._logger.warning('Could not apply stashed ROI sets', exc_info=True)
+        else:
+            self._stash = None
+
+    def getStateSchemaVersion(self) -> int:
+        return 1
 
 
 class _GuiLayoutStateAdapter:

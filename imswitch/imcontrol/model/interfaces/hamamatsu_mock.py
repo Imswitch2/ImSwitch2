@@ -108,7 +108,15 @@ class MockHamamatsu:
                            'subarray_mode': 'OFF',
                            'timing_readout_time': 10,
                            'internal_frame_rate': 10,
-                           'internal_frame_interval': 10,
+                           # Seconds per frame, as DCAM reports it on hardware:
+                           # the reciprocal of the rate above, which is also
+                           # what paces this mock's frames. It was 10 -- the
+                           # rate copied into a field labelled seconds -- so
+                           # every consumer that trusted the declared interval
+                           # (the OME time axis, and now the recording stall
+                           # watchdog) believed this camera framed once every
+                           # ten seconds while it delivered ten a second.
+                           'internal_frame_interval': 0.1,
                            'trigger_source': 1,
                            'trigger_mode': 1}
 

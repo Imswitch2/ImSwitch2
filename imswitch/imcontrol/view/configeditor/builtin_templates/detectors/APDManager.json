@@ -1,0 +1,17 @@
+{
+  "display": "APD (Avalanche Photodiode)",
+  "category": "detectors",
+  "top": [
+    {"key": "analogChannel",  "label": "Analog Channel",  "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",    "label": "Digital Line",    "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forAcquisition", "label": "For Acquisition", "default": true,   "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forFocusLock",   "label": "For Focus Lock",  "default": false,  "req": false, "grp": "Basic", "tip": "", "opts": []}
+  ],
+  "props": [
+    {"key": "ctrInputLine", "label": "Counter Input", "default": "Dev1/ctr0", "req": true,  "grp": "DAQ", "tip": "e.g. Dev1/ctr0", "opts": []},
+    {"key": "terminal",     "label": "Terminal",      "default": "PFI0",      "req": true,  "grp": "DAQ", "tip": "e.g. PFI0",      "opts": []},
+    {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": 0, "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": [0, 90, 180, 270]},
+    {"key": "displayFlipX", "label": "Mirror X", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only horizontal mirror.", "opts": []},
+    {"key": "displayFlipY", "label": "Mirror Y", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only vertical mirror.", "opts": []}
+  ]
+}

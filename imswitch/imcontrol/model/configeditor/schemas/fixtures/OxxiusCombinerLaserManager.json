@@ -1,0 +1,11 @@
+{
+  "category": "lasers",
+  "device": {
+    "managerName": "OxxiusCombinerLaserManager",
+    "managerProperties": {
+      "calibCsvPath": "example",
+      "channel": 1,
+      "rs232device": "example"
+    }
+  }
+}

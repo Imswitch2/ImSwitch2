@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "binwidth_ps": {
+      "description": "Histogram bin width in picoseconds.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "cameraPixelSizeUm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
+    },
+    "click_channel": {
+      "description": "TimeTagger input channel receiving photon clicks.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:int()",
+        "code:required"
+      ]
+    },
+    "click_trigger": {
+      "description": "Trigger threshold in volts for the photon-click channel.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "enabled": {
+      "description": "If ``false`` the manager is constructed but ``initiateScan`` is a no-op.",
+      "x-imswitch-kind": "boolean",
+      "x-imswitch-source": [
+        "code:default:boolean",
+        "code:optional(get)"
+      ]
+    },
+    "fit_method": {
+      "description": "Lifetime fit method; one of ``\"moment\"``, ``\"phasor\"``, ``\"exp1\"``.  All three apply automatic IRF-peak compensation (see \"Lifetime fitting\" below); ``exp1`` is the most accurate for clean mono-exponential decays.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "laser_rep_rate_mhz": {
+      "description": "Laser repetition rate in MHz.  Used by the phasor fit to set ω = 2π·f_rep.  The Swabian ``Flim`` API does not expose the rate, so it must be supplied here; measure it once with ``scripts/diagnostics/measure_laser_rep_rate.py`` if unsure.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "line_channel": {
+      "description": "TimeTagger input channel receiving the per-line marker.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:int()",
+        "code:required"
+      ]
+    },
+    "line_trigger": {
+      "description": "Trigger threshold in volts for the per-line marker channel.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "min_counts_per_pixel": {
+      "description": "Minimum photon count for a pixel's fit to be considered valid; below this the lifetime is treated as NaN.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "n_bins": {
+      "description": "Number of TCSPC histogram bins per pixel. Omitted, it spans one period of ``laser_rep_rate_mhz`` at ``binwidth_ps`` (391 bins at 80 MHz / 32 ps). A declared window shorter than 80 % of the period is warned about at startup: the ``moment`` and ``phasor`` fits read a truncated decay as a short lifetime, plausibly and without any other sign.",
+      "x-imswitch-kind": "integer",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:integer"
+      ]
+    },
+    "start_channel": {
+      "description": "TimeTagger input channel receiving the TCSPC start (sync) signal.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:int()",
+        "code:required"
+      ]
+    },
+    "start_trigger": {
+      "description": "Trigger threshold in volts for the TCSPC start/sync channel.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "t0_ps": {
+      "description": "Histogram zero-time offset in picoseconds.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "trigger_levels": {
+      "description": "Backward-compatible dict mapping channel-number-as-string to trigger threshold in volts.  Used only to seed the per-role ``click_trigger`` / ``start_trigger`` / ``line_trigger`` defaults.  Direct per-role fields take precedence.",
+      "x-imswitch-kind": "object",
+      "x-imswitch-source": [
+        "code:default:object",
+        "code:optional(get)"
+      ]
+    }
+  },
+  "required": [
+    "click_channel",
+    "line_channel",
+    "start_channel"
+  ],
+  "title": "SwabianTimeTaggerManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "SwabianTimeTaggerManager",
+    "DetectorManager"
+  ],
+  "x-imswitch-unresolved-reads": [
+    "tl.get(str(self._click_ch), 0.5) (line 93; sub-key of 'trigger_levels' is not a literal)",
+    "tl.get(str(self._line_ch), 0.5) (line 99; sub-key of 'trigger_levels' is not a literal)",
+    "tl.get(str(self._start_ch), 0.5) (line 96; sub-key of 'trigger_levels' is not a literal)"
+  ]
+}

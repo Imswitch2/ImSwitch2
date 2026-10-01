@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "This manager hands its whole managerProperties dict to a driver; the driver's own keys are not listed here.",
+  "properties": {
+    "port": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    },
+    "recv_termination": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "example:string"
+      ]
+    }
+  },
+  "required": [
+    "port",
+    "recv_termination"
+  ],
+  "title": "RS232Manager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "RS232Manager"
+  ],
+  "x-imswitch-open-passthrough": true
+}

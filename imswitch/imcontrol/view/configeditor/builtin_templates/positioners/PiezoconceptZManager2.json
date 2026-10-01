@@ -1,0 +1,15 @@
+{
+  "display": "Piezoconcept Z Stage v2",
+  "category": "positioners",
+  "top": [
+    {"key": "analogChannel",  "label": "Analog Channel",  "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",    "label": "Digital Line",    "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "axes",           "label": "Axes",            "default": "Z",    "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forPositioning", "label": "For Positioning", "default": true,   "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forScanning",    "label": "For Scanning",    "default": false,  "req": true,  "grp": "Basic", "tip": "", "opts": []}
+  ],
+  "props": [
+    {"key": "rs232device", "label": "RS232 Device", "default": "pczpiezo", "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "range_um",    "label": "Range (um)",   "type": "int",  "default": 300,        "req": false, "grp": "Basic", "tip": "", "opts": []}
+  ]
+}

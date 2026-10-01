@@ -152,6 +152,7 @@
         "maxVolt": 10,
         "vel_max": 1000.0,
         "acc_max": 1000.0,
+        "smoothScan": false,
         "returnToCenterAfterScan": true
       },
       "axes": ["Z"],

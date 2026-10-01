@@ -8,6 +8,20 @@ from imswitch.imscripting.view import guitools
 from .basecontrollers import ImScrWidgetController
 
 
+#: Plain-text files that mimetypes does not file under text/* (or does not
+#: know at all, depending on the platform): JSON above all, since the scan
+#: tutorials load their settings from .json files, and the tutorials' README.
+_TEXT_EXTENSIONS = {'.json', '.md', '.yaml', '.yml', '.toml', '.ini', '.cfg'}
+
+
+def isEditableTextFile(path):
+    """ Whether the editor should open ``path``: text-like files only. """
+    mime, _ = mimetypes.guess_type(path)
+    if mime is not None and mime.startswith('text/'):
+        return True
+    return os.path.splitext(path)[1].lower() in _TEXT_EXTENSIONS
+
+
 class FilesController(ImScrWidgetController):
     """ Connected to FilesView. """
 
@@ -26,8 +40,7 @@ class FilesController(ImScrWidgetController):
         self._widget.sigOpenRootInOSClicked.connect(self.openRootInOS)
 
     def checkAndOpenItem(self, itemPath):
-        mime, _ = mimetypes.guess_type(itemPath)
-        if mime is not None and mime.startswith('text/'):  # Only open text-like files
+        if isEditableTextFile(itemPath):
             self._commChannel.sigOpenFileFromPath.emit(itemPath)
 
     def deleteItem(self, itemPath):

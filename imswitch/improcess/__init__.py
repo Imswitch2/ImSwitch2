@@ -19,6 +19,7 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
         is_metadata_panel_enabled,
         is_multi_data_panel_enabled,
         is_multicolor_panel_enabled,
+        is_napari_storm_viewer_enabled,
         is_parameter_panel_enabled,
         is_profile_panel_enabled,
         is_psf_resolution_panel_enabled,
@@ -28,6 +29,7 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
         is_roi_manager_panel_enabled,
         is_roi_stats_panel_enabled,
         is_segmentation_panel_enabled,
+        is_smlm_render_panel_enabled,
         load_processing_config,
     )
     from .view import ImProcessMainView
@@ -53,6 +55,8 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
         showPSFResolutionPanel=is_psf_resolution_panel_enabled(processing_config),
         showColocalizationPanel=is_colocalization_panel_enabled(processing_config),
         showMulticolorPanel=is_multicolor_panel_enabled(processing_config),
+        useNapariStormViewer=is_napari_storm_viewer_enabled(processing_config),
+        showSmlmRenderPanel=is_smlm_render_panel_enabled(processing_config),
     )
     try:
         controller = ImProcessMainController(

@@ -1,4 +1,16 @@
-"""ROI statistics helpers for ImProcess."""
+"""ROI statistics helpers for ImProcess.
+
+The eight statistics the ROI-statistics panel has always shown, kept as a
+small dataclass because that panel and its tests are written against it. The
+values now come from the shared measurement registry, so this panel and the
+ROI manager cannot disagree about what a mean is.
+
+One number changed deliberately: **standard deviation is now the sample
+standard deviation (n-1), matching ImageJ**, where it was the population one
+(n). A std that disagrees with Fiji for the same region is a support burden,
+and this is a measurement tool for people who check their numbers against
+Fiji. For a single pixel it is NaN rather than 0 — undefined, not "no spread".
+"""
 
 from __future__ import annotations
 
@@ -43,26 +55,44 @@ def compute_roi_stats(image: np.ndarray, roi: tuple[int, int, int, int] | None =
             raise ValueError("ROI is empty after clipping to image bounds")
         arr = arr[rlo:rhi, clo:chi]
 
-    finite = arr[np.isfinite(arr)]
+    return stats_from_values(arr[np.isfinite(arr)], area_pixels=int(arr.size))
+
+
+def stats_from_values(finite: np.ndarray, *, area_pixels: int) -> ROIStats:
+    """The eight legacy statistics from an ROI's finite values.
+
+    A thin shim over the registry: each field is computed by the same function
+    that fills the corresponding column in the ROI manager.
+    """
+    from .roi_measurements import MEASUREMENTS, MeasurementContext
+
+    finite = np.asarray(finite, dtype=np.float64)
     if finite.size == 0:
+        nan = float("nan")
         return ROIStats(
-            area_pixels=int(arr.size),
+            area_pixels=int(area_pixels),
             finite_pixels=0,
-            mean=float("nan"),
-            median=float("nan"),
-            std=float("nan"),
-            minimum=float("nan"),
-            maximum=float("nan"),
-            total=float("nan"),
+            mean=nan, median=nan, std=nan,
+            minimum=nan, maximum=nan, total=nan,
         )
 
+    # The registry measures a mask over an image; the values are already
+    # selected here, so they are presented as a 1xN row that is entirely ROI.
+    row = finite.reshape(1, -1)
+    context = MeasurementContext(
+        local_mask=np.ones(row.shape, dtype=bool),
+        local_image=row,
+        roi=None,
+    )
+    value = {key: MEASUREMENTS[key].compute(context) for key in
+             ("mean", "median", "std", "min", "max", "sum")}
     return ROIStats(
-        area_pixels=int(arr.size),
+        area_pixels=int(area_pixels),
         finite_pixels=int(finite.size),
-        mean=float(np.mean(finite)),
-        median=float(np.median(finite)),
-        std=float(np.std(finite)),
-        minimum=float(np.min(finite)),
-        maximum=float(np.max(finite)),
-        total=float(np.sum(finite)),
+        mean=value["mean"],
+        median=value["median"],
+        std=value["std"],
+        minimum=value["min"],
+        maximum=value["max"],
+        total=value["sum"],
     )

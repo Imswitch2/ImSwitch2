@@ -6,6 +6,7 @@ from qtpy import QtWidgets
 
 from imswitch.improcess.analysis.projections import axis_index_from_label, project_array
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import ProjectionResult
@@ -19,9 +20,42 @@ class ProjectionProcessor(Processor):
     category = "Dimensions and channels"
     kinds = ("image", "composite")
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'axis': 'Auto', 'mode': 'max', 'start': None, 'stop': None}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'axis', 'select', 'Auto', label='Axis',
+                options=('Auto', 'T', 'Z', 'C', 'D0', 'D1', 'D2'),
+            ),
+            ParamField(
+                'mode', 'select', 'max', label='Mode',
+                options=('max', 'mean', 'sum', 'median', 'std'),
+            ),
+            ParamField(
+                'start', 'int', None, label='First slice',
+                help="First slice to project (1-based); 'first' = 1", min=0, max=999999,
+                nullable=True,
+            ),
+            ParamField(
+                'stop', 'int', None, label='Last slice',
+                help="Last slice to project, inclusive; 'last' = end of axis", min=0, max=999999,
+                nullable=True,
+            ),
+        )
+
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
-        return lambda result: result.data.ndim >= 2
+        # A stack, as ImageJ's Z Project requires. Collapsing one of a 2D
+        # image's two axes leaves a 1D profile that is no image at all: the
+        # viewer cannot show it and the TIFF writer cannot store it. The
+        # profile tools exist for that question. Gating here means a batch
+        # over mixed results refuses the flat ones with a reason, instead of
+        # producing a result nothing downstream can take.
+        return lambda result: result.data.ndim >= 3
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget(parent)
@@ -86,12 +120,18 @@ class ProjectionProcessor(Processor):
             # ranges are otherwise named identically.
             name += f" {start + 1}-{stop}"
         name += ")"
+        # Collapsing a non-spatial axis (Z, T) leaves every pixel where it was,
+        # so the output shares the input's grid. Collapsing one of the two
+        # *displayed* axes (an explicit "X" or "Y") does not: the result is
+        # laid out on another grid, and an ROI from the source means nothing
+        # on it.
+        same_grid = axis < result.data.ndim - 2
         return ProjectionResult(
             name=name,
             analysis=analysis,
             scale_unit=result.scale_unit,
             params={**params, "start": start, "stop": stop},
-        )
+        ).adopt_identity_from(result, same_grid=same_grid)
 
     @staticmethod
     def _slice_range(data, axis: int, params: dict):

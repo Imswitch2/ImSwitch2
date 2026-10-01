@@ -8,7 +8,7 @@ import pytest
 
 from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer, SaveMode
 from imswitch.imcontrol.model.managers.recording_metadata import (
-    MODE_SNAP, MODE_TIMELAPSE, build_ome_image_meta,
+    MODE_SCAN, MODE_SNAP, MODE_TIMELAPSE, build_ome_image_meta,
 )
 
 
@@ -66,3 +66,26 @@ def test_streaming_embeds_ome_xml_at_finalize(detman, tmp_path):
         assert 'PhysicalSizeX="0.1"' in xml
         assert g['data'].shape == (32, 48, 32)
         assert g['data'].attrs['writing'] in (False, np.False_)
+
+
+def test_streaming_linestep_tcyx_keeps_ome_xml(detman, tmp_path):
+    """SizeC > 1 (retained line-steps) with the default one-entry channel
+    list used to raise inside build_ome_xml; HDF5's guarded embed then
+    silently omitted ome_xml while pixels and axes survived."""
+    path = str(tmp_path / 'ls.hdf5')
+    storer = HDF5Storer(str(tmp_path / 'ls'), detman)
+    storer.omeMeta = {'Cam': build_ome_image_meta(
+        'Cam', MODE_SCAN, 1, pixel_size_yx_um=(0.2, 0.1), dtype=np.uint16)}
+    storer.openStream({'Cam': path}, ['Cam'], {'Cam': (2, 4, 5)}, {'Cam': {}},
+                      singleMultiDetectorFile=False, singleLapseFile=False,
+                      saveMode=SaveMode.Disk)
+    storer.writeFrames('Cam', np.zeros((1, 2, 4, 5), np.uint16))
+    storer.finalizeStream({'Cam': 1}, {'Cam': path}, None, SaveMode.Disk)
+
+    with h5py.File(path, 'r') as h:
+        g = h['Cam']
+        assert g['data'].shape == (1, 2, 4, 5)
+        assert g['data'].attrs['axes'] == 'TCYX'
+        xml = g.attrs['ome_xml']
+        assert 'SizeC="2"' in xml
+        assert xml.count('Name="Cam"') == 2

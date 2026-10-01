@@ -104,6 +104,39 @@ class StandManager(ABC):
         if self._subManager is not None:
             self._subManager.setILshutter(value)
 
+    def isConnected(self) -> bool:
+        """Return cached/driver connection state for the active stand."""
+        if self._subManager is None:
+            return False
+        checker = getattr(self._subManager, "isConnected", None)
+        return bool(checker()) if callable(checker) else True
+
+    def getAvailableCubes(self):
+        if self._subManager is None:
+            return {}
+        getter = getattr(self._subManager, "getAvailableCubes", None)
+        return getter() if callable(getter) else {}
+
+    def setCube(self, slot):
+        if self._subManager is not None:
+            return self._subManager.setCube(slot)
+
+    def setCameraPort(self):
+        if self._subManager is not None:
+            return self._subManager.setCameraPort()
+
+    def setMagn1(self):
+        if self._subManager is not None:
+            return self._subManager.setMagn1()
+
+    def setMagnScan(self):
+        if self._subManager is not None:
+            return self._subManager.setMagnScan()
+
+    def setILFieldDiaphragm(self, value):
+        if self._subManager is not None:
+            return self._subManager.setILFieldDiaphragm(value)
+
 
 # Copyright (C) 2020-2023 ImSwitch developers
 # This file is part of ImSwitch.

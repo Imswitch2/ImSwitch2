@@ -1,0 +1,20 @@
+{
+  "display": "MPB Communications Laser",
+  "category": "lasers",
+  "top": [
+    {"key": "analogChannel",  "label": "Analog Channel",  "default": "null",  "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",    "label": "Digital Line",    "default": "null",  "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "wavelength",     "label": "Wavelength (nm)", "type": "int",   "default": 775,    "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "valueRangeMin",  "label": "Min Value",       "default": 0.0,    "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "valueRangeMax",  "label": "Max Value",       "default": 3050.0, "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "valueRangeStep", "label": "Step",            "default": 1.0,    "req": true,  "grp": "Basic", "tip": "", "opts": []}
+  ],
+  "props": [
+    {"key": "rs232device",       "label": "RS232 Device",        "default": "mpb", "req": true,  "grp": "Basic",    "tip": "", "opts": []},
+    {"key": "useMockOnFailure",  "label": "Mock on failure",     "default": true,  "req": false, "grp": "Basic",    "tip": "Continue without hardware after a failed startup, but only after a best-effort immediate OFF. Disable to make an unavailable or unconfirmed laser a startup error.", "opts": []},
+    {"key": "rampDownEnabled",   "label": "Ramp down before OFF", "default": true,  "req": false, "grp": "Advanced", "tip": "Ramp live APC output to the device-reported minimum before normal OFF commands.", "opts": []},
+    {"key": "rampDownDurationS", "label": "Ramp duration (s)",    "default": 2.0,   "req": false, "grp": "Advanced", "tip": "Approximate duration of the software ramp. Confirm the correct value for the exact MPB model and firmware.", "opts": []},
+    {"key": "rampDownSteps",     "label": "Ramp steps",           "default": 20,    "req": false, "grp": "Advanced", "tip": "Number of descending SETPOWER commands used by a normal OFF.", "opts": []},
+    {"key": "rampDownDwellS",    "label": "Minimum-power dwell (s)", "default": 0.0, "req": false, "grp": "Advanced", "tip": "Optional dwell at the device-reported minimum before disabling emission.", "opts": []}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "category": "rs232devices",
+  "device": {
+    "managerName": "ESP32Manager",
+    "managerProperties": {
+      "host": "example",
+      "identity": "example",
+      "serialport": "example"
+    }
+  }
+}

@@ -7,6 +7,7 @@ from qtpy import QtWidgets
 from scipy import ndimage
 from skimage.registration import phase_cross_correlation
 
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.imcommon.model import initLogger
@@ -28,6 +29,29 @@ class DriftCorrectProcessor(Processor):
     category = "Restoration"
     kinds = ("image", "composite")
     
+    @classmethod
+    def default_params(cls) -> dict:
+        return {'reference_frame': 0, 'mode': 'reference', 'upsample_factor': 10}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'reference_frame', 'int', 0, label='Reference frame',
+                help='Frame index to use as reference (0-indexed)', min=0, max=9999,
+            ),
+            ParamField(
+                'mode', 'select', 'reference', label='Correction mode',
+                help='reference: align all frames to reference frame\nsequential: align each frame to previous frame',
+                options=('reference', 'sequential'),
+            ),
+            ParamField(
+                'upsample_factor', 'int', 10, label='Upsample factor',
+                help='Sub-pixel precision factor (higher = more accurate, slower)', min=1,
+                max=100,
+            ),
+        )
+
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
     

@@ -101,8 +101,9 @@ def test_inputs_the_processor_cannot_take_are_named():
 
 @pytest.mark.parametrize("processor_id", ["channel-merge", "stack-combine", "image-calculator"])
 def test_metadata_mismatches_are_reported_not_just_refused(processor_id):
-    """Every combine-shaped processor routes through combine_compatibility,
-    so the reason names the input and the property that disagrees."""
+    """Every combine-shaped processor reports *why* it refused: the reason
+    names the offending input and the property that disagrees. (The calculator
+    uses the looser elementwise check, but owes the same explanation.)"""
     first = _result("recA", scales=[0.065, 0.065], unit="um")
     scaled = _result("recB", scales=[0.13, 0.13], unit="um")
     united = _result("recC", scales=[0.065, 0.065], unit="nm")

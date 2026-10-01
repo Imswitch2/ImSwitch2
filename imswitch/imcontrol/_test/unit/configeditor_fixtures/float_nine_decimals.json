@@ -1,0 +1,20 @@
+{
+  "why": "Floats with more decimals than the old spin box showed (4); it rounded them on Apply.",
+  "setup": {
+    "positioners": {
+      "galvo": {
+        "analogChannel": "Dev1/ao0", "digitalLine": null, "axes": ["X"], "forPositioning": true, "forScanning": true,
+        "managerName": "NidaqPositionerManager",
+        "managerProperties": {"conversionFactor": 17.123456789, "minVolt": -10, "maxVolt": 10, "vel_max": 0.000000001, "acc_max": 1e-10}
+      }
+    },
+    "lasers": {
+      "aotf": {
+        "analogChannel": null, "digitalLine": null,
+        "managerName": "AAAOTFLaserManager",
+        "managerProperties": {"rs232device": "aaaotf", "channel": 2, "frequencyMHz": 87.123456789},
+        "wavelength": 640, "valueRangeMin": 0, "valueRangeMax": 1023, "valueRangeStep": 1
+      }
+    }
+  }
+}

@@ -114,6 +114,7 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
     m._laser = laser
     m._port = 'COM_TEST'
     m._modulation_power_mw = float(modulation_power_mw)
+    m._scan_resume_settle_s = 0.0
     m._setpoint_mw = 0
     m._enabled = False
     m._real_hw = True
@@ -1274,6 +1275,49 @@ def test_simulation_true_uses_mock_without_opening_the_port():
     assert m._enabled is False
 
 
+def test_simulation_pause_mode_uses_scpi_capable_mock():
+    """Pause-mode simulation must not fail just because the mock defaults
+    to legacy firmware."""
+    info = FakeLaserInfo(
+        digitalPorts=['COM_DOES_NOT_EXIST'],
+        simulation=True,
+        emissionControl='pause',
+    )
+    m = Cobolt0601NewLaserManager(info, 'simulated-pause')
+
+    assert m._real_hw is False
+    assert m._laser.firmware == 'scpi'
+    assert m._profile.profile_id == 'cobolt.scpi-compatible'
+    assert m._laser.cmds[-1] == 'las:paus 1'
+    assert m._enabled is False
+
+
+def test_simulation_explicit_scpi_profile_uses_scpi_capable_mock():
+    info = FakeLaserInfo(
+        digitalPorts=['COM_DOES_NOT_EXIST'],
+        simulation=True,
+        protocolProfile='cobolt.scpi-compatible',
+    )
+    m = Cobolt0601NewLaserManager(info, 'simulated-scpi')
+
+    assert m._laser.firmware == 'scpi'
+    assert m._profile.profile_id == 'cobolt.scpi-compatible'
+
+
+def test_simulation_explicit_legacy_pause_remains_invalid():
+    """Mock adaptation must not hide an explicitly incompatible setup."""
+    info = FakeLaserInfo(
+        digitalPorts=['COM_DOES_NOT_EXIST'],
+        simulation=True,
+        protocolProfile='cobolt.legacy',
+        emissionControl='pause',
+    )
+    with pytest.raises(
+        DeviceInitializationError, match='emission/startup policy'
+    ):
+        Cobolt0601NewLaserManager(info, 'invalid-simulated-pause')
+
+
 def test_absent_simulation_key_falls_back_to_mock_when_port_is_unavailable():
     """Existing setups recover from a missing COM port without an extra key."""
     info = FakeLaserInfo(digitalPorts=['COM_DOES_NOT_EXIST'])
@@ -1283,6 +1327,31 @@ def test_absent_simulation_key_falls_back_to_mock_when_port_is_unavailable():
     assert m._mock_fallback is True
     assert m._real_hw is False
     assert m._laser.cmds[-1] == 'l0'
+
+
+def test_connection_failure_pause_mode_falls_back_to_scpi_capable_mock(
+        monkeypatch):
+    from imswitch.imcontrol.model.managers.lasers import PyCoboltManager
+
+    class UnavailableCobolt:
+        def __init__(self, *, port):
+            raise OSError(f'{port} not accessible')
+
+    monkeypatch.setattr(PyCoboltManager, 'Cobolt06', UnavailableCobolt)
+
+    m = Cobolt0601NewLaserManager(
+        FakeLaserInfo(
+            digitalPorts=['COM24'],
+            emissionControl='pause',
+        ),
+        'unavailable-pause-cobolt',
+    )
+
+    assert m._mock_fallback is True
+    assert m._real_hw is False
+    assert m._laser.firmware == 'scpi'
+    assert m._profile.profile_id == 'cobolt.scpi-compatible'
+    assert m._laser.cmds[-1] == 'las:paus 1'
 
 
 def test_connection_open_error_falls_back_to_mock(monkeypatch):

@@ -7,6 +7,8 @@ import numpy as np
 import Pyro5
 import Pyro5.api
 
+from imswitch.imcontrol.model.scan_request import ScanRunHandle
+
 T = TypeVar("T")
 
 
@@ -66,6 +68,17 @@ class SerNDArray(Serializer[np.ndarray]):
         shm.close()
         shm.unlink()
         return array
+
+
+class SerScanRunHandle(Serializer[ScanRunHandle]):
+    """ A scan request handle travels as its status dict; the client polls
+    getScanRequestStatus(requestId) for updates. """
+
+    def to_dict(self, obj: ScanRunHandle):
+        return obj.to_dict()
+
+    def from_dict(self, classname: str, d: dict):
+        return dict(d)
 
 
 @atexit.register  # pragma: no cover

@@ -8,18 +8,21 @@ ImProcess already provides.
 
 `process()` does no signal processing — it returns the raw DataObj data or
 lazy data handle wrapped as a ProcessingResult so the rest of ImProcess
-(ReconstructionView, WatcherFrame save, etc.) can handle it uniformly.
+(ReconstructionView, the save paths, etc.) can handle it uniformly.
 """
 
-from pathlib import Path
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
-import tifffile as tiff
 from qtpy import QtWidgets
 
+from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
+
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
-from imswitch.improcess.reconstructors.base import Reconstructor
+from imswitch.improcess.model.param_spec import ParamField
+from imswitch.improcess.reconstructors.base import StreamingReconstructor
+from imswitch.improcess.model.result_io import save_image_result
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -29,15 +32,34 @@ if TYPE_CHECKING:
 _DEFAULT_AXIS_LABELS = ["T", "Z", "C", "Y", "X"]
 
 
+def _source_identity(data_obj) -> str | None:
+    """A stable identity for the file this result was loaded from, if any.
+
+    Uses the *source*, never the pixels. Sampling content was both unsound and
+    expensive: a strided sum collides easily (two acquisitions of the same
+    static field, or any two all-zero arrays), and calling ``np.asarray`` on a
+    lazily-loaded stack materialises gigabytes purely to compute an id.
+
+    A file path plus its size and mtime identifies the data without reading
+    it. When there is no path — data handed over in memory — there is nothing
+    trustworthy to derive an identity from, and the caller mints a fresh one
+    instead of inventing an equivalence.
+    """
+    path = getattr(data_obj, "dataPath", None)
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+        return content_digest_uid("data", path, stat.st_size, int(stat.st_mtime))
+    except OSError:
+        return content_digest_uid("data", path)
+
+
 class ViewOnlyResult(ProcessingResult):
     """Raw frame stack wrapped as a ProcessingResult."""
 
-    def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        if fmt == "tiff":
-            tiff.imwrite(str(path), np.asarray(self.data))
-        else:
-            raise ValueError(f'ViewOnlyResult only supports fmt="tiff", got "{fmt}"')
+    def write_files(self, plan, document) -> None:
+        save_image_result(self, plan.primary, plan.fmt, document=document)
 
 
 class _NoParamsWidget(QtWidgets.QWidget):
@@ -55,7 +77,7 @@ class _NoParamsWidget(QtWidgets.QWidget):
         return {}
 
 
-class ViewOnlyReconstructor(Reconstructor):
+class ViewOnlyReconstructor(StreamingReconstructor):
     """
     Pass-through 'reconstructor' that loads the data and exposes it for viewing.
 
@@ -69,11 +91,114 @@ class ViewOnlyReconstructor(Reconstructor):
     description = "Display raw frames without any reconstruction"
     is_pass_through = True
 
+    @classmethod
+    def default_params(cls) -> dict:
+        return {}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return ()
+
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return _NoParamsWidget(parent)
 
+    def make_session(self):
+        """Create a session that passes raw frames through to the viewer.
+
+        Imported here rather than at module scope because the session needs
+        :class:`ViewOnlyResult` from this module -- the same cycle, and the
+        same break, as ``SmlmLocalizer.make_session``.
+        """
+        from .live_session import ViewOnlyLiveSession
+
+        return ViewOnlyLiveSession()
+
     def make_metadata_dialog(self, parent: QtWidgets.QWidget) -> QtWidgets.QDialog | None:
         return None
+
+    def inspect_source(self, data_obj: "DataObj"):
+        """Show how the acquisition was interpreted, without gating on it.
+
+        View-only never refuses data, so it declares no requirements; but it is
+        often the first place a user opens an unfamiliar file, which makes it
+        the right place to say that the axis names are a guess.
+        """
+        from imswitch.improcess.reconstructors.base import SourceInspection
+
+        try:
+            resolved = data_obj.acquisition_layout
+        except Exception as error:
+            return SourceInspection(
+                source_kind=getattr(data_obj, "sourceKind", "image"),
+                issues=tuple(getattr(error, "issues", ())),
+                warning=str(error),
+            )
+        if resolved is None:
+            return None
+        return SourceInspection(
+            source_kind=getattr(data_obj, "sourceKind", "image"),
+            metadata={
+                "acquisition_layout_source": resolved.source,
+                "acquisition_layout_confidence": resolved.confidence,
+                "acquisition_payload_kind": resolved.layout.payload_kind,
+            },
+            issues=tuple(resolved.issues),
+        )
+
+    #: Provenance values that mean the layout was inferred rather than read.
+    #: The container declared nothing, so its axis names are a rank guess.
+    _INFERRED_PROVENANCE = frozenset({"shape-inference", "generic-fallback"})
+
+    #: Canonical storage roles to the names shown on the viewer's sliders.
+    _AXIS_DISPLAY_NAMES = {
+        "frame": "Frame",
+        "detector_y": "Y",
+        "detector_x": "X",
+        "scan_x": "X",
+        "scan_y": "Y",
+        "scan_z": "Z",
+        "channel": "C",
+        "condition": "Condition",
+        "time": "T",
+    }
+
+    def _axis_labels_for(
+        self, data_obj: "DataObj", source_axis_labels, ndim: int
+    ) -> list[str]:
+        """Name the axes from evidence, falling back to Frame rather than T/C.
+
+        A source that declares its own axes keeps them. A source that declares
+        nothing used to be labelled from rank alone, which called a plain 3D
+        camera stack ``C, Y, X`` -- channel data, on no evidence at all.
+
+        A file whose acquisition metadata cannot be resolved still has pixels,
+        and this reconstructor's whole promise is that it never refuses data.
+        ``getattr`` with a default swallows only ``AttributeError``, so a
+        resolution error propagated out of ``process`` and the user got no
+        image at all -- for a *naming* decision with a perfectly good fallback.
+        ``inspect_source`` reports the failure, so nothing is hidden by
+        continuing here.
+        """
+        try:
+            resolved = data_obj.acquisition_layout
+        except Exception:
+            resolved = None
+        layout = getattr(resolved, "layout", None)
+        inferred = layout is None or layout.provenance in self._INFERRED_PROVENANCE
+
+        if source_axis_labels and len(source_axis_labels) == ndim and not inferred:
+            return list(source_axis_labels)
+        if layout is not None and len(layout.storage_axes) == ndim:
+            return [
+                self._AXIS_DISPLAY_NAMES.get(axis, axis.capitalize())
+                for axis in layout.storage_axes
+            ]
+        if ndim >= 2:
+            # Only the trailing two axes are known to be the detector plane.
+            leading = ndim - 2
+            names = ["Frame"] if leading == 1 else [f"Frame{i}" for i in range(leading)]
+            return names + ["Y", "X"]
+        return _DEFAULT_AXIS_LABELS[-ndim:]
 
     def process(
         self, data_obj: "DataObj", params: dict, context=None
@@ -101,14 +226,7 @@ class ViewOnlyReconstructor(Reconstructor):
                     data_obj.checkAndUnloadData()
 
         ndim = data.ndim
-        if source_axis_labels and len(source_axis_labels) == ndim:
-            axis_labels = list(source_axis_labels)
-        elif ndim <= len(_DEFAULT_AXIS_LABELS):
-            axis_labels = _DEFAULT_AXIS_LABELS[-ndim:]
-        else:
-            # More dims than we have default labels for — pad the front.
-            extra = ndim - len(_DEFAULT_AXIS_LABELS)
-            axis_labels = [f"D{i}" for i in range(extra)] + _DEFAULT_AXIS_LABELS
+        axis_labels = self._axis_labels_for(data_obj, source_axis_labels, ndim)
 
         axis_scales = (
             list(source_axis_scales)
@@ -117,6 +235,23 @@ class ViewOnlyReconstructor(Reconstructor):
         )
         view_modes = [ViewMode("Standard", tuple(range(ndim)))]
 
+        # Loaded data carries no recorded identity. When it came from a file we
+        # can identify the *source*, so the same file reopened lines up with an
+        # ROI set saved against it. With no path there is nothing sound to
+        # derive from, so the ids are minted: two unidentifiable datasets must
+        # come out unrelated rather than accidentally equal.
+        dataset_uid = _source_identity(data_obj)
+        if dataset_uid is None:
+            return ViewOnlyResult(
+                name=data_obj.name,
+                data=data,
+                axis_labels=axis_labels,
+                view_modes=view_modes,
+                display_levels=None,
+                axis_scales=axis_scales,
+                scale_unit=source_scale_unit or "px",
+                identity_kind="derived",
+            )
         return ViewOnlyResult(
             name=data_obj.name,
             data=data,
@@ -125,4 +260,8 @@ class ViewOnlyReconstructor(Reconstructor):
             display_levels=None,
             axis_scales=axis_scales,
             scale_unit=source_scale_unit or "px",
+            dataset_uid=dataset_uid,
+            result_uid=content_digest_uid("result", dataset_uid, tuple(axis_labels)),
+            coordinate_space_uid=content_digest_uid("space", dataset_uid, data.shape[-2:]),
+            identity_kind="derived",
         )
