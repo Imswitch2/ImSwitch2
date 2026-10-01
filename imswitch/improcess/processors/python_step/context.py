@@ -22,6 +22,7 @@ import numpy as np
 from imswitch.imcommon.model import currentRoute, routeThisThreadsOutputTo
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import finite_range
+from imswitch.improcess.model.curve_result import CurveResult
 from imswitch.improcess.model.labels_result import LabelsResult
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors._axis_split import (
@@ -340,6 +341,11 @@ def result_from_value(
     """
     described = value if isinstance(value, ScriptOutput) else ScriptOutput(array=value)
     array = _as_array(what, described)
+    if array.ndim == 0:
+        raise ScriptError(
+            f"{what} is a single number, not an array: print() it, "
+            f"or output it as a one-element array"
+        )
     axes = described.axes if described.axes is not None else (
         tuple(str(label) for label in axes) if axes is not None else None
     )
@@ -374,10 +380,11 @@ def result_from_value(
             f"say what they are with make_result(array, axes=[...])"
         )
     else:
+        example = '["Frame"]' if array.ndim == 1 else "[...]"
         raise ScriptError(
             f"{what} has {array.ndim} dimensions but the input has "
             f"{len(reference_labels)} ({', '.join(reference_labels)}): say what its axes are "
-            f"with make_result(array, axes=[...])"
+            f"with make_result(array, axes={example})"
         )
     if len(scale_values) != array.ndim:
         raise ScriptError(f"{what}: {len(scale_values)} scales for {array.ndim} dimensions")
@@ -386,6 +393,13 @@ def result_from_value(
     if described.kind == "labels":
         return LabelsResult(
             result_name, _as_labels(what, array), labels,
+            axis_scales=scale_values, scale_unit=unit, metadata=metadata,
+        )
+    if array.ndim == 1:
+        # A row of numbers has nothing to show in the image viewer; it is a
+        # curve, and the Graph panel is where it is drawn.
+        return CurveResult(
+            result_name, array, labels,
             axis_scales=scale_values, scale_unit=unit, metadata=metadata,
         )
     return ArrayProcessingResult(
