@@ -62,6 +62,8 @@ def test_focused_editing_is_visibility_only_and_restores_full_view():
         assert patterns.widget.contentArea.widget() is None
         assert patterns.widget.contentWidget.parentWidget() is patterns.widget
         assert not view.focused_editing_notice.isHidden()
+        assert "rgba(255, 193, 7, 38)" in view.focused_editing_notice.styleSheet()
+        assert "font-size: 10px" in view.focused_editing_notice.styleSheet()
         assert not patterns.widget.contentWidget.isEnabled()  # parent Patterns active=False
         assert patterns._item_widgets["linear_phase"].isFlat()
         assert "border: none" in patterns._item_widgets["linear_phase"].styleSheet()

@@ -127,7 +127,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         content_layout.addWidget(self._create_layout_group())
 
         description = QtWidgets.QLabel(
-            "Configure each section's full interface and compact Focused-editing view."
+            "Configure each section's full interface and Focused View."
         )
         description.setWordWrap(True)
         content_layout.addWidget(description)
@@ -175,7 +175,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
             focused_layout = QtWidgets.QVBoxLayout(focused_page)
             focused_layout.setContentsMargins(6,6,6,6)
             focused_layout.addWidget(focused_editor,1)
-            settings_tabs.addTab(focused_page,"Focused editing")
+            settings_tabs.addTab(focused_page,"Focused View")
 
             page_layout.addWidget(settings_tabs,1)
             self.section_tabs.addTab(

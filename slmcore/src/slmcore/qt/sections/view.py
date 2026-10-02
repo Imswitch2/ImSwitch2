@@ -143,16 +143,12 @@ class SectionView(QtWidgets.QWidget):
         self.content_layout.setSpacing(6)
 
         self.focused_editing_notice = QtWidgets.QLabel(
-            "Focused editing — hidden settings remain active",self,
+            "Focused View — hidden settings remain active",self,
         )
         self.focused_editing_notice.setObjectName("SLMFocusedEditingNotice")
-        self.focused_editing_notice.setStyleSheet(
-            "QLabel#SLMFocusedEditingNotice {"
-            " color: #888; padding: 1px 4px; font-size: 9px;"
-            "}"
-        )
+        self.focused_editing_notice.setStyleSheet("color: #a66a00;")
         self.focused_editing_notice.setToolTip(
-            "This is a filtered editing view. Hidden settings are unchanged "
+            "This is a Focused View. Hidden settings are unchanged "
             "and can still affect the output."
         )
         self.focused_editing_notice.hide()

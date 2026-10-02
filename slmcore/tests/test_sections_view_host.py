@@ -213,8 +213,9 @@ def test_sections_view_host_exposes_geometry_and_change_signals():
         collection.deleteLater()
 
 
-def test_sections_view_host_uses_compact_focus_text_toggle():
+def test_sections_view_host_uses_native_focused_view_text_toggle():
     _app()
+    from qtpy import QtCore,QtWidgets
     from slmcore.qt.sections.collection import SectionsCollectionView
     from slmcore.qt.sections.view_host import SectionsViewHost
 
@@ -226,8 +227,22 @@ def test_sections_view_host_uses_compact_focus_text_toggle():
     try:
         button = host._tab_focused_button
         assert button is not None
-        assert button.text() == "Focus"
+        assert button.text() == "Focused View"
         assert button.isCheckable()
+        assert button.parentWidget() is host.tab_bar()
+        assert host._tabs.cornerWidget(QtCore.Qt.TopRightCorner) is None
+        assert isinstance(button,QtWidgets.QPushButton)
+        assert button.styleSheet() == ""
+
+        host.resize(640,400)
+        host.show()
+        _app().processEvents()
+        host._position_tab_controls()
+        tab_bar = host.tab_bar()
+        assert tab_bar is not None
+        assert button.geometry().top() >= 2
+        assert tab_bar.height() - button.geometry().bottom() - 1 >= 2
+
         host.set_focused_editing_available("sec_0",True)
         host.set_focused_editing_state("sec_0",True)
         assert button.isEnabled()

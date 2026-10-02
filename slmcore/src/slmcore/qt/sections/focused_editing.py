@@ -87,7 +87,7 @@ class FocusedEditingEditor(QtWidgets.QWidget):
         layout.setSpacing(8)
 
         description = QtWidgets.QLabel(
-            "Choose the editors shown by the Focused-editing button. "
+            "Choose the editors shown by the Focused View button. "
             "This only changes visibility; hidden settings remain unchanged."
         )
         description.setWordWrap(True)

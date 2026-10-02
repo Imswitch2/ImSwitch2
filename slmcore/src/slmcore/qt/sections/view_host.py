@@ -56,8 +56,8 @@ class SectionsViewHost(QtWidgets.QWidget):
         self._pane_scrolls: dict[str, QtWidgets.QScrollArea] = {}
         self._title_labels: dict[str, _SectionTitleLabel] = {}
         self._tab_filter: QtCore.QObject | None = None
-        self._tab_focused_button: QtWidgets.QToolButton | None = None
-        self._focused_buttons: dict[str,QtWidgets.QToolButton] = {}
+        self._tab_focused_button: QtWidgets.QPushButton | None = None
+        self._focused_buttons: dict[str,QtWidgets.QPushButton] = {}
         self._focused_available: dict[str,bool] = {}
         self._focused_states: dict[str,bool] = {}
 
@@ -294,21 +294,25 @@ class SectionsViewHost(QtWidgets.QWidget):
         self.layout().addWidget(tabs)
         self._presentation_widget = tabs
         self._tabs = tabs
+        # Keep Focus in the tab row itself rather than using QTabWidget's
+        # corner-widget slot.  The latter gets its own styled corner area on
+        # some Qt themes, which both shifts the control vertically and can
+        # expose bright top-corner pixels.
         self._tab_focused_button = self._create_focused_button()
-        tabs.setCornerWidget(
-            self._tab_focused_button,QtCore.Qt.TopRightCorner,
-        )
+        self._tab_focused_button.setParent(tab_bar)
+        self._tab_focused_button.show()
         self._sync_tab_focused_button()
 
         if self._show_settings:
             self._settings_button.setParent(tab_bar)
             self._settings_button.show()
-            self._position_tab_settings_button()
-            QtCore.QTimer.singleShot(0,self._position_tab_settings_button)
-            self._tab_filter = _TabSettingsPositionFilter(
-                tab_bar,self._position_tab_settings_button,
-            )
-            tab_bar.installEventFilter(self._tab_filter)
+
+        self._position_tab_controls()
+        QtCore.QTimer.singleShot(0,self._position_tab_controls)
+        self._tab_filter = _TabControlsPositionFilter(
+            tab_bar,self._position_tab_controls,
+        )
+        tab_bar.installEventFilter(self._tab_filter)
 
     def _mount_horizontal(self) -> None:
         assert self._collection is not None
@@ -460,20 +464,19 @@ class SectionsViewHost(QtWidgets.QWidget):
 
     def _create_focused_button(
         self,section_key: str | None=None,
-    ) -> QtWidgets.QToolButton:
-        button = QtWidgets.QToolButton(self)
-        button.setText("Focus")
-        button.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
-        button.setAccessibleName("Focused editing")
+    ) -> QtWidgets.QPushButton:
+        # Deliberately use the same native checkable push-button semantics as
+        # the SLM/Metric unit controls.  This gives Focused View the
+        # platform/theme's normal off, hover and checked appearance without
+        # maintaining a separate toolbar-button stylesheet.
+        button = QtWidgets.QPushButton("Focused View",self)
+        button.setAccessibleName("Focused View")
         button.setCheckable(True)
-        button.setAutoRaise(True)
+        button.setAutoDefault(False)
+        button.setDefault(False)
         button.setFocusPolicy(QtCore.Qt.NoFocus)
         button.setFixedHeight(22)
-        button.setMinimumWidth(44)
-        button.setStyleSheet(
-            "QToolButton { padding: 0px 6px; }"
-            "QToolButton:checked { font-weight: 600; }"
-        )
+        button.setMinimumWidth(86)
         if section_key is None:
             button.clicked.connect(self._on_tab_focused_clicked)
         else:
@@ -504,7 +507,7 @@ class SectionsViewHost(QtWidgets.QWidget):
             self._sync_tab_focused_button()
 
     def _sync_focused_button(
-        self,button: QtWidgets.QToolButton,section_key: str | None,
+        self,button: QtWidgets.QPushButton,section_key: str | None,
     ) -> None:
         available = bool(
             section_key is not None
@@ -521,15 +524,15 @@ class SectionsViewHost(QtWidgets.QWidget):
         button.setEnabled(available)
         if not available:
             button.setToolTip(
-                "Configure Focused editing in SLM section settings first."
+                "Configure Focused View in SLM section settings first."
             )
         elif enabled:
             button.setToolTip(
-                "Focused editing is on. Click to return to Full editing."
+                "Focused View is on. Click to return to Full editing."
             )
         else:
             button.setToolTip(
-                "Focused editing: show only the editors selected for this section. "
+                "Focused View: show only the editors selected for this section. "
                 "Hidden settings remain unchanged."
             )
 
@@ -560,23 +563,50 @@ class SectionsViewHost(QtWidgets.QWidget):
         """)
         return button
 
-    def _position_tab_settings_button(self) -> None:
-        if self._tabs is None or not self._show_settings:
+    def _position_tab_controls(self) -> None:
+        """Keep Focused View and section settings aligned inside the tab-bar row."""
+        if self._tabs is None or self._tab_focused_button is None:
             return
         tab_bar = self._tabs.tabBar()
         if tab_bar.count() == 0:
-            self._settings_button.hide()
+            self._tab_focused_button.hide()
+            if self._show_settings:
+                self._settings_button.hide()
             return
 
-        last_rect = tab_bar.tabRect(tab_bar.count() - 1)
-        x = min(
-            last_rect.right() + 5,
-            max(0,tab_bar.width() - self._settings_button.width()),
-        )
-        y = (tab_bar.height() - self._settings_button.height()) // 2
-        self._settings_button.move(x,max(0,y))
-        self._settings_button.raise_()
-        self._settings_button.show()
+        margin = 2
+        spacing = 3
+        focus = self._tab_focused_button
+
+        # Leave a small vertical inset around the native push-button frame.
+        # Some styles paint the checked border right at the widget edge; when
+        # the button fills the tab bar vertically that frame can look clipped.
+        vertical_inset = 2
+        available_height = max(1,tab_bar.height() - 2 * vertical_inset)
+        focus.setFixedHeight(min(22,available_height))
+
+        focus_x = max(margin,tab_bar.width() - focus.width() - margin)
+        focus_y = max(vertical_inset,(tab_bar.height() - focus.height()) // 2)
+        focus.move(focus_x,focus_y)
+        focus.raise_()
+        focus.show()
+
+        reserved = focus.width() + margin * 2
+        if self._show_settings:
+            settings_x = max(
+                margin,focus_x - self._settings_button.width() - spacing,
+            )
+            settings_y = max(
+                0,(tab_bar.height() - self._settings_button.height()) // 2,
+            )
+            self._settings_button.move(settings_x,settings_y)
+            self._settings_button.raise_()
+            self._settings_button.show()
+            reserved += self._settings_button.width() + spacing
+
+        # Give the style/layout system a right-side exclusion zone so a wide
+        # final tab does not paint underneath the overlaid controls.
+        tab_bar.setContentsMargins(0,0,reserved,0)
 
     def _rename_tab_index(self,index: int) -> None:
         if index < 0 or index >= len(self.section_keys):
@@ -684,8 +714,8 @@ class _SectionTitleLabel(ElidedLabel):
         event.accept()
 
 
-class _TabSettingsPositionFilter(QtCore.QObject):
-    """Keep the section-settings button near the last tab."""
+class _TabControlsPositionFilter(QtCore.QObject):
+    """Keep the tab-row Focused View/settings controls correctly positioned."""
 
     def __init__(self,parent,reposition):
         super().__init__(parent)
