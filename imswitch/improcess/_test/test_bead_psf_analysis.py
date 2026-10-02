@@ -282,3 +282,39 @@ def test_focal_surface_needs_beads_on_one_surface():
     notes: list[str] = []
     assert focal_surface(analysis, select_beads(analysis, Selection()), notes=notes) is None
     assert notes and "not on one surface" in notes[0]
+
+
+def _defocus_stack(seed=11, planes=21, shape=(220, 220), sigma=1.8, n=14):
+    """Beads in focus on different planes of a frame stack: each defocuses
+    (wider, dimmer, same energy) away from its own plane."""
+    rng = np.random.default_rng(seed)
+    centers = _positions(n, shape, 20, 40, rng)
+    focus = rng.integers(2, planes - 2, n)
+    yy, xx = np.indices(shape, dtype=float)
+    stack = np.full((planes,) + shape, 100.0)
+    for (cy, cx), f in zip(centers, focus):
+        for k in range(planes):
+            s = sigma * math.sqrt(1 + ((k - f) / 3.0) ** 2)
+            stack[k] += 1000.0 * (sigma / s) ** 2 * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * s * s))
+    return rng.poisson(stack).astype(np.uint16), centers, focus
+
+
+def test_a_frame_stack_is_searched_on_its_projection_and_fitted_in_focus():
+    """Not only the first plane: every bead of the stack is found, and each
+    is measured in its own focal plane, not on the (wider) projection."""
+    stack, centers, focus = _defocus_stack()
+    analysis = analyze_beads(stack, _params(), stack_2d=True)
+    assert analysis.projected and analysis.ndim == 2
+    found = {(round(b["y_det"] / 3), round(b["x_det"] / 3)): b for b in analysis.beads}
+    assert len(analysis.beads) >= len(centers) - 1
+    planes = {}
+    for (cy, cx), f in zip(centers, focus):
+        bead = min(analysis.beads, key=lambda b: (b["y_det"] - cy) ** 2 + (b["x_det"] - cx) ** 2)
+        planes[(cy, cx)] = (bead["plane"], f)
+    assert sum(abs(p - f) <= 1 for p, f in planes.values()) >= len(centers) - 1
+    summary = summarize(analysis, select_beads(analysis, Selection()), Selection())
+    assert summary["stats"]["fwhm_lat"]["median"] == pytest.approx(FWHM_FACTOR * 1.8 * PX, rel=0.05)
+    first_plane_only = analyze_beads(stack[0], _params())
+    assert len(first_plane_only.fitted()) < len(analysis.fitted())
+    averaged = average_psf(stack, analysis, select_beads(analysis, Selection()))
+    assert averaged.fwhm["fwhm_x"] == pytest.approx(FWHM_FACTOR * 1.8 * PX, rel=0.05)

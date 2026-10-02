@@ -221,3 +221,22 @@ def test_preview_run_matches_the_fit():
     assert len(run.reasons) == len(run.analysis.beads)
     assert all(r == "" for r, m in zip(run.reasons, run.mask) if m)
     assert any(r == "border" for r in run.reasons)  # the beads cut by the padding
+
+
+def test_a_stack_without_z_is_not_cut_to_its_first_plane():
+    from imswitch.improcess.processors.psf_resolution import input_layout, run_bead_analysis
+
+    rng = np.random.default_rng(4)
+    yy, xx = np.mgrid[:120, :120]
+    stack = np.full((9, 120, 120), 100.0)
+    for (cy, cx), plane in zip([(30, 30), (30, 90), (90, 30), (90, 90)], (1, 4, 6, 8)):
+        stack[plane] += 900.0 * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * 1.8**2))
+    result = MinimalResult(name="frames", data=rng.poisson(stack).astype(np.float32),
+                           axis_labels=["Frame", "Y", "X"])
+    layout = input_layout(result, {})
+    assert layout.stack_axis == 0 and layout.shape == (9, 120, 120)
+    assert "maximum projection" in layout.describe() and "label it Z" in layout.note
+    run = run_bead_analysis(result, {})
+    assert sorted(b["plane"] for b, m in zip(run.analysis.beads, run.mask) if m) == [1, 4, 6, 8]
+    beads = _outputs(PSFResolutionProcessor().apply(result, {}))["beads"]
+    assert "plane" in beads.table_columns() and len(beads.table_records()) == 4

@@ -341,11 +341,15 @@ class PSFResolutionWidget(QtWidgets.QWidget):
     def _fillBeadTable(self, run) -> None:
         analysis = run.analysis
         unit = analysis.unit
+        stack_axis = run.layout.stack_axis
+        self.beadTable.setHorizontalHeaderItem(
+            2, QtWidgets.QTableWidgetItem("plane" if stack_axis is not None else "z")
+        )
         order = sorted(range(len(analysis.beads)), key=lambda i: (run.reasons[i] != "", i))
         self.beadTable.setRowCount(len(order))
         for row, index in enumerate(order):
             bead, reason = analysis.beads[index], run.reasons[index]
-            z = bead.get("z", bead.get("z_det"))
+            z = bead.get("z", bead.get("z_det", bead.get("plane")))
             y = bead.get("y", bead.get("y_det"))
             x = bead.get("x", bead.get("x_det"))
             lat = bead.get("fwhm_lat_hm", bead.get("fwhm_lat"))
@@ -419,6 +423,8 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         coords[ndim - 1] = float(bead.get("x", bead["x_det"]))
         if run.layout.is3d:
             coords[labels.index("Z")] = float(bead.get("z", bead["z_det"]))
+        elif run.layout.stack_axis is not None:
+            coords[run.layout.stack_axis] = float(bead.get("plane", 0))
         transpose = _view_transpose(self._currentResult, layer, ndim)
         displayed = [coords[axis] for axis in transpose]
         layer_ndim = int(getattr(layer, "ndim", len(displayed)))

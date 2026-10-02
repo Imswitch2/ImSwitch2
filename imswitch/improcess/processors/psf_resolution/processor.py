@@ -75,10 +75,19 @@ class InputLayout:
     pixel_size: tuple[float, ...] | None  # (z,) y, x in nm; None = uncalibrated
     from_metadata: bool
     note: str = ""
+    #: A non-z stack axis searched on its maximum projection (``shape`` is
+    #: then ``(planes, Y, X)``), or ``None``.
+    stack_axis: int | None = None
 
     def describe(self) -> str:
         dims = " × ".join(str(n) for n in self.shape)
-        kind = f"3-D stack {dims} (Z, Y, X)" if self.is3d else f"2-D image {dims} (Y, X)"
+        if self.is3d:
+            kind = f"3-D stack {dims} (Z, Y, X)"
+        elif self.stack_axis is not None:
+            kind = (f"stack {dims} ({self.labels[self.stack_axis]}, Y, X), beads found on its "
+                    "maximum projection and fitted in their brightest plane")
+        else:
+            kind = f"2-D image {dims} (Y, X)"
         if self.pixel_size is None:
             calibration = "no calibration: widths in px"
         else:
@@ -301,16 +310,23 @@ def run_bead_analysis(result: ProcessingResult, params: dict) -> BeadRun:
     layout = input_layout(result, p)
     data, pixel_size, unit = resolve_input(result, p)
     settings = bead_params(p, pixel_size, unit)
+    stack_2d = layout.stack_axis is not None
     if source == "full_image":
-        analysis = analyze_whole_image(data, settings)
+        if stack_2d:  # the brightest plane holds the PSF in focus
+            plane = int(np.argmax(data.reshape(data.shape[0], -1).max(axis=1)))
+            analysis = analyze_whole_image(data[plane], settings)
+            for bead in analysis.beads:
+                bead["plane"] = plane
+        else:
+            analysis = analyze_whole_image(data, settings)
     elif source == "rois":
         rois = p.get("rois") or []
         if not rois:
             raise ValueError("Source is 'ROI Manager' but no ROIs were given.")
         image = data.max(axis=0) if data.ndim == 3 else data
-        analysis = analyze_beads(data, settings, candidates_yx=roi_candidates(image, rois))
+        analysis = analyze_beads(data, settings, candidates_yx=roi_candidates(image, rois), stack_2d=stack_2d)
     else:
-        analysis = analyze_beads(data, settings)
+        analysis = analyze_beads(data, settings, stack_2d=stack_2d)
     selection = selection_from_params(p)
     reasons = rejection_reasons(analysis, selection)
     mask = np.array([r == "" for r in reasons], dtype=bool)
@@ -324,9 +340,12 @@ def input_layout(result: ProcessingResult, params: dict) -> InputLayout:
 
     A result with a ``Z`` axis of more than one plane (other than the last two
     axes) gives a ``(Z, Y, X)`` stack, every other non-spatial axis taken at
-    index 0; anything else gives the first ``(Y, X)`` plane. The pixel size
-    comes from ``axis_scales`` and ``scale_unit`` (converted to nm), unless
-    the ``pixel_size_nm`` / ``z_step_nm`` overrides are set.
+    index 0. Without one, a stack over any other axis (frames, time, an
+    unlabelled axis; the one nearest the image plane if several) gives a
+    ``(planes, Y, X)`` stack analysed in 2-D on its maximum projection, never
+    only its first plane; a single plane is a 2-D image. The pixel size comes
+    from ``axis_scales`` and ``scale_unit`` (converted to nm), unless the
+    ``pixel_size_nm`` / ``z_step_nm`` overrides are set.
     """
     labels = [str(label) for label in result.axis_labels]
     shape = tuple(int(n) for n in np.shape(result.data))
@@ -336,15 +355,19 @@ def input_layout(result: ProcessingResult, params: dict) -> InputLayout:
     z_index = labels.index("Z") if "Z" in labels else None
     is3d = z_index is not None and z_index < ndim - 2 and shape[z_index] > 1
     plane = shape[-2:]
-    out_shape = ((shape[z_index],) if is3d else ()) + tuple(plane)
+    stacked = [k for k in range(ndim - 2) if shape[k] > 1]
+    stack_axis = stacked[-1] if stacked and not is3d else None
+    lead = z_index if is3d else stack_axis
+    out_shape = ((shape[lead],) if lead is not None else ()) + tuple(plane)
 
-    note = ""
-    others = [labels[k] for k in range(ndim - 2) if k != z_index and shape[k] > 1]
+    notes = []
+    others = [labels[k] for k in stacked if k != lead]
     if others:
-        note = f"Only index 0 of {', '.join(others)} is analysed."
-        if not is3d and z_index is None and ndim >= 3:
-            note += (" If that axis is a z-stack, label it Z (and set its scale) to analyse "
-                     "the beads in 3-D.")
+        notes.append(f"Only index 0 of {', '.join(others)} is analysed.")
+    if stack_axis is not None:
+        notes.append(f"If {labels[stack_axis]} is a z-stack, label it Z (and set its scale) for a 3-D "
+                     "analysis: axial widths and aberrations.")
+    note = " ".join(notes)
 
     lateral_override = float(params.get("pixel_size_nm", 0.0) or 0.0)
     z_override = float(params.get("z_step_nm", 0.0) or 0.0)
@@ -367,7 +390,7 @@ def input_layout(result: ProcessingResult, params: dict) -> InputLayout:
         pixel_size = ((axial,) if is3d else ()) + lateral
     else:
         pixel_size = None
-    return InputLayout(out_shape, tuple(labels), is3d, pixel_size, from_metadata, note)
+    return InputLayout(out_shape, tuple(labels), is3d, pixel_size, from_metadata, note, stack_axis)
 
 
 def resolve_input(result: ProcessingResult, params: dict) -> tuple[np.ndarray, tuple[float, ...], str]:
@@ -378,9 +401,9 @@ def resolve_input(result: ProcessingResult, params: dict) -> tuple[np.ndarray, t
     labels = list(result.axis_labels)
     raw = result.data
     ndim = np.ndim(raw)
-    if layout.is3d:
-        z_index = labels.index("Z")
-        index = tuple(slice(None) if k in (z_index, ndim - 2, ndim - 1) else 0 for k in range(ndim))
+    lead = labels.index("Z") if layout.is3d else layout.stack_axis
+    if lead is not None:
+        index = tuple(slice(None) if k in (lead, ndim - 2, ndim - 1) else 0 for k in range(ndim))
         data = np.asarray(raw[index])
     else:
         data = np.asarray(extract_2d_plane(result))
@@ -393,7 +416,8 @@ def resolve_input(result: ProcessingResult, params: dict) -> tuple[np.ndarray, t
         raise ValueError("The lateral pixel size is set but the z step is unknown: set 'Z step'.")
     if layout.is3d and z_override > 0:
         raise ValueError("The z step is set but the lateral pixel size is unknown: set 'Pixel size'.")
-    return data, (1.0,) * data.ndim, "px"
+    analysed = 2 if layout.stack_axis is not None else data.ndim
+    return data, (1.0,) * analysed, "px"
 
 
 def _averaged_result(name: str, averaged, pixel_size, unit: str) -> ArrayProcessingResult:

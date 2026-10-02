@@ -274,14 +274,16 @@ class BeadTableResult(_RowsTableResult):
         unit = analysis.unit
         axes = analysis.axes
         width_keys = _width_keys(analysis)
-        columns = ["id", *[f"{ax}_px" for ax in axes], *[f"{k}_{unit}" for k in width_keys],
+        plane = ["plane"] if getattr(analysis, "projected", False) else []
+        columns = ["id", *plane, *[f"{ax}_px" for ax in axes], *[f"{k}_{unit}" for k in width_keys],
                    "ellipticity", "r2", *(["r2_z"] if analysis.ndim == 3 else []), "amplitude", "background"]
         rows = []
         for bead, chosen in zip(analysis.beads, self.mask):
             if not chosen:
                 continue
             row = {
-                "id": bead["id"], "ellipticity": bead.get("ellipticity"), "r2": bead.get("r2"),
+                "id": bead["id"], "plane": bead.get("plane"),
+                "ellipticity": bead.get("ellipticity"), "r2": bead.get("r2"),
                 "r2_z": bead.get("r2_z"), "amplitude": bead.get("amp"), "background": bead.get("offset"),
             }
             for ax in axes:

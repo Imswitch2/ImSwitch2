@@ -1009,6 +1009,11 @@ measures, the averaged PSF and the aberrations.
   stack itself), *ROI Manager* (one bead per ROI, forwarded through the
   ``rois`` parameter) or *Whole image* (one PSF for the frame, the behaviour
   of the first version).
+* A stack is analysed in 3-D when its axis is labelled ``Z``. A stack over
+  any other axis (frames, time, an unlabelled axis) is never cut to its
+  first plane: the beads are found on its maximum projection and each is
+  fitted in the plane where it is brightest (lateral widths only; the panel
+  suggests labelling the axis ``Z`` for axial widths and aberrations).
 * The detection scale is estimated from the beads unless *Expected lateral
   FWHM* (Advanced) is set: a first pass (from NA and wavelength, or a 1.5 px
   guess) is fitted and its median widths start the next.

@@ -7,7 +7,9 @@ cheap selection and summary on an existing analysis.
 
 Pipeline
     1. candidates  LoG blob detection in the 2-D image or the 3-D stack itself,
-                   or one candidate per ROI Manager ROI
+                   or one candidate per ROI Manager ROI. A stack that is not a
+                   z-stack (``stack_2d``) is searched on its maximum projection
+                   and each bead is fitted in its brightest plane
     2. pre-filter  side lobes / defocus rings of brighter beads and faint
                    peaks are discarded; edge (image border or no-data region),
                    crowded, saturated and abnormally bright (aggregate) beads
@@ -500,6 +502,9 @@ class BeadAnalysis:
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     n_discarded: int = 0
+    #: Found on the maximum projection of a stack; each bead's ``plane`` is
+    #: the stack index it was fitted in.
+    projected: bool = False
 
     @property
     def unit(self) -> str:
@@ -623,13 +628,18 @@ def _analyze_once(
     background: float,
     noise: float,
     candidates_yx: np.ndarray | None,
+    stack: tuple[np.ndarray, np.ndarray, float] | None = None,
 ) -> BeadAnalysis:
+    """One pass at one detection scale. With ``stack`` (``(planes, valid,
+    background)``), ``data`` is the stack's maximum projection: beads are
+    found there and cropped from their brightest plane."""
     is3d = data.ndim == 3
     px = np.asarray(params.pixel_size, dtype=np.float64)
     half = np.ceil(params.crop_factor * sig).astype(int)
     analysis = BeadAnalysis(
         [], params, data.ndim, tuple(data.shape), tuple(float(s) for s in sig),
         tuple(int(h) for h in half), "auto" if candidates_yx is None else "rois",
+        projected=stack is not None,
     )
     # Distances in expected FWHMs per axis, so z counts by the axial width.
     metric = 1.0 / (FWHM_FACTOR * sig)
@@ -668,26 +678,40 @@ def _analyze_once(
     n_neigh = np.array([len(tree.query_ball_point(p, params.isolation_factor)) - 1 for p in points * metric])
 
     saturation = params.saturation_value
-    if saturation is None and np.issubdtype(data.dtype, np.integer):
-        saturation = float(np.iinfo(data.dtype).max)
+    source_dtype = (stack[0] if stack is not None else data).dtype
+    if saturation is None and np.issubdtype(source_dtype, np.integer):
+        saturation = float(np.iinfo(source_dtype).max)
+
+    best_plane = None
+    if stack is not None:
+        planes, planes_valid, planes_background = stack
+        smoothed = ndimage.gaussian_filter(
+            np.where(planes_valid, planes, planes_background).astype(np.float32), (0.0, *smooth_sigma)
+        )
+        best_plane = np.array([int(np.argmax(smoothed[:, y, x])) for y, x in points], dtype=int)
 
     crops: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for i, point in enumerate(points):
         bead: dict[str, Any] = {"id": i, "status": STATUS_OK, "amp_est": float(amp[i])}
         for ax, value in zip(analysis.axes, point):
             bead[f"{ax}_det"] = int(value)
+        if best_plane is not None:
+            bead["plane"] = int(best_plane[i])
+            source, source_valid = planes[best_plane[i]], planes_valid[best_plane[i]]
+        else:
+            source, source_valid = data, valid
         lo, hi = point - half, point + half + 1
         box = tuple(slice(a, b) for a, b in zip(lo, hi))
         if np.any(lo < 0) or np.any(hi > np.array(data.shape)):
             bead["status"] = STATUS_BORDER
         else:
-            valid_crop = valid[box]
+            valid_crop = source_valid[box]
             if _core_touches_invalid(valid_crop, sig) or valid_crop.mean() < 0.75:
                 bead["status"] = STATUS_BORDER
             elif n_neigh[i] > 0:
                 bead["status"] = STATUS_CROWDED
             else:
-                crop = data[box]
+                crop = source[box]
                 crops[i] = (crop, lo, valid_crop)
                 if saturation is not None and float(crop[valid_crop].max()) >= saturation:
                     bead["status"] = STATUS_SATURATED
@@ -756,6 +780,7 @@ def analyze_beads(
     data: np.ndarray,
     params: BeadPSFParams,
     candidates_yx: np.ndarray | None = None,
+    stack_2d: bool = False,
 ) -> BeadAnalysis:
     """Detect (or take) candidate beads, pre-filter and fit them.
 
@@ -763,22 +788,38 @@ def analyze_beads(
     positions (e.g. one per ROI; in a stack each is taken at its brightest
     plane); the side-lobe filter is then not applied, as the caller chose the
     positions deliberately.
+
+    ``stack_2d`` analyses a ``(P, Y, X)`` stack that is not a z-stack (frames,
+    an unlabelled axis) in 2-D: the beads are found on its maximum projection
+    -- every plane contributes, not only the first -- and each is fitted in
+    the plane where it is brightest (its ``plane``). Widths are lateral only;
+    ``pixel_size`` is ``(y, x)``.
     """
     data = np.asarray(data)
-    if data.ndim not in (2, 3):
-        raise ValueError(f"bead analysis needs a (Y, X) or (Z, Y, X) array, got shape {data.shape}")
+    if data.ndim not in (2, 3) or (stack_2d and data.ndim != 3):
+        expected = "a (P, Y, X) stack" if stack_2d else "a (Y, X) or (Z, Y, X) array"
+        raise ValueError(f"bead analysis needs {expected}, got shape {data.shape}")
     px = np.asarray(params.pixel_size, dtype=np.float64)
-    if len(px) != data.ndim:
-        raise ValueError(f"pixel_size needs {data.ndim} entries for a {data.ndim}-D array")
+    ndim = 2 if stack_2d else data.ndim
+    if len(px) != ndim:
+        raise ValueError(f"pixel_size needs {ndim} entries for a {ndim}-D analysis")
     if params.fit_mode_3d not in FIT_MODES_3D:
         raise ValueError(f"unknown 3-D fit mode {params.fit_mode_3d!r}")
     valid = valid_mask(data, params.zero_is_invalid)
     if not valid.any():
         raise ValueError("the image holds no data (every pixel is zero or not finite)")
+    stack = None
+    if stack_2d:
+        stack_background, _ = background_and_noise(data, valid)
+        filled = np.where(valid, data, np.asarray(stack_background).astype(data.dtype))
+        stack = (data, valid, stack_background)
+        data, valid = filled.max(axis=0), valid.any(axis=0)
+    # On a projection these are the projection's own: its background sits
+    # above the planes' (the maximum of the noise), and detection is there.
     background, noise = background_and_noise(data, valid)
 
     sig, given = _start_sigma_px(params, data.ndim)
-    analysis = _analyze_once(data, params, sig, valid, background, noise, candidates_yx)
+    analysis = _analyze_once(data, params, sig, valid, background, noise, candidates_yx, stack)
     if not given:
         estimated = False
         for _ in range(_SCALE_ITERATIONS):
@@ -789,7 +830,7 @@ def analyze_beads(
             if np.all(np.abs(fitted / sig - 1.0) < _SCALE_TOLERANCE):
                 break
             sig = fitted
-            analysis = _analyze_once(data, params, sig, valid, background, noise, candidates_yx)
+            analysis = _analyze_once(data, params, sig, valid, background, noise, candidates_yx, stack)
         unit = params.unit
         widths = analysis.expected_fwhm()
         text = f"lateral FWHM ≈ {widths[-1]:.4g} {unit}"
@@ -814,6 +855,11 @@ def analyze_beads(
     if valid.mean() < 0.999:
         analysis.notes.append(
             f"{100 * (1 - valid.mean()):.0f} % of the voxels carry no data (zero padding) and are ignored."
+        )
+    if stack is not None:
+        analysis.notes.append(
+            f"Beads found on the maximum projection of {stack[0].shape[0]} planes, each fitted in its "
+            "brightest plane."
         )
     return analysis
 
@@ -1018,6 +1064,8 @@ def average_psf(
     """
     data = np.asarray(data)
     valid = valid_mask(data, analysis.params.zero_is_invalid)
+    # A projected analysis averages each bead from the plane it was fitted in.
+    stacked = data.ndim == analysis.ndim + 1
     axes = analysis.axes
     half = np.asarray(half_px if half_px is not None else analysis.crop_half, dtype=int)
     margin = 2
@@ -1033,20 +1081,21 @@ def average_psf(
         icenter = np.round(center).astype(int)
         lo = icenter - half - margin
         hi = icenter + half + margin + 1
-        if np.any(lo < 0) or np.any(hi > np.array(data.shape)):
+        source, source_valid = (data[bead["plane"]], valid[bead["plane"]]) if stacked else (data, valid)
+        if np.any(lo < 0) or np.any(hi > np.array(source.shape)):
             continue
         inside = np.all(np.abs(detections - icenter) <= half + margin, axis=1)
         if inside.sum() > 1:
             continue
         box = tuple(slice(a, b) for a, b in zip(lo, hi))
-        if valid[box].mean() < 0.75:
+        if source_valid[box].mean() < 0.75:
             continue
         shift = -(center - icenter)
         # No-data voxels are filled with the bead's background before the
         # spline shift, so they do not ring into their valid neighbours.
-        crop = ndimage.shift(np.where(valid[box], data[box], bead["offset"]).astype(np.float64), shift,
+        crop = ndimage.shift(np.where(source_valid[box], source[box], bead["offset"]).astype(np.float64), shift,
                              order=3, mode="nearest")
-        w = ndimage.shift(valid[box].astype(np.float64), shift, order=1, mode="nearest")
+        w = ndimage.shift(source_valid[box].astype(np.float64), shift, order=1, mode="nearest")
         trim = tuple(slice(margin, -margin) for _ in axes)
         crop, w = crop[trim], np.clip(w[trim], 0.0, 1.0)
         w = np.where(w > 0.99, 1.0, 0.0)

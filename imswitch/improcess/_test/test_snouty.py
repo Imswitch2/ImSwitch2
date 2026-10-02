@@ -745,3 +745,27 @@ def test_snouty_hdf5_reloads_calibrated(tmp_path):
     assert list(loaded.axis_labels) == ["Z", "Y", "X"]
     assert list(loaded.axis_scales) == pytest.approx([0.25, 0.25, 0.25])
     loaded.checkAndUnloadData()
+
+
+def test_declared_axes_survive_the_view_only_reconstructor(tmp_path):
+    """A volume whose file names its axes keeps them when opened for viewing
+    and processing, although it has no acquisition layout (the layout is
+    then only inferred from the shape, which is no evidence against them)."""
+    from imswitch.improcess.model.DataObj import DataObj
+    from imswitch.improcess.reconstructors.snouty.result import SnoutyResult
+    from imswitch.improcess.reconstructors.view_only.reconstructor import ViewOnlyReconstructor
+
+    params = dict(DEFAULT_PARAMS, sample_vx_size=200.0)
+    saved = tmp_path / "deskewed.h5"
+    SnoutyResult("deskewed", np.zeros((5, 6, 7), np.float32), params).save(saved, fmt="hdf5")
+    legacy = tmp_path / "legacy.h5"
+    with h5py.File(legacy, "w") as f:
+        f.create_dataset("volume", data=np.zeros((5, 6, 7), np.float32))
+        for key, value in params.items():
+            f.attrs[key] = value
+    for path in (saved, legacy):
+        data_obj = DataObj(path.name, "volume", path=str(path))
+        result = ViewOnlyReconstructor().process(data_obj, {})
+        assert result.axis_labels == ["Z", "Y", "X"], path.name
+        assert list(result.axis_scales) == pytest.approx([0.2, 0.2, 0.2])
+        data_obj.checkAndUnloadData()
