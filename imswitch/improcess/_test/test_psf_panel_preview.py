@@ -129,3 +129,18 @@ def test_uncalibrated_data_opens_the_calibration_override(qapp):
     panel, _viewer = _panel_on(_field(scaled=False))
     assert panel.form.sections[CALIBRATION_GROUP].isExpanded()
     assert "no calibration" in panel.dataLabel.text()
+
+
+def test_the_panel_says_what_an_aberration_fit_still_needs(qapp):
+    stack = ArrayProcessingResult("stack", np.zeros((5, 30, 30), np.float32), ["Z", "Y", "X"],
+                                  axis_scales=[0.2, 0.1, 0.1], scale_unit="um")
+    panel = PSFResolutionWidget(napariViewer=None)
+    panel.setCurrentResult(stack)
+    assert panel.requirementLabel.isHidden()
+    panel.form.controls["fit_aberrations"].setChecked(True)
+    assert not panel.requirementLabel.isHidden()
+    assert "NA" in panel.requirementLabel.text()
+    assert "e0a030" in panel.form.controls["na"].styleSheet()
+    panel.form.set_values({"na": 1.0, "wavelength_nm": 515.0})
+    assert panel.requirementLabel.isHidden()
+    assert panel.form.controls["na"].styleSheet() == ""

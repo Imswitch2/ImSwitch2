@@ -186,6 +186,16 @@ class ScalarPSF:
 # Fit
 # --------------------------------------------------------------------------- #
 ILLUMINATIONS = ("widefield", "light_sheet")
+#: Illuminations :func:`fit_aberrations_from_analysis` takes: ``auto`` fits
+#: widefield and, when that fits poorly, the light-sheet model too.
+ILLUMINATION_CHOICES = ("auto", *ILLUMINATIONS)
+#: Below this R² a model is said not to describe the PSF (and the fit warns).
+POOR_FIT_R2 = 0.85
+#: ``auto`` also fits the light sheet when widefield stays below this R² (a
+#: clean widefield bead fits better), and keeps it when it fits better by
+#: ``_AUTO_MARGIN``.
+_AUTO_TRY_BELOW_R2 = 0.95
+_AUTO_MARGIN = 0.05
 
 
 @dataclass
@@ -445,10 +455,17 @@ def fit_aberrations_from_analysis(
     modes: Sequence[int] = DEFAULT_MODES,
     backend: PSFBackend | None = None,
     z_flip: bool = False,
-    illumination: str = "widefield",
+    illumination: str = "auto",
 ) -> AberrationFit:
     """Average the selected beads on a crop wide enough for phase retrieval
-    and fit Zernike modes. Needs calibrated 3-D data and NA + wavelength."""
+    and fit Zernike modes. Needs calibrated 3-D data and NA + wavelength.
+
+    ``illumination`` ``"auto"`` fits the widefield model and, unless that
+    already fits well, the light-sheet model as well, keeping the light sheet
+    when it fits clearly better.
+    """
+    if illumination not in ILLUMINATION_CHOICES:
+        raise ValueError(f"unknown illumination {illumination!r}; expected one of {ILLUMINATION_CHOICES}")
     p = analysis.params
     if analysis.ndim != 3:
         raise ValueError("aberration fitting needs a 3-D stack")
@@ -469,15 +486,26 @@ def fit_aberrations_from_analysis(
             "no selected, isolated bead fits the aberration crop; "
             "reduce the crop size or relax the selection"
         )
-    result = fit_aberrations(
-        averaged.image, tuple(px), p.na, p.wavelength_nm, p.refractive_index, modes=modes,
-        bead_diameter_nm=p.bead_diameter_nm, bead_labeling=p.bead_labeling,
-        backend=backend, z_flip=z_flip, illumination=illumination,
-    )
+    def fit(model: str) -> AberrationFit:
+        return fit_aberrations(
+            averaged.image, tuple(px), p.na, p.wavelength_nm, p.refractive_index, modes=modes,
+            bead_diameter_nm=p.bead_diameter_nm, bead_labeling=p.bead_labeling,
+            backend=backend, z_flip=z_flip, illumination=model,
+        )
+
+    result = fit("widefield" if illumination == "auto" else illumination)
+    if illumination == "auto" and result.r2 < _AUTO_TRY_BELOW_R2:
+        sheet = fit("light_sheet")
+        if sheet.r2 > result.r2 + _AUTO_MARGIN:
+            sheet.warnings.append(
+                f"Fitted as light-sheet data: the light-sheet model describes this PSF "
+                f"(R² {sheet.r2:.2f}), the widefield model does not (R² {result.r2:.2f})."
+            )
+            result = sheet
     result.n_beads = averaged.n
     if averaged.n < 5:
         result.warnings.append(f"Aberrations estimated from only {averaged.n} bead(s).")
-    if result.r2 < 0.85:
+    if result.r2 < POOR_FIT_R2:
         hint = (
             " If this is light-sheet data, set Illumination to 'light sheet'."
             if illumination == "widefield" else ""

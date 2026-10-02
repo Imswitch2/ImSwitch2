@@ -378,10 +378,11 @@ class PSFSummaryResult(_RowsTableResult):
         if aberrations is not None:
             self.warnings += [w for w in aberrations.warnings if w not in self.warnings]
         self.notes = list(summary.get("notes", []))
-        super().__init__(name, rows, list(self.COLUMNS), attrs={
-            "unit": unit, "warnings": self.warnings, "notes": self.notes,
-            "selection": summary.get("selection", {}),
-        })
+        attrs = {"unit": unit, "warnings": self.warnings, "notes": self.notes,
+                 "selection": summary.get("selection", {})}
+        if summary.get("aberrations_skipped"):
+            attrs["aberrations_skipped"] = summary["aberrations_skipped"]
+        super().__init__(name, rows, list(self.COLUMNS), attrs=attrs)
 
     def plot_payloads(self) -> list[PlotPayload]:
         stats = {k: v for k, v in self.summary["stats"].items() if v.get("n")}
@@ -468,6 +469,10 @@ def psf_report(summary: dict, averaged=None, aberrations=None) -> str:
         )
     if aberrations is not None:
         lines.append(f"Aberrations: {aberrations.headline()}")
+        lines.append("  The Zernike table, the wavefront map and the data | model comparison are in the "
+                     "results list ('… (aberrations)', '… (wavefront …)', '… (aberration fit …)').")
+    elif summary.get("aberrations_skipped"):
+        lines.append(f"Aberrations: not estimated — {summary['aberrations_skipped']}.")
     warnings = list(summary.get("warnings", []))
     if aberrations is not None:
         warnings += [w for w in aberrations.warnings if w not in warnings]

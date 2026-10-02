@@ -43,7 +43,7 @@ from imswitch.improcess.analysis.bead_psf import (
     select_beads,
     summarize,
 )
-from imswitch.improcess.analysis.psf_aberrations import ILLUMINATIONS
+from imswitch.improcess.analysis.psf_aberrations import ILLUMINATION_CHOICES
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.result import ProcessingResult
@@ -147,10 +147,11 @@ class PSFResolutionProcessor(Processor):
             ParamField("fit_aberrations", "bool", False, label="Estimate aberrations (3-D)",
                        help="Fit Zernike modes 5-11 to the averaged bead. Needs a calibrated "
                             "through-focus stack, NA and wavelength. Takes a few seconds.", group="Outputs"),
-            ParamField("illumination", "select", "widefield", label="Illumination", options=ILLUMINATIONS,
+            ParamField("illumination", "select", "auto", label="Illumination", options=ILLUMINATION_CHOICES,
                        help="For the aberration model. 'Light sheet' fits the excitation sheet "
                             "(thickness and tilt, e.g. an oblique plane microscope) along with the "
-                            "aberrations; a widefield model cannot describe a light-sheet PSF.",
+                            "aberrations; a widefield model cannot describe a light-sheet PSF. 'Auto' "
+                            "tries widefield and, if that fits poorly, the light sheet too.",
                        group="Outputs"),
             *SELECTION_FIELDS,
             ParamField("pixel_size_nm", "float", 0.0, label="Pixel size",
@@ -231,7 +232,7 @@ class PSFResolutionProcessor(Processor):
 
         aberration_fit = None
         if p["fit_aberrations"]:
-            aberration_fit = self._aberrations(run.data, analysis, mask, p, summary["warnings"])
+            aberration_fit = self._aberrations(run, p, summary)
 
         recorded = {k: v for k, v in p.items() if k != "rois"}
         results: list[ProcessingResult] = [
@@ -256,26 +257,40 @@ class PSFResolutionProcessor(Processor):
         return ProcessorOutput(results, keys=keys)
 
     @staticmethod
-    def _aberrations(data, analysis, mask, p: dict, warnings: list[str]):
+    def _aberrations(run: BeadRun, p: dict, summary: dict):
+        """The aberration fit, or ``None`` with ``summary["aberrations_skipped"]``
+        saying why it was not estimated."""
         from imswitch.improcess.analysis.psf_aberrations import fit_aberrations_from_analysis
 
-        if analysis.ndim != 3:
-            warnings.append("Aberrations need a 3-D stack; skipped.")
-            return None
-        if not analysis.params.physical:
-            warnings.append("Aberrations need a calibrated pixel size and z step; skipped.")
-            return None
-        if not (analysis.params.na and analysis.params.wavelength_nm):
-            warnings.append("Aberrations need NA and emission wavelength; skipped.")
+        missing = aberration_requirements(run.layout, p)
+        if missing:
+            summary["aberrations_skipped"] = missing
             return None
         try:
             return fit_aberrations_from_analysis(
-                data, analysis, mask, lateral_half_nm=float(p["aberration_crop_nm"]),
-                z_flip=bool(p["z_flip"]), illumination=str(p.get("illumination", "widefield")),
+                run.data, run.analysis, run.mask, lateral_half_nm=float(p["aberration_crop_nm"]),
+                z_flip=bool(p["z_flip"]), illumination=str(p.get("illumination", "auto")),
             )
         except ValueError as exc:
-            warnings.append(f"Aberrations skipped: {exc}")
+            summary["aberrations_skipped"] = str(exc)
             return None
+
+
+def aberration_requirements(layout: InputLayout, params: dict) -> str:
+    """What an aberration fit on this input still needs (``""``: nothing).
+
+    Known from the input's layout and the parameters alone, so the panel can
+    say it before a fit runs.
+    """
+    if not layout.is3d:
+        return "it needs a through-focus z-stack (an axis labelled Z with several planes)"
+    if layout.pixel_size is None:
+        return "it needs the pixel size and z step (from the metadata or the Calibration override)"
+    missing = [name for key, name in (("na", "the NA"), ("wavelength_nm", "the emission wavelength"))
+               if not float(params.get(key, 0.0) or 0.0) > 0]
+    if missing:
+        return f"set {' and '.join(missing)} under Optics"
+    return ""
 
 
 def bead_params(p: dict, pixel_size: tuple[float, ...], unit: str) -> BeadPSFParams:

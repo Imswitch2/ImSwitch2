@@ -96,3 +96,23 @@ def test_wavefront_map_and_headline():
     assert np.sqrt(np.mean(phase[inside] ** 2)) == pytest.approx(fit.rms_nm, rel=0.05)
     match = re.search(r"spherical ([+-]\d+) nm", fit.headline())
     assert match and int(match.group(1)) == pytest.approx(40, abs=2)
+
+
+def test_auto_illumination_recognises_light_sheet_data():
+    """Several beads under a tilted sheet: 'auto' tries widefield, finds that
+    it does not describe the PSF, and keeps the light-sheet fit."""
+    from imswitch.improcess.analysis.bead_psf import BeadPSFParams, analyze_beads, select_beads, Selection
+    from imswitch.improcess.analysis.psf_aberrations import fit_aberrations_from_analysis
+
+    bead, px = _sheet_stack({11: -50.0}, seed=3)
+    bead = bead - 100.0
+    volume = np.full((41, 110, 110), 100.0)
+    for cy, cx in [(25, 25), (25, 85), (85, 25), (85, 85)]:
+        volume[:, cy - 12:cy + 13, cx - 12:cx + 13] += bead
+    volume = np.random.default_rng(5).poisson(np.clip(volume, 0, None)).astype(np.float32)
+    params = BeadPSFParams(pixel_size=px, na=1.0, wavelength_nm=515.0, refractive_index=1.33)
+    analysis = analyze_beads(volume, params)
+    mask = select_beads(analysis, Selection(min_r2=0.0, max_ellipticity=10.0))
+    fit = fit_aberrations_from_analysis(volume, analysis, mask, lateral_half_nm=1400.0, illumination="auto")
+    assert fit.illumination == "light_sheet" and fit.r2 > 0.9
+    assert any("Fitted as light-sheet data" in w for w in fit.warnings)

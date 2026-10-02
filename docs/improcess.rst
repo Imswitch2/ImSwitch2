@@ -1055,10 +1055,15 @@ measures, the averaged PSF and the aberrations.
   Zernike modes 5-11 (astigmatism, coma, trefoil, primary spherical; Noll
   indexing, nm RMS) to the averaged bead by model-based phase retrieval with
   a scalar PSF model, plus an extra Gaussian blur (sampling, interpolation)
-  fitted as a nuisance.  It needs a through-focus stack.  For light-sheet
-  data set **Illumination** to *Light sheet*: the PSF is then the detection
-  PSF times the excitation sheet, whose thickness and tilt are fitted with
-  the aberrations (an oblique plane microscope's sheet is tilted; its tilt
+  fitted as a nuisance.  It needs a through-focus stack, the pixel size and
+  z step, the **NA** and the **emission wavelength**; while the box is
+  ticked, the panel says which of these is still missing and outlines the
+  empty fields, and a fit that could not be estimated says why in the
+  report.  **Illumination** *Auto* (the default) fits the widefield model
+  and, unless that already fits well, the light-sheet model too, keeping
+  the one that describes the PSF; *Widefield* or *Light sheet* force one.
+  For light-sheet data the PSF is the detection PSF times the excitation
+  sheet, whose thickness and tilt are fitted with the aberrations (an oblique plane microscope's sheet is tilted; its tilt
   and a coma along the same direction look alike, so the coma's magnitude is
   the reliable part).  A widefield model fits light-sheet data badly, and the
   report says so.  The results are the Zernike table, the data and the model

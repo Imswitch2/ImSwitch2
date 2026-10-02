@@ -217,5 +217,6 @@ OPTION_LABELS: dict[str, dict[str, str]] = {
     "source": {"auto": "Auto-detect beads", "rois": "ROI Manager", "full_image": "Whole image (one PSF)"},
     "bead_labeling": {"volume": "Volume labelled", "shell": "Shell labelled"},
     "fit_mode_3d": {"separable": "Separable (axial + lateral)", "full": "Full 3-D Gaussian"},
-    "illumination": {"widefield": "Widefield / confocal", "light_sheet": "Light sheet (fit sheet)"},
+    "illumination": {"auto": "Auto (widefield, else light sheet)", "widefield": "Widefield / confocal",
+                     "light_sheet": "Light sheet (fit sheet)"},
 }

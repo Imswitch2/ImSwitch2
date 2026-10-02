@@ -104,6 +104,10 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         buttons.addStretch()
         buttons.addWidget(self.fitButton)
 
+        self.requirementLabel = QtWidgets.QLabel("")
+        self.requirementLabel.setWordWrap(True)
+        self.requirementLabel.setStyleSheet("color:#e0a030;")
+        self.requirementLabel.setVisible(False)
         self.legendLabel = QtWidgets.QLabel(_legend_html())
         self.legendLabel.setWordWrap(True)
         self.legendLabel.setVisible(False)
@@ -126,6 +130,7 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         fit_layout.addWidget(self.dataLabel)
         fit_layout.addWidget(self.form)
         fit_layout.addLayout(buttons)
+        fit_layout.addWidget(self.requirementLabel)
         fit_layout.addWidget(self.legendLabel)
         fit_layout.addWidget(self.beadTable)
 
@@ -168,6 +173,9 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         self.applySelectionButton.clicked.connect(self.applySelection)
         for key in ("pixel_size_nm", "z_step_nm"):
             self.form.controls[key].valueChanged.connect(self._updateDataLabel)
+        for key in ("na", "wavelength_nm"):
+            self.form.controls[key].valueChanged.connect(self._updateRequirements)
+        self.form.controls["fit_aberrations"].toggled.connect(self._updateRequirements)
         lat_min = self.selectForm.controls["fwhm_lat_min"]
         lat_max = self.selectForm.controls["fwhm_lat_max"]
         lat_min.valueChanged.connect(self._spinsToRegion)
@@ -315,6 +323,7 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         from imswitch.improcess.processors.psf_resolution._params import CALIBRATION_GROUP
         from imswitch.improcess.processors.psf_resolution.processor import input_layout
 
+        self._updateRequirements()
         result = self._currentResult
         if result is None or not self._fitAccepts(result) or self._selectAccepts(result):
             self.dataLabel.setText("")
@@ -334,6 +343,28 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         section = getattr(self.form, "sections", {}).get(CALIBRATION_GROUP)
         if section is not None and uncalibrated and not section.isExpanded():
             section.setExpanded(True)
+
+    def _updateRequirements(self, *_args) -> None:
+        """Say what an aberration fit still needs, while the box is ticked."""
+        from imswitch.improcess.processors.psf_resolution.processor import (
+            aberration_requirements,
+            input_layout,
+        )
+
+        values = self.form.get_values()
+        wanted = bool(values.get("fit_aberrations"))
+        missing = ""
+        result = self._currentResult
+        if wanted and result is not None and self._fitAccepts(result) and not self._selectAccepts(result):
+            try:
+                missing = aberration_requirements(input_layout(result, values), values)
+            except Exception:
+                missing = ""
+        self.requirementLabel.setText(f"⚠ Aberrations will not be estimated: {missing}." if missing else "")
+        self.requirementLabel.setVisible(bool(missing))
+        for key in ("na", "wavelength_nm"):
+            unset = wanted and not values.get(key)
+            self.form.controls[key].setStyleSheet("border: 1px solid #e0a030;" if unset else "")
 
     # ------------------------------------------------------------------ #
     # Preview overlay and bead list

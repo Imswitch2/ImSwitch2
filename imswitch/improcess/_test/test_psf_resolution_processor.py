@@ -240,3 +240,31 @@ def test_a_stack_without_z_is_not_cut_to_its_first_plane():
     assert sorted(b["plane"] for b, m in zip(run.analysis.beads, run.mask) if m) == [1, 4, 6, 8]
     beads = _outputs(PSFResolutionProcessor().apply(result, {}))["beads"]
     assert "plane" in beads.table_columns() and len(beads.table_records()) == 4
+
+
+def _calibrated_stack():
+    return MinimalResult(name="s", data=np.zeros((5, 20, 20)), axis_labels=["Z", "Y", "X"],
+                         axis_scales=[0.2, 0.1, 0.1], scale_unit="um")
+
+
+def test_aberration_requirements_say_what_is_missing():
+    from imswitch.improcess.processors.psf_resolution import aberration_requirements, input_layout
+
+    stack = _calibrated_stack()
+    layout = input_layout(stack, {})
+    assert "NA and the emission wavelength" in aberration_requirements(layout, {})
+    assert "emission wavelength" in aberration_requirements(layout, {"na": 1.0})
+    assert aberration_requirements(layout, {"na": 1.0, "wavelength_nm": 515.0}) == ""
+    plane = MinimalResult(name="p", data=np.zeros((20, 20)), axis_labels=["Y", "X"])
+    assert "z-stack" in aberration_requirements(input_layout(plane, {}), {"na": 1.0, "wavelength_nm": 515.0})
+    uncalibrated = MinimalResult(name="u", data=np.zeros((5, 20, 20)), axis_labels=["Z", "Y", "X"])
+    assert "pixel size" in aberration_requirements(input_layout(uncalibrated, {}), {"na": 1, "wavelength_nm": 5})
+
+
+def test_a_skipped_aberration_fit_is_reported_in_place_of_the_results():
+    image, _ = _bead_field()
+    result = MinimalResult(name="beads", data=image, axis_labels=["Y", "X"])
+    out = _outputs(PSFResolutionProcessor().apply(result, {"fit_aberrations": True}))
+    assert "aberrations" not in out
+    report = out["summary"].report()
+    assert "Aberrations: not estimated" in report and "z-stack" in report
