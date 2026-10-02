@@ -1,7 +1,8 @@
 """Re-select the beads of a ``psf-resolution`` bead table.
 
-The cheap half of the bead analysis: given the fitted beads, choose which
-enter the statistics (FWHM range, ellipticity, R²) and summarize them again.
+The cheap half of the bead analysis: given the fitted beads (the bead table
+keeps every candidate in memory, rejected ones included), choose which enter
+the statistics (R², ellipticity, FWHM range) and summarize them again.
 No refitting, so it is what the PSF panel's range slider drives, and the
 chosen range is recorded in provenance like any other parameter. The
 averaged PSF and aberrations need the image and are not recomputed here;
@@ -49,7 +50,7 @@ class PSFBeadSelectProcessor(Processor):
         return lambda result: isinstance(result, BeadTableResult)
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
-        return build_form(parent, self.param_spec())
+        return build_form(parent, self.param_spec(), collapsed=())
 
     def apply(self, result: ProcessingResult, params: dict) -> ProcessorOutput:
         if not isinstance(result, BeadTableResult):
@@ -66,7 +67,8 @@ class PSFBeadSelectProcessor(Processor):
                 BeadTableResult(f"{base} (PSF beads, reselected)", analysis, mask, selection, recorded),
                 PSFSummaryResult(
                     f"{base} (PSF summary, reselected)", summary, None,
-                    focal_surface(analysis, mask), field_trend(analysis, mask), recorded,
+                    focal_surface(analysis, mask, notes=summary["notes"]), field_trend(analysis, mask), recorded,
+                    detection_fwhm=analysis.expected_fwhm(),
                 ),
             ],
             keys=("beads", "summary"),

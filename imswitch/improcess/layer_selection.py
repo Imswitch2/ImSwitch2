@@ -16,6 +16,7 @@ import numpy as np
 VIEWER_TOOLS_LAYER_NAME = "Viewer Tools"
 ROI_OVERLAY_LAYER_NAME = "ROI Manager"
 VIEWER_TOOL_POINTS_LAYER_NAME = "Viewer Tool Points"
+PSF_PREVIEW_LAYER_NAME = "PSF bead preview"
 
 #: Layers that annotate the image rather than being one. Excluded by name as
 #: well as by type, and the *Points* layer shows why the name check is not
@@ -27,6 +28,7 @@ ANNOTATION_LAYER_NAMES = (
     VIEWER_TOOLS_LAYER_NAME,
     ROI_OVERLAY_LAYER_NAME,
     VIEWER_TOOL_POINTS_LAYER_NAME,
+    PSF_PREVIEW_LAYER_NAME,
 )
 
 

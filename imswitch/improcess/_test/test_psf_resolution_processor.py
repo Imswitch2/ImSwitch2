@@ -102,7 +102,6 @@ def test_psf_resolution_processor_accepts_rois_param():
 
     assert out["beads"].analysis.source == "rois"
     (row,) = out["beads"].table_records()
-    assert row["status"] == "ok"
     assert row["fwhm_x_px"] == pytest.approx(2.354820045 * 2.0, rel=0.05)
 
 
@@ -143,7 +142,7 @@ def test_output_ports_follow_the_params():
     spec = PSFResolutionProcessor().output_spec({"average_psf": False})
     assert spec.ports == ("beads", "summary")
     spec = PSFResolutionProcessor().output_spec({"fit_aberrations": True})
-    assert spec.ports == ("beads", "summary", "average_psf", "aberrations")
+    assert spec.ports == ("beads", "summary", "average_psf", "aberrations", "aberration_fit", "wavefront")
 
 
 def test_psf_resolution_result_saves_hdf5(tmp_path):
@@ -158,3 +157,67 @@ def test_psf_resolution_result_saves_hdf5(tmp_path):
         assert "fits" in h5
         assert h5["fits"]["fwhm_x_px"][0] > 0
         assert h5["fits"]["fit_error"][0] < 1e-4
+
+
+# --------------------------------------------------------------------------- #
+# Selected-only bead table, input description, preview run
+# --------------------------------------------------------------------------- #
+def _bead_field(n=12, shape=(160, 160), sigma=1.8, seed=0):
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[: shape[0], : shape[1]]
+    image = np.full(shape, 100.0)
+    centers = []
+    while len(centers) < n:
+        c = rng.uniform(12, shape[0] - 12, 2)
+        if all(np.hypot(*(c - d)) > 30 for d in centers):
+            centers.append(c)
+    for cy, cx in centers:
+        image += 900.0 * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * sigma**2))
+    image = rng.poisson(image).astype(np.float32)
+    image[:, :10] = 0.0  # padding, like a registered or deskewed image
+    return image, centers
+
+
+def test_bead_table_lists_only_the_selected_beads():
+    image, _ = _bead_field()
+    image[80, 80] = 0  # a stray zero is still data
+    result = MinimalResult(name="beads", data=image, axis_labels=["Y", "X"], axis_scales=[0.065, 0.065],
+                           scale_unit="um")
+    out = _outputs(PSFResolutionProcessor().apply(result, {}))
+    beads, summary = out["beads"], out["summary"]
+    rows = beads.table_records()
+    assert 0 < len(rows) == int(beads.mask.sum()) < len(beads.analysis.beads)
+    assert "status" not in beads.table_columns() and "selected" not in beads.table_columns()
+    assert {"fwhm_x_hm_nm", "fwhm_lat_nm"} <= set(beads.table_columns())
+    metrics = {row["metric"] for row in summary.table_records()}
+    assert "FWHM lateral (half maximum)" in metrics and "beads selected" in metrics
+    assert any(metric.startswith("rejected: ") for metric in metrics)
+    assert "candidates selected" in summary.report()
+
+
+def test_input_layout_says_what_is_analysed():
+    from imswitch.improcess.processors.psf_resolution import input_layout
+
+    stack = MinimalResult(name="s", data=np.zeros((4, 5, 6)), axis_labels=["Z", "Y", "X"],
+                          axis_scales=[0.2, 0.1, 0.1], scale_unit="um")
+    layout = input_layout(stack, {})
+    assert layout.is3d and layout.pixel_size == (200.0, 100.0, 100.0) and layout.from_metadata
+    assert "from metadata" in layout.describe()
+    assert input_layout(stack, {"pixel_size_nm": 50.0}).pixel_size == (200.0, 50.0, 50.0)
+    channels = MinimalResult(name="c", data=np.zeros((4, 5, 6)), axis_labels=["C", "Y", "X"])
+    layout = input_layout(channels, {})
+    assert not layout.is3d and layout.pixel_size is None
+    assert "label it Z" in layout.note
+
+
+def test_preview_run_matches_the_fit():
+    from imswitch.improcess.processors.psf_resolution import run_bead_analysis
+
+    image, _ = _bead_field()
+    result = MinimalResult(name="beads", data=image, axis_labels=["Y", "X"])
+    run = run_bead_analysis(result, {})
+    out = _outputs(PSFResolutionProcessor().apply(result, {}))
+    assert list(run.mask) == list(out["beads"].mask)
+    assert len(run.reasons) == len(run.analysis.beads)
+    assert all(r == "" for r, m in zip(run.reasons, run.mask) if m)
+    assert any(r == "border" for r in run.reasons)  # the beads cut by the padding

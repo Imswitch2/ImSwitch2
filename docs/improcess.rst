@@ -638,10 +638,13 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - Any rank >= 2 image-like result.  A ``Z`` axis with more than one
        plane makes it a 3-D analysis; every other extra axis collapses to
        index ``0``.
-     - Ports ``beads`` (``BeadTableResult``, one row per candidate bead with
-       status and ``selected`` flag), ``summary`` (``PSFSummaryResult``),
-       ``average_psf`` (image) and, when requested on calibrated 3-D data,
-       ``aberrations`` (``AberrationsResult``, Zernike modes 5-11).
+     - Ports ``beads`` (``BeadTableResult``, one row per *selected* bead;
+       the rejected candidates stay in memory for re-selection),
+       ``summary`` (``PSFSummaryResult``: statistics, rejection counts,
+       aberration headline), ``average_psf`` (image) and, when requested on
+       calibrated 3-D data, ``aberrations`` (``AberrationsResult``, Zernike
+       modes 5-11), ``aberration_fit`` (data | model stack) and
+       ``wavefront`` (pupil phase map, nm).
    * - ``psf-bead-select``
      - Measurement
      - A ``beads`` table from ``psf-resolution``.
@@ -985,18 +988,51 @@ PSF resolution panel
 ====================
 
 Set ``"psfResolutionPanel": true`` in the ``processing`` block to show a
-bead/PSF resolution panel.  With an image selected it runs ``psf-resolution``:
+bead/PSF resolution panel.  With an image selected it runs ``psf-resolution``.
+The panel shows what it will analyse (``3-D stack 114 × 408 × 776 (Z, Y, X);
+voxel 200 × 200 × 200 nm (from metadata)``); only *Beads*, *Optics* and
+*Outputs* are open, while *Selection*, *Calibration override* and
+*Advanced* are collapsed.
 
-* **Beads from** — *Auto-detect beads* (LoG detection; 3-D stacks are
-  detected on their maximum projection and fitted on the stack), *ROI
-  Manager* (one bead per ROI, forwarded through the ``rois`` parameter) or
-  *Whole image* (one PSF for the frame, the behaviour of the first version).
-* Candidates near the border, too close to a neighbour, saturated or
-  abnormally bright (aggregates) are flagged and kept out of the fits; side
-  lobes and defocus rings of brighter beads are discarded.
-* Each bead is fitted with an axis-aligned Gaussian (2-D), or separably /
-  as a full 3-D Gaussian.  Widths are in nm when the data carry a physical
-  scale (or the *Pixel size* / *Z step* overrides are set), otherwise in px.
+**Preview beads** runs the detection, the fits and the selection without
+publishing anything.  Every candidate is marked in the viewer (a points layer
+named *PSF bead preview*, drawn in 3-D so it follows the z slider and the
+XZ / YZ views): green beads are selected, grey ones sit at the image or data
+edge, orange ones are too close to another bead, violet ones are too bright
+or saturated, red ones failed the fit or the selection.  A list of the
+candidates, selected first, gives each bead's state and widths; clicking a
+row centres the viewer on that bead.  **Fit** runs the same analysis and
+publishes the results; the panel then reports the bead counts, both width
+measures, the averaged PSF and the aberrations.
+
+* **Beads from** — *Auto-detect beads* (LoG detection in the image or the
+  stack itself), *ROI Manager* (one bead per ROI, forwarded through the
+  ``rois`` parameter) or *Whole image* (one PSF for the frame, the behaviour
+  of the first version).
+* The detection scale is estimated from the beads unless *Expected lateral
+  FWHM* (Advanced) is set: a first pass (from NA and wavelength, or a 1.5 px
+  guess) is fitted and its median widths start the next.
+* Solid regions of exact zeros — the padding of a deskewed or registered
+  volume — carry no data (*Zero = no data*, Advanced): beads whose core
+  touches them are *edge* beads, and the rest of a crop is fitted without
+  them.
+* Candidates too close to a neighbour (in expected FWHMs, axially by the
+  axial width), saturated or abnormally bright (aggregates: brighter than
+  1.8× the median, or more when the beads' brightness varies anyway, as
+  under a light sheet) are flagged and kept out of the fits; side lobes and
+  defocus rings of brighter beads, and faint peaks, are discarded.
+* Each bead is fitted with an axis-aligned Gaussian (2-D), or separably
+  (lateral fit in the brightest plane, axial profile through its centre) or
+  as a full 3-D Gaussian.  Each width is also measured directly, at half
+  maximum of the profile through the bead: for an aberrated PSF the Gaussian
+  follows the wings and reads wider than the core, so both are reported.
+  Widths are in nm when the data carry a physical scale (or the *Calibration
+  override* is set), otherwise in px.
+* Selection keeps beads whose Gaussian fit is good (R² ≥ 0.8), whose
+  ellipticity is not an outlier (automatic: median + 3 MAD of the beads, at
+  least 1.3, so an astigmatic system keeps its uniformly elliptical beads
+  while doublets still stand out) and whose widths are within median ± 3 MAD
+  of the beads passing those cuts.
 * With a **bead diameter**, widths are corrected for the bead's own extent
   by subtracting variances: ``sigma_psf² = sigma_meas² − d²/20`` for
   volume-labelled and ``d²/12`` for shell-labelled beads.  A warning is
@@ -1004,17 +1040,29 @@ bead/PSF resolution panel.  With an image selected it runs ``psf-resolution``:
 * With **NA and wavelength**, the summary compares the result with the
   widefield diffraction limit (0.51 λ/NA laterally, 0.88 λ/(n − √(n² − NA²))
   axially).
-* The **summary** reports mean, std, SEM, median and MAD of the selected
-  beads, the averaged-bead value, bead counts per status, the lateral FWHM
-  trend across the field and, for 3-D stacks, the focal-plane tilt and field
-  curvature.
+* The **beads** table lists the selected beads only.  The **summary**
+  reports mean, std, SEM, median and MAD of the selected beads for both
+  width measures, the averaged-bead value, how many candidates were rejected
+  and why, the detection scale, the lateral FWHM trend across the field and,
+  for 3-D stacks whose beads lie on one surface, the focal-plane tilt and
+  field curvature.
 * **Estimate aberrations** (3-D, calibrated, NA and wavelength set) fits
   Zernike modes 5-11 (astigmatism, coma, trefoil, primary spherical; Noll
   indexing, nm RMS) to the averaged bead by model-based phase retrieval with
-  a scalar PSF model.  It needs a through-focus stack.  Signs and angles
-  depend on the z direction (*Flip z*) and image orientation; magnitudes do
-  not.  The SLM pattern designer defines Noll modes 2/3, 7/8 and 11
-  differently, so those coefficients cannot be applied there one to one.
+  a scalar PSF model, plus an extra Gaussian blur (sampling, interpolation)
+  fitted as a nuisance.  It needs a through-focus stack.  For light-sheet
+  data set **Illumination** to *Light sheet*: the PSF is then the detection
+  PSF times the excitation sheet, whose thickness and tilt are fitted with
+  the aberrations (an oblique plane microscope's sheet is tilted; its tilt
+  and a coma along the same direction look alike, so the coma's magnitude is
+  the reliable part).  A widefield model fits light-sheet data badly, and the
+  report says so.  The results are the Zernike table, the data and the model
+  side by side (``aberration_fit``, scroll z or use the XZ / YZ view to
+  compare) and the wavefront over the pupil (``wavefront``).  Signs and
+  angles depend on the z direction (*Flip z*) and image orientation;
+  magnitudes do not.  The SLM pattern designer defines Noll modes 2/3, 7/8
+  and 11 differently, so those coefficients cannot be applied there one to
+  one.
 
 With a ``beads`` table selected, the panel switches to re-selection: a
 histogram of the fitted lateral FWHMs with a draggable range, the selection

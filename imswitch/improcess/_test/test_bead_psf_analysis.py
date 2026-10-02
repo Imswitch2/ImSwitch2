@@ -172,3 +172,113 @@ def test_large_bead_warns():
     analysis = analyze_beads(image, _params(bead_diameter_nm=500.0))
     summary = summarize(analysis, select_beads(analysis, Selection()), Selection())
     assert any("correction" in w for w in summary["warnings"])
+
+
+# --------------------------------------------------------------------------- #
+# Real-data robustness: padding, scale, widths, astigmatism, lobes
+# --------------------------------------------------------------------------- #
+from imswitch.improcess.analysis.bead_psf import (  # noqa: E402
+    REASON_ELLIPTICITY,
+    STATUS_BORDER,
+    STATUS_OK,
+    analyze_whole_image,
+    half_max_widths,
+    rejection_reasons,
+    valid_mask,
+)
+
+
+def _stack_3d(seed=5, shape=(41, 200, 200), sigma=(3.0, 1.5, 1.5), n=12, amp=800.0):
+    rng = np.random.default_rng(seed)
+    lateral = _positions(n, shape[1:], 20, 40, rng)
+    centers = np.column_stack([rng.uniform(18, 22, n), lateral])
+    image = rng.poisson(_render(shape, centers, sigma, np.full(n, amp), 100.0)).astype(np.float32)
+    return image, centers
+
+
+def test_zero_padding_is_no_data_and_flags_edge_beads():
+    """A deskewed volume is zero outside its parallelogram: beads cut by it are
+    'border', and the padding never counts as data (background, crops)."""
+    image, centers = _stack_3d()
+    padded = image.copy()
+    padded[:, :, 150:] = 0.0  # a solid no-data block, like deskew padding
+    assert not valid_mask(padded)[:, :, 160:].any() and valid_mask(padded)[:, :, :140].all()
+    params = BeadPSFParams(pixel_size=(200.0, 65.0, 65.0), expected_fwhm_nm=(230.0, 1400.0))
+    analysis = analyze_beads(padded, params)
+    for bead in analysis.beads:
+        if bead["x_det"] > 150 - 4:
+            assert bead["status"] == STATUS_BORDER
+    inside = [c for c in centers if c[2] < 140]
+    assert sum(b["status"] == STATUS_OK for b in analysis.beads) >= len(inside) - 1
+    # isolated zeros (clipped noise) stay data
+    speckled = image.copy()
+    speckled[::7, ::5, ::3] = 0
+    assert valid_mask(speckled).all()
+
+
+def test_detection_scale_is_estimated_from_the_beads():
+    image, _ = _stack_3d(sigma=(3.0, 2.2, 2.2))
+    analysis = analyze_beads(image, BeadPSFParams(pixel_size=(200.0, 65.0, 65.0)))
+    assert analysis.expected_sigma_px[1] == pytest.approx(2.2, rel=0.15)
+    assert analysis.expected_sigma_px[0] == pytest.approx(3.0, rel=0.15)
+    assert any("estimated from the beads" in note for note in analysis.notes)
+    summary = summarize(analysis, select_beads(analysis, Selection()), Selection())
+    assert summary["stats"]["fwhm_lat"]["median"] == pytest.approx(FWHM_FACTOR * 2.2 * 65, rel=0.05)
+
+
+def test_half_maximum_widths_match_a_gaussian():
+    image = _render((41, 41), [(20.3, 19.6)], (2.0, 3.0), [1000.0], 50.0)
+    widths = half_max_widths(image, (20.3, 19.6), 50.0)
+    assert widths == pytest.approx([FWHM_FACTOR * 2.0, FWHM_FACTOR * 3.0], rel=0.02)
+    analysis = analyze_whole_image(image, BeadPSFParams(pixel_size=(1.0, 1.0), unit="px"))
+    (bead,) = analysis.beads
+    assert bead["fwhm_x_hm"] == pytest.approx(FWHM_FACTOR * 3.0, rel=0.03)
+    assert "fwhm_lat_hm" in summarize(analysis, np.array([True]), Selection())["stats"]
+
+
+def test_astigmatic_population_keeps_its_beads_and_loses_its_doublets():
+    """Every bead 1.5x elliptical (astigmatism): the automatic ellipticity
+    bound follows the population instead of rejecting it, and a doublet
+    still stands out."""
+    rng = np.random.default_rng(3)
+    shape = (300, 300)
+    centers = _positions(30, shape, 20, 40, rng)
+    amps = np.full(30, 1000.0)
+    doublet = centers[0] + [0.0, 5.0]
+    image = _render(shape, np.vstack([centers, doublet]), (2.0, 3.0), np.append(amps, 1000.0), 100.0)
+    image = rng.poisson(image).astype(np.uint16)
+    analysis = analyze_beads(image, _params())
+    reasons = rejection_reasons(analysis, Selection())
+    selected = sum(r == "" for r in reasons)
+    assert selected >= 24
+    for bead, reason in zip(analysis.beads, reasons):
+        if abs(bead["y_det"] - centers[0][0]) < 3 and abs(bead["x_det"] - centers[0][1] - 2.5) < 5:
+            assert reason in (REASON_ELLIPTICITY, STATUS_CROWDED, "fwhm_outlier")
+    assert not select_beads(analysis, Selection(max_ellipticity=1.3)).any()  # the old fixed cut
+
+
+def test_side_lobes_are_not_beads():
+    """A weak lobe beside each bead (an aberrated PSF) is neither a bead nor
+    makes its bead 'crowded'."""
+    rng = np.random.default_rng(8)
+    shape = (300, 300)
+    centers = _positions(16, shape, 25, 60, rng)
+    lobes = centers + [0.0, 11.0]
+    image = _render(shape, np.vstack([centers, lobes]), (2.0, 2.0),
+                    np.concatenate([np.full(16, 1000.0), np.full(16, 150.0)]), 100.0)
+    analysis = analyze_beads(rng.poisson(image).astype(np.uint16), _params())
+    assert len(analysis.beads) <= 16
+    assert sum(b["status"] == STATUS_OK for b in analysis.beads) >= 13
+
+
+def test_focal_surface_needs_beads_on_one_surface():
+    rng = np.random.default_rng(9)
+    shape, sigma = (61, 300, 300), (2.5, 2.0, 2.0)
+    lateral = _positions(16, shape[1:], 20, 40, rng)
+    z = np.where(np.arange(16) % 2 == 0, 15.0, 45.0)  # two layers, 6 um apart
+    image = rng.poisson(_render(shape, np.column_stack([z, lateral]), sigma, np.full(16, 800.0), 100.0))
+    params = BeadPSFParams(pixel_size=(200.0, 65.0, 65.0), expected_fwhm_nm=(300.0, 1200.0))
+    analysis = analyze_beads(image.astype(np.uint16), params)
+    notes: list[str] = []
+    assert focal_surface(analysis, select_beads(analysis, Selection()), notes=notes) is None
+    assert notes and "not on one surface" in notes[0]

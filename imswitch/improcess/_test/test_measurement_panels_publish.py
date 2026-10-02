@@ -109,7 +109,7 @@ def test_psf_panel_emits_processor_contract_params(qtbot):
     beads = dict(zip(output.keys, output.results))["beads"]
     assert isinstance(beads, BeadTableResult)
     assert beads.analysis.source == "auto"
-    assert [row["status"] for row in beads.table_records()] == ["ok"]
+    assert len(beads.table_records()) == 1  # the one bead, selected
 
 
 def test_psf_panel_roi_source_forwards_roi_manager_rois(qtbot):

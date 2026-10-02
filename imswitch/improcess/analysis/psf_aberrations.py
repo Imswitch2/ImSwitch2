@@ -181,12 +181,23 @@ class ScalarPSF:
         return intensity
 
 
+
 # --------------------------------------------------------------------------- #
 # Fit
 # --------------------------------------------------------------------------- #
+ILLUMINATIONS = ("widefield", "light_sheet")
+
+
 @dataclass
 class AberrationFit:
-    """Fitted Zernike coefficients (nm RMS) and fit diagnostics."""
+    """Fitted Zernike coefficients (nm RMS) and fit diagnostics.
+
+    ``blur_nm`` is the fitted extra Gaussian blur (sigma) beyond the bead
+    size: sampling, interpolation (deskew), drift. ``sheet`` describes the
+    fitted light-sheet envelope (``tilt_deg`` of its normal from the z axis,
+    ``azimuth_deg`` of that tilt in the x-y plane, ``fwhm_nm`` thickness) when
+    the illumination is a light sheet.
+    """
 
     coeffs_nm: dict[int, float]
     coeffs_err_nm: dict[int, float]
@@ -200,6 +211,10 @@ class AberrationFit:
     wavelength_nm: float
     n_beads: int = 1
     warnings: list[str] = field(default_factory=list)
+    blur_nm: float | None = None
+    sheet: dict[str, float] | None = None
+    illumination: str = "widefield"
+    pixel_size_nm: tuple[float, float, float] | None = None
 
     def rows(self) -> list[dict[str, object]]:
         """One row per fitted mode."""
@@ -213,6 +228,31 @@ class AberrationFit:
             }
             for j, c in self.coeffs_nm.items()
         ]
+
+    def wavefront(self, size: int = 129) -> np.ndarray:
+        """The fitted pupil phase in nm on a ``size x size`` grid over the unit
+        disk (NaN outside). Rows are pupil y, columns pupil x."""
+        r = (np.arange(size) - (size - 1) / 2) / ((size - 1) / 2)
+        y, x = np.meshgrid(r, r, indexing="ij")
+        rho, theta = np.hypot(x, y), np.arctan2(y, x)
+        inside = rho <= 1.0
+        phase = np.zeros((size, size))
+        for j, c in self.coeffs_nm.items():
+            phase += c * np.where(inside, zernike(j, np.where(inside, rho, 0.0), theta), 0.0)
+        return np.where(inside, phase, np.nan)
+
+    def headline(self) -> str:
+        """One line with the dominant aberrations, for status reports."""
+        parts = []
+        for name, pair in self.pairs.items():
+            parts.append(f"{name} {pair['magnitude_nm_rms']:.0f} nm @ {pair['angle_deg']:.0f}°")
+        if 11 in self.coeffs_nm:
+            parts.append(f"spherical {self.coeffs_nm[11]:+.0f} nm")
+        text = f"{self.rms_nm:.0f} nm RMS (Strehl ≈ {self.strehl:.2f}, fit R² {self.r2:.2f}): " + ", ".join(parts)
+        if self.sheet:
+            text += (f"; light sheet {self.sheet['fwhm_nm']:.0f} nm thick, tilted "
+                     f"{self.sheet['tilt_deg']:.0f}°")
+        return text
 
 
 def _pairs(c: dict[int, float]) -> dict[str, dict[str, float]]:
@@ -228,6 +268,11 @@ def _pairs(c: dict[int, float]) -> dict[str, dict[str, float]]:
     return out
 
 
+def _grids_nm(shape: Sequence[int], px: Sequence[float]) -> list[np.ndarray]:
+    axes = [(np.arange(n) - (n - 1) / 2) * p for n, p in zip(shape, px)]
+    return list(np.meshgrid(*axes, indexing="ij"))
+
+
 def fit_aberrations(
     data: np.ndarray,
     pixel_size_nm: Sequence[float],
@@ -240,16 +285,28 @@ def fit_aberrations(
     backend: PSFBackend | None = None,
     z_flip: bool = False,
     n_starts: int = 3,
+    illumination: str = "widefield",
+    fit_blur: bool = True,
 ) -> AberrationFit:
     """Fit Zernike coefficients to a roughly centred 3-D bead stack ``(z, y, x)``.
 
-    The fit runs in two stages (position, amplitude, astigmatism and spherical
-    first, then every mode) from ``n_starts`` spherical starting values, and
-    keeps the best: phase retrieval has local minima.
+    The model is ``A * [PSF(c) * envelope] (*) blur + b``: the pupil model
+    with the Zernike phase, for a ``"light_sheet"`` illumination multiplied
+    by a Gaussian excitation envelope across a (possibly tilted) sheet, and
+    convolved with the bead (fixed) and an extra fitted Gaussian blur
+    (``fit_blur``). The envelope sits on the emitter: a scanned sheet, or a
+    sample scanned through a fixed one, excites a bead by its distance from
+    the sheet plane through each voxel.
+
+    The fit runs in two stages (position, amplitude, nuisances, astigmatism
+    and spherical first, then every mode) from ``n_starts`` spherical starting
+    values, and keeps the best: phase retrieval has local minima.
     """
     data = np.asarray(data, dtype=np.float64)
     if data.ndim != 3:
         raise ValueError("aberration fitting needs a 3-D (Z, Y, X) stack")
+    if illumination not in ILLUMINATIONS:
+        raise ValueError(f"unknown illumination {illumination!r}; expected one of {ILLUMINATIONS}")
     if z_flip:
         data = data[::-1]
     px = tuple(float(v) for v in pixel_size_nm)
@@ -257,22 +314,31 @@ def fit_aberrations(
     modes = tuple(int(j) for j in modes)
     if any(j <= 4 for j in modes):
         raise ValueError("piston, tilt and defocus (Noll 1-4) are position parameters, not fitted modes")
+    sheet = illumination == "light_sheet"
+    lam = wavelength_nm
 
-    bead_sigma_px = None
-    if bead_diameter_nm:
-        s = bead_sigma_nm(bead_diameter_nm, bead_labeling)
-        bead_sigma_px = tuple(s / p for p in px)
+    bead_sigma = bead_sigma_nm(bead_diameter_nm, bead_labeling) if bead_diameter_nm else 0.0
+    grid_z, grid_y, grid_x = _grids_nm(data.shape, px) if sheet else (None, None, None)
 
     reference_max = float(backend(data.shape, px, {}, (0.0, 0.0, 0.0)).max())
     baseline = float(np.median(data))
     scale = float(data.max() - baseline) or 1.0
     normalized = (data - baseline) / scale
 
+    n_modes = len(modes)
+    i_blur = 5 + n_modes
+    i_sheet = i_blur + (1 if fit_blur else 0)
+
     def model(p: np.ndarray) -> np.ndarray:
         amplitude, background, z0, y0, x0 = p[:5]
-        psf = backend(data.shape, px, dict(zip(modes, p[5:])), (z0, y0, x0)) / reference_max
-        if bead_sigma_px:
-            psf = ndimage.gaussian_filter(psf, bead_sigma_px, mode="constant")
+        psf = backend(data.shape, px, dict(zip(modes, p[5:5 + n_modes])), (z0, y0, x0)) / reference_max
+        if sheet:
+            ty, tx, thickness = p[i_sheet:i_sheet + 3]
+            u = ((grid_z - z0) + ty * (grid_y - y0) + tx * (grid_x - x0)) / math.sqrt(1 + ty * ty + tx * tx)
+            psf = psf * np.exp(-0.5 * (u / thickness) ** 2)
+        blur = math.hypot(bead_sigma, p[i_blur]) if fit_blur else bead_sigma
+        if blur > 0:
+            psf = ndimage.gaussian_filter(psf, tuple(blur / p_ for p_ in px), mode="constant")
         return amplitude * psf + background
 
     def residual(p: np.ndarray) -> np.ndarray:
@@ -282,18 +348,33 @@ def fit_aberrations(
     com = ndimage.center_of_mass(weights) if weights.sum() > 0 else np.array(data.shape) / 2
     start_position = [(com[k] - (data.shape[k] - 1) / 2) * px[k] for k in range(3)]
 
-    lam = wavelength_nm
     extent = [data.shape[k] * px[k] for k in range(3)]
-    lower = np.array([0.0, -1.0, *(-e for e in extent)] + [-lam] * len(modes))
-    upper = np.array([np.inf, 1.0, *extent] + [lam] * len(modes))
-    x_scale = np.array([1.0, 0.1, *px] + [lam / 20] * len(modes))
+    p_start = [1.0, 0.0, *start_position] + [0.0] * n_modes
+    lower = [0.0, -1.0, *(-e for e in extent)] + [-lam] * n_modes
+    upper = [np.inf, 1.0, *extent] + [lam] * n_modes
+    x_scale = [1.0, 0.1, *px] + [lam / 20] * n_modes
+    nuisance = []
+    if fit_blur:
+        nuisance.append(len(p_start))
+        p_start.append(0.25 * px[1])
+        lower.append(1.0)
+        upper.append(4.0 * max(px))
+        x_scale.append(0.25 * px[1])
+    if sheet:
+        nuisance += [len(p_start), len(p_start) + 1, len(p_start) + 2]
+        p_start += [0.0, 0.0, 0.25 * extent[0]]
+        lower += [-5.0, -5.0, 0.5 * px[0]]
+        upper += [5.0, 5.0, 10.0 * extent[0]]
+        x_scale += [0.2, 0.2, 2.0 * px[0]]
+        p_start[0] = 2.0  # the envelope dims the in-focus peak
+    p_start, lower, upper, x_scale = (np.array(v, dtype=np.float64) for v in (p_start, lower, upper, x_scale))
 
-    first_stage = [0, 1, 2, 3, 4] + [5 + i for i, j in enumerate(modes) if j in (5, 6, 11)]
+    first_stage = [0, 1, 2, 3, 4] + [5 + i for i, j in enumerate(modes) if j in (5, 6, 11)] + nuisance
     spherical = modes.index(11) if 11 in modes else None
     starts = [0.0] if spherical is None or n_starts <= 1 else list(np.linspace(-lam / 8, lam / 8, n_starts))
     best = None
     for start in starts:
-        p0 = np.array([1.0, 0.0, *start_position] + [0.0] * len(modes))
+        p0 = p_start.copy()
         if spherical is not None:
             p0[5 + spherical] = start
 
@@ -321,15 +402,25 @@ def fit_aberrations(
     fitted = model(p)
     ss_tot = float(((normalized - normalized.mean()) ** 2).sum())
     r2 = 1.0 - float(((fitted - normalized) ** 2).sum()) / ss_tot if ss_tot > 0 else float("nan")
-    coeffs = {j: float(v) for j, v in zip(modes, p[5:])}
+    coeffs = {j: float(v) for j, v in zip(modes, p[5:5 + n_modes])}
     rms = math.sqrt(sum(v * v for v in coeffs.values()))
     model_image = fitted * scale + baseline
     data_image = data
     if z_flip:
         model_image, data_image = model_image[::-1], data_image[::-1]
+    sheet_info = None
+    if sheet:
+        ty, tx, thickness = (float(v) for v in p[i_sheet:i_sheet + 3])
+        if z_flip:
+            ty, tx = -ty, -tx
+        sheet_info = {
+            "tilt_deg": math.degrees(math.atan(math.hypot(ty, tx))),
+            "azimuth_deg": math.degrees(math.atan2(ty, tx)),
+            "fwhm_nm": 2.0 * math.sqrt(2.0 * math.log(2.0)) * thickness,
+        }
     return AberrationFit(
         coeffs_nm=coeffs,
-        coeffs_err_nm={j: float(v) for j, v in zip(modes, errors[5:])},
+        coeffs_err_nm={j: float(v) for j, v in zip(modes, errors[5:5 + n_modes])},
         rms_nm=rms,
         strehl=math.exp(-((2 * math.pi * rms / lam) ** 2)),
         pairs=_pairs(coeffs),
@@ -338,6 +429,10 @@ def fit_aberrations(
         model=model_image,
         data=data_image,
         wavelength_nm=lam,
+        blur_nm=float(p[i_blur]) if fit_blur else None,
+        sheet=sheet_info,
+        illumination=illumination,
+        pixel_size_nm=px,
     )
 
 
@@ -350,6 +445,7 @@ def fit_aberrations_from_analysis(
     modes: Sequence[int] = DEFAULT_MODES,
     backend: PSFBackend | None = None,
     z_flip: bool = False,
+    illumination: str = "widefield",
 ) -> AberrationFit:
     """Average the selected beads on a crop wide enough for phase retrieval
     and fit Zernike modes. Needs calibrated 3-D data and NA + wavelength."""
@@ -362,8 +458,9 @@ def fit_aberrations_from_analysis(
         raise ValueError("aberration fitting needs NA and emission wavelength")
     px = np.asarray(p.pixel_size, dtype=np.float64)
     if axial_half_nm is None:
-        axial = expected_fwhm_nm(p)[1]
-        axial_half_nm = 2.5 * (axial if axial and np.isfinite(axial) else 3 * 0.51 * p.wavelength_nm / p.na)
+        # The measured axial width (detection scale), not the theory: an
+        # aberrated bead spreads further than the diffraction limit says.
+        axial_half_nm = 2.5 * analysis.expected_fwhm()[0]
     half = np.ceil(np.array([axial_half_nm, lateral_half_nm, lateral_half_nm]) / px).astype(int)
     half = np.minimum(half, (np.array(data.shape) - 5) // 2)
     averaged = average_psf(data, analysis, mask, half_px=half, fit=False)
@@ -375,14 +472,23 @@ def fit_aberrations_from_analysis(
     result = fit_aberrations(
         averaged.image, tuple(px), p.na, p.wavelength_nm, p.refractive_index, modes=modes,
         bead_diameter_nm=p.bead_diameter_nm, bead_labeling=p.bead_labeling,
-        backend=backend, z_flip=z_flip,
+        backend=backend, z_flip=z_flip, illumination=illumination,
     )
     result.n_beads = averaged.n
     if averaged.n < 5:
         result.warnings.append(f"Aberrations estimated from only {averaged.n} bead(s).")
-    if result.r2 < 0.9:
+    if result.r2 < 0.85:
+        hint = (
+            " If this is light-sheet data, set Illumination to 'light sheet'."
+            if illumination == "widefield" else ""
+        )
         result.warnings.append(
-            f"Model fit R^2 = {result.r2:.2f}: the model may not describe this PSF "
-            "(check NA, wavelength and pixel size, or use a vectorial backend)."
+            f"Aberration model fit R² = {result.r2:.2f}: the model does not describe this PSF well, "
+            f"so the coefficients are approximate (check NA, wavelength and pixel size).{hint}"
+        )
+    if result.sheet and 7 in result.coeffs_nm and 8 in result.coeffs_nm:
+        result.warnings.append(
+            "Coma and a tilted light sheet look alike; the coma magnitude is meaningful, "
+            "its direction less so."
         )
     return result

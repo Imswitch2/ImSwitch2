@@ -1,5 +1,7 @@
 """Zernike basis and model-based aberration fitting."""
 
+import re
+
 import numpy as np
 import pytest
 
@@ -55,3 +57,42 @@ def test_rejects_position_modes_and_2d_data():
         fit_aberrations(_stack({}), PX, 1.4, 520, modes=(4, 5))
     with pytest.raises(ValueError):
         fit_aberrations(np.zeros((8, 8)), PX, 1.4, 520)
+
+
+def _sheet_stack(coeffs, tilt_deg=30.0, sheet_sigma=450.0, blur=80.0, seed=1):
+    """A bead under a tilted light sheet: the pupil model times a Gaussian
+    envelope across the sheet (normal tilted in z-y), blurred, with noise."""
+    from scipy import ndimage
+
+    px = (150.0, 120.0, 120.0)
+    shape = (41, 25, 25)
+    psf = ScalarPSF(1.0, 515, 1.33)(shape, px, coeffs, (0.0, 0.0, 0.0))
+    z, y, x = np.meshgrid(*[(np.arange(n) - (n - 1) / 2) * p for n, p in zip(shape, px)], indexing="ij")
+    t = np.tan(np.radians(tilt_deg))
+    u = (z + t * y) / np.sqrt(1 + t * t)
+    psf = ndimage.gaussian_filter(psf * np.exp(-0.5 * (u / sheet_sigma) ** 2), [blur / p for p in px],
+                                  mode="constant")
+    rng = np.random.default_rng(seed)
+    return rng.poisson(psf / psf.max() * 3000.0 + 100.0).astype(float), px
+
+
+def test_light_sheet_envelope_is_fitted_with_the_aberrations():
+    truth = {5: 20.0, 6: -15.0, 11: -60.0}
+    data, px = _sheet_stack(truth)
+    sheet = fit_aberrations(data, px, 1.0, 515, 1.33, illumination="light_sheet")
+    assert sheet.r2 > 0.97
+    assert sheet.coeffs_nm[11] == pytest.approx(-60.0, abs=8.0)
+    assert sheet.pairs["astigmatism"]["magnitude_nm_rms"] == pytest.approx(25.0, abs=8.0)
+    assert sheet.sheet["tilt_deg"] == pytest.approx(30.0, abs=4.0)
+    assert sheet.sheet["fwhm_nm"] == pytest.approx(2.3548 * 450.0, rel=0.15)
+    widefield = fit_aberrations(data, px, 1.0, 515, 1.33, n_starts=1)
+    assert widefield.r2 < sheet.r2 - 0.05  # a pupil model alone cannot explain it
+
+
+def test_wavefront_map_and_headline():
+    fit = fit_aberrations(_stack({11: 40.0}), PX, 1.4, 520, n_starts=1)
+    phase = fit.wavefront(65)
+    inside = np.isfinite(phase)
+    assert np.sqrt(np.mean(phase[inside] ** 2)) == pytest.approx(fit.rms_nm, rel=0.05)
+    match = re.search(r"spherical ([+-]\d+) nm", fit.headline())
+    assert match and int(match.group(1)) == pytest.approx(40, abs=2)
