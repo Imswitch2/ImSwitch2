@@ -2600,6 +2600,7 @@ def _load_widget_registry() -> dict:
         "ViewerTools": "Core",
         "LineProfile": "Core",
         "Console": "Core",
+        "Log": "Core",
         # Control
         "Laser": "Control",
         "Positioner": "Control",

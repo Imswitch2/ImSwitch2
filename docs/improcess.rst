@@ -770,6 +770,19 @@ threshold curve and cutoff marker.  The same graph contract is intended for
 future processing units such as batch summaries, FLIM traces and line-profile
 tools.
 
+Log panel
+=========
+
+Set ``"logPanel": true`` in the ``processing`` block to open the log panel at
+startup, or toggle it at any time from **View > Log**.  It is the same log, the
+same buffer and the same panel ImControl uses, so the two are two views of one
+thing — see :ref:`the Log panel <log-panel>` in :doc:`gui` for what the
+controls do.
+
+Worth enabling for a standalone bundle, which has no console behind it on
+macOS.  The log is also written to ``ImSwitchConfig/logs/imswitch.log``
+regardless of whether the panel is open.
+
 Metadata panel
 ==============
 

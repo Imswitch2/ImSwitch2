@@ -134,6 +134,16 @@ def is_metadata_panel_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("metadataPanel", False))
 
 
+def is_log_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the ImProcess log panel starts out visible.
+
+    Off by default: the panel is always built and always reachable from
+    View > Log, so this only decides whether it is open on startup.  Worth
+    turning on for a standalone bundle, which has no console behind it.
+    """
+    return bool(processing_config.get("logPanel", False))
+
+
 def is_napari_storm_viewer_enabled(processing_config: dict[str, Any]) -> bool:
     """Return whether localization results render through napari-storm.
 

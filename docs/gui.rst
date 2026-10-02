@@ -1479,6 +1479,42 @@ opens pyqtgraph's panel for inspecting exceptions and their stack traces.
    :align: center
    :width: 256px
 
+.. _log-panel:
+
+Log
+---
+
+Everything ImSwitch2 logs, in a panel.  Always available from **View > Log**;
+add ``Log`` to ``availableWidgets`` to have it open at startup.
+
+This is the only way to read the log in a standalone bundle: the Windows build
+keeps a console window behind the application, and the macOS ``.app`` has
+nowhere to print at all (see :doc:`packaging`).  From a terminal the same
+records also go to stderr, as they always have.
+
+Records are buffered **from the moment ImSwitch2 starts, at Debug level**,
+whatever the console shows.  Two things follow, both deliberate:
+
+* Opening the panel after something went wrong shows what already happened --
+  the records you want are usually minutes old by the time you think to look.
+* **Level** raises or lowers what the panel shows without restarting.  On a
+  microscope that matters: the run that misbehaved is often not one you can
+  repeat, and ``--debug`` is a decision you would otherwise have had to make
+  before it happened.
+
+**Filter** narrows to records containing a string, and applies to the history
+too, not only to new records.  **Follow** scrolls to the newest record as it
+arrives; untick it to read back without being dragged to the bottom.  **Copy**
+and **Save…** take what is currently shown -- filters included -- which is what
+to send when reporting a problem.
+
+The same log is also written to ``ImSwitchConfig/logs/imswitch.log``, rotating
+at 5 MB over four files, and **Log folder** opens the folder holding it.  That
+file is what survives a crash, or a startup that never reached a window, which
+no panel can help with.  The panel and ImProcess's own Log panel are two views
+of one log, so a recording in ImControl and ImProcess reacting to it appear in
+both.
+
 File watcher
 ------------
 

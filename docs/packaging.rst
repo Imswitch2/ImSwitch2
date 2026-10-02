@@ -215,6 +215,27 @@ is only part of the bundle -- ``pip install imswitch2`` does not grow a
 ``--bundle-selftest`` option.
 
 
+Reading the log from a bundle
+=============================
+
+A bundle has nowhere obvious to print.  The Windows build keeps a console window
+behind the application (``IMSWITCH_BUNDLE_CONSOLE=0`` turns it off), but the
+macOS ``.app`` has no console at all -- anything written to stderr there is
+simply gone.
+
+So there are two ways in, and neither needs a terminal:
+
+* **View > Log**, in both ImControl and ImProcess.  Records are buffered from
+  startup at Debug level, so the panel shows what happened before it was
+  opened, and its **Copy** / **Save…** buttons produce something to attach to a
+  bug report.  See :doc:`gui`.
+* ``ImSwitchConfig/logs/imswitch.log``, rotating at 5 MB over four files.  This
+  is the one that survives a crash or a startup that never reached a window --
+  the failures a panel cannot help with.  Ask for this file first.
+
+Both are populated whether or not anyone opens a panel, and on a source install
+as well as a bundle.
+
 The frozen-multiprocessing trap
 ===============================
 
