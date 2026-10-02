@@ -720,3 +720,28 @@ class TestSnoutyWidgetPrefill:
         values = widget.get_values()
 
         assert (values["cycles"], values["planes_in_cycle"]) == (5, 6)
+
+
+def test_snouty_hdf5_reloads_calibrated(tmp_path):
+    """The deskew writer stores axes and voxel size on the volume, and a file
+    written before it did is still read as a calibrated Z, Y, X stack."""
+    from imswitch.improcess.model.DataObj import DataObj
+    from imswitch.improcess.reconstructors.snouty.result import SnoutyResult
+
+    params = dict(DEFAULT_PARAMS, sample_vx_size=250.0)
+    path = tmp_path / "deskewed.h5"
+    SnoutyResult("deskewed", np.zeros((5, 6, 7), np.float32), params).save(path, fmt="hdf5")
+    loaded = DataObj("deskewed", "volume", path=str(path))
+    assert list(loaded.axis_labels) == ["Z", "Y", "X"]
+    assert list(loaded.axis_scales) == pytest.approx([0.25, 0.25, 0.25]) and loaded.scale_unit == "um"
+    loaded.checkAndUnloadData()
+
+    legacy = tmp_path / "legacy.h5"
+    with h5py.File(legacy, "w") as f:
+        f.create_dataset("volume", data=np.zeros((5, 6, 7), np.float32))
+        for key, value in params.items():
+            f.attrs[key] = value
+    loaded = DataObj("legacy", "volume", path=str(legacy))
+    assert list(loaded.axis_labels) == ["Z", "Y", "X"]
+    assert list(loaded.axis_scales) == pytest.approx([0.25, 0.25, 0.25])
+    loaded.checkAndUnloadData()
