@@ -407,6 +407,24 @@ def test_pixel_world_conversion_scales_the_translation():
     np.testing.assert_allclose(world[:2, 2], [5.0, 5.0])
 
 
+def test_pixel_world_conversion_supports_different_source_and_target_scales():
+    matrix = np.array(
+        [[1.02, 0.04, 8.0], [-0.03, 0.97, -6.0], [0.0, 0.0, 1.0]]
+    )
+    source_scale = (0.16, 0.08)
+    target_scale = (0.20, 0.10)
+
+    world = pixel_matrix_to_world(matrix, source_scale, target_scale)
+
+    source_scaling = np.diag([*source_scale, 1.0])
+    target_scaling = np.diag([*target_scale, 1.0])
+    expected = target_scaling @ matrix @ np.linalg.inv(source_scaling)
+    np.testing.assert_allclose(world, expected)
+    np.testing.assert_allclose(
+        world_matrix_to_pixel(world, source_scale, target_scale), matrix
+    )
+
+
 def test_matrix_to_ndimage_returns_the_inverse_mapping():
     model = AffineTransform.from_linear_offset([[1.0, 0.0], [0.0, 1.0]], [3.0, 7.0])
     linear, offset = matrix_to_ndimage(model.matrix)

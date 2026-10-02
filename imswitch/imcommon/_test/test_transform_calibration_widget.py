@@ -94,6 +94,44 @@ def test_unknown_model_is_refused(widget):
         widget.setSelectedModel("projective")
 
 
+def test_host_can_register_an_independent_correspondence_strategy(widget):
+    from imswitch.imcommon.algorithms.transforms.correspondence import (
+        CorrespondenceResult,
+        CorrespondenceStrategySpec,
+    )
+
+    source_points = np.array(
+        [[10.0, 10.0], [10.0, 30.0], [30.0, 10.0], [30.0, 30.0]]
+    )
+    target_points = source_points + np.array([2.0, -3.0])
+
+    def correspondence(_source, _target, _parameters):
+        return CorrespondenceResult(
+            source_points=source_points,
+            target_points=target_points,
+            metadata={"provider": "test"},
+        )
+
+    widget.registerCorrespondenceStrategy(
+        CorrespondenceStrategySpec(
+            name="test_points",
+            label="Test points",
+            description="Synthetic host correspondence",
+            handler=correspondence,
+        ),
+        select=True,
+    )
+    widget.setSourceImage(np.zeros((48, 48)), "moving")
+    widget.setTargetImage(np.zeros((48, 48)), "reference")
+    widget.setSelectedModel("translation")
+
+    widget.calibrate()
+
+    assert widget.transform.provenance["strategy"] == "test_points"
+    assert widget.transform.provenance["correspondence"]["provider"] == "test"
+    np.testing.assert_allclose(widget.transform.as_matrix()[:2, 2], [2.0, -3.0])
+
+
 @pytest.mark.parametrize(
     "model, expected_kind",
     [

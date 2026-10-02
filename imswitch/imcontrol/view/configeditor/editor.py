@@ -2620,6 +2620,7 @@ def _load_widget_registry() -> dict:
         "AlignmentLine": "Analysis",
         "ULenses": "Analysis",      # Code uses ULenses (capital U)
         "uLenses": "Analysis",      # Docstring uses uLenses (lowercase u)
+        "TransformCalibration": "Analysis",
         "BFTimelapse": "Analysis",
         # Advanced
         "SLMs": "Advanced",
@@ -2662,6 +2663,7 @@ def _load_widget_registry() -> dict:
             ("AlignXY",        "Rotational alignment tool"),
             ("AlignmentLine",  "Line alignment overlay"),
             ("ULenses",        "uLenses tool"),
+            ("TransformCalibration", "General image transform calibration"),
             ("BFTimelapse",    "Brightfield timelapse"),
         ],
         "Advanced": [

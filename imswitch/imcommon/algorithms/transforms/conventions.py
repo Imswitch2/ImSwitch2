@@ -79,16 +79,18 @@ def points_yx_to_xy(points: Any) -> np.ndarray:
     return points_xy_to_yx(points)
 
 
-def pixel_matrix_to_world(matrix: Any, scale: Sequence[float] | None) -> np.ndarray:
+def pixel_matrix_to_world(
+    matrix: Any,
+    scale: Sequence[float] | None,
+    target_scale: Sequence[float] | None = None,
+) -> np.ndarray:
     """Convert a pixel-space affine into the world-space affine napari stores.
 
-    A pixel-space matrix and a physical-space matrix are different objects: if
-    a layer carries a ``scale``, the transform napari applies lives in scaled
-    world coordinates. The conversion is the conjugation ``S @ H @ S^-1``.
-
-    This is also the seed of the physical-units decision (D3 in the plan): the
-    same conjugation is what will let a calibration be stored in micrometres
-    and applied at whatever pixel size the detector currently has.
+    A pixel-space matrix and a physical-space matrix are different objects.
+    ``scale`` is the moving/source pixel scale and ``target_scale`` is the
+    reference/target scale.  The conversion is
+    ``S_target @ H @ S_source^-1``.  Omitting ``target_scale`` preserves the
+    historical same-scale conjugation ``S @ H @ S^-1``.
     """
     homogeneous = _as_homogeneous(matrix)
     values = (
@@ -103,27 +105,62 @@ def pixel_matrix_to_world(matrix: Any, scale: Sequence[float] | None) -> np.ndar
     if np.any(values == 0):
         raise ValueError(f"scale entries must be non-zero, got {values.tolist()}")
 
-    scaling = np.diag([values[0], values[1], 1.0])
-    return scaling @ homogeneous @ np.linalg.inv(scaling)
+    source_scaling = np.diag([values[0], values[1], 1.0])
+
+    target_values = (
+        values
+        if target_scale is None
+        else np.asarray(target_scale, dtype=np.float64).reshape(-1)
+    )
+    if target_values.size < 2:
+        target_values = np.ones(2, dtype=np.float64)
+    else:
+        target_values = target_values[-2:]
+    if np.any(target_values == 0):
+        raise ValueError(
+            f"target scale entries must be non-zero, got {target_values.tolist()}"
+        )
+    target_scaling = np.diag([target_values[0], target_values[1], 1.0])
+    return target_scaling @ homogeneous @ np.linalg.inv(source_scaling)
 
 
-def world_matrix_to_pixel(matrix: Any, scale: Sequence[float] | None) -> np.ndarray:
-    """Inverse of :func:`pixel_matrix_to_world`."""
+def world_matrix_to_pixel(
+    matrix: Any,
+    scale: Sequence[float] | None,
+    target_scale: Sequence[float] | None = None,
+) -> np.ndarray:
+    """Inverse of :func:`pixel_matrix_to_world` for the same two scales."""
     homogeneous = _as_homogeneous(matrix)
-    values = (
+    source_values = (
         np.ones(2, dtype=np.float64)
         if scale is None
         else np.asarray(scale, dtype=np.float64).reshape(-1)
     )
-    if values.size < 2:
-        values = np.ones(2, dtype=np.float64)
+    if source_values.size < 2:
+        source_values = np.ones(2, dtype=np.float64)
     else:
-        values = values[-2:]
-    if np.any(values == 0):
-        raise ValueError(f"scale entries must be non-zero, got {values.tolist()}")
+        source_values = source_values[-2:]
+    if np.any(source_values == 0):
+        raise ValueError(
+            f"scale entries must be non-zero, got {source_values.tolist()}"
+        )
+    target_values = (
+        source_values
+        if target_scale is None
+        else np.asarray(target_scale, dtype=np.float64).reshape(-1)
+    )
+    if target_values.size < 2:
+        target_values = np.ones(2, dtype=np.float64)
+    else:
+        target_values = target_values[-2:]
+    if np.any(target_values == 0):
+        raise ValueError(
+            f"target scale entries must be non-zero, got {target_values.tolist()}"
+        )
 
-    scaling = np.diag([values[0], values[1], 1.0])
-    return np.linalg.inv(scaling) @ homogeneous @ scaling
+    source_scaling = np.diag([source_values[0], source_values[1], 1.0])
+    target_scaling = np.diag([target_values[0], target_values[1], 1.0])
+    return np.linalg.inv(target_scaling) @ homogeneous @ source_scaling
 
 
 def matrix_to_ndimage(matrix: Any) -> tuple[np.ndarray, np.ndarray]:

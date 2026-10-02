@@ -140,6 +140,21 @@ class PositionerInfo(DeviceInfo):
 
 
 @dataclass(frozen=True)
+class TransformCalibrationSetupInfo:
+    auto_load: bool = False
+    """Whether this named spatial transform is loaded when ImControl starts."""
+
+    calibration_file: Optional[str] = None
+    """JSON/HDF5 spatial-transform file. Relative paths use the calibration dir."""
+
+
+@dataclass(frozen=True)
+class CalibrationsInfo:
+    transforms: Dict[str, TransformCalibrationSetupInfo] = field(default_factory=dict)
+    """Named reusable spatial calibrations, keyed by workflow/purpose."""
+
+
+@dataclass(frozen=True)
 class RS232Info:
     managerName: str
     """ RS232 manager class name. """
@@ -678,6 +693,9 @@ class SetupInfo:
 
     flipMirrors: Optional[Dict[str, FlipMirrorInfo]] = field(default_factory=lambda: None)
     """ Motorized flip mirror settings. """
+
+    calibrations: CalibrationsInfo = field(default_factory=CalibrationsInfo)
+    """Named transform-calibration startup settings."""
 
     microscopeStand: Optional[MicroscopeStandInfo] = field(default_factory=lambda: None)
     """ Microscope stand settings. Required to be defined to use MotCorr widget. """

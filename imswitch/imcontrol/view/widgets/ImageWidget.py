@@ -1,12 +1,18 @@
+import weakref
+
+import napari
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcommon.algorithms.transforms.conventions import pixel_matrix_to_world
 from imswitch.imcommon.model import shortcut
 from imswitch.imcommon.view.guitools import naparitools
 from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 
 
 class ImageWidget(QtWidgets.QWidget):
+    sigTransformRegistrationTargetsChanged = QtCore.Signal()
+
     """ Widget containing viewbox that displays the new detector frames. """
 
     def __init__(self, *args, **kwargs):
@@ -21,6 +27,12 @@ class ImageWidget(QtWidgets.QWidget):
         #self.NapariResetViewWidget = naparitools.NapariResetViewWidget.addToViewer(self.napariViewer, 'right')
         #self.NapariSumImageWidget = naparitools.NapariSumImageWidget.addToViewer(self.napariViewer, 'right')
         self.imgLayers = {}
+        self._liveSourceRegistrations = {}
+        self._layerRegistrationBaselines = {}
+        # Napari emits layer-list events in the middle of live-layer
+        # recreation. Suppress those transient events so a persistent logical
+        # source registration is not mistaken for a real source deletion.
+        self._suspendRegistrationTargetSignals = 0
 
         # The viewer's tool broker, and the one ViewerToolManager behind it.
         # Viewer Tools draws through the manager and the Line Profile panel
@@ -35,6 +47,15 @@ class ImageWidget(QtWidgets.QWidget):
         # computation (extent.data[:, displayed_axes]) raises IndexError for
         # 2D layers while the user slides through a 3D scan result.
         self.napariViewer.dims.events.ndisplay.connect(self._on_ndisplay_changed)
+        try:
+            self.napariViewer.layers.events.inserted.connect(
+                self._registrationTargetsChanged
+            )
+            self.napariViewer.layers.events.removed.connect(
+                self._registrationTargetsChanged
+            )
+        except AttributeError:
+            pass
 
         self.viewCtrlLayout = QtWidgets.QVBoxLayout()
         self.viewCtrlLayout.setContentsMargins(0, 0, 0, 0)
@@ -90,23 +111,35 @@ class ImageWidget(QtWidgets.QWidget):
             pass
 
     def setLiveViewLayers(self, names):
-        for name, img in self.imgLayers.items():
-            if name not in names:
-                self._removeProtectedLayer(img)
+        names = tuple(names)
+        self._suspendRegistrationTargetSignals += 1
+        try:
+            for name, layer in self.imgLayers.items():
+                if name not in names:
+                    self._removeProtectedLayer(layer)
 
-        def addImage(name, colormap=None):
-            self.imgLayers[name] = self.napariViewer.add_image(
-                np.zeros((1, 1)), rgb=False, name=f'Live: {name}', blending='additive',
-                colormap=colormap, protected=True
-            )
+            def addImage(name, colormap=None):
+                self.imgLayers[name] = self.napariViewer.add_image(
+                    np.zeros((1, 1)), rgb=False, name=f'Live: {name}',
+                    blending='additive', colormap=colormap, protected=True
+                )
 
-        for name in names:
-            if (name not in self.imgLayers
-                    or self.imgLayers[name] not in self.napariViewer.layers):
-                try:
-                    addImage(name, name.lower())
-                except KeyError:
-                    addImage(name, 'grayclip')
+            for name in names:
+                if (name not in self.imgLayers
+                        or self.imgLayers[name] not in self.napariViewer.layers):
+                    try:
+                        addImage(name, name.lower())
+                    except KeyError:
+                        addImage(name, 'grayclip')
+                    self._applyLiveSourceRegistration(name)
+        finally:
+            self._suspendRegistrationTargetSignals -= 1
+        self._registrationTargetsChanged()
+
+    def _registrationTargetsChanged(self, event=None):
+        if self._suspendRegistrationTargetSignals:
+            return
+        self.sigTransformRegistrationTargetsChanged.emit()
 
     def _on_ndisplay_changed(self, event=None):
         """Pad all live-view layers to ndisplay dims when the viewer enters 3D mode."""
@@ -165,20 +198,26 @@ class ImageWidget(QtWidgets.QWidget):
             protected=True,
         )
 
-        self._removeProtectedLayer(old)
-        new = self.napariViewer.add_image(im, **properties)
+        self._suspendRegistrationTargetSignals += 1
         try:
-            new.visible = old.visible
-        except AttributeError:
-            pass
-        if index is not None:
+            self._removeProtectedLayer(old)
+            new = self.napariViewer.add_image(im, **properties)
             try:
-                new_index = layers.index(new)
-                if new_index != index:
-                    layers.move(new_index, index)
-            except (ValueError, IndexError):
+                new.visible = old.visible
+            except AttributeError:
                 pass
-        self.imgLayers[name] = new
+            if index is not None:
+                try:
+                    new_index = layers.index(new)
+                    if new_index != index:
+                        layers.move(new_index, index)
+                except (ValueError, IndexError):
+                    pass
+            self.imgLayers[name] = new
+            self._applyLiveSourceRegistration(name)
+        finally:
+            self._suspendRegistrationTargetSignals -= 1
+        self._registrationTargetsChanged()
 
     def addStaticLayer(self, name, im, scale=None):
         kwargs = dict(rgb=False, name=name, blending='additive')
@@ -190,6 +229,169 @@ class ImageWidget(QtWidgets.QWidget):
                 sc = sc[-im.ndim:]
             kwargs['scale'] = sc
         self.napariViewer.add_image(im, **kwargs)
+
+    def getLiveLayerSnapshot(self, detectorName):
+        layer = self.imgLayers.get(detectorName)
+        if layer is None or layer not in self.napariViewer.layers:
+            raise KeyError(f"live detector layer {detectorName!r} is unavailable")
+        image = np.squeeze(np.asarray(layer.data))
+        if image.ndim != 2:
+            raise ValueError(
+                f"live detector {detectorName!r} is not a 2D image after squeeze "
+                f"(shape {image.shape})"
+            )
+        return np.array(image, copy=True), tuple(layer.scale[-2:])
+
+    def getTransformRegistrationTargets(self):
+        targets = []
+        for detectorName, layer in self.imgLayers.items():
+            if layer in self.napariViewer.layers:
+                targets.append((
+                    f"Live source: {detectorName}",
+                    {"kind": "live_source", "name": str(detectorName)},
+                ))
+
+        live_layer_ids = {id(layer) for layer in self.imgLayers.values()}
+        for layer in self.napariViewer.layers:
+            if id(layer) in live_layer_ids:
+                continue
+            if not isinstance(layer, napari.layers.Image):
+                continue
+            name = getattr(layer, 'name', 'image')
+            targets.append((
+                f"Layer: {name}",
+                {"kind": "layer", "name": str(name), "layer_id": id(layer)},
+            ))
+        return targets
+
+    def applyTransformRegistration(self, target, pixel_matrix, target_scale=None):
+        if not isinstance(target, dict):
+            raise TypeError("registration target must be a mapping")
+        kind = target.get("kind")
+        name = target.get("name")
+        if kind == "live_source":
+            self.setLiveSourceRegistration(str(name), pixel_matrix, target_scale)
+            return
+        if kind == "layer":
+            self._setLayerTargetRegistration(target, pixel_matrix, target_scale)
+            return
+        raise ValueError(f"unknown registration target kind {kind!r}")
+
+    def clearTransformRegistration(self, target):
+        if not isinstance(target, dict):
+            return
+        kind = target.get("kind")
+        name = target.get("name")
+        if kind == "live_source":
+            self.clearLiveSourceRegistration(str(name))
+        elif kind == "layer":
+            self._clearLayerTargetRegistration(target)
+
+    def setLiveSourceRegistration(self, detectorName, pixel_matrix, target_scale=None):
+        self._liveSourceRegistrations[str(detectorName)] = (
+            np.asarray(pixel_matrix, dtype=np.float64).copy(),
+            None if target_scale is None else tuple(float(v) for v in target_scale),
+        )
+        self._applyLiveSourceRegistration(str(detectorName))
+
+    def clearLiveSourceRegistration(self, detectorName):
+        detectorName = str(detectorName)
+        self._liveSourceRegistrations.pop(detectorName, None)
+        layer = self.imgLayers.get(detectorName)
+        if layer is not None and layer in self.napariViewer.layers:
+            layer.affine = np.eye(int(layer.ndim) + 1)
+
+    def _applyLiveSourceRegistration(self, detectorName):
+        entry = self._liveSourceRegistrations.get(str(detectorName))
+        layer = self.imgLayers.get(str(detectorName))
+        if entry is None or layer is None or layer not in self.napariViewer.layers:
+            return
+        pixel_matrix, target_scale = entry
+        world = pixel_matrix_to_world(
+            self._asPlaneAffine(pixel_matrix), getattr(layer, 'scale', None), target_scale
+        )
+        layer.affine = self._embedPlaneAffine(world, int(layer.ndim))
+
+    def setLayerRegistration(self, layerName, pixel_matrix, target_scale=None):
+        """Compatibility helper for callers that only know a current layer name."""
+        target = {"kind": "layer", "name": str(layerName)}
+        self._setLayerTargetRegistration(target, pixel_matrix, target_scale)
+
+    def clearLayerRegistration(self, layerName):
+        """Compatibility helper for callers that only know a current layer name."""
+        target = {"kind": "layer", "name": str(layerName)}
+        self._clearLayerTargetRegistration(target)
+
+    def _setLayerTargetRegistration(self, target, pixel_matrix, target_scale=None):
+        layer = self._findLayerForRegistrationTarget(target)
+        if layer is None:
+            raise KeyError(f"napari layer {target.get('name')!r} no longer exists")
+        key = id(layer)
+        if key not in self._layerRegistrationBaselines:
+            self._layerRegistrationBaselines[key] = (
+                weakref.ref(layer),
+                self._layerAffineMatrix(layer),
+            )
+        baseline = self._layerRegistrationBaselines[key][1]
+        world = pixel_matrix_to_world(
+            self._asPlaneAffine(pixel_matrix), getattr(layer, 'scale', None), target_scale
+        )
+        registration = self._embedPlaneAffine(world, int(layer.ndim))
+        layer.affine = registration @ baseline
+
+    def _clearLayerTargetRegistration(self, target):
+        layer = self._findLayerForRegistrationTarget(target)
+        if layer is None:
+            layer_id = target.get("layer_id") if isinstance(target, dict) else None
+            if layer_id is not None:
+                self._layerRegistrationBaselines.pop(int(layer_id), None)
+            return
+        entry = self._layerRegistrationBaselines.pop(id(layer), None)
+        if entry is not None:
+            layer.affine = entry[1]
+
+    def _findLayerForRegistrationTarget(self, target):
+        if not isinstance(target, dict):
+            return None
+        layer_id = target.get("layer_id")
+        if layer_id is not None:
+            for layer in self.napariViewer.layers:
+                if id(layer) == int(layer_id):
+                    return layer
+            return None
+        return self._findLayerByName(str(target.get("name", "")))
+
+    @staticmethod
+    def _asPlaneAffine(matrix):
+        matrix = np.asarray(matrix, dtype=np.float64)
+        if matrix.shape == (3, 3):
+            return matrix
+        if matrix.shape == (2, 3):
+            result = np.eye(3, dtype=np.float64)
+            result[:2, :] = matrix
+            return result
+        raise ValueError(f"expected a 2D affine matrix, got shape {matrix.shape}")
+
+    @staticmethod
+    def _embedPlaneAffine(plane, ndim):
+        plane = ImageWidget._asPlaneAffine(plane)
+        ndim = int(ndim)
+        if ndim < 2:
+            raise ValueError("image layer must have at least 2 dimensions")
+        if ndim == 2:
+            return plane.copy()
+        result = np.eye(ndim + 1, dtype=np.float64)
+        result[-3:-1, -3:-1] = plane[:2, :2]
+        result[-3:-1, -1] = plane[:2, 2]
+        return result
+
+    @staticmethod
+    def _layerAffineMatrix(layer):
+        affine = getattr(layer, 'affine', None)
+        if affine is None:
+            return np.eye(int(layer.ndim) + 1, dtype=np.float64)
+        matrix = getattr(affine, 'affine_matrix', affine)
+        return np.asarray(matrix, dtype=np.float64).copy()
 
     def getCurrentImageName(self):
         return self.napariViewer.active_layer.name
@@ -240,6 +442,7 @@ class ImageWidget(QtWidgets.QWidget):
         # transform.
         layer.scale = scale
         layer.data = im
+        self._applyLiveSourceRegistration(name)
 
     def clearImage(self, name):
         self.setImage(name, np.zeros((1, 1)))

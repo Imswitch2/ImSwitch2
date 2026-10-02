@@ -179,6 +179,14 @@ But there is a real footgun at the boundary: if a detector has a display
 rotation on, a calibration measured by clicking on screen is wrong by that
 rotation. **Calibrate in raw detector coordinates, always.**
 
+**Integration note (2026-10-02).** The first ImControl hookup deliberately
+defers the full raw-coordinate composition above. It calibrates the already
+display-transformed live images, records each detector's `displayTransform` in
+the acquisition context, and refuses reuse if that orientation later changes.
+This keeps the first port aligned with what the user sees while preserving a
+clear migration path back to D5: compose the stored/raw detector transform with
+the two finite-image display transforms at apply time.
+
 **D6 — File format: JSON canonical, HDF5 as an embedding path.** One
 human-readable, diffable, git-able JSON file per transform, with an optional
 `.npy` sidecar for dense payloads (displacement fields). HDF5 is *also*
@@ -362,8 +370,26 @@ model would have flagged; picking the model class is how you find that out.
 
 Deferred from Step 0 by design, as planned: the live snap-from-detector path,
 the display-layer apply, the target-layer chooser, startup-calibration wiring,
-and the `imreconstruct.localizer` autolocalize path (that module does not exist
-in Imswitch2).
+and uLens-assisted autolocalization. These hookup pieces are implemented by the
+first ImControl integration described below rather than being baked into the
+Step-0 harness.
+
+### 0.8 First ImControl integration (2026-10-02)
+
+The shared widget now treats **correspondence/localization strategy** and
+**transform estimator** as independent choices. ImControl registers a uLens
+strategy that uses `imcontrol.model.ulenses_localizer` to infer grid dimensions
+and spacing, then delegates point detection/pairing to the shared foci-grid
+matcher. No ImControl dependency enters `imcommon`.
+
+ImControl adds live snap/apply through a thin host controller. Application has
+two explicit targets: a logical live source (persistent across Napari layer
+recreation and 2D/3D transitions) or one concrete existing image layer
+(instance-local). There is intentionally no "all layers" target. Pixel-to-world
+conversion accepts independent moving/reference scales,
+`S_target @ H_pixel @ inv(S_source)`. Named transform startup settings live
+under the generic setup `calibrations.transforms` section; startup loading does
+not imply automatic application.
 
 ---
 

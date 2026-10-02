@@ -97,6 +97,8 @@ class ViewSetupInfo(SetupInfo):
     - ``AlignXY`` (rotation alignment tool widget)
     - ``AlignmentLine`` (line alignment tool widget)
     - ``ULenses`` (uLenses tool widget; requires ``Image`` widget)
+    - ``TransformCalibration`` (general image transform calibration; requires
+      ``Image`` for live snap/apply integration)
     - ``FFT`` (FFT tool widget)
     - ``FLIMHist`` (FLIM per-pixel lifetime histogram widget; requires a
       detector that emits fluorescence-lifetime images, e.g. the
