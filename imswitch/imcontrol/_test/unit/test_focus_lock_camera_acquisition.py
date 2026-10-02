@@ -242,6 +242,26 @@ def test_unlocked_focus_lock_does_not_block_reacquisition_barrier():
     assert FocusLockController.waitForFocusReacquired(ctrl, timeoutS=0) is True
 
 
+
+
+def test_ending_roi_edit_resyncs_controls_when_camera_remains_stopped():
+    ctrl = _makeController(active=False)
+    ctrl._focusRoiEditing = True
+    ctrl._focusRoiSession = {'original': (0, 0, 10, 10), 'restoreAcquisition': False}
+    ctrl._focusRoiSelection = (0, 0, 10, 10)
+    ctrl._focusRoiDisplayShape = (10, 10)
+    ctrl._widget.cameraAcqButton.enabled = False
+    ctrl._widget.lockButton.enabled = False
+    ctrl._widget.focusCalibButton.enabled = False
+
+    FocusLockController._endFocusCameraRoiSession(ctrl)
+
+    assert ctrl._focusRoiEditing is False
+    assert ctrl._widget.cameraAcqButton.enabled is True
+    assert ctrl._widget.lockButton.enabled is False
+    assert ctrl._widget.focusCalibButton.enabled is False
+
+
 def test_post_stop_action_waits_for_stuck_worker_before_running():
     worker = _Worker(waitResult=False)
     worker.running = True

@@ -169,6 +169,9 @@ class FocusLockWidget(Widget):
         modelParam.setOpts(tip=f'Focus camera: {detectorName}')
 
         frameParam = tree.p.param('Image frame')
+        frameParam.addChild({
+            'name': 'Full chip', 'type': 'action', 'title': 'Full chip'
+        })
         frameParam.setOpts(
             tip=(
                 'Focus-camera ROI. Applying a crop safely stops the dedicated '
@@ -178,7 +181,10 @@ class FocusLockWidget(Widget):
         )
         frameParam.param('Binning').setOpts(enabled=False)
         frameParam.param('Mode').setOpts(enabled=False)
-        for name in ('X0', 'Y0', 'Width', 'Height', 'Apply', 'New ROI', 'Abort ROI'):
+        for name in (
+            'X0', 'Y0', 'Width', 'Height', 'Apply', 'New ROI', 'Abort ROI',
+            'Full chip',
+        ):
             frameParam.param(name).setOpts(enabled=self._focusCameraCroppable)
 
         # These are global Settings-widget concepts, not part of the dedicated

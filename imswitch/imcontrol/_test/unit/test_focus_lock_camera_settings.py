@@ -77,6 +77,7 @@ class _Tree:
             ('Apply', None),
             ('New ROI', None),
             ('Abort ROI', None),
+            ('Full chip', None),
         ):
             frame.add(name, _TreeParam(value))
         for parameterName, parameter in detectorParameters.items():
@@ -288,7 +289,9 @@ def test_focus_lock_widget_uses_two_tabs_and_exposes_safe_roi_controls(qtbot):
     frame = tree.p.param('Image frame')
     assert frame.param('Binning').opts.get('enabled') is False
     assert frame.param('Mode').opts.get('enabled') is False
-    for name in ('X0', 'Y0', 'Width', 'Height', 'Apply', 'New ROI', 'Abort ROI'):
+    for name in (
+        'X0', 'Y0', 'Width', 'Height', 'Apply', 'New ROI', 'Abort ROI', 'Full chip'
+    ):
         assert frame.param(name).opts.get('enabled') is True
     for name in ('Save mode', 'Delete mode', 'Update all detectors'):
         assert frame.param(name).opts.get('visible') is False
@@ -311,6 +314,25 @@ def test_numeric_focus_roi_applies_hardware_readback_without_global_detector_swi
 
     assert detector.cropCalls == [(12, 16, 100, 80)]
     assert persisted == [(12, 16, 100, 80)]
+    assert ctrl._master.detectorsManager.getCurrentDetectorName() == 'MainCam'
+
+
+
+
+def test_full_chip_action_uses_safe_roi_path_and_hardware_readback():
+    ctrl, detector = _makeController()
+    FocusLockController._setupFocusCameraSettings(ctrl)
+    tree = ctrl._focusCameraSettingsTree
+
+    persisted = []
+    ctrl._persistFocusCameraRoi = lambda roi: persisted.append(tuple(roi))
+    ctrl._refreshFocusCameraSettings = lambda: None
+    ctrl._endFocusCameraRoiSession = lambda: None
+
+    tree.p.param('Image frame').param('Full chip').sigActivated.emit()
+
+    assert detector.cropCalls == [(0, 0, 640, 480)]
+    assert persisted == [(0, 0, 640, 480)]
     assert ctrl._master.detectorsManager.getCurrentDetectorName() == 'MainCam'
 
 

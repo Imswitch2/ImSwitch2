@@ -435,6 +435,7 @@ class FocusLockController(ImConWidgetController):
         frame.param('Apply').sigActivated.connect(self.applyFocusCameraROI)
         frame.param('New ROI').sigActivated.connect(self.beginFocusCameraROI)
         frame.param('Abort ROI').sigActivated.connect(self.abortFocusCameraROI)
+        frame.param('Full chip').sigActivated.connect(self.applyFocusCameraFullChip)
         for name in ('X0', 'Y0', 'Width', 'Height'):
             frame.param(name).sigValueChanged.connect(
                 lambda *_args, name=name: self._focusCameraFrameFieldChanged(name)
@@ -663,8 +664,19 @@ class FocusLockController(ImConWidgetController):
                 'ROI not applied', 'Focus-camera ROI width and height must be positive.'
             )
             return
-        requested = self._clampFocusCameraRoi(requested)
+        self._queueFocusCameraRoiApply(self._clampFocusCameraRoi(requested))
 
+    def applyFocusCameraFullChip(self):
+        """Remove the focus-camera crop using the normal safe ROI lifecycle."""
+        if not self._focusCameraRoiOperationAllowed():
+            return
+        detector = self._master.detectorsManager[self.camera]
+        requested = (
+            0, 0, int(detector.fullShape[0]), int(detector.fullShape[1])
+        )
+        self._queueFocusCameraRoiApply(requested)
+
+    def _queueFocusCameraRoiApply(self, requested):
         session = self.__dict__.get('_focusRoiSession')
         if session is not None:
             restartAfter = bool(session['restoreAcquisition'])
@@ -839,6 +851,11 @@ class FocusLockController(ImConWidgetController):
             self._widget.setFocusCameraRoiEditing(False)
         except AttributeError:
             pass
+        # _finishFocusCameraStop() may have synchronized the controls while
+        # ROI editing was still active, leaving Start Cam disabled. Re-sync
+        # after clearing the editing flag so a camera that should remain
+        # stopped is operable again.
+        self._syncFocusCameraUi(self.focusCameraAcquisitionActive())
 
     def _persistFocusCameraRoi(self, roi):
         """Persist only hardware-read-back geometry, never the requested ROI."""
