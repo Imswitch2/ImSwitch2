@@ -67,6 +67,9 @@ class ParamSection(QtCore.QObject):
         self._form_labels: dict[str, str] = {}
         self._runtime_summary: Any = None
         self._next_row = 0
+        self._flat_mode = False
+        self._expanded_before_flat = bool(widget.expanded)
+        self._layout_margins_before_flat: tuple[int,int,int,int] | None = None
 
         self.layout = QtWidgets.QGridLayout()
         self.layout.setHorizontalSpacing(horizontal_spacing)
@@ -113,6 +116,41 @@ class ParamSection(QtCore.QObject):
             self.widget.addHeaderWidget(self.summary_label)
 
         self.refresh_summary()
+
+    @property
+    def flat_mode(self) -> bool:
+        return self._flat_mode
+
+    def set_flat_mode(self,enabled: bool) -> None:
+        """Hide group chrome while retaining the complete bound state.
+
+        Focused editing uses this to project a group as bare editors.  The
+        group-level active control remains bound but presentation-hidden.
+        """
+        enabled = bool(enabled)
+        if enabled == self._flat_mode:
+            return
+        self._flat_mode = enabled
+        if enabled:
+            self._expanded_before_flat = bool(self.widget.expanded)
+            self._layout_margins_before_flat = self.layout.getContentsMargins()
+            self.widget.set_expanded(True,animate=False)
+            self.widget.set_flat_mode(True)
+            self.layout.setContentsMargins(0,0,0,0)
+        else:
+            self.widget.set_flat_mode(False)
+            if self._layout_margins_before_flat is not None:
+                self.layout.setContentsMargins(*self._layout_margins_before_flat)
+            self._layout_margins_before_flat = None
+            self.widget.set_expanded(self._expanded_before_flat,animate=False)
+
+        self.widget.toggleButton.setVisible(not enabled)
+        if self.active_field is not None:
+            self.active_field.set_presentation_visible(not enabled)
+        if self.summary_prefix_label is not None:
+            self.summary_prefix_label.setVisible(not enabled)
+        if self.summary_label is not None:
+            self.summary_label.setVisible(not enabled)
 
     def add_form(
         self,

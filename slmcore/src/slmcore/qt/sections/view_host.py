@@ -31,6 +31,7 @@ class SectionsViewHost(QtWidgets.QWidget):
     sigCurrentSectionChanged = QtCore.Signal(str)
     sigSectionsChanged = QtCore.Signal()
     sigDisplayModeChanged = QtCore.Signal(object)
+    sigFocusedEditingRequested = QtCore.Signal(str,bool)
 
     def __init__(
         self,
@@ -55,6 +56,10 @@ class SectionsViewHost(QtWidgets.QWidget):
         self._pane_scrolls: dict[str, QtWidgets.QScrollArea] = {}
         self._title_labels: dict[str, _SectionTitleLabel] = {}
         self._tab_filter: QtCore.QObject | None = None
+        self._tab_focused_button: QtWidgets.QToolButton | None = None
+        self._focused_buttons: dict[str,QtWidgets.QToolButton] = {}
+        self._focused_available: dict[str,bool] = {}
+        self._focused_states: dict[str,bool] = {}
 
         self._show_settings = bool(show_settings)
         self._settings_button = self._create_settings_button()
@@ -147,6 +152,27 @@ class SectionsViewHost(QtWidgets.QWidget):
             if self._tabs.currentIndex() != index:
                 self._tabs.setCurrentIndex(index)
 
+    def focused_editing_state(self,section_key: str) -> bool:
+        return bool(self._focused_states.get(str(section_key),False))
+
+    def set_focused_editing_available(
+        self,section_key: str,available: bool,
+    ) -> None:
+        key = str(section_key)
+        self._focused_available[key] = bool(available)
+        if not available:
+            self._focused_states[key] = False
+        self._refresh_focused_button(key)
+
+    def set_focused_editing_state(
+        self,section_key: str,enabled: bool,
+    ) -> None:
+        key = str(section_key)
+        self._focused_states[key] = (
+            bool(enabled) and bool(self._focused_available.get(key,False))
+        )
+        self._refresh_focused_button(key)
+
     def set_display_mode(self,display_mode) -> None:
         mode = SectionsDisplayMode.normalize(display_mode)
         if mode == self._display_mode:
@@ -180,6 +206,13 @@ class SectionsViewHost(QtWidgets.QWidget):
         if current_key not in self.section_keys:
             current_key = None
         self._current_section_key = current_key
+        valid = set(self.section_keys)
+        self._focused_available = {
+            key:value for key,value in self._focused_available.items() if key in valid
+        }
+        self._focused_states = {
+            key:value for key,value in self._focused_states.items() if key in valid
+        }
         self._remount(current_key=current_key)
         self.sigSectionsChanged.emit()
 
@@ -261,6 +294,11 @@ class SectionsViewHost(QtWidgets.QWidget):
         self.layout().addWidget(tabs)
         self._presentation_widget = tabs
         self._tabs = tabs
+        self._tab_focused_button = self._create_focused_button()
+        tabs.setCornerWidget(
+            self._tab_focused_button,QtCore.Qt.TopRightCorner,
+        )
+        self._sync_tab_focused_button()
 
         if self._show_settings:
             self._settings_button.setParent(tab_bar)
@@ -356,6 +394,10 @@ class SectionsViewHost(QtWidgets.QWidget):
         title_layout.addWidget(label,1)
         self._title_labels[section_key] = label
 
+        focused_button = self._create_focused_button(section_key)
+        self._focused_buttons[section_key] = focused_button
+        title_layout.addWidget(focused_button)
+
         if include_settings and self._show_settings:
             self._settings_button.setParent(title_row)
             title_layout.addWidget(self._settings_button)
@@ -380,6 +422,8 @@ class SectionsViewHost(QtWidgets.QWidget):
         self._settings_button.setParent(None)
         self._settings_button.hide()
         self._tab_filter = None
+        self._tab_focused_button = None
+        self._focused_buttons.clear()
 
         if self._tabs is not None:
             while self._tabs.count():
@@ -413,6 +457,81 @@ class SectionsViewHost(QtWidgets.QWidget):
         if widget is not None:
             self.layout().removeWidget(widget)
             widget.deleteLater()
+
+    def _create_focused_button(
+        self,section_key: str | None=None,
+    ) -> QtWidgets.QToolButton:
+        button = QtWidgets.QToolButton(self)
+        button.setText("Focus")
+        button.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        button.setAccessibleName("Focused editing")
+        button.setCheckable(True)
+        button.setAutoRaise(True)
+        button.setFocusPolicy(QtCore.Qt.NoFocus)
+        button.setFixedHeight(22)
+        button.setMinimumWidth(44)
+        button.setStyleSheet(
+            "QToolButton { padding: 0px 6px; }"
+            "QToolButton:checked { font-weight: 600; }"
+        )
+        if section_key is None:
+            button.clicked.connect(self._on_tab_focused_clicked)
+        else:
+            button.clicked.connect(
+                lambda checked,key=section_key:
+                    self.sigFocusedEditingRequested.emit(key,bool(checked))
+            )
+        self._sync_focused_button(button,section_key)
+        return button
+
+    def _on_tab_focused_clicked(self,checked: bool) -> None:
+        key = self.current_section_key()
+        if key is None:
+            return
+        self.sigFocusedEditingRequested.emit(key,bool(checked))
+
+    def _sync_tab_focused_button(self) -> None:
+        if self._tab_focused_button is not None:
+            self._sync_focused_button(
+                self._tab_focused_button,self.current_section_key(),
+            )
+
+    def _refresh_focused_button(self,section_key: str) -> None:
+        button = self._focused_buttons.get(section_key)
+        if button is not None:
+            self._sync_focused_button(button,section_key)
+        if self.current_section_key() == section_key:
+            self._sync_tab_focused_button()
+
+    def _sync_focused_button(
+        self,button: QtWidgets.QToolButton,section_key: str | None,
+    ) -> None:
+        available = bool(
+            section_key is not None
+            and self._focused_available.get(section_key,False)
+        )
+        enabled = bool(
+            available and self._focused_states.get(section_key,False)
+        )
+        blocker = QtCore.QSignalBlocker(button)
+        try:
+            button.setChecked(enabled)
+        finally:
+            del blocker
+        button.setEnabled(available)
+        if not available:
+            button.setToolTip(
+                "Configure Focused editing in SLM section settings first."
+            )
+        elif enabled:
+            button.setToolTip(
+                "Focused editing is on. Click to return to Full editing."
+            )
+        else:
+            button.setToolTip(
+                "Focused editing: show only the editors selected for this section. "
+                "Hidden settings remain unchanged."
+            )
 
     def _create_settings_button(self) -> QtWidgets.QToolButton:
         button = QtWidgets.QToolButton(self)
@@ -488,6 +607,7 @@ class SectionsViewHost(QtWidgets.QWidget):
         keys = self.section_keys
         if 0 <= index < len(keys):
             self._current_section_key = keys[index]
+            self._sync_tab_focused_button()
             self.sigCurrentSectionChanged.emit(keys[index])
 
     def _snapshot_title(self,section_key: str) -> str | None:

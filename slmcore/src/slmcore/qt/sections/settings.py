@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass,replace
+from dataclasses import dataclass,field,replace
 from typing import Mapping
 
 from qtpy import QtCore,QtGui,QtWidgets
@@ -14,8 +14,10 @@ from ...core.engine.section.presentation import SectionPresentation
 from ...core.engine.section.snapshot import SLMSectionSnapshot
 from ...core.engine.device import SLMGeometry
 from ...core.engine.state.topology import GroupTopology
+from ...setup import FocusedEditingPreferences
 from ..application.interaction import RuntimeViewInteractionSettings
 from .display import SectionsDisplayMode
+from .focused_editing import FocusedEditingEditor
 from .topology import SectionTopologyEditor
 
 
@@ -25,6 +27,7 @@ class SLMSectionsSettingsChanges:
 
     topologies: Mapping[str,Mapping[str,GroupTopology]]
     presentations: Mapping[str,SectionPresentation]
+    focused_editing: Mapping[str,FocusedEditingPreferences] = field(default_factory=dict)
     layout: SectionSplitLayout | None = None
     display_mode: SectionsDisplayMode | None = None
     interaction_settings: RuntimeViewInteractionSettings | None = None
@@ -33,6 +36,7 @@ class SLMSectionsSettingsChanges:
         return bool(
             self.topologies
             or self.presentations
+            or self.focused_editing
             or self.layout
             or self.display_mode is not None
             or self.interaction_settings is not None
@@ -50,6 +54,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         section_layout_customizable: bool=False,
         display_mode: SectionsDisplayMode | None=None,
         interaction_settings: RuntimeViewInteractionSettings | None=None,
+        focused_editing: Mapping[str,FocusedEditingPreferences] | None=None,
         initial_section_key: str | None=None,
         title: str="SLM settings",
         parent: QtWidgets.QWidget | None=None,
@@ -66,6 +71,13 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
             for index,key in enumerate(snapshots)
         }
         self._editors: dict[str, SectionTopologyEditor] = {}
+        self._focused_editors: dict[str,FocusedEditingEditor] = {}
+        self._focused_initial = {
+            key:FocusedEditingPreferences.from_value(
+                (focused_editing or {}).get(key)
+            )
+            for key in snapshots
+        }
         self._presentation_controls: dict[str, QtWidgets.QCheckBox] = {}
         self._layout_customizable = bool(section_layout_customizable)
         self._display_mode_initial = (
@@ -115,8 +127,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         content_layout.addWidget(self._create_layout_group())
 
         description = QtWidgets.QLabel(
-            "Choose which interface controls, groups and items are present "
-            "in each section."
+            "Configure each section's full interface and compact Focused-editing view."
         )
         description.setWordWrap(True)
         content_layout.addWidget(description)
@@ -130,16 +141,43 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         for section_key,snapshot in snapshots.items():
             editor = SectionTopologyEditor(snapshot=snapshot)
             self._editors[section_key] = editor
+            focused_editor = FocusedEditingEditor(
+                snapshot=snapshot,
+                selection=self._focused_initial[section_key],
+            )
+            self._focused_editors[section_key] = focused_editor
 
             page = QtWidgets.QWidget()
             page_layout = QtWidgets.QVBoxLayout(page)
             page_layout.setContentsMargins(6,6,6,6)
             page_layout.setSpacing(8)
-            page_layout.addWidget(
+
+            settings_tabs = QtWidgets.QTabWidget(page)
+
+            structure_page = QtWidgets.QWidget(settings_tabs)
+            structure_layout = QtWidgets.QVBoxLayout(structure_page)
+            structure_layout.setContentsMargins(6,6,6,6)
+            structure_layout.setSpacing(8)
+            structure_layout.addWidget(
                 self._create_interface_group(section_key,snapshot),
             )
-            page_layout.addWidget(editor)
+            structure_layout.addWidget(editor,1)
+            warning = QtWidgets.QLabel(
+                "Disabling a group or removing an item discards its current "
+                "values. Adding it again later recreates it from registry defaults."
+            )
+            warning.setWordWrap(True)
+            warning.setStyleSheet("color: #8a6d3b;")
+            structure_layout.addWidget(warning)
+            settings_tabs.addTab(structure_page,"Structure")
 
+            focused_page = QtWidgets.QWidget(settings_tabs)
+            focused_layout = QtWidgets.QVBoxLayout(focused_page)
+            focused_layout.setContentsMargins(6,6,6,6)
+            focused_layout.addWidget(focused_editor,1)
+            settings_tabs.addTab(focused_page,"Focused editing")
+
+            page_layout.addWidget(settings_tabs,1)
             self.section_tabs.addTab(
                 page,self._section_titles[section_key],
             )
@@ -148,15 +186,6 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
                 section_keys.index(initial_section_key),
             )
         content_layout.addWidget(self.section_tabs,1)
-
-        warning = QtWidgets.QLabel(
-            "Disabling a group or removing an item discards its current "
-            "values. Adding it again later recreates it from registry "
-            "defaults."
-        )
-        warning.setWordWrap(True)
-        warning.setStyleSheet("color: #8a6d3b;")
-        content_layout.addWidget(warning)
 
         self._content_scroll.setWidget(content)
         layout.addWidget(self._content_scroll,1)
@@ -534,6 +563,16 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
                 result[section_key] = presentation
         return result
 
+    def changed_focused_editing(
+        self,
+    ) -> Mapping[str,FocusedEditingPreferences]:
+        result = {}
+        for section_key,editor in self._focused_editors.items():
+            changed = editor.changed_selection()
+            if changed is not None:
+                result[section_key] = changed
+        return result
+
     def changed_display_mode(self) -> SectionsDisplayMode | None:
         if (
             self._display_mode_initial is None
@@ -582,6 +621,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         return bool(
             self.changed_topologies()
             or self.changed_presentations()
+            or self.changed_focused_editing()
             or self.changed_layout()
             or self.changed_display_mode()
             or self.changed_interaction_settings()
@@ -594,6 +634,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
                 for key,value in self.changed_topologies().items()
             },
             presentations=dict(self.changed_presentations()),
+            focused_editing=dict(self.changed_focused_editing()),
             layout=self.changed_layout(),
             display_mode=self.changed_display_mode(),
             interaction_settings=self.changed_interaction_settings(),
@@ -618,6 +659,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
         section_layout_customizable: bool=False,
         display_mode: SectionsDisplayMode | None=None,
         interaction_settings: RuntimeViewInteractionSettings | None=None,
+        focused_editing: Mapping[str,FocusedEditingPreferences] | None=None,
         initial_section_key: str | None=None,
         title: str="SLM settings",
         parent: QtWidgets.QWidget | None=None,
@@ -629,6 +671,7 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
             section_layout_customizable=section_layout_customizable,
             display_mode=display_mode,
             interaction_settings=interaction_settings,
+            focused_editing=focused_editing,
             initial_section_key=initial_section_key,
             title=title,
             parent=parent,

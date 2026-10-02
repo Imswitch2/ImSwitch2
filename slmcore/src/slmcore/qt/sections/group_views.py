@@ -131,6 +131,14 @@ class BaseGroupView:
         self._conversion_context = conversion_context
         self._on_edit = on_edit
         self._on_action: Callable[[str, Mapping[str, Any]], None] | None = None
+        self._focused_presentation = False
+        self._focused_item_keys: tuple[str,...] | None = None
+        self._local_form: ParamForm | None = None
+        self._item_forms: dict[str,ParamForm] = {}
+        self._item_widgets: dict[str,QtWidgets.QWidget] = {}
+        self._item_widget_styles: dict[str,str] = {}
+        self._item_widget_flat_states: dict[str,bool] = {}
+        self._last_state: StateModel = entry.state
 
         local_specs = visible_specs(entry.state,render_policy)
         active_spec,remaining = pop_active_spec(local_specs)
@@ -183,6 +191,7 @@ class BaseGroupView:
             editor_width=70,show_complementary=False,
         )
         self.binding.bind_form(form,(),self._emit_edit)
+        self._local_form = form
         return form
 
     def _create_item_form(
@@ -205,6 +214,7 @@ class BaseGroupView:
             show_complementary=False,mount=False,
         )
         self.binding.bind_form(form,prefix,self._emit_edit)
+        self._item_forms[form_name] = form
         return form
 
     def _add_item_form(
@@ -222,7 +232,11 @@ class BaseGroupView:
         )
         if form is None:
             return None
-        return add_form_to_group_box(form,title)
+        box = add_form_to_group_box(form,title)
+        self._item_widgets[form_name] = box
+        self._item_widget_styles[form_name] = box.styleSheet()
+        self._item_widget_flat_states[form_name] = bool(box.isFlat())
+        return box
 
     def _emit_edit(self,path: ParamPath,value: Any) -> None:
         self._emit_edits({tuple(path):value})
@@ -248,13 +262,89 @@ class BaseGroupView:
             self._on_action(action.value,dict(options or {}))
 
     def apply_state(self,state: StateModel) -> None:
+        self._last_state = state
         self.binding.apply_state(state)
         self.param_section.refresh_summary()
+        self._refresh_focused_parent_state()
+
+    def available_focused_item_keys(
+        self,item_keys,
+    ) -> tuple[str,...]:
+        return tuple(
+            str(key) for key in tuple(item_keys or ())
+            if str(key) in self._item_forms
+        )
+
+    def set_focused_presentation(
+        self,enabled: bool,*,item_keys: tuple[str,...] | None=None,
+    ) -> None:
+        """Apply a presentation-only focused projection of this group."""
+        enabled = bool(enabled)
+        normalized_items = (
+            None if item_keys is None
+            else tuple(str(key) for key in item_keys)
+        )
+        self._focused_presentation = enabled
+        self._focused_item_keys = normalized_items if enabled else None
+        self.param_section.set_flat_mode(enabled)
+
+        if self._local_form is not None:
+            self._local_form.set_presentation_visible(
+                not enabled or normalized_items is None
+            )
+
+        selected = None if normalized_items is None else set(normalized_items)
+        for key,form in self._item_forms.items():
+            visible = (not enabled) or selected is None or key in selected
+            form.set_presentation_visible(visible)
+        for key,widget in self._item_widgets.items():
+            visible = (not enabled) or selected is None or key in selected
+            widget.setVisible(visible)
+            self._set_item_widget_focused_chrome(key,widget,enabled)
+
+        self._refresh_focused_parent_state()
+
+    def _set_item_widget_focused_chrome(
+        self,key: str,widget: QtWidgets.QWidget,enabled: bool,
+    ) -> None:
+        if not isinstance(widget,QtWidgets.QGroupBox):
+            return
+        if enabled:
+            widget.setFlat(True)
+            widget.setStyleSheet(
+                "QGroupBox { border: none; margin-top: 1.15em; padding-top: 2px; }"
+                "QGroupBox::title {"
+                " subcontrol-origin: margin; left: 0px; padding: 0px 2px;"
+                "}"
+            )
+        else:
+            widget.setFlat(self._item_widget_flat_states.get(key,False))
+            widget.setStyleSheet(self._item_widget_styles.get(key,""))
+
+
+    def _refresh_focused_parent_state(self) -> None:
+        content = self.widget.contentWidget
+        if content is None:
+            return
+        blocked = (
+            self._focused_presentation
+            and not self.param_section.is_active()
+        )
+        content.setEnabled(not blocked)
+        tooltip = (
+            f"{self._last_state.title()} is inactive. "
+            "Switch to Full editing to change section state."
+            if blocked else ""
+        )
+        content.setToolTip(tooltip)
+        self.widget.contentArea.viewport().setToolTip(tooltip)
+        self.widget.setToolTip(tooltip)
 
     def set_parameter(self,path: ParamPath,value: Any) -> bool:
         changed = self.binding.set_parameter(path,value)
         if changed:
             self.param_section.refresh_summary()
+            self._refresh_focused_parent_state()
         return changed
 
     def set_unit_mode(self,mode: str) -> None:

@@ -41,12 +41,17 @@ class SectionSettingsManager(QtCore.QObject):
         )
         self.section_host.sigSettingsRequested.connect(self.open_settings)
         self.section_host.sigSectionTitleChanged.connect(self._on_title_changed)
+        self.section_host.sigFocusedEditingRequested.connect(
+            self._on_focused_editing_requested,
+        )
+        self._sync_focused_editing_controls()
 
     def _disconnect(self) -> None:
         pairs = (
             (self.controller.section_collection.sigSectionTopologyRequested,self._on_topology_requested),
             (self.section_host.sigSettingsRequested,self.open_settings),
             (self.section_host.sigSectionTitleChanged,self._on_title_changed),
+            (self.section_host.sigFocusedEditingRequested,self._on_focused_editing_requested),
         )
         for signal,slot in pairs:
             try: signal.disconnect(slot)
@@ -65,6 +70,7 @@ class SectionSettingsManager(QtCore.QObject):
             section_layout_customizable=self.controller.section_layout_available,
             display_mode=self.section_host.display_mode,
             interaction_settings=self.controller.interaction_settings,
+            focused_editing=self._focused_editing_preferences(),
             initial_section_key=self.section_host.current_section_key(),
             title="%s settings" % self.controller.display_name,
             parent=self.section_host,
@@ -79,6 +85,9 @@ class SectionSettingsManager(QtCore.QObject):
         if changes.display_mode is not None:
             self._apply_display_mode(changes.display_mode)
 
+        for section_key,selection in changes.focused_editing.items():
+            self._apply_focused_editing_selection(section_key,selection)
+
         if changes.layout is not None:
             self._apply_layout(
                 changes.layout,
@@ -91,6 +100,89 @@ class SectionSettingsManager(QtCore.QObject):
             self._apply_topology(section_key,topologies)
         for section_key,presentation in changes.presentations.items():
             self._apply_presentation(section_key,presentation)
+
+    def _focused_editing_preferences(self):
+        preferences = self.controller.startup_preferences
+        if preferences is None:
+            return {}
+        return {
+            key:preferences.focused_editing(key)
+            for key in self.controller.section_collection.section_keys
+        }
+
+    def _sync_focused_editing_controls(self) -> None:
+        preferences = self.controller.startup_preferences
+        collection = self.controller.section_collection
+        for section_key in collection.section_keys:
+            selection = (
+                None if preferences is None
+                else preferences.focused_editing(section_key)
+            )
+            configured = bool(
+                selection is not None and selection.configured
+            )
+            was_focused = self.section_host.focused_editing_state(section_key)
+            self.section_host.set_focused_editing_available(
+                section_key,configured,
+            )
+            collection.section_view(section_key).set_focused_editing(
+                selection,enabled=was_focused and configured,
+            )
+            self.section_host.set_focused_editing_state(
+                section_key,was_focused and configured,
+            )
+
+    @QtCore.Slot(str,bool)
+    def _on_focused_editing_requested(
+        self,section_key: str,enabled: bool,
+    ) -> None:
+        preferences = self.controller.startup_preferences
+        selection = (
+            None if preferences is None
+            else preferences.focused_editing(section_key)
+        )
+        if selection is None or not selection.configured:
+            self.section_host.set_focused_editing_state(section_key,False)
+            return
+        try:
+            self.controller.section_collection.section_view(
+                section_key
+            ).set_focused_editing(selection,enabled=bool(enabled))
+            self.section_host.set_focused_editing_state(
+                section_key,bool(enabled),
+            )
+        except Exception as error:
+            self.section_host.set_focused_editing_state(section_key,False)
+            self.controller._emit_exception(
+                "SLM focused editing failed",error,
+            )
+
+    def _apply_focused_editing_selection(
+        self,section_key: str,selection,
+    ) -> None:
+        preferences = self.controller.startup_preferences
+        if preferences is None:
+            return
+        was_focused = self.section_host.focused_editing_state(section_key)
+        try:
+            preferences.set_focused_editing(section_key,selection)
+            saved = preferences.focused_editing(section_key)
+            configured = saved.configured
+            self.section_host.set_focused_editing_available(
+                section_key,configured,
+            )
+            self.controller.section_collection.section_view(
+                section_key
+            ).set_focused_editing(
+                saved,enabled=was_focused and configured,
+            )
+            self.section_host.set_focused_editing_state(
+                section_key,was_focused and configured,
+            )
+        except Exception as error:
+            self.controller._emit_exception(
+                "SLM focused editing setting failed",error,
+            )
 
     def _apply_display_mode(self,display_mode) -> None:
         mode = SectionsDisplayMode.normalize(display_mode)

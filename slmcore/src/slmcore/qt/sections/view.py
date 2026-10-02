@@ -16,6 +16,7 @@ from ...core.engine.section.update import SectionUpdate
 from ...core.engine.state.base import ParamPath
 from ...core.engine.state.groups import DynamicGroupState
 from ...core.engine.transition import SectionStateTransition
+from ...setup import FocusedEditingPreferences
 from .group_factory import DEFAULT_GROUP_VIEW_FACTORY,GroupViewFactory
 from .group_views import BaseGroupView,CghGroupView,GroupPresentationState
 from .policy import DEFAULT_RENDER_POLICY,RenderPolicy
@@ -134,10 +135,28 @@ class SectionView(QtWidgets.QWidget):
         self._revision = snapshot.revision
         self._cgh_computing = False
         self._feedback_status: Any = None
+        self._focused_editing = FocusedEditingPreferences()
+        self._focused_editing_enabled = False
 
         self.content_layout = QtWidgets.QVBoxLayout(self)
         self.content_layout.setContentsMargins(4,4,4,4)
         self.content_layout.setSpacing(6)
+
+        self.focused_editing_notice = QtWidgets.QLabel(
+            "Focused editing — hidden settings remain active",self,
+        )
+        self.focused_editing_notice.setObjectName("SLMFocusedEditingNotice")
+        self.focused_editing_notice.setStyleSheet(
+            "QLabel#SLMFocusedEditingNotice {"
+            " color: #888; padding: 1px 4px; font-size: 9px;"
+            "}"
+        )
+        self.focused_editing_notice.setToolTip(
+            "This is a filtered editing view. Hidden settings are unchanged "
+            "and can still affect the output."
+        )
+        self.focused_editing_notice.hide()
+        self.content_layout.addWidget(self.focused_editing_notice,0)
 
         self._controls_row: QtWidgets.QHBoxLayout | None = None
         self.calibration_interface_widget: QtWidgets.QWidget | None = None
@@ -172,6 +191,7 @@ class SectionView(QtWidgets.QWidget):
         self._refresh_calibration_controls()
         self._refresh_presentation_controls()
         self._refresh_topology_controls()
+        self._apply_focused_editing_presentation()
         self.apply_cgh_status(snapshot.cgh_status)
 
     @property
@@ -388,6 +408,52 @@ class SectionView(QtWidgets.QWidget):
             self.section_key,full_changes,
         )
 
+    @property
+    def focused_editing_enabled(self) -> bool:
+        return self._focused_editing_enabled
+
+    @property
+    def focused_editing_selection(self) -> FocusedEditingPreferences:
+        return self._focused_editing
+
+    def set_focused_editing(
+        self,
+        selection: FocusedEditingPreferences | None,
+        *,
+        enabled: bool | None=None,
+    ) -> None:
+        """Apply the presentation-only Focused-editing projection."""
+        self._focused_editing = FocusedEditingPreferences.from_value(selection)
+        if enabled is not None:
+            self._focused_editing_enabled = bool(enabled) and self._focused_editing.configured
+        elif not self._focused_editing.configured:
+            self._focused_editing_enabled = False
+        self._apply_focused_editing_presentation()
+
+    def _apply_focused_editing_presentation(self) -> None:
+        focused = bool(
+            self._focused_editing_enabled and self._focused_editing.configured
+        )
+        self.focused_editing_notice.setVisible(focused)
+        for group_key,group_view in self.groups.items():
+            if group_key in self._focused_editing.items:
+                item_keys = group_view.available_focused_item_keys(
+                    self._focused_editing.item_keys(group_key)
+                )
+                selected = bool(item_keys)
+            else:
+                item_keys = None
+                selected = group_key in self._focused_editing.groups
+
+            if focused and selected:
+                group_view.set_focused_presentation(
+                    True,item_keys=item_keys,
+                )
+                group_view.widget.setVisible(True)
+            else:
+                group_view.set_focused_presentation(False)
+                group_view.widget.setVisible(not focused)
+
     def auto_recompute_enabled(self) -> bool:
         for group_view in self.groups.values():
             if isinstance(group_view,CghGroupView):
@@ -496,6 +562,7 @@ class SectionView(QtWidgets.QWidget):
         self._refresh_calibration_controls()
         self._refresh_presentation_controls()
         self._refresh_topology_controls()
+        self._apply_focused_editing_presentation()
         self.apply_cgh_status(snapshot.cgh_status)
 
     def set_parameter(self,path: ParamPath,value: Any) -> bool:
@@ -537,6 +604,7 @@ class SectionView(QtWidgets.QWidget):
             self._index_group_entry(entry)
             self._refresh_unit_controls()
             self._refresh_presentation_controls()
+            self._apply_focused_editing_presentation()
             return
 
         replacement = self._create_group_view(entry)
@@ -554,6 +622,7 @@ class SectionView(QtWidgets.QWidget):
         self._index_group_entry(entry)
         self._refresh_unit_controls()
         self._refresh_presentation_controls()
+        self._apply_focused_editing_presentation()
 
     def _group_layout_position(
         self,snapshot: SLMSectionSnapshot,group_key: str,

@@ -56,6 +56,23 @@ class StartupPreferencesState:
         self._commit(replace(self._value,section_display_mode=mode))
 
 
+    def focused_editing(self,section_key: str):
+        from ..setup import FocusedEditingPreferences
+        return self._value.focused_editing.get(
+            str(section_key),FocusedEditingPreferences(),
+        )
+
+    def set_focused_editing(self,section_key: str,value: Any) -> None:
+        from ..setup import FocusedEditingPreferences
+        section = str(section_key)
+        selection = FocusedEditingPreferences.from_value(value)
+        focused = dict(self._value.focused_editing)
+        if selection.configured:
+            focused[section] = selection
+        else:
+            focused.pop(section,None)
+        self._commit(replace(self._value,focused_editing=focused))
+
     def feedback_orientation_default(self,section_key: str) -> str:
         settings = self._value.feedback_orientations.get(str(section_key))
         return "identity" if settings is None else settings.default

@@ -92,6 +92,86 @@ class FOVPositionCalibrationPreferences:
 
 
 @dataclass(frozen=True)
+class FocusedEditingPreferences:
+    """Persistent editor visibility selection for one SLM section.
+
+    ``groups`` contains groups rendered atomically in Focused editing.
+    ``items`` contains selected registry-backed item keys for groups whose
+    editors can be pruned item-by-item.  This is presentation-only state; it
+    never carries active/inactive values.
+    """
+
+    groups: tuple[str,...] = ()
+    items: Mapping[str,tuple[str,...]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        groups = []
+        seen_groups = set()
+        for value in tuple(self.groups or ()):
+            key = str(value or "").strip()
+            if key and key not in seen_groups:
+                groups.append(key)
+                seen_groups.add(key)
+
+        items = {}
+        for group,value in dict(self.items or {}).items():
+            group_key = str(group or "").strip()
+            if not group_key:
+                continue
+            selected = []
+            seen_items = set()
+            for item in tuple(value or ()):
+                item_key = str(item or "").strip()
+                if item_key and item_key not in seen_items:
+                    selected.append(item_key)
+                    seen_items.add(item_key)
+            if selected:
+                items[group_key] = tuple(selected)
+
+        object.__setattr__(self,"groups",tuple(groups))
+        object.__setattr__(self,"items",MappingProxyType(items))
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.groups or self.items)
+
+    def item_keys(self,group_key: str) -> tuple[str,...]:
+        return tuple(self.items.get(str(group_key),()))
+
+    def selects_group(self,group_key: str) -> bool:
+        key = str(group_key)
+        return key in self.groups or bool(self.items.get(key))
+
+    def to_dict(self) -> dict[str,Any]:
+        return {
+            "groups":list(self.groups),
+            "items":{key:list(value) for key,value in self.items.items()},
+        }
+
+    @classmethod
+    def from_value(cls,value: Any) -> "FocusedEditingPreferences":
+        if isinstance(value,cls):
+            return value
+        if value is None:
+            return cls()
+        if not isinstance(value,Mapping):
+            raise TypeError(
+                "startup_preferences.focused_editing entries must be mappings"
+            )
+        groups = value.get("groups",()) or ()
+        items = value.get("items",{}) or {}
+        if isinstance(groups,(str,bytes)) or not isinstance(groups,(list,tuple)):
+            raise TypeError(
+                "startup_preferences.focused_editing.*.groups must be a sequence"
+            )
+        if not isinstance(items,Mapping):
+            raise TypeError(
+                "startup_preferences.focused_editing.*.items must be a mapping"
+            )
+        return cls(groups=tuple(groups),items=dict(items))
+
+
+@dataclass(frozen=True)
 class SLMStartupPreferences:
     """Persistent defaults applied when constructing an SLM session."""
 
@@ -104,6 +184,9 @@ class SLMStartupPreferences:
     fov_position_calibrations: Mapping[
         str,FOVPositionCalibrationPreferences
     ] = field(default_factory=dict)
+    focused_editing: Mapping[str,FocusedEditingPreferences] = field(
+        default_factory=dict,
+    )
 
     def __post_init__(self) -> None:
         startup = str(self.startup_config or "").strip() or None
@@ -137,6 +220,16 @@ class SLMStartupPreferences:
         object.__setattr__(
             self,"fov_position_calibrations",MappingProxyType(fov_defaults),
         )
+        focused = {}
+        for section,value in dict(self.focused_editing or {}).items():
+            section_key = str(section or "").strip()
+            if section_key:
+                selection = FocusedEditingPreferences.from_value(value)
+                if selection.configured:
+                    focused[section_key] = selection
+        object.__setattr__(
+            self,"focused_editing",MappingProxyType(focused),
+        )
 
     def to_dict(self) -> dict[str,Any]:
         return {
@@ -150,6 +243,10 @@ class SLMStartupPreferences:
             "fov_position_calibrations":{
                 section:value.to_dict()
                 for section,value in self.fov_position_calibrations.items()
+            },
+            "focused_editing":{
+                section:value.to_dict()
+                for section,value in self.focused_editing.items()
             },
         }
 
@@ -174,10 +271,16 @@ class SLMStartupPreferences:
             raise TypeError(
                 "startup_preferences.fov_position_calibrations must be a mapping"
             )
+        focused = data.get("focused_editing",{}) or {}
+        if not isinstance(focused,Mapping):
+            raise TypeError(
+                "startup_preferences.focused_editing must be a mapping"
+            )
         return cls(
             startup_config=data.get("startup_config"),
             default_planes=dict(planes),
             section_display_mode=data.get("section_display_mode","tabs"),
             feedback_orientations=dict(orientations),
             fov_position_calibrations=dict(fov_defaults),
+            focused_editing=dict(focused),
         )

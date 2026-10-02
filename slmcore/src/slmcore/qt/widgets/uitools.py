@@ -103,6 +103,7 @@ class CollapsibleSection(QtWidgets.QWidget):
         else:
             self._content_height = None
         self.contentWidget: QtWidgets.QWidget | None = None
+        self._flat_mode = False
 
         self.toggleButton = QtWidgets.QToolButton(
             text=title,checkable=True,checked=False,
@@ -147,6 +148,7 @@ class CollapsibleSection(QtWidgets.QWidget):
         main_layout.setContentsMargins(0,0,0,0)
         main_layout.addLayout(self.headerLayout)
         main_layout.addWidget(self.contentArea)
+        self._main_layout = main_layout
 
         self._resize_handle = _CollapsibleResizeHandle(self)
         self._resize_handle.setVisible(False)
@@ -167,6 +169,10 @@ class CollapsibleSection(QtWidgets.QWidget):
     @property
     def expanded(self) -> bool:
         return bool(self.toggleButton.isChecked())
+
+    @property
+    def flat_mode(self) -> bool:
+        return self._flat_mode
 
     @property
     def resizable(self) -> bool:
@@ -204,9 +210,58 @@ class CollapsibleSection(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Expanding,
         )
         self.contentWidget = content_widget
-        self.contentArea.setWidget(content_widget)
+        if self._flat_mode:
+            content_widget.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding,
+                QtWidgets.QSizePolicy.Preferred,
+            )
+            self._main_layout.insertWidget(1,content_widget)
+            self.contentArea.hide()
+        else:
+            self.contentArea.setWidget(content_widget)
         if self.expanded:
             self.set_expanded(True,animate=False)
+
+    def set_flat_mode(self,enabled: bool) -> None:
+        """Mount content directly, bypassing this section's inner scroll area.
+
+        The focused editor already lives inside the panel/section scroll surface.
+        Keeping a QScrollArea around every group creates nested scroll bars and
+        prevents the complete focused editor from behaving like one surface.
+        Flat mode changes presentation only; the same content widget and bound
+        parameter editors stay alive.
+        """
+        enabled = bool(enabled)
+        if enabled == self._flat_mode:
+            return
+
+        self.toggleAnimation.stop()
+        content = self.contentWidget
+        if enabled:
+            if content is not None and self.contentArea.widget() is content:
+                content = self.contentArea.takeWidget()
+            self.contentArea.hide()
+            self._resize_handle.hide()
+            if content is not None:
+                content.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding,
+                    QtWidgets.QSizePolicy.Preferred,
+                )
+                self._main_layout.insertWidget(1,content)
+                content.show()
+        else:
+            if content is not None and self.contentArea.widget() is not content:
+                self._main_layout.removeWidget(content)
+                content.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding,
+                    QtWidgets.QSizePolicy.Expanding,
+                )
+                self.contentArea.setWidget(content)
+            self.contentArea.show()
+            self._resize_handle.setVisible(self._resizable and self.expanded)
+
+        self._flat_mode = enabled
+        self.updateGeometry()
 
     def addHeaderWidget(self,widget,position=None) -> None:
         """Add a widget to the right side of the section header."""
