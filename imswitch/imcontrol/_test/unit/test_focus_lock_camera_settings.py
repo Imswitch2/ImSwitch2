@@ -267,7 +267,7 @@ def test_focus_camera_action_uses_current_manager_and_refreshes_values():
 
 
 def test_focus_lock_widget_uses_two_tabs_and_exposes_safe_roi_controls(qtbot):
-    widget = FocusLockWidget()
+    widget = FocusLockWidget(None)
     qtbot.addWidget(widget)
 
     parameters = {
