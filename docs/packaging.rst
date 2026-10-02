@@ -193,10 +193,12 @@ A passing run::
      frozen=True  prefix=.../dist/ImSwitch2/_internal
    ok    bundle flag
    ok    own distribution metadata (imswitch2 0.2.0)
-   ok    data files (16 default setups)
+   ok    data files (18 default setups)
+   ok    module packages (imcontrol, improcess, imscripting)
    ok    npe2 plugin discovery (napari, napari-console, napari-svg)
    ok    vispy backend (PyQt5)
    ok    napari viewer (1 layer)
+   ok    no self-respawn (1 child process(es) after forcing a tracker spawn, stable)
 
    all checks passed
 
@@ -211,6 +213,45 @@ with a display and no ``QT_QPA_PLATFORM`` override.
 The flag is defined in ``release/pyinstaller/imswitch_bundle_entry.py``, which
 is only part of the bundle -- ``pip install imswitch2`` does not grow a
 ``--bundle-selftest`` option.
+
+
+The frozen-multiprocessing trap
+===============================
+
+A frozen build **must** call ``multiprocessing.freeze_support()`` before it does
+anything else.  ``release/pyinstaller/imswitch_bundle_entry.py`` does, as its
+first statement, and it has to stay there.
+
+Why it matters here, concretely.  ``multiprocessing`` starts its resource
+tracker by spawning ``sys.executable -c "from multiprocessing.resource_tracker
+import main..."``.  In a frozen app ``sys.executable`` *is* the app, and the
+PyInstaller bootloader ignores ``-c`` -- so that spawn starts a second
+ImSwitch2.  The second copy imports zarr, hence ``numcodecs``, which creates a
+``multiprocessing.Lock()`` at import time; registering that semaphore starts a
+resource tracker, which spawns a third ImSwitch2.  A new window every couple of
+seconds, each process parented by the last, until they are killed by hand.
+
+PyInstaller's own multiprocessing runtime hook already knows how to divert that
+child -- it recognises the command, ``exec()``\ s it and exits.  But it does so
+from inside ``multiprocessing.freeze_support()``, which the hook *replaces* and
+which somebody still has to call.  Leave the call out and the hook never runs.
+
+Two things worth knowing if you meet this again:
+
+* CPython's own ``freeze_support()`` is a no-op off Windows, so the name
+  suggests it is not needed on macOS or Linux.  It is: what does the work in a
+  frozen build is PyInstaller's replacement, on every platform.
+* The trigger is a *transitive* dependency.  Nothing in ImSwitch calls
+  ``multiprocessing``; ``numcodecs`` does, at import, and ``zarr`` needs
+  ``numcodecs``.  Auditing our own code for ``multiprocessing`` use would not
+  have found it.
+
+The ``no self-respawn`` self-test check exists for exactly this: it counts child
+processes, waits, and counts again, failing on growth or on more than the one
+legitimate resource tracker.  The ``module packages`` check sits before it to
+make sure the imports that trigger the spawn have actually happened --
+``imswitch.__main__`` alone does not reach zarr, which is how this got past the
+self-test the first time.
 
 
 Size

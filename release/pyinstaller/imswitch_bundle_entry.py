@@ -14,8 +14,30 @@ Two things this adds over ``imswitch.__main__``:
   it is build tooling, not a product feature -- the wheel has no use for it.
 """
 
+import multiprocessing
 import os
 import sys
+
+# FIRST, before ImSwitch is imported and before anything else runs.
+#
+# multiprocessing starts its resource tracker by spawning
+# ``sys.executable -c "from multiprocessing.resource_tracker import main..."``.
+# In a frozen app ``sys.executable`` *is* the app and the bootloader ignores
+# ``-c``, so that spawn starts a second ImSwitch2 -- which imports zarr, hence
+# numcodecs, which creates a ``multiprocessing.Lock()`` at import time, which
+# starts a resource tracker, which spawns a third ImSwitch2.  The result is a
+# new window every couple of seconds, each process parented by the last, until
+# the user kills them all by hand.
+#
+# PyInstaller's multiprocessing runtime hook already knows how to divert that
+# child: it recognises the command, exec()s it and exits.  But it does so from
+# inside ``multiprocessing.freeze_support()``, which the hook *replaces* and
+# which somebody still has to call.  This is that call.
+#
+# Nothing here is macOS-specific.  CPython's own ``freeze_support()`` is a no-op
+# off Windows, so the name is misleading: what makes this work is PyInstaller's
+# replacement, and a frozen build needs it on every platform.
+multiprocessing.freeze_support()
 
 os.environ['IMSWITCH_IS_BUNDLE'] = '1'
 
@@ -94,6 +116,65 @@ def _selftest():
             raise RuntimeError(f'no default setups under {setups}')
         return f'{count} default setups'
 
+    def _module_packages():
+        # main() imports the enabled module packages by name.  Doing the same
+        # here reaches the real manager and widget trees -- and through the
+        # recording managers, zarr and numcodecs.  Importing only
+        # imswitch.__main__, which this module does at the top, does not: that
+        # is how a fork bomb triggered by numcodecs at startup got past this
+        # self-test once already.
+        import importlib
+
+        for module_id in ('imcontrol', 'improcess', 'imscripting'):
+            importlib.import_module(f'imswitch.{module_id}')
+        return 'imcontrol, improcess, imscripting'
+
+    def _no_self_respawn():
+        # The failure this guards against: multiprocessing starts a helper by
+        # re-running the frozen executable, the bootloader ignores the -c it was
+        # handed and starts the whole application instead, that copy imports
+        # numcodecs and spawns another helper, and so on.  One legitimate
+        # resource-tracker child is expected; growth is not.
+        import time
+
+        import psutil
+
+        # Force the spawn rather than hoping something above caused it.
+        # numcodecs creates a multiprocessing.Lock() at import time; registering
+        # that semaphore is what starts the resource tracker.  zarr needs
+        # numcodecs, which is why every ImSwitch2 build has it -- but none of the
+        # module packages imported above pull it in, so without this line the
+        # check watches an idle process and proves nothing.  (Measured: that is
+        # exactly what it did on the first attempt.)
+        import numcodecs  # noqa: F401
+
+        me = psutil.Process()
+
+        def describe(procs):
+            out = []
+            for proc in procs:
+                try:
+                    out.append(' '.join(proc.cmdline()[:4]) or proc.name())
+                except psutil.Error:
+                    out.append(f'pid {proc.pid} (gone)')
+            return '; '.join(out) or 'none'
+
+        before = me.children(recursive=True)
+        time.sleep(2.0)
+        after = me.children(recursive=True)
+        if len(after) > len(before) or len(after) > 1:
+            # Don't leave a bomb running behind a failed check.
+            for proc in after:
+                try:
+                    proc.kill()
+                except psutil.Error:
+                    pass
+            raise RuntimeError(
+                f'child processes {len(before)} -> {len(after)}, expected at most one '
+                f'resource tracker and no growth: {describe(after)}'
+            )
+        return f'{len(after)} child process(es) after forcing a tracker spawn, stable'
+
     def _npe2_plugins():
         # Entry-point discovery reads distribution metadata, which PyInstaller
         # drops by default.  This is the single most likely bundle-only defect.
@@ -129,6 +210,7 @@ def _selftest():
     check('bundle flag', _bundle_flag)
     check('own distribution metadata', _own_metadata)
     check('data files', _data_files)
+    check('module packages', _module_packages)
     check('npe2 plugin discovery', _npe2_plugins)
     check('vispy backend', _vispy_backend)
     # Building a viewer needs a real GL context.  Under the offscreen platform
@@ -137,6 +219,8 @@ def _selftest():
     # Run with QT_QPA_PLATFORM=cocoa (or windows) on a machine with a display
     # to exercise it.
     check('napari viewer', _napari_viewer, needs_gl=True)
+    # Last, so every import above has had its chance to spawn something.
+    check('no self-respawn', _no_self_respawn)
 
     if failures:
         say(f'\n{len(failures)} check(s) failed')
