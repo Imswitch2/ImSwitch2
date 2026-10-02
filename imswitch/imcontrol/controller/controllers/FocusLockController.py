@@ -400,9 +400,10 @@ class FocusLockController(ImConWidgetController):
 
         self._focusCameraSettingsTree = tree
 
-        # Only detector-specific Parameters/Actions are wired here. The whole
-        # Image frame group remains visible but disabled in FocusLockWidget;
-        # focusLock.frameCrop* stays the authoritative ROI for this pass.
+        # Detector-specific Parameters/Actions first, then the Image frame
+        # group. Only the custom ROI fields and the ROI actions are wired:
+        # binning and saved modes stay read-only here, and an applied ROI is
+        # written back to focusLock.frameCrop* (see _persistFocusCameraRoi).
         for parameterName, parameter in focusParameters.items():
             try:
                 paramInWidget = tree.p.param(parameter.group).param(parameterName)
@@ -426,8 +427,10 @@ class FocusLockController(ImConWidgetController):
                     'settings tree; it will not be available here.'
                 )
                 continue
+            # sigActivated passes the ActionParameter itself; absorb it so it
+            # cannot overwrite the bound action name.
             actionInWidget.sigActivated.connect(
-                lambda actionName=actionName:
+                lambda *_args, actionName=actionName:
                 self._runFocusCameraAction(actionName)
             )
 

@@ -266,6 +266,25 @@ def test_focus_camera_action_uses_current_manager_and_refreshes_values():
     assert tree.p.param('Timings').param('Real exposure').value() == 0.012
 
 
+def test_camera_tab_action_button_runs_the_manager_action(qtbot):
+    """Real pyqtgraph tree: ``sigActivated`` passes the ActionParameter itself.
+
+    The fake ``_Signal`` above emits nothing, so it could not catch a slot
+    that let that argument overwrite the bound action name (KeyError on the
+    rig when clicking a TIS camera's "More properties").
+    """
+    ctrl, detector = _makeController()
+    widget = FocusLockWidget(None)
+    qtbot.addWidget(widget)
+    ctrl._widget = widget
+    FocusLockController._setupFocusCameraSettings(ctrl)
+
+    ctrl._focusCameraSettingsTree.p.param('Acquisition').param('Refresh').activate()
+
+    assert ctrl._logger.errors == []
+    assert detector.actionCalls == 1
+
+
 def test_focus_lock_widget_uses_two_tabs_and_exposes_safe_roi_controls(qtbot):
     widget = FocusLockWidget(None)
     qtbot.addWidget(widget)
