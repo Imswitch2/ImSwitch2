@@ -94,14 +94,30 @@ class CameraTIS:
             f'ROI set: w{wid} x h{hei} at l{left},t{top}'
         )
 
+    # Video properties pyicic exposes as IC_Property objects, in integer
+    # device units.
+    _VIDEO_PROPERTIES = ('gain', 'brightness')
+
     def setPropertyValue(self, property_name, property_value):
-        # Check if the property exists.
-        if property_name == "gain":
-            self.cam.gain = property_value
-        elif property_name == "brightness":
-            self.cam.brightness = property_value
+        """Write a property and return the value the camera reports back.
+
+        ``gain`` and ``brightness`` are integer device units, clamped to the
+        camera's range; ``exposure`` is in milliseconds. An IC_Property is
+        written through ``.value``. Assigning ``self.cam.gain = value``, as
+        this used to, only shadowed the attribute on the Python object
+        (pyicic's IC_Camera.__setattr__ is commented out), so none of the
+        three ever reached the camera.
+        """
+        if property_name in self._VIDEO_PROPERTIES:
+            prop = getattr(self.cam, property_name)
+            low, high = prop.range
+            prop.value = int(round(min(max(float(property_value), low), high)))
+            return prop.value
         elif property_name == "exposure":
-            self.cam.exposure = property_value
+            low, high = self.cam.get_exposure_abs_range()
+            seconds = min(max(float(property_value) / 1000.0, low), high)
+            self.cam.set_exposure_abs(seconds)
+            return self.cam.get_exposure_abs() * 1000.0
         elif property_name == 'image_height':
             self.shape = (self.shape[0], property_value)
         elif property_name == 'image_width':
@@ -113,12 +129,10 @@ class CameraTIS:
 
     def getPropertyValue(self, property_name):
         # Check if the property exists.
-        if property_name == "gain":
-            property_value = self.cam.gain.value
-        elif property_name == "brightness":
-            property_value = self.cam.brightness.value
+        if property_name in self._VIDEO_PROPERTIES:
+            property_value = getattr(self.cam, property_name).value
         elif property_name == "exposure":
-            property_value = self.cam.exposure.values
+            property_value = self.cam.get_exposure_abs() * 1000.0
         elif property_name == "image_width":
             property_value = self.shape[0]
         elif property_name == "image_height":

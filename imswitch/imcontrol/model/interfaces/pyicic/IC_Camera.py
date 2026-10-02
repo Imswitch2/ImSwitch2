@@ -145,7 +145,54 @@ class IC_Camera:
         be disabled.
         """
         return IC_GrabberDLL.reset_properties(self._handle)
-        
+
+    # Absolute exposure, in seconds. The ``exposure`` camera property
+    # (``self.exposure.value``) is the DirectShow integer, a log2-seconds
+    # step rather than a time, so it cannot carry a millisecond setting.
+
+    def get_exposure_abs_range(self):
+        """
+        Get the valid absolute exposure range.
+
+        :returns: tuple -- (min, max) in seconds.
+        """
+        rmin = c_float()
+        rmax = c_float()
+        err = IC_GrabberDLL.get_exp_abs_val_range(self._handle,
+                                                  byref(rmin),
+                                                  byref(rmax))
+        if err != 1:
+            raise IC_Exception(err)
+        return (rmin.value, rmax.value)
+
+    def get_exposure_abs(self):
+        """
+        Get the absolute exposure time.
+
+        :returns: float -- exposure time in seconds.
+        """
+        val = c_float()
+        err = IC_GrabberDLL.get_exp_abs_val(self._handle, byref(val))
+        if err != 1:
+            raise IC_Exception(err)
+        return val.value
+
+    def set_exposure_abs(self, seconds):
+        """
+        Set the absolute exposure time, switching auto exposure off first
+        (the camera ignores a manual value while auto exposure is on).
+
+        :param seconds: float -- exposure time in seconds.
+        """
+        if IC_GrabberDLL.is_exp_abs_val_available(self._handle) != 1:
+            raise RuntimeError('This camera has no absolute exposure control.')
+        exposure = self.exposure
+        if exposure.auto_available and exposure.auto:
+            exposure.auto = False
+        err = IC_GrabberDLL.set_exp_abs_val(self._handle, c_float(seconds))
+        if err != 1:
+            raise IC_Exception(err)
+
     def save_device_state_to_file(self, filename):
         """
         Save the state of a video capture device to a file.
