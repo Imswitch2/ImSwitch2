@@ -325,3 +325,66 @@ def test_collapsible_top_panel_keeps_section_tabs_visible_after_scrolling():
         assert not sticky.widget.isVisible()
     finally:
         panel.deleteLater()
+
+
+def test_collapsible_top_horizontal_sections_expand_to_available_height():
+    app = _app()
+    from qtpy import QtWidgets
+    from slmcore.qt import SectionsDisplayMode,SLMPanel
+
+    runtime = _runtime_two_sections()
+    panel = SLMPanel(
+        section_snapshots=runtime.get_section_snapshots(),
+        initial_frame=runtime.artifacts.eightbit,
+    )
+    try:
+        panel.resize(900,760)
+        panel.show()
+        app.processEvents()
+
+        # Reproduce the failure mode exactly: compact every section first, then
+        # enter side-by-side presentation.  The small collapsed size hint must
+        # not become the allocated height of the horizontal section host.
+        for section_key in panel.section_host.section_keys:
+            view = panel.section_collection.section_view(section_key)
+            for group_view in view.groups.values():
+                group_view.widget.set_expanded(False,animate=False)
+        app.processEvents()
+
+        panel.section_host.set_display_mode(SectionsDisplayMode.HORIZONTAL)
+        app.processEvents()
+
+        middle = panel.body_widget.widget()
+        assert isinstance(middle,QtWidgets.QWidget)
+        layout = middle.layout()
+        assert layout.indexOf(panel.section_host) >= 0
+        assert layout.stretch(layout.indexOf(panel.section_host)) == 1
+
+        available = middle.contentsRect().height()
+        preview_height = panel.preview_panel.height()
+        spacing = layout.spacing()
+        margins = layout.contentsMargins()
+        expected_floor = max(
+            0,
+            available
+            - preview_height
+            - spacing
+            - margins.top()
+            - margins.bottom(),
+        )
+        # Allow a few pixels for style/layout rounding.  The regression was a
+        # much larger collapse to the sections' compact size hint.
+        assert panel.section_host.height() >= expected_floor - 6
+
+        splitter = panel.section_host._splitter
+        assert splitter is not None
+        for pane in panel.section_host._pane_widgets.values():
+            assert pane.height() >= splitter.height() - 2
+
+        # Growing the outer panel must grow the side-by-side section area too.
+        before = panel.section_host.height()
+        panel.resize(900,920)
+        app.processEvents()
+        assert panel.section_host.height() > before
+    finally:
+        panel.deleteLater()
