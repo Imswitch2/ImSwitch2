@@ -773,8 +773,9 @@ tools.
 Log panel
 =========
 
-Set ``"logPanel": true`` in the ``processing`` block to open the log panel at
-startup, or toggle it at any time from **View > Log**.  It is the same log, the
+Toggle the log panel at any time from **View > Log**, or set
+``"logPanel": true`` in the ``processing`` block to have it open at startup.  It
+is the same log, the
 same buffer and the same panel ImControl uses, so the two are two views of one
 thing — see :ref:`the Log panel <log-panel>` in :doc:`gui` for what the
 controls do.

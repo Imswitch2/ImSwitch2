@@ -135,6 +135,16 @@ def test_an_unwritable_log_path_does_not_stop_startup(tmp_path, monkeypatch):
     assert attachLogFile(str(blocker / 'logs' / 'imswitch.log')) is None
 
 
+def test_log_panel_is_off_by_default_and_opt_in():
+    # Hidden at startup, in a bundle as much as from a terminal: it is always
+    # built and always one click away under View > Log.
+    from imswitch.improcess.model.processing_config import is_log_panel_enabled
+
+    assert is_log_panel_enabled({}) is False
+    assert is_log_panel_enabled({'logPanel': True}) is True
+    assert is_log_panel_enabled({'logPanel': False}) is False
+
+
 @pytest.mark.ui
 class TestLogWidget:
     @staticmethod

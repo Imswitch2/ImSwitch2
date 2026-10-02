@@ -1484,8 +1484,8 @@ opens pyqtgraph's panel for inspecting exceptions and their stack traces.
 Log
 ---
 
-Everything ImSwitch2 logs, in a panel.  Always available from **View > Log**;
-add ``Log`` to ``availableWidgets`` to have it open at startup.
+Everything ImSwitch2 logs, in a panel.  Closed at startup and always available
+from **View > Log**; ``Log`` in ``availableWidgets`` opens it at startup instead.
 
 This is the only way to read the log in a standalone bundle: the Windows build
 keeps a console window behind the application, and the macOS ``.app`` has
