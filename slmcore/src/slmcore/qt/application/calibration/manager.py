@@ -242,15 +242,25 @@ class CalibrationManager(QtCore.QObject):
             return
         try:
             self.service.mapping_definition(mapping)
+            state = self.service.ensure_target_context(section_key)
         except Exception as error:
             self._error("SLM Section Calibration",error)
             return
-        detectors,current_detector = self._measurement_sources(section_key)
+        observation_planes,current_observation,default_pixel_size = (
+            self._observation_context(section_key,state)
+        )
+        detectors,current_detector = self._measurement_sources(
+            section_key,preferred=state.source,
+        )
 
         dialog = self._dialogs.get(section_key)
         if dialog is None:
             dialog = CalibrationDialog(
                 mapping_name=mapping,
+                section_key=section_key,
+                observation_planes=observation_planes,
+                current_observation_plane=current_observation,
+                observation_default_pixel_size_um=default_pixel_size,
                 localization_parameters=_default_localization_parameters(),
                 detectors=detectors,
                 current_detector=current_detector,
@@ -263,6 +273,11 @@ class CalibrationManager(QtCore.QObject):
             )
             dialog.sigLoadRequested.connect(
                 lambda key=section_key:self.load_target_measurement(key)
+            )
+            dialog.sigObservationPlaneChanged.connect(
+                lambda plane,key=section_key:self._on_observation_plane_changed(
+                    key,plane,
+                )
             )
             dialog.sigLocalizationRunRequested.connect(
                 lambda parameters,key=section_key:self.run_target_localization(
@@ -285,6 +300,9 @@ class CalibrationManager(QtCore.QObject):
             )
         else:
             dialog.set_mapping_name(mapping)
+            dialog.configure_observation_planes(
+                observation_planes,current_observation,default_pixel_size,
+            )
             dialog.configure_detectors(detectors,current_detector)
 
         self.render_target_state(section_key)
@@ -317,6 +335,53 @@ class CalibrationManager(QtCore.QObject):
         if current not in sources:
             current = sources[0] if sources else None
         return sources,current
+
+    def _observation_context(
+        self,section_key: str,state: TargetCalibrationState | None=None,
+    ) -> tuple[tuple[str,...],str | None,float | None]:
+        state = state or self.service.ensure_target_context(section_key)
+        names = self.service.observation_plane_names()
+        selected = state.observation_plane_name
+        default_pixel_size = None
+        if selected is not None:
+            default_pixel_size = self.service.observation_planes.get(
+                selected
+            ).default_pixel_size_um
+        return names,selected,default_pixel_size
+
+    def _on_observation_plane_changed(
+        self,section_key: str,observation_plane_name: str | None,
+    ) -> None:
+        if not self.controller.editor_writes_allowed:
+            return
+        dialog = self._dialogs.get(section_key)
+        try:
+            changed = self.service.select_target_observation_plane(
+                section_key,observation_plane_name,
+            )
+            state = self.service.ensure_target_context(section_key)
+            names,selected,default_pixel_size = self._observation_context(
+                section_key,state,
+            )
+            detectors,current = self._measurement_sources(
+                section_key,preferred=state.source,
+            )
+            if dialog is not None:
+                if changed:
+                    dialog.target_view.clear_measurement()
+                    dialog.clear_target_calibration_candidate()
+                    dialog.clear_target_pixel_size_override()
+                dialog.configure_observation_planes(
+                    names,selected,default_pixel_size,
+                )
+                dialog.configure_detectors(detectors,current)
+            self.render_target_state(section_key)
+            self._refresh_live_acquisition(section_key)
+        except Exception as error:
+            if dialog is not None:
+                dialog.set_target_measurement_error(error)
+            else:
+                self._error("Observation-plane selection failed",error)
 
     def _dialog_finished(self,section_key: str) -> None:
         self.service.discard_target_state(section_key)
@@ -377,7 +442,10 @@ class CalibrationManager(QtCore.QObject):
         try:
             self.controller.flush_section(section_key,propagate=True)
             self.service.ensure_target_reference(section_key)
-            self.service.acquire_target_measurement(section_key,detector)
+            pixel_size_um = None if dialog is None else dialog.target_pixel_size_um
+            self.service.acquire_target_measurement(
+                section_key,detector,pixel_size_um=pixel_size_um,
+            )
         except Exception as error:
             if dialog is not None:
                 dialog.set_target_measurement_error(error)
@@ -410,10 +478,14 @@ class CalibrationManager(QtCore.QObject):
                     "slm_key":self.controller.runtime.identity.key,
                     "section_key":section_key,
                     "mapping_name":self.service.active_mapping(section_key),
+                    "observation_plane":state.observation_plane_name,
                     "calibration_method":TARGET_LOCALIZATION_METHOD,
                 },
             )
-            self.service.commit_target_measurement(section_key,measurement)
+            pixel_size_um = None if dialog is None else dialog.target_pixel_size_um
+            self.service.commit_target_measurement(
+                section_key,measurement,source="file",pixel_size_um=pixel_size_um,
+            )
             self.render_target_state(section_key)
         except Exception as error:
             if dialog is not None:
@@ -429,7 +501,10 @@ class CalibrationManager(QtCore.QObject):
         dialog = self._dialogs.get(section_key)
         try:
             self.controller.flush_section(section_key,propagate=True)
-            self.service.run_target_localization(section_key,parameters)
+            pixel_size_um = None if dialog is None else dialog.target_pixel_size_um
+            self.service.run_target_localization(
+                section_key,parameters,pixel_size_um=pixel_size_um,
+            )
             self.render_target_state(section_key)
         except Exception as error:
             if dialog is not None:
@@ -445,6 +520,16 @@ class CalibrationManager(QtCore.QObject):
         if state is None:
             self._refresh_live_acquisition(section_key)
             return
+        names,selected,default_pixel_size = self._observation_context(
+            section_key,state,
+        )
+        dialog.configure_observation_planes(
+            names,selected,default_pixel_size,
+        )
+        detectors,current = self._measurement_sources(
+            section_key,preferred=state.source,
+        )
+        dialog.configure_detectors(detectors,current)
         if state.reference is not None:
             dialog.set_target_reference(
                 context=state.reference.localization_context,

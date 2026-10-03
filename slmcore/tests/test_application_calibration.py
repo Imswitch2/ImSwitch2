@@ -2,8 +2,9 @@ import numpy as np
 import pytest
 
 from slmcore import (
-    DEFAULT_REGISTRIES,CalibrationMismatchPolicy,ImageMeasurement,
-    MappingStore,SLMCalibrationStore,SLMGeometry,SLMIdentity,
+    DEFAULT_REGISTRIES,CalibrationMismatchPolicy,GeometryOrientationCalibration,
+    ImageMeasurement,MappingStore,ObservationPlaneDefinition,ObservationPlaneStore,
+    SLMCalibrationStore,SLMGeometry,SLMGeometryOrientationCalibrationStore,SLMIdentity,
     SLMRuntime,SLMSectionCalibration,SLMSession,SLMSessionCallbacks,
     SLMStartupPreferences,
 )
@@ -11,6 +12,7 @@ from slmcore.application.startup_preferences import StartupPreferencesState
 from slmcore.core.calibration import section_geometry_to_dict
 from slmcore.core.cgh import CGHResult
 from slmcore.core.cgh.execution.status import CGHResultState
+from slmcore.core.cgh.localization import LocalizationResult
 from slmcore.core.engine.section import split_slm_geometry
 from slmcore.host import MockSLMDeviceProvider,SLMHostServices
 
@@ -306,12 +308,17 @@ def test_calibration_live_acquisition_uses_host_neutral_dispatcher(tmp_path):
     mapping = _mapping(mapping_store)
     _save_calibration(store,runtime,mapping)
     dispatcher = _Dispatcher()
+    observation_store = ObservationPlaneStore(tmp_path/"observations")
+    observation_store.add(ObservationPlaneDefinition(
+        name="Intermediate",preferred_detector="cam2",default_pixel_size_um=0.2,
+    ))
     device = MockSLMDeviceProvider()
     busy = []
     session = SLMSession(
         runtime=runtime,
         calibration_store=store,
         mapping_store=mapping_store,
+        observation_plane_store=observation_store,
         measurement_dispatcher=dispatcher,
         host_services=SLMHostServices(device=device),
         callbacks=SLMSessionCallbacks(
@@ -342,13 +349,14 @@ def test_calibration_live_acquisition_uses_host_neutral_dispatcher(tmp_path):
     assert state.reference is not None
     availability = session.calibration.acquisition_availability("sec_0")
     assert availability.available
-    assert availability.detector is None
+    assert availability.detector == "cam2"
 
     session.calibration.acquire_target_measurement("sec_0","cam2")
     request = dispatcher.pending[-1][0]
     assert request.active
     assert dispatcher.pending[-1][4] == "cam2"
     assert dispatcher.pending[-1][3]["mapping_name"] == mapping
+    assert dispatcher.pending[-1][3]["observation_plane"] == "Intermediate"
     assert busy[-1][1] is True
 
     measurement = ImageMeasurement(
@@ -358,7 +366,8 @@ def test_calibration_live_acquisition_uses_host_neutral_dispatcher(tmp_path):
     )
     dispatcher.complete(measurement)
     assert busy[-1][1] is False
-    assert session.calibration.target_state("sec_0").measurement is measurement
+    committed = session.calibration.target_state("sec_0").measurement
+    assert committed.pixel_size_um == pytest.approx(0.2)
 
 
 def test_target_state_is_discarded_on_runtime_change(tmp_path):
@@ -376,3 +385,229 @@ def test_target_state_is_discarded_on_runtime_change(tmp_path):
 
     session.calibration.prepare_runtime_change()
     assert session.calibration.target_state("sec_0") is None
+
+
+def _observation_store(tmp_path):
+    store = ObservationPlaneStore(tmp_path/"observations")
+    store.add(ObservationPlaneDefinition(
+        name="Main",preferred_detector="MainCam",default_pixel_size_um=0.4,
+    ))
+    store.add(ObservationPlaneDefinition(
+        name="Intermediate",preferred_detector="IntermediateCam",
+        default_pixel_size_um=0.2,
+    ))
+    return store
+
+
+def _save_observation_geometry(store,runtime,plane,orientation="identity"):
+    store.save(GeometryOrientationCalibration(
+        slm_serial=runtime.identity.serial_number,
+        section_key="sec_0",
+        plane_name=plane,
+        orientation=orientation,
+        detector_name=plane + "Cam",
+        grid_x=5,grid_y=4,
+        period_x_px=12.0,period_y_px=14.0,
+        score=0.99,confidence_margin=0.3,matched_count=20,
+    ))
+
+
+def _fake_target_localization():
+    lattice = np.asarray([[0,1,0,1],[0,0,1,1]],dtype=np.int64)
+    positions = np.asarray(
+        [[10.0,20.0,10.0,20.0],[10.0,10.0,30.0,30.0]],
+        dtype=np.float64,
+    )
+    return LocalizationResult(
+        target_type="multi_foci_vector",
+        target_params={},
+        parameters={},
+        lattice_indices=lattice,
+        crop_coord=(0,64,0,64),
+        cropped_image=np.zeros((64,64),dtype=np.float64),
+        expected_positions_px=positions,
+        measured_positions_px=positions,
+        period_x_px=10.0,
+        period_y_px=20.0,
+        offset_x_px=0.0,
+        offset_y_px=0.0,
+        diagnostics={
+            "matched_mask":(True,True,True,True),
+            "rms_residual_px":0.0,
+        },
+    )
+
+
+def test_mapping_calibration_observation_selection_is_independent_from_feedback_and_cgh(tmp_path):
+    runtime = _runtime(with_cgh=True)
+    mapping_store = MappingStore(tmp_path/"mappings")
+    mapping = _mapping(mapping_store)
+    calibration_store = SLMCalibrationStore(tmp_path/"calibrations")
+    _save_calibration(calibration_store,runtime,mapping)
+    observations = _observation_store(tmp_path)
+    session = SLMSession(
+        runtime=runtime,
+        calibration_store=calibration_store,
+        mapping_store=mapping_store,
+        observation_plane_store=observations,
+    )
+    session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",mapping)
+    )
+    session.feedback.select_observation_plane("sec_0","Main")
+    job = runtime.prepare_section_base_cgh("sec_0")
+    runtime.commit_section_cgh(
+        "sec_0",
+        CGHResult(
+            generation=job.generation,spec=job.spec,target_name=job.target_name,
+            pattern=np.ones(job.spec.context.shape,dtype=np.complex128),
+        ),
+    )
+    assert runtime.get_section_cgh_status("sec_0").result_state is CGHResultState.CURRENT
+
+    session.calibration.select_target_observation_plane("sec_0","Intermediate")
+
+    assert session.calibration.target_observation_plane("sec_0") == "Intermediate"
+    assert session.feedback.active_observation_plane("sec_0") == "Main"
+    assert session.calibration.active_mapping("sec_0") == mapping
+    assert runtime.get_section_cgh_status("sec_0").result_state is CGHResultState.CURRENT
+
+
+def test_target_mapping_calibration_uses_observation_scale_geometry_and_provenance(
+    tmp_path,monkeypatch,
+):
+    runtime = _runtime(with_cgh=True)
+    mapping_store = MappingStore(tmp_path/"mappings")
+    mapping = _mapping(mapping_store)
+    calibration_store = SLMCalibrationStore(tmp_path/"calibrations")
+    observations = _observation_store(tmp_path)
+    geometry_store = SLMGeometryOrientationCalibrationStore(tmp_path/"geometry")
+    _save_observation_geometry(geometry_store,runtime,"Intermediate")
+    _save_observation_geometry(geometry_store,runtime,"Main","rotate_90_cw")
+    session = SLMSession(
+        runtime=runtime,
+        calibration_store=calibration_store,
+        mapping_store=mapping_store,
+        observation_plane_store=observations,
+        geometry_orientation_calibration_store=geometry_store,
+    )
+    session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",mapping)
+    )
+    monkeypatch.setattr(
+        "slmcore.application.calibration.localize_measurement",
+        lambda *_args,**_kwargs:_fake_target_localization(),
+    )
+
+    session.calibration.select_target_observation_plane("sec_0","Intermediate")
+    session.calibration.ensure_target_reference("sec_0")
+    measurement = ImageMeasurement(
+        np.zeros((64,64),dtype=np.float64),source="camera",detector="IntermediateCam",
+    )
+    state = session.calibration.commit_target_measurement(
+        "sec_0",measurement,source="IntermediateCam",
+    )
+    assert state.measurement.pixel_size_um == pytest.approx(0.2)
+    candidate = session.calibration.run_target_localization(
+        "sec_0",state.localization_parameters,
+    )
+    assert candidate.calibration.mapping_name == mapping
+    assert candidate.calibration.metadata["observation_plane"] == "Intermediate"
+    assert candidate.calibration.metadata["observation_source"] == "IntermediateCam"
+    assert candidate.calibration.metadata["pixel_size_um"] == pytest.approx(0.2)
+    assert candidate.calibration.metadata["geometry_calibration"]["orientation"] == "identity"
+    saved = session.calibration.apply_target_candidate("sec_0",mapping)
+    assert saved.mapping_name == mapping
+    assert mapping_store.names == (mapping,)
+
+    session.calibration.discard_target_state("sec_0")
+    session.calibration.select_target_observation_plane("sec_0","Main")
+    session.calibration.ensure_target_reference("sec_0")
+    actual_scale = ImageMeasurement(
+        np.zeros((64,64),dtype=np.float64),source="external",
+        detector="OtherCam",pixel_size_um=0.3,
+    )
+    state = session.calibration.commit_target_measurement(
+        "sec_0",actual_scale,source="OtherCam",
+    )
+    assert state.measurement.pixel_size_um == pytest.approx(0.3)
+    candidate = session.calibration.run_target_localization(
+        "sec_0",state.localization_parameters,
+    )
+    assert candidate.calibration.mapping_name == mapping
+    assert candidate.calibration.metadata["observation_plane"] == "Main"
+    assert candidate.calibration.metadata["observation_source"] == "OtherCam"
+    assert candidate.calibration.metadata["pixel_size_um"] == pytest.approx(0.3)
+    assert candidate.calibration.metadata["geometry_calibration"]["orientation"] == "rotate_90_cw"
+    # 90-degree observation geometry swaps detector-period interpretation while
+    # preserving the same mapping identity.
+    assert candidate.fitted_period_x_px == pytest.approx(20.0)
+    assert candidate.fitted_period_y_px == pytest.approx(10.0)
+    saved = session.calibration.apply_target_candidate("sec_0",mapping)
+    assert saved.mapping_name == mapping
+    assert mapping_store.names == (mapping,)
+    loaded = calibration_store.load_calibration(runtime.identity,"sec_0",mapping)
+    assert loaded.metadata["observation_plane"] == "Main"
+
+
+def test_target_mapping_calibration_requires_geometry_for_selected_observation(tmp_path,monkeypatch):
+    runtime = _runtime(with_cgh=True)
+    mapping_store = MappingStore(tmp_path/"mappings")
+    mapping = _mapping(mapping_store)
+    observations = ObservationPlaneStore(tmp_path/"observations")
+    observations.add(ObservationPlaneDefinition(
+        name="Intermediate",default_pixel_size_um=0.2,
+    ))
+    session = SLMSession(
+        runtime=runtime,
+        calibration_store=SLMCalibrationStore(tmp_path/"calibrations"),
+        mapping_store=mapping_store,
+        observation_plane_store=observations,
+        geometry_orientation_calibration_store=(
+            SLMGeometryOrientationCalibrationStore(tmp_path/"geometry")
+        ),
+    )
+    session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",mapping)
+    )
+    state = session.calibration.ensure_target_reference("sec_0")
+    session.calibration.commit_target_measurement(
+        "sec_0",
+        ImageMeasurement(np.zeros((64,64)),source="file"),
+        source="file",
+    )
+    monkeypatch.setattr(
+        "slmcore.application.calibration.localize_measurement",
+        lambda *_args,**_kwargs:_fake_target_localization(),
+    )
+    with pytest.raises(RuntimeError,match="Geometry not calibrated"):
+        session.calibration.run_target_localization(
+            "sec_0",state.localization_parameters,
+        )
+
+
+def test_target_measurement_pixel_size_uses_workflow_override_after_plane_fallback(tmp_path):
+    runtime = _runtime(with_cgh=True)
+    mapping_store = MappingStore(tmp_path/"mappings_override")
+    mapping = _mapping(mapping_store)
+    observations = ObservationPlaneStore(tmp_path/"observations_override")
+    observations.add(ObservationPlaneDefinition(name="External"))
+    session = SLMSession(
+        runtime=runtime,
+        calibration_store=SLMCalibrationStore(tmp_path/"calibrations_override"),
+        mapping_store=mapping_store,
+        observation_plane_store=observations,
+    )
+    session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",mapping)
+    )
+    session.calibration.ensure_target_reference("sec_0")
+    state = session.calibration.commit_target_measurement(
+        "sec_0",
+        ImageMeasurement(np.zeros((64,64)),source="file"),
+        source="file",
+        pixel_size_um=0.75,
+    )
+    assert state.observation_plane_name == "External"
+    assert state.source == "file"
+    assert state.measurement.pixel_size_um == pytest.approx(0.75)

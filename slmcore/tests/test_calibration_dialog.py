@@ -215,3 +215,32 @@ def test_calibration_dialog_allows_source_selection_without_mapping_detector_bin
         assert dialog.target_view.current_detector == "Camera 2"
     finally:
         dialog.deleteLater()
+
+
+def test_calibration_dialog_exposes_mapping_observation_and_optional_pixel_size():
+    _app,QtWidgets,CalibrationDialog = _qapp_and_dialog_class()
+    dialog = CalibrationDialog(
+        mapping_name="100x",
+        section_key="sec_488",
+        observation_planes=("Main","Intermediate"),
+        current_observation_plane="Intermediate",
+        observation_default_pixel_size_um=0.108,
+        localization_parameters=_localization_defaults(),
+        detectors=("MainCam","IntermediateCam"),
+        current_detector="IntermediateCam",
+    )
+    selected = []
+    dialog.sigObservationPlaneChanged.connect(selected.append)
+    try:
+        assert "100x" in dialog._mapping_label.text()
+        assert "sec_488" in dialog._mapping_label.text()
+        assert dialog.current_observation_plane == "Intermediate"
+        assert "0.108" in dialog._pixel_size_edit.placeholderText()
+        dialog._pixel_size_edit.setText("0.125")
+        assert dialog.target_pixel_size_um == pytest.approx(0.125)
+
+        index = dialog._observation_combo.findData("Main")
+        dialog._observation_combo.setCurrentIndex(index)
+        assert selected[-1] == "Main"
+    finally:
+        dialog.deleteLater()

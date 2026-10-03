@@ -31,6 +31,7 @@ class CalibrationDialog(QtWidgets.QDialog):
 
     sigAcquireRequested = QtCore.Signal(str)
     sigLoadRequested = QtCore.Signal()
+    sigObservationPlaneChanged = QtCore.Signal(object)
     sigLocalizationRunRequested = QtCore.Signal(object)
     sigCalibrationRequested = QtCore.Signal(str,object)
     sigMethodChanged = QtCore.Signal(str)
@@ -46,6 +47,10 @@ class CalibrationDialog(QtWidgets.QDialog):
         self,
         *,
         mapping_name: str | None=None,
+        section_key: str | None=None,
+        observation_planes: Sequence[str]=(),
+        current_observation_plane: str | None=None,
+        observation_default_pixel_size_um: float | None=None,
         localization_parameters: Mapping[str, Any] | None=None,
         target_context: Mapping[str, Any] | None=None,
         detectors: Sequence[str]=(),
@@ -65,6 +70,7 @@ class CalibrationDialog(QtWidgets.QDialog):
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose,True)
 
         self._mapping_name = ""
+        self._section_key = str(section_key or "").strip()
         self._target_available = False
         self._target_calibration_candidate = None
         self._linear_edits: dict[str, QtWidgets.QLineEdit] = {}
@@ -99,6 +105,9 @@ class CalibrationDialog(QtWidgets.QDialog):
         self._target_page = self._build_target_localization_page(
             localization_parameters or _default_values(LOCALIZATION_PARAMS),
             target_context,
+            observation_planes,
+            current_observation_plane,
+            observation_default_pixel_size_um,
             detectors,
             current_detector,
         )
@@ -149,10 +158,58 @@ class CalibrationDialog(QtWidgets.QDialog):
     def set_mapping_name(self,mapping_name: str | None) -> None:
         mapping = str(mapping_name or "").strip()
         self._mapping_name = mapping
+        section = self._section_key
+        suffix = " / Section %s" % section if section else ""
         self._mapping_label.setText(
-            "Calibrating mapping: %s" % mapping
-            if mapping else "Calibrating mapping: none"
+            "Calibrating mapping: %s%s" % (mapping,suffix)
+            if mapping else "Calibrating mapping: none%s" % suffix
         )
+
+    @property
+    def current_observation_plane(self) -> str | None:
+        value = self._observation_combo.currentData()
+        return str(value).strip() if value is not None and str(value).strip() else None
+
+    @property
+    def target_pixel_size_um(self) -> float | None:
+        text = self._pixel_size_edit.text().strip()
+        if not text:
+            return None
+        value = float(text)
+        if value <= 0:
+            raise ValueError("Pixel size must be > 0 um.")
+        return value
+
+    def clear_target_pixel_size_override(self) -> None:
+        self._pixel_size_edit.clear()
+
+    def configure_observation_planes(
+        self,
+        observation_planes: Sequence[str],
+        current_observation_plane: str | None=None,
+        default_pixel_size_um: float | None=None,
+    ) -> None:
+        names = tuple(
+            str(value).strip() for value in observation_planes if str(value).strip()
+        )
+        blocker = QtCore.QSignalBlocker(self._observation_combo)
+        try:
+            self._observation_combo.clear()
+            self._observation_combo.addItem("Select observation plane...",None)
+            for name in names:
+                self._observation_combo.addItem(name,name)
+            index = self._observation_combo.findData(current_observation_plane)
+            if index < 0:
+                index = 0
+            self._observation_combo.setCurrentIndex(index)
+        finally:
+            del blocker
+        if default_pixel_size_um is None:
+            self._pixel_size_edit.setPlaceholderText("Auto / required if unavailable")
+        else:
+            self._pixel_size_edit.setPlaceholderText(
+                "Auto (plane default %.6g)" % float(default_pixel_size_um)
+            )
 
 
     def set_live_acquisition_available(
@@ -288,6 +345,9 @@ class CalibrationDialog(QtWidgets.QDialog):
         self,
         localization_parameters: Mapping[str,Any],
         target_context: Mapping[str, Any] | None,
+        observation_planes: Sequence[str],
+        current_observation_plane: str | None,
+        observation_default_pixel_size_um: float | None,
         detectors: Sequence[str],
         current_detector: str | None,
     ) -> QtWidgets.QWidget:
@@ -295,6 +355,32 @@ class CalibrationDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0,6,0,0)
         layout.setSpacing(8)
+
+        context_row = QtWidgets.QHBoxLayout()
+        context_row.addWidget(QtWidgets.QLabel("Observation plane:"))
+        self._observation_combo = QtWidgets.QComboBox()
+        self._observation_combo.setMinimumWidth(170)
+        self._observation_combo.currentIndexChanged.connect(
+            lambda _index:self.sigObservationPlaneChanged.emit(
+                self.current_observation_plane
+            )
+        )
+        context_row.addWidget(self._observation_combo)
+        context_row.addSpacing(12)
+        context_row.addWidget(QtWidgets.QLabel("Pixel size (um):"))
+        self._pixel_size_edit = QtWidgets.QLineEdit()
+        validator = QtGui.QDoubleValidator(0.0,1e9,9,self._pixel_size_edit)
+        validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+        self._pixel_size_edit.setValidator(validator)
+        self._pixel_size_edit.setMaximumWidth(170)
+        context_row.addWidget(self._pixel_size_edit)
+        context_row.addStretch(1)
+        layout.addLayout(context_row)
+        self.configure_observation_planes(
+            observation_planes,
+            current_observation_plane,
+            observation_default_pixel_size_um,
+        )
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal,page)
         splitter.setChildrenCollapsible(False)

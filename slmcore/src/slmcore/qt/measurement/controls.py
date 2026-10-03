@@ -42,7 +42,7 @@ class MeasurementControls(QtWidgets.QWidget):
         layout.setContentsMargins(0,0,0,0)
         layout.setSpacing(6)
 
-        layout.addWidget(QtWidgets.QLabel("Detector:"))
+        layout.addWidget(QtWidgets.QLabel("Source:"))
 
         self.detector_combo = QtWidgets.QComboBox()
         self.detector_combo.setMinimumWidth(150)

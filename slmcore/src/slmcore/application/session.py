@@ -163,6 +163,8 @@ class SLMSession:
             self,
             store=calibration_store,
             mappings=self.mappings,
+            observation_planes=self.observation_planes,
+            observation_geometry=self.observation_geometry,
             preferences=startup_preferences,
             display_name=self.display_name,
             measurements=measurement_dispatcher,

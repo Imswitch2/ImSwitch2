@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass,field
+from dataclasses import dataclass,field,replace
+import math
 from typing import Any,Callable,Mapping
 
 from ..core.calibration.geometry import (
@@ -10,6 +11,8 @@ from ..core.calibration.geometry import (
 from ..core.calibration.slm_section_calibration import SLMSectionCalibration
 from ..workspace.calibration_store import SLMCalibrationStore
 from .mapping import MappingService
+from .observation import ObservationPlaneService
+from .observation_geometry import ObservationGeometryService
 from ..core.calibration.target_localization_calibration import (
     TargetLocalizationCalibrationCandidate,fit_target_localization_calibration,
 )
@@ -55,7 +58,11 @@ def _validated_localization_parameters(
 class TargetCalibrationState:
     """Transient target-localization calibration workflow state."""
 
+    section_key: str=""
     mapping_name: str | None=None
+    observation_plane_name: str | None=None
+    source: str | None=None
+    pixel_size_um_override: float | None=None
     measurement: ImageMeasurement | None=None
     localization_parameters: dict[str,Any]=field(default_factory=dict)
     reference: TargetLocalizationReference | None=None
@@ -107,6 +114,8 @@ class SLMCalibrationService:
         *,
         store: SLMCalibrationStore | None=None,
         mappings: MappingService | None=None,
+        observation_planes: ObservationPlaneService | None=None,
+        observation_geometry: ObservationGeometryService | None=None,
         preferences=None,
         display_name: str="",
         measurements: MeasurementDispatcher | None=None,
@@ -115,6 +124,8 @@ class SLMCalibrationService:
         self.session = session
         self.store = store
         self.mappings = mappings or MappingService()
+        self.observation_planes = observation_planes or ObservationPlaneService()
+        self.observation_geometry = observation_geometry
         self.preferences = preferences
         self.display_name = str(display_name or session.runtime.identity.key)
         self.measurements = measurements
@@ -354,16 +365,95 @@ class SLMCalibrationService:
     def target_state(self,section_key: str) -> TargetCalibrationState | None:
         return self._states.get(section_key)
 
-    def ensure_target_reference(self,section_key: str) -> TargetCalibrationState:
+    def observation_plane_names(self) -> tuple[str,...]:
+        return tuple(item.name for item in self.observation_planes.list())
+
+    def ensure_target_context(self,section_key: str) -> TargetCalibrationState:
+        """Return/create mapping-calibration workflow state for one section.
+
+        Observation selection is calibration-workflow state.  It is deliberately
+        independent from Feedback's observation selection and from mapping
+        identity itself.
+        """
         self._require_editor_mode()
         self._require_section(section_key)
         state = self._states.get(section_key)
+        mapping = self.active_mapping(section_key)
         if state is None:
+            planes = self.observation_planes.list()
+            plane_name = planes[0].name if len(planes) == 1 else None
+            source = None
+            if plane_name is not None:
+                source = self.observation_planes.get(plane_name).preferred_detector
             state = TargetCalibrationState(
-                mapping_name=self.active_mapping(section_key),
+                section_key=str(section_key),
+                mapping_name=mapping,
+                observation_plane_name=plane_name,
+                source=source,
                 localization_parameters=_default_localization_parameters(),
             )
             self._states[section_key] = state
+        elif state.mapping_name != mapping:
+            state.mapping_name = mapping
+            self._clear_target_measurement_state(state)
+        return state
+
+    def target_observation_plane(self,section_key: str) -> str | None:
+        return self.ensure_target_context(section_key).observation_plane_name
+
+    def select_target_observation_plane(
+        self,section_key: str,observation_plane_name: str | None,
+    ) -> bool:
+        """Select observation context for mapping calibration only."""
+        state = self.ensure_target_context(section_key)
+        selected = str(observation_plane_name or "").strip() or None
+        if selected is not None:
+            plane = self.observation_planes.get(selected)
+        else:
+            plane = None
+        if selected == state.observation_plane_name:
+            return False
+        self.cancel_request(section_key)
+        state.observation_plane_name = selected
+        state.source = None if plane is None else plane.preferred_detector
+        state.pixel_size_um_override = None
+        self._clear_target_measurement_state(state)
+        self._callbacks.on_state_changed(section_key)
+        return True
+
+    def set_target_source(self,section_key: str,source: str | None) -> bool:
+        state = self.ensure_target_context(section_key)
+        selected = str(source or "").strip() or None
+        if selected == state.source:
+            return False
+        self.cancel_request(section_key)
+        state.source = selected
+        self._clear_target_measurement_state(state)
+        self._callbacks.on_state_changed(section_key)
+        return True
+
+    def set_target_pixel_size_override(
+        self,section_key: str,pixel_size_um: float | None,
+    ) -> None:
+        state = self.ensure_target_context(section_key)
+        if pixel_size_um is None:
+            state.pixel_size_um_override = None
+            return
+        value = float(pixel_size_um)
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("pixel_size_um must be a positive finite value")
+        state.pixel_size_um_override = value
+
+    @staticmethod
+    def _clear_target_measurement_state(state: TargetCalibrationState) -> None:
+        state.measurement = None
+        state.localization = None
+        state.calibration_candidate = None
+
+    def ensure_target_reference(self,section_key: str) -> TargetCalibrationState:
+        self._require_editor_mode()
+        self._require_section(section_key)
+        state = self.ensure_target_context(section_key)
         try:
             reference = self.session.runtime.get_section_base_target_localization_reference(
                 section_key
@@ -469,13 +559,52 @@ class SLMCalibrationService:
             return CalibrationAcquisitionAvailability(
                 False,reason="Select a mapping before live acquisition."
             )
-        return CalibrationAcquisitionAvailability(True)
+        state = self.ensure_target_context(section_key)
+        plane_name = state.observation_plane_name
+        if not plane_name:
+            return CalibrationAcquisitionAvailability(
+                False,
+                reason="Select an observation plane before live acquisition.",
+            )
+        try:
+            available_sources = tuple(
+                str(value).strip()
+                for value in measurements.available_sources(section_key)
+                if str(value).strip()
+            )
+        except Exception:
+            available_sources = ()
+        source = str(state.source or "").strip() or None
+        if source not in available_sources:
+            preferred = self.observation_planes.get(plane_name).preferred_detector
+            if preferred in available_sources:
+                source = preferred
+            else:
+                try:
+                    source = measurements.preferred_source(section_key,available_sources)
+                except Exception:
+                    source = None
+                source = str(source or "").strip() or None
+                if source not in available_sources:
+                    source = available_sources[0] if available_sources else None
+        return CalibrationAcquisitionAvailability(True,detector=source)
 
     def acquire_target_measurement(
-        self,section_key: str,detector: str | None=None,
+        self,
+        section_key: str,
+        detector: str | None=None,
+        *,
+        pixel_size_um: float | None=None,
     ) -> bool:
         self._require_editor_mode()
-        self.ensure_target_reference(section_key)
+        state = self.ensure_target_reference(section_key)
+        if detector is not None:
+            requested = str(detector or "").strip() or None
+            if requested != state.source:
+                state.source = requested
+                self._clear_target_measurement_state(state)
+        if pixel_size_um is not None:
+            self.set_target_pixel_size_override(section_key,pixel_size_um)
         availability = self.acquisition_availability(section_key)
         if not availability.available:
             raise RuntimeError(availability.reason)
@@ -486,6 +615,8 @@ class SLMCalibrationService:
         if not detector:
             raise RuntimeError("Select a detector before acquisition.")
         mapping = self.active_mapping(section_key)
+        plane_name = state.observation_plane_name
+        state.source = detector
         self.cancel_request(section_key)
         generation = self._generation
         self._callbacks.on_measurement_busy_changed(
@@ -500,7 +631,9 @@ class SLMCalibrationService:
             if not self.session.editor_writes_allowed:
                 return
             try:
-                self.commit_target_measurement(section_key,measurement)
+                self.commit_target_measurement(
+                    section_key,measurement,source=detector,
+                )
             except Exception as error:
                 self._callbacks.on_measurement_error(section_key,error)
 
@@ -520,6 +653,8 @@ class SLMCalibrationService:
                 "slm_key":self.session.runtime.identity.key,
                 "section_key":section_key,
                 "mapping_name":mapping,
+                "observation_plane":plane_name,
+                "source":detector,
                 "calibration_method":"target_localization",
             },
             on_result=on_result,
@@ -530,12 +665,29 @@ class SLMCalibrationService:
         return True
 
     def commit_target_measurement(
-        self,section_key: str,measurement: ImageMeasurement,
+        self,
+        section_key: str,
+        measurement: ImageMeasurement,
+        *,
+        source: str | None=None,
+        pixel_size_um: float | None=None,
     ) -> TargetCalibrationState:
         self._require_editor_mode()
         state = self._states.get(section_key)
         if state is None or state.reference is None:
             raise RuntimeError("Target localization reference is not available.")
+        self._require_target_observation_plane(state)
+        if pixel_size_um is not None:
+            self.set_target_pixel_size_override(section_key,pixel_size_um)
+        measurement = self._resolve_target_measurement_scale(state,measurement)
+        selected_source = str(source or "").strip() or None
+        if selected_source is None:
+            selected_source = (
+                str(measurement.detector or "").strip()
+                or str(measurement.source or "").strip()
+                or None
+            )
+        state.source = selected_source
         state.measurement = measurement
         state.localization = None
         state.calibration_candidate = None
@@ -552,12 +704,22 @@ class SLMCalibrationService:
         return state
 
     def run_target_localization(
-        self,section_key: str,parameters: Mapping[str,Any],
+        self,
+        section_key: str,
+        parameters: Mapping[str,Any],
+        *,
+        pixel_size_um: float | None=None,
     ) -> TargetLocalizationCalibrationCandidate:
         self._require_editor_mode()
         state = self.ensure_target_reference(section_key)
         if state.measurement is None:
             raise RuntimeError("Acquire or load an image before localization.")
+        if pixel_size_um is not None:
+            self.set_target_pixel_size_override(section_key,pixel_size_um)
+        state.measurement = self._resolve_target_measurement_scale(
+            state,state.measurement,require=True,
+        )
+        geometry = self._require_target_observation_geometry(state)
         normalized = _validated_localization_parameters(parameters)
         reference = state.reference
         if reference is None:
@@ -573,13 +735,20 @@ class SLMCalibrationService:
         state.localization_parameters = normalized
         state.localization = localization
         state.calibration_candidate = None
-        candidate = self._fit_target_candidate(section_key,state,localization)
+        candidate = self._fit_target_candidate(
+            section_key,state,localization,geometry=geometry,
+        )
         state.calibration_candidate = candidate
         self._callbacks.on_state_changed(section_key)
         return candidate
 
     def _fit_target_candidate(
-        self,section_key: str,state: TargetCalibrationState,localization: Any,
+        self,
+        section_key: str,
+        state: TargetCalibrationState,
+        localization: Any,
+        *,
+        geometry: Any,
     ) -> TargetLocalizationCalibrationCandidate:
         if state.reference is None:
             raise RuntimeError("Target localization reference is not available.")
@@ -594,6 +763,22 @@ class SLMCalibrationService:
             raise RuntimeError(
                 "Target-localization calibration requires measurement pixel_size_um."
             )
+        orientation = getattr(geometry,"orientation",None)
+        orientation_value = str(getattr(orientation,"value",orientation) or "identity")
+        if orientation_value in {
+            "rotate_90_cw","rotate_90_ccw","transpose","anti_transpose",
+        }:
+            localization = replace(
+                localization,
+                period_x_px=localization.period_y_px,
+                period_y_px=localization.period_x_px,
+            )
+        geometry_provenance = {
+            "orientation":orientation_value,
+            "protocol":getattr(geometry,"protocol",None),
+            "created_at":getattr(geometry,"created_at",None),
+            "detector_name":getattr(geometry,"detector_name",None),
+        }
         return fit_target_localization_calibration(
             resolution=state.reference.resolution,
             localization=localization,
@@ -607,8 +792,72 @@ class SLMCalibrationService:
                 "measurement_id":getattr(measurement,"measurement_id",None),
                 "measurement_source":getattr(measurement,"source",None),
                 "measurement_detector":getattr(measurement,"detector",None),
+                "observation_plane":state.observation_plane_name,
+                "observation_source":state.source,
+                "pixel_size_um":pixel_size_um,
+                "geometry_calibration":geometry_provenance,
             },
         )
+
+    def _require_target_observation_plane(
+        self,state: TargetCalibrationState,
+    ) -> str:
+        plane_name = str(state.observation_plane_name or "").strip()
+        if not plane_name:
+            raise RuntimeError(
+                "Select an observation plane before target-localization calibration."
+            )
+        self.observation_planes.get(plane_name)
+        return plane_name
+
+    def _resolve_target_measurement_scale(
+        self,
+        state: TargetCalibrationState,
+        measurement: ImageMeasurement,
+        *,
+        require: bool=False,
+    ) -> ImageMeasurement:
+        if not isinstance(measurement,ImageMeasurement):
+            raise TypeError("measurement must be an ImageMeasurement")
+        if measurement.pixel_size_um is not None:
+            return measurement
+        plane_name = self._require_target_observation_plane(state)
+        plane = self.observation_planes.get(plane_name)
+        pixel_size_um = plane.default_pixel_size_um
+        if pixel_size_um is None:
+            pixel_size_um = state.pixel_size_um_override
+        if pixel_size_um is None:
+            if require:
+                raise RuntimeError(
+                    "Target-localization calibration requires a detector pixel size. "
+                    "Provide it in the measurement, define an observation-plane default, "
+                    "or enter a pixel size for this calibration workflow."
+                )
+            return measurement
+        metadata = dict(measurement.metadata)
+        metadata.setdefault("pixel_size_resolution","observation_or_workflow_fallback")
+        return replace(
+            measurement,
+            pixel_size_um=float(pixel_size_um),
+            metadata=metadata,
+        )
+
+    def _require_target_observation_geometry(
+        self,state: TargetCalibrationState,
+    ):
+        plane_name = self._require_target_observation_plane(state)
+        geometry_service = self.observation_geometry
+        calibration = (
+            None if geometry_service is None
+            else geometry_service.calibration(state.section_key,plane_name)
+        )
+        if calibration is None:
+            raise RuntimeError(
+                'Geometry not calibrated for section "%s" / observation plane "%s". '
+                "Calibrate observation geometry before target-localization mapping calibration."
+                % (state.section_key,plane_name)
+            )
+        return calibration
 
     @staticmethod
     def linear_phase_calibration(
