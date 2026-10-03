@@ -33,6 +33,7 @@ from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
     CAMERA_PIXEL_SIZE_PARAM, DetectorListParameter, DetectorNumberParameter,
 )
 from imswitch.imcontrol.view.widgets.SettingsWidget import SettingsWidget
+from imswitch.imcontrol.view.widgets.DetectorSettingsTree import DetectorSettingsTree
 
 
 @pytest.fixture
@@ -189,6 +190,18 @@ def savedState(detectorName='Camera1', **overrides):
     }
     detector_state.update(overrides)
     return {'detectors': {detectorName: detector_state}}
+
+
+def test_settings_uses_extracted_detector_settings_tree(cameras):
+    """Settings keeps the same per-detector tree after the view extraction."""
+    controller, _, _ = cameras
+
+    tree = controller._widget.trees['Camera1']
+
+    assert isinstance(tree, DetectorSettingsTree)
+    assert tree.p.param('Model') is not None
+    assert tree.p.param('Image frame').param('Binning') is not None
+    assert tree.p.param('Timings').param('Set exposure time') is not None
 
 
 # --- snapshot -------------------------------------------------------------

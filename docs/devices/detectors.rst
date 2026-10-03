@@ -857,8 +857,8 @@ setups naming ``TISManager`` keep using this manager.
             "managerProperties": {
                 "cameraListIndex": 0,
                 "tis": {
-                    "exposure": 10000,
-                    "gain": 1
+                    "image_width": 1280,
+                    "image_height": 1024
                 }
             },
             "forAcquisition": true
@@ -879,7 +879,7 @@ setups naming ``TISManager`` keep using this manager.
      - Index of the camera in the enumerated TIS camera list (0-based).  Set to an invalid value (e.g. ``"mock"``) to force the mock fallback.
    * - ``tis``
      - dict
-     - Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.
+     - Camera properties. ``image_width`` and ``image_height`` (pixels) set the full-chip size the manager reports. ``exposure``, ``gain`` and ``brightness`` are accepted but not applied at startup: the camera keeps its own settings, the detector parameters show what it reports, and edits there (exposure in ms, gain/brightness in device units) are written to the camera.
 
 Both fields are **required**; no defaults.
 

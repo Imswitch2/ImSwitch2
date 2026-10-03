@@ -17,7 +17,7 @@
       ]
     },
     "tis": {
-      "description": "Dictionary of camera property name → value pairs applied via ``setPropertyValue`` at startup.",
+      "description": "Camera properties. ``image_width`` and ``image_height`` (pixels) set the full-chip size the manager reports. ``exposure``, ``gain`` and ``brightness`` are accepted but not applied at startup: the camera keeps its own settings, the detector parameters show what it reports, and edits there (exposure in ms, gain/brightness in device units) are written to the camera.",
       "type": "object",
       "x-imswitch-kind": "object",
       "x-imswitch-source": [

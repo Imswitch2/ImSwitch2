@@ -15,7 +15,11 @@ class MockCameraTIS:
             'subarray_vsize': 800,
             'subarray_hsize': 800,
             'SensorHeight': 1024,
-            'SensorWidth': 1280
+            'SensorWidth': 1280,
+            # Settable like the real CameraTIS (exposure in ms).
+            'exposure': 100.0,
+            'gain': 1,
+            'brightness': 1,
         }
         self.exposure = 100
         self.gain = 1
@@ -105,6 +109,11 @@ class MockCameraTIS:
         return np.expand_dims(self.grabFrame(),0)
     
     def setPropertyValue(self, property_name, property_value):
+        # Keep camera settings so a read after a write returns them, as on
+        # the real camera. The geometry keys stay fixed: the mock's frame
+        # size does not follow them.
+        if property_name in ('exposure', 'gain', 'brightness'):
+            self.properties[property_name] = property_value
         return property_value
 
     def getPropertyValue(self, property_name):
