@@ -195,6 +195,12 @@ class TestLogWidget:
         assert any('after the panels were dropped' in text
                    for _levelno, _name, text in logBuffer.records())
 
+        # Hand the worker back in one piece.  Those deleteLater() calls are still
+        # queued, and leaving them for whichever later test next spins the event
+        # loop made an unrelated one segfault -- which is this test's own mess,
+        # not the bug it guards.
+        qapp.processEvents()
+
     def test_its_timer_belongs_to_it(self, qtbot):
         # Ownership is what makes the above safe: a timer parented to the widget
         # cannot fire after the widget is gone.
