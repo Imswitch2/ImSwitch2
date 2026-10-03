@@ -214,7 +214,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         if plane is None:
-            raise RuntimeError("Select a measurement plane before choosing an FOV calibration")
+            raise RuntimeError("Select a calibration plane before choosing an FOV calibration")
         key = (section,plane)
         selected = str(name or "").strip() or None
         selection = self._fov_position_calibration_selections.setdefault(
@@ -239,7 +239,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         if plane is None:
-            raise RuntimeError("Select a measurement plane before applying an FOV calibration")
+            raise RuntimeError("Select a calibration plane before applying an FOV calibration")
         key = (section,plane)
         selection = self._fov_position_calibration_selections.setdefault(
             key,_FOVPositionCalibrationSelection(),
@@ -263,7 +263,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         if plane is None:
-            raise RuntimeError("Select a measurement plane before setting an FOV default")
+            raise RuntimeError("Select a calibration plane before setting an FOV default")
         context = self.fov_position_calibration_context(section)
         name = context.get("selected_name")
         if not name:
@@ -309,7 +309,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         if plane is None:
-            raise RuntimeError("Select a measurement plane before fitting an FOV calibration")
+            raise RuntimeError("Select a calibration plane before fitting an FOV calibration")
         status = self._runtime.get_section_feedback_status(section)
         if FeedbackCapability.POSITION_CORRECTION not in set(status.capabilities):
             raise RuntimeError("The current target does not support position correction")
@@ -381,7 +381,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         section = str(section_key)
         plane = self._active_feedback_plane(section)
         if plane is None:
-            raise RuntimeError("Select a measurement plane before saving an FOV calibration")
+            raise RuntimeError("Select a calibration plane before saving an FOV calibration")
         candidate = self._fov_position_calibration_candidates.get((section,plane))
         if candidate is None:
             raise RuntimeError("Build an FOV calibration fit before saving")

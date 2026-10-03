@@ -24,6 +24,8 @@ class MeasurementService(FeedbackComponent):
         editor_writes_allowed: Callable[[], bool],
         commit_measurement: Callable[...,bool],
         dispatcher: MeasurementDispatcher | None=None,
+        measurement_context: Callable[[str],tuple[str | None,float | None]] | None=None,
+        validate_measurement_context: Callable[[str],None] | None=None,
     ) -> None:
         super().__init__(
             runtime_provider=runtime_provider,
@@ -32,6 +34,8 @@ class MeasurementService(FeedbackComponent):
         )
         self._commit_measurement = commit_measurement
         self._measurement_dispatcher = dispatcher
+        self._measurement_context = measurement_context
+        self._validate_measurement_context = validate_measurement_context
         self._measurement_requests: dict[str,MeasurementRequest] = {}
 
     @property
@@ -69,6 +73,8 @@ class MeasurementService(FeedbackComponent):
     ) -> None:
         """Replace a section's pending acquisition; the dispatcher owns late-result guards."""
         self._require_editor_mode()
+        if self._validate_measurement_context is not None:
+            self._validate_measurement_context(section_key)
         self.cancel_measurement(section_key)
         self._callbacks.on_measurement_busy_changed(
             section_key,True,"Waiting for %s..." % source,
@@ -86,6 +92,11 @@ class MeasurementService(FeedbackComponent):
             self._callbacks.on_measurement_busy_changed(section_key,False,"")
             if not self._editor_writes_allowed():
                 return
+            if self._measurement_context is not None:
+                plane_name,fallback_pixel_size_um = self._measurement_context(section_key)
+                if measurement.pixel_size_um is None and fallback_pixel_size_um is not None:
+                    from dataclasses import replace
+                    measurement = replace(measurement,pixel_size_um=fallback_pixel_size_um)
             on_result(measurement)
 
         def error_callback(error: Exception) -> None:
@@ -147,7 +158,11 @@ class MeasurementService(FeedbackComponent):
 
     def feedback_measurement_metadata(self,section_key: str) -> dict[str,Any]:
         status = self._runtime.get_section_cgh_status(section_key)
+        plane_name = None
+        if self._measurement_context is not None:
+            plane_name,_pixel_size_um = self._measurement_context(section_key)
         return {
+            "observation_plane":plane_name,
             "slm_key":self._runtime.identity.key,
             "section_key":section_key,
             "cgh_state":status.result_state.value,

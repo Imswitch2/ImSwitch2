@@ -134,6 +134,12 @@ class FeedbackCoordinator(QtCore.QObject):
             window = self._windows.get(section_key)
             sources = self.available_sources(section_key)
             current = self.preferred_source(section_key,sources)
+            observation_planes = tuple(
+                plane.name for plane in self._feedback_service.observation_planes()
+            )
+            current_observation = (
+                self._feedback_service.active_observation_plane(section_key)
+            )
             if window is None:
                 parent = self._qt_session.section_collection.section_view(
                     section_key
@@ -158,6 +164,8 @@ class FeedbackCoordinator(QtCore.QObject):
                     localization_context=self.localization_context(section_key),
                     detectors=sources,
                     current_detector=current,
+                    observation_planes=observation_planes,
+                    current_observation_plane=current_observation,
                     feedback_orientation=(
                         self._feedback_service.feedback_orientation(section_key)
                     ),
@@ -183,6 +191,9 @@ class FeedbackCoordinator(QtCore.QObject):
                 self._fov_calibration.synchronize(section_key,window)
                 self._geometry.synchronize(section_key,window)
             else:
+                window.configure_observation_planes(
+                    observation_planes,current_observation,
+                )
                 window.configure_detectors(sources,current)
                 self.synchronize_section(section_key)
 
@@ -208,6 +219,17 @@ class FeedbackCoordinator(QtCore.QObject):
         if window is None:
             return
         runtime = self._qt_session.runtime
+        observation_planes = tuple(
+            plane.name for plane in self._feedback_service.observation_planes()
+        )
+        current_observation = self._feedback_service.active_observation_plane(
+            section_key
+        )
+        sources = self.available_sources(section_key)
+        window.configure_observation_planes(observation_planes,current_observation)
+        window.configure_detectors(
+            sources,self.preferred_source(section_key,sources),
+        )
         window.set_session_state(
             runtime.get_section_feedback_status(section_key),
             runtime.get_section_feedback_inspection(section_key),

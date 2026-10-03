@@ -672,6 +672,18 @@ class CGHSession:
             )
         )
 
+    def clear_feedback_measurement(self) -> bool:
+        """Clear only the current round measurement/localization analysis.
+
+        Historical rounds and generated/adapted target state are preserved. This
+        is used when the observation context changes without changing the CGH.
+        """
+        if not self._rounds or self._rounds[-1].evaluation is None:
+            return False
+        current = self._rounds[-1]
+        self._rounds = self._rounds[:-1] + (current.with_evaluation(None),)
+        return True
+
     def update_feedback_parameters(
         self,group: str,changes: Mapping[str,Any],
     ) -> bool:
@@ -828,6 +840,7 @@ class CGHSession:
 
     def feedback_localization_context(
         self,state: CGHState,context: SectionContext,
+        *,pixel_size_um: float | None=None,
     ):
         self._require_any_feedback_capability(state)
         committed = self._committed_target
@@ -839,6 +852,7 @@ class CGHSession:
             target_params=target.params,
             resolution=target.resolution,
             calibration=context.calibration,
+            pixel_size_um=pixel_size_um,
         )
 
     def compute_feedback_localization_candidate(

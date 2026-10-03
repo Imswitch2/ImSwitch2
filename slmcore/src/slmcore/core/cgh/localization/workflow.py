@@ -49,6 +49,7 @@ def localize_measurement(
         resolution=resolution,
         calibration=calibration,
         parameters=parameters,
+        pixel_size_um=measurement.pixel_size_um,
     )
     if hints.geometry_type != "lattice":
         raise ValueError(

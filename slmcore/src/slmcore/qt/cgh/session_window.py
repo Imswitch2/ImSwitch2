@@ -81,6 +81,7 @@ class MeasurementsAction(str,Enum):
     INSPECT = "inspect"  # compatibility with the previous details dialog
     AUTOMATIC_START = "automatic_start"
     AUTOMATIC_STOP = "automatic_stop"
+    OBSERVATION_PLANE_SET = "observation_plane_set"
 
 
 class CGHSessionWindow(QtWidgets.QDialog):
@@ -98,6 +99,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         localization_context: Mapping[str, Any] | None=None,
         detectors: Sequence[str]=(),
         current_detector: str | None=None,
+        observation_planes: Sequence[str]=(),
+        current_observation_plane: str | None=None,
         feedback_orientation: FeedbackOrientation | str=FeedbackOrientation.IDENTITY,
         feedback_orientation_context: Mapping[str,Any] | None=None,
         cgh_summary: Mapping[str, Any] | None=None,
@@ -184,6 +187,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_measurement_panel(
             status,localization_context,detectors,current_detector,
+            observation_planes,current_observation_plane,
         ))
         splitter.addWidget(self._build_feedback_panel(status))
         splitter.setStretchFactor(0,1)
@@ -305,11 +309,27 @@ class CGHSessionWindow(QtWidgets.QDialog):
         localization_context: Mapping[str, Any] | None,
         detectors: Sequence[str],
         current_detector: str | None,
+        observation_planes: Sequence[str],
+        current_observation_plane: str | None,
     ) -> QtWidgets.QWidget:
         panel = QtWidgets.QGroupBox("Measurement")
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setContentsMargins(8,10,8,8)
         layout.setSpacing(7)
+
+        observation_row = QtWidgets.QHBoxLayout()
+        observation_row.setSpacing(6)
+        observation_row.addWidget(QtWidgets.QLabel("Observation:"))
+        self.observation_plane_combo = QtWidgets.QComboBox(panel)
+        self.observation_plane_combo.setMinimumWidth(150)
+        observation_row.addWidget(self.observation_plane_combo,1)
+        layout.addLayout(observation_row)
+        self.configure_observation_planes(
+            observation_planes,current_observation_plane,
+        )
+        self.observation_plane_combo.currentIndexChanged.connect(
+            self._on_observation_plane_changed,
+        )
 
         self.measurement_view = MeasurementLocalizationView(
             parameters=status.localization_params,
@@ -1881,6 +1901,29 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._emit(
                 MeasurementsAction.POSITION_REFERENCE_DELETE,{"name":name},
             )
+
+    def configure_observation_planes(
+        self,planes: Sequence[str],current_plane: str | None=None,
+    ) -> None:
+        combo = getattr(self,"observation_plane_combo",None)
+        if combo is None:
+            return
+        blocker = QtCore.QSignalBlocker(combo)
+        combo.clear()
+        names = tuple(str(name) for name in planes if str(name).strip())
+        if current_plane is None or str(current_plane) not in names:
+            combo.addItem("Select observation…",None)
+        for name in names:
+            combo.addItem(name,name)
+        if current_plane is not None:
+            index = combo.findData(str(current_plane))
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        del blocker
+
+    def _on_observation_plane_changed(self,_index: int) -> None:
+        plane = self.observation_plane_combo.currentData()
+        self._emit(MeasurementsAction.OBSERVATION_PLANE_SET,{"plane":plane})
 
     def configure_detectors(
         self,detectors: Sequence[str],current_detector: str | None=None,

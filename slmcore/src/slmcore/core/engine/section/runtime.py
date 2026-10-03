@@ -632,6 +632,14 @@ class SLMSectionRuntime:
         )
         self._cgh_session = candidate
 
+    def clear_feedback_measurement(self) -> bool:
+        """Invalidate current measurement-side state without touching CGH state."""
+        candidate = self._cgh_session.clone()
+        changed = candidate.clear_feedback_measurement()
+        if changed:
+            self._cgh_session = candidate
+        return changed
+
     def update_feedback_parameters(
         self,group: str,changes: Mapping[str,Any],
     ) -> bool:
@@ -642,10 +650,11 @@ class SLMSectionRuntime:
             self._cgh_session = candidate
         return changed
 
-    def get_feedback_localization_context(self):
+    def get_feedback_localization_context(self,*,pixel_size_um: float | None=None):
         candidate = self._cgh_session.clone()
         return candidate.feedback_localization_context(
             self.state.cgh,self._build_context(self.state),
+            pixel_size_um=pixel_size_um,
         )
 
     def get_base_target_localization_reference(

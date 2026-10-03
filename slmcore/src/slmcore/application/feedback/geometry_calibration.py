@@ -303,7 +303,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         self._require_editor_mode()
         section=str(section_key); plane=self._active_feedback_plane(section)
         if plane is None:
-            raise RuntimeError('Select a measurement plane before geometry calibration.')
+            raise RuntimeError('Select an observation plane before geometry calibration.')
         key=(section,plane)
         workflow=self._geometry_calibration_workflows.setdefault(key,_GeometryCalibrationWorkflow())
         pending_grid_x=int(grid_x); pending_grid_y=int(grid_y)
@@ -445,7 +445,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
     def save_geometry_orientation_calibration(self,section_key: str) -> GeometryOrientationCalibration:
         """Persist an accepted orientation and refresh feedback; leave target displayed."""
         self._require_editor_mode(); section=str(section_key); plane=self._active_feedback_plane(section)
-        if plane is None:raise RuntimeError('Select a measurement plane first.')
+        if plane is None:raise RuntimeError('Select an observation plane first.')
         workflow=self._geometry_calibration_workflows.get((section,plane))
         if workflow is None or workflow.analysis is None or not workflow.analysis.accepted:
             raise RuntimeError('Analyze a confident geometry calibration before saving.')

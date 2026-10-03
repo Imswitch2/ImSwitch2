@@ -44,6 +44,14 @@ class MeasurementCoordinator:
     ) -> str | None:
         return self._feedback.preferred_source(section_key,available)
 
+    def select_observation_plane(
+        self,section_key: str,plane_name: str | None,
+    ) -> bool:
+        return self._feedback.select_observation_plane(section_key,plane_name)
+
+    def set_source_override(self,section_key: str,source: str | None) -> bool:
+        return self._feedback.set_source_override(section_key,source)
+
     def request_measurement(
         self,
         section_key: str,

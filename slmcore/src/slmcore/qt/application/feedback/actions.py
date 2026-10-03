@@ -65,17 +65,24 @@ class FeedbackActionRouter:
         if request is MeasurementsAction.AUTOMATIC_STOP:
             self._automatic.stop()
             return
+        if request is MeasurementsAction.OBSERVATION_PLANE_SET:
+            self._measurement.select_observation_plane(
+                section_key,values.get("plane"),
+            )
+            return
         if self._automatic.operation_active:
             return
 
         if request is MeasurementsAction.ACQUIRE:
+            source = str(values.get("detector") or "")
+            self._measurement.set_source_override(section_key,source or None)
             if values.get("geometry_calibration"):
                 self._geometry.acquire(
-                    section_key,str(values.get("detector") or ""),
+                    section_key,source,
                 )
             else:
                 self._measurement.acquire(
-                    section_key,str(values.get("detector") or ""),
+                    section_key,source,
                     reuse_previous_localization=bool(
                         values.get("reuse_previous_localization",False)
                     ),

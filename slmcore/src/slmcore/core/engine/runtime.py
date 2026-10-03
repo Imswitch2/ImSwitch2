@@ -355,13 +355,21 @@ class SLMRuntime:
         """Attach one generic image measurement to a section feedback session."""
         self._get_section(key).set_feedback_measurement(measurement)
 
+    def clear_section_feedback_measurement(self,key: str) -> bool:
+        """Clear current feedback measurement/localization for one section."""
+        return self._get_section(key).clear_feedback_measurement()
+
     def update_section_feedback_parameters(
         self,key: str,group: str,changes: Mapping[str,Any],
     ) -> bool:
         return self._get_section(key).update_feedback_parameters(group,changes)
 
-    def get_section_feedback_localization_context(self,key: str):
-        return self._get_section(key).get_feedback_localization_context()
+    def get_section_feedback_localization_context(
+        self,key: str,*,pixel_size_um: float | None=None,
+    ):
+        return self._get_section(key).get_feedback_localization_context(
+            pixel_size_um=pixel_size_um,
+        )
 
     def get_section_base_target_localization_reference(
         self,key: str,

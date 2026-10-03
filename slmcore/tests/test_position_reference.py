@@ -222,6 +222,27 @@ def test_analyze_position_without_reference_keeps_legacy_result_exactly():
     )
 
 
+
+
+def test_position_analysis_physical_errors_use_measurement_pixel_size():
+    localization = _localization(crop=(0,80,0,80))
+    acquisition = ImageMeasurement(
+        image=np.zeros((80,80),dtype=np.float64),source="test",pixel_size_um=0.25,
+    )
+    measurement = FeedbackMeasurement(
+        acquisition=acquisition,localization=localization,
+    )
+    ideal = np.asarray(localization.lattice_indices,dtype=np.float64)*0.05
+
+    analysis = analyze_position(
+        measurement,ideal_positions_kxy=ideal,parameters={},
+    )
+
+    np.testing.assert_allclose(
+        analysis.position_errors_um,analysis.position_errors_px*0.25,
+    )
+
+
 def test_saved_reference_span_does_not_rescale_pixel_to_kxy_mapping():
     localization = _localization(crop=(0,80,0,80))
     acquisition = ImageMeasurement(

@@ -31,6 +31,7 @@ class LocalizationService(FeedbackComponent):
         feedback_orientation: Callable[[str],Any],
         update_committed_analysis: Callable[[str,LocalizationResult | None],None],
         refresh_editable_reference: Callable[[str,LocalizationResult],None],
+        pixel_size_um: Callable[[str],float | None] | None=None,
     ) -> None:
         super().__init__(
             runtime_provider=runtime_provider,
@@ -40,6 +41,7 @@ class LocalizationService(FeedbackComponent):
         self._feedback_orientation = feedback_orientation
         self._update_committed_analysis_callback = update_committed_analysis
         self._refresh_editable_reference = refresh_editable_reference
+        self._pixel_size_um = pixel_size_um or (lambda _section:None)
 
     def commit_measurement(
         self,
@@ -59,7 +61,9 @@ class LocalizationService(FeedbackComponent):
         cgh_status = runtime.get_section_cgh_status(section_key)
         target_hints_allowed = cgh_status.result_state is CGHResultState.CURRENT
         context = (
-            runtime.get_section_feedback_localization_context(section_key)
+            runtime.get_section_feedback_localization_context(
+                section_key,pixel_size_um=measurement.pixel_size_um,
+            )
             if target_hints_allowed else {}
         )
         defaults = suggest_localization_sources(
@@ -262,7 +266,9 @@ class LocalizationService(FeedbackComponent):
         status = runtime.get_section_cgh_status(section_key)
         if status.result_state is not CGHResultState.CURRENT:
             return {}
-        return runtime.get_section_feedback_localization_context(section_key)
+        return runtime.get_section_feedback_localization_context(
+            section_key,pixel_size_um=self._pixel_size_um(section_key),
+        )
 
     def require_current_cgh_for_localization_commit(self,section_key: str) -> None:
         status = self._runtime.get_section_cgh_status(section_key)

@@ -853,3 +853,33 @@ def test_geometry_measurement_survives_inactive_automatic_state_refresh():
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_session_window_observation_selector_is_explicit_and_emits_selection():
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _app,QtWidgets,CGHSessionWindow = _qapp_and_window_class()
+    window = CGHSessionWindow(
+        status=runtime.get_section_feedback_status(section_key),
+        inspection=runtime.get_section_feedback_inspection(section_key),
+        session_inspection=runtime.get_section_cgh_session_inspection(section_key),
+        cgh_status=runtime.get_section_cgh_status(section_key),
+        localization_context=None,
+        detectors=("MainCam","IntermediateCam"),
+        current_detector="MainCam",
+        observation_planes=("Main","Intermediate"),
+        current_observation_plane=None,
+        cgh_summary=_summary(runtime,section_key),
+    )
+    emitted = []
+    window.sigActionRequested.connect(lambda action,options:emitted.append((action,options)))
+    try:
+        assert window.observation_plane_combo.currentData() is None
+        index = window.observation_plane_combo.findData("Intermediate")
+        assert index >= 0
+        window.observation_plane_combo.setCurrentIndex(index)
+        assert emitted[-1][0] == "observation_plane_set"
+        assert emitted[-1][1]["plane"] == "Intermediate"
+    finally:
+        window.close()
+        window.deleteLater()

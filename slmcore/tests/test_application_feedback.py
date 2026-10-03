@@ -7,6 +7,18 @@ from slmcore import (
 from slmcore.core.cgh import CGHResult
 from slmcore.core.engine.section import split_slm_geometry
 from slmcore.host import SLMDeviceProvider,SLMHostServices
+from slmcore.workspace import ObservationPlaneDefinition,ObservationPlaneStore
+
+
+def _set_feedback_observation_planes(session,*names):
+    import tempfile
+    store=ObservationPlaneStore(tempfile.mkdtemp(prefix="slmcore-observation-test-"))
+    for name in names:
+        store.add(ObservationPlaneDefinition(name=name))
+    session.observation_planes.store=store
+    if names:
+        session.feedback.select_observation_plane("sec_0",names[0])
+    return store
 
 
 def _runtime(*,serial="SER123"):
@@ -167,7 +179,8 @@ def test_feedback_orientation_is_transient_until_explicitly_saved_and_scoped_by_
     )
     session = SLMSession(runtime=runtime,startup_preferences=preferences)
     active_plane = {"value":None}
-    session.calibration.active_plane = lambda _section:active_plane["value"]
+    _set_feedback_observation_planes(session,"sample","fourier")
+    session.feedback.select_observation_plane("sec_0",active_plane["value"])
 
     assert session.feedback.feedback_orientation("sec_0").value == "identity"
     session.feedback.set_feedback_orientation("sec_0","flip_vertical")
@@ -181,6 +194,7 @@ def test_feedback_orientation_is_transient_until_explicitly_saved_and_scoped_by_
     assert saved[-1].feedback_orientations["sec_0"].default == "flip_vertical"
 
     active_plane["value"] = "sample"
+    session.feedback.select_observation_plane("sec_0","sample")
     session.feedback.refresh_feedback_orientation_contexts()
     assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
     context = session.feedback.feedback_orientation_context("sec_0")
@@ -214,7 +228,8 @@ def test_feedback_orientation_unsaved_value_is_discarded_only_when_plane_changes
     )
     session = SLMSession(runtime=runtime,startup_preferences=preferences)
     active_plane = {"value":"sample"}
-    session.calibration.active_plane = lambda _section:active_plane["value"]
+    _set_feedback_observation_planes(session,"sample","fourier")
+    session.feedback.select_observation_plane("sec_0",active_plane["value"])
 
     assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
     session.feedback.set_feedback_orientation("sec_0","flip_vertical")
@@ -222,10 +237,12 @@ def test_feedback_orientation_unsaved_value_is_discarded_only_when_plane_changes
     assert session.feedback.feedback_orientation("sec_0").value == "flip_vertical"
 
     active_plane["value"] = "fourier"
+    session.feedback.select_observation_plane("sec_0","fourier")
     session.feedback.refresh_feedback_orientation_contexts()
     assert session.feedback.feedback_orientation("sec_0").value == "rotate_180"
 
     active_plane["value"] = "sample"
+    session.feedback.select_observation_plane("sec_0","sample")
     session.feedback.refresh_feedback_orientation_contexts()
     assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
 
@@ -324,7 +341,7 @@ def test_named_session_reference_is_shared_but_selection_is_transient(tmp_path):
         runtime=runtime_a,
         position_reference_store=store,
     )
-    session_a.calibration.active_plane = lambda _section:"sample"
+    _set_feedback_observation_planes(session_a,"sample")
     localization = _attach_reference_localization(runtime_a)
 
     reference = session_a.feedback.add_position_reference(
@@ -349,7 +366,7 @@ def test_named_session_reference_is_shared_but_selection_is_transient(tmp_path):
         runtime=runtime_b,
         position_reference_store=store,
     )
-    session_b.calibration.active_plane = lambda _section:"sample"
+    _set_feedback_observation_planes(session_b,"sample")
     context = session_b.feedback.position_reference_context("sec_0")
     assert tuple(record.name for record in context.references) == ("aligned OFF",)
     assert context.selection.mode is PositionReferenceMode.GLOBAL_FIT
@@ -379,7 +396,7 @@ def test_position_reference_workflow_remains_available_with_stored_correction(tm
     store = PositionReferenceStore(tmp_path / "position_references")
     runtime = _runtime()
     session = SLMSession(runtime=runtime,position_reference_store=store)
-    session.calibration.active_plane = lambda _section:"sample"
+    _set_feedback_observation_planes(session,"sample")
     _attach_reference_localization(runtime)
     session.feedback.add_position_reference("sec_0","first reference")
 
@@ -422,7 +439,7 @@ def test_named_reference_reindexes_source_orientation_for_destination_section(tm
 
     runtime_a = _runtime(serial="SER-A")
     session_a = SLMSession(runtime=runtime_a,position_reference_store=store)
-    session_a.calibration.active_plane = lambda _section:"sample"
+    _set_feedback_observation_planes(session_a,"sample")
     localization_a = _attach_reference_localization(runtime_a)
     session_a.feedback.set_feedback_orientation("sec_0","rotate_180")
     reference = session_a.feedback.add_position_reference("sec_0","488 reference")
@@ -430,7 +447,7 @@ def test_named_reference_reindexes_source_orientation_for_destination_section(tm
 
     runtime_b = _runtime(serial="SER-B")
     session_b = SLMSession(runtime=runtime_b,position_reference_store=store)
-    session_b.calibration.active_plane = lambda _section:"sample"
+    _set_feedback_observation_planes(session_b,"sample")
     localization_b = _attach_reference_localization(runtime_b)
     session_b.feedback.set_feedback_orientation("sec_0","flip_vertical")
     session_b.feedback.set_position_reference(
@@ -777,3 +794,142 @@ def test_delete_fov_calibration_clears_selection_runtime_and_default(tmp_path):
     assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
     assert saved[-1].fov_position_calibrations == {}
     session.dispose()
+
+
+def test_feedback_observation_plane_switch_does_not_change_mapping_fov_or_cgh(tmp_path):
+    from slmcore import SLMWorkspace
+
+    runtime = _runtime()
+    workspace = SLMWorkspace(tmp_path / "workspace")
+    fov = _fov_calibration_for_runtime(runtime,"field A")
+    workspace.fov_position_calibration_store.save(fov)
+    store = ObservationPlaneStore(tmp_path / "observations")
+    store.add(ObservationPlaneDefinition(
+        name="Main",preferred_detector="cam",default_pixel_size_um=0.1,
+    ))
+    store.add(ObservationPlaneDefinition(
+        name="Intermediate",default_pixel_size_um=0.2,
+    ))
+    session = SLMSession(
+        runtime=runtime,observation_plane_store=store,
+        fov_position_calibration_store=workspace.fov_position_calibration_store,
+    )
+    session.calibration.active_plane = lambda _section:"sample"
+    assert session.feedback.active_observation_plane("sec_0") is None
+    assert session.feedback.select_observation_plane("sec_0","Main")
+
+    session.feedback.refresh_fov_position_calibration_contexts()
+    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+    # Applying FOV intentionally stales the generated hologram. Recompute once so
+    # the checkpoint can prove that observation switching itself does not stale it.
+    job = runtime.prepare_section_base_cgh("sec_0")
+    runtime.commit_section_cgh(
+        "sec_0",CGHResult(
+            generation=job.generation,spec=job.spec,target_name=job.target_name,
+            pattern=np.ones(job.spec.context.shape,dtype=np.complex128),
+        ),
+    )
+    session.feedback.commit_measurement(
+        "sec_0",ImageMeasurement(
+            image=np.zeros((64,64)),source="cam",detector="cam",pixel_size_um=0.1,
+        ),
+    )
+
+    before_status = runtime.get_section_cgh_status("sec_0")
+    before_result = runtime.get_section_cgh_result_copy("sec_0")
+    before_calibration = runtime.get_section_calibration_copy("sec_0")
+    before_fov = runtime.get_section_fov_position_context("sec_0")
+    assert before_fov["calibration"].name == "field A"
+    assert runtime.get_section_feedback_inspection("sec_0").measurement is not None
+
+    assert session.feedback.select_observation_plane("sec_0","Intermediate")
+
+    assert session.feedback.active_observation_plane("sec_0") == "Intermediate"
+    assert runtime.get_section_calibration_copy("sec_0") == before_calibration
+    assert runtime.get_section_cgh_status("sec_0") == before_status
+    np.testing.assert_array_equal(
+        runtime.get_section_cgh_result_copy("sec_0").pattern,before_result.pattern,
+    )
+    after_fov = runtime.get_section_fov_position_context("sec_0")
+    assert after_fov["calibration"].name == "field A"
+    np.testing.assert_allclose(
+        after_fov["baseline_positions_kxy"],before_fov["baseline_positions_kxy"],
+    )
+    assert session.feedback.fov_position_calibration_context("sec_0")["applied"] is True
+    # Measurement/localization state belongs to the old observation context and is
+    # intentionally invalidated without changing generated pattern state.
+    assert runtime.get_section_feedback_inspection("sec_0").measurement is None
+
+
+def test_multiple_observation_planes_require_explicit_feedback_selection(tmp_path):
+    runtime = _runtime()
+    store = ObservationPlaneStore(tmp_path)
+    store.add(ObservationPlaneDefinition(name="Main"))
+    store.add(ObservationPlaneDefinition(name="Intermediate"))
+    session = SLMSession(runtime=runtime,observation_plane_store=store)
+
+    assert session.feedback.active_observation_plane("sec_0") is None
+    assert session.feedback.select_observation_plane("sec_0","Main")
+    assert session.feedback.active_observation_plane("sec_0") == "Main"
+
+
+def test_multiple_observation_planes_block_measurement_until_selected(tmp_path):
+    import pytest
+
+    runtime = _runtime()
+    dispatcher = _Dispatcher()
+    store = ObservationPlaneStore(tmp_path)
+    store.add(ObservationPlaneDefinition(name="Main"))
+    store.add(ObservationPlaneDefinition(name="Intermediate"))
+    session = SLMSession(
+        runtime=runtime,measurement_dispatcher=dispatcher,observation_plane_store=store,
+    )
+
+    with pytest.raises(RuntimeError,match="Select an observation plane"):
+        session.feedback.acquire("sec_0","cam")
+    assert dispatcher.pending == []
+
+    session.feedback.select_observation_plane("sec_0","Main")
+    session.feedback.acquire("sec_0","cam")
+    assert len(dispatcher.pending) == 1
+
+
+def test_feedback_plane_suggests_detector_but_override_does_not_switch_plane(tmp_path):
+    runtime = _runtime()
+    store = ObservationPlaneStore(tmp_path)
+    store.add(ObservationPlaneDefinition(name="Main",preferred_detector="main_cam"))
+    session = SLMSession(runtime=runtime,observation_plane_store=store)
+    available = ("main_cam","other_cam")
+
+    assert session.feedback.preferred_source("sec_0",available) == "main_cam"
+    assert session.feedback.set_source_override("sec_0","other_cam")
+    assert session.feedback.preferred_source("sec_0",available) == "other_cam"
+    assert session.feedback.active_observation_plane("sec_0") == "Main"
+
+
+def test_detector_measurement_uses_observation_plane_pixel_size_fallback(tmp_path):
+    runtime = _runtime()
+    dispatcher = _Dispatcher()
+    store = ObservationPlaneStore(tmp_path)
+    store.add(ObservationPlaneDefinition(name="Main",preferred_detector="cam",default_pixel_size_um=0.123))
+    session = SLMSession(runtime=runtime,measurement_dispatcher=dispatcher,observation_plane_store=store)
+
+    session.feedback.acquire("sec_0","cam")
+    dispatcher.complete(ImageMeasurement(image=np.zeros((64,64)),source="cam",detector="cam"))
+    committed = runtime.get_section_feedback_inspection("sec_0").measurement.acquisition
+    assert committed.pixel_size_um == 0.123
+    assert dispatcher.pending[-1][3]["observation_plane"] == "Main"
+
+
+def test_external_measurement_pixel_size_overrides_observation_plane_fallback(tmp_path):
+    runtime = _runtime()
+    dispatcher = _Dispatcher()
+    store = ObservationPlaneStore(tmp_path)
+    store.add(ObservationPlaneDefinition(name="Main",default_pixel_size_um=0.123))
+    session = SLMSession(runtime=runtime,measurement_dispatcher=dispatcher,observation_plane_store=store)
+
+    session.feedback.acquire("sec_0","cam")
+    dispatcher.complete(ImageMeasurement(image=np.zeros((64,64)),source="file",pixel_size_um=0.456))
+    committed = runtime.get_section_feedback_inspection("sec_0").measurement.acquisition
+    assert committed.pixel_size_um == 0.456

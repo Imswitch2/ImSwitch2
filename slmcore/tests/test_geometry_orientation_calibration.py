@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from slmcore.workspace import ObservationPlaneDefinition,ObservationPlaneStore
+
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
 from slmcore.core.cgh import CGHResult
 from slmcore.core.cgh.feedback import (
@@ -15,6 +17,17 @@ from slmcore.core.engine.section import split_slm_geometry
 from slmcore.core.measurement import create_image_measurement
 from slmcore.workspace import SLMGeometryOrientationCalibrationStore
 
+
+
+def _set_feedback_observation_planes(session,*names):
+    import tempfile
+    store=ObservationPlaneStore(tempfile.mkdtemp(prefix="slmcore-observation-test-"))
+    for name in names:
+        store.add(ObservationPlaneDefinition(name=name))
+    session.observation_planes.store=store
+    if names:
+        session.feedback.select_observation_plane("sec_0",names[0])
+    return store
 
 def _localization_for_orientation(orientation: FeedbackOrientation):
     indices=rectangular_lattice_indices(5,4)
@@ -167,7 +180,8 @@ def test_geometry_calibration_workflow_is_manual_and_restores_only_on_finish(mon
         ),
     )
     active_plane={"value":"sample"}
-    session.calibration.active_plane=lambda _section:active_plane["value"]
+    _set_feedback_observation_planes(session,"sample","fourier")
+    session.feedback.select_observation_plane("sec_0",active_plane["value"])
     calibration_frame=np.full(runtime.geometry.shape,37,dtype=np.uint8)
 
     def fake_compute(
@@ -211,6 +225,7 @@ def test_geometry_calibration_workflow_is_manual_and_restores_only_on_finish(mon
     assert len(uploads) == 1
 
     active_plane["value"]="fourier"
+    session.feedback.select_observation_plane("sec_0","fourier")
     switched=session.feedback.geometry_orientation_calibration_context("sec_0")
     assert switched["frame_active"] is False
     assert switched["any_frame_active"] is True
@@ -218,6 +233,7 @@ def test_geometry_calibration_workflow_is_manual_and_restores_only_on_finish(mon
 
     session.feedback.finish_geometry_orientation_calibration("sec_0")
     active_plane["value"]="sample"
+    session.feedback.select_observation_plane("sec_0","sample")
     context=session.feedback.geometry_orientation_calibration_context("sec_0")
     assert context["frame_active"] is False
     assert context["measurement"] is measurement
@@ -244,7 +260,7 @@ def test_geometry_calibration_recompute_failure_keeps_previous_active_target(mon
             ),
         ),
     )
-    session.calibration.active_plane=lambda _section:"sample"
+    _set_feedback_observation_planes(session,"sample")
     calls={"count":0}
 
     def fake_compute(
@@ -352,7 +368,7 @@ def test_feedback_reads_geometry_saved_through_shared_observation_service(tmp_pa
         runtime=runtime,
         geometry_orientation_calibration_store=SLMGeometryOrientationCalibrationStore(tmp_path),
     )
-    session.calibration.active_plane=lambda _section:"sample"
+    _set_feedback_observation_planes(session,"sample")
     saved=_saved_geometry(orientation="rotate_90_ccw")
     session.observation_geometry.save(saved)
 

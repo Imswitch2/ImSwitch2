@@ -27,8 +27,8 @@ def analyze_position(
     Position correction itself does not require a section calibration.
     The localized target provides the detector-pixel -> target-kxy mapping.
 
-    When a valid calibration with detector pixel size is available, physical
-    position errors in micrometres are also calculated for diagnostics.
+    When the measurement carries a detector pixel size, physical position
+    errors in micrometres are also calculated for diagnostics.
     """
     localization = measurement.localization
     if localization is None:
@@ -101,28 +101,12 @@ def analyze_position(
 
     corrected = baseline + correction_kxy
 
-    # Physical units are diagnostic only. They are available when the
-    # section calibration carries a valid detector pixel size, but are
-    # not required to calculate the correction.
+    # Physical units are diagnostic only. Detector scale belongs to the
+    # measurement/observation side, not to the section mapping calibration.
     error_um = None
-
-    if calibration is not None:
-        validator = getattr(calibration, "is_valid", None)
-        pixel_size_um = getattr(
-            calibration,
-            "cam_px_size_um",
-            None,
-        )
-
-        if (
-            callable(validator)
-            and validator()
-            and pixel_size_um is not None
-            and float(pixel_size_um) > 0
-        ):
-            error_um = (
-                error_px * float(pixel_size_um)
-            )
+    pixel_size_um = measurement.acquisition.pixel_size_um
+    if pixel_size_um is not None and float(pixel_size_um) > 0:
+        error_um = error_px * float(pixel_size_um)
 
     return PositionAnalysis(
         parameters=parameters,

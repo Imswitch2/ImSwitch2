@@ -70,7 +70,7 @@ def test_hint_resolution_target_manual_none_and_safe_period_only():
     calibration = SLMSectionCalibration(
         kx_per_um=0.01,
         ky_per_um=0.02,
-        cam_px_size_um=0.1,
+        cam_px_size_um=9.9,
     )
 
     params = _defaults()
@@ -83,6 +83,7 @@ def test_hint_resolution_target_manual_none_and_safe_period_only():
         resolution=resolution,
         calibration=calibration,
         parameters=params,
+        pixel_size_um=0.1,
     )
     assert hints.stagger == 0.5
     assert hints.stagger_source == "target"
@@ -100,6 +101,7 @@ def test_hint_resolution_target_manual_none_and_safe_period_only():
         },
         resolution=resolution,
         calibration=calibration,
+        pixel_size_um=0.1,
     )
     assert context["target_geometry_type"] == "lattice"
     assert context["target_lattice_count"] == (2,2)

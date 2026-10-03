@@ -8,6 +8,7 @@ will replace that temporary bridge with narrow explicit dependencies.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any,Callable,Mapping,Sequence,TYPE_CHECKING
 
 import numpy as np
@@ -65,6 +66,9 @@ class SLMFeedbackService:
     ) -> None:
         self._application_session = application_session
         self._callbacks = callbacks or SLMFeedbackCallbacks()
+        # Feedback owns observation selection independently from mapping/calibration.
+        self._observation_plane_by_section: dict[str,str | None] = {}
+        self._source_override_by_section: dict[str,str] = {}
 
         runtime_provider = lambda:self._application_session.runtime
         callbacks_provider = lambda:self._callbacks
@@ -78,6 +82,8 @@ class SLMFeedbackService:
             commit_measurement=lambda *args,**kwargs:
                 self._localization.commit_measurement(*args,**kwargs),
             dispatcher=measurements,
+            measurement_context=self._measurement_context,
+            validate_measurement_context=self._require_observation_plane_for_measurement,
         )
         self._geometry = GeometryOrientationFeedbackService(
             runtime_provider=runtime_provider,
@@ -113,7 +119,7 @@ class SLMFeedbackService:
             runtime_provider=runtime_provider,
             callbacks_provider=callbacks_provider,
             editor_writes_allowed=editor_writes_allowed,
-            active_feedback_plane=self._active_feedback_plane,
+            active_feedback_plane=self._active_mapping_plane,
             startup_preferences=startup_preferences,
             cancel_cgh=lambda key:self._application_session.cancel_cgh(key),
             feedback_orientation=self._geometry.feedback_orientation,
@@ -129,6 +135,7 @@ class SLMFeedbackService:
             refresh_editable_reference=(
                 self._references.refresh_editable_geometry_after_localization
             ),
+            pixel_size_um=lambda section:self._measurement_context(section)[1],
         )
         self._adaptation = FeedbackAdaptationService(
             runtime_provider=runtime_provider,
@@ -213,12 +220,85 @@ class SLMFeedbackService:
             return "Automatic feedback is unavailable while frame upload is deferred."
         return ""
 
+    def observation_planes(self):
+        """Return the observation-plane catalog available to feedback."""
+        return self._application_session.observation_planes.list()
+
+    def active_observation_plane(self,section_key: str) -> str | None:
+        section = str(section_key)
+        if section in self._observation_plane_by_section:
+            return self._observation_plane_by_section[section]
+        planes = self.observation_planes()
+        selected = planes[0].name if len(planes) == 1 else None
+        self._observation_plane_by_section[section] = selected
+        return selected
+
+    def select_observation_plane(self,section_key: str,plane_name: str | None) -> bool:
+        """Select feedback measurement context without touching mapping/CGH state."""
+        self._require_editor_mode()
+        section = str(section_key)
+        selected = str(plane_name or "").strip() or None
+        if selected is not None:
+            self._application_session.observation_planes.get(selected)
+        previous = self.active_observation_plane(section)
+        if selected == previous:
+            return False
+        self._measurement.cancel_measurement(section)
+        self._application_session.runtime.clear_section_feedback_measurement(section)
+        self._observation_plane_by_section[section] = selected
+        # A plane change suggests the new plane's detector again; explicit source
+        # overrides are workflow-local and do not change observation identity.
+        self._source_override_by_section.pop(section,None)
+        self._callbacks.on_section_changed(section)
+        return True
+
+    def set_source_override(self,section_key: str,source: str | None) -> bool:
+        section = str(section_key)
+        value = str(source or "").strip()
+        previous = self._source_override_by_section.get(section,"")
+        if value == previous:
+            return False
+        if value:
+            self._source_override_by_section[section] = value
+        else:
+            self._source_override_by_section.pop(section,None)
+        self._callbacks.on_section_changed(section)
+        return True
+
     def _active_feedback_plane(self,section_key: str) -> str | None:
-        calibration = getattr(self._application_session,"calibration",None)
+        # Compatibility name used by geometry/reference components. Its semantic
+        # identity is the selected observation plane.
+        return self.active_observation_plane(section_key)
+
+    def _active_mapping_plane(self,section_key: str) -> str | None:
+        """Transitional mapping identity used only by legacy FOV ownership.
+
+        Patch 6 moves FOV persistence out of Feedback. Until then, keep it keyed
+        by the existing calibration-plane/mapping identity rather than by the
+        independently selected observation plane.
+        """
+        calibration_service = getattr(self._application_session,"calibration",None)
+        if calibration_service is not None:
+            return calibration_service.active_plane(section_key)
+        calibration = self._application_session.runtime.get_section_calibration_copy(
+            section_key
+        )
         if calibration is None:
             return None
-        plane = calibration.active_plane(section_key)
-        return str(plane or "").strip() or None
+        return str(getattr(calibration,"plane","") or "").strip() or None
+
+    def _require_observation_plane_for_measurement(self,section_key: str) -> None:
+        if self.observation_planes() and self.active_observation_plane(section_key) is None:
+            raise RuntimeError(
+                "Select an observation plane before acquiring or loading a measurement."
+            )
+
+    def _measurement_context(self,section_key: str) -> tuple[str | None,float | None]:
+        plane_name = self.active_observation_plane(section_key)
+        if plane_name is None:
+            return None,None
+        plane = self._application_session.observation_planes.get(plane_name)
+        return plane.name,plane.default_pixel_size_um
 
 
     # ------------------------------------------------------------------
@@ -231,6 +311,15 @@ class SLMFeedbackService:
     def preferred_source(
         self,section_key: str,available: Sequence[str],
     ) -> str | None:
+        available = tuple(available)
+        override = self._source_override_by_section.get(str(section_key))
+        if override and override in available:
+            return override
+        plane_name = self.active_observation_plane(section_key)
+        if plane_name is not None:
+            detector = self._application_session.observation_planes.get(plane_name).preferred_detector
+            if detector and detector in available:
+                return detector
         return self._measurement.preferred_source(section_key,available)
 
     def request_measurement(
@@ -573,6 +662,10 @@ class SLMFeedbackService:
         *,
         reuse_previous_localization: bool=False,
     ) -> bool:
+        self._require_observation_plane_for_measurement(section_key)
+        _plane_name,fallback_pixel_size_um = self._measurement_context(section_key)
+        if measurement.pixel_size_um is None and fallback_pixel_size_um is not None:
+            measurement = replace(measurement,pixel_size_um=fallback_pixel_size_um)
         return self._localization.commit_measurement(
             section_key,
             measurement,
