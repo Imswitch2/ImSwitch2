@@ -52,7 +52,7 @@ def test_startup_preferences_state_can_set_and_clear_focused_selection():
 def test_old_startup_preferences_default_to_no_focused_selection():
     restored = SLMStartupPreferences.from_dict({
         "startup_config":None,
-        "default_planes":{},
+        "default_mappings":{},
         "section_display_mode":"tabs",
     })
 

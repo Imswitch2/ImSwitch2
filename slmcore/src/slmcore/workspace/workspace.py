@@ -9,6 +9,7 @@ from .config_store import SLMConfigStore
 from .correction_store import SLMCorrectionStore
 from .fov_position_calibration_store import SLMFOVPositionCalibrationStore
 from .geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
+from .mapping_store import MappingStore
 from .observation_plane_store import ObservationPlaneStore
 
 
@@ -26,6 +27,7 @@ class SLMWorkspace:
         fov_position_calibrations_dir: str | Path | None=None,
         geometry_orientation_calibrations_dir: str | Path | None=None,
         observation_planes_dir: str | Path | None=None,
+        mappings_dir: str | Path | None=None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True,exist_ok=True)
@@ -42,18 +44,27 @@ class SLMWorkspace:
             geometry_orientation_calibrations_dir,"geometry_orientation_calibrations"
         )
         self.observation_planes_root = self._resolve_override(observation_planes_dir,".")
+        self.mappings_root = self._resolve_override(mappings_dir,".")
         self._config_stores: dict[tuple[str,int],SLMConfigStore] = {}
         self._correction_stores: dict[tuple[str,str],SLMCorrectionStore] = {}
         self._calibration_store: SLMCalibrationStore | None = None
         self._fov_position_calibration_store: SLMFOVPositionCalibrationStore | None = None
         self._geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None = None
         self._observation_plane_store: ObservationPlaneStore | None = None
+        self._mapping_store: MappingStore | None = None
 
     @property
     def calibration_store(self) -> SLMCalibrationStore:
         if self._calibration_store is None:
             self._calibration_store = SLMCalibrationStore(self.calibrations_root)
         return self._calibration_store
+
+
+    @property
+    def mapping_store(self) -> MappingStore:
+        if self._mapping_store is None:
+            self._mapping_store = MappingStore(self.mappings_root)
+        return self._mapping_store
 
     @property
     def fov_position_calibration_store(self) -> SLMFOVPositionCalibrationStore:

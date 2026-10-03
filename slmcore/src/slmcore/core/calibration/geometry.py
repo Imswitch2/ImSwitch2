@@ -77,7 +77,7 @@ def attach_calibration_geometry(calibration: Any,geometry: SectionGeometry):
 @dataclass(frozen=True)
 class CalibrationGeometryMismatch:
     section_key: str
-    plane_name: str | None
+    mapping_name: str | None
     calibration_geometry: Mapping[str,Any]
     section_geometry: Mapping[str,Any]
 
@@ -88,7 +88,7 @@ class CalibrationGeometryMismatch:
             "%s%s: x=%s, y=%s, %sx%s -> x=%s, y=%s, %sx%s"
             % (
                 self.section_key,
-                " / %s" % self.plane_name if self.plane_name else "",
+                " / %s" % self.mapping_name if self.mapping_name else "",
                 old.get("x"),old.get("y"),old.get("width"),old.get("height"),
                 new.get("x"),new.get("y"),new.get("width"),new.get("height"),
             )
@@ -116,9 +116,9 @@ def calibration_geometry_mismatches(
             )
         mismatches.append(CalibrationGeometryMismatch(
             section_key=str(section_key),
-            plane_name=(
-                str(getattr(calibration,"plane",None))
-                if getattr(calibration,"plane",None) else None
+            mapping_name=(
+                str(getattr(calibration,"mapping_name",None))
+                if getattr(calibration,"mapping_name",None) else None
             ),
             calibration_geometry=recorded,
             section_geometry=section_geometry_to_dict(geometry),

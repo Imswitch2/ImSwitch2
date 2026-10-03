@@ -100,10 +100,10 @@ class SectionView(QtWidgets.QWidget):
 
     sigPatchRequested = QtCore.Signal(str,object)  # section_key, changes
     sigTopologyRequested = QtCore.Signal(str,object)  # section_key, topologies
-    sigActivePlaneRequested = QtCore.Signal(str,str)  # section_key, plane
-    sigAddPlaneRequested = QtCore.Signal(str)  # section_key
-    sigDeletePlaneRequested = QtCore.Signal(str,str)  # section_key, plane
-    sigDeleteCalibrationRequested = QtCore.Signal(str,str)  # section_key, plane
+    sigActiveMappingRequested = QtCore.Signal(str,str)  # section_key, mapping
+    sigAddMappingRequested = QtCore.Signal(str)  # section_key
+    sigDeleteMappingRequested = QtCore.Signal(str,str)  # section_key, mapping
+    sigDeleteCalibrationRequested = QtCore.Signal(str,str)  # section_key, mapping
     sigCalibrationRequested = QtCore.Signal(str)  # section_key
     sigCghActionRequested = QtCore.Signal(str,str,object)
     sigTargetLockRequested = QtCore.Signal(str,str,object)
@@ -160,11 +160,11 @@ class SectionView(QtWidgets.QWidget):
         self.slm_unit_button: QtWidgets.QPushButton | None = None
         self.metric_unit_button: QtWidgets.QPushButton | None = None
         self.calibration_label: QtWidgets.QLabel | None = None
-        self.active_plane_combo: QtWidgets.QComboBox | None = None
+        self.active_mapping_combo: QtWidgets.QComboBox | None = None
         self.calibration_button: QtWidgets.QPushButton | None = None
-        self.plane_more_button: QtWidgets.QToolButton | None = None
-        self.add_plane_action: QtWidgets.QAction | None = None
-        self.delete_plane_action: QtWidgets.QAction | None = None
+        self.mapping_more_button: QtWidgets.QToolButton | None = None
+        self.add_mapping_action: QtWidgets.QAction | None = None
+        self.delete_mapping_action: QtWidgets.QAction | None = None
         self.delete_calibration_action: QtWidgets.QAction | None = None
         self.topology_settings_button: QtWidgets.QPushButton | None = None
         if (
@@ -259,14 +259,14 @@ class SectionView(QtWidgets.QWidget):
             self.render_policy.show_calibration_controls
             and interface_layout is not None
         ):
-            interface_layout.addWidget(QtWidgets.QLabel("Plane:"))
+            interface_layout.addWidget(QtWidgets.QLabel("Mapping:"))
 
             combo = QtWidgets.QComboBox()
             combo.setMinimumWidth(130)
             combo.currentTextChanged.connect(
-                self._on_active_plane_changed,
+                self._on_active_mapping_changed,
             )
-            self.active_plane_combo = combo
+            self.active_mapping_combo = combo
             interface_layout.addWidget(combo)
 
             calibrate = QtWidgets.QPushButton("Calibrate")
@@ -284,20 +284,20 @@ class SectionView(QtWidgets.QWidget):
             more.setFixedHeight(22)
             more.setPopupMode(QtWidgets.QToolButton.InstantPopup)
             menu = QtWidgets.QMenu(more)
-            self.add_plane_action = menu.addAction(
-                "Add plane...",
-                lambda:self.sigAddPlaneRequested.emit(self.section_key),
+            self.add_mapping_action = menu.addAction(
+                "Add mapping...",
+                lambda:self.sigAddMappingRequested.emit(self.section_key),
             )
             self.delete_calibration_action = menu.addAction(
                 "Delete calibration...",
                 self._request_delete_calibration,
             )
-            self.delete_plane_action = menu.addAction(
-                "Delete plane...",
-                self._request_delete_plane,
+            self.delete_mapping_action = menu.addAction(
+                "Delete mapping...",
+                self._request_delete_mapping,
             )
             more.setMenu(menu)
-            self.plane_more_button = more
+            self.mapping_more_button = more
             interface_layout.addWidget(more)
 
         if self.calibration_interface_widget is not None:
@@ -315,24 +315,24 @@ class SectionView(QtWidgets.QWidget):
 
         self.content_layout.addLayout(row)
 
-    def _on_active_plane_changed(self,plane_name: str) -> None:
+    def _on_active_mapping_changed(self,mapping_name: str) -> None:
         self._refresh_calibration_controls()
-        self.sigActivePlaneRequested.emit(
-            self.section_key,str(plane_name or ""),
+        self.sigActiveMappingRequested.emit(
+            self.section_key,str(mapping_name or ""),
         )
 
     def _request_delete_calibration(self) -> None:
-        plane_name = self.get_active_plane()
-        if plane_name and _has_valid_calibration(self.calibration):
+        mapping_name = self.get_active_mapping()
+        if mapping_name and _has_valid_calibration(self.calibration):
             self.sigDeleteCalibrationRequested.emit(
-                self.section_key,plane_name,
+                self.section_key,mapping_name,
             )
 
-    def _request_delete_plane(self) -> None:
-        plane_name = self.get_active_plane()
-        if plane_name:
-            self.sigDeletePlaneRequested.emit(
-                self.section_key,plane_name,
+    def _request_delete_mapping(self) -> None:
+        mapping_name = self.get_active_mapping()
+        if mapping_name:
+            self.sigDeleteMappingRequested.emit(
+                self.section_key,mapping_name,
             )
 
     @property
@@ -671,27 +671,27 @@ class SectionView(QtWidgets.QWidget):
         self._refresh_calibration_controls()
         self._refresh_presentation_controls()
 
-    def set_available_planes(
-        self,plane_names,active_plane: str | None=None,
+    def set_available_mappings(
+        self,mapping_names,active_mapping: str | None=None,
     ) -> None:
-        """Set host-provided planes without emitting a selection request."""
-        combo = self.active_plane_combo
+        """Set host-provided mappings without emitting a selection request."""
+        combo = self.active_mapping_combo
         if combo is None:
             return
 
-        names = [str(name) for name in (plane_names or ())]
+        names = [str(name) for name in (mapping_names or ())]
         blocker = QtCore.QSignalBlocker(combo)
         try:
             combo.clear()
             combo.addItems(names)
-            index = combo.findText(str(active_plane)) if active_plane else -1
+            index = combo.findText(str(active_mapping)) if active_mapping else -1
             combo.setCurrentIndex(index)
         finally:
             del blocker
         self._refresh_calibration_controls()
 
-    def get_active_plane(self) -> str | None:
-        combo = self.active_plane_combo
+    def get_active_mapping(self) -> str | None:
+        combo = self.active_mapping_combo
         if combo is None or combo.currentIndex() < 0:
             return None
         return combo.currentText().strip() or None
@@ -765,7 +765,7 @@ class SectionView(QtWidgets.QWidget):
     def _refresh_calibration_controls(self) -> None:
         label = self.calibration_label
         valid = _has_valid_calibration(self.calibration)
-        plane = self.get_active_plane()
+        mapping = self.get_active_mapping()
 
         if label is not None:
             if valid:
@@ -785,21 +785,21 @@ class SectionView(QtWidgets.QWidget):
                         geometry_matches=matches,
                     )
                 )
-            elif plane:
+            elif mapping:
                 label.setText("Not calibrated")
                 label.setStyleSheet("color: #888;")
                 label.setToolTip("")
             else:
-                label.setText("No plane selected")
+                label.setText("No mapping selected")
                 label.setStyleSheet("color: #888;")
                 label.setToolTip("")
 
         if self.calibration_button is not None:
-            self.calibration_button.setEnabled(bool(plane))
+            self.calibration_button.setEnabled(bool(mapping))
         if self.delete_calibration_action is not None:
-            self.delete_calibration_action.setEnabled(bool(plane) and valid)
-        if self.delete_plane_action is not None:
-            self.delete_plane_action.setEnabled(bool(plane))
+            self.delete_calibration_action.setEnabled(bool(mapping) and valid)
+        if self.delete_mapping_action is not None:
+            self.delete_mapping_action.setEnabled(bool(mapping))
 
     def set_cgh_target_presentation(
         self,summary: Mapping[str,Any],

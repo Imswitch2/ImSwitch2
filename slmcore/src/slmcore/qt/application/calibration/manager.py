@@ -14,9 +14,9 @@ from ...calibration.dialog import CalibrationDialog,TARGET_LOCALIZATION_METHOD
 from ...calibration.geometry_dialogs import (
     CalibrationMismatchDecision,calibration_mismatch_decision,
 )
-from ...calibration.plane_dialogs import (
-    confirm_calibration_deletion,confirm_plane_deletion,
-    request_plane_definition,
+from ...calibration.mapping_dialogs import (
+    confirm_calibration_deletion,confirm_mapping_deletion,
+    request_mapping_definition,
 )
 
 
@@ -42,27 +42,27 @@ class CalibrationManager(QtCore.QObject):
         self.display_name = str(controller.display_name)
         self._dialogs: dict[str,CalibrationDialog] = {}
         self._disposed = False
-        load_error = self.service.last_store_load_error
+        load_error = self.service.last_mapping_store_load_error
         if load_error is not None:
             self.controller.sigWarning.emit(
                 "SLM calibration",
-                "Could not load plane definitions: %s" % load_error,
+                "Could not load mapping definitions: %s" % load_error,
             )
         self._connect_collection()
         self.controller.sigAutomaticOperationChanged.connect(
             self._on_automatic_operation_changed,
         )
-        self.refresh_planes()
+        self.refresh_mappings()
 
     # ------------------------------------------------------------------
-    # Plane catalog / selection presentation
+    # Mapping catalog / selection presentation
     # ------------------------------------------------------------------
 
     def _connect_collection(self) -> None:
         collection = self.controller.section_collection
-        collection.sigActivePlaneRequested.connect(self._on_active_plane_requested)
-        collection.sigAddPlaneRequested.connect(self._on_add_plane_requested)
-        collection.sigDeletePlaneRequested.connect(self._on_delete_plane_requested)
+        collection.sigActiveMappingRequested.connect(self._on_active_mapping_requested)
+        collection.sigAddMappingRequested.connect(self._on_add_mapping_requested)
+        collection.sigDeleteMappingRequested.connect(self._on_delete_mapping_requested)
         collection.sigDeleteCalibrationRequested.connect(
             self._on_delete_calibration_requested,
         )
@@ -71,9 +71,9 @@ class CalibrationManager(QtCore.QObject):
     def _disconnect_collection(self) -> None:
         collection = self.controller.section_collection
         for signal,slot in (
-            (collection.sigActivePlaneRequested,self._on_active_plane_requested),
-            (collection.sigAddPlaneRequested,self._on_add_plane_requested),
-            (collection.sigDeletePlaneRequested,self._on_delete_plane_requested),
+            (collection.sigActiveMappingRequested,self._on_active_mapping_requested),
+            (collection.sigAddMappingRequested,self._on_add_mapping_requested),
+            (collection.sigDeleteMappingRequested,self._on_delete_mapping_requested),
             (
                 collection.sigDeleteCalibrationRequested,
                 self._on_delete_calibration_requested,
@@ -85,33 +85,33 @@ class CalibrationManager(QtCore.QObject):
             except (RuntimeError,TypeError):
                 pass
 
-    def refresh_planes(self) -> None:
-        names = self.service.plane_names
+    def refresh_mappings(self) -> None:
+        names = self.service.mapping_names
         for section_key in self.controller.runtime.section_keys:
-            self.controller.section_collection.set_available_planes(
-                section_key,names,self.service.active_plane(section_key),
+            self.controller.section_collection.set_available_mappings(
+                section_key,names,self.service.active_mapping(section_key),
             )
 
     @QtCore.Slot(str,str)
-    def _on_active_plane_requested(
-        self,section_key: str,plane_name: str,
+    def _on_active_mapping_requested(
+        self,section_key: str,mapping_name: str,
     ) -> None:
         if (
             not self.controller.editor_writes_allowed
             or self.controller.automatic_operation_active
         ):
             return
-        self.set_active_plane(section_key,str(plane_name or "").strip() or None)
+        self.set_active_mapping(section_key,str(mapping_name or "").strip() or None)
 
-    def set_active_plane(
-        self,section_key: str,plane_name: str | None,
+    def set_active_mapping(
+        self,section_key: str,mapping_name: str | None,
     ) -> bool:
         if not self.controller.editor_writes_allowed:
             return False
-        previous_active = self.service.active_plane(section_key)
+        previous_active = self.service.active_mapping(section_key)
         try:
             self.controller.flush_section(section_key,propagate=True)
-            prepared = self.service.prepare_plane_selection(section_key,plane_name)
+            prepared = self.service.prepare_mapping_selection(section_key,mapping_name)
             policy = CalibrationMismatchPolicy.REJECT
             if prepared.calibration_mismatches:
                 decision = calibration_mismatch_decision(
@@ -125,105 +125,102 @@ class CalibrationManager(QtCore.QObject):
                     allow_clear=False,
                 )
                 if decision is not CalibrationMismatchDecision.KEEP:
-                    self.refresh_planes()
+                    self.refresh_mappings()
                     return False
                 policy = CalibrationMismatchPolicy.KEEP
-            changed = self.service.select_plane(
+            changed = self.service.select_mapping(
                 prepared,calibration_mismatch_policy=policy,
             )
-            self.refresh_planes()
-            if changed and prepared.plane_name != previous_active:
+            self.refresh_mappings()
+            if changed and prepared.mapping_name != previous_active:
                 self.close_dialog(section_key)
             return bool(changed)
         except Exception as error:
             self.controller._restore_section(section_key)
-            self.refresh_planes()
-            self._error("SLM plane selection failed",error)
+            self.refresh_mappings()
+            self._error("SLM mapping selection failed",error)
             return False
 
     @QtCore.Slot(str)
-    def _on_add_plane_requested(self,section_key: str) -> None:
+    def _on_add_mapping_requested(self,section_key: str) -> None:
         if (
             not self.controller.editor_writes_allowed
             or self.controller.automatic_operation_active
         ):
             return
         parent = self.controller.section_collection.section_view(section_key)
-        detectors,current_detector = self._measurement_sources(section_key)
-        definition = request_plane_definition(
-            parent,detectors=detectors,current_detector=current_detector,
-        )
+        definition = request_mapping_definition(parent)
         if definition is None:
             return
         try:
-            plane = self.service.add_plane(definition)
-            if self.set_active_plane(section_key,plane):
-                self.controller.sigInfo.emit("SLM Plane",'Added plane "%s".' % plane)
+            mapping = self.service.add_mapping(definition)
+            if self.set_active_mapping(section_key,mapping):
+                self.controller.sigInfo.emit("SLM Mapping",'Added mapping "%s".' % mapping)
         except Exception as error:
-            self.refresh_planes()
-            self._error("Add SLM Plane Failed",error)
+            self.refresh_mappings()
+            self._error("Add SLM Mapping Failed",error)
 
     @QtCore.Slot(str,str)
     def _on_delete_calibration_requested(
-        self,section_key: str,plane_name: str,
+        self,section_key: str,mapping_name: str,
     ) -> None:
         if (
             not self.controller.editor_writes_allowed
             or self.controller.automatic_operation_active
         ):
             return
-        plane = str(plane_name or "").strip()
-        if not plane or self.service.active_plane(section_key) != plane:
-            self.refresh_planes()
+        mapping = str(mapping_name or "").strip()
+        if not mapping or self.service.active_mapping(section_key) != mapping:
+            self.refresh_mappings()
             return
         parent = self.controller.section_collection.section_view(section_key)
-        if not confirm_calibration_deletion(plane,parent):
+        if not confirm_calibration_deletion(mapping,parent):
             return
         try:
             deleted = self.service.delete_calibration(section_key)
             self.close_dialog(section_key)
-            self.refresh_planes()
+            self.refresh_mappings()
             self.controller._restore_section(section_key)
             self.controller.sigInfo.emit(
                 "SLM Calibration",
                 (
-                    'Deleted calibration for plane "%s".' % plane
+                    'Deleted calibration for mapping "%s".' % mapping
                     if deleted else
-                    'No saved calibration file existed for plane "%s"; '
-                    'the active calibration was cleared.' % plane
+                    'No saved calibration file existed for mapping "%s"; '
+                    'the active calibration was cleared.' % mapping
                 ),
             )
         except Exception as error:
             self.controller._restore_section(section_key)
-            self.refresh_planes()
+            self.refresh_mappings()
             self._error("Delete SLM Calibration Failed",error)
 
     @QtCore.Slot(str,str)
-    def _on_delete_plane_requested(
-        self,section_key: str,plane_name: str,
+    def _on_delete_mapping_requested(
+        self,section_key: str,mapping_name: str,
     ) -> None:
         if (
             not self.controller.editor_writes_allowed
             or self.controller.automatic_operation_active
         ):
             return
-        plane = str(plane_name or "").strip()
-        if not plane:
+        mapping = str(mapping_name or "").strip()
+        if not mapping:
             return
         parent = self.controller.section_collection.section_view(section_key)
-        if not confirm_plane_deletion(plane,parent):
+        if not confirm_mapping_deletion(mapping,parent):
             return
         try:
-            deleted = self.service.delete_plane(plane)
+            deleted = self.service.delete_mapping(mapping)
             self.controller.sigInfo.emit(
-                "SLM Plane",
-                'Deleted plane "%s" and %d calibration file(s).'
-                % (plane,len(deleted)),
+                "SLM Mapping",
+                'Deleted mapping "%s" and %d calibration file(s).'
+                % (mapping,len(deleted)),
             )
-            self.refresh_planes()
+            self.refresh_mappings()
         except Exception as error:
-            self.refresh_planes()
-            self._error("Delete SLM Plane Failed",error)
+            self.refresh_mappings()
+            self._error("Delete SLM Mapping Failed",error)
 
     # ------------------------------------------------------------------
     # Calibration dialog / target workflow presentation
@@ -236,27 +233,24 @@ class CalibrationManager(QtCore.QObject):
             or self.controller.automatic_operation_active
         ):
             return
-        plane = self.service.active_plane(section_key)
-        if not plane:
+        mapping = self.service.active_mapping(section_key)
+        if not mapping:
             self._error(
                 "SLM Section Calibration",
-                RuntimeError("Select or add a plane before saving calibration."),
+                RuntimeError("Select or add a mapping before saving calibration."),
             )
             return
         try:
-            definition = self.service.plane_definition(plane)
+            self.service.mapping_definition(mapping)
         except Exception as error:
             self._error("SLM Section Calibration",error)
             return
-        detector = str(definition.get("detector_name") or "").strip()
-        detectors,current_detector = self._measurement_sources(
-            section_key,preferred=detector,
-        )
+        detectors,current_detector = self._measurement_sources(section_key)
 
         dialog = self._dialogs.get(section_key)
         if dialog is None:
             dialog = CalibrationDialog(
-                plane_name=plane,
+                mapping_name=mapping,
                 localization_parameters=_default_localization_parameters(),
                 detectors=detectors,
                 current_detector=current_detector,
@@ -264,7 +258,6 @@ class CalibrationManager(QtCore.QObject):
                 parent=self.controller.section_collection.section_view(section_key),
             )
             self._dialogs[section_key] = dialog
-            dialog.set_bound_detector(detector)
             dialog.sigAcquireRequested.connect(
                 lambda source,key=section_key:self.acquire_target_measurement(key,source)
             )
@@ -291,9 +284,8 @@ class CalibrationManager(QtCore.QObject):
                 lambda _obj=None,key=section_key:self._dialog_destroyed(key)
             )
         else:
-            dialog.set_plane_name(plane)
+            dialog.set_mapping_name(mapping)
             dialog.configure_detectors(detectors,current_detector)
-            dialog.set_bound_detector(detector)
 
         self.render_target_state(section_key)
         self._refresh_live_acquisition(section_key)
@@ -417,7 +409,7 @@ class CalibrationManager(QtCore.QObject):
                     "path":str(path),
                     "slm_key":self.controller.runtime.identity.key,
                     "section_key":section_key,
-                    "plane_name":self.service.active_plane(section_key),
+                    "mapping_name":self.service.active_mapping(section_key),
                     "calibration_method":TARGET_LOCALIZATION_METHOD,
                 },
             )
@@ -479,17 +471,17 @@ class CalibrationManager(QtCore.QObject):
     ) -> None:
         if not self.controller.editor_writes_allowed:
             return
-        plane = str(values.get("plane_name") or "").strip()
-        if not plane:
+        mapping = str(values.get("mapping_name") or "").strip()
+        if not mapping:
             self._error(
                 "SLM Section Calibration",
-                RuntimeError("Calibration request is not bound to a plane."),
+                RuntimeError("Calibration request is not bound to a mapping."),
             )
             return
         try:
             self.controller.flush_section(section_key,propagate=True)
             if method == TARGET_LOCALIZATION_METHOD:
-                value = self.service.apply_target_candidate(section_key,plane)
+                value = self.service.apply_target_candidate(section_key,mapping)
             elif method == CalibrationDialog.LINEAR_PHASE:
                 calibration = self.service.linear_phase_calibration(
                     period_x_px=values.get("period_x_px"),
@@ -498,23 +490,23 @@ class CalibrationManager(QtCore.QObject):
                     measured_dy_um=values.get("measured_dy_um"),
                 )
                 value = self.service.apply_and_save_calibration(
-                    section_key,plane,calibration,
+                    section_key,mapping,calibration,
                 )
             else:
                 raise ValueError("Unknown calibration method %r" % method)
-            self.refresh_planes()
+            self.refresh_mappings()
             self.controller.sigInfo.emit(
                 "SLM Section Calibration",
                 "Saved calibration for %s/%s (%s):\n"
                 "kx_per_um = %.6g\nky_per_um = %.6g"
                 % (
-                    self.display_name,section_key,plane,
+                    self.display_name,section_key,mapping,
                     value.kx_per_um,value.ky_per_um,
                 ),
             )
         except Exception as error:
             self.controller._restore_section(section_key)
-            self.refresh_planes()
+            self.refresh_mappings()
             self._error("SLM Section Calibration Failed",error)
 
     # ------------------------------------------------------------------
@@ -572,17 +564,17 @@ class CalibrationManager(QtCore.QObject):
 
     def runtime_replaced(self) -> None:
         self._connect_collection()
-        self.refresh_planes()
+        self.refresh_mappings()
 
     @QtCore.Slot(bool)
     def _on_automatic_operation_changed(self,active: bool) -> None:
         if active:
             self.close_all_dialogs()
-        self.refresh_planes()
+        self.refresh_mappings()
         self.refresh_live_acquisition_all()
 
     def control_mode_changed(self) -> None:
-        self.refresh_planes()
+        self.refresh_mappings()
         self.refresh_live_acquisition_all()
 
     def dispose(self) -> None:

@@ -21,6 +21,7 @@ from .runtime_factory import SLMRuntimeFactory
 from .position_reference_store import PositionReferenceStore
 from .observation import ObservationPlaneService
 from .observation_geometry import ObservationGeometryService
+from .mapping import MappingService
 from .feedback import (
     AutomaticFeedbackState,GeometryCalibrationPayload,MeasurementDispatcher,SLMFeedbackCallbacks,
     SLMFeedbackService,
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from ..workspace.fov_position_calibration_store import SLMFOVPositionCalibrationStore
     from ..workspace.geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
     from ..workspace.observation_plane_store import ObservationPlaneStore
+    from ..workspace.mapping_store import MappingStore
     from .startup_preferences import StartupPreferencesState
 
 
@@ -61,7 +63,7 @@ class SLMSessionCallbacks:
     on_config_committed: Callable[[ConfigLoadOutcome],None] = _noop
     on_control_mode_changed: Callable[[SLMControlMode,str | None],None] = _noop
     on_fast_config_changed: Callable[[str | None],None] = _noop
-    on_calibration_planes_changed: Callable[[],None] = _noop
+    on_calibration_mappings_changed: Callable[[],None] = _noop
     on_calibration_state_changed: Callable[[str],None] = _noop
     on_calibration_measurement_busy_changed: Callable[[str,bool,str],None] = _noop
     on_calibration_measurement_error: Callable[[str,Exception],None] = _noop
@@ -103,6 +105,7 @@ class SLMSession:
         current_config_path: str | None=None,
         measurement_dispatcher: MeasurementDispatcher | None=None,
         calibration_store: SLMCalibrationStore | None=None,
+        mapping_store: MappingStore | None=None,
         position_reference_store: PositionReferenceStore | None=None,
         fov_position_calibration_store: SLMFOVPositionCalibrationStore | None=None,
         geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None=None,
@@ -141,6 +144,7 @@ class SLMSession:
         self._last_upload_error: Exception | None = None
 
         self.observation_planes = ObservationPlaneService(observation_plane_store)
+        self.mappings = MappingService(mapping_store)
         self.observation_geometry = ObservationGeometryService(
             lambda: self.runtime.identity, geometry_orientation_calibration_store,
         )
@@ -158,6 +162,7 @@ class SLMSession:
         self.calibration = SLMCalibrationService(
             self,
             store=calibration_store,
+            mappings=self.mappings,
             preferences=startup_preferences,
             display_name=self.display_name,
             measurements=measurement_dispatcher,
@@ -1029,17 +1034,15 @@ class SLMSession:
             self.calibration.session_state_changed()
         self._notify("on_automatic_feedback_changed",state)
 
-    def _on_calibration_planes_changed(self) -> None:
-        # A plane switch changes which saved feedback orientation applies.
-        # Preserve transient test values while the plane is unchanged, but
-        # discard them when the active plane context actually changes.
-        self.feedback.refresh_feedback_orientation_contexts()
+    def _on_calibration_mappings_changed(self) -> None:
+        # FOV remains mapping-scoped until its later ownership move. Observation
+        # orientation/geometry are independent and must not be refreshed here.
         self.feedback.refresh_fov_position_calibration_contexts()
-        self._notify("on_calibration_planes_changed")
+        self._notify("on_calibration_mappings_changed")
 
     def _calibration_callbacks(self) -> SLMCalibrationCallbacks:
         return SLMCalibrationCallbacks(
-            on_planes_changed=self._on_calibration_planes_changed,
+            on_mappings_changed=self._on_calibration_mappings_changed,
             on_state_changed=lambda key:self._notify(
                 "on_calibration_state_changed",key,
             ),

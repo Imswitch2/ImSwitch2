@@ -1,5 +1,5 @@
 from .calibration import (
-    CalibrationAcquisitionAvailability,PreparedPlaneSelection,
+    CalibrationAcquisitionAvailability,PreparedMappingSelection,
     SLMCalibrationCallbacks,SLMCalibrationService,TargetCalibrationState,
 )
 from .configuration import (
@@ -12,6 +12,7 @@ from .feedback import (
     MeasurementDispatcher,MeasurementRequest,PositionReferenceContext,
     PositionReferenceSelection,SLMFeedbackCallbacks,SLMFeedbackService,
 )
+from .mapping import MappingService
 from .observation import ObservationPlaneService
 from .observation_geometry import ObservationGeometryService
 from .position_reference_store import (
@@ -33,10 +34,11 @@ __all__ = [
     "FeedbackParameterUpdateResult",
     "MeasurementDispatcher",
     "MeasurementRequest",
+    "MappingService",
     "ObservationGeometryService",
     "ObservationPlaneService",
     "PreparedConfigLoad",
-    "PreparedPlaneSelection",
+    "PreparedMappingSelection",
     "PreparedSectionLayoutChange",
     "PositionReferenceContext",
     "PositionReferenceSelection",

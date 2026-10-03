@@ -22,8 +22,7 @@ class SLMSectionCalibration:
     version: int = 1
     created_at: str = ""
     source: str = ""
-    plane: str = None
-    cam_px_size_um: float = None
+    mapping_name: str = None
     section_geometry: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -34,8 +33,7 @@ class SLMSectionCalibration:
         self.version = int(self.version or 1)
         self.created_at = str(self.created_at or "")
         self.source = str(self.source or "")
-        self.plane = self._coerce_optional_text(self.plane)
-        self.cam_px_size_um = self._coerce_optional_float(self.cam_px_size_um)
+        self.mapping_name = self._coerce_optional_text(self.mapping_name)
         self.section_geometry = normalize_section_geometry_data(self.section_geometry)
         self.metadata = dict(self.metadata or {})
 
@@ -118,8 +116,7 @@ class SLMSectionCalibration:
             "matrix_2x2": [list(row) for row in matrix] if matrix is not None else None,
             "created_at": self.created_at,
             "source": self.source,
-            "plane": self.plane,
-            "cam_px_size_um": self.cam_px_size_um,
+            "mapping_name": self.mapping_name,
             "section_geometry": (
                 None if self.section_geometry is None
                 else dict(self.section_geometry)
@@ -159,8 +156,7 @@ class SLMSectionCalibration:
             created_at=data.get("created_at", data.get("date", "")),
             source=data.get("source", ""),
             metadata=data.get("metadata", {}),
-            plane = data.get("plane",None),
-            cam_px_size_um=data.get("cam_px_size_um"),
+            mapping_name=data.get("mapping_name",None),
             section_geometry=data.get("section_geometry"),
         )
 

@@ -45,7 +45,7 @@ class CalibrationDialog(QtWidgets.QDialog):
     def __init__(
         self,
         *,
-        plane_name: str | None=None,
+        mapping_name: str | None=None,
         localization_parameters: Mapping[str, Any] | None=None,
         target_context: Mapping[str, Any] | None=None,
         detectors: Sequence[str]=(),
@@ -64,9 +64,8 @@ class CalibrationDialog(QtWidgets.QDialog):
         self.resize(1180,760)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose,True)
 
-        self._plane_name = ""
+        self._mapping_name = ""
         self._target_available = False
-        self._bound_detector = ""
         self._target_calibration_candidate = None
         self._linear_edits: dict[str, QtWidgets.QLineEdit] = {}
 
@@ -74,12 +73,12 @@ class CalibrationDialog(QtWidgets.QDialog):
         layout.setContentsMargins(8,8,8,8)
         layout.setSpacing(8)
 
-        self._plane_label = QtWidgets.QLabel()
-        plane_font = self._plane_label.font()
-        plane_font.setBold(True)
-        self._plane_label.setFont(plane_font)
-        layout.addWidget(self._plane_label)
-        self.set_plane_name(plane_name)
+        self._mapping_label = QtWidgets.QLabel()
+        mapping_font = self._mapping_label.font()
+        mapping_font.setBold(True)
+        self._mapping_label.setFont(mapping_font)
+        layout.addWidget(self._mapping_label)
+        self.set_mapping_name(mapping_name)
 
         method_row = QtWidgets.QHBoxLayout()
         method_row.addWidget(QtWidgets.QLabel("Method:"))
@@ -102,9 +101,6 @@ class CalibrationDialog(QtWidgets.QDialog):
             target_context,
             detectors,
             current_detector,
-        )
-        self.target_view.sigDetectorChanged.connect(
-            self._refresh_detector_binding_warning,
         )
         self._stack.addWidget(self._linear_page)
         self._stack.addWidget(self._target_page)
@@ -147,48 +143,17 @@ class CalibrationDialog(QtWidgets.QDialog):
         return self._target_calibration_candidate
 
     @property
-    def plane_name(self) -> str:
-        return self._plane_name
+    def mapping_name(self) -> str:
+        return self._mapping_name
 
-    def set_plane_name(self,plane_name: str | None) -> None:
-        plane = str(plane_name or "").strip()
-        self._plane_name = plane
-        self._plane_label.setText(
-            "Calibrating plane: %s" % plane
-            if plane else "Calibrating plane: none"
+    def set_mapping_name(self,mapping_name: str | None) -> None:
+        mapping = str(mapping_name or "").strip()
+        self._mapping_name = mapping
+        self._mapping_label.setText(
+            "Calibrating mapping: %s" % mapping
+            if mapping else "Calibrating mapping: none"
         )
 
-
-    def set_bound_detector(self,detector_name: str | None) -> None:
-        detector = str(detector_name or "").strip()
-        self._bound_detector = detector
-        self._detector_label.setText(
-            "Plane detector: %s" % detector
-            if detector else "Plane detector: none"
-        )
-        self.target_view.set_detector_selection_enabled(True)
-        self._refresh_detector_binding_warning()
-
-    def _refresh_detector_binding_warning(self,*_args) -> None:
-        selected = str(self.target_view.current_detector or "").strip()
-        bound = self._bound_detector
-        if bound and selected and selected != bound:
-            self._detector_label.setText(
-                'Plane detector: %s  —  using %s for this acquisition.' % (bound,selected)
-            )
-            self._detector_label.setStyleSheet("color: #a66a00;")
-            self._detector_label.setToolTip(
-                'The selected detector differs from the detector stored for this plane. '
-                'Acquisition is allowed and the measurement records the selected detector.'
-            )
-        elif bound:
-            self._detector_label.setText("Plane detector: %s" % bound)
-            self._detector_label.setStyleSheet("")
-            self._detector_label.setToolTip("")
-        else:
-            self._detector_label.setText("Plane detector: none")
-            self._detector_label.setStyleSheet("")
-            self._detector_label.setToolTip("")
 
     def set_live_acquisition_available(
         self,available: bool,reason: str="",
@@ -199,7 +164,6 @@ class CalibrationDialog(QtWidgets.QDialog):
         self,detectors: Sequence[str],current_detector: str | None=None,
     ) -> None:
         self.target_view.configure_detectors(detectors,current_detector)
-        self._refresh_detector_binding_warning()
 
     def set_target_available(self,available: bool,text: str="") -> None:
         self._target_available = bool(available)
@@ -335,15 +299,6 @@ class CalibrationDialog(QtWidgets.QDialog):
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal,page)
         splitter.setChildrenCollapsible(False)
 
-        context_row = QtWidgets.QHBoxLayout()
-        self._detector_label = QtWidgets.QLabel("Live acquisition detector: none")
-        detector_font = self._detector_label.font()
-        detector_font.setBold(True)
-        self._detector_label.setFont(detector_font)
-        context_row.addWidget(self._detector_label)
-        context_row.addStretch(1)
-        layout.addLayout(context_row)
-
         measurement_group = QtWidgets.QGroupBox("Measurement / Localization")
         measurement_layout = QtWidgets.QVBoxLayout(measurement_group)
         measurement_layout.setContentsMargins(8,10,8,8)
@@ -357,7 +312,7 @@ class CalibrationDialog(QtWidgets.QDialog):
             show_accept=False,
             parent=measurement_group,
         )
-        self.target_view.set_detector_selection_enabled(False)
+        self.target_view.set_detector_selection_enabled(True)
         self.target_view.sigAcquireRequested.connect(
             lambda detector:self.sigAcquireRequested.emit(str(detector))
         )
@@ -437,7 +392,7 @@ class CalibrationDialog(QtWidgets.QDialog):
             self.sigCalibrationRequested.emit(
                 method,
                 {
-                    "plane_name":self.plane_name,
+                    "mapping_name":self.mapping_name,
                     "candidate":self._target_calibration_candidate,
                 },
             )
@@ -450,7 +405,7 @@ class CalibrationDialog(QtWidgets.QDialog):
         except ValueError as error:
             self._linear_status_label.setText(str(error))
             return
-        values["plane_name"] = self.plane_name
+        values["mapping_name"] = self.mapping_name
         self._linear_status_label.setText("")
         self.sigCalibrationRequested.emit(method,values)
         self.accept()

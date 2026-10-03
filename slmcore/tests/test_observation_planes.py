@@ -45,8 +45,8 @@ def test_workspace_observation_plane_store_is_root_scoped_and_independent(tmp_pa
     workspace=SLMWorkspace(tmp_path)
     workspace.observation_plane_store.add(ObservationPlaneDefinition(name="External"))
     assert (tmp_path/"observation_planes.json").is_file()
-    assert not (tmp_path/"calibrations"/"planes.json").exists()
-    assert workspace.calibration_store.plane_names == ()
+    assert not (tmp_path/"mappings.json").exists()
+    assert workspace.mapping_store.names == ()
 
 
 def test_observation_plane_crud_does_not_mutate_runtime_mapping_or_cgh(tmp_path):

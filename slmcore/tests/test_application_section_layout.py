@@ -30,7 +30,7 @@ def _factory():
 def _calibration(geometry):
     return attach_calibration_geometry(
         SLMSectionCalibration(
-            kx_per_um=0.01,ky_per_um=0.02,plane="Sample plane",
+            kx_per_um=0.01,ky_per_um=0.02,mapping_name="100x",
         ),
         geometry,
     )

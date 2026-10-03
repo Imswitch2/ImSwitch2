@@ -103,7 +103,7 @@ class SLMQtSession(QtCore.QObject):
             on_config_committed=self._on_application_config_committed,
             on_control_mode_changed=self._on_application_control_mode_changed,
             on_fast_config_changed=self._on_application_fast_config_changed,
-            on_calibration_planes_changed=self._on_calibration_planes_changed,
+            on_calibration_mappings_changed=self._on_calibration_mappings_changed,
             on_calibration_state_changed=self._on_calibration_state_changed,
             on_calibration_measurement_busy_changed=(
                 self._on_calibration_measurement_busy_changed
@@ -815,9 +815,9 @@ class SLMQtSession(QtCore.QObject):
         if self.control_mode is SLMControlMode.FAST_CONFIG:
             self.panel.config_controls.set_selected_path(path)
 
-    def _on_calibration_planes_changed(self) -> None:
+    def _on_calibration_mappings_changed(self) -> None:
         if hasattr(self,"_calibration"):
-            self._calibration.refresh_planes()
+            self._calibration.refresh_mappings()
 
     def _on_calibration_state_changed(self,section_key: str) -> None:
         if hasattr(self,"_calibration"):

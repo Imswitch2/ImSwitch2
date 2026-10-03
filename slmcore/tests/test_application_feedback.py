@@ -506,7 +506,7 @@ def test_fov_default_is_plane_scoped_and_apply_off_is_temporary(tmp_path):
         fov_position_calibration_store=workspace.fov_position_calibration_store,
         startup_preferences=preferences,
     )
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
 
     session.feedback.apply_startup_fov_position_calibration_defaults()
     context = session.feedback.fov_position_calibration_context("sec_0")
@@ -540,7 +540,7 @@ def test_fov_selection_swap_while_applied_updates_runtime_and_keeps_default(tmp_
         runtime=runtime,fov_position_calibration_store=store,
         startup_preferences=preferences,
     )
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
 
     session.feedback.select_fov_position_calibration("sec_0","field A")
@@ -568,7 +568,7 @@ def test_switching_fov_calibration_marks_position_feedback_stale(tmp_path):
     second = _fov_calibration_for_runtime(runtime,"field B",(0.02,0.01))
     store.save(first); store.save(second)
     session = SLMSession(runtime=runtime,fov_position_calibration_store=store)
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
     session.feedback.select_fov_position_calibration("sec_0","field A")
     session.feedback.set_fov_position_calibration_applied("sec_0",True)
@@ -613,7 +613,7 @@ def test_fov_preview_falls_back_to_saved_samples_without_cgh_target(tmp_path):
         runtime=runtime,
         fov_position_calibration_store=workspace.fov_position_calibration_store,
     )
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
     session.feedback.select_fov_position_calibration("sec_0","field A")
     session.feedback.set_fov_position_calibration_applied("sec_0",True)
@@ -637,7 +637,7 @@ def test_plane_switch_clears_previous_runtime_fov_when_new_plane_has_no_selectio
         fov_position_calibration_store=workspace.fov_position_calibration_store,
     )
     active = {"plane":"sample"}
-    session.calibration.active_plane = lambda _section:active["plane"]
+    session.calibration.active_mapping = lambda _section:active["plane"]
     session.feedback.refresh_fov_position_calibration_contexts()
     session.feedback.select_fov_position_calibration("sec_0","field A")
     session.feedback.set_fov_position_calibration_applied("sec_0",True)
@@ -673,7 +673,7 @@ def test_reading_fov_context_does_not_mutate_runtime_before_explicit_startup_app
             on_transition_committed=lambda key,transition:transitions.append((key,transition)),
         ),
     )
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
 
     context = session.feedback.fov_position_calibration_context("sec_0")
     assert context["selected_name"] == "field A"
@@ -698,7 +698,7 @@ def test_fov_replacement_warning_detects_shifted_equal_area_coverage(tmp_path):
         runtime=runtime,
         fov_position_calibration_store=workspace.fov_position_calibration_store,
     )
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
     session.feedback.select_fov_position_calibration("sec_0","field A")
     session.feedback.set_fov_position_calibration_applied("sec_0",True)
@@ -728,7 +728,7 @@ def test_fov_fit_uses_accepted_position_correction_after_apply(tmp_path):
         runtime=runtime,
         fov_position_calibration_store=workspace.fov_position_calibration_store,
     )
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
     _attach_reference_localization(runtime)
     session.feedback.apply_position_correction("sec_0")
@@ -776,7 +776,7 @@ def test_delete_fov_calibration_clears_selection_runtime_and_default(tmp_path):
         fov_position_calibration_store=store,
         startup_preferences=preferences,
     )
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
     session.feedback.select_fov_position_calibration("sec_0","field A")
     session.feedback.set_fov_position_calibration_applied("sec_0",True)
@@ -814,7 +814,7 @@ def test_feedback_observation_plane_switch_does_not_change_mapping_fov_or_cgh(tm
         runtime=runtime,observation_plane_store=store,
         fov_position_calibration_store=workspace.fov_position_calibration_store,
     )
-    session.calibration.active_plane = lambda _section:"sample"
+    session.calibration.active_mapping = lambda _section:"sample"
     assert session.feedback.active_observation_plane("sec_0") is None
     assert session.feedback.select_observation_plane("sec_0","Main")
 

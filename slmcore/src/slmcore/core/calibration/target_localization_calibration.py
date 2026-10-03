@@ -40,7 +40,7 @@ def fit_target_localization_calibration(
     resolution: Any,
     localization: Any,
     detector_pixel_size_um: Any,
-    plane: str | None=None,
+    mapping_name: str | None=None,
     source: str="target_localization",
     metadata: Mapping[str, Any] | None=None,
     created_at: str | None=None,
@@ -138,8 +138,7 @@ def fit_target_localization_calibration(
         ky_per_um=target_ky / measured_period_y,
         created_at=created_at or datetime.now().isoformat(),
         source=str(source or "target_localization"),
-        plane=plane,
-        cam_px_size_um=detector_scale,
+        mapping_name=mapping_name,
         metadata=fit_metadata,
     )
     return TargetLocalizationCalibrationCandidate(

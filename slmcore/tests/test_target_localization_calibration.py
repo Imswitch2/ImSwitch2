@@ -71,7 +71,7 @@ def test_fit_target_localization_calibration_returns_diagonal_candidate():
         resolution=_resolution(),
         localization=_localization(),
         detector_pixel_size_um=0.5,
-        plane="Plane A",
+        mapping_name="100x",
         metadata={"slm_key":"SLM"},
         created_at="2026-08-13T12:00:00",
     )
@@ -90,8 +90,8 @@ def test_fit_target_localization_calibration_returns_diagonal_candidate():
         (8.0 / 512.0) / 5.0
     )
     assert candidate.calibration.source == "target_localization"
-    assert candidate.calibration.plane == "Plane A"
-    assert candidate.calibration.cam_px_size_um == 0.5
+    assert candidate.calibration.mapping_name == "100x"
+    assert not hasattr(candidate.calibration,"cam_px_size_um")
     assert candidate.calibration.metadata["slm_key"] == "SLM"
     assert candidate.matched_count == 4
     assert candidate.expected_count == 6

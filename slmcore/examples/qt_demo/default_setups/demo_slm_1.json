@@ -25,7 +25,7 @@
   "hardware": null,
   "startup_preferences": {
     "startup_config": null,
-    "default_planes": {},
+    "default_mappings": {},
     "section_display_mode": "tabs"
   }
 }

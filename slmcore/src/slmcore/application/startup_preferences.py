@@ -32,20 +32,20 @@ class StartupPreferencesState:
         value = str(filename or "").strip() or None
         self._commit(replace(self._value,startup_config=value))
 
-    def default_plane(self,section_key: str) -> str | None:
-        return self._value.default_planes.get(str(section_key))
+    def default_mapping(self,section_key: str) -> str | None:
+        return self._value.default_mappings.get(str(section_key))
 
-    def set_default_plane(
-        self,section_key: str,plane_name: str | None,
+    def set_default_mapping(
+        self,section_key: str,mapping_name: str | None,
     ) -> None:
         section = str(section_key)
-        plane = str(plane_name or "").strip() or None
-        planes = dict(self._value.default_planes)
-        if plane is None:
-            planes.pop(section,None)
+        mapping = str(mapping_name or "").strip() or None
+        mappings = dict(self._value.default_mappings)
+        if mapping is None:
+            mappings.pop(section,None)
         else:
-            planes[section] = plane
-        self._commit(replace(self._value,default_planes=planes))
+            mappings[section] = mapping
+        self._commit(replace(self._value,default_mappings=mappings))
 
     def section_display_mode(self) -> str:
         return self._value.section_display_mode

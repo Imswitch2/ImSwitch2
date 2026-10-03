@@ -70,7 +70,6 @@ def test_hint_resolution_target_manual_none_and_safe_period_only():
     calibration = SLMSectionCalibration(
         kx_per_um=0.01,
         ky_per_um=0.02,
-        cam_px_size_um=9.9,
     )
 
     params = _defaults()

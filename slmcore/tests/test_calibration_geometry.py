@@ -15,7 +15,7 @@ def _calibration(geometry):
         SLMSectionCalibration(
             kx_per_um=0.01,
             ky_per_um=0.02,
-            plane="Sample plane",
+            mapping_name="100x",
         ),
         geometry,
     )

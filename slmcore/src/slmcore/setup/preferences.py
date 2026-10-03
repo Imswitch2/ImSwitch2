@@ -176,7 +176,7 @@ class SLMStartupPreferences:
     """Persistent defaults applied when constructing an SLM session."""
 
     startup_config: str | None = None
-    default_planes: Mapping[str,str] = field(default_factory=dict)
+    default_mappings: Mapping[str,str] = field(default_factory=dict)
     section_display_mode: str = "tabs"
     feedback_orientations: Mapping[str,FeedbackOrientationPreferences] = field(
         default_factory=dict,
@@ -191,11 +191,11 @@ class SLMStartupPreferences:
     def __post_init__(self) -> None:
         startup = str(self.startup_config or "").strip() or None
         planes = {}
-        for section,value in dict(self.default_planes or {}).items():
+        for section,value in dict(self.default_mappings or {}).items():
             section_key = str(section or "").strip()
-            plane_name = str(value or "").strip()
-            if section_key and plane_name:
-                planes[section_key] = plane_name
+            mapping_name = str(value or "").strip()
+            if section_key and mapping_name:
+                planes[section_key] = mapping_name
         display_mode = str(self.section_display_mode or "tabs").strip() or "tabs"
         orientations = {}
         for section,value in dict(self.feedback_orientations or {}).items():
@@ -205,7 +205,7 @@ class SLMStartupPreferences:
                     value,
                 )
         object.__setattr__(self,"startup_config",startup)
-        object.__setattr__(self,"default_planes",MappingProxyType(planes))
+        object.__setattr__(self,"default_mappings",MappingProxyType(planes))
         object.__setattr__(self,"section_display_mode",display_mode)
         object.__setattr__(
             self,"feedback_orientations",MappingProxyType(orientations),
@@ -234,7 +234,7 @@ class SLMStartupPreferences:
     def to_dict(self) -> dict[str,Any]:
         return {
             "startup_config":self.startup_config,
-            "default_planes":dict(self.default_planes),
+            "default_mappings":dict(self.default_mappings),
             "section_display_mode":self.section_display_mode,
             "feedback_orientations":{
                 section:value.to_dict()
@@ -258,11 +258,11 @@ class SLMStartupPreferences:
             return cls()
         if not isinstance(data,Mapping):
             raise TypeError("startup_preferences must be a mapping")
-        planes = data.get("default_planes",{})
+        planes = data.get("default_mappings",{})
         if planes is None:
             planes = {}
         if not isinstance(planes,Mapping):
-            raise TypeError("startup_preferences.default_planes must be a mapping")
+            raise TypeError("startup_preferences.default_mappings must be a mapping")
         orientations = data.get("feedback_orientations",{}) or {}
         if not isinstance(orientations,Mapping):
             raise TypeError("startup_preferences.feedback_orientations must be a mapping")
@@ -278,7 +278,7 @@ class SLMStartupPreferences:
             )
         return cls(
             startup_config=data.get("startup_config"),
-            default_planes=dict(planes),
+            default_mappings=dict(planes),
             section_display_mode=data.get("section_display_mode","tabs"),
             feedback_orientations=dict(orientations),
             fov_position_calibrations=dict(fov_defaults),

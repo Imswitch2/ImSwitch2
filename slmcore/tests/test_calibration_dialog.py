@@ -46,7 +46,7 @@ def _target_method_combo(dialog,QtWidgets):
 def test_calibration_dialog_linear_phase_emits_current_values():
     _app,QtWidgets,CalibrationDialog = _qapp_and_dialog_class()
     dialog = CalibrationDialog(
-        plane_name="Plane A",
+        mapping_name="100x",
         localization_parameters=_localization_defaults(),
     )
     captured = []
@@ -63,7 +63,7 @@ def test_calibration_dialog_linear_phase_emits_current_values():
         method,values = captured[0]
         assert method == CalibrationDialog.LINEAR_PHASE
         assert values == {
-            "plane_name":"Plane A",
+            "mapping_name":"100x",
             "period_x_px":100.0,
             "measured_dx_um":1.0,
             "period_y_px":100.0,
@@ -76,7 +76,7 @@ def test_calibration_dialog_linear_phase_emits_current_values():
 def test_calibration_dialog_target_mode_uses_reusable_measurement_view():
     _app,QtWidgets,CalibrationDialog = _qapp_and_dialog_class()
     dialog = CalibrationDialog(
-        plane_name="Plane A",
+        mapping_name="100x",
         localization_parameters=_localization_defaults(),
         detectors=("Camera",),
         current_detector="Camera",
@@ -131,7 +131,7 @@ def test_calibration_dialog_target_mode_uses_reusable_measurement_view():
 def test_calibration_dialog_target_candidate_enables_set_calibration():
     _app,QtWidgets,CalibrationDialog = _qapp_and_dialog_class()
     dialog = CalibrationDialog(
-        plane_name="Plane A",
+        mapping_name="100x",
         localization_parameters=_localization_defaults(),
     )
     from slmcore.core.calibration import SLMSectionCalibration
@@ -180,22 +180,21 @@ def test_calibration_dialog_target_candidate_enables_set_calibration():
         assert captured
         method,values = captured[0]
         assert method == CalibrationDialog.TARGET_LOCALIZATION
-        assert values["plane_name"] == "Plane A"
+        assert values["mapping_name"] == "100x"
         assert values["candidate"] is candidate
     finally:
         dialog.deleteLater()
 
 
-def test_calibration_dialog_prefers_plane_detector_but_allows_override_with_warning():
+def test_calibration_dialog_allows_source_selection_without_mapping_detector_binding():
     _app,QtWidgets,CalibrationDialog = _qapp_and_dialog_class()
     dialog = CalibrationDialog(
-        plane_name="Sample plane",
+        mapping_name="100x",
         localization_parameters=_localization_defaults(),
         detectors=("Camera","Camera 2"),
         current_detector="Camera",
     )
     try:
-        dialog.set_bound_detector("Camera")
         dialog.set_target_reference(
             context={},parameters=_localization_defaults(),status="Ready",
         )
@@ -210,12 +209,9 @@ def test_calibration_dialog_prefers_plane_detector_but_allows_override_with_warn
         controls = dialog.target_view._workbench.measurement_controls
         assert dialog.target_view.current_detector == "Camera"
         assert controls.detector_combo.isEnabled()
-        assert "Sample plane" in dialog._plane_label.text()
-        assert "Camera" in dialog._detector_label.text()
+        assert "100x" in dialog._mapping_label.text()
 
         controls.detector_combo.setCurrentIndex(1)
         assert dialog.target_view.current_detector == "Camera 2"
-        assert "using Camera 2" in dialog._detector_label.text()
-        assert dialog._detector_label.styleSheet()
     finally:
         dialog.deleteLater()

@@ -119,7 +119,7 @@ class SLMFeedbackService:
             runtime_provider=runtime_provider,
             callbacks_provider=callbacks_provider,
             editor_writes_allowed=editor_writes_allowed,
-            active_feedback_plane=self._active_mapping_plane,
+            active_feedback_plane=self._active_mapping_name,
             startup_preferences=startup_preferences,
             cancel_cgh=lambda key:self._application_session.cancel_cgh(key),
             feedback_orientation=self._geometry.feedback_orientation,
@@ -270,22 +270,22 @@ class SLMFeedbackService:
         # identity is the selected observation plane.
         return self.active_observation_plane(section_key)
 
-    def _active_mapping_plane(self,section_key: str) -> str | None:
+    def _active_mapping_name(self,section_key: str) -> str | None:
         """Transitional mapping identity used only by legacy FOV ownership.
 
         Patch 6 moves FOV persistence out of Feedback. Until then, keep it keyed
-        by the existing calibration-plane/mapping identity rather than by the
+        by the active mapping identity rather than by the
         independently selected observation plane.
         """
         calibration_service = getattr(self._application_session,"calibration",None)
         if calibration_service is not None:
-            return calibration_service.active_plane(section_key)
+            return calibration_service.active_mapping(section_key)
         calibration = self._application_session.runtime.get_section_calibration_copy(
             section_key
         )
         if calibration is None:
             return None
-        return str(getattr(calibration,"plane","") or "").strip() or None
+        return str(getattr(calibration,"mapping_name","") or "").strip() or None
 
     def _require_observation_plane_for_measurement(self,section_key: str) -> None:
         if self.observation_planes() and self.active_observation_plane(section_key) is None:

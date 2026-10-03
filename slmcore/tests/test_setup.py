@@ -80,7 +80,7 @@ def test_hardware_config_roundtrips_independently():
 def test_startup_preferences_roundtrip():
     preferences = SLMStartupPreferences(
         startup_config="default.h5",
-        default_planes={"sec_0":"Sample"},
+        default_mappings={"sec_0":"Sample"},
         section_display_mode="horizontal",
     )
     assert SLMStartupPreferences.from_dict(preferences.to_dict()) == preferences
@@ -96,7 +96,7 @@ def test_canonical_setup_file_load_and_preference_update(tmp_path):
         "hardware":hardware.to_dict(),
         "startup_preferences":{
             "startup_config":None,
-            "default_planes":{},
+            "default_mappings":{},
             "section_display_mode":"tabs",
         },
         "host_note":"preserved",
@@ -109,7 +109,7 @@ def test_canonical_setup_file_load_and_preference_update(tmp_path):
 
     changed = SLMStartupPreferences(
         startup_config="startup.h5",
-        default_planes={"sec_0":"Sample"},
+        default_mappings={"sec_0":"Sample"},
         section_display_mode="horizontal",
     )
     save_slm_startup_preferences(path,changed)
