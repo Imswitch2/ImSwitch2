@@ -18,7 +18,7 @@ from ...core.engine.state.groups import DynamicGroupState
 from ...core.engine.transition import SectionStateTransition
 from ...setup import FocusedEditingPreferences
 from .group_factory import DEFAULT_GROUP_VIEW_FACTORY,GroupViewFactory
-from .group_views import BaseGroupView,CghGroupView,GroupPresentationState
+from .group_views import BaseGroupView,CghAction,CghGroupView,GroupPresentationState
 from .policy import DEFAULT_RENDER_POLICY,RenderPolicy
 from .topology import SectionTopologyDialog
 
@@ -161,6 +161,8 @@ class SectionView(QtWidgets.QWidget):
         self.metric_unit_button: QtWidgets.QPushButton | None = None
         self.calibration_label: QtWidgets.QLabel | None = None
         self.active_mapping_combo: QtWidgets.QComboBox | None = None
+        self.fov_apply_checkbox: QtWidgets.QCheckBox | None = None
+        self._fov_mapping_context: dict[str,Any] = {}
         self.calibration_button: QtWidgets.QPushButton | None = None
         self.mapping_more_button: QtWidgets.QToolButton | None = None
         self.add_mapping_action: QtWidgets.QAction | None = None
@@ -268,6 +270,19 @@ class SectionView(QtWidgets.QWidget):
             )
             self.active_mapping_combo = combo
             interface_layout.addWidget(combo)
+
+            fov_apply = QtWidgets.QCheckBox("FOV")
+            fov_apply.setToolTip(
+                "Apply this mapping's default compatible FOV correction."
+            )
+            fov_apply.toggled.connect(
+                lambda checked:self.sigCghActionRequested.emit(
+                    self.section_key,CghAction.FOV_CALIBRATION_APPLY.value,
+                    {"applied":bool(checked)},
+                )
+            )
+            self.fov_apply_checkbox = fov_apply
+            interface_layout.addWidget(fov_apply)
 
             calibrate = QtWidgets.QPushButton("Calibrate")
             calibrate.setFixedHeight(22)
@@ -828,9 +843,26 @@ class SectionView(QtWidgets.QWidget):
     def set_fov_position_calibration_context(
         self,context: Mapping[str,Any] | None,
     ) -> None:
-        for group_view in self.groups.values():
-            if isinstance(group_view,CghGroupView):
-                group_view.set_fov_position_calibration_context(context)
+        self._fov_mapping_context = dict(context or {})
+        checkbox = self.fov_apply_checkbox
+        if checkbox is None:
+            return
+        ctx = self._fov_mapping_context
+        compatible = bool(ctx.get("default_compatible",False))
+        supported = bool(ctx.get("supported",False))
+        blocker = QtCore.QSignalBlocker(checkbox)
+        try:
+            checkbox.setChecked(bool(ctx.get("applied",False)))
+        finally:
+            del blocker
+        enabled = bool(ctx.get("mapping_name")) and compatible and supported
+        checkbox.setEnabled(enabled)
+        reason = str(ctx.get("compatibility_reason") or "").strip()
+        if not supported:
+            reason = "The current target does not support FOV position correction."
+        checkbox.setToolTip(
+            reason or "Apply this mapping's default compatible FOV correction."
+        )
 
     def set_snapshot(self,snapshot: SLMSectionSnapshot) -> None:
         calibration_changed = (

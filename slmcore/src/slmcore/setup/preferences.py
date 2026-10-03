@@ -56,39 +56,39 @@ class FeedbackOrientationPreferences:
 
 
 @dataclass(frozen=True)
-class FOVPositionCalibrationPreferences:
-    """Persistent default FOV calibration names by measurement plane."""
+class FOVMappingCorrectionPreferences:
+    """Persistent default FOV-correction names by mapping."""
 
-    planes: Mapping[str,str] = field(default_factory=dict)
+    mappings: Mapping[str,str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         planes = {}
-        for plane,value in dict(self.planes or {}).items():
-            plane_name = str(plane or "").strip()
-            calibration_name = str(value or "").strip()
-            if plane_name and calibration_name:
-                planes[plane_name] = calibration_name
-        object.__setattr__(self,"planes",MappingProxyType(planes))
+        for mapping,value in dict(self.mappings or {}).items():
+            mapping_name = str(mapping or "").strip()
+            correction_name = str(value or "").strip()
+            if mapping_name and correction_name:
+                planes[mapping_name] = correction_name
+        object.__setattr__(self,"mappings",MappingProxyType(planes))
 
     def to_dict(self) -> dict[str,Any]:
-        return {"planes":dict(self.planes)}
+        return {"mappings":dict(self.mappings)}
 
     @classmethod
-    def from_value(cls,value: Any) -> "FOVPositionCalibrationPreferences":
+    def from_value(cls,value: Any) -> "FOVMappingCorrectionPreferences":
         if isinstance(value,cls):
             return value
         if value is None:
             return cls()
         if not isinstance(value,Mapping):
             raise TypeError(
-                "startup_preferences.fov_position_calibrations entries must be mappings"
+                "startup_preferences.fov_mapping_corrections entries must be mappings"
             )
-        planes = value.get("planes",value) or {}
-        if not isinstance(planes,Mapping):
+        mappings = value.get("mappings",value) or {}
+        if not isinstance(mappings,Mapping):
             raise TypeError(
-                "startup_preferences.fov_position_calibrations.*.planes must be a mapping"
+                "startup_preferences.fov_mapping_corrections.*.mappings must be a mapping"
             )
-        return cls(planes=dict(planes))
+        return cls(mappings=dict(mappings))
 
 
 @dataclass(frozen=True)
@@ -181,8 +181,8 @@ class SLMStartupPreferences:
     feedback_orientations: Mapping[str,FeedbackOrientationPreferences] = field(
         default_factory=dict,
     )
-    fov_position_calibrations: Mapping[
-        str,FOVPositionCalibrationPreferences
+    fov_mapping_corrections: Mapping[
+        str,FOVMappingCorrectionPreferences
     ] = field(default_factory=dict)
     focused_editing: Mapping[str,FocusedEditingPreferences] = field(
         default_factory=dict,
@@ -211,14 +211,14 @@ class SLMStartupPreferences:
             self,"feedback_orientations",MappingProxyType(orientations),
         )
         fov_defaults = {}
-        for section,value in dict(self.fov_position_calibrations or {}).items():
+        for section,value in dict(self.fov_mapping_corrections or {}).items():
             section_key = str(section or "").strip()
             if section_key:
-                fov_defaults[section_key] = FOVPositionCalibrationPreferences.from_value(
+                fov_defaults[section_key] = FOVMappingCorrectionPreferences.from_value(
                     value
                 )
         object.__setattr__(
-            self,"fov_position_calibrations",MappingProxyType(fov_defaults),
+            self,"fov_mapping_corrections",MappingProxyType(fov_defaults),
         )
         focused = {}
         for section,value in dict(self.focused_editing or {}).items():
@@ -240,9 +240,9 @@ class SLMStartupPreferences:
                 section:value.to_dict()
                 for section,value in self.feedback_orientations.items()
             },
-            "fov_position_calibrations":{
+            "fov_mapping_corrections":{
                 section:value.to_dict()
-                for section,value in self.fov_position_calibrations.items()
+                for section,value in self.fov_mapping_corrections.items()
             },
             "focused_editing":{
                 section:value.to_dict()
@@ -266,10 +266,10 @@ class SLMStartupPreferences:
         orientations = data.get("feedback_orientations",{}) or {}
         if not isinstance(orientations,Mapping):
             raise TypeError("startup_preferences.feedback_orientations must be a mapping")
-        fov_defaults = data.get("fov_position_calibrations",{}) or {}
+        fov_defaults = data.get("fov_mapping_corrections",{}) or {}
         if not isinstance(fov_defaults,Mapping):
             raise TypeError(
-                "startup_preferences.fov_position_calibrations must be a mapping"
+                "startup_preferences.fov_mapping_corrections must be a mapping"
             )
         focused = data.get("focused_editing",{}) or {}
         if not isinstance(focused,Mapping):
@@ -281,6 +281,6 @@ class SLMStartupPreferences:
             default_mappings=dict(planes),
             section_display_mode=data.get("section_display_mode","tabs"),
             feedback_orientations=dict(orientations),
-            fov_position_calibrations=dict(fov_defaults),
+            fov_mapping_corrections=dict(fov_defaults),
             focused_editing=dict(focused),
         )

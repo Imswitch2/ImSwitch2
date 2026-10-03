@@ -129,16 +129,16 @@ def test_fov_mapping_correction_store_roundtrips_measurement_provenance(tmp_path
     assert restored.provenance["source"] == "current_position_analysis"
 
 
-def test_startup_preferences_persist_fov_default_by_section_and_mapping_transitionally():
+def test_startup_preferences_persist_fov_default_by_section_and_mapping():
     saved = []
     state = StartupPreferencesState(SLMStartupPreferences(),saved.append)
-    state.set_default_fov_position_calibration("sec_0","sample","map A")
+    state.set_default_fov_correction("sec_0","sample","map A")
 
-    assert state.default_fov_position_calibration("sec_0","sample") == "map A"
+    assert state.default_fov_correction("sec_0","sample") == "map A"
     payload = saved[-1].to_dict()
-    assert payload["fov_position_calibrations"]["sec_0"]["planes"]["sample"] == "map A"
+    assert payload["fov_mapping_corrections"]["sec_0"]["mappings"]["sample"] == "map A"
     restored = SLMStartupPreferences.from_dict(payload)
-    assert restored.fov_position_calibrations["sec_0"].planes["sample"] == "map A"
+    assert restored.fov_mapping_corrections["sec_0"].mappings["sample"] == "map A"
 
 
 def test_position_analysis_residual_is_applied_from_fov_baseline_not_ideal():
@@ -326,3 +326,40 @@ def test_multifoci_fov_numerical_path_is_characterized_point_by_point():
         atol=1e-12,
     )
     assert corrected["baseline_positions_kxy"].shape[1] == 4
+
+
+def test_base_mapping_signature_uses_numerics_and_geometry_not_provenance():
+    from slmcore import SLMSectionCalibration
+    from slmcore.core.calibration import base_mapping_signature
+
+    geometry = {"key":"sec_0","x":0,"y":0,"width":64,"height":64}
+    first = SLMSectionCalibration(
+        matrix_2x2=((0.01,0.002),(-0.001,0.012)),
+        mapping_name="100x",created_at="2026-01-01",source="first",
+        section_geometry=geometry,metadata={"detector":"cam-a"},
+    )
+    provenance_only = first.copy()
+    provenance_only.mapping_name = "renamed"
+    provenance_only.created_at = "2027-04-05"
+    provenance_only.source = "other"
+    provenance_only.metadata = {"detector":"cam-b","note":"changed"}
+    numerical_change = first.copy()
+    numerical_change.matrix_2x2 = ((0.0101,0.002),(-0.001,0.012))
+
+    assert base_mapping_signature(first) == base_mapping_signature(provenance_only)
+    assert base_mapping_signature(first) != base_mapping_signature(numerical_change)
+
+
+def test_base_mapping_signature_changes_with_section_geometry():
+    from slmcore import SLMSectionCalibration
+    from slmcore.core.calibration import base_mapping_signature
+
+    first = SLMSectionCalibration(
+        kx_per_um=0.01,ky_per_um=0.012,
+        section_geometry={"key":"sec_0","x":0,"y":0,"width":64,"height":64},
+    )
+    changed = first.copy()
+    changed.section_geometry = {
+        "key":"sec_0","x":1,"y":0,"width":64,"height":64,
+    }
+    assert base_mapping_signature(first) != base_mapping_signature(changed)

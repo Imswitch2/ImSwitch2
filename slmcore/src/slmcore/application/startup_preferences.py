@@ -148,38 +148,38 @@ class StartupPreferencesState:
         )
         self._commit(replace(self._value,feedback_orientations=orientations))
 
-    def default_fov_position_calibration(
-        self,section_key: str,plane_name: str | None,
+    def default_fov_correction(
+        self,section_key: str,mapping_name: str | None,
     ) -> str | None:
-        plane = str(plane_name or "").strip()
-        if not plane:
+        mapping = str(mapping_name or "").strip()
+        if not mapping:
             return None
-        settings = self._value.fov_position_calibrations.get(str(section_key))
+        settings = self._value.fov_mapping_corrections.get(str(section_key))
         if settings is None:
             return None
-        return settings.planes.get(plane)
+        return settings.mappings.get(mapping)
 
-    def set_default_fov_position_calibration(
-        self,section_key: str,plane_name: str,name: str | None,
+    def set_default_fov_correction(
+        self,section_key: str,mapping_name: str,name: str | None,
     ) -> None:
-        from ..setup import FOVPositionCalibrationPreferences
+        from ..setup import FOVMappingCorrectionPreferences
         section = str(section_key)
-        plane = str(plane_name or "").strip()
-        if not plane:
-            raise ValueError("plane_name must not be empty")
-        calibration_name = str(name or "").strip() or None
-        values = dict(self._value.fov_position_calibrations)
-        previous = values.get(section,FOVPositionCalibrationPreferences())
-        planes = dict(previous.planes)
-        if calibration_name is None:
-            planes.pop(plane,None)
+        mapping = str(mapping_name or "").strip()
+        if not mapping:
+            raise ValueError("mapping_name must not be empty")
+        correction_name = str(name or "").strip() or None
+        values = dict(self._value.fov_mapping_corrections)
+        previous = values.get(section,FOVMappingCorrectionPreferences())
+        mappings = dict(previous.mappings)
+        if correction_name is None:
+            mappings.pop(mapping,None)
         else:
-            planes[plane] = calibration_name
-        if planes:
-            values[section] = FOVPositionCalibrationPreferences(planes=planes)
+            mappings[mapping] = correction_name
+        if mappings:
+            values[section] = FOVMappingCorrectionPreferences(mappings=mappings)
         else:
             values.pop(section,None)
-        self._commit(replace(self._value,fov_position_calibrations=values))
+        self._commit(replace(self._value,fov_mapping_corrections=values))
 
     # Compatibility helper for the first pre-release section-only behavior.
     def set_feedback_orientation(self,section_key: str,value: Any) -> None:

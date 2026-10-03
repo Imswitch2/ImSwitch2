@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -11,6 +13,33 @@ from typing import Any
 from .geometry import normalize_section_geometry_data
 
 Matrix2x2 = tuple[tuple[float, float], tuple[float, float]]
+
+
+def base_mapping_signature(calibration: "SLMSectionCalibration") -> str:
+    """Return a stable signature for the effective numerical base mapping.
+
+    Identity/provenance fields are deliberately excluded.  Compatibility is
+    defined by the effective 2x2 mapping, normalized section geometry, and
+    this signature schema version only.
+    """
+    if calibration is None or not calibration.is_valid():
+        raise ValueError("A valid SLM section calibration is required")
+    matrix = calibration._effective_matrix()
+    payload = {
+        "schema": 1,
+        "matrix_2x2": [
+            [float(matrix[0][0]), float(matrix[0][1])],
+            [float(matrix[1][0]), float(matrix[1][1])],
+        ],
+        "section_geometry": normalize_section_geometry_data(
+            calibration.section_geometry
+        ),
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
 
 @dataclass
 class SLMSectionCalibration:
