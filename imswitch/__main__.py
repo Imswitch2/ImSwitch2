@@ -1,12 +1,13 @@
 import argparse
 import importlib
+import os
 import traceback
 
 import imswitch
 from imswitch.imcommon import prepareApp, launchApp
 from imswitch.imcommon.controller import ModuleCommunicationChannel, MultiModuleWindowController
-from imswitch.imcommon.model import modulesconfigtools, pythontools, initLogger
-from imswitch.imcommon.model.logging import setLogLevel
+from imswitch.imcommon.model import dirtools, modulesconfigtools, pythontools, initLogger
+from imswitch.imcommon.model.logging import attachLogFile, setLogLevel
 from imswitch.imcommon.view import MultiModuleWindow, ModuleLoadErrorView
 
 
@@ -22,6 +23,12 @@ def main():
         setLogLevel('DEBUG')
 
     logger = initLogger('main')
+
+    # Before the modules load, so a crash while loading one is still on disk.
+    # Records emitted even earlier than this (during imports) are in the
+    # in-memory buffer and get written into the file as its first lines.
+    attachLogFile(os.path.join(dirtools.UserFileDirs.Root, 'logs', 'imswitch.log'))
+
     logger.info(f'Starting ImSwitch {imswitch.__version__}')
 
     app = prepareApp(scale=args.scale)

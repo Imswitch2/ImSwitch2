@@ -75,6 +75,10 @@ This is a clean-slate continuation of the [ImSwitch](https://github.com/ImSwitch
 
 > Requires **Python 3.10+** and **PyQt5**.  Windows / macOS / Linux all supported.
 
+**Don't want to manage a Python environment?**  Windows and macOS installers are attached to every [release](https://github.com/Imswitch2/Imswitch2/releases).  They are unsigned, so SmartScreen and Gatekeeper both complain on first launch, and a bundled Imswitch2 cannot load pip-installed device plugins or vendor SDKs — fine for analysis and for trying it out, not for a rig.  See [`docs/packaging.rst`](docs/packaging.rst).
+
+**Already have Python?**  `pip install imswitch2`, then `imswitch`.  The clone below is for developing on Imswitch2 itself, and for the newest fixes — PyPI releases trail `main`.
+
 ```bash
 # 1. Clone and install (core install — UI + file I/O, no hardware drivers)
 git clone https://github.com/Imswitch2/ImSwitch2.git

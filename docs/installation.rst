@@ -2,9 +2,15 @@
 Installation
 ************
 
-ImSwitch2 is a Python application.  There is no Windows ``.exe`` bundle —
-the original ImSwitch project shipped one, but it is **no longer
-maintained** in ImSwitch2.  Install from source or PyPI instead.
+ImSwitch2 is a Python application.  Install it with ``pip`` from PyPI, or
+from a source checkout.
+
+Standalone **Windows and macOS installers** are attached to each
+`GitHub release <https://github.com/Imswitch2/Imswitch2/releases>`_ for
+people who would rather not own a Python environment.  They are unsigned, so
+Windows SmartScreen and macOS Gatekeeper both complain on first launch, and a
+bundle cannot load pip-installed device plugins or vendor SDKs — a ``pip``
+install remains the right choice for a rig.  See :doc:`packaging`.
 
 Requirements
 ============
@@ -14,6 +20,13 @@ Requirements
 * Windows, macOS, or Linux.  A few optional components (the MoNaLISA
   reconstruction DLLs, TIS cameras) are Windows-only — the generic
   ImProcess shell and most plugins run on all three platforms.
+
+.. note::
+
+   Microscope *control* is in practice a Windows story: NI-DAQmx has no
+   macOS support at all, and the Thorlabs TSI and TIS camera SDKs are
+   Windows/Linux only.  On macOS, ImSwitch2 runs the analysis modules
+   (ImProcess, imscripting) and the mock setups.
 
 
 Option A: Install from PyPI

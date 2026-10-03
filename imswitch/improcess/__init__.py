@@ -16,7 +16,8 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
         is_file_watcher_panel_enabled,
         is_frc_panel_enabled,
         is_graph_panel_enabled,
-        is_metadata_panel_enabled,
+        is_log_panel_enabled,
+    is_metadata_panel_enabled,
         is_multi_data_panel_enabled,
         is_multicolor_panel_enabled,
         is_napari_storm_viewer_enabled,
@@ -57,6 +58,7 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
         showMulticolorPanel=is_multicolor_panel_enabled(processing_config),
         useNapariStormViewer=is_napari_storm_viewer_enabled(processing_config),
         showSmlmRenderPanel=is_smlm_render_panel_enabled(processing_config),
+        showLogPanel=is_log_panel_enabled(processing_config),
     )
     try:
         controller = ImProcessMainController(
