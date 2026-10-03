@@ -63,3 +63,18 @@ def test_config_mismatch_detection_compares_calibration_to_config_section_geomet
     mismatches = config_calibration_geometry_mismatches(config)
     assert len(mismatches) == 1
     assert mismatches[0].section_key == "sec_0"
+
+
+def test_diagonal_calibration_conversion_and_serialized_matrix_are_equivalent():
+    calibration = SLMSectionCalibration(kx_per_um=0.0125, ky_per_um=-0.02)
+
+    assert calibration.um_to_kxy(8.0, -3.0) == (0.1, 0.06)
+    x_um, y_um = calibration.kxy_to_um(0.1, 0.06)
+    assert x_um == 8.0
+    assert y_um == -3.0
+
+    payload = calibration.to_dict()
+    assert payload["mapping"] == "diagonal"
+    assert payload["matrix_2x2"] == [[0.0125, 0.0], [0.0, -0.02]]
+    restored = SLMSectionCalibration.from_dict(payload)
+    assert restored.um_to_kxy(8.0, -3.0) == (0.1, 0.06)

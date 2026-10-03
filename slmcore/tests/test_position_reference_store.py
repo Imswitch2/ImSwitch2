@@ -103,3 +103,14 @@ def test_duplicate_name_in_same_plane_requires_explicit_overwrite(tmp_path):
 
     with pytest.raises(FileExistsError):
         store.add(_reference())
+
+
+def test_reference_identity_is_plane_scoped_not_section_scoped(tmp_path):
+    store = PositionReferenceStore(tmp_path)
+    store.add(_reference("shared in sample", plane="sample"))
+
+    # PositionReferenceStore has no section dimension: the same plane-scoped
+    # reference is intentionally available to workflows from different sections.
+    assert store.exists("sample", "shared in sample")
+    assert store.get("sample", "shared in sample").plane_name == "sample"
+    assert not store.exists("fourier", "shared in sample")

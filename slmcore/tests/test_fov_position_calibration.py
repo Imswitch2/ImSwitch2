@@ -230,3 +230,54 @@ def test_fov_change_does_not_discard_feedback_on_unsupported_target():
         == before.measurement.acquisition.measurement_id
     )
     assert runtime.get_section_fov_position_context("sec_0")["supported"] is False
+
+
+def test_multifoci_fov_numerical_path_is_characterized_point_by_point():
+    """Pin the Phase-1 numerical contract before FOV ownership moves."""
+    runtime = _runtime()
+    ideal_context = runtime.get_section_fov_position_context("sec_0")
+    ideal = ideal_context["ideal_positions_kxy"]
+
+    # The target resolver owns the ideal lattice. Keep its exact current output
+    # explicit so later ownership refactors cannot silently move the correction
+    # earlier into target resolution.
+    expected_ideal = np.array([
+        [-0.005859375, 0.005859375, -0.005859375, 0.005859375],
+        [-0.005859375, -0.005859375, 0.005859375, 0.005859375],
+    ])
+    np.testing.assert_allclose(ideal, expected_ideal, atol=1e-12)
+    assert ideal.shape[1] == 4
+
+    # Fit a deterministic affine displacement field from exact samples. This is
+    # deliberately non-uniform so the assertion proves correction is evaluated
+    # independently at every resolved target position.
+    samples = _grid()
+    displacement = np.vstack([
+        0.01 + 0.04 * samples[0] - 0.02 * samples[1],
+        -0.015 + 0.01 * samples[0] + 0.03 * samples[1],
+    ])
+    calibration = FOVPositionCalibration.fit(
+        name="characterization map", slm_serial="SER123", section_key="sec_0",
+        plane_name="sample", ideal_positions_kxy=samples,
+        total_displacements_kxy=displacement, degree=1,
+    )
+
+    runtime.set_section_fov_position_calibration("sec_0", calibration)
+    corrected = runtime.get_section_fov_position_context("sec_0")
+    expected_displacement = np.vstack([
+        0.01 + 0.04 * expected_ideal[0] - 0.02 * expected_ideal[1],
+        -0.015 + 0.01 * expected_ideal[0] + 0.03 * expected_ideal[1],
+    ])
+
+    np.testing.assert_allclose(
+        corrected["ideal_positions_kxy"], expected_ideal, atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        corrected["displacement_kxy"], expected_displacement, atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        corrected["baseline_positions_kxy"],
+        expected_ideal + expected_displacement,
+        atol=1e-12,
+    )
+    assert corrected["baseline_positions_kxy"].shape[1] == 4

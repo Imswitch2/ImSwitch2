@@ -277,3 +277,19 @@ def test_geometry_calibration_recompute_failure_keeps_previous_active_target(mon
     assert (after["grid_x"],after["grid_y"]) == (5,4)
     assert (after["period_x_px"],after["period_y_px"]) == (12.0,15.0)
     assert len(uploads) == 1
+
+
+def test_geometry_orientation_store_scope_includes_slm_section_and_plane(tmp_path):
+    store=SLMGeometryOrientationCalibrationStore(tmp_path)
+    calibration=GeometryOrientationCalibration(
+        slm_serial="SER123",section_key="sec_0",plane_name="sample",
+        orientation="identity",detector_name="cam",grid_x=5,grid_y=4,
+        period_x_px=12.0,period_y_px=12.0,score=1.0,
+        confidence_margin=0.5,matched_count=20,
+    )
+    store.save(calibration)
+
+    assert store.exists(SLMIdentity("slm","SER123"),"sec_0","sample")
+    assert not store.exists(SLMIdentity("slm","OTHER"),"sec_0","sample")
+    assert not store.exists(SLMIdentity("slm","SER123"),"sec_1","sample")
+    assert not store.exists(SLMIdentity("slm","SER123"),"sec_0","fourier")
