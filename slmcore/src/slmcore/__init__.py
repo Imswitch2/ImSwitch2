@@ -27,6 +27,7 @@ from .application import (
     CorrectionMismatchPolicy,
     FeedbackParameterUpdateResult,
     MeasurementDispatcher,
+    ObservationPlaneService,
     PositionReferenceContext,
     PositionReferenceSelection,
     PositionReferenceLifetime,
@@ -109,6 +110,8 @@ from .workspace import (
     SLMCorrectionStore,
     SLMFOVPositionCalibrationStore,
     SLMGeometryOrientationCalibrationStore,
+    ObservationPlaneDefinition,
+    ObservationPlaneStore,
     SLMWorkspace,
 )
 
@@ -128,6 +131,7 @@ __all__ = [
     "GroupTopology",
     "ImageMeasurement",
     "MeasurementDispatcher",
+    "ObservationPlaneService",
     "EditablePositionReferenceGeometry",
     "FOVPositionCalibration",
     "GeometryOrientationAnalysis",
@@ -169,6 +173,8 @@ __all__ = [
     "SLMCorrectionStore",
     "SLMFOVPositionCalibrationStore",
     "SLMGeometryOrientationCalibrationStore",
+    "ObservationPlaneDefinition",
+    "ObservationPlaneStore",
     "SLMFeedbackService",
     "SLMGeometry",
     "SLMHardwareConfig",

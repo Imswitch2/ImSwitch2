@@ -9,6 +9,7 @@ from .config_store import (
 from .correction_store import SLMCorrectionStore
 from .fov_position_calibration_store import SLMFOVPositionCalibrationStore
 from .geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
+from .observation_plane_store import ObservationPlaneDefinition,ObservationPlaneStore
 from .workspace import SLMWorkspace
 
 __all__ = [
@@ -21,5 +22,7 @@ __all__ = [
     "SLMCorrectionStore",
     "SLMFOVPositionCalibrationStore",
     "SLMGeometryOrientationCalibrationStore",
+    "ObservationPlaneDefinition",
+    "ObservationPlaneStore",
     "SLMWorkspace",
 ]

@@ -19,6 +19,7 @@ from .configuration import (
 from .control_mode import SLMControlMode
 from .runtime_factory import SLMRuntimeFactory
 from .position_reference_store import PositionReferenceStore
+from .observation import ObservationPlaneService
 from .feedback import (
     AutomaticFeedbackState,GeometryCalibrationPayload,MeasurementDispatcher,SLMFeedbackCallbacks,
     SLMFeedbackService,
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from ..workspace.calibration_store import SLMCalibrationStore
     from ..workspace.fov_position_calibration_store import SLMFOVPositionCalibrationStore
     from ..workspace.geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
+    from ..workspace.observation_plane_store import ObservationPlaneStore
     from .startup_preferences import StartupPreferencesState
 
 
@@ -103,6 +105,7 @@ class SLMSession:
         position_reference_store: PositionReferenceStore | None=None,
         fov_position_calibration_store: SLMFOVPositionCalibrationStore | None=None,
         geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None=None,
+        observation_plane_store: ObservationPlaneStore | None=None,
         startup_preferences: StartupPreferencesState | None=None,
         display_name: str="",
         apply_startup_calibration_defaults: bool=False,
@@ -135,6 +138,8 @@ class SLMSession:
         self._upload_defer_depth = 0
         self._upload_pending = False
         self._last_upload_error: Exception | None = None
+
+        self.observation_planes = ObservationPlaneService(observation_plane_store)
 
         # Application services are owned by this session. They may coordinate
         # runtime operations, but presentation adapters remain outside this layer.

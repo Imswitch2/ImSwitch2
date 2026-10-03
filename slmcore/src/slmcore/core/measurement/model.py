@@ -9,6 +9,8 @@ from types import MappingProxyType
 from typing import Any,Mapping
 from uuid import uuid4
 
+import math
+
 import numpy as np
 
 
@@ -49,6 +51,7 @@ class ImageMeasurement:
     created_at: str = ""
     metadata: Mapping[str,Any] = field(default_factory=dict)
     detector: str | None = None
+    pixel_size_um: float | None = None
     measurement_id: str = ""
 
     def __post_init__(self) -> None:
@@ -58,6 +61,11 @@ class ImageMeasurement:
             if self.detector is None or not str(self.detector).strip()
             else str(self.detector).strip()
         )
+        pixel_size_um = self.pixel_size_um
+        if pixel_size_um is not None:
+            pixel_size_um = float(pixel_size_um)
+            if not math.isfinite(pixel_size_um) or pixel_size_um <= 0:
+                raise ValueError("pixel_size_um must be a positive finite value")
         created_at = str(self.created_at or datetime.now().isoformat())
         measurement_id = str(self.measurement_id or uuid4().hex).strip()
         if not measurement_id:
@@ -66,6 +74,7 @@ class ImageMeasurement:
         object.__setattr__(self,"image",_freeze_image(self.image))
         object.__setattr__(self,"source",source)
         object.__setattr__(self,"detector",detector)
+        object.__setattr__(self,"pixel_size_um",pixel_size_um)
         object.__setattr__(self,"created_at",created_at)
         object.__setattr__(self,"measurement_id",measurement_id)
         object.__setattr__(self,"metadata",_freeze_mapping(self.metadata))
@@ -76,6 +85,7 @@ def create_image_measurement(
     *,
     source: str,
     detector: str | None=None,
+    pixel_size_um: float | None=None,
     metadata: Mapping[str, Any] | None=None,
 ) -> ImageMeasurement:
     """Create a normalized 2D measurement from common detector/file arrays."""
@@ -90,6 +100,7 @@ def create_image_measurement(
         image=np.asarray(array,dtype=np.float64),
         source=source,
         detector=detector,
+        pixel_size_um=pixel_size_um,
         metadata=dict(metadata or {}),
     )
 

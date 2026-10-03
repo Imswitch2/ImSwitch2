@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from slmcore.core.measurement import create_image_measurement
+from slmcore.core.measurement import ImageMeasurement,create_image_measurement
 
 
 def test_create_image_measurement_normalizes_rgb_to_2d_float():
@@ -36,3 +36,15 @@ def test_loaded_external_measurement_requires_no_live_detector_identity():
     np.testing.assert_array_equal(
         measurement.image, np.arange(12, dtype=np.float64).reshape(3, 4),
     )
+
+
+def test_measurement_pixel_size_is_optional_and_validated():
+    measurement = create_image_measurement(
+        np.zeros((3,3)),source="file",pixel_size_um=0.123,
+    )
+    assert measurement.pixel_size_um == pytest.approx(0.123)
+    assert measurement.detector is None
+    assert ImageMeasurement(np.zeros((2,2))).pixel_size_um is None
+    for value in (0,-1,float("nan"),float("inf")):
+        with pytest.raises(ValueError,match="positive finite"):
+            ImageMeasurement(np.zeros((2,2)),pixel_size_um=value)

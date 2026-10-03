@@ -116,6 +116,9 @@ class SLMQtSessionFactory:
         calibration_store = (
             None if workspace is None else workspace.calibration_store
         )
+        observation_plane_store = (
+            None if workspace is None else workspace.observation_plane_store
+        )
         position_reference_store = self.position_reference_store
         fov_position_calibration_store = (
             None if workspace is None else workspace.fov_position_calibration_store
@@ -180,6 +183,7 @@ class SLMQtSessionFactory:
                 configuration_service=configuration_service,
                 current_config_path=startup.config_path,
                 calibration_store=calibration_store,
+                observation_plane_store=observation_plane_store,
                 position_reference_store=position_reference_store,
                 fov_position_calibration_store=fov_position_calibration_store,
                 geometry_orientation_calibration_store=geometry_orientation_calibration_store,
