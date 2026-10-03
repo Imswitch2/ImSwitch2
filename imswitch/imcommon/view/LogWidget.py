@@ -26,21 +26,6 @@ _LEVEL_CHOICES = (
 )
 
 
-class _LogBridge(QtCore.QObject):
-    """ Carries records from whatever thread logged them to the GUI thread.
-
-    Records arrive on hardware threads, scan workers and the API server's
-    thread.  Touching a widget from any of those is undefined behaviour in Qt,
-    so everything goes through this signal: emitting is safe from any thread,
-    and a cross-thread connection is queued onto the receiver's event loop. """
-
-    # One `object` argument, not (int, str, str): the buffer calls listeners with
-    # a single entry tuple, so a three-argument signal's `emit` is the wrong
-    # shape and every live record raised TypeError inside the buffer's
-    # listener-error guard -- invisibly.
-    sigRecord = QtCore.Signal(object)  # (levelno, levelname, text)
-
-
 class LogWidget(QtWidgets.QWidget):
     """ Shows the ImSwitch2 log: everything buffered so far, then live records.
 
@@ -60,17 +45,23 @@ class LogWidget(QtWidgets.QWidget):
         self._minLevel = logging.INFO
         self._textFilter = ''
 
-        self._bridge = _LogBridge()
-        self._bridge.sigRecord.connect(self._onRecord)
-
-        # A plain function, not a bound method: it has to outlive the widget to
-        # unregister itself, and must not resurrect a half-deleted one.
-        listener = self._bridge.sigRecord.emit
-        logBuffer.addListener(listener)
-        self.destroyed.connect(lambda *_: logBuffer.removeListener(listener))
+        #: Records already rendered, counted the way the buffer counts them.
+        self._renderedTotal = 0
 
         self._build()
         self.reload()
+
+        # Polling, not a callback the logging threads push into.  Records are
+        # logged from hardware threads, scan workers and the API server's
+        # thread; pushing from there into a Qt widget means a cross-thread
+        # signal, and a panel torn down without the event loop running then
+        # emits into a dead receiver -- which segfaults the process, as it did
+        # here.  A timer owned by this widget cannot outlive it, reads the
+        # buffer on the GUI thread, and costs a deque length comparison.
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(250)
+        self._timer.timeout.connect(self._drainNewRecords)
+        self._timer.start()
 
     # ------------------------------------------------------------------ build
     def _build(self):
@@ -171,6 +162,9 @@ class LogWidget(QtWidgets.QWidget):
         showed, instead of only those it happens to still hold. """
 
         self.textEdit.clear()
+        # Read total() first: a record arriving between the two would otherwise
+        # be rendered here and counted as new on the next tick, showing twice.
+        self._renderedTotal = logBuffer.total()
         for levelno, _levelname, text in logBuffer.records():
             if self._shouldShow(levelno, text):
                 self._append(levelno, text)
@@ -184,10 +178,25 @@ class LogWidget(QtWidgets.QWidget):
             )
 
     # ---------------------------------------------------------------- signals
-    def _onRecord(self, entry):
-        levelno, _levelname, text = entry
-        if self._shouldShow(levelno, text):
-            self._append(levelno, text)
+    def _drainNewRecords(self):
+        """ Append whatever has been logged since the last pass. """
+
+        total = logBuffer.total()
+        newCount = total - self._renderedTotal
+        if newCount <= 0:
+            self._renderedTotal = total  # buffer cleared under us
+            return
+
+        records = logBuffer.records()
+        # Counting from total() rather than indexing means a burst larger than
+        # the buffer just loses its oldest records instead of mis-slicing.
+        appended = False
+        for levelno, _levelname, text in records[-min(newCount, len(records)):]:
+            if self._shouldShow(levelno, text):
+                self._append(levelno, text)
+                appended = True
+        self._renderedTotal = total
+        if appended:
             self._scrollToEndIfFollowing()
 
     def _onLevelChanged(self, index):

@@ -3,7 +3,6 @@ import inspect
 import logging
 import logging.handlers
 import os
-import sys
 import weakref
 
 import coloredlogs
@@ -29,33 +28,36 @@ LOG_BUFFER_CAPACITY = 5000
 class LogRecordBuffer(logging.Handler):
     """ The last :data:`LOG_BUFFER_CAPACITY` records, plus live fan-out.
 
-    Two jobs, and the first is the reason this is a handler rather than
-    something the Log panel owns:
-
-    * **History.**  The panel can be opened at any point in a session, and the
-      interesting records are usually the ones from before the user thought to
-      open it.  Buffering starts when this module is imported -- earlier than
-      any window exists -- so opening the panel shows what already happened.
-    * **Live updates.**  Listeners registered with :meth:`addListener` are
-      called for every subsequent record.
+    The panel can be opened at any point in a session, and the interesting
+    records are usually the ones from before the user thought to open it.
+    Buffering starts when this module is imported -- earlier than any window
+    exists -- so opening the panel shows what already happened.
 
     Records are buffered at DEBUG whatever the console is set to, so detail is
     available without restarting with ``--debug``.  On a microscope that matters:
     the run that misbehaved is often not one you can repeat.
 
-    Thread-safe for appending -- ``logging.Handler.handle`` takes the handler
-    lock, and a ``deque`` with a ``maxlen`` is atomic for append.  Listeners are
-    called on whichever thread logged, so a GUI listener must marshal to the GUI
-    thread itself (:class:`~imswitch.imcommon.view.LogWidget.LogWidget` does).
+    Deliberately **passive**: it stores records and counts them, and nothing is
+    pushed anywhere.  The Log panel polls (see
+    :class:`~imswitch.imcommon.view.LogWidget.LogWidget`).  An earlier version
+    fanned out to registered listeners instead, which a Qt widget had to marshal
+    onto the GUI thread -- and a panel torn down without the event loop running
+    left a listener emitting into it, which segfaulted the process.  Pushing
+    into live GUI objects from arbitrary logging threads is not worth the
+    hundred milliseconds it saves.
+
+    Thread-safe: ``logging.Handler.handle`` takes the handler lock, and a
+    ``deque`` with a ``maxlen`` is atomic for append.
     """
 
     def __init__(self, capacity=LOG_BUFFER_CAPACITY):
         super().__init__(level=logging.DEBUG)
         self.setFormatter(logging.Formatter(LOG_FORMAT))
         self._records = collections.deque(maxlen=capacity)
-        self._listeners = []
-        #: Listener failures seen so far; the first one is reported to stderr.
-        self._listenerErrors = 0
+        #: Records ever handled, not just the ones still held.  The panel
+        #: remembers this to tell what is new, which survives the deque rolling
+        #: over -- an index into a bounded deque would not.
+        self._total = 0
 
     def emit(self, record):
         try:
@@ -64,32 +66,15 @@ class LogRecordBuffer(logging.Handler):
             self.handleError(record)
             return
         self._records.append(entry)
-        for listener in list(self._listeners):
-            try:
-                listener(entry)
-            except Exception as err:
-                # A listener that raises must not break logging for everyone
-                # else, and must not recurse into logging to complain -- but it
-                # must not vanish either.  Swallowing this silently is what hid
-                # a Log panel whose live updates never worked at all: the panel
-                # still backfilled from the buffer, so it looked right.
-                if not self._listenerErrors:
-                    print(f'imswitch: a log listener raised {err!r}; live log'
-                          f' updates may be incomplete', file=sys.stderr)
-                self._listenerErrors += 1
+        self._total += 1
 
     def records(self):
         """ The buffered records, oldest first, as ``(levelno, levelname, text)``. """
         return list(self._records)
 
-    def addListener(self, listener):
-        """ Call ``listener((levelno, levelname, text))`` for every new record. """
-        if listener not in self._listeners:
-            self._listeners.append(listener)
-
-    def removeListener(self, listener):
-        if listener in self._listeners:
-            self._listeners.remove(listener)
+    def total(self):
+        """ How many records this buffer has handled since the process started. """
+        return self._total
 
     def clear(self):
         self._records.clear()

@@ -1502,6 +1502,10 @@ whatever the console shows.  Two things follow, both deliberate:
   repeat, and ``--debug`` is a decision you would otherwise have had to make
   before it happened.
 
+New records appear within a fraction of a second: the panel polls the buffer on
+a timer it owns rather than being called from whichever thread logged, which
+keeps logging threads out of the GUI entirely.
+
 **Filter** narrows to records containing a string, and applies to the history
 too, not only to new records.  **Follow** scrolls to the newest record as it
 arrives; untick it to read back without being dragged to the bottom.  **Copy**

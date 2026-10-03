@@ -53,33 +53,17 @@ def test_buffer_is_bounded(buffer):
     assert 'record 19' in records[-1][2]
 
 
-def test_listeners_see_new_records_and_can_unregister(buffer):
-    seen = []
-    buffer.addListener(seen.append)
+def test_total_counts_records_the_buffer_no_longer_holds(buffer):
+    # The panel tells what is new by comparing against total(), so it has to keep
+    # counting past the point where the deque starts dropping -- an index into a
+    # bounded deque would silently mis-slice after a burst.
+    log = initLogger('test')
+    before = buffer.total()
+    for i in range(20):
+        log.info(f'record {i}')
 
-    initLogger('test').warning('while listening')
-    assert len(seen) == 1
-    assert seen[0][0] == logging.WARNING
-
-    buffer.removeListener(seen.append)
-    initLogger('test').warning('after unregistering')
-    assert len(seen) == 1
-
-
-def test_a_broken_listener_does_not_break_logging(buffer):
-    def broken(_entry):
-        raise RuntimeError('boom')
-
-    buffer.addListener(broken)
-    reached = []
-    buffer.addListener(reached.append)
-    try:
-        initLogger('test').info('still logged')
-    finally:
-        buffer.removeListener(broken)
-
-    assert any('still logged' in text for _levelno, _name, text in buffer.records())
-    assert reached, 'a later listener was skipped because an earlier one raised'
+    assert buffer.total() - before == 20
+    assert len(buffer.records()) == 5
 
 
 def test_log_file_starts_with_the_buffered_backlog(tmp_path, monkeypatch):
@@ -161,9 +145,12 @@ class TestLogWidget:
         assert 'logged before the panel existed' in widget.textEdit.toPlainText()
 
     def test_live_records_arrive(self, qtbot):
+        # Through the widget's own timer, not by calling the drain directly:
+        # a panel whose timer never starts looks fine in every other test.
         widget = self._widget(qtbot)
         initLogger('test').warning('a live record')
-        assert 'a live record' in widget.textEdit.toPlainText()
+        qtbot.waitUntil(lambda: 'a live record' in widget.textEdit.toPlainText(),
+                        timeout=3000)
 
     def test_raising_the_level_reveals_buffered_debug_records(self, qtbot):
         initLogger('test').debug('a buffered debug record')
@@ -186,20 +173,33 @@ class TestLogWidget:
         assert 'keep this one' in shown
         assert 'drop that one' not in shown
 
-    def test_unregisters_its_listener_when_destroyed(self, qtbot):
-        # A panel that is closed and reopened must not leave a listener behind
-        # holding its dead bridge: every subsequent record would then raise
-        # inside the buffer's listener loop.
+    def test_dropping_panels_without_an_event_loop_does_not_crash(self, qapp):
+        """Regression: this segfaulted the process.
+
+        The first version had the buffer push records to registered listeners,
+        which the panel marshalled onto the GUI thread through a Qt signal.  A
+        panel torn down without the event loop running -- which is what a pytest
+        teardown looks like -- left that signal connected to a dead receiver, and
+        the next record anywhere in the process killed the interpreter.  It took
+        out two CI workers before the cause was found.
+        """
         from imswitch.imcommon.view.LogWidget import LogWidget
 
-        before = len(logBuffer._listeners)
-        # Not qtbot.addWidget: this test deletes the widget itself, and qtbot
-        # would then try to close an object that no longer exists.
-        widget = LogWidget()
-        assert len(logBuffer._listeners) == before + 1
+        for _ in range(5):
+            widget = LogWidget()
+            widget.deleteLater()
+            del widget
 
-        widget.deleteLater()
-        qtbot.waitUntil(lambda: len(logBuffer._listeners) == before, timeout=2000)
+        initLogger('test').warning('a record after the panels were dropped')
+        # Reaching here at all is the assertion; the buffer kept the record.
+        assert any('after the panels were dropped' in text
+                   for _levelno, _name, text in logBuffer.records())
+
+    def test_its_timer_belongs_to_it(self, qtbot):
+        # Ownership is what makes the above safe: a timer parented to the widget
+        # cannot fire after the widget is gone.
+        widget = self._widget(qtbot)
+        assert widget._timer.parent() is widget
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
