@@ -21,9 +21,7 @@ if TYPE_CHECKING:
     from ...core.calibration.slm_section_calibration import SLMSectionCalibration
     from ...core.cgh.targets.resolution import TargetResolution
     from ...core.engine.runtime import SLMRuntime
-    from ...workspace.geometry_orientation_calibration_store import (
-        SLMGeometryOrientationCalibrationStore,
-    )
+    from ..observation_geometry import ObservationGeometryService
     from ..startup_preferences import StartupPreferencesState
     from .contracts import SLMFeedbackCallbacks
 
@@ -99,7 +97,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         request_measurement: Callable[...,None],
         feedback_measurement_metadata: Callable[[str],dict[str,Any]],
         update_committed_analysis: Callable[[str,LocalizationResult | None],None],
-        store: "SLMGeometryOrientationCalibrationStore | None"=None,
+        observation_geometry: "ObservationGeometryService | None"=None,
     ) -> None:
         super().__init__(
             runtime_provider=runtime_provider,
@@ -114,15 +112,15 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         self._request_measurement = request_measurement
         self._feedback_measurement_metadata = feedback_measurement_metadata
         self._update_committed_analysis_callback = update_committed_analysis
-        self._geometry_orientation_calibration_store = store
+        self._observation_geometry = observation_geometry
         self._feedback_orientations: dict[
             str,tuple[str | None,FeedbackOrientation]
         ] = {}
         self._geometry_calibration_workflows: dict[
             tuple[str,str | None],_GeometryCalibrationWorkflow
         ] = {}
-        if self._geometry_orientation_calibration_store is not None:
-            self._geometry_orientation_calibration_store.add_listener(
+        if self._observation_geometry is not None:
+            self._observation_geometry.add_listener(
                 self._on_geometry_orientation_calibration_store_changed
             )
 
@@ -150,13 +148,10 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         """Load the saved orientation for this SLM/section and active or given plane."""
         section=str(section_key)
         plane=(self._active_feedback_plane(section) if plane_name is None else str(plane_name or '').strip() or None)
-        store=self._geometry_orientation_calibration_store
-        if plane is None or store is None:
+        geometry=self._observation_geometry
+        if plane is None or geometry is None:
             return None
-        identity=self._runtime.identity
-        if not store.exists(identity,section,plane):
-            return None
-        return store.load(identity,section,plane)
+        return geometry.calibration(section,plane)
 
     def _geometry_calibration_key(self,section_key: str) -> tuple[str,str | None]:
         section=str(section_key)
@@ -454,8 +449,8 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         workflow=self._geometry_calibration_workflows.get((section,plane))
         if workflow is None or workflow.analysis is None or not workflow.analysis.accepted:
             raise RuntimeError('Analyze a confident geometry calibration before saving.')
-        store=self._geometry_orientation_calibration_store
-        if store is None:raise RuntimeError('Geometry orientation-calibration storage is unavailable.')
+        geometry=self._observation_geometry
+        if geometry is None:raise RuntimeError('Geometry orientation-calibration storage is unavailable.')
         calibration=GeometryOrientationCalibration(
             slm_serial=self._runtime.identity.serial_number,section_key=section,plane_name=plane,
             orientation=workflow.analysis.orientation,detector_name=workflow.detector_name,
@@ -465,7 +460,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
             matched_count=workflow.analysis.matched_count,
             provenance={'measurement_id':getattr(workflow.measurement,'measurement_id',None)},
         )
-        store.save(calibration)
+        geometry.save(calibration)
         self._feedback_orientations[section]=(plane,calibration.orientation)
         if self._runtime.get_section_feedback_status(section).localization_available:
             self._update_committed_analysis_callback(section,None)
@@ -548,8 +543,8 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         self._feedback_orientations.clear()
 
     def dispose(self) -> None:
-        if self._geometry_orientation_calibration_store is not None:
-            self._geometry_orientation_calibration_store.remove_listener(
+        if self._observation_geometry is not None:
+            self._observation_geometry.remove_listener(
                 self._on_geometry_orientation_calibration_store_changed
             )
         self._feedback_orientations.clear()

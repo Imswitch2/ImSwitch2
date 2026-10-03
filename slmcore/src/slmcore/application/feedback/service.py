@@ -47,9 +47,7 @@ from .references import (
 if TYPE_CHECKING:
     from ..session import SLMSession
     from ...workspace.fov_position_calibration_store import SLMFOVPositionCalibrationStore
-    from ...workspace.geometry_orientation_calibration_store import (
-        SLMGeometryOrientationCalibrationStore,
-    )
+    from ..observation_geometry import ObservationGeometryService
 
 
 class SLMFeedbackService:
@@ -63,9 +61,7 @@ class SLMFeedbackService:
         callbacks: SLMFeedbackCallbacks | None=None,
         position_reference_store: PositionReferenceStore | None=None,
         fov_position_calibration_store: "SLMFOVPositionCalibrationStore | None"=None,
-        geometry_orientation_calibration_store: (
-            "SLMGeometryOrientationCalibrationStore | None"
-        )=None,
+        observation_geometry: "ObservationGeometryService | None"=None,
     ) -> None:
         self._application_session = application_session
         self._callbacks = callbacks or SLMFeedbackCallbacks()
@@ -102,7 +98,7 @@ class SLMFeedbackService:
             request_measurement=self._measurement.request_measurement,
             feedback_measurement_metadata=self._measurement.feedback_measurement_metadata,
             update_committed_analysis=self._update_committed_analysis,
-            store=geometry_orientation_calibration_store,
+            observation_geometry=observation_geometry,
         )
         self._references = PositionReferenceService(
             runtime_provider=runtime_provider,

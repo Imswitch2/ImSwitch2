@@ -13,6 +13,7 @@ from .feedback import (
     PositionReferenceSelection,SLMFeedbackCallbacks,SLMFeedbackService,
 )
 from .observation import ObservationPlaneService
+from .observation_geometry import ObservationGeometryService
 from .position_reference_store import (
     PositionReferenceLifetime,PositionReferenceRecord,PositionReferenceStore,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "FeedbackParameterUpdateResult",
     "MeasurementDispatcher",
     "MeasurementRequest",
+    "ObservationGeometryService",
     "ObservationPlaneService",
     "PreparedConfigLoad",
     "PreparedPlaneSelection",

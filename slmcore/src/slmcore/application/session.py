@@ -20,6 +20,7 @@ from .control_mode import SLMControlMode
 from .runtime_factory import SLMRuntimeFactory
 from .position_reference_store import PositionReferenceStore
 from .observation import ObservationPlaneService
+from .observation_geometry import ObservationGeometryService
 from .feedback import (
     AutomaticFeedbackState,GeometryCalibrationPayload,MeasurementDispatcher,SLMFeedbackCallbacks,
     SLMFeedbackService,
@@ -140,6 +141,9 @@ class SLMSession:
         self._last_upload_error: Exception | None = None
 
         self.observation_planes = ObservationPlaneService(observation_plane_store)
+        self.observation_geometry = ObservationGeometryService(
+            lambda: self.runtime.identity, geometry_orientation_calibration_store,
+        )
 
         # Application services are owned by this session. They may coordinate
         # runtime operations, but presentation adapters remain outside this layer.
@@ -149,7 +153,7 @@ class SLMSession:
             callbacks=self._feedback_callbacks(),
             position_reference_store=position_reference_store,
             fov_position_calibration_store=fov_position_calibration_store,
-            geometry_orientation_calibration_store=geometry_orientation_calibration_store,
+            observation_geometry=self.observation_geometry,
         )
         self.calibration = SLMCalibrationService(
             self,

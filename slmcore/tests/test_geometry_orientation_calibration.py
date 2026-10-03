@@ -293,3 +293,96 @@ def test_geometry_orientation_store_scope_includes_slm_section_and_plane(tmp_pat
     assert not store.exists(SLMIdentity("slm","OTHER"),"sec_0","sample")
     assert not store.exists(SLMIdentity("slm","SER123"),"sec_1","sample")
     assert not store.exists(SLMIdentity("slm","SER123"),"sec_0","fourier")
+
+
+def _saved_geometry(
+    *, section="sec_0", plane="sample", orientation="identity", serial="SER123",
+):
+    return GeometryOrientationCalibration(
+        slm_serial=serial,section_key=section,plane_name=plane,
+        orientation=orientation,detector_name="cam",grid_x=5,grid_y=4,
+        period_x_px=12.0,period_y_px=14.0,score=0.98,
+        confidence_margin=0.31,matched_count=20,
+    )
+
+
+def test_observation_geometry_service_scopes_section_and_observation_plane(tmp_path):
+    from slmcore import ObservationGeometryService
+
+    service=ObservationGeometryService(
+        SLMIdentity("slm","SER123"),SLMGeometryOrientationCalibrationStore(tmp_path),
+    )
+    service.save(_saved_geometry(plane="sample",orientation="identity"))
+    service.save(_saved_geometry(plane="fourier",orientation="rotate_90_cw"))
+    service.save(_saved_geometry(
+        section="sec_1",plane="sample",orientation="flip_horizontal",
+    ))
+
+    assert service.is_calibrated("sec_0","sample")
+    assert service.calibrated_orientation("sec_0","sample") is FeedbackOrientation.IDENTITY
+    assert service.calibrated_orientation("sec_0","fourier") is FeedbackOrientation.ROTATE_90_CW
+    assert service.calibrated_orientation("sec_1","sample") is FeedbackOrientation.FLIP_HORIZONTAL
+    assert service.calibration("sec_1","fourier") is None
+
+
+def test_observation_geometry_service_is_usable_without_feedback(tmp_path):
+    from slmcore import ObservationGeometryService
+
+    service=ObservationGeometryService(
+        SLMIdentity("slm","SER123"),SLMGeometryOrientationCalibrationStore(tmp_path),
+    )
+    calibration=_saved_geometry(orientation="rotate_180")
+    assert not service.exists("sec_0","sample")
+    assert service.save(calibration) is calibration
+    assert service.load("sec_0","sample").orientation is FeedbackOrientation.ROTATE_180
+    service.delete("sec_0","sample")
+    assert not service.is_calibrated("sec_0","sample")
+
+
+def test_feedback_reads_geometry_saved_through_shared_observation_service(tmp_path):
+    from slmcore import SLMSession
+
+    geometry=SLMGeometry(width=64,height=64,pixel_size_um=1.0)
+    runtime=SLMRuntime(
+        identity=SLMIdentity("slm","SER123"),geometry=geometry,
+        section_geometries=split_slm_geometry(geometry,1),
+        registries=DEFAULT_REGISTRIES,
+    )
+    session=SLMSession(
+        runtime=runtime,
+        geometry_orientation_calibration_store=SLMGeometryOrientationCalibrationStore(tmp_path),
+    )
+    session.calibration.active_plane=lambda _section:"sample"
+    saved=_saved_geometry(orientation="rotate_90_ccw")
+    session.observation_geometry.save(saved)
+
+    assert session.feedback.geometry_orientation_calibration("sec_0") == saved
+    context=session.feedback.geometry_orientation_calibration_context("sec_0")
+    assert context["calibrated"] is True
+    assert session.feedback.feedback_orientation("sec_0") is FeedbackOrientation.ROTATE_90_CCW
+
+
+def test_observation_geometry_persistence_does_not_change_cgh(tmp_path):
+    from slmcore import SLMSession
+
+    geometry=SLMGeometry(width=64,height=64,pixel_size_um=1.0)
+    runtime=SLMRuntime(
+        identity=SLMIdentity("slm","SER123"),geometry=geometry,
+        section_geometries=split_slm_geometry(geometry,1),
+        registries=DEFAULT_REGISTRIES,
+    )
+    session=SLMSession(
+        runtime=runtime,
+        geometry_orientation_calibration_store=SLMGeometryOrientationCalibrationStore(tmp_path),
+    )
+    state_before=runtime.get_section_state_copy("sec_0").to_dict()
+    frame_before=np.array(runtime.artifacts.eightbit,copy=True)
+    status_before=runtime.get_section_cgh_status("sec_0")
+
+    session.observation_geometry.save(_saved_geometry())
+    session.observation_geometry.delete("sec_0","sample")
+
+    assert runtime.get_section_state_copy("sec_0").to_dict() == state_before
+    np.testing.assert_array_equal(runtime.artifacts.eightbit,frame_before)
+    status_after=runtime.get_section_cgh_status("sec_0")
+    assert status_after == status_before
