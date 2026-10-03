@@ -5,6 +5,7 @@ from typing import Any,Callable,Mapping,TypeVar
 import numpy as np
 
 from ...measurement import ImageMeasurement
+from ...calibration import FOVMappingCorrection
 from ...engine.registry import SLMRegistries,TargetRegistration
 from ...engine.section.components import CGHState
 from ...engine.section.context import SectionContext
@@ -18,7 +19,6 @@ from ..feedback import (
     FeedbackOrientation,
     IntensityAdaptation,
     PositionCorrection,
-    FOVPositionCalibration,
     RoundEvaluation,
     orient_localization,
 )
@@ -88,7 +88,7 @@ class CGHSession:
         self._position_params = _default_values(POSITION_CORRECTION_PARAMS)
         self._localization_reference = None
         self._position_correction: PositionCorrection | None = None
-        self._fov_position_calibration: FOVPositionCalibration | None = None
+        self._fov_position_calibration: FOVMappingCorrection | None = None
         self._position_reference_round: CGHRound | None = None
         self._position_active = False
         self._prefer_previous_initialization = False
@@ -103,7 +103,7 @@ class CGHSession:
         return self._target.clone() if self._target is not None else None
 
     @property
-    def fov_position_calibration(self) -> FOVPositionCalibration | None:
+    def fov_position_calibration(self) -> FOVMappingCorrection | None:
         return self._fov_position_calibration
 
     @property
@@ -1849,13 +1849,13 @@ class CGHSession:
 
     def set_fov_position_calibration(
         self,state: CGHState,context: SectionContext,
-        calibration: FOVPositionCalibration | None,
+        calibration: FOVMappingCorrection | None,
     ) -> bool:
         if calibration is not None and not isinstance(
-            calibration,FOVPositionCalibration
+            calibration,FOVMappingCorrection
         ):
             raise TypeError(
-                "calibration must be an FOVPositionCalibration or None"
+                "calibration must be an FOVMappingCorrection or None"
             )
         effective_changed = (
             FeedbackCapability.POSITION_CORRECTION

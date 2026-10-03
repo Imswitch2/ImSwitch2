@@ -1,3 +1,4 @@
+from .fov_mapping_correction import FOVMappingCorrection
 from .geometry import (
     CalibrationGeometryMismatch,
     attach_calibration_geometry,
@@ -14,6 +15,7 @@ from .target_localization_calibration import (
 
 __all__ = [
     "CalibrationGeometryMismatch",
+    "FOVMappingCorrection",
     "SLMSectionCalibration",
     "TargetLocalizationCalibrationCandidate",
     "attach_calibration_geometry",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from slmcore import (
-    DEFAULT_REGISTRIES,FOVPositionCalibration,ImageMeasurement,SLMGeometry,
+    DEFAULT_REGISTRIES,FOVMappingCorrection,ImageMeasurement,SLMGeometry,
     SLMIdentity,SLMRuntime,SLMStartupPreferences,SLMWorkspace,
 )
 from slmcore.application.startup_preferences import StartupPreferencesState
@@ -30,8 +30,8 @@ def _synthetic_displacement(points):
 
 def _calibration(name="map",points=None):
     points = _grid() if points is None else np.asarray(points,dtype=np.float64)
-    return FOVPositionCalibration.fit(
-        name=name,slm_serial="SER123",section_key="sec_0",plane_name="sample",
+    return FOVMappingCorrection.fit(
+        name=name,slm_serial="SER123",section_key="sec_0",mapping_name="100x",base_mapping_signature="",
         ideal_positions_kxy=points,
         total_displacements_kxy=_synthetic_displacement(points),
         degree=2,
@@ -69,22 +69,67 @@ def test_fov_coverage_allows_small_boundary_tolerance_but_flags_real_extrapolati
     assert maximum > tolerance > 0
 
 
-def test_fov_store_is_scoped_by_slm_section_and_plane(tmp_path):
+def test_fov_store_is_scoped_by_slm_section_and_mapping(tmp_path):
     workspace = SLMWorkspace(tmp_path)
-    store = workspace.fov_position_calibration_store
+    store = workspace.fov_mapping_correction_store
     calibration = _calibration("sample map")
 
     path = store.save(calibration)
     assert "SER123".lower() in str(path).lower()
-    assert store.list("SER123","sec_0","sample") == ("sample map",)
-    assert store.list("OTHER","sec_0","sample") == ()
-    assert store.list("SER123","sec_1","sample") == ()
-    assert store.list("SER123","sec_0","pupil") == ()
-    restored = store.load("SER123","sec_0","sample","sample map")
+    assert store.list("SER123","sec_0","100x") == ("sample map",)
+    assert store.list("OTHER","sec_0","100x") == ()
+    assert store.list("SER123","sec_1","100x") == ()
+    assert store.list("SER123","sec_0","60x") == ()
+    restored = store.load("SER123","sec_0","100x","sample map")
     np.testing.assert_allclose(restored.evaluate(_grid(3)),calibration.evaluate(_grid(3)))
 
 
-def test_startup_preferences_persist_fov_default_by_section_and_plane():
+
+
+def test_mapping_service_owns_fov_correction_persistence(tmp_path):
+    from slmcore import MappingService,SLMIdentity
+
+    workspace = SLMWorkspace(tmp_path)
+    identity = SLMIdentity("slm","SER123")
+    service = MappingService(
+        workspace.mapping_store,workspace.fov_mapping_correction_store,lambda:identity,
+    )
+    correction = _calibration("field A")
+
+    service.save_fov_correction(correction)
+    assert service.fov_correction_names("sec_0","100x") == ("field A",)
+    assert service.fov_correction_names("sec_0","60x") == ()
+    loaded = service.load_fov_correction("sec_0","100x","field A")
+    np.testing.assert_allclose(loaded.evaluate(_grid(3)),correction.evaluate(_grid(3)))
+    service.delete_fov_correction("sec_0","100x","field A")
+    assert service.fov_correction_names("sec_0","100x") == ()
+    assert "fov_mapping_corrections" in str(workspace.fov_mapping_corrections_root)
+
+def test_fov_mapping_correction_store_roundtrips_measurement_provenance(tmp_path):
+    workspace = SLMWorkspace(tmp_path)
+    points = _grid()
+    correction = FOVMappingCorrection.fit(
+        name="field A",slm_serial="SER123",section_key="sec_0",
+        mapping_name="100x",base_mapping_signature="",
+        ideal_positions_kxy=points,total_displacements_kxy=_synthetic_displacement(points),
+        degree=2,detector_name="cam",provenance={
+            "observation_plane":"Main",
+            "measurement_source":"cam",
+            "measurement_pixel_size_um":0.108,
+            "source":"current_position_analysis",
+        },
+    )
+    workspace.fov_mapping_correction_store.save(correction)
+    restored = workspace.fov_mapping_correction_store.load(
+        "SER123","sec_0","100x","field A"
+    )
+    assert restored.provenance["observation_plane"] == "Main"
+    assert restored.provenance["measurement_source"] == "cam"
+    assert restored.provenance["measurement_pixel_size_um"] == 0.108
+    assert restored.provenance["source"] == "current_position_analysis"
+
+
+def test_startup_preferences_persist_fov_default_by_section_and_mapping_transitionally():
     saved = []
     state = StartupPreferencesState(SLMStartupPreferences(),saved.append)
     state.set_default_fov_position_calibration("sec_0","sample","map A")
@@ -150,9 +195,9 @@ def test_runtime_fov_layer_changes_baseline_without_becoming_cgh_config_state():
     runtime = _runtime()
     before = runtime.get_section_fov_position_context("sec_0")
     ideal = before["ideal_positions_kxy"]
-    calibration = FOVPositionCalibration.fit(
+    calibration = FOVMappingCorrection.fit(
         name="runtime map",slm_serial="SER123",section_key="sec_0",
-        plane_name="sample",ideal_positions_kxy=_grid(),
+        mapping_name="100x",base_mapping_signature="",ideal_positions_kxy=_grid(),
         total_displacements_kxy=_synthetic_displacement(_grid()),degree=2,
     )
 
@@ -256,9 +301,9 @@ def test_multifoci_fov_numerical_path_is_characterized_point_by_point():
         0.01 + 0.04 * samples[0] - 0.02 * samples[1],
         -0.015 + 0.01 * samples[0] + 0.03 * samples[1],
     ])
-    calibration = FOVPositionCalibration.fit(
+    calibration = FOVMappingCorrection.fit(
         name="characterization map", slm_serial="SER123", section_key="sec_0",
-        plane_name="sample", ideal_positions_kxy=samples,
+        mapping_name="100x",base_mapping_signature="", ideal_positions_kxy=samples,
         total_displacements_kxy=displacement, degree=1,
     )
 

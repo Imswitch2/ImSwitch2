@@ -31,7 +31,7 @@ from .section_layout import PreparedSectionLayoutChange,SLMSectionLayoutService
 
 if TYPE_CHECKING:
     from ..workspace.calibration_store import SLMCalibrationStore
-    from ..workspace.fov_position_calibration_store import SLMFOVPositionCalibrationStore
+    from ..workspace.fov_mapping_correction_store import FOVMappingCorrectionStore
     from ..workspace.geometry_orientation_calibration_store import SLMGeometryOrientationCalibrationStore
     from ..workspace.observation_plane_store import ObservationPlaneStore
     from ..workspace.mapping_store import MappingStore
@@ -107,7 +107,7 @@ class SLMSession:
         calibration_store: SLMCalibrationStore | None=None,
         mapping_store: MappingStore | None=None,
         position_reference_store: PositionReferenceStore | None=None,
-        fov_position_calibration_store: SLMFOVPositionCalibrationStore | None=None,
+        fov_mapping_correction_store: FOVMappingCorrectionStore | None=None,
         geometry_orientation_calibration_store: SLMGeometryOrientationCalibrationStore | None=None,
         observation_plane_store: ObservationPlaneStore | None=None,
         startup_preferences: StartupPreferencesState | None=None,
@@ -144,7 +144,9 @@ class SLMSession:
         self._last_upload_error: Exception | None = None
 
         self.observation_planes = ObservationPlaneService(observation_plane_store)
-        self.mappings = MappingService(mapping_store)
+        self.mappings = MappingService(
+            mapping_store,fov_mapping_correction_store,lambda:self.runtime.identity,
+        )
         self.observation_geometry = ObservationGeometryService(
             lambda: self.runtime.identity, geometry_orientation_calibration_store,
         )
@@ -156,7 +158,7 @@ class SLMSession:
             measurements=measurement_dispatcher,
             callbacks=self._feedback_callbacks(),
             position_reference_store=position_reference_store,
-            fov_position_calibration_store=fov_position_calibration_store,
+            mappings=self.mappings,
             observation_geometry=self.observation_geometry,
         )
         self.calibration = SLMCalibrationService(

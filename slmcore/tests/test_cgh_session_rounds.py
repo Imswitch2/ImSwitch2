@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from slmcore import (
-    DEFAULT_REGISTRIES,FOVPositionCalibration,SLMGeometry,SLMIdentity,SLMRuntime,
+    DEFAULT_REGISTRIES,FOVMappingCorrection,SLMGeometry,SLMIdentity,SLMRuntime,
 )
 from slmcore.core.cgh import (
     FeedbackChangeKind,
@@ -1210,11 +1210,11 @@ def _test_fov_calibration(name: str,dx: float,dy: float):
         np.full(points.shape[1],float(dx)),
         np.full(points.shape[1],float(dy)),
     ])
-    return FOVPositionCalibration.fit(
+    return FOVMappingCorrection.fit(
         name=name,
         slm_serial="SER123",
         section_key="sec_0",
-        plane_name="sample",
+        mapping_name="sample",base_mapping_signature="",
         ideal_positions_kxy=points,
         total_displacements_kxy=displacement,
         degree=1,

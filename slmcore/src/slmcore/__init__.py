@@ -51,11 +51,14 @@ from .application import (
     TargetCalibrationState,
 )
 from .core.cgh.feedback import (
-    EditablePositionReferenceGeometry,FOVPositionCalibration,
+    EditablePositionReferenceGeometry,
     GeometryOrientationAnalysis,GeometryOrientationCalibration,
     PositionReference,PositionReferenceMode,
 )
-from .core.calibration import SLMSectionCalibration
+from .core.calibration import FOVMappingCorrection,SLMSectionCalibration
+
+# Transitional public alias; persistent ownership is Mapping as of Patch 6.
+FOVPositionCalibration = FOVMappingCorrection
 from .core.config import (
     SectionConfigLoadResult,
     SLM_CONFIG_SCHEMA_VERSION,
@@ -110,7 +113,7 @@ from .workspace import (
     SLMConfigMetadata,
     SLMConfigStore,
     SLMCorrectionStore,
-    SLMFOVPositionCalibrationStore,
+    FOVMappingCorrectionStore,
     SLMGeometryOrientationCalibrationStore,
     MappingDefinition,
     MappingStore,
@@ -141,6 +144,7 @@ __all__ = [
     "ObservationGeometryService",
     "ObservationPlaneService",
     "EditablePositionReferenceGeometry",
+    "FOVMappingCorrection",
     "FOVPositionCalibration",
     "GeometryOrientationAnalysis",
     "GeometryOrientationCalibration",
@@ -179,7 +183,7 @@ __all__ = [
     "SLMConfigurationService",
     "SLMControlMode",
     "SLMCorrectionStore",
-    "SLMFOVPositionCalibrationStore",
+    "FOVMappingCorrectionStore",
     "SLMGeometryOrientationCalibrationStore",
     "ObservationPlaneDefinition",
     "ObservationPlaneStore",

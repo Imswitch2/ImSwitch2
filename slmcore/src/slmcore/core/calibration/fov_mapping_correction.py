@@ -1,4 +1,4 @@
-"""Persistent smooth FOV position-calibration fields."""
+"""Persistent smooth FOV mapping-correction fields."""
 
 from __future__ import annotations
 
@@ -46,18 +46,19 @@ def _polynomial_terms(x: np.ndarray,y: np.ndarray,degree: int) -> np.ndarray:
 
 
 @dataclass(frozen=True)
-class FOVPositionCalibration:
-    """Smooth correction field sampled from position-feedback measurements.
+class FOVMappingCorrection:
+    """Persistent smooth correction layered on a named base mapping.
 
-    The field maps ideal normalized Fourier coordinates to the persistent
-    displacement that should be applied before transient position feedback.
-    Source samples are retained so saved calibrations can be inspected/refit.
+    The field maps ideal normalized Fourier coordinates to the displacement
+    applied after target resolution and before transient position feedback.
+    Source samples are retained so saved corrections can be inspected/refit.
     """
 
     name: str
     slm_serial: str
     section_key: str
-    plane_name: str
+    mapping_name: str
+    base_mapping_signature: str
     sample_positions_kxy: np.ndarray
     sample_displacements_kxy: np.ndarray
     coefficients_kxy: np.ndarray
@@ -75,15 +76,15 @@ class FOVPositionCalibration:
         name = str(self.name or "").strip()
         serial = str(self.slm_serial or "").strip()
         section = str(self.section_key or "").strip()
-        plane = str(self.plane_name or "").strip()
+        mapping = str(self.mapping_name or "").strip()
         model = str(self.model or "polynomial").strip().lower()
         degree = int(self.degree)
         if not name:
-            raise ValueError("FOV calibration name cannot be empty")
-        if not serial or not section or not plane:
-            raise ValueError("FOV calibration requires SLM serial, section and plane")
+            raise ValueError("FOV mapping correction name cannot be empty")
+        if not serial or not section or not mapping:
+            raise ValueError("FOV mapping correction requires SLM serial, section and mapping")
         if model != "polynomial":
-            raise ValueError(f"Unsupported FOV calibration model: {model}")
+            raise ValueError(f"Unsupported FOV mapping correction model: {model}")
         if degree < 1 or degree > 3:
             raise ValueError("Polynomial degree must be between 1 and 3")
 
@@ -92,7 +93,7 @@ class FOVPositionCalibration:
             self.sample_displacements_kxy,"sample_displacements_kxy"
         )
         if samples.shape != displacements.shape:
-            raise ValueError("FOV calibration sample arrays must have matching shapes")
+            raise ValueError("FOV mapping correction sample arrays must have matching shapes")
         center = np.asarray(self.normalization_center_kxy,dtype=np.float64).reshape(-1)
         scale = np.asarray(self.normalization_scale_kxy,dtype=np.float64).reshape(-1)
         if center.shape != (2,) or scale.shape != (2,):
@@ -121,7 +122,8 @@ class FOVPositionCalibration:
         object.__setattr__(self,"name",name)
         object.__setattr__(self,"slm_serial",serial)
         object.__setattr__(self,"section_key",section)
-        object.__setattr__(self,"plane_name",plane)
+        object.__setattr__(self,"mapping_name",mapping)
+        object.__setattr__(self,"base_mapping_signature",str(self.base_mapping_signature or "").strip())
         object.__setattr__(self,"sample_positions_kxy",samples)
         object.__setattr__(self,"sample_displacements_kxy",displacements)
         object.__setattr__(self,"coefficients_kxy",coeff)
@@ -142,24 +144,25 @@ class FOVPositionCalibration:
         name: str,
         slm_serial: str,
         section_key: str,
-        plane_name: str,
+        mapping_name: str,
+        base_mapping_signature: str,
         ideal_positions_kxy: Any,
         total_displacements_kxy: Any,
         model: str="polynomial",
         degree: int=2,
         detector_name: str | None=None,
         provenance: Mapping[str,Any] | None=None,
-    ) -> "FOVPositionCalibration":
+    ) -> "FOVMappingCorrection":
         positions = _freeze_points(ideal_positions_kxy,"ideal_positions_kxy")
         displacements = _freeze_points(
             total_displacements_kxy,"total_displacements_kxy"
         )
         if positions.shape != displacements.shape:
-            raise ValueError("FOV fit samples must have matching shapes")
+            raise ValueError("FOV correction fit samples must have matching shapes")
         degree = int(degree)
         model = str(model or "polynomial").strip().lower()
         if model != "polynomial":
-            raise ValueError(f"Unsupported FOV calibration model: {model}")
+            raise ValueError(f"Unsupported FOV mapping correction model: {model}")
         center = np.mean(positions,axis=1)
         span = np.ptp(positions,axis=1)
         scale = np.where(span > 1e-12,0.5*span,1.0)
@@ -172,14 +175,15 @@ class FOVPositionCalibration:
             )
         coefficients,_,rank,_ = np.linalg.lstsq(design,displacements.T,rcond=None)
         if int(rank) < design.shape[1]:
-            raise ValueError("FOV calibration samples are rank-deficient for this fit")
+            raise ValueError("FOV mapping correction samples are rank-deficient for this fit")
         coefficients = coefficients.T
         fitted = (design @ coefficients.T).T
         residual = displacements-fitted
         magnitude = np.linalg.norm(residual,axis=0)
         return cls(
             name=name,slm_serial=slm_serial,section_key=section_key,
-            plane_name=plane_name,sample_positions_kxy=positions,
+            mapping_name=mapping_name,base_mapping_signature=base_mapping_signature,
+            sample_positions_kxy=positions,
             sample_displacements_kxy=displacements,
             coefficients_kxy=coefficients,
             normalization_center_kxy=center,
@@ -190,7 +194,7 @@ class FOVPositionCalibration:
             provenance=dict(provenance or {}),
         )
 
-    def with_name(self,name: str) -> "FOVPositionCalibration":
+    def with_name(self,name: str) -> "FOVMappingCorrection":
         return replace(self,name=str(name))
 
     @property
@@ -247,7 +251,8 @@ class FOVPositionCalibration:
             "name":self.name,
             "slm_serial":self.slm_serial,
             "section_key":self.section_key,
-            "plane_name":self.plane_name,
+            "mapping_name":self.mapping_name,
+            "base_mapping_signature":self.base_mapping_signature,
             "sample_positions_kxy":self.sample_positions_kxy.tolist(),
             "sample_displacements_kxy":self.sample_displacements_kxy.tolist(),
             "coefficients_kxy":self.coefficients_kxy.tolist(),
@@ -263,10 +268,10 @@ class FOVPositionCalibration:
         }
 
     @classmethod
-    def from_dict(cls,data: Mapping[str,Any]) -> "FOVPositionCalibration":
+    def from_dict(cls,data: Mapping[str,Any]) -> "FOVMappingCorrection":
         if not isinstance(data,Mapping):
-            raise TypeError("FOV calibration data must be a mapping")
+            raise TypeError("FOV mapping correction data must be a mapping")
         return cls(**dict(data))
 
 
-__all__ = ["FOVPositionCalibration"]
+__all__ = ["FOVMappingCorrection"]

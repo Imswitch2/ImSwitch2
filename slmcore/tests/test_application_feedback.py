@@ -464,7 +464,7 @@ def test_named_reference_reindexes_source_orientation_for_destination_section(tm
 
 
 def _fov_calibration_for_runtime(runtime,name,displacement=(0.01,-0.02)):
-    from slmcore import FOVPositionCalibration
+    from slmcore import FOVMappingCorrection
 
     section = runtime._get_section("sec_0")
     resolution = section._cgh_session.create_target_resolution(
@@ -475,25 +475,25 @@ def _fov_calibration_for_runtime(runtime,name,displacement=(0.01,-0.02)):
         np.asarray(displacement,dtype=np.float64).reshape(2,1),
         ideal.shape[1],axis=1,
     )
-    return FOVPositionCalibration.fit(
+    return FOVMappingCorrection.fit(
         name=name,
         slm_serial=runtime.identity.serial_number,
         section_key="sec_0",
-        plane_name="sample",
+        mapping_name="sample",base_mapping_signature="",
         ideal_positions_kxy=ideal,
         total_displacements_kxy=delta,
         degree=1,
     )
 
 
-def test_fov_default_is_plane_scoped_and_apply_off_is_temporary(tmp_path):
+def test_fov_default_is_mapping_scoped_and_apply_off_is_temporary(tmp_path):
     from slmcore import SLMStartupPreferences,SLMWorkspace
     from slmcore.application.startup_preferences import StartupPreferencesState
 
     workspace = SLMWorkspace(tmp_path)
     runtime = _runtime()
     calibration = _fov_calibration_for_runtime(runtime,"field A")
-    workspace.fov_position_calibration_store.save(calibration)
+    workspace.fov_mapping_correction_store.save(calibration)
     saved = []
     preferences = StartupPreferencesState(
         SLMStartupPreferences(fov_position_calibrations={
@@ -503,7 +503,7 @@ def test_fov_default_is_plane_scoped_and_apply_off_is_temporary(tmp_path):
     )
     session = SLMSession(
         runtime=runtime,
-        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
         startup_preferences=preferences,
     )
     session.calibration.active_mapping = lambda _section:"sample"
@@ -532,12 +532,12 @@ def test_fov_selection_swap_while_applied_updates_runtime_and_keeps_default(tmp_
     runtime = _runtime()
     first = _fov_calibration_for_runtime(runtime,"field A",(0.01,-0.02))
     second = _fov_calibration_for_runtime(runtime,"field B",(-0.03,0.04))
-    store = workspace.fov_position_calibration_store
+    store = workspace.fov_mapping_correction_store
     store.save(first); store.save(second)
     saved = []
     preferences = StartupPreferencesState(SLMStartupPreferences(),saved.append)
     session = SLMSession(
-        runtime=runtime,fov_position_calibration_store=store,
+        runtime=runtime,fov_mapping_correction_store=store,
         startup_preferences=preferences,
     )
     session.calibration.active_mapping = lambda _section:"sample"
@@ -563,11 +563,11 @@ def test_switching_fov_calibration_marks_position_feedback_stale(tmp_path):
 
     workspace = SLMWorkspace(tmp_path)
     runtime = _runtime()
-    store = workspace.fov_position_calibration_store
+    store = workspace.fov_mapping_correction_store
     first = _fov_calibration_for_runtime(runtime,"field A")
     second = _fov_calibration_for_runtime(runtime,"field B",(0.02,0.01))
     store.save(first); store.save(second)
-    session = SLMSession(runtime=runtime,fov_position_calibration_store=store)
+    session = SLMSession(runtime=runtime,fov_mapping_correction_store=store)
     session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
     session.feedback.select_fov_position_calibration("sec_0","field A")
@@ -589,7 +589,7 @@ def test_switching_fov_calibration_marks_position_feedback_stale(tmp_path):
 
 
 def test_fov_preview_falls_back_to_saved_samples_without_cgh_target(tmp_path):
-    from slmcore import FOVPositionCalibration,SLMWorkspace
+    from slmcore import FOVMappingCorrection,SLMWorkspace
 
     geometry = SLMGeometry(width=64,height=64,pixel_size_um=1.0)
     runtime = SLMRuntime(
@@ -602,16 +602,16 @@ def test_fov_preview_falls_back_to_saved_samples_without_cgh_target(tmp_path):
         [-0.2,-0.2,-0.2,0.2,0.2,0.2],
     ])
     displacement = np.repeat(np.array([[0.01],[-0.02]]),points.shape[1],axis=1)
-    calibration = FOVPositionCalibration.fit(
+    calibration = FOVMappingCorrection.fit(
         name="field A",slm_serial="SER123",section_key="sec_0",
-        plane_name="sample",ideal_positions_kxy=points,
+        mapping_name="sample",base_mapping_signature="",ideal_positions_kxy=points,
         total_displacements_kxy=displacement,degree=1,
     )
     workspace = SLMWorkspace(tmp_path)
-    workspace.fov_position_calibration_store.save(calibration)
+    workspace.fov_mapping_correction_store.save(calibration)
     session = SLMSession(
         runtime=runtime,
-        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
     )
     session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
@@ -625,16 +625,16 @@ def test_fov_preview_falls_back_to_saved_samples_without_cgh_target(tmp_path):
     session.dispose()
 
 
-def test_plane_switch_clears_previous_runtime_fov_when_new_plane_has_no_selection(tmp_path):
-    from slmcore import FOVPositionCalibration,SLMWorkspace
+def test_mapping_switch_clears_previous_runtime_fov_when_new_mapping_has_no_selection(tmp_path):
+    from slmcore import FOVMappingCorrection,SLMWorkspace
 
     workspace = SLMWorkspace(tmp_path)
     runtime = _runtime()
     calibration = _fov_calibration_for_runtime(runtime,"field A")
-    workspace.fov_position_calibration_store.save(calibration)
+    workspace.fov_mapping_correction_store.save(calibration)
     session = SLMSession(
         runtime=runtime,
-        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
     )
     active = {"plane":"sample"}
     session.calibration.active_mapping = lambda _section:active["plane"]
@@ -657,7 +657,7 @@ def test_reading_fov_context_does_not_mutate_runtime_before_explicit_startup_app
     workspace = SLMWorkspace(tmp_path)
     runtime = _runtime()
     calibration = _fov_calibration_for_runtime(runtime,"field A")
-    workspace.fov_position_calibration_store.save(calibration)
+    workspace.fov_mapping_correction_store.save(calibration)
     preferences = StartupPreferencesState(
         SLMStartupPreferences(fov_position_calibrations={
             "sec_0":{"planes":{"sample":"field A"}},
@@ -667,7 +667,7 @@ def test_reading_fov_context_does_not_mutate_runtime_before_explicit_startup_app
     transitions = []
     session = SLMSession(
         runtime=runtime,
-        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
         startup_preferences=preferences,
         callbacks=SLMSessionCallbacks(
             on_transition_committed=lambda key,transition:transitions.append((key,transition)),
@@ -688,15 +688,15 @@ def test_reading_fov_context_does_not_mutate_runtime_before_explicit_startup_app
 
 
 def test_fov_replacement_warning_detects_shifted_equal_area_coverage(tmp_path):
-    from slmcore import FOVPositionCalibration,SLMWorkspace
+    from slmcore import FOVMappingCorrection,SLMWorkspace
 
     workspace = SLMWorkspace(tmp_path)
     runtime = _runtime()
     old = _fov_calibration_for_runtime(runtime,"field A")
-    workspace.fov_position_calibration_store.save(old)
+    workspace.fov_mapping_correction_store.save(old)
     session = SLMSession(
         runtime=runtime,
-        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
     )
     session.calibration.active_mapping = lambda _section:"sample"
     session.feedback.refresh_fov_position_calibration_contexts()
@@ -705,9 +705,9 @@ def test_fov_replacement_warning_detects_shifted_equal_area_coverage(tmp_path):
 
     shifted = np.array(old.sample_positions_kxy,copy=True)
     shifted[0] += 0.05
-    candidate = FOVPositionCalibration.fit(
+    candidate = FOVMappingCorrection.fit(
         name="Current candidate",slm_serial=runtime.identity.serial_number,
-        section_key="sec_0",plane_name="sample",
+        section_key="sec_0",mapping_name="sample",base_mapping_signature="",
         ideal_positions_kxy=shifted,
         total_displacements_kxy=np.array(old.sample_displacements_kxy,copy=True),
         degree=1,
@@ -726,9 +726,10 @@ def test_fov_fit_uses_accepted_position_correction_after_apply(tmp_path):
     runtime = _runtime()
     session = SLMSession(
         runtime=runtime,
-        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
     )
     session.calibration.active_mapping = lambda _section:"sample"
+    _set_feedback_observation_planes(session,"Main")
     session.feedback.refresh_fov_position_calibration_contexts()
     _attach_reference_localization(runtime)
     session.feedback.apply_position_correction("sec_0")
@@ -757,6 +758,10 @@ def test_fov_fit_uses_accepted_position_correction_after_apply(tmp_path):
 
     np.testing.assert_allclose(candidate.sample_displacements_kxy,expected)
     assert candidate.provenance["source"] == "accepted_position_correction"
+    assert candidate.mapping_name == "sample"
+    assert candidate.provenance["observation_plane"] == "Main"
+    assert "measurement_source" in candidate.provenance
+    assert "measurement_pixel_size_um" in candidate.provenance
     session.dispose()
 
 
@@ -767,13 +772,13 @@ def test_delete_fov_calibration_clears_selection_runtime_and_default(tmp_path):
     workspace = SLMWorkspace(tmp_path)
     runtime = _runtime()
     calibration = _fov_calibration_for_runtime(runtime,"field A")
-    store = workspace.fov_position_calibration_store
+    store = workspace.fov_mapping_correction_store
     store.save(calibration)
     saved = []
     preferences = StartupPreferencesState(SLMStartupPreferences(),saved.append)
     session = SLMSession(
         runtime=runtime,
-        fov_position_calibration_store=store,
+        fov_mapping_correction_store=store,
         startup_preferences=preferences,
     )
     session.calibration.active_mapping = lambda _section:"sample"
@@ -802,7 +807,7 @@ def test_feedback_observation_plane_switch_does_not_change_mapping_fov_or_cgh(tm
     runtime = _runtime()
     workspace = SLMWorkspace(tmp_path / "workspace")
     fov = _fov_calibration_for_runtime(runtime,"field A")
-    workspace.fov_position_calibration_store.save(fov)
+    workspace.fov_mapping_correction_store.save(fov)
     store = ObservationPlaneStore(tmp_path / "observations")
     store.add(ObservationPlaneDefinition(
         name="Main",preferred_detector="cam",default_pixel_size_um=0.1,
@@ -812,7 +817,7 @@ def test_feedback_observation_plane_switch_does_not_change_mapping_fov_or_cgh(tm
     ))
     session = SLMSession(
         runtime=runtime,observation_plane_store=store,
-        fov_position_calibration_store=workspace.fov_position_calibration_store,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
     )
     session.calibration.active_mapping = lambda _section:"sample"
     assert session.feedback.active_observation_plane("sec_0") is None

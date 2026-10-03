@@ -34,7 +34,10 @@ from .reference import (
     localization_positions_full_px,
     reference_positions_for_localization,
 )
-from .fov_calibration import FOVPositionCalibration
+from ...calibration import FOVMappingCorrection
+
+# Transitional import alias for callers that still use the old feedback name.
+FOVPositionCalibration = FOVMappingCorrection
 from .geometry_calibration import (
     GEOMETRY_ORIENTATION_PROTOCOL,
     GeometryOrientationAnalysis,
