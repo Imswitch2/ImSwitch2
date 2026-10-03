@@ -748,7 +748,6 @@ class SLMCalibrationService:
         state.measurement = self._resolve_target_measurement_scale(
             state,state.measurement,require=True,
         )
-        geometry = self._require_target_observation_geometry(state)
         normalized = _validated_localization_parameters(parameters)
         reference = state.reference
         if reference is None:
@@ -765,7 +764,7 @@ class SLMCalibrationService:
         state.localization = localization
         state.calibration_candidate = None
         candidate = self._fit_target_candidate(
-            section_key,state,localization,geometry=geometry,
+            section_key,state,localization,
         )
         state.calibration_candidate = candidate
         self._callbacks.on_state_changed(section_key)
@@ -776,8 +775,6 @@ class SLMCalibrationService:
         section_key: str,
         state: TargetCalibrationState,
         localization: Any,
-        *,
-        geometry: Any,
     ) -> TargetLocalizationCalibrationCandidate:
         if state.reference is None:
             raise RuntimeError("Target localization reference is not available.")
@@ -792,22 +789,6 @@ class SLMCalibrationService:
             raise RuntimeError(
                 "Target-localization calibration requires measurement pixel_size_um."
             )
-        orientation = getattr(geometry,"orientation",None)
-        orientation_value = str(getattr(orientation,"value",orientation) or "identity")
-        if orientation_value in {
-            "rotate_90_cw","rotate_90_ccw","transpose","anti_transpose",
-        }:
-            localization = replace(
-                localization,
-                period_x_px=localization.period_y_px,
-                period_y_px=localization.period_x_px,
-            )
-        geometry_provenance = {
-            "orientation":orientation_value,
-            "protocol":getattr(geometry,"protocol",None),
-            "created_at":getattr(geometry,"created_at",None),
-            "detector_name":getattr(geometry,"detector_name",None),
-        }
         return fit_target_localization_calibration(
             resolution=state.reference.resolution,
             localization=localization,
@@ -824,7 +805,6 @@ class SLMCalibrationService:
                 "observation_plane":state.observation_plane_name,
                 "observation_source":state.source,
                 "pixel_size_um":pixel_size_um,
-                "geometry_calibration":geometry_provenance,
             },
         )
 
@@ -871,22 +851,6 @@ class SLMCalibrationService:
             metadata=metadata,
         )
 
-    def _require_target_observation_geometry(
-        self,state: TargetCalibrationState,
-    ):
-        plane_name = self._require_target_observation_plane(state)
-        geometry_service = self.observation_geometry
-        calibration = (
-            None if geometry_service is None
-            else geometry_service.calibration(state.section_key,plane_name)
-        )
-        if calibration is None:
-            raise RuntimeError(
-                'Geometry not calibrated for section "%s" / observation plane "%s". '
-                "Calibrate observation geometry before target-localization mapping calibration."
-                % (state.section_key,plane_name)
-            )
-        return calibration
 
     @staticmethod
     def linear_phase_calibration(

@@ -12,6 +12,7 @@ from ....core.cgh.localization.parameters import LOCALIZATION_PARAMS
 from ....core.measurement import create_image_measurement
 from ....core.calibration import base_mapping_signature
 from ...calibration.dialog import CalibrationDialog,TARGET_LOCALIZATION_METHOD
+from ...calibration.fov_dialog import FOVCalibrationDialog
 from ...calibration.geometry_dialogs import (
     CalibrationMismatchDecision,calibration_mismatch_decision,
 )
@@ -33,6 +34,8 @@ def _default_localization_parameters() -> dict[str,Any]:
 
 
 class CalibrationManager(QtCore.QObject):
+    sigFovMeasurementReceived=QtCore.Signal(str,object)
+    sigFovMeasurementError=QtCore.Signal(str,object)
     """Qt presentation adapter for the application calibration service."""
 
     def __init__(
@@ -46,6 +49,7 @@ class CalibrationManager(QtCore.QObject):
         self.service = controller.calibration_service
         self.display_name = str(controller.display_name)
         self._dialogs: dict[str,CalibrationDialog] = {}
+        self._fov_dialogs: dict[str,FOVCalibrationDialog] = {}
         self._management_dialog: CalibrationManagementDialog | None = None
         self._observation_planes_dialog: ObservationPlanesManagerDialog | None = None
         self._disposed = False
@@ -59,6 +63,8 @@ class CalibrationManager(QtCore.QObject):
         self.controller.sigAutomaticOperationChanged.connect(
             self._on_automatic_operation_changed,
         )
+        self.sigFovMeasurementReceived.connect(self._fov_measurement_received)
+        self.sigFovMeasurementError.connect(self._fov_measurement_error)
         self.refresh_mappings()
 
     # ------------------------------------------------------------------
@@ -383,12 +389,216 @@ class CalibrationManager(QtCore.QObject):
 
     @QtCore.Slot(str,str)
     def _management_start_fov_calibration(self,section_key: str,mapping_name: str) -> None:
-        # Patch 8 keeps the existing Position workflow as the temporary producer.
-        # Patch 9 replaces this launch point with the dedicated editable-lattice workflow.
         if self.service.active_mapping(section_key) != mapping_name:
             if not self.set_active_mapping(section_key,mapping_name):
                 return
-        self.controller._feedback.open_fov_calibration(section_key)
+        self.open_fov_calibration(section_key,mapping_name)
+
+    def open_fov_calibration(self,section_key: str,mapping_name: str) -> None:
+        service=self.controller.fov_calibration_service
+        try:
+            self.controller.flush_section(section_key,propagate=True)
+            state=service.ensure_reference(section_key,mapping_name)
+            dialog=self._fov_dialogs.get(section_key)
+            sources,current=self._fov_measurement_sources(section_key,state)
+            if dialog is None:
+                dialog=FOVCalibrationDialog(
+                    section_key=section_key,mapping_name=mapping_name,
+                    observation_planes=service.observation_plane_names(),
+                    current_observation_plane=state.observation_plane_name,
+                    localization_parameters=state.localization_parameters,
+                    detectors=sources,current_detector=current,
+                    parent=self._management_dialog,
+                )
+                self._fov_dialogs[section_key]=dialog
+                dialog.sigObservationPlaneChanged.connect(
+                    lambda plane,key=section_key:self._fov_observation_changed(key,plane)
+                )
+                dialog.sigAcquireRequested.connect(
+                    lambda source,pixel,key=section_key:self._fov_acquire(key,source,pixel)
+                )
+                dialog.sigLoadRequested.connect(
+                    lambda pixel,key=section_key:self._fov_load(key,pixel)
+                )
+                dialog.sigLocalizationRequested.connect(
+                    lambda params,key=section_key:self._fov_localize(key,dict(params or {}))
+                )
+                dialog.sigGeometryChanged.connect(
+                    lambda values,locks,key=section_key:self._fov_geometry_changed(key,values,locks)
+                )
+                dialog.sigSquareStraightRequested.connect(
+                    lambda key=section_key:self._fov_square_straight(key)
+                )
+                dialog.sigFitCenterRequested.connect(lambda key=section_key:self._fov_fit_center(key))
+                dialog.sigResetFromFitRequested.connect(lambda key=section_key:self._fov_reset_fit(key))
+                dialog.sigFitCandidateRequested.connect(
+                    lambda degree,key=section_key:self._fov_fit_candidate(key,degree)
+                )
+                dialog.sigSaveRequested.connect(
+                    lambda name,default,key=section_key:self._fov_save(key,name,default)
+                )
+                dialog.sigGeometryCalibrationRequested.connect(
+                    lambda plane,key=section_key:self._management_start_geometry_calibration(key,plane)
+                )
+                dialog.finished.connect(lambda _result,key=section_key:self._fov_dialog_finished(key))
+                dialog.destroyed.connect(lambda _obj=None,key=section_key:self._fov_dialogs.pop(key,None))
+            else:
+                dialog.configure_observation_planes(service.observation_plane_names(),state.observation_plane_name)
+                dialog.configure_detectors(sources,current)
+            dialog.measurement_view.set_context(state.reference.localization_context)
+            dialog.measurement_view.set_parameters(state.localization_parameters,invalidate_candidate=False)
+            self._render_fov_state(section_key)
+            dialog.show(); dialog.raise_(); dialog.activateWindow()
+        except Exception as error:
+            self._error("FOV calibration failed",error)
+
+    def _fov_measurement_sources(self,section_key: str,state) -> tuple[tuple[str,...],str | None]:
+        service=self.controller.fov_calibration_service
+        sources=service.available_sources(section_key)
+        current=service.preferred_source(section_key,state.mapping_name)
+        return sources,current
+
+    def _fov_observation_changed(self,section_key: str,plane_name: str | None) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key)
+        if state is None: return
+        try:
+            state=service.select_observation_plane(section_key,state.mapping_name,plane_name)
+            dialog=self._fov_dialogs.get(section_key)
+            if dialog is not None:
+                sources,current=self._fov_measurement_sources(section_key,state)
+                dialog.configure_detectors(sources,current); dialog.clear_measurement()
+            self._render_fov_state(section_key)
+        except Exception as error: self._fov_error(section_key,error)
+
+    def _fov_acquire(self,section_key: str,source: str,pixel_size_um: float | None) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key)
+        if state is None: return
+        dialog=self._fov_dialogs.get(section_key)
+        try:
+            if dialog is not None: dialog.measurement_view.set_measurement_busy(True,"Acquiring…")
+            service.acquire(
+                section_key,state.mapping_name,source,pixel_size_um=pixel_size_um,
+                on_result=lambda value,key=section_key:self.sigFovMeasurementReceived.emit(key,value),
+                on_error=lambda error,key=section_key:self.sigFovMeasurementError.emit(key,error),
+            )
+        except Exception as error:
+            if dialog is not None: dialog.measurement_view.set_measurement_busy(False)
+            self._fov_error(section_key,error)
+
+    @QtCore.Slot(str,object)
+    def _fov_measurement_received(self,section_key: str,_state) -> None:
+        dialog=self._fov_dialogs.get(section_key)
+        if dialog is not None: dialog.measurement_view.set_measurement_busy(False)
+        self._render_fov_state(section_key)
+
+    @QtCore.Slot(str,object)
+    def _fov_measurement_error(self,section_key: str,error) -> None:
+        dialog=self._fov_dialogs.get(section_key)
+        if dialog is not None: dialog.measurement_view.set_measurement_busy(False)
+        self._fov_error(section_key,error)
+
+    def _fov_load(self,section_key: str,pixel_size_um: float | None) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key); dialog=self._fov_dialogs.get(section_key)
+        if state is None: return
+        try:
+            path,_=QtWidgets.QFileDialog.getOpenFileName(
+                dialog,"Select FOV calibration image","",
+                "Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp);;All files (*)",
+            )
+            if not path: return
+            image=np.asarray(Image.open(path).convert("F"),dtype=np.float64)
+            measurement=create_image_measurement(
+                image,source="file",pixel_size_um=pixel_size_um,
+                metadata={"path":str(path),"workflow":"fov_mapping_calibration"},
+            )
+            service.commit_measurement(section_key,state.mapping_name,measurement,pixel_size_um=pixel_size_um)
+            self._render_fov_state(section_key)
+        except Exception as error: self._fov_error(section_key,error)
+
+    def _fov_localize(self,section_key: str,parameters: Mapping[str,Any]) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key)
+        if state is None: return
+        try:
+            service.run_localization(section_key,state.mapping_name,parameters); self._render_fov_state(section_key)
+        except Exception as error:
+            self._render_fov_state(section_key); self._fov_error(section_key,error)
+
+    def _fov_geometry_changed(self,section_key: str,values,locks) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key)
+        if state is None: return
+        try:
+            service.set_editable_geometry(section_key,state.mapping_name,dict(values),dict(locks)); self._render_fov_state(section_key)
+        except Exception as error: self._fov_error(section_key,error)
+
+    def _fov_square_straight(self,section_key: str) -> None:
+        self._fov_state_action(section_key,"square_and_straight")
+
+    def _fov_fit_center(self,section_key: str) -> None:
+        self._fov_state_action(section_key,"fit_center")
+
+    def _fov_reset_fit(self,section_key: str) -> None:
+        self._fov_state_action(section_key,"reset_from_fit")
+
+    def _fov_state_action(self,section_key: str,method: str) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key)
+        if state is None: return
+        try:
+            getattr(service,method)(section_key,state.mapping_name); self._render_fov_state(section_key)
+        except Exception as error: self._fov_error(section_key,error)
+
+    def _fov_fit_candidate(self,section_key: str,degree: int) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key)
+        if state is None: return
+        try:
+            service.fit_candidate(section_key,state.mapping_name,degree=int(degree)); self._render_fov_state(section_key)
+        except Exception as error: self._fov_error(section_key,error)
+
+    def _fov_save(self,section_key: str,name: str,set_default: bool) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key)
+        if state is None: return
+        try:
+            overwrite=name in self.controller.mapping_service.fov_correction_names(section_key,state.mapping_name)
+            if overwrite:
+                answer=QtWidgets.QMessageBox.question(
+                    self._fov_dialogs.get(section_key),"Replace FOV correction",
+                    'Replace existing FOV correction "%s"?' % name,
+                    QtWidgets.QMessageBox.Yes|QtWidgets.QMessageBox.No,QtWidgets.QMessageBox.No,
+                )
+                if answer!=QtWidgets.QMessageBox.Yes: return
+            service.save_candidate(section_key,state.mapping_name,name,overwrite=overwrite,set_default=set_default)
+            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self._refresh_management_context(section_key,state.mapping_name)
+            self.controller.sigInfo.emit("FOV Calibration",'Saved FOV correction "%s".' % name)
+        except Exception as error: self._fov_error(section_key,error)
+
+    def _render_fov_state(self,section_key: str) -> None:
+        service=self.controller.fov_calibration_service; state=service.state(section_key); dialog=self._fov_dialogs.get(section_key)
+        if state is None or dialog is None: return
+        dialog.configure_observation_planes(service.observation_plane_names(),state.observation_plane_name)
+        displayed_measurement = dialog.measurement_view.measurement
+        if state.measurement is None:
+            if displayed_measurement is not None:
+                dialog.clear_measurement()
+        elif displayed_measurement is not state.measurement:
+            dialog.set_measurement(state.measurement)
+        if state.localization is not None:
+            dialog.set_localization(state.localization,state.localization_parameters)
+        dialog.set_geometry(None if state.editable_geometry is None else state.editable_geometry.to_dict(),state.locks)
+        dialog.set_reference_preview(service.preview(section_key,state.mapping_name))
+        dialog.set_candidate(state.candidate)
+        missing=False
+        if state.observation_plane_name:
+            missing=self.controller.observation_geometry_service.calibration(section_key,state.observation_plane_name) is None
+        dialog.set_geometry_missing(state.observation_plane_name,missing)
+
+    def _fov_error(self,section_key: str,error: Exception) -> None:
+        dialog=self._fov_dialogs.get(section_key)
+        if dialog is not None: dialog.set_error(error)
+        else: self._error("FOV calibration failed",error)
+
+    def _fov_dialog_finished(self,section_key: str) -> None:
+        self.controller.fov_calibration_service.discard(section_key)
+        self._fov_dialogs.pop(section_key,None)
 
     @QtCore.Slot(str,str,str)
     def _management_set_fov_default(self,section_key: str,mapping_name: str,name: str) -> None:
@@ -483,6 +693,10 @@ class CalibrationManager(QtCore.QObject):
             names,selected,default_pixel_size=self._observation_context(section,state)
             dialog.configure_observation_planes(names,selected,default_pixel_size)
         self.controller._feedback.refresh_observation_planes()
+        for section,dialog in tuple(self._fov_dialogs.items()):
+            state=self.controller.fov_calibration_service.state(section)
+            current=None if state is None else state.observation_plane_name
+            dialog.configure_observation_planes(tuple(sorted(valid)),current)
         if self._management_dialog is not None:
             self._refresh_management_context(
                 self._management_dialog.section_key,self._management_dialog.mapping_name,
@@ -679,6 +893,10 @@ class CalibrationManager(QtCore.QObject):
     def close_all_dialogs(self) -> None:
         for section_key in tuple(self._dialogs):
             self.close_dialog(section_key)
+        for section_key,dialog in tuple(self._fov_dialogs.items()):
+            self.controller.fov_calibration_service.discard(section_key)
+            dialog.close(); dialog.deleteLater()
+        self._fov_dialogs.clear()
 
     def _on_method_changed(self,section_key: str,method: str) -> None:
         if method == TARGET_LOCALIZATION_METHOD:

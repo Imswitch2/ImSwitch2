@@ -27,6 +27,7 @@ from .feedback import (
     SLMFeedbackService,
 )
 from .calibration import SLMCalibrationCallbacks,SLMCalibrationService
+from .fov_calibration import FOVCalibrationService
 from .section_layout import PreparedSectionLayoutChange,SLMSectionLayoutService
 
 if TYPE_CHECKING:
@@ -171,6 +172,15 @@ class SLMSession:
             display_name=self.display_name,
             measurements=measurement_dispatcher,
             callbacks=self._calibration_callbacks(),
+        )
+        self.fov_calibration = FOVCalibrationService(
+            self,
+            mappings=self.mappings,
+            observation_planes=self.observation_planes,
+            observation_geometry=self.observation_geometry,
+            calibration_service=self.calibration,
+            startup_preferences=startup_preferences,
+            measurements=measurement_dispatcher,
         )
         if apply_startup_calibration_defaults:
             self.calibration.apply_startup_defaults()
@@ -525,6 +535,7 @@ class SLMSession:
         self._require_active()
         self.feedback.set_measurement_dispatcher(measurements)
         self.calibration.set_measurement_dispatcher(measurements)
+        self.fov_calibration.set_measurement_dispatcher(measurements)
 
     @property
     def can_run_automatic_feedback(self) -> bool:
@@ -1121,6 +1132,8 @@ class SLMSession:
             return
         self.feedback.dispose()
         self.calibration.dispose()
+        for section_key in tuple(self.runtime.section_keys):
+            self.fov_calibration.discard(section_key)
         self.cancel_all_cgh()
         if self._owns_cgh_executor:
             dispose = getattr(self._cgh_executor,"dispose",None)

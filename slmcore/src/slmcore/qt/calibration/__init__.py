@@ -4,6 +4,7 @@ from .dialog import (
     TARGET_LOCALIZATION_METHOD,
 )
 from .mapping_dialogs import confirm_mapping_deletion, request_mapping_definition
+from .fov_dialog import FOVCalibrationDialog
 
 __all__ = [
     "CalibrationDialog",

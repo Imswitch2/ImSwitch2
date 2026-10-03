@@ -962,72 +962,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
         controls_layout.addWidget(separator)
         controls_layout.addSpacing(2)
 
-        fov_label = QtWidgets.QLabel("FOV calibration")
-        fov_font = fov_label.font()
-        fov_font.setBold(True)
-        fov_label.setFont(fov_font)
-        controls_layout.addWidget(fov_label)
-
-        self.fov_calibration_state_label = QtWidgets.QLabel("No calibration loaded")
-        self.fov_calibration_state_label.setWordWrap(True)
-        self.fov_calibration_state_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
-        controls_layout.addWidget(self.fov_calibration_state_label)
-
-        fov_form = QtWidgets.QFormLayout()
-        fov_form.setContentsMargins(0,0,0,0)
-        self.fov_calibration_model_combo = QtWidgets.QComboBox()
-        self.fov_calibration_model_combo.addItem("Polynomial","polynomial")
-        self.fov_calibration_model_combo.setEnabled(False)
-        self.fov_calibration_degree_combo = QtWidgets.QComboBox()
-        self.fov_calibration_degree_combo.addItem("Quadratic (2)",2)
-        self.fov_calibration_degree_combo.setEnabled(False)
-        fov_form.addRow("Model",self.fov_calibration_model_combo)
-        fov_form.addRow("Degree",self.fov_calibration_degree_combo)
-        controls_layout.addLayout(fov_form)
-
-        self.fov_calibration_fit_button = QtWidgets.QPushButton(
-            "Build fit from current feedback"
-        )
-        self.fov_calibration_fit_button.setFixedHeight(24)
-        self.fov_calibration_fit_button.setToolTip(
-            "Build a candidate FOV calibration. If a position correction has "
-            "already been applied, its accepted correction is used even after "
-            "computing the adapted hologram."
-        )
-        self.fov_calibration_fit_button.clicked.connect(
-            lambda _checked=False:self._emit(
-                MeasurementsAction.FOV_CALIBRATION_FIT,{
-                    "model":self.fov_calibration_model_combo.currentData(),
-                    "degree":self.fov_calibration_degree_combo.currentData(),
-                },
-            )
-        )
-        controls_layout.addWidget(self.fov_calibration_fit_button)
-
-        fov_save_row = QtWidgets.QHBoxLayout()
-        fov_save_row.setContentsMargins(0,0,0,0)
-        fov_save_row.setSpacing(5)
-        self.fov_calibration_save_button = QtWidgets.QPushButton("Save as new…")
-        self.fov_calibration_save_button.setFixedHeight(24)
-        self.fov_calibration_save_button.clicked.connect(
-            self._save_fov_calibration_requested
-        )
-        fov_save_row.addWidget(self.fov_calibration_save_button,1)
-
-        self.fov_calibration_replace_button = QtWidgets.QPushButton(
-            "Replace…"
-        )
-        self.fov_calibration_replace_button.setToolTip(
-            "Replace the currently applied FOV calibration with this candidate fit."
-        )
-        self.fov_calibration_replace_button.setFixedHeight(24)
-        self.fov_calibration_replace_button.clicked.connect(
-            lambda _checked=False:self._emit(
-                MeasurementsAction.FOV_CALIBRATION_REPLACE,{}
-            )
-        )
-        fov_save_row.addWidget(self.fov_calibration_replace_button,1)
-        controls_layout.addLayout(fov_save_row)
+        # Persistent FOV mapping calibration moved to the dedicated Calibration
+        # Manager workflow in Patch 9. Position Feedback remains focused on
+        # transient measurement/reference corrections and no longer produces
+        # or saves FOV calibration candidates.
 
         controls_layout.addStretch(1)
         layout.addWidget(controls,0)
@@ -1169,7 +1107,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             )
         else:
             save_button.setToolTip(
-                "Persist this orientation for the active plane."
+                "Persist this orientation as a manual geometry calibration for the active plane."
                 if plane is not None
                 else "Persist this orientation as the section default."
             )
@@ -1917,7 +1855,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             combo.addItem("Select observation…",None)
         for name in names:
             combo.addItem(name,name)
-        combo.addSeparator()
+        combo.insertSeparator(combo.count())
         combo.addItem("Define new observation plane…",_DEFINE_OBSERVATION_PLANE)
         if current_plane is not None:
             index = combo.findData(str(current_plane))
@@ -1933,11 +1871,11 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._emit(MeasurementsAction.OBSERVATION_PLANE_SET,{"plane":plane})
 
     def show_position_feedback_tab(self) -> None:
-        self.workspace_tabs.setCurrentWidget(self.feedback_view)
+        self.workspace_tabs.setCurrentIndex(0)
         self.feedback_tabs.setCurrentIndex(1)
 
     def show_geometry_calibration_tab(self) -> None:
-        self.workspace_tabs.setCurrentWidget(self.feedback_view)
+        self.workspace_tabs.setCurrentIndex(0)
         self.feedback_tabs.setCurrentIndex(2)
 
     def configure_detectors(

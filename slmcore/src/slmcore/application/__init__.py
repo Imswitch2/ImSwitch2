@@ -7,6 +7,7 @@ from .configuration import (
     CorrectionMismatchPolicy,PreparedConfigLoad,SLMConfigurationService,StartupRuntime,
 )
 from .control_mode import SLMControlMode
+from .fov_calibration import FOVCalibrationService,FOVCalibrationState
 from .feedback import (
     AutomaticFeedbackRunner,AutomaticFeedbackState,FeedbackParameterUpdateResult,
     MeasurementDispatcher,MeasurementRequest,PositionReferenceContext,
@@ -32,6 +33,8 @@ __all__ = [
     "CorrectionMismatch",
     "CorrectionMismatchPolicy",
     "FeedbackParameterUpdateResult",
+    "FOVCalibrationService",
+    "FOVCalibrationState",
     "MeasurementDispatcher",
     "MeasurementRequest",
     "MappingService",

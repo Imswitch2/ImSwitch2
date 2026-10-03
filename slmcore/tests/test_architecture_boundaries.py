@@ -97,3 +97,18 @@ def test_patch8_observation_plane_editor_is_shared_by_measurement_selectors():
     assert "Define new observation plane…" in calibration
     assert "Define new observation plane…" in feedback
     assert "ObservationPlaneEditorDialog" in manager
+
+
+def test_patch9_editable_lattice_core_is_neutral_and_fov_workflow_is_dedicated():
+    root = _package_root()
+    neutral = root / "core" / "measurement" / "reference_geometry.py"
+    assert neutral.exists()
+    reference = (root / "core" / "cgh" / "feedback" / "reference.py").read_text(encoding="utf-8")
+    assert "measurement.reference_geometry" in reference
+    manager = (root / "qt" / "application" / "calibration" / "manager.py").read_text(encoding="utf-8")
+    assert "FOVCalibrationDialog" in manager
+    assert "fov_calibration_service" in manager
+    assert "controller._feedback.open_fov_calibration" not in manager
+    feedback_ui = (root / "qt" / "cgh" / "session_window.py").read_text(encoding="utf-8")
+    assert "Build fit from current feedback" not in feedback_ui
+    assert "Persistent FOV mapping calibration moved to the dedicated Calibration" in feedback_ui

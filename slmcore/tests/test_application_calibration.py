@@ -473,7 +473,7 @@ def test_mapping_calibration_observation_selection_is_independent_from_feedback_
     assert runtime.get_section_cgh_status("sec_0").result_state is CGHResultState.CURRENT
 
 
-def test_target_mapping_calibration_uses_observation_scale_geometry_and_provenance(
+def test_target_mapping_calibration_uses_observation_scale_without_geometry_dependency(
     tmp_path,monkeypatch,
 ):
     runtime = _runtime(with_cgh=True)
@@ -482,8 +482,6 @@ def test_target_mapping_calibration_uses_observation_scale_geometry_and_provenan
     calibration_store = SLMCalibrationStore(tmp_path/"calibrations")
     observations = _observation_store(tmp_path)
     geometry_store = SLMGeometryOrientationCalibrationStore(tmp_path/"geometry")
-    _save_observation_geometry(geometry_store,runtime,"Intermediate")
-    _save_observation_geometry(geometry_store,runtime,"Main","rotate_90_cw")
     session = SLMSession(
         runtime=runtime,
         calibration_store=calibration_store,
@@ -515,7 +513,7 @@ def test_target_mapping_calibration_uses_observation_scale_geometry_and_provenan
     assert candidate.calibration.metadata["observation_plane"] == "Intermediate"
     assert candidate.calibration.metadata["observation_source"] == "IntermediateCam"
     assert candidate.calibration.metadata["pixel_size_um"] == pytest.approx(0.2)
-    assert candidate.calibration.metadata["geometry_calibration"]["orientation"] == "identity"
+    assert "geometry_calibration" not in candidate.calibration.metadata
     saved = session.calibration.apply_target_candidate("sec_0",mapping)
     assert saved.mapping_name == mapping
     assert mapping_store.names == (mapping,)
@@ -538,11 +536,11 @@ def test_target_mapping_calibration_uses_observation_scale_geometry_and_provenan
     assert candidate.calibration.metadata["observation_plane"] == "Main"
     assert candidate.calibration.metadata["observation_source"] == "OtherCam"
     assert candidate.calibration.metadata["pixel_size_um"] == pytest.approx(0.3)
-    assert candidate.calibration.metadata["geometry_calibration"]["orientation"] == "rotate_90_cw"
-    # 90-degree observation geometry swaps detector-period interpretation while
-    # preserving the same mapping identity.
-    assert candidate.fitted_period_x_px == pytest.approx(20.0)
-    assert candidate.fitted_period_y_px == pytest.approx(10.0)
+    assert "geometry_calibration" not in candidate.calibration.metadata
+    # Base target calibration is period-based and does not require or reinterpret
+    # observation geometry.
+    assert candidate.fitted_period_x_px == pytest.approx(10.0)
+    assert candidate.fitted_period_y_px == pytest.approx(20.0)
     saved = session.calibration.apply_target_candidate("sec_0",mapping)
     assert saved.mapping_name == mapping
     assert mapping_store.names == (mapping,)
@@ -550,7 +548,7 @@ def test_target_mapping_calibration_uses_observation_scale_geometry_and_provenan
     assert loaded.metadata["observation_plane"] == "Main"
 
 
-def test_target_mapping_calibration_requires_geometry_for_selected_observation(tmp_path,monkeypatch):
+def test_target_mapping_calibration_does_not_require_geometry_for_selected_observation(tmp_path,monkeypatch):
     runtime = _runtime(with_cgh=True)
     mapping_store = MappingStore(tmp_path/"mappings")
     mapping = _mapping(mapping_store)
@@ -580,10 +578,12 @@ def test_target_mapping_calibration_requires_geometry_for_selected_observation(t
         "slmcore.application.calibration.localize_measurement",
         lambda *_args,**_kwargs:_fake_target_localization(),
     )
-    with pytest.raises(RuntimeError,match="Geometry not calibrated"):
-        session.calibration.run_target_localization(
-            "sec_0",state.localization_parameters,
-        )
+    candidate = session.calibration.run_target_localization(
+        "sec_0",state.localization_parameters,
+    )
+    assert candidate.calibration.mapping_name == mapping
+    assert candidate.calibration.metadata["observation_plane"] == "Intermediate"
+    assert "geometry_calibration" not in candidate.calibration.metadata
 
 
 def test_target_measurement_pixel_size_uses_workflow_override_after_plane_fallback(tmp_path):

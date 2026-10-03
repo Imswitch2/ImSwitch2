@@ -503,20 +503,78 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         return normalized
 
     def save_feedback_orientation(self,section_key: str) -> FeedbackOrientation:
-        """Persist the current transient orientation for the active plane/default."""
+        """Persist the current transient orientation for the active plane/default.
+
+        A plane-scoped save is an explicit manual geometry calibration and is
+        therefore stored in the authoritative observation-geometry store.  A
+        section default remains a startup preference because it is only a
+        fallback when no observation plane is selected.
+        """
         self._require_editor_mode()
         section = str(section_key)
         orientation = self.feedback_orientation(section)
         plane = self._active_feedback_plane(section)
-        preferences = self._startup_preferences_provider()
-        if preferences is None:
-            raise RuntimeError("Startup preferences are unavailable")
         if plane is None:
+            preferences = self._startup_preferences_provider()
+            if preferences is None:
+                raise RuntimeError("Startup preferences are unavailable")
             preferences.set_feedback_orientation_default(section,orientation.value)
         else:
-            preferences.set_feedback_orientation_for_plane(
-                section,plane,orientation.value,
+            geometry = self._observation_geometry
+            if geometry is None or geometry.store is None:
+                # Keep non-workspace/legacy hosts functional.  This remains a
+                # preference fallback only; with an authoritative geometry store
+                # available, a plane-scoped save becomes a real calibration.
+                preferences = self._startup_preferences_provider()
+                if preferences is None:
+                    raise RuntimeError(
+                        "Geometry orientation-calibration storage is unavailable."
+                    )
+                preferences.set_feedback_orientation_for_plane(
+                    section,plane,orientation.value,
+                )
+                self._section_changed(section)
+                return orientation
+            key = (section,plane)
+            workflow = self._geometry_calibration_workflows.get(key)
+            if workflow is None:
+                grid_x,grid_y = 5,4
+                period_x_px,period_y_px = self._geometry_period_guess_px(
+                    section,grid_x,grid_y,
+                )
+                workflow = _GeometryCalibrationWorkflow(
+                    grid_x=grid_x,grid_y=grid_y,
+                    period_x_px=period_x_px,period_y_px=period_y_px,
+                )
+                self._geometry_calibration_workflows[key] = workflow
+            calibration = GeometryOrientationCalibration(
+                slm_serial=self._runtime.identity.serial_number,
+                section_key=section,
+                plane_name=plane,
+                orientation=orientation,
+                detector_name=workflow.detector_name,
+                grid_x=int(workflow.grid_x),
+                grid_y=int(workflow.grid_y),
+                period_x_px=float(
+                    workflow.period_x_px
+                    or self._geometry_period_guess_px(
+                        section,workflow.grid_x,workflow.grid_y,
+                    )[0]
+                ),
+                period_y_px=float(
+                    workflow.period_y_px
+                    or self._geometry_period_guess_px(
+                        section,workflow.grid_x,workflow.grid_y,
+                    )[1]
+                ),
+                protocol="manual_orientation_v1",
+                provenance={
+                    "method":"manual",
+                    "source":"manual_orientation",
+                },
             )
+            geometry.save(calibration)
+            self._feedback_orientations[section] = (plane,orientation)
         self._section_changed(section)
         return orientation
 

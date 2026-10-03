@@ -209,7 +209,7 @@ class CalibrationDialog(QtWidgets.QDialog):
             self._observation_combo.addItem("Select observation plane...",None)
             for name in names:
                 self._observation_combo.addItem(name,name)
-            self._observation_combo.addSeparator()
+            self._observation_combo.insertSeparator(self._observation_combo.count())
             self._observation_combo.addItem(
                 "Define new observation plane…",_DEFINE_OBSERVATION_PLANE,
             )

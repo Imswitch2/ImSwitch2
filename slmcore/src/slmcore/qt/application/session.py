@@ -180,6 +180,10 @@ class SLMQtSession(QtCore.QObject):
         return self._application_session.observation_geometry
 
     @property
+    def fov_calibration_service(self):
+        return self._application_session.fov_calibration
+
+    @property
     def auto_upload_frame(self) -> bool:
         return self._application_session.auto_upload_frame
 

@@ -214,6 +214,32 @@ def test_feedback_orientation_is_transient_until_explicitly_saved_and_scoped_by_
     assert saved[-1].feedback_orientations["sec_0"].planes["sample"] == "rotate_180"
 
 
+
+def test_manual_plane_orientation_save_persists_authoritative_geometry_calibration(tmp_path):
+    from slmcore.workspace import SLMGeometryOrientationCalibrationStore
+
+    runtime = _runtime()
+    geometry_store = SLMGeometryOrientationCalibrationStore(tmp_path/"geometry")
+    session = SLMSession(
+        runtime=runtime,
+        geometry_orientation_calibration_store=geometry_store,
+    )
+    _set_feedback_observation_planes(session,"sample")
+    session.feedback.select_observation_plane("sec_0","sample")
+
+    assert not session.observation_geometry.is_calibrated("sec_0","sample")
+    session.feedback.set_feedback_orientation("sec_0","rotate_90_cw")
+    session.feedback.save_feedback_orientation("sec_0")
+
+    assert session.observation_geometry.is_calibrated("sec_0","sample")
+    saved = session.observation_geometry.load("sec_0","sample")
+    assert saved.orientation.value == "rotate_90_cw"
+    assert saved.protocol == "manual_orientation_v1"
+    assert saved.provenance["method"] == "manual"
+    context = session.feedback.feedback_orientation_context("sec_0")
+    assert context.calibrated
+    assert context.saved_orientation.value == "rotate_90_cw"
+
 def test_feedback_orientation_unsaved_value_is_discarded_only_when_plane_changes():
     from slmcore.application.startup_preferences import StartupPreferencesState
     from slmcore.setup import SLMStartupPreferences
