@@ -1504,7 +1504,9 @@ whatever the console shows.  Two things follow, both deliberate:
 
 New records appear within a fraction of a second: the panel polls the buffer on
 a timer it owns rather than being called from whichever thread logged, which
-keeps logging threads out of the GUI entirely.
+keeps logging threads out of the GUI entirely.  It polls only while it is
+visible -- closing the panel stops it doing anything at all -- and reopening it
+catches up on everything logged in between, because the buffer kept it.
 
 **Filter** narrows to records containing a string, and applies to the history
 too, not only to new records.  **Follow** scrolls to the newest record as it

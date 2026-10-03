@@ -61,7 +61,8 @@ class LogWidget(QtWidgets.QWidget):
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._drainNewRecords)
-        self._timer.start()
+        # Started by showEvent, not here: the dock is built hidden in both
+        # modules, and a panel nobody is looking at has no reason to poll.
 
     # ------------------------------------------------------------------ build
     def _build(self):
@@ -141,6 +142,22 @@ class LogWidget(QtWidgets.QWidget):
         else:
             self.pathLabel.setText('No log file for this session — nothing is being written to disk.')
             self.openFolderButton.setEnabled(False)
+
+    # --------------------------------------------------------------- lifetime
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Catch up on everything logged while hidden, then resume polling.  The
+        # buffer kept it all, so a panel reopened after an hour is not missing
+        # the hour.
+        self.reload()
+        self._timer.start()
+
+    def hideEvent(self, event):
+        # A closed or hidden panel stops polling entirely.  Beyond the wasted
+        # work, a timer that outlives what anyone is looking at is how a widget
+        # ends up touching its own half-torn-down children.
+        self._timer.stop()
+        super().hideEvent(event)
 
     # ----------------------------------------------------------------- render
     def _shouldShow(self, levelno, text):

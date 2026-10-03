@@ -132,11 +132,16 @@ def test_log_panel_is_off_by_default_and_opt_in():
 @pytest.mark.ui
 class TestLogWidget:
     @staticmethod
-    def _widget(qtbot):
+    def _widget(qtbot, shown=False):
         from imswitch.imcommon.view.LogWidget import LogWidget
 
         widget = LogWidget()
         qtbot.addWidget(widget)
+        if shown:
+            # Polling only runs while the panel is visible, so a test about live
+            # records has to open it the way a user does.
+            widget.show()
+            qtbot.waitExposed(widget)
         return widget
 
     def test_shows_records_logged_before_it_was_built(self, qtbot):
@@ -147,10 +152,34 @@ class TestLogWidget:
     def test_live_records_arrive(self, qtbot):
         # Through the widget's own timer, not by calling the drain directly:
         # a panel whose timer never starts looks fine in every other test.
-        widget = self._widget(qtbot)
+        widget = self._widget(qtbot, shown=True)
         initLogger('test').warning('a live record')
         qtbot.waitUntil(lambda: 'a live record' in widget.textEdit.toPlainText(),
                         timeout=3000)
+
+    def test_a_hidden_panel_does_not_poll(self, qtbot):
+        # Both modules build the dock hidden.  A panel nobody is looking at
+        # should do nothing at all -- and a timer outliving what anyone is
+        # looking at is how a widget ends up touching its own torn-down children.
+        widget = self._widget(qtbot)
+        assert not widget._timer.isActive()
+
+        widget.show()
+        qtbot.waitExposed(widget)
+        assert widget._timer.isActive()
+
+        widget.hide()
+        assert not widget._timer.isActive()
+
+    def test_reopening_catches_up_on_what_was_logged_while_hidden(self, qtbot):
+        widget = self._widget(qtbot)
+        initLogger('test').warning('logged while the panel was hidden')
+        assert 'logged while the panel was hidden' not in widget.textEdit.toPlainText()
+
+        widget.show()
+        qtbot.waitExposed(widget)
+        # showEvent reloads from the buffer, which kept it.
+        assert 'logged while the panel was hidden' in widget.textEdit.toPlainText()
 
     def test_raising_the_level_reveals_buffered_debug_records(self, qtbot):
         initLogger('test').debug('a buffered debug record')
