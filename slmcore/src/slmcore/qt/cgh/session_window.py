@@ -36,6 +36,7 @@ _OK_COLOR = "#286b2d"
 _WARNING_COLOR = "#a66a00"
 _POSITION_NOT_CORRECTED = "not_corrected"
 _POSITION_CORRECTED = "corrected"
+_DEFINE_OBSERVATION_PLANE = "__define_observation_plane__"
 
 
 def _format_float(value: Any) -> str:
@@ -88,6 +89,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
     """Modeless CGH session workspace with measurement, feedback and inspection."""
 
     sigActionRequested = QtCore.Signal(str,object)
+    sigDefineObservationPlaneRequested = QtCore.Signal()
 
     def __init__(
         self,
@@ -1915,6 +1917,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
             combo.addItem("Select observation…",None)
         for name in names:
             combo.addItem(name,name)
+        combo.addSeparator()
+        combo.addItem("Define new observation plane…",_DEFINE_OBSERVATION_PLANE)
         if current_plane is not None:
             index = combo.findData(str(current_plane))
             if index >= 0:
@@ -1923,7 +1927,18 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
     def _on_observation_plane_changed(self,_index: int) -> None:
         plane = self.observation_plane_combo.currentData()
+        if plane == _DEFINE_OBSERVATION_PLANE:
+            self.sigDefineObservationPlaneRequested.emit()
+            return
         self._emit(MeasurementsAction.OBSERVATION_PLANE_SET,{"plane":plane})
+
+    def show_position_feedback_tab(self) -> None:
+        self.workspace_tabs.setCurrentWidget(self.feedback_view)
+        self.feedback_tabs.setCurrentIndex(1)
+
+    def show_geometry_calibration_tab(self) -> None:
+        self.workspace_tabs.setCurrentWidget(self.feedback_view)
+        self.feedback_tabs.setCurrentIndex(2)
 
     def configure_detectors(
         self,detectors: Sequence[str],current_detector: str | None=None,

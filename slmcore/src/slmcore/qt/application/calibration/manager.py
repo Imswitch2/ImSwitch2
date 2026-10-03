@@ -10,6 +10,7 @@ from ....application.calibration import TargetCalibrationState
 from ....application.configuration import CalibrationMismatchPolicy
 from ....core.cgh.localization.parameters import LOCALIZATION_PARAMS
 from ....core.measurement import create_image_measurement
+from ....core.calibration import base_mapping_signature
 from ...calibration.dialog import CalibrationDialog,TARGET_LOCALIZATION_METHOD
 from ...calibration.geometry_dialogs import (
     CalibrationMismatchDecision,calibration_mismatch_decision,
@@ -17,6 +18,10 @@ from ...calibration.geometry_dialogs import (
 from ...calibration.mapping_dialogs import (
     confirm_calibration_deletion,confirm_mapping_deletion,
     request_mapping_definition,
+)
+from ...calibration.management_dialogs import (
+    CalibrationManagementDialog,ObservationPlaneEditorDialog,
+    ObservationPlanesManagerDialog,
 )
 
 
@@ -41,6 +46,8 @@ class CalibrationManager(QtCore.QObject):
         self.service = controller.calibration_service
         self.display_name = str(controller.display_name)
         self._dialogs: dict[str,CalibrationDialog] = {}
+        self._management_dialog: CalibrationManagementDialog | None = None
+        self._observation_planes_dialog: ObservationPlanesManagerDialog | None = None
         self._disposed = False
         load_error = self.service.last_mapping_store_load_error
         if load_error is not None:
@@ -66,7 +73,7 @@ class CalibrationManager(QtCore.QObject):
         collection.sigDeleteCalibrationRequested.connect(
             self._on_delete_calibration_requested,
         )
-        collection.sigCalibrationRequested.connect(self.open_dialog)
+        collection.sigCalibrationRequested.connect(self.open_management)
 
     def _disconnect_collection(self) -> None:
         collection = self.controller.section_collection
@@ -78,7 +85,7 @@ class CalibrationManager(QtCore.QObject):
                 collection.sigDeleteCalibrationRequested,
                 self._on_delete_calibration_requested,
             ),
-            (collection.sigCalibrationRequested,self.open_dialog),
+            (collection.sigCalibrationRequested,self.open_management),
         ):
             try:
                 signal.disconnect(slot)
@@ -90,6 +97,10 @@ class CalibrationManager(QtCore.QObject):
         for section_key in self.controller.runtime.section_keys:
             self.controller.section_collection.set_available_mappings(
                 section_key,names,self.service.active_mapping(section_key),
+            )
+        if self._management_dialog is not None:
+            self._management_dialog.set_catalog(
+                tuple(self.controller.runtime.section_keys),names,
             )
 
     @QtCore.Slot(str,str)
@@ -223,6 +234,261 @@ class CalibrationManager(QtCore.QObject):
             self._error("Delete SLM Mapping Failed",error)
 
     # ------------------------------------------------------------------
+    # Persistent calibration management
+    # ------------------------------------------------------------------
+
+    @QtCore.Slot(str)
+    def open_management(self,section_key: str) -> None:
+        if (
+            not self.controller.editor_writes_allowed
+            or self.controller.automatic_operation_active
+        ):
+            return
+        sections=tuple(self.controller.runtime.section_keys)
+        mappings=self.service.mapping_names
+        current_mapping=self.service.active_mapping(section_key)
+        dialog=self._management_dialog
+        if dialog is None:
+            dialog=CalibrationManagementDialog(
+                sections=sections,mappings=mappings,
+                current_section=section_key,current_mapping=current_mapping,
+                parent=self.controller.section_collection.section_view(section_key).window(),
+            )
+            self._management_dialog=dialog
+            dialog.sigContextChanged.connect(self._refresh_management_context)
+            dialog.sigBaseCalibrationRequested.connect(
+                self._management_start_base_calibration
+            )
+            dialog.sigBaseCalibrationDeleteRequested.connect(
+                self._management_delete_base_calibration
+            )
+            dialog.sigFovCalibrationRequested.connect(
+                self._management_start_fov_calibration
+            )
+            dialog.sigFovSetDefaultRequested.connect(
+                self._management_set_fov_default
+            )
+            dialog.sigFovInspectRequested.connect(self._management_inspect_fov)
+            dialog.sigFovDeleteRequested.connect(self._management_delete_fov)
+            dialog.sigGeometryCalibrationRequested.connect(
+                self._management_start_geometry_calibration
+            )
+            dialog.sigObservationPlanesRequested.connect(
+                self.open_observation_planes_manager
+            )
+            dialog.destroyed.connect(self._management_destroyed)
+        else:
+            dialog.set_catalog(sections,mappings)
+            si=dialog.section_combo.findText(section_key)
+            if si>=0: dialog.section_combo.setCurrentIndex(si)
+            if current_mapping:
+                mi=dialog.mapping_combo.findText(current_mapping)
+                if mi>=0: dialog.mapping_combo.setCurrentIndex(mi)
+        self._refresh_management_context(dialog.section_key,dialog.mapping_name)
+        dialog.show(); dialog.raise_(); dialog.activateWindow()
+
+    def _management_destroyed(self,*_args: Any) -> None:
+        self._management_dialog=None
+
+    def _refresh_management_context(
+        self,section_key: str | None=None,mapping_name: str | None=None,
+    ) -> None:
+        dialog=self._management_dialog
+        if dialog is None:
+            return
+        section=str(section_key or dialog.section_key).strip()
+        mapping=str(mapping_name or dialog.mapping_name).strip()
+        if not section or not mapping:
+            return
+        try:
+            calibration=self.service.saved_calibration(section,mapping)
+            calibrated=bool(calibration.is_valid())
+            matrix=calibration._effective_matrix() if calibrated else None
+            matrix_text=(
+                "—" if matrix is None else
+                "[[%.6g, %.6g], [%.6g, %.6g]]" % (
+                    matrix[0][0],matrix[0][1],matrix[1][0],matrix[1][1]
+                )
+            )
+            provenance="—"
+            if calibrated:
+                pieces=[calibration.source or "unspecified source"]
+                if calibration.created_at: pieces.append(calibration.created_at)
+                metadata=dict(calibration.metadata or {})
+                observation=metadata.get("observation_plane")
+                source=metadata.get("measurement_source") or metadata.get("detector")
+                if observation: pieces.append("observation %s" % observation)
+                if source: pieces.append("source %s" % source)
+                provenance=" · ".join(str(v) for v in pieces if v)
+            names=self.controller.mapping_service.fov_correction_names(section,mapping)
+            default=self.controller.startup_preferences.default_fov_correction(section,mapping)
+            signature=None
+            if calibrated:
+                try: signature=base_mapping_signature(calibration)
+                except Exception: signature=None
+            rows=[]
+            for name in names:
+                correction=self.controller.mapping_service.load_fov_correction(section,mapping,name)
+                compatible=bool(signature and correction.base_mapping_signature==signature)
+                prov=dict(correction.provenance or {})
+                details=[]
+                if prov.get("observation_plane"): details.append("observation %s" % prov["observation_plane"])
+                if prov.get("detector"): details.append("detector %s" % prov["detector"])
+                rows.append({
+                    "name":name,
+                    "compatibility":"Valid" if compatible else "Incompatible",
+                    "default":name==default,
+                    "provenance":" · ".join(details) or correction.created_at or "—",
+                })
+            dialog.set_mapping_summary({
+                "calibrated":calibrated,
+                "metrics":("—" if not calibrated else "%.6g, %.6g" % (calibration.kx_per_um,calibration.ky_per_um)),
+                "matrix":matrix_text,
+                "provenance":provenance,
+                "default_fov":default,
+                "fov_rows":rows,
+            })
+            geometry_rows=[]
+            for plane in self.controller.observation_plane_service.list():
+                calibration_geometry=self.controller.observation_geometry_service.calibration(section,plane.name)
+                geometry_rows.append({
+                    "plane":plane.name,
+                    "status":"Calibrated" if calibration_geometry is not None else "Not calibrated",
+                    "details":(
+                        "—" if calibration_geometry is None else
+                        "%s · %s" % (calibration_geometry.orientation.value,calibration_geometry.created_at or "saved")
+                    ),
+                })
+            dialog.set_geometry_rows(geometry_rows)
+        except Exception as error:
+            self._error("Calibration Manager refresh failed",error)
+
+    @QtCore.Slot(str,str)
+    def _management_start_base_calibration(self,section_key: str,mapping_name: str) -> None:
+        if self.service.active_mapping(section_key) != mapping_name:
+            if not self.set_active_mapping(section_key,mapping_name):
+                return
+        self.open_dialog(section_key)
+
+    @QtCore.Slot(str,str)
+    def _management_delete_base_calibration(self,section_key: str,mapping_name: str) -> None:
+        parent=self._management_dialog
+        if not confirm_calibration_deletion(mapping_name,parent):
+            return
+        try:
+            self.service.delete_mapping_calibration(section_key,mapping_name)
+            self.refresh_mappings(); self._refresh_management_context(section_key,mapping_name)
+        except Exception as error:
+            self._error("Delete SLM Calibration Failed",error)
+
+    @QtCore.Slot(str,str)
+    def _management_start_fov_calibration(self,section_key: str,mapping_name: str) -> None:
+        # Patch 8 keeps the existing Position workflow as the temporary producer.
+        # Patch 9 replaces this launch point with the dedicated editable-lattice workflow.
+        if self.service.active_mapping(section_key) != mapping_name:
+            if not self.set_active_mapping(section_key,mapping_name):
+                return
+        self.controller._feedback.open_fov_calibration(section_key)
+
+    @QtCore.Slot(str,str,str)
+    def _management_set_fov_default(self,section_key: str,mapping_name: str,name: str) -> None:
+        try:
+            calibration=self.service.saved_calibration(section_key,mapping_name)
+            correction=self.controller.mapping_service.load_fov_correction(section_key,mapping_name,name)
+            if not calibration.is_valid() or correction.base_mapping_signature != base_mapping_signature(calibration):
+                raise RuntimeError("Incompatible FOV corrections cannot be set as default.")
+            self.controller.startup_preferences.set_default_fov_correction(section_key,mapping_name,name)
+            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self._refresh_management_context(section_key,mapping_name)
+        except Exception as error:
+            self._error("Set default FOV correction failed",error)
+
+    @QtCore.Slot(str,str,str)
+    def _management_inspect_fov(self,section_key: str,mapping_name: str,name: str) -> None:
+        try:
+            correction=self.controller.mapping_service.load_fov_correction(section_key,mapping_name,name)
+            QtWidgets.QMessageBox.information(
+                self._management_dialog,"FOV correction",
+                "%s\n\nModel: %s degree %d\nSamples: %d\nRMS residual: %.6g kxy\nMax residual: %.6g kxy\nCreated: %s"
+                % (name,correction.model,correction.degree,correction.sample_count,
+                   correction.rms_residual_kxy,correction.max_residual_kxy,
+                   correction.created_at or "—"),
+            )
+        except Exception as error:
+            self._error("Inspect FOV correction failed",error)
+
+    @QtCore.Slot(str,str,str)
+    def _management_delete_fov(self,section_key: str,mapping_name: str,name: str) -> None:
+        answer=QtWidgets.QMessageBox.question(
+            self._management_dialog,"Delete FOV correction",
+            'Delete FOV correction "%s"?' % name,
+            QtWidgets.QMessageBox.Yes|QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            self.controller.mapping_service.delete_fov_correction(section_key,mapping_name,name)
+            if self.controller.startup_preferences.default_fov_correction(section_key,mapping_name)==name:
+                self.controller.startup_preferences.set_default_fov_correction(section_key,mapping_name,None)
+            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self._refresh_management_context(section_key,mapping_name)
+        except Exception as error:
+            self._error("Delete FOV correction failed",error)
+
+    @QtCore.Slot(str,str)
+    def _management_start_geometry_calibration(self,section_key: str,plane_name: str) -> None:
+        self.controller._feedback.open_geometry_calibration(section_key,plane_name)
+
+    @QtCore.Slot()
+    def open_observation_planes_manager(self) -> None:
+        dialog=self._observation_planes_dialog
+        if dialog is None:
+            dialog=ObservationPlanesManagerDialog(
+                self.controller.observation_plane_service,
+                parent=None if self._management_dialog is None else self._management_dialog,
+            )
+            self._observation_planes_dialog=dialog
+            dialog.sigChanged.connect(self._observation_planes_changed)
+            dialog.destroyed.connect(lambda *_args:setattr(self,"_observation_planes_dialog",None))
+        else:
+            dialog.refresh()
+        dialog.show(); dialog.raise_(); dialog.activateWindow()
+
+    def define_observation_plane(
+        self,*,parent: QtWidgets.QWidget | None=None,
+    ) -> str | None:
+        dialog=ObservationPlaneEditorDialog(parent=parent)
+        if dialog.exec_()!=QtWidgets.QDialog.Accepted:
+            return None
+        try:
+            value=self.controller.observation_plane_service.add(dialog.definition())
+            self._observation_planes_changed()
+            return value.name
+        except Exception as error:
+            self._error("Add observation plane failed",error)
+            return None
+
+    def _observation_planes_changed(self) -> None:
+        valid={plane.name for plane in self.controller.observation_plane_service.list()}
+        for section in tuple(self.controller.runtime.section_keys):
+            current=self.controller.feedback_service.active_observation_plane(section)
+            if current is not None and current not in valid:
+                self.controller.feedback_service.select_observation_plane(section,None)
+            state=self.service.target_state(section)
+            if state is not None and state.observation_plane_name not in valid:
+                self.service.select_target_observation_plane(section,None)
+        for section,dialog in tuple(self._dialogs.items()):
+            state=self.service.ensure_target_context(section)
+            names,selected,default_pixel_size=self._observation_context(section,state)
+            dialog.configure_observation_planes(names,selected,default_pixel_size)
+        self.controller._feedback.refresh_observation_planes()
+        if self._management_dialog is not None:
+            self._refresh_management_context(
+                self._management_dialog.section_key,self._management_dialog.mapping_name,
+            )
+
+    # ------------------------------------------------------------------
     # Calibration dialog / target workflow presentation
     # ------------------------------------------------------------------
 
@@ -278,6 +544,9 @@ class CalibrationManager(QtCore.QObject):
                 lambda plane,key=section_key:self._on_observation_plane_changed(
                     key,plane,
                 )
+            )
+            dialog.sigDefineObservationPlaneRequested.connect(
+                lambda key=section_key:self._define_observation_for_calibration(key)
             )
             dialog.sigLocalizationRunRequested.connect(
                 lambda parameters,key=section_key:self.run_target_localization(
@@ -348,6 +617,17 @@ class CalibrationManager(QtCore.QObject):
                 selected
             ).default_pixel_size_um
         return names,selected,default_pixel_size
+
+    def _define_observation_for_calibration(self,section_key: str) -> None:
+        dialog=self._dialogs.get(section_key)
+        name=self.define_observation_plane(parent=dialog)
+        if name is not None:
+            self._on_observation_plane_changed(section_key,name)
+            return
+        if dialog is not None:
+            state=self.service.ensure_target_context(section_key)
+            names,selected,default_pixel_size=self._observation_context(section_key,state)
+            dialog.configure_observation_planes(names,selected,default_pixel_size)
 
     def _on_observation_plane_changed(
         self,section_key: str,observation_plane_name: str | None,
@@ -580,6 +860,7 @@ class CalibrationManager(QtCore.QObject):
             else:
                 raise ValueError("Unknown calibration method %r" % method)
             self.refresh_mappings()
+            self._refresh_management_context(section_key,mapping)
             self.controller.sigInfo.emit(
                 "SLM Section Calibration",
                 "Saved calibration for %s/%s (%s):\n"
@@ -645,6 +926,10 @@ class CalibrationManager(QtCore.QObject):
 
     def prepare_runtime_replacement(self) -> None:
         self.close_all_dialogs()
+        if self._management_dialog is not None:
+            self._management_dialog.close(); self._management_dialog=None
+        if self._observation_planes_dialog is not None:
+            self._observation_planes_dialog.close(); self._observation_planes_dialog=None
         self._disconnect_collection()
 
     def runtime_replaced(self) -> None:
@@ -666,6 +951,10 @@ class CalibrationManager(QtCore.QObject):
         if self._disposed:
             return
         self.close_all_dialogs()
+        if self._management_dialog is not None:
+            self._management_dialog.close(); self._management_dialog=None
+        if self._observation_planes_dialog is not None:
+            self._observation_planes_dialog.close(); self._observation_planes_dialog=None
         self._disconnect_collection()
         try:
             self.controller.sigAutomaticOperationChanged.disconnect(

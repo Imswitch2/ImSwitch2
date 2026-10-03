@@ -289,6 +289,35 @@ class SLMCalibrationService:
         self._require_mappings().delete(name)
         return self._require_store().delete_mapping_calibrations(name)
 
+    def saved_calibration(
+        self,section_key: str,mapping_name: str,
+    ) -> SLMSectionCalibration:
+        """Load one persisted base calibration without changing active mapping state."""
+        self._require_section(section_key)
+        mapping = str(mapping_name or "").strip()
+        if not mapping:
+            raise ValueError("mapping_name must not be empty")
+        self.mapping_definition(mapping)
+        return self._require_store().load_calibration(
+            self.session.runtime.identity,str(section_key),mapping,
+        )
+
+    def delete_mapping_calibration(
+        self,section_key: str,mapping_name: str,
+    ) -> str | None:
+        """Delete one persisted base calibration while preserving the mapping profile."""
+        self._require_editor_mode()
+        self._require_section(section_key)
+        mapping = str(mapping_name or "").strip()
+        if not mapping:
+            raise ValueError("mapping_name must not be empty")
+        self.mapping_definition(mapping)
+        if self.active_mapping(section_key) == mapping:
+            return self.delete_calibration(section_key)
+        return self._require_store().delete_calibration(
+            self.session.runtime.identity,str(section_key),mapping,
+        )
+
     def delete_calibration(self,section_key: str) -> str | None:
         """Delete only the active mapping calibration, preserving mapping selection."""
         self._require_editor_mode()

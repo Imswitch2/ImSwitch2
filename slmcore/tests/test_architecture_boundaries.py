@@ -76,3 +76,24 @@ def test_normal_qt_application_mutations_route_through_application_session():
     )
     assert binding.count("self.runtime.apply_section_patch(") == 1
     assert binding.count("self.runtime.restore_section_current_cgh_target(") == 1
+
+
+def test_patch8_calibration_management_has_distinct_persistent_domains():
+    root = _package_root()
+    ui = (root / "qt" / "calibration" / "management_dialogs.py").read_text(encoding="utf-8")
+    manager = (root / "qt" / "application" / "calibration" / "manager.py").read_text(encoding="utf-8")
+    assert '"Mapping Calibration"' in ui
+    assert '"Observation Geometry"' in ui
+    assert '"Observation Planes…"' in ui
+    assert "sigCalibrationRequested.connect(self.open_management)" in manager
+    assert "sigCalibrationRequested.connect(self.open_dialog)" not in manager
+
+
+def test_patch8_observation_plane_editor_is_shared_by_measurement_selectors():
+    root = _package_root()
+    calibration = (root / "qt" / "calibration" / "dialog.py").read_text(encoding="utf-8")
+    feedback = (root / "qt" / "cgh" / "session_window.py").read_text(encoding="utf-8")
+    manager = (root / "qt" / "application" / "calibration" / "manager.py").read_text(encoding="utf-8")
+    assert "Define new observation plane…" in calibration
+    assert "Define new observation plane…" in feedback
+    assert "ObservationPlaneEditorDialog" in manager

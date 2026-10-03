@@ -168,6 +168,18 @@ class SLMQtSession(QtCore.QObject):
         return self._application_session.calibration
 
     @property
+    def mapping_service(self):
+        return self._application_session.mappings
+
+    @property
+    def observation_plane_service(self):
+        return self._application_session.observation_planes
+
+    @property
+    def observation_geometry_service(self):
+        return self._application_session.observation_geometry
+
+    @property
     def auto_upload_frame(self) -> bool:
         return self._application_session.auto_upload_frame
 

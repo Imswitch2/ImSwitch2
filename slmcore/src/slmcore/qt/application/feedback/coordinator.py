@@ -183,6 +183,9 @@ class FeedbackCoordinator(QtCore.QObject):
                     lambda action,options,key=section_key:
                         self._on_action(key,action,options)
                 )
+                window.sigDefineObservationPlaneRequested.connect(
+                    lambda key=section_key:self._define_observation_plane(key)
+                )
                 window.destroyed.connect(
                     lambda _obj=None,key=section_key:
                         self._windows.pop(key,None)
@@ -213,6 +216,34 @@ class FeedbackCoordinator(QtCore.QObject):
             window.close()
             window.deleteLater()
         self._windows.clear()
+
+    def refresh_observation_planes(self) -> None:
+        for section_key in tuple(self._windows):
+            self.synchronize_section(section_key)
+
+    def _define_observation_plane(self,section_key: str) -> None:
+        window=self._windows.get(section_key)
+        name=self._qt_session._calibration.define_observation_plane(parent=window)
+        if name is None:
+            self.synchronize_section(section_key)
+            return
+        try:
+            self._feedback_service.select_observation_plane(section_key,name)
+        finally:
+            self.synchronize_section(section_key)
+
+    def open_fov_calibration(self,section_key: str) -> None:
+        self.open_window(section_key)
+        window=self._windows.get(section_key)
+        if window is not None:
+            window.show_position_feedback_tab()
+
+    def open_geometry_calibration(self,section_key: str,plane_name: str) -> None:
+        self._feedback_service.select_observation_plane(section_key,plane_name)
+        self.open_window(section_key)
+        window=self._windows.get(section_key)
+        if window is not None:
+            window.show_geometry_calibration_tab()
 
     def synchronize_section(self,section_key: str) -> None:
         window = self._windows.get(section_key)

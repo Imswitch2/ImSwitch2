@@ -12,6 +12,7 @@ from ..measurement.localization_view import MeasurementLocalizationView
 
 LINEAR_PHASE_METHOD = "linear_phase"
 TARGET_LOCALIZATION_METHOD = "target_localization"
+_DEFINE_OBSERVATION_PLANE = "__define_observation_plane__"
 
 
 def _default_values(specs: Mapping[str,Any]) -> dict[str, Any]:
@@ -32,6 +33,7 @@ class CalibrationDialog(QtWidgets.QDialog):
     sigAcquireRequested = QtCore.Signal(str)
     sigLoadRequested = QtCore.Signal()
     sigObservationPlaneChanged = QtCore.Signal(object)
+    sigDefineObservationPlaneRequested = QtCore.Signal()
     sigLocalizationRunRequested = QtCore.Signal(object)
     sigCalibrationRequested = QtCore.Signal(str,object)
     sigMethodChanged = QtCore.Signal(str)
@@ -168,6 +170,8 @@ class CalibrationDialog(QtWidgets.QDialog):
     @property
     def current_observation_plane(self) -> str | None:
         value = self._observation_combo.currentData()
+        if value == _DEFINE_OBSERVATION_PLANE:
+            return None
         return str(value).strip() if value is not None and str(value).strip() else None
 
     @property
@@ -182,6 +186,13 @@ class CalibrationDialog(QtWidgets.QDialog):
 
     def clear_target_pixel_size_override(self) -> None:
         self._pixel_size_edit.clear()
+
+    def _on_observation_combo_changed(self,_index: int) -> None:
+        value=self._observation_combo.currentData()
+        if value == _DEFINE_OBSERVATION_PLANE:
+            self.sigDefineObservationPlaneRequested.emit()
+            return
+        self.sigObservationPlaneChanged.emit(self.current_observation_plane)
 
     def configure_observation_planes(
         self,
@@ -198,6 +209,10 @@ class CalibrationDialog(QtWidgets.QDialog):
             self._observation_combo.addItem("Select observation plane...",None)
             for name in names:
                 self._observation_combo.addItem(name,name)
+            self._observation_combo.addSeparator()
+            self._observation_combo.addItem(
+                "Define new observation plane…",_DEFINE_OBSERVATION_PLANE,
+            )
             index = self._observation_combo.findData(current_observation_plane)
             if index < 0:
                 index = 0
@@ -361,9 +376,7 @@ class CalibrationDialog(QtWidgets.QDialog):
         self._observation_combo = QtWidgets.QComboBox()
         self._observation_combo.setMinimumWidth(170)
         self._observation_combo.currentIndexChanged.connect(
-            lambda _index:self.sigObservationPlaneChanged.emit(
-                self.current_observation_plane
-            )
+            self._on_observation_combo_changed
         )
         context_row.addWidget(self._observation_combo)
         context_row.addSpacing(12)
