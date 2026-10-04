@@ -73,11 +73,34 @@ This is a clean-slate continuation of the [ImSwitch](https://github.com/ImSwitch
 
 ## Quick start
 
+Two ways in: a ready-made installer, or `pip`.
+
+### Download a ready-made installer
+
+**Don't want to manage a Python environment?**  Every [release](https://github.com/Imswitch2/Imswitch2/releases) ships a standalone build with Python and every dependency inside it — nothing else to install.
+
+| | Download | Size |
+|---|---|---|
+| **Windows** (64-bit) | [**ImSwitch2-win64-setup.exe**](https://github.com/Imswitch2/Imswitch2/releases/latest/download/ImSwitch2-win64-setup.exe) | ~135 MB |
+| **macOS** (Apple Silicon) | [**ImSwitch2-macOS-arm64.dmg**](https://github.com/Imswitch2/Imswitch2/releases/latest/download/ImSwitch2-macOS-arm64.dmg) | ~175 MB |
+
+Both links always point at the newest release.  Three things to know before you click:
+
+* **They are unsigned.**  Windows SmartScreen says "unrecognized app" — choose *More info* → *Run anyway*.  macOS refuses to open it at all on first launch — right-click **ImSwitch2** and choose *Open*.  Nothing is wrong with the download; code-signing certificates cost money the project has not spent yet.
+* **A bundled Imswitch2 cannot load pip-installed device plugins or vendor SDKs**, and scripts in it can only import what was bundled.  Great for analysis, teaching and trying it out; for a microscope, install with `pip` instead.
+* **macOS is Apple Silicon only**, and in practice macOS runs the analysis side — NI-DAQmx has no macOS support at all, and the Thorlabs and TIS camera SDKs are Windows/Linux only.
+
+Having trouble, or want to build one yourself?  See [`docs/packaging.rst`](docs/packaging.rst).
+
+### Install with Python
+
 > Requires **Python 3.10+** and **PyQt5**.  Windows / macOS / Linux all supported.
 
-**Don't want to manage a Python environment?**  Windows and macOS installers are attached to every [release](https://github.com/Imswitch2/Imswitch2/releases).  They are unsigned, so SmartScreen and Gatekeeper both complain on first launch, and a bundled Imswitch2 cannot load pip-installed device plugins or vendor SDKs — fine for analysis and for trying it out, not for a rig.  See [`docs/packaging.rst`](docs/packaging.rst).
+`pip install imswitch2`, then run `imswitch`.  This is the right choice for a
+microscope: a `pip` install can load device plugins and vendor SDKs, and a
+bundled one cannot.
 
-**Already have Python?**  `pip install imswitch2`, then `imswitch`.  The clone below is for developing on Imswitch2 itself, and for the newest fixes — PyPI releases trail `main`.
+Clone instead to develop on Imswitch2 itself, or for the newest fixes — PyPI releases trail `main`:
 
 ```bash
 # 1. Clone and install (core install — UI + file I/O, no hardware drivers)
