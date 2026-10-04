@@ -1,53 +1,139 @@
 name: imswitch-bundle
 
-# DISABLED tag trigger.  The job uses `actions/upload-artifact@v2`,
-# which GitHub hard-deprecated on 2024-11-30; runs fail at validation
-# in ~3 seconds before any real work.  `actions/checkout@v2` and
-# `actions/setup-python@v2` below are also deprecated.
+# Builds the standalone ImSwitch2 bundles with PyInstaller and attaches the
+# installers to the GitHub release.
 #
-# To reactivate:
-#   - Bump to actions/checkout@v4, actions/setup-python@v5,
-#     actions/upload-artifact@v4.
-#   - Verify the imswitch.spec PyInstaller build still works under
-#     newer Python (Python 3.9 in the matrix is end-of-life; consider
-#     3.11+).
-#   - Restore the `push:` block below.
+# This runs alongside imswitch-pypi.yml on the same trigger, so publishing a
+# release ships three things: the sdist/wheel to PyPI, a Windows Setup .exe and
+# a macOS .dmg.  The two workflows are separate because they fail for unrelated
+# reasons -- a broken bundle should not block a PyPI upload, or the reverse.
 #
-# workflow_dispatch stays available for manual testing during the fix.
+# Releasing: see the header of imswitch-pypi.yml.  As there, a release runs this
+# file as it exists at the tagged commit, so changes here must be merged before
+# tagging.
+#
+# No Trusted Publishing and no secret: uploading a release asset uses the
+# run's own GITHUB_TOKEN, which is why `contents: write` is scoped to the one
+# job that needs it.
+#
+# `workflow_dispatch` builds without touching any release, which is the way to
+# test a change to the spec or to either build script.
+
 on:
+  release:
+    types: [published]
   workflow_dispatch:
-  # push:
-  #   tags:
-  #     - '*'
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-
+  bundle:
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write        # only to attach assets to the release
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest]
+        include:
+          - os: windows-latest
+            name: windows-x64
+            # The unpacked tree is ~400 MB and useless to a user; the installer
+            # is the deliverable.
+            asset_glob: dist/*setup.exe
+          - os: macos-14      # Apple Silicon runner
+            name: macos-arm64
+            # Never dist/ImSwitch2.app directly: GitHub re-zips artifacts
+            # without the executable bit, which leaves a .app that cannot
+            # launch.  A disk image survives the round trip intact.
+            asset_glob: dist/*.dmg
 
     steps:
-    - uses: actions/checkout@v2
-      with:
-        ref: ${{ github.ref }}
-    - name: Set up Python 3.9
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.9
-    - name: Install dependencies
-      run: |
-        python3 -m pip install --upgrade pip
-        python3 -m pip install .
-        python3 -m pip install pyinstaller
-      shell: bash
-    - name: Build bundle
-      run: |
-        pyinstaller imswitch.spec
-    - name: Upload artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: imswitch-${{ matrix.os }}
-        path: dist
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Installing the built wheel rather than the source tree keeps the
+      # editable-install import hook out of PyInstaller's module graph, and is
+      # the only way the bundle gets correct `imswitch2` distribution metadata
+      # -- which npe2 and the device plugin registry both read.  Same reason
+      # release/{windows,macos}/ build a wheel locally.
+      - name: Build and install wheel
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip build "pyinstaller>=6.11"
+          python -m build --outdir wheelhouse .
+          python -m pip install wheelhouse/*.whl
+
+      - name: Run PyInstaller
+        shell: bash
+        run: pyinstaller imswitch.spec --noconfirm --clean
+
+      # "It built" says almost nothing: the failures that matter are the quiet
+      # ones, where the app starts but napari's plugin metadata never made it
+      # in.  --bundle-selftest checks those and exits non-zero.  The runners
+      # have no display, so the one check that needs a GL context reports itself
+      # as skipped rather than running.
+      - name: Self-test the bundle
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            ./dist/ImSwitch2/ImSwitch2.exe --bundle-selftest
+          else
+            ./dist/ImSwitch2/ImSwitch2 --bundle-selftest
+          fi
+
+      # Inno Setup shipped with the windows-2022 image but is not on
+      # windows-2025, which windows-latest now resolves to.
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f %%i in ('python -c "import imswitch; print(imswitch.__version__)"') do set V=%%i
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAPP_VERSION=%V% /DSOURCE_DIR="%CD%\dist\ImSwitch2" /DOUTPUT_DIR="%CD%\dist" release\windows\imswitch_innoinstaller.iss
+
+      - name: Build macOS DMG
+        if: runner.os == 'macOS'
+        run: |
+          VERSION=$(python -c "import imswitch; print(imswitch.__version__)")
+          codesign --force --deep --sign - dist/ImSwitch2.app
+          # hdiutil is part of macOS, so this needs no `brew install`; the local
+          # script prefers create-dmg when it is there, purely for the window
+          # layout.  create-dmg also images a *directory*, never the app itself.
+          mkdir -p dist/dmg-staging
+          cp -R dist/ImSwitch2.app dist/dmg-staging/
+          ln -s /Applications dist/dmg-staging/Applications
+          hdiutil create \
+            -volname "ImSwitch2 $VERSION" \
+            -srcfolder dist/dmg-staging \
+            -ov -format UDZO \
+            "dist/ImSwitch2-$VERSION-macOS-arm64.dmg"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imswitch2-${{ matrix.name }}
+          path: ${{ matrix.asset_glob }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # Only on a release.  A workflow_dispatch run leaves the artifact above
+      # and touches nothing published.
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: gh release upload "$TAG" ${{ matrix.asset_glob }} --clobber
