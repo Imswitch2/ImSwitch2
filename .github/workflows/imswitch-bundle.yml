@@ -42,12 +42,14 @@ jobs:
             # The unpacked tree is ~400 MB and useless to a user; the installer
             # is the deliverable.
             asset_glob: dist/*setup.exe
+            release_asset: ImSwitch2-win64-setup.exe
           - os: macos-14      # Apple Silicon runner
             name: macos-arm64
             # Never dist/ImSwitch2.app directly: GitHub re-zips artifacts
             # without the executable bit, which leaves a .app that cannot
             # launch.  A disk image survives the round trip intact.
             asset_glob: dist/*.dmg
+            release_asset: ImSwitch2-macOS-arm64.dmg
 
     steps:
       - uses: actions/checkout@v4
@@ -130,10 +132,20 @@ jobs:
 
       # Only on a release.  A workflow_dispatch run leaves the artifact above
       # and touches nothing published.
+      # Uploaded under a name with no version in it, so that
+      # https://github.com/<owner>/<repo>/releases/latest/download/<name>
+      # resolves for good: that redirect matches on the exact file name, so a
+      # versioned asset means every link to it in the README or the docs breaks
+      # on the next release.  The version is on the release itself, and in the
+      # installer; the build artifact above keeps the versioned file name, so CI
+      # runs stay traceable.
       - name: Attach to the release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
         shell: bash
-        run: gh release upload "$TAG" ${{ matrix.asset_glob }} --clobber
+        run: |
+          built=$(ls ${{ matrix.asset_glob }} | head -1)
+          cp "$built" "dist/${{ matrix.release_asset }}"
+          gh release upload "$TAG" "dist/${{ matrix.release_asset }}" --clobber

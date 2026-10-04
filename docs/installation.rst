@@ -5,12 +5,18 @@ Installation
 ImSwitch2 is a Python application.  Install it with ``pip`` from PyPI, or
 from a source checkout.
 
-Standalone **Windows and macOS installers** are attached to each
-`GitHub release <https://github.com/Imswitch2/Imswitch2/releases>`_ for
-people who would rather not own a Python environment.  They are unsigned, so
-Windows SmartScreen and macOS Gatekeeper both complain on first launch, and a
-bundle cannot load pip-installed device plugins or vendor SDKs — a ``pip``
-install remains the right choice for a rig.  See :doc:`packaging`.
+Standalone **installers** are attached to each release for people who would
+rather not own a Python environment.  Both links always point at the newest one:
+
+* Windows (64-bit): `ImSwitch2-win64-setup.exe
+  <https://github.com/Imswitch2/Imswitch2/releases/latest/download/ImSwitch2-win64-setup.exe>`_
+* macOS (Apple Silicon): `ImSwitch2-macOS-arm64.dmg
+  <https://github.com/Imswitch2/Imswitch2/releases/latest/download/ImSwitch2-macOS-arm64.dmg>`_
+
+They are unsigned, so Windows SmartScreen and macOS Gatekeeper both complain on
+first launch, and a bundle cannot load pip-installed device plugins or vendor
+SDKs — a ``pip`` install remains the right choice for a rig.  See
+:doc:`packaging`.
 
 Requirements
 ============
