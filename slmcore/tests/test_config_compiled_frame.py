@@ -37,7 +37,7 @@ def test_store_reads_compiled_frame_without_reconstructing_sections(tmp_path):
     assert not compiled.final_eightbit.flags.writeable
 
 
-def test_compiled_frame_reader_requires_current_schema(tmp_path):
+def test_compiled_frame_reader_accepts_schema1_without_migrating_sections(tmp_path):
     runtime = _runtime()
     store = SLMConfigStore(tmp_path,DEFAULT_REGISTRIES)
     path = store.resolve("compiled.h5")
@@ -47,7 +47,24 @@ def test_compiled_frame_reader_requires_current_schema(tmp_path):
         group = handle["config"]
         if "schema_version" in group:
             del group["schema_version"]
-        group.attrs["schema_version"] = str(SLM_CONFIG_SCHEMA_VERSION - 1)
+        group.attrs["schema_version"] = "1"
 
-    with pytest.raises(ValueError,match="requires schema version"):
+    compiled = store.read_compiled_frame(path)
+    assert compiled.identity == runtime.identity
+    assert compiled.geometry == runtime.geometry
+
+
+def test_compiled_frame_reader_rejects_unknown_schema(tmp_path):
+    runtime = _runtime()
+    store = SLMConfigStore(tmp_path,DEFAULT_REGISTRIES)
+    path = store.resolve("compiled.h5")
+    store.save(path,runtime.create_config(),"compiled",overwrite=False)
+
+    with h5py.File(str(path),"r+") as handle:
+        group = handle["config"]
+        if "schema_version" in group:
+            del group["schema_version"]
+        group.attrs["schema_version"] = str(SLM_CONFIG_SCHEMA_VERSION + 1)
+
+    with pytest.raises(ValueError,match="supports schema version"):
         store.read_compiled_frame(path)

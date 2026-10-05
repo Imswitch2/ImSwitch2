@@ -4,6 +4,7 @@ from .model import (
     SLMCompiledFrame,
     SLMConfig,
     SLMSectionConfig,
+    migrate_slm_config_dict,
 )
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "SLMConfig",
     "SLMConfigLoadReport",
     "SLMSectionConfig",
+    "migrate_slm_config_dict",
 ]

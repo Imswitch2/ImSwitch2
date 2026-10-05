@@ -34,7 +34,45 @@ from ..engine.corrections import ResolvedCorrections
 from ..engine.state import ConfigPath,ConfigWarning
 
 
-SLM_CONFIG_SCHEMA_VERSION = 1
+SLM_CONFIG_SCHEMA_VERSION = 2
+
+
+def migrate_slm_config_dict(
+    data: Mapping[str,Any],
+) -> tuple[dict[str,Any], tuple[ConfigWarning, ...]]:
+    """Migrate a serialized SLM config dictionary to the current schema.
+
+    Schema 1 persisted CGH-session signatures using the pre-v2 context
+    signature semantics.  Those session objects are derived/recomputable and
+    cannot be restored safely under schema 2, so the v1 -> v2 migration keeps
+    the section/target configuration but drops only ``cgh_session``.
+    """
+    version = int(data.get("schema_version",SLM_CONFIG_SCHEMA_VERSION))
+    if version == SLM_CONFIG_SCHEMA_VERSION:
+        return dict(data),()
+    if version != 1:
+        raise ValueError(
+            f"Unsupported SLM config schema version {version}; "
+            f"expected 1 or {SLM_CONFIG_SCHEMA_VERSION}"
+        )
+
+    migrated = dict(data)
+    migrated_sections = {}
+    warnings = []
+    sections = data.get("sections",{}) or {}
+    for key,section_data in sections.items():
+        section = dict(section_data)
+        if section.get("cgh_session") is not None:
+            warnings.append(ConfigWarning(
+                ("sections",str(key),"cgh_session"),
+                "Discarded legacy persisted CGH session while migrating "
+                "SLM config schema 1 to 2; recompute the CGH for this section.",
+            ))
+        section["cgh_session"] = None
+        migrated_sections[key] = section
+    migrated["sections"] = migrated_sections
+    migrated["schema_version"] = SLM_CONFIG_SCHEMA_VERSION
+    return migrated,tuple(warnings)
 
 
 @dataclass(frozen=True)
@@ -183,17 +221,10 @@ class SLMConfig:
     def from_dict(
         cls,data: Mapping[str,Any],registries: SLMRegistries,
     ) -> tuple['SLMConfig', tuple[ConfigWarning, ...]]:
-        version = int(data.get(
-            "schema_version",SLM_CONFIG_SCHEMA_VERSION
-        ))
+        data,migration_warnings = migrate_slm_config_dict(data)
+        version = int(data["schema_version"])
 
-        if version != SLM_CONFIG_SCHEMA_VERSION:
-            raise ValueError(
-                f"Unsupported SLM config schema version {version}; "
-                f"expected {SLM_CONFIG_SCHEMA_VERSION}"
-            )
-
-        warnings = []
+        warnings = list(migration_warnings)
         sections = {}
 
         for key,section_data in data.get("sections",{}).items():

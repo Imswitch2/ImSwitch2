@@ -31,6 +31,7 @@ _CREATED_AT_ATTR = "created_at"
 _INFO_ATTR = "info"
 _SUPPORTED_EXTENSIONS = (".h5",".hdf5")
 _MAX_DIFF_LINES = 500
+_FAST_ACTIVATION_SCHEMA_VERSIONS = frozenset({1,SLM_CONFIG_SCHEMA_VERSION})
 
 
 @dataclass(frozen=True)
@@ -192,8 +193,8 @@ class _ConfigFileStore:
         """Read only the persisted identity, geometry and final uint8 frame.
 
         This intentionally bypasses registry-aware section reconstruction and
-        config migration. Fast activation therefore accepts only current
-        complete HDF5 configs that already contain ``final_eightbit``.
+        config migration. Schema 1 and 2 share the compiled-frame envelope, so
+        fast activation can safely use either without restoring CGH state.
         """
         path = self._normalize_path(path)
         self._validate_load_path(path)
@@ -212,10 +213,13 @@ class _ConfigFileStore:
             ):
                 raise ValueError("SLM config is missing schema_version")
             version = int(read_value(config_group,"schema_version"))
-            if version != SLM_CONFIG_SCHEMA_VERSION:
+            if version not in _FAST_ACTIVATION_SCHEMA_VERSIONS:
+                supported = ", ".join(
+                    str(item) for item in sorted(_FAST_ACTIVATION_SCHEMA_VERSIONS)
+                )
                 raise ValueError(
-                    "Fast config activation requires schema version %d; got %d"
-                    % (SLM_CONFIG_SCHEMA_VERSION,version)
+                    "Fast config activation supports schema version(s) %s; got %d"
+                    % (supported,version)
                 )
 
             for name in ("identity","geometry","final_eightbit"):
