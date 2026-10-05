@@ -832,9 +832,11 @@ class SLMCalibrationService:
             return measurement
         plane_name = self._require_target_observation_plane(state)
         plane = self.observation_planes.get(plane_name)
-        pixel_size_um = plane.default_pixel_size_um
+        # An explicit workflow value overrides the observation-plane fallback.
+        # A scale carried by the measurement itself remains authoritative above.
+        pixel_size_um = state.pixel_size_um_override
         if pixel_size_um is None:
-            pixel_size_um = state.pixel_size_um_override
+            pixel_size_um = plane.default_pixel_size_um
         if pixel_size_um is None:
             if require:
                 raise RuntimeError(

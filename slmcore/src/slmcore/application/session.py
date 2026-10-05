@@ -23,11 +23,12 @@ from .observation import ObservationPlaneService
 from .observation_geometry import ObservationGeometryService
 from .mapping import MappingService
 from .feedback import (
-    AutomaticFeedbackState,GeometryCalibrationPayload,MeasurementDispatcher,SLMFeedbackCallbacks,
+    AutomaticFeedbackState,MeasurementDispatcher,SLMFeedbackCallbacks,
     SLMFeedbackService,
 )
 from .calibration import SLMCalibrationCallbacks,SLMCalibrationService
 from .fov_calibration import FOVCalibrationService
+from .geometry_calibration import GeometryCalibrationPayload,GeometryCalibrationService
 from .section_layout import PreparedSectionLayoutChange,SLMSectionLayoutService
 
 if TYPE_CHECKING:
@@ -151,6 +152,12 @@ class SLMSession:
         self.observation_geometry = ObservationGeometryService(
             lambda: self.runtime.identity, geometry_orientation_calibration_store,
         )
+        self.geometry_calibration = GeometryCalibrationService(
+            self,
+            observation_planes=self.observation_planes,
+            observation_geometry=self.observation_geometry,
+            measurements=measurement_dispatcher,
+        )
 
         # Application services are owned by this session. They may coordinate
         # runtime operations, but presentation adapters remain outside this layer.
@@ -161,6 +168,7 @@ class SLMSession:
             position_reference_store=position_reference_store,
             mappings=self.mappings,
             observation_geometry=self.observation_geometry,
+            geometry_calibration=self.geometry_calibration,
         )
         self.calibration = SLMCalibrationService(
             self,
@@ -243,6 +251,7 @@ class SLMSession:
             raise RuntimeError("Cannot replace runtime while CGH computation is active")
         self.feedback.prepare_runtime_change()
         self.calibration.prepare_runtime_change()
+        self.geometry_calibration.prepare_runtime_change()
         self.runtime = runtime
         self._upload_pending = False
         self._last_upload_error = None
@@ -276,6 +285,7 @@ class SLMSession:
         service = self._require_configuration()
         self.feedback.prepare_runtime_change()
         self.calibration.prepare_runtime_change()
+        self.geometry_calibration.prepare_runtime_change()
         self.cancel_all_cgh()
         commit = service.commit_load(
             self.runtime,
@@ -536,6 +546,7 @@ class SLMSession:
         self.feedback.set_measurement_dispatcher(measurements)
         self.calibration.set_measurement_dispatcher(measurements)
         self.fov_calibration.set_measurement_dispatcher(measurements)
+        self.geometry_calibration.set_measurement_dispatcher(measurements)
 
     @property
     def can_run_automatic_feedback(self) -> bool:
@@ -1132,6 +1143,7 @@ class SLMSession:
             return
         self.feedback.dispose()
         self.calibration.dispose()
+        self.geometry_calibration.dispose()
         for section_key in tuple(self.runtime.section_keys):
             self.fov_calibration.discard(section_key)
         self.cancel_all_cgh()

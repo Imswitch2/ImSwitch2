@@ -8,6 +8,9 @@ from .configuration import (
 )
 from .control_mode import SLMControlMode
 from .fov_calibration import FOVCalibrationService,FOVCalibrationState
+from .geometry_calibration import (
+    GeometryCalibrationContext,GeometryCalibrationPayload,GeometryCalibrationService,
+)
 from .feedback import (
     AutomaticFeedbackRunner,AutomaticFeedbackState,FeedbackParameterUpdateResult,
     MeasurementDispatcher,MeasurementRequest,PositionReferenceContext,
@@ -35,6 +38,9 @@ __all__ = [
     "FeedbackParameterUpdateResult",
     "FOVCalibrationService",
     "FOVCalibrationState",
+    "GeometryCalibrationContext",
+    "GeometryCalibrationPayload",
+    "GeometryCalibrationService",
     "MeasurementDispatcher",
     "MeasurementRequest",
     "MappingService",

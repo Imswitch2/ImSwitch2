@@ -193,9 +193,12 @@ class FOVCalibrationService:
         if not state.observation_plane_name: raise RuntimeError("Select an observation plane first.")
         if pixel_size_um is not None: self.set_pixel_size_override(section_key,mapping_name,pixel_size_um)
         scale=measurement.pixel_size_um
+        # A workflow override is explicit and therefore takes precedence over
+        # the observation-plane default.  Measurement metadata remains
+        # authoritative when present.
+        if scale is None: scale=state.pixel_size_um_override
         if scale is None:
             scale=self.observation_planes.get(state.observation_plane_name).default_pixel_size_um
-        if scale is None: scale=state.pixel_size_um_override
         if scale is not None and measurement.pixel_size_um!=scale:
             measurement=ImageMeasurement(
                 image=measurement.image,source=measurement.source,created_at=measurement.created_at,

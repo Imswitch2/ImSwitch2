@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from ..session import SLMSession
     from ..mapping import MappingService
     from ..observation_geometry import ObservationGeometryService
+    from ..geometry_calibration import GeometryCalibrationService
 
 
 class SLMFeedbackService:
@@ -64,6 +65,7 @@ class SLMFeedbackService:
         position_reference_store: PositionReferenceStore | None=None,
         mappings: "MappingService",
         observation_geometry: "ObservationGeometryService | None"=None,
+        geometry_calibration: "GeometryCalibrationService | None"=None,
     ) -> None:
         self._application_session = application_session
         self._callbacks = callbacks or SLMFeedbackCallbacks()
@@ -106,6 +108,7 @@ class SLMFeedbackService:
             feedback_measurement_metadata=self._measurement.feedback_measurement_metadata,
             update_committed_analysis=self._update_committed_analysis,
             observation_geometry=observation_geometry,
+            geometry_calibration=geometry_calibration,
         )
         self._references = PositionReferenceService(
             runtime_provider=runtime_provider,

@@ -30,6 +30,7 @@ from .interaction import (
 from .runtime_binding import SLMRuntimeViewBinding
 from .measurement_dispatcher import QtMeasurementDispatcher
 from .feedback.coordinator import FeedbackCoordinator
+from .geometry_calibration import GeometryCalibrationCoordinator
 from .section_settings import SectionSettingsManager
 from ..configuration.manager import QtConfigurationManager
 
@@ -127,6 +128,7 @@ class SLMQtSession(QtCore.QObject):
             parent=self,
         )
         self._application_session.set_measurement_dispatcher(self._measurements)
+        self._geometry_calibration = GeometryCalibrationCoordinator(self,parent=self)
         self._feedback = FeedbackCoordinator(self)
         self.sigAutomaticOperationChanged.connect(
             self._refresh_control_mode_availability,
@@ -182,6 +184,14 @@ class SLMQtSession(QtCore.QObject):
     @property
     def fov_calibration_service(self):
         return self._application_session.fov_calibration
+
+    @property
+    def geometry_calibration_service(self):
+        return self._application_session.geometry_calibration
+
+    @property
+    def geometry_calibration(self):
+        return self._geometry_calibration
 
     @property
     def auto_upload_frame(self) -> bool:
@@ -1238,6 +1248,7 @@ class SLMQtSession(QtCore.QObject):
         self._configuration.dispose()
         self._section_settings.dispose()
         self._calibration.dispose()
+        self._geometry_calibration.close_all()
         self._feedback.dispose()
         self._measurements.dispose()
         self.cancel_all_cgh()

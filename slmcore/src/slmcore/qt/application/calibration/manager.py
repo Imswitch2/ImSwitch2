@@ -65,6 +65,9 @@ class CalibrationManager(QtCore.QObject):
         )
         self.sigFovMeasurementReceived.connect(self._fov_measurement_received)
         self.sigFovMeasurementError.connect(self._fov_measurement_error)
+        self.controller.geometry_calibration.sigSaved.connect(
+            self._geometry_calibration_saved
+        )
         self.refresh_mappings()
 
     # ------------------------------------------------------------------
@@ -648,7 +651,17 @@ class CalibrationManager(QtCore.QObject):
 
     @QtCore.Slot(str,str)
     def _management_start_geometry_calibration(self,section_key: str,plane_name: str) -> None:
-        self.controller._feedback.open_geometry_calibration(section_key,plane_name)
+        self.controller.geometry_calibration.open(
+            section_key,plane_name,parent=self._management_dialog,
+        )
+
+    @QtCore.Slot(str,str)
+    def _geometry_calibration_saved(self,section_key: str,plane_name: str) -> None:
+        if self._management_dialog is not None:
+            self._refresh_management_context(section_key,self._management_dialog.mapping_name)
+        dialog=self._fov_dialogs.get(section_key)
+        if dialog is not None:
+            self._render_fov_state(section_key)
 
     @QtCore.Slot()
     def open_observation_planes_manager(self) -> None:

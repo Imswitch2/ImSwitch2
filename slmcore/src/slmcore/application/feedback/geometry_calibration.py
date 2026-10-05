@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ...core.cgh.targets.resolution import TargetResolution
     from ...core.engine.runtime import SLMRuntime
     from ..observation_geometry import ObservationGeometryService
+    from ..geometry_calibration import GeometryCalibrationService
     from ..startup_preferences import StartupPreferencesState
     from .contracts import SLMFeedbackCallbacks
 
@@ -98,6 +99,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         feedback_measurement_metadata: Callable[[str],dict[str,Any]],
         update_committed_analysis: Callable[[str,LocalizationResult | None],None],
         observation_geometry: "ObservationGeometryService | None"=None,
+        geometry_calibration: "GeometryCalibrationService | None"=None,
     ) -> None:
         super().__init__(
             runtime_provider=runtime_provider,
@@ -113,6 +115,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         self._feedback_measurement_metadata = feedback_measurement_metadata
         self._update_committed_analysis_callback = update_committed_analysis
         self._observation_geometry = observation_geometry
+        self._geometry_calibration = geometry_calibration
         self._feedback_orientations: dict[
             str,tuple[str | None,FeedbackOrientation]
         ] = {}
@@ -193,6 +196,8 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
 
     def geometry_period_from_um(self,section_key: str,value_um: float,axis: str) -> float:
         """Convert a metric period to reference pixels using the section calibration."""
+        if self._geometry_calibration is not None:
+            return self._geometry_calibration.period_from_um(section_key,value_um,axis)
         calibration=self._runtime.get_section_calibration_copy(section_key)
         if calibration is None or not calibration.is_valid():
             raise RuntimeError('A valid section/plane FOV calibration is required for metric geometry periods.')
@@ -204,6 +209,10 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         self,section_key: str,
     ) -> GeometryOrientationCalibrationContext:
         """Inspect the active plane workflow, creating default draft geometry if absent."""
+        if self._geometry_calibration is not None:
+            return self._geometry_calibration.context(
+                section_key,self._active_feedback_plane(section_key),
+            )
         section=str(section_key)
         plane=self._active_feedback_plane(section)
         key=(section,plane)
@@ -300,6 +309,15 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         Acquisition is explicit. Failed computation/upload retains the previous
         workflow; finish_geometry_orientation_calibration restores the experiment.
         """
+        if self._geometry_calibration is not None:
+            plane=self._active_feedback_plane(section_key)
+            if plane is None:
+                raise RuntimeError('Select an observation plane before geometry calibration.')
+            return self._geometry_calibration.compute_target(
+                section_key,plane,grid_x=grid_x,grid_y=grid_y,
+                period_x_px=period_x_px,period_y_px=period_y_px,source=source,
+                on_complete=on_complete,
+            )
         self._require_editor_mode()
         section=str(section_key); plane=self._active_feedback_plane(section)
         if plane is None:
@@ -344,6 +362,13 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         self,section_key: str,source: str,*,on_complete: Callable[[bool,Exception | None],None] | None=None,
     ) -> None:
         """Acquire for the displayed target, clearing its previous localization/analysis."""
+        if self._geometry_calibration is not None:
+            plane=self._active_feedback_plane(section_key)
+            if plane is None:
+                raise RuntimeError('Select an observation plane before geometry calibration.')
+            return self._geometry_calibration.acquire(
+                section_key,plane,source,on_complete=on_complete,
+            )
         self._require_editor_mode()
         section=str(section_key); key=self._geometry_calibration_key(section)
         workflow=self._geometry_calibration_workflows.get(key)
@@ -382,6 +407,11 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         self,section_key: str,measurement: ImageMeasurement,
     ) -> None:
         """Load a measurement for a computed target without changing the displayed frame."""
+        if self._geometry_calibration is not None:
+            plane=self._active_feedback_plane(section_key)
+            if plane is None:
+                raise RuntimeError('Select an observation plane before geometry calibration.')
+            return self._geometry_calibration.set_measurement(section_key,plane,measurement)
         self._require_editor_mode(); section=str(section_key)
         workflow=self._geometry_calibration_workflows.get(self._geometry_calibration_key(section))
         if workflow is None or workflow.payload is None:
@@ -421,6 +451,11 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         self,section_key: str,parameters: Mapping[str,Any],
     ) -> LocalizationResult:
         """Localize the calibration measurement and retain the candidate in its draft."""
+        if self._geometry_calibration is not None:
+            plane=self._active_feedback_plane(section_key)
+            if plane is None:
+                raise RuntimeError('Select an observation plane before geometry calibration.')
+            return self._geometry_calibration.localize(section_key,plane,parameters)
         self._require_editor_mode(); section=str(section_key)
         workflow=self._geometry_calibration_workflows.get(self._geometry_calibration_key(section))
         if workflow is None:raise RuntimeError('Start geometry calibration first.')
@@ -430,6 +465,11 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
 
     def analyze_geometry_orientation_calibration(self,section_key: str) -> GeometryOrientationAnalysis:
         """Analyze the localized calibration target without saving or restoring its frame."""
+        if self._geometry_calibration is not None:
+            plane=self._active_feedback_plane(section_key)
+            if plane is None:
+                raise RuntimeError('Select an observation plane before geometry calibration.')
+            return self._geometry_calibration.analyze(section_key,plane)
         self._require_editor_mode(); section=str(section_key)
         workflow=self._geometry_calibration_workflows.get(self._geometry_calibration_key(section))
         if workflow is None or workflow.payload is None or workflow.measurement is None or workflow.localization is None:
@@ -444,6 +484,16 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
 
     def save_geometry_orientation_calibration(self,section_key: str) -> GeometryOrientationCalibration:
         """Persist an accepted orientation and refresh feedback; leave target displayed."""
+        if self._geometry_calibration is not None:
+            section=str(section_key); plane=self._active_feedback_plane(section)
+            if plane is None:
+                raise RuntimeError('Select an observation plane first.')
+            calibration=self._geometry_calibration.save(section,plane)
+            self._feedback_orientations[section]=(plane,calibration.orientation)
+            if self._runtime.get_section_feedback_status(section).localization_available:
+                self._update_committed_analysis_callback(section,None)
+            self._section_changed(section)
+            return calibration
         self._require_editor_mode(); section=str(section_key); plane=self._active_feedback_plane(section)
         if plane is None:raise RuntimeError('Select an observation plane first.')
         workflow=self._geometry_calibration_workflows.get((section,plane))
@@ -469,6 +519,8 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
 
     def finish_geometry_orientation_calibration(self,section_key: str) -> None:
         """Restore the authoritative experiment frame after manual calibration."""
+        if self._geometry_calibration is not None:
+            return self._geometry_calibration.finish(section_key)
         self._require_editor_mode()
         section=str(section_key)
         active=self._active_geometry_calibration_frame(section)

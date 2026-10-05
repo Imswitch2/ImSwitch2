@@ -402,3 +402,51 @@ def test_observation_geometry_persistence_does_not_change_cgh(tmp_path):
     np.testing.assert_array_equal(runtime.artifacts.eightbit,frame_before)
     status_after=runtime.get_section_cgh_status("sec_0")
     assert status_after == status_before
+
+
+def test_shared_geometry_calibration_service_has_explicit_observation_context(tmp_path):
+    from slmcore import SLMSession
+
+    geometry=SLMGeometry(width=64,height=64,pixel_size_um=1.0)
+    runtime=SLMRuntime(
+        identity=SLMIdentity("slm","SER123"),geometry=geometry,
+        section_geometries=split_slm_geometry(geometry,1),
+        registries=DEFAULT_REGISTRIES,
+    )
+    session=SLMSession(
+        runtime=runtime,
+        geometry_orientation_calibration_store=SLMGeometryOrientationCalibrationStore(tmp_path),
+    )
+    _set_feedback_observation_planes(session,"sample","fourier")
+    session.feedback.select_observation_plane("sec_0","sample")
+
+    context=session.geometry_calibration.context("sec_0","fourier")
+
+    assert context["plane_name"] == "fourier"
+    assert session.feedback.active_observation_plane("sec_0") == "sample"
+    assert session.geometry_calibration.observation_geometry is session.observation_geometry
+
+
+def test_feedback_geometry_workflow_delegates_to_shared_service(monkeypatch):
+    from slmcore import SLMSession
+
+    geometry=SLMGeometry(width=64,height=64,pixel_size_um=1.0)
+    runtime=SLMRuntime(
+        identity=SLMIdentity("slm","SER123"),geometry=geometry,
+        section_geometries=split_slm_geometry(geometry,1),
+        registries=DEFAULT_REGISTRIES,
+    )
+    session=SLMSession(runtime=runtime)
+    _set_feedback_observation_planes(session,"sample")
+    calls=[]
+
+    def fake_compute(section_key,plane_name,**kwargs):
+        calls.append((section_key,plane_name,kwargs))
+        return True
+
+    monkeypatch.setattr(session.geometry_calibration,"compute_target",fake_compute)
+    assert session.feedback.compute_geometry_orientation_calibration_target(
+        "sec_0",grid_x=5,grid_y=4,period_x_px=12.0,period_y_px=14.0,
+        source="cam",
+    )
+    assert calls[0][0:2] == ("sec_0","sample")
