@@ -50,6 +50,7 @@ class CalibrationDialog(QtWidgets.QDialog):
         *,
         mapping_name: str | None=None,
         section_key: str | None=None,
+        section_title: str | None=None,
         observation_planes: Sequence[str]=(),
         current_observation_plane: str | None=None,
         observation_default_pixel_size_um: float | None=None,
@@ -73,6 +74,7 @@ class CalibrationDialog(QtWidgets.QDialog):
 
         self._mapping_name = ""
         self._section_key = str(section_key or "").strip()
+        self._section_title = str(section_title or self._section_key).strip()
         self._target_available = False
         self._target_calibration_candidate = None
         self._linear_edits: dict[str, QtWidgets.QLineEdit] = {}
@@ -160,7 +162,7 @@ class CalibrationDialog(QtWidgets.QDialog):
     def set_mapping_name(self,mapping_name: str | None) -> None:
         mapping = str(mapping_name or "").strip()
         self._mapping_name = mapping
-        section = self._section_key
+        section = self._section_title
         suffix = " / Section %s" % section if section else ""
         self._mapping_label.setText(
             "Calibrating mapping: %s%s" % (mapping,suffix)

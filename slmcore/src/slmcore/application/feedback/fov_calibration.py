@@ -575,16 +575,10 @@ class FOVPositionCalibrationService(FeedbackComponent):
                 self._section_changed(section_key)
 
     def _warn_fov_extrapolation(self,section_key: str) -> None:
-        context = self.fov_position_calibration_context(section_key)
-        count = int(context.get("extrapolated_count",0) or 0)
-        if count:
-            self._warning(
-                "FOV calibration extrapolation",
-                "%d of %d current target positions lie outside the measured FOV "
-                "coverage (beyond numerical tolerance). The polynomial calibration "
-                "will be extrapolated at those positions."
-                % (count,int(context.get("target_count",0) or 0)),
-            )
+        # Extrapolation is a persistent runtime state, not an exceptional event.
+        # Surface it through the section FOV indicator/tooltip rather than a modal
+        # warning every time Apply is toggled or the target changes.
+        return None
 
     def apply_startup_fov_position_calibration_defaults(self) -> None:
         """Explicitly reconcile default selections with the runtime after startup."""

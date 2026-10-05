@@ -42,17 +42,19 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
         self,*,section_key: str,mapping_name: str,observation_planes: Sequence[str],
         current_observation_plane: str | None,localization_parameters: Mapping[str,Any],
         detectors: Sequence[str]=(),current_detector: str | None=None,
+        section_title: str | None=None,
         parent: QtWidgets.QWidget | None=None,
     ) -> None:
         super().__init__(parent)
         self.section_key=str(section_key); self.mapping_name=str(mapping_name)
-        self.setWindowTitle("FOV Calibration - %s / %s" % (self.mapping_name,self.section_key))
+        self.section_title=str(section_title or self.section_key)
+        self.setWindowTitle("FOV Calibration - %s / %s" % (self.mapping_name,self.section_title))
         self.resize(1180,820)
 
         root=QtWidgets.QVBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(6)
         context=QtWidgets.QHBoxLayout(); context.setSpacing(8)
         context.addWidget(QtWidgets.QLabel("Mapping: <b>%s</b>" % self.mapping_name))
-        context.addWidget(QtWidgets.QLabel("Section: <b>%s</b>" % self.section_key))
+        context.addWidget(QtWidgets.QLabel("Section: <b>%s</b>" % self.section_title))
         context.addSpacing(12); context.addWidget(QtWidgets.QLabel("Observation:"))
         self.observation_combo=QtWidgets.QComboBox(); context.addWidget(self.observation_combo)
         context.addWidget(QtWidgets.QLabel("Pixel size override:"))
@@ -196,7 +198,7 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
     def set_geometry_missing(self,plane_name: str | None,missing: bool) -> None:
         if missing:
             self.geometry_warning_label.setText(
-                "Geometry not calibrated for Section %s × Plane %s" % (self.section_key,plane_name or "—")
+                "Geometry not calibrated for Section %s × Plane %s" % (self.section_title,plane_name or "—")
             )
         self.geometry_warning.setVisible(bool(missing))
 

@@ -16,6 +16,7 @@ class ObservationPlaneEditorDialog(QtWidgets.QDialog):
         self,
         definition: ObservationPlaneDefinition | None=None,
         *,
+        detectors: Sequence[str]=(),
         parent: QtWidgets.QWidget | None=None,
     ) -> None:
         super().__init__(parent)
@@ -23,7 +24,21 @@ class ObservationPlaneEditorDialog(QtWidgets.QDialog):
         self.setWindowTitle("Observation plane")
         form = QtWidgets.QFormLayout(self)
         self.name_edit = QtWidgets.QLineEdit()
-        self.detector_edit = QtWidgets.QLineEdit()
+        self.detector_combo = QtWidgets.QComboBox()
+        self.detector_combo.addItem("None",None)
+        for detector in dict.fromkeys(
+            str(value).strip() for value in detectors if str(value).strip()
+        ):
+            self.detector_combo.addItem(detector,detector)
+        self.detector_combo.addItem("Other…","__other__")
+        self.detector_other_edit = QtWidgets.QLineEdit()
+        self.detector_other_edit.setPlaceholderText("Detector/source name")
+        self.detector_other_edit.setVisible(False)
+        detector_widget = QtWidgets.QWidget()
+        detector_layout = QtWidgets.QHBoxLayout(detector_widget)
+        detector_layout.setContentsMargins(0,0,0,0)
+        detector_layout.addWidget(self.detector_combo,1)
+        detector_layout.addWidget(self.detector_other_edit,1)
         self.pixel_size_edit = QtWidgets.QDoubleSpinBox()
         self.pixel_size_edit.setRange(0.0,1e9)
         self.pixel_size_edit.setDecimals(9)
@@ -31,7 +46,7 @@ class ObservationPlaneEditorDialog(QtWidgets.QDialog):
         self.description_edit = QtWidgets.QPlainTextEdit()
         self.description_edit.setMaximumHeight(80)
         form.addRow("Name",self.name_edit)
-        form.addRow("Preferred detector/source",self.detector_edit)
+        form.addRow("Preferred detector/source",detector_widget)
         form.addRow("Default pixel size (µm)",self.pixel_size_edit)
         form.addRow("Description",self.description_edit)
         buttons = QtWidgets.QDialogButtonBox(
@@ -40,15 +55,34 @@ class ObservationPlaneEditorDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+        self.detector_combo.currentIndexChanged.connect(
+            self._detector_selection_changed
+        )
         if definition is not None:
             self.name_edit.setText(definition.name)
             self.name_edit.setReadOnly(True)
-            self.detector_edit.setText(definition.preferred_detector or "")
+            preferred=str(definition.preferred_detector or "").strip()
+            index=self.detector_combo.findData(preferred) if preferred else 0
+            if preferred and index < 0:
+                index=self.detector_combo.findData("__other__")
+                self.detector_other_edit.setText(preferred)
+            self.detector_combo.setCurrentIndex(max(0,index))
             self.pixel_size_edit.setValue(
                 0.0 if definition.default_pixel_size_um is None
                 else float(definition.default_pixel_size_um)
             )
             self.description_edit.setPlainText(definition.description)
+        self._detector_selection_changed()
+
+    def _detector_selection_changed(self,*_args) -> None:
+        other=self.detector_combo.currentData()=="__other__"
+        self.detector_other_edit.setVisible(bool(other))
+
+    def preferred_detector(self) -> str | None:
+        value=self.detector_combo.currentData()
+        if value=="__other__":
+            return self.detector_other_edit.text().strip() or None
+        return str(value).strip() if value else None
 
     def definition(self) -> ObservationPlaneDefinition:
         name = self.name_edit.text().strip()
@@ -56,7 +90,7 @@ class ObservationPlaneEditorDialog(QtWidgets.QDialog):
         created_at = "" if self._existing is None else self._existing.created_at
         return ObservationPlaneDefinition(
             name=name,
-            preferred_detector=self.detector_edit.text().strip() or None,
+            preferred_detector=self.preferred_detector(),
             default_pixel_size_um=None if pixel <= 0 else pixel,
             description=self.description_edit.toPlainText().strip(),
             created_at=created_at,
@@ -66,9 +100,13 @@ class ObservationPlaneEditorDialog(QtWidgets.QDialog):
 class ObservationPlanesManagerDialog(QtWidgets.QDialog):
     sigChanged = QtCore.Signal()
 
-    def __init__(self,service,*,parent: QtWidgets.QWidget | None=None) -> None:
+    def __init__(
+        self,service,*,detectors: Sequence[str]=(),
+        parent: QtWidgets.QWidget | None=None,
+    ) -> None:
         super().__init__(parent)
         self.service = service
+        self._detectors=tuple(detectors)
         self.setWindowTitle("Observation Planes")
         self.resize(720,360)
         layout = QtWidgets.QVBoxLayout(self)
@@ -97,6 +135,11 @@ class ObservationPlanesManagerDialog(QtWidgets.QDialog):
         self.table.itemDoubleClicked.connect(lambda _item:self.edit_plane())
         self.refresh()
 
+    def configure_detectors(self,detectors: Sequence[str]) -> None:
+        self._detectors=tuple(
+            dict.fromkeys(str(value).strip() for value in detectors if str(value).strip())
+        )
+
     def selected_name(self) -> str | None:
         row = self.table.currentRow()
         if row < 0:
@@ -119,7 +162,7 @@ class ObservationPlanesManagerDialog(QtWidgets.QDialog):
         self.table.resizeColumnsToContents()
 
     def add_plane(self) -> str | None:
-        dialog = ObservationPlaneEditorDialog(parent=self)
+        dialog = ObservationPlaneEditorDialog(detectors=self._detectors,parent=self)
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return None
         value = self.service.add(dialog.definition())
@@ -131,7 +174,9 @@ class ObservationPlanesManagerDialog(QtWidgets.QDialog):
         if not name:
             return
         current = self.service.get(name)
-        dialog = ObservationPlaneEditorDialog(current,parent=self)
+        dialog = ObservationPlaneEditorDialog(
+            current,detectors=self._detectors,parent=self,
+        )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         value = dialog.definition()
@@ -178,6 +223,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         *,
         sections: Sequence[str],
         mappings: Sequence[str],
+        section_titles: Mapping[str,str] | None=None,
         current_section: str | None=None,
         current_mapping: str | None=None,
         parent: QtWidgets.QWidget | None=None,
@@ -188,7 +234,8 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         outer = QtWidgets.QVBoxLayout(self)
         context = QtWidgets.QHBoxLayout()
         context.addWidget(QtWidgets.QLabel("Section:"))
-        self.section_combo = QtWidgets.QComboBox(); self.section_combo.addItems([str(v) for v in sections])
+        self.section_combo = QtWidgets.QComboBox()
+        self._populate_sections(sections,section_titles or {})
         context.addWidget(self.section_combo)
         context.addWidget(QtWidgets.QLabel("Mapping:"))
         self.mapping_combo = QtWidgets.QComboBox(); self.mapping_combo.addItems([str(v) for v in mappings])
@@ -206,7 +253,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         close.rejected.connect(self.close); close.clicked.connect(self.close)
         outer.addWidget(close)
         if current_section:
-            i=self.section_combo.findText(current_section); self.section_combo.setCurrentIndex(max(0,i))
+            i=self.section_combo.findData(current_section); self.section_combo.setCurrentIndex(max(0,i))
         if current_mapping:
             i=self.mapping_combo.findText(current_mapping); self.mapping_combo.setCurrentIndex(max(0,i))
         self.section_combo.currentTextChanged.connect(self._context_changed)
@@ -218,17 +265,37 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     @property
     def section_key(self) -> str:
-        return self.section_combo.currentText().strip()
+        value=self.section_combo.currentData()
+        return str(value).strip() if value is not None else ""
 
     @property
     def mapping_name(self) -> str:
         return self.mapping_combo.currentText().strip()
 
-    def set_catalog(self,sections: Sequence[str],mappings: Sequence[str]) -> None:
+    def _populate_sections(
+        self,sections: Sequence[str],section_titles: Mapping[str,str],
+    ) -> None:
+        self.section_combo.clear()
+        for index,value in enumerate(sections):
+            key=str(value)
+            title=str(section_titles.get(key) or "Section %d" % (index+1))
+            self.section_combo.addItem(title,key)
+
+    def set_catalog(
+        self,sections: Sequence[str],mappings: Sequence[str],
+        section_titles: Mapping[str,str] | None=None,
+    ) -> None:
         section=self.section_key; mapping=self.mapping_name
-        for combo,values,current in ((self.section_combo,sections,section),(self.mapping_combo,mappings,mapping)):
-            blocker=QtCore.QSignalBlocker(combo); combo.clear(); combo.addItems([str(v) for v in values])
-            idx=combo.findText(current); combo.setCurrentIndex(idx if idx>=0 else (0 if combo.count() else -1)); del blocker
+        blocker=QtCore.QSignalBlocker(self.section_combo)
+        self._populate_sections(sections,section_titles or {})
+        idx=self.section_combo.findData(section)
+        self.section_combo.setCurrentIndex(idx if idx>=0 else (0 if self.section_combo.count() else -1))
+        del blocker
+        blocker=QtCore.QSignalBlocker(self.mapping_combo)
+        self.mapping_combo.clear(); self.mapping_combo.addItems([str(v) for v in mappings])
+        idx=self.mapping_combo.findText(mapping)
+        self.mapping_combo.setCurrentIndex(idx if idx>=0 else (0 if self.mapping_combo.count() else -1))
+        del blocker
         self._context_changed()
 
     def _build_mapping_tab(self) -> QtWidgets.QWidget:

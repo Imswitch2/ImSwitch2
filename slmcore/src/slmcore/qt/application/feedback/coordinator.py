@@ -223,7 +223,9 @@ class FeedbackCoordinator(QtCore.QObject):
 
     def _define_observation_plane(self,section_key: str) -> None:
         window=self._windows.get(section_key)
-        name=self._qt_session._calibration.define_observation_plane(parent=window)
+        name=self._qt_session._calibration.define_observation_plane(
+            section_key=section_key,parent=window,
+        )
         if name is None:
             self.synchronize_section(section_key)
             return

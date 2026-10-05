@@ -450,3 +450,31 @@ def test_feedback_geometry_workflow_delegates_to_shared_service(monkeypatch):
         source="cam",
     )
     assert calls[0][0:2] == ("sec_0","sample")
+
+
+def test_shared_geometry_calibration_service_saves_manual_geometry(tmp_path):
+    from slmcore import SLMSession
+
+    geometry=SLMGeometry(width=64,height=64,pixel_size_um=1.0)
+    runtime=SLMRuntime(
+        identity=SLMIdentity("slm","SER123"),geometry=geometry,
+        section_geometries=split_slm_geometry(geometry,1),
+        registries=DEFAULT_REGISTRIES,
+    )
+    session=SLMSession(
+        runtime=runtime,
+        geometry_orientation_calibration_store=SLMGeometryOrientationCalibrationStore(tmp_path),
+    )
+    _set_feedback_observation_planes(session,"sample")
+
+    saved=session.geometry_calibration.save_manual(
+        "sec_0","sample",FeedbackOrientation.ROTATE_90_CW,
+    )
+
+    assert saved.protocol == "manual_orientation_v1"
+    assert saved.orientation is FeedbackOrientation.ROTATE_90_CW
+    assert saved.provenance["method"] == "manual"
+    assert session.observation_geometry.is_calibrated("sec_0","sample")
+    loaded=session.observation_geometry.calibration("sec_0","sample")
+    assert loaded is not None
+    assert loaded.orientation is FeedbackOrientation.ROTATE_90_CW

@@ -254,12 +254,17 @@ class CalibrationManager(QtCore.QObject):
         ):
             return
         sections=tuple(self.controller.runtime.section_keys)
+        section_titles={
+            key:self.controller.section_host.section_title(key)
+            for key in sections
+        }
         mappings=self.service.mapping_names
         current_mapping=self.service.active_mapping(section_key)
         dialog=self._management_dialog
         if dialog is None:
             dialog=CalibrationManagementDialog(
                 sections=sections,mappings=mappings,
+                section_titles=section_titles,
                 current_section=section_key,current_mapping=current_mapping,
                 parent=self.controller.section_collection.section_view(section_key).window(),
             )
@@ -290,8 +295,8 @@ class CalibrationManager(QtCore.QObject):
             )
             dialog.destroyed.connect(self._management_destroyed)
         else:
-            dialog.set_catalog(sections,mappings)
-            si=dialog.section_combo.findText(section_key)
+            dialog.set_catalog(sections,mappings,section_titles)
+            si=dialog.section_combo.findData(section_key)
             if si>=0: dialog.section_combo.setCurrentIndex(si)
             if current_mapping:
                 mi=dialog.mapping_combo.findText(current_mapping)
@@ -438,6 +443,7 @@ class CalibrationManager(QtCore.QObject):
             if dialog is None:
                 dialog=FOVCalibrationDialog(
                     section_key=section_key,mapping_name=mapping_name,
+                    section_title=self.controller.section_host.section_title(section_key),
                     observation_planes=service.observation_plane_names(),
                     current_observation_plane=state.observation_plane_name,
                     localization_parameters=state.localization_parameters,
@@ -700,19 +706,23 @@ class CalibrationManager(QtCore.QObject):
         if dialog is None:
             dialog=ObservationPlanesManagerDialog(
                 self.controller.observation_plane_service,
+                detectors=self._observation_detector_suggestions(),
                 parent=None if self._management_dialog is None else self._management_dialog,
             )
             self._observation_planes_dialog=dialog
             dialog.sigChanged.connect(self._observation_planes_changed)
             dialog.destroyed.connect(lambda *_args:setattr(self,"_observation_planes_dialog",None))
         else:
+            dialog.configure_detectors(self._observation_detector_suggestions())
             dialog.refresh()
         dialog.show(); dialog.raise_(); dialog.activateWindow()
 
     def define_observation_plane(
-        self,*,parent: QtWidgets.QWidget | None=None,
+        self,*,section_key: str | None=None,parent: QtWidgets.QWidget | None=None,
     ) -> str | None:
-        dialog=ObservationPlaneEditorDialog(parent=parent)
+        dialog=ObservationPlaneEditorDialog(
+            detectors=self._observation_detector_suggestions(section_key),parent=parent,
+        )
         if dialog.exec_()!=QtWidgets.QDialog.Accepted:
             return None
         try:
@@ -782,13 +792,16 @@ class CalibrationManager(QtCore.QObject):
             dialog = CalibrationDialog(
                 mapping_name=mapping,
                 section_key=section_key,
+                section_title=self.controller.section_host.section_title(section_key),
                 observation_planes=observation_planes,
                 current_observation_plane=current_observation,
                 observation_default_pixel_size_um=default_pixel_size,
                 localization_parameters=_default_localization_parameters(),
                 detectors=detectors,
                 current_detector=current_detector,
-                title="Calibration - %s/%s" % (self.display_name,section_key),
+                title="Calibration - %s/%s" % (
+                    self.display_name,self.controller.section_host.section_title(section_key),
+                ),
                 parent=self.controller.section_collection.section_view(section_key),
             )
             self._dialogs[section_key] = dialog
@@ -863,6 +876,20 @@ class CalibrationManager(QtCore.QObject):
             current = sources[0] if sources else None
         return sources,current
 
+    def _observation_detector_suggestions(
+        self,section_key: str | None=None,
+    ) -> tuple[str,...]:
+        sections=(str(section_key),) if section_key else tuple(self.controller.runtime.section_keys)
+        names=[]
+        seen=set()
+        for section in sections:
+            sources,_current=self._measurement_sources(section)
+            for source in sources:
+                if source not in seen:
+                    seen.add(source)
+                    names.append(source)
+        return tuple(names)
+
     def _observation_context(
         self,section_key: str,state: TargetCalibrationState | None=None,
     ) -> tuple[tuple[str,...],str | None,float | None]:
@@ -878,7 +905,7 @@ class CalibrationManager(QtCore.QObject):
 
     def _define_observation_for_calibration(self,section_key: str) -> None:
         dialog=self._dialogs.get(section_key)
-        name=self.define_observation_plane(parent=dialog)
+        name=self.define_observation_plane(section_key=section_key,parent=dialog)
         if name is not None:
             self._on_observation_plane_changed(section_key,name)
             return

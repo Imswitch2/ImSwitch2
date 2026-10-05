@@ -43,6 +43,7 @@ class GeometryCalibrationCoordinator(QtCore.QObject):
                 section_key=section,observation_planes=names,current_observation_plane=plane,
                 detectors=sources,current_detector=current,
                 localization_parameters=context.get("localization_parameters") or {},
+                section_title=self.qt_session.section_host.section_title(section),
                 parent=parent,
             )
             self._dialogs[section]=dialog
@@ -53,6 +54,9 @@ class GeometryCalibrationCoordinator(QtCore.QObject):
             dialog.sigLocalizationRequested.connect(lambda params,key=section:self._localize(key,dict(params or {})))
             dialog.sigAnalyzeRequested.connect(lambda key=section:self._analyze(key))
             dialog.sigSaveRequested.connect(lambda key=section:self._save(key))
+            dialog.sigManualSaveRequested.connect(
+                lambda orientation,key=section:self._save_manual(key,orientation)
+            )
             dialog.sigFinishRequested.connect(lambda key=section:self._finish(key))
             # Closing the reusable geometry window is also leaving the
             # calibration workflow.  Restore the experiment CGH just as the
@@ -186,6 +190,22 @@ class GeometryCalibrationCoordinator(QtCore.QObject):
             self.sigSaved.emit(section,plane)
         except Exception as error:
             self._error("Saving geometry calibration failed",error,section)
+
+    def _save_manual(self,section: str,orientation: str) -> None:
+        plane=self._plane(section)
+        if plane is None:
+            self._error(
+                "Saving manual geometry failed",
+                RuntimeError("Select an observation plane first."),section,
+            )
+            return
+        try:
+            self.service.save_manual(section,plane,orientation)
+            self._render(section)
+            self.qt_session.synchronize_section(section)
+            self.sigSaved.emit(section,plane)
+        except Exception as error:
+            self._error("Saving manual geometry failed",error,section)
 
     def _finish(self,section: str) -> None:
         try:

@@ -860,6 +860,18 @@ class SectionView(QtWidgets.QWidget):
         reason = str(ctx.get("compatibility_reason") or "").strip()
         if not supported:
             reason = "The current target does not support FOV position correction."
+        extrapolated = int(ctx.get("extrapolated_count",0) or 0)
+        target_count = int(ctx.get("target_count",0) or 0)
+        if extrapolated:
+            detail = (
+                "Applying the default FOV correction extrapolates %d of %d "
+                "current target positions outside measured coverage."
+                % (extrapolated,target_count)
+            )
+            reason = (reason + "\n" + detail).strip() if reason else detail
+        checkbox.setStyleSheet(
+            "QCheckBox { color: #a66a00; }" if extrapolated else ""
+        )
         checkbox.setToolTip(
             reason or "Apply this mapping's default compatible FOV correction."
         )

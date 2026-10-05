@@ -17,17 +17,20 @@ class GeometryCalibrationDialog(QtWidgets.QDialog):
     sigLocalizationRequested=QtCore.Signal(object)
     sigAnalyzeRequested=QtCore.Signal()
     sigSaveRequested=QtCore.Signal()
+    sigManualSaveRequested=QtCore.Signal(str)
     sigFinishRequested=QtCore.Signal()
 
     def __init__(
         self,*,section_key: str,observation_planes: Sequence[str],
         current_observation_plane: str | None,detectors: Sequence[str],
         current_detector: str | None,localization_parameters: Mapping[str,Any] | None=None,
+        section_title: str | None=None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.section_key=str(section_key)
-        self.setWindowTitle("Geometry calibration — Section %s" % self.section_key)
+        self.section_title=str(section_title or self.section_key)
+        self.setWindowTitle("Geometry calibration — %s" % self.section_title)
         self.resize(1040,760)
         root=QtWidgets.QVBoxLayout(self)
 
@@ -81,6 +84,32 @@ class GeometryCalibrationDialog(QtWidgets.QDialog):
         self.save_button.clicked.connect(self.sigSaveRequested.emit); row.addWidget(self.save_button)
         row.addStretch(1); analysis_layout.addLayout(row); root.addWidget(analysis)
 
+        manual=QtWidgets.QGroupBox("Manual geometry")
+        manual_layout=QtWidgets.QHBoxLayout(manual)
+        manual_layout.addWidget(QtWidgets.QLabel("Orientation:"))
+        self.manual_orientation_combo=QtWidgets.QComboBox()
+        for label,value in (
+            ("Identity","identity"),
+            ("Flip horizontal","flip_horizontal"),
+            ("Flip vertical","flip_vertical"),
+            ("Rotate 180°","rotate_180"),
+            ("Rotate 90° CW","rotate_90_cw"),
+            ("Rotate 90° CCW","rotate_90_ccw"),
+            ("Transpose","transpose"),
+            ("Anti-transpose","anti_transpose"),
+        ):
+            self.manual_orientation_combo.addItem(label,value)
+        manual_layout.addWidget(self.manual_orientation_combo)
+        self.manual_save_button=QtWidgets.QPushButton("Save manual geometry")
+        manual_layout.addWidget(self.manual_save_button)
+        manual_layout.addStretch(1)
+        root.addWidget(manual)
+        self.manual_save_button.clicked.connect(
+            lambda:self.sigManualSaveRequested.emit(
+                str(self.manual_orientation_combo.currentData() or "identity")
+            )
+        )
+
         close=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
         close.rejected.connect(self.reject); root.addWidget(close)
         self.observation_combo.currentIndexChanged.connect(self._observation_changed)
@@ -118,6 +147,8 @@ class GeometryCalibrationDialog(QtWidgets.QDialog):
         calibrated=bool(context.get("calibrated")); calibration=context.get("calibration")
         if calibrated and calibration is not None:
             self.status_label.setText("Status: Calibrated (%s)" % calibration.orientation.value)
+            index=self.manual_orientation_combo.findData(calibration.orientation.value)
+            if index>=0:self.manual_orientation_combo.setCurrentIndex(index)
         elif context.get("plane_name"):
             self.status_label.setText("Status: Not calibrated for %s" % context.get("plane_name"))
         else:
@@ -162,6 +193,7 @@ class GeometryCalibrationDialog(QtWidgets.QDialog):
             )
         self.analyze_button.setEnabled(bool(context.get("analyze_enabled")))
         self.save_button.setEnabled(bool(context.get("save_enabled")))
+        self.manual_save_button.setEnabled(bool(context.get("plane_name")))
 
     def set_error(self,error: Any) -> None:
         self.measurement_view.set_error(error)

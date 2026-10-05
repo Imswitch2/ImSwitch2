@@ -9,7 +9,7 @@ import numpy as np
 
 from ..core.cgh.coordinates import reference_px_to_k,k_to_reference_px
 from ..core.cgh.feedback import (
-    GeometryOrientationAnalysis,GeometryOrientationCalibration,
+    FeedbackOrientation,GeometryOrientationAnalysis,GeometryOrientationCalibration,
     analyze_geometry_orientation,
 )
 from ..core.cgh.localization import (
@@ -345,6 +345,39 @@ class GeometryCalibrationService:
             score=workflow.analysis.score,confidence_margin=workflow.analysis.confidence_margin,
             matched_count=workflow.analysis.matched_count,
             provenance={"measurement_id":getattr(workflow.measurement,"measurement_id",None)},
+        )
+        self.observation_geometry.save(calibration)
+        return calibration
+
+    def save_manual(
+        self,section_key: str,plane_name: str,orientation: FeedbackOrientation | str,
+    ) -> GeometryOrientationCalibration:
+        """Persist an explicit manual section × observation-plane geometry."""
+        self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
+        workflow=self._workflows.get((section,plane))
+        if workflow is None:
+            gx,gy=5,4
+            px,py=self._period_guess_px(section,gx,gy)
+            workflow=_GeometryCalibrationWorkflow(
+                grid_x=gx,grid_y=gy,period_x_px=px,period_y_px=py,
+            )
+            self._workflows[(section,plane)]=workflow
+        calibration=GeometryOrientationCalibration(
+            slm_serial=self.session.runtime.identity.serial_number,
+            section_key=section,plane_name=plane,
+            orientation=FeedbackOrientation.normalize(orientation),
+            detector_name=workflow.detector_name,
+            grid_x=int(workflow.grid_x),grid_y=int(workflow.grid_y),
+            period_x_px=float(
+                workflow.period_x_px
+                or self._period_guess_px(section,workflow.grid_x,workflow.grid_y)[0]
+            ),
+            period_y_px=float(
+                workflow.period_y_px
+                or self._period_guess_px(section,workflow.grid_x,workflow.grid_y)[1]
+            ),
+            protocol="manual_orientation_v1",
+            provenance={"method":"manual","source":"manual_orientation"},
         )
         self.observation_geometry.save(calibration)
         return calibration
