@@ -284,7 +284,7 @@ class SectionView(QtWidgets.QWidget):
             self.fov_apply_checkbox = fov_apply
             interface_layout.addWidget(fov_apply)
 
-            calibrate = QtWidgets.QPushButton("Calibrate…")
+            calibrate = QtWidgets.QPushButton("Calibration")
             calibrate.setFixedHeight(22)
             calibrate.clicked.connect(
                 lambda _checked=False:self.sigCalibrationRequested.emit(

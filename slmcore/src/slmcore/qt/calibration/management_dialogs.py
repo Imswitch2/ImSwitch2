@@ -205,18 +205,28 @@ class ObservationPlanesManagerDialog(QtWidgets.QDialog):
 
 
 class CalibrationManagementDialog(QtWidgets.QDialog):
-    """Authoritative management home for mapping calibration and observation geometry."""
+    """Unified calibration/characterization workspace.
+
+    The left column owns selection, persisted state and actions.  The right
+    workspace shows either the selected persisted calibration or the active
+    calibration workflow.  Workflow widgets are mounted here by the Qt
+    application coordinator; no nested calibration windows are required.
+    """
 
     sigContextChanged = QtCore.Signal(str,str)
+    sigMappingAddRequested = QtCore.Signal(str)
     sigMappingDeleteRequested = QtCore.Signal(str,str)
     sigBaseCalibrationRequested = QtCore.Signal(str,str)
     sigBaseCalibrationDeleteRequested = QtCore.Signal(str,str)
     sigFovCalibrationRequested = QtCore.Signal(str,str)
     sigFovSetDefaultRequested = QtCore.Signal(str,str,str)
-    sigFovInspectRequested = QtCore.Signal(str,str,str)
     sigFovDeleteRequested = QtCore.Signal(str,str,str)
     sigGeometryCalibrationRequested = QtCore.Signal(str,str)
-    sigObservationPlanesRequested = QtCore.Signal()
+    sigObservationSelectionChanged = QtCore.Signal(str)
+    sigObservationCreateRequested = QtCore.Signal(object)
+    sigObservationUpdateRequested = QtCore.Signal(str,object)
+    sigObservationDeleteRequested = QtCore.Signal(str)
+    sigWorkspaceResetRequested = QtCore.Signal()
 
     def __init__(
         self,
@@ -229,39 +239,57 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Calibration Manager")
-        self.resize(900,620)
-        outer = QtWidgets.QVBoxLayout(self)
-        context = QtWidgets.QHBoxLayout()
-        context.addWidget(QtWidgets.QLabel("Section:"))
-        self.section_combo = QtWidgets.QComboBox()
-        self._populate_sections(sections,section_titles or {})
-        context.addWidget(self.section_combo)
-        context.addWidget(QtWidgets.QLabel("Mapping:"))
-        self.mapping_combo = QtWidgets.QComboBox(); self.mapping_combo.addItems([str(v) for v in mappings])
-        context.addWidget(self.mapping_combo,1)
-        self.delete_mapping_button = QtWidgets.QPushButton("Delete mapping…")
-        context.addWidget(self.delete_mapping_button)
-        self.observation_planes_button = QtWidgets.QPushButton("Observation Planes…")
-        context.addWidget(self.observation_planes_button)
-        outer.addLayout(context)
-        self.tabs = QtWidgets.QTabWidget(self)
-        self.tabs.addTab(self._build_mapping_tab(),"Mapping Calibration")
-        self.tabs.addTab(self._build_geometry_tab(),"Observation Geometry")
-        outer.addWidget(self.tabs,1)
-        close = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
-        close.rejected.connect(self.close); close.clicked.connect(self.close)
-        outer.addWidget(close)
-        if current_section:
-            i=self.section_combo.findData(current_section); self.section_combo.setCurrentIndex(max(0,i))
-        if current_mapping:
-            i=self.mapping_combo.findText(current_mapping); self.mapping_combo.setCurrentIndex(max(0,i))
-        self.section_combo.currentTextChanged.connect(self._context_changed)
-        self.mapping_combo.currentTextChanged.connect(self._context_changed)
-        self.delete_mapping_button.clicked.connect(
-            lambda:self.sigMappingDeleteRequested.emit(self.section_key,self.mapping_name)
+        self.setWindowTitle("Calibration & Characterization")
+        self.setWindowFlags(
+            self.windowFlags()
+            | QtCore.Qt.WindowMinimizeButtonHint
+            | QtCore.Qt.WindowMaximizeButtonHint
         )
-        self.observation_planes_button.clicked.connect(self.sigObservationPlanesRequested.emit)
+        self.setMinimumSize(920,620)
+        self.resize(1280,820)
+        self._section_titles=dict(section_titles or {})
+        self._mapping_descriptions: dict[str,str]={}
+        self._mapping_summary: dict[str,Any]={}
+        self._observation_rows: dict[str,dict[str,Any]]={}
+        self._geometry_rows: list[dict[str,Any]]=[]
+        self._detectors: tuple[str,...]=()
+        self._observation_edit_mode: str | None=None
+        self._editing_observation_name: str | None=None
+        self._workspace_widget: QtWidgets.QWidget | None=None
+        self._inspection_kind="base"
+
+        outer=QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(8,8,8,8)
+        outer.setSpacing(8)
+
+        header=QtWidgets.QHBoxLayout()
+        header.addWidget(QtWidgets.QLabel("Section:"))
+        self.section_combo=QtWidgets.QComboBox()
+        self.section_combo.setMinimumWidth(180)
+        self._populate_sections(sections,self._section_titles)
+        header.addWidget(self.section_combo)
+        header.addStretch(1)
+        outer.addLayout(header)
+
+        self.tabs=QtWidgets.QTabWidget(self)
+        self.tabs.addTab(self._build_mapping_tab(),"Mapping")
+        self.tabs.addTab(self._build_observation_tab(),"Observation & Geometry")
+        outer.addWidget(self.tabs,1)
+
+        close=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        close.rejected.connect(self.close)
+        outer.addWidget(close)
+
+        if current_section:
+            i=self.section_combo.findData(current_section)
+            if i>=0:self.section_combo.setCurrentIndex(i)
+        self.set_mapping_catalog(mappings,current_mapping=current_mapping)
+        self.section_combo.currentIndexChanged.connect(self._section_changed)
+        self.tabs.currentChanged.connect(self._tab_changed)
+
+    # ------------------------------------------------------------------
+    # Basic selection state
+    # ------------------------------------------------------------------
 
     @property
     def section_key(self) -> str:
@@ -270,11 +298,19 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     @property
     def mapping_name(self) -> str:
-        return self.mapping_combo.currentText().strip()
+        item=self.mapping_list.currentItem()
+        if item is None:return ""
+        value=item.data(QtCore.Qt.UserRole)
+        return str(value or item.text()).strip()
 
-    def _populate_sections(
-        self,sections: Sequence[str],section_titles: Mapping[str,str],
-    ) -> None:
+    @property
+    def observation_plane_name(self) -> str:
+        item=self.observation_list.currentItem()
+        if item is None:return ""
+        value=item.data(QtCore.Qt.UserRole)
+        return str(value or item.text()).strip()
+
+    def _populate_sections(self,sections: Sequence[str],section_titles: Mapping[str,str]) -> None:
         self.section_combo.clear()
         for index,value in enumerate(sections):
             key=str(value)
@@ -284,103 +320,561 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
     def set_catalog(
         self,sections: Sequence[str],mappings: Sequence[str],
         section_titles: Mapping[str,str] | None=None,
+        mapping_descriptions: Mapping[str,str] | None=None,
     ) -> None:
         section=self.section_key; mapping=self.mapping_name
+        self._section_titles=dict(section_titles or self._section_titles)
         blocker=QtCore.QSignalBlocker(self.section_combo)
-        self._populate_sections(sections,section_titles or {})
+        self._populate_sections(sections,self._section_titles)
         idx=self.section_combo.findData(section)
         self.section_combo.setCurrentIndex(idx if idx>=0 else (0 if self.section_combo.count() else -1))
         del blocker
-        blocker=QtCore.QSignalBlocker(self.mapping_combo)
-        self.mapping_combo.clear(); self.mapping_combo.addItems([str(v) for v in mappings])
-        idx=self.mapping_combo.findText(mapping)
-        self.mapping_combo.setCurrentIndex(idx if idx>=0 else (0 if self.mapping_combo.count() else -1))
+        self.set_mapping_catalog(
+            mappings,current_mapping=mapping,
+            descriptions=mapping_descriptions,
+        )
+        self._emit_context()
+
+    def set_mapping_catalog(
+        self,mappings: Sequence[str],*,current_mapping: str | None=None,
+        descriptions: Mapping[str,str] | None=None,
+    ) -> None:
+        if descriptions is not None:
+            self._mapping_descriptions={str(k):str(v or "") for k,v in descriptions.items()}
+        current=str(current_mapping or self.mapping_name or "").strip()
+        blocker=QtCore.QSignalBlocker(self.mapping_list)
+        self.mapping_list.clear()
+        for value in mappings:
+            name=str(value)
+            item=QtWidgets.QListWidgetItem(name)
+            item.setData(QtCore.Qt.UserRole,name)
+            description=self._mapping_descriptions.get(name,"")
+            if description:item.setToolTip(description)
+            self.mapping_list.addItem(item)
+        if self.mapping_list.count():
+            matches=self.mapping_list.findItems(current,QtCore.Qt.MatchExactly) if current else []
+            self.mapping_list.setCurrentItem(matches[0] if matches else self.mapping_list.item(0))
         del blocker
-        self._context_changed()
+        self._mapping_changed()
 
-    def _build_mapping_tab(self) -> QtWidgets.QWidget:
-        widget=QtWidgets.QWidget(); layout=QtWidgets.QVBoxLayout(widget)
-        base=QtWidgets.QGroupBox("Base metric calibration"); form=QtWidgets.QFormLayout(base)
-        self.base_status=QtWidgets.QLabel("—"); self.base_metrics=QtWidgets.QLabel("—")
-        self.base_matrix=QtWidgets.QLabel("—"); self.base_provenance=QtWidgets.QLabel("—"); self.base_provenance.setWordWrap(True)
-        form.addRow("Status",self.base_status); form.addRow("kx/µm, ky/µm",self.base_metrics)
-        form.addRow("Matrix",self.base_matrix); form.addRow("Provenance",self.base_provenance)
-        buttons=QtWidgets.QHBoxLayout(); self.base_calibrate=QtWidgets.QPushButton("Calibrate/Recalibrate…"); self.base_delete=QtWidgets.QPushButton("Delete")
-        buttons.addWidget(self.base_calibrate); buttons.addWidget(self.base_delete); buttons.addStretch(1); form.addRow(buttons)
-        self.base_calibrate.clicked.connect(lambda:self.sigBaseCalibrationRequested.emit(self.section_key,self.mapping_name))
-        self.base_delete.clicked.connect(lambda:self.sigBaseCalibrationDeleteRequested.emit(self.section_key,self.mapping_name))
-        layout.addWidget(base)
-        fov=QtWidgets.QGroupBox("FOV corrections"); fv=QtWidgets.QVBoxLayout(fov)
-        self.fov_default=QtWidgets.QLabel("Default: —"); fv.addWidget(self.fov_default)
-        self.fov_table=QtWidgets.QTableWidget(0,4); self.fov_table.setHorizontalHeaderLabels(["Name","Compatibility","Default","Provenance"])
-        self.fov_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows); self.fov_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection); self.fov_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers); self.fov_table.horizontalHeader().setStretchLastSection(True)
-        fv.addWidget(self.fov_table,1)
-        row=QtWidgets.QHBoxLayout(); self.fov_calibrate=QtWidgets.QPushButton("Calibrate new…"); self.fov_default_button=QtWidgets.QPushButton("Set default"); self.fov_inspect=QtWidgets.QPushButton("Inspect"); self.fov_delete=QtWidgets.QPushButton("Delete")
-        for b in (self.fov_calibrate,self.fov_default_button,self.fov_inspect,self.fov_delete): row.addWidget(b)
-        row.addStretch(1); fv.addLayout(row)
-        self.fov_calibrate.clicked.connect(lambda:self.sigFovCalibrationRequested.emit(self.section_key,self.mapping_name))
-        self.fov_default_button.clicked.connect(lambda:self._emit_fov(self.sigFovSetDefaultRequested))
-        self.fov_inspect.clicked.connect(lambda:self._emit_fov(self.sigFovInspectRequested))
-        self.fov_delete.clicked.connect(lambda:self._emit_fov(self.sigFovDeleteRequested))
-        layout.addWidget(fov,1)
-        return widget
+    def select_mapping(self,name: str | None) -> None:
+        target=str(name or "").strip()
+        for index in range(self.mapping_list.count()):
+            item=self.mapping_list.item(index)
+            if str(item.data(QtCore.Qt.UserRole) or item.text())==target:
+                self.mapping_list.setCurrentItem(item); return
 
-    def _build_geometry_tab(self) -> QtWidgets.QWidget:
-        widget=QtWidgets.QWidget(); layout=QtWidgets.QVBoxLayout(widget)
-        info=QtWidgets.QLabel("Geometry is scoped by section × observation plane and is independent of mapping calibration."); info.setWordWrap(True); layout.addWidget(info)
-        self.geometry_table=QtWidgets.QTableWidget(0,3); self.geometry_table.setHorizontalHeaderLabels(["Observation plane","Status","Calibration"]); self.geometry_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows); self.geometry_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection); self.geometry_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers); self.geometry_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.geometry_table,1)
-        row=QtWidgets.QHBoxLayout(); self.geometry_calibrate=QtWidgets.QPushButton("Calibrate…"); row.addWidget(self.geometry_calibrate); row.addStretch(1); layout.addLayout(row)
-        self.geometry_calibrate.clicked.connect(self._emit_geometry)
-        return widget
+    def select_section(self,section_key: str) -> None:
+        index=self.section_combo.findData(str(section_key))
+        if index>=0:self.section_combo.setCurrentIndex(index)
 
-    def _context_changed(self,*_args: Any) -> None:
+    def _section_changed(self,*_args: Any) -> None:
+        self.sigWorkspaceResetRequested.emit()
+        self._emit_context()
+        if self.tabs.currentIndex()==1 and self.observation_plane_name:
+            self.sigObservationSelectionChanged.emit(self.observation_plane_name)
+
+    def _mapping_changed(self,*_args: Any) -> None:
+        mapping=self.mapping_name
+        description=self._mapping_descriptions.get(mapping,"")
+        self.mapping_description.setText(description or "No description.")
+        self.mapping_description.setToolTip(description)
+        self.sigWorkspaceResetRequested.emit()
+        self._inspection_kind="base"
+        self._emit_context()
+        self._show_base_inspection()
+
+    def _mapping_clicked(self,_item) -> None:
+        self.sigWorkspaceResetRequested.emit()
+        self._inspection_kind="base"
+        self._show_base_inspection()
+
+    def _emit_context(self) -> None:
         if self.section_key and self.mapping_name:
             self.sigContextChanged.emit(self.section_key,self.mapping_name)
 
-    def _selected_fov(self) -> str | None:
-        row=self.fov_table.currentRow()
-        item=None if row<0 else self.fov_table.item(row,0)
-        return None if item is None else item.text().strip() or None
+    def _tab_changed(self,_index: int) -> None:
+        self.sigWorkspaceResetRequested.emit()
+        if self.tabs.currentIndex()==0:
+            self._show_current_mapping_inspection()
+        else:
+            plane=self.observation_plane_name
+            if plane:self.sigObservationSelectionChanged.emit(plane)
+            self._show_observation_inspection()
 
-    def _emit_fov(self,signal) -> None:
-        name=self._selected_fov()
-        if name: signal.emit(self.section_key,self.mapping_name,name)
+    # ------------------------------------------------------------------
+    # Mapping tab / persisted-state selection
+    # ------------------------------------------------------------------
 
-    def _emit_geometry(self) -> None:
-        row=self.geometry_table.currentRow(); item=None if row<0 else self.geometry_table.item(row,0)
-        plane=None if item is None else item.text().strip() or None
-        if plane: self.sigGeometryCalibrationRequested.emit(self.section_key,plane)
+    def _build_mapping_tab(self) -> QtWidgets.QWidget:
+        page=QtWidgets.QWidget()
+        root=QtWidgets.QHBoxLayout(page); root.setContentsMargins(0,6,0,0)
+        splitter=QtWidgets.QSplitter(QtCore.Qt.Horizontal); splitter.setChildrenCollapsible(False)
+        root.addWidget(splitter,1)
+
+        left=QtWidgets.QWidget(); left.setMinimumWidth(250); left.setMaximumWidth(360)
+        lv=QtWidgets.QVBoxLayout(left); lv.setContentsMargins(0,0,6,0); lv.setSpacing(7)
+
+        mappings_box=QtWidgets.QGroupBox("Mappings")
+        ml=QtWidgets.QVBoxLayout(mappings_box)
+        self.mapping_list=QtWidgets.QListWidget(); self.mapping_list.setMaximumHeight(145)
+        self.mapping_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        ml.addWidget(self.mapping_list)
+        self.mapping_description=QtWidgets.QLabel("No description."); self.mapping_description.setWordWrap(True)
+        self.mapping_description.setStyleSheet("color: #777;")
+        self.mapping_description.setMaximumHeight(48); ml.addWidget(self.mapping_description)
+        row=QtWidgets.QHBoxLayout()
+        self.mapping_add=QtWidgets.QPushButton("+ New")
+        self.mapping_delete=QtWidgets.QPushButton("Delete")
+        row.addWidget(self.mapping_add); row.addWidget(self.mapping_delete); row.addStretch(1); ml.addLayout(row)
+        lv.addWidget(mappings_box)
+
+        base=QtWidgets.QGroupBox("Base calibration")
+        bf=QtWidgets.QFormLayout(base)
+        self.base_status=QtWidgets.QLabel("—")
+        self.base_metrics=QtWidgets.QLabel("—")
+        self.base_matrix=QtWidgets.QLabel("—"); self.base_matrix.setWordWrap(True)
+        self.base_provenance=QtWidgets.QLabel("—"); self.base_provenance.setWordWrap(True)
+        bf.addRow("Status",self.base_status)
+        bf.addRow("kx/µm, ky/µm",self.base_metrics)
+        bf.addRow("Matrix",self.base_matrix)
+        bf.addRow("Provenance",self.base_provenance)
+        row=QtWidgets.QHBoxLayout()
+        self.base_calibrate=QtWidgets.QPushButton("Calibrate / Recalibrate")
+        self.base_delete=QtWidgets.QPushButton("Delete")
+        row.addWidget(self.base_calibrate); row.addWidget(self.base_delete); row.addStretch(1)
+        bf.addRow(row)
+        lv.addWidget(base)
+
+        fov=QtWidgets.QGroupBox("FOV corrections")
+        fv=QtWidgets.QVBoxLayout(fov)
+        self.fov_default=QtWidgets.QLabel("Default: —"); fv.addWidget(self.fov_default)
+        self.fov_list=QtWidgets.QListWidget(); self.fov_list.setMinimumHeight(90)
+        self.fov_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        fv.addWidget(self.fov_list,1)
+        row=QtWidgets.QHBoxLayout()
+        self.fov_calibrate=QtWidgets.QPushButton("+ Calibrate new")
+        self.fov_default_button=QtWidgets.QPushButton("Set default")
+        self.fov_delete=QtWidgets.QPushButton("Delete")
+        row.addWidget(self.fov_calibrate); row.addWidget(self.fov_default_button); row.addWidget(self.fov_delete)
+        fv.addLayout(row)
+        lv.addWidget(fov,1)
+        splitter.addWidget(left)
+        splitter.addWidget(self._build_workspace())
+        splitter.setSizes([300,980])
+
+        self.mapping_list.currentItemChanged.connect(lambda *_args:self._mapping_changed())
+        self.mapping_list.itemClicked.connect(self._mapping_clicked)
+        self.mapping_add.clicked.connect(lambda:self.sigMappingAddRequested.emit(self.section_key))
+        self.mapping_delete.clicked.connect(
+            lambda:self.sigMappingDeleteRequested.emit(self.section_key,self.mapping_name)
+        )
+        self.base_calibrate.clicked.connect(
+            lambda:self.sigBaseCalibrationRequested.emit(self.section_key,self.mapping_name)
+        )
+        self.base_delete.clicked.connect(
+            lambda:self.sigBaseCalibrationDeleteRequested.emit(self.section_key,self.mapping_name)
+        )
+        self.fov_calibrate.clicked.connect(
+            lambda:self.sigFovCalibrationRequested.emit(self.section_key,self.mapping_name)
+        )
+        self.fov_default_button.clicked.connect(lambda:self._emit_fov(self.sigFovSetDefaultRequested))
+        self.fov_delete.clicked.connect(lambda:self._emit_fov(self.sigFovDeleteRequested))
+        self.fov_list.currentItemChanged.connect(lambda *_args:self._fov_selected())
+        return page
 
     def set_mapping_summary(self,summary: Mapping[str,Any]) -> None:
+        self._mapping_summary=dict(summary)
         calibrated=bool(summary.get("calibrated",False))
         load_error=str(summary.get("load_error") or "").strip()
-        if load_error:
-            self.base_status.setText("Error")
-        else:
-            self.base_status.setText("Calibrated" if calibrated else "Not calibrated")
+        self.base_status.setText("Error" if load_error else ("Calibrated" if calibrated else "Not calibrated"))
         self.base_metrics.setText(str(summary.get("metrics") or "—"))
         self.base_matrix.setText(str(summary.get("matrix") or "—"))
         self.base_provenance.setText(
-            ("Load error: %s" % load_error)
-            if load_error else str(summary.get("provenance") or "—")
+            "Load error: %s" % load_error if load_error else str(summary.get("provenance") or "—")
         )
         self.base_delete.setEnabled(calibrated or bool(load_error))
         default=str(summary.get("default_fov") or "").strip() or None
         self.fov_default.setText("Default: %s" % (default or "—"))
-        rows=list(summary.get("fov_rows") or ())
-        self.fov_table.setRowCount(len(rows))
-        for r,row in enumerate(rows):
-            values=(row.get("name",""),row.get("compatibility",""),"Yes" if row.get("default") else "",row.get("provenance",""))
-            for c,value in enumerate(values): self.fov_table.setItem(r,c,QtWidgets.QTableWidgetItem(str(value)))
-        self.fov_table.resizeColumnsToContents()
+        selected=self._selected_fov()
+        blocker=QtCore.QSignalBlocker(self.fov_list)
+        self.fov_list.clear()
+        for raw in list(summary.get("fov_rows") or ()):
+            row=dict(raw)
+            name=str(row.get("name") or "")
+            suffix=[]
+            if row.get("default"):suffix.append("default")
+            if str(row.get("compatibility") or "").lower()!="valid":suffix.append("incompatible")
+            text=name + ("  ·  " + ", ".join(suffix) if suffix else "")
+            item=QtWidgets.QListWidgetItem(text)
+            item.setData(QtCore.Qt.UserRole,name)
+            item.setData(QtCore.Qt.UserRole+1,row)
+            item.setToolTip(str(row.get("provenance") or ""))
+            self.fov_list.addItem(item)
+        if selected:
+            for i in range(self.fov_list.count()):
+                item=self.fov_list.item(i)
+                if str(item.data(QtCore.Qt.UserRole))==selected:
+                    self.fov_list.setCurrentItem(item); break
+        del blocker
+        self._refresh_fov_actions()
+        if self._inspection_kind=="base" and self.workspace_stack.currentWidget() is self.inspection_page:
+            self._show_base_inspection()
+        elif self._inspection_kind=="fov" and self.workspace_stack.currentWidget() is self.inspection_page:
+            self._show_fov_inspection()
+
+    def _selected_fov(self) -> str | None:
+        item=self.fov_list.currentItem()
+        if item is None:return None
+        return str(item.data(QtCore.Qt.UserRole) or "").strip() or None
+
+    def _emit_fov(self,signal) -> None:
+        name=self._selected_fov()
+        if name:signal.emit(self.section_key,self.mapping_name,name)
+
+    def _fov_selected(self) -> None:
+        self._refresh_fov_actions()
+        if not self._selected_fov():return
+        self.sigWorkspaceResetRequested.emit()
+        self._inspection_kind="fov"
+        self._show_fov_inspection()
+
+    def _refresh_fov_actions(self) -> None:
+        selected=bool(self._selected_fov())
+        self.fov_default_button.setEnabled(selected)
+        self.fov_delete.setEnabled(selected)
+
+    def _show_current_mapping_inspection(self) -> None:
+        if self._inspection_kind=="fov" and self._selected_fov():self._show_fov_inspection()
+        else:self._show_base_inspection()
+
+    def _show_base_inspection(self) -> None:
+        summary=self._mapping_summary
+        mapping=self.mapping_name or "Mapping"
+        description=self._mapping_descriptions.get(mapping,"")
+        lines=[]
+        if description:lines.append(description+"\n")
+        lines.extend([
+            "Base calibration",
+            "Status: %s" % self.base_status.text(),
+            "kx/µm, ky/µm: %s" % self.base_metrics.text(),
+            "Matrix: %s" % self.base_matrix.text(),
+            "Provenance: %s" % self.base_provenance.text(),
+        ])
+        self.show_inspection(mapping,"\n".join(lines))
+
+    def _show_fov_inspection(self) -> None:
+        item=self.fov_list.currentItem()
+        if item is None:
+            self._inspection_kind="base"; self._show_base_inspection(); return
+        row=dict(item.data(QtCore.Qt.UserRole+1) or {})
+        name=str(row.get("name") or item.data(QtCore.Qt.UserRole) or "FOV correction")
+        fields=(
+            ("Compatibility",row.get("compatibility")),
+            ("Default","Yes" if row.get("default") else "No"),
+            ("Model",row.get("model")),
+            ("Degree",row.get("degree")),
+            ("Samples",row.get("sample_count")),
+            ("RMS residual",row.get("rms_residual")),
+            ("Max residual",row.get("max_residual")),
+            ("Coverage",row.get("coverage")),
+            ("Created",row.get("created_at")),
+            ("Provenance",row.get("provenance")),
+        )
+        lines=["FOV correction"]+["%s: %s" % (label,value) for label,value in fields if value not in (None,"")]
+        self.show_inspection("%s / %s" % (self.mapping_name,name),"\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # Observation + geometry tab
+    # ------------------------------------------------------------------
+
+    def _build_observation_tab(self) -> QtWidgets.QWidget:
+        page=QtWidgets.QWidget(); root=QtWidgets.QHBoxLayout(page); root.setContentsMargins(0,6,0,0)
+        splitter=QtWidgets.QSplitter(QtCore.Qt.Horizontal); splitter.setChildrenCollapsible(False); root.addWidget(splitter,1)
+        left=QtWidgets.QWidget(); left.setMinimumWidth(270); left.setMaximumWidth(380)
+        lv=QtWidgets.QVBoxLayout(left); lv.setContentsMargins(0,0,6,0); lv.setSpacing(7)
+
+        planes=QtWidgets.QGroupBox("Observation planes"); pv=QtWidgets.QVBoxLayout(planes)
+        self.observation_list=QtWidgets.QListWidget(); self.observation_list.setMaximumHeight(145)
+        pv.addWidget(self.observation_list)
+        row=QtWidgets.QHBoxLayout()
+        self.observation_new=QtWidgets.QPushButton("+ New")
+        self.observation_edit=QtWidgets.QPushButton("Edit")
+        self.observation_delete=QtWidgets.QPushButton("Delete")
+        row.addWidget(self.observation_new); row.addWidget(self.observation_edit); row.addWidget(self.observation_delete); row.addStretch(1)
+        pv.addLayout(row); lv.addWidget(planes)
+
+        geometry=QtWidgets.QGroupBox("Geometry by section"); gv=QtWidgets.QVBoxLayout(geometry)
+        self.geometry_list=QtWidgets.QListWidget(); self.geometry_list.setMinimumHeight(100)
+        gv.addWidget(self.geometry_list,1)
+        self.geometry_calibrate=QtWidgets.QPushButton("Calibrate / Recalibrate")
+        gv.addWidget(self.geometry_calibrate)
+        lv.addWidget(geometry,1)
+
+        details=QtWidgets.QGroupBox("Observation plane details"); df=QtWidgets.QFormLayout(details)
+        self.obs_name=QtWidgets.QLineEdit()
+        self.obs_detector_combo=QtWidgets.QComboBox()
+        self.obs_detector_other=QtWidgets.QLineEdit(); self.obs_detector_other.setPlaceholderText("Detector/source name")
+        detector_widget=QtWidgets.QWidget(); dh=QtWidgets.QHBoxLayout(detector_widget); dh.setContentsMargins(0,0,0,0)
+        dh.addWidget(self.obs_detector_combo,1); dh.addWidget(self.obs_detector_other,1)
+        self.obs_pixel=QtWidgets.QDoubleSpinBox(); self.obs_pixel.setRange(0.0,1e9); self.obs_pixel.setDecimals(9); self.obs_pixel.setSpecialValueText("Not set")
+        self.obs_description=QtWidgets.QPlainTextEdit(); self.obs_description.setMaximumHeight(70)
+        df.addRow("Name",self.obs_name); df.addRow("Preferred detector",detector_widget)
+        df.addRow("Default pixel size (µm)",self.obs_pixel); df.addRow("Description",self.obs_description)
+        buttons=QtWidgets.QHBoxLayout()
+        self.obs_save=QtWidgets.QPushButton("Save")
+        self.obs_cancel=QtWidgets.QPushButton("Cancel")
+        buttons.addWidget(self.obs_save); buttons.addWidget(self.obs_cancel); buttons.addStretch(1); df.addRow(buttons)
+        lv.addWidget(details)
+        splitter.addWidget(left)
+
+        self.observation_workspace=self._build_workspace(separate=True)
+        splitter.addWidget(self.observation_workspace); splitter.setSizes([320,960])
+
+        self.observation_list.currentItemChanged.connect(lambda *_args:self._observation_selected())
+        self.observation_new.clicked.connect(self._new_observation)
+        self.observation_edit.clicked.connect(self._edit_observation)
+        self.observation_delete.clicked.connect(self._delete_observation)
+        self.obs_save.clicked.connect(self._save_observation)
+        self.obs_cancel.clicked.connect(self._cancel_observation_edit)
+        self.obs_detector_combo.currentIndexChanged.connect(self._obs_detector_changed)
+        self.geometry_list.currentItemChanged.connect(lambda *_args:self._geometry_selected())
+        self.geometry_calibrate.clicked.connect(self._emit_geometry)
+        self._set_observation_editing(False)
+        return page
+
+    def set_observation_catalog(
+        self,planes: Sequence[Mapping[str,Any]],*,detectors: Sequence[str]=(),
+        current: str | None=None,
+    ) -> None:
+        previous=str(current or self.observation_plane_name or "").strip()
+        self._detectors=tuple(dict.fromkeys(str(v).strip() for v in detectors if str(v).strip()))
+        self._observation_rows={str(row.get("name")):dict(row) for row in planes if str(row.get("name") or "").strip()}
+        blocker=QtCore.QSignalBlocker(self.observation_list)
+        self.observation_list.clear()
+        for name,row in self._observation_rows.items():
+            item=QtWidgets.QListWidgetItem(name); item.setData(QtCore.Qt.UserRole,name)
+            description=str(row.get("description") or "")
+            if description:item.setToolTip(description)
+            self.observation_list.addItem(item)
+        if self.observation_list.count():
+            target=None
+            for i in range(self.observation_list.count()):
+                item=self.observation_list.item(i)
+                if str(item.data(QtCore.Qt.UserRole))==previous:target=item; break
+            self.observation_list.setCurrentItem(target or self.observation_list.item(0))
+        del blocker
+        self._configure_detector_editor(None)
+        self._observation_selected()
+
+    def _observation_selected(self) -> None:
+        if self._observation_edit_mode is not None:return
+        self.sigWorkspaceResetRequested.emit()
+        plane=self.observation_plane_name
+        self._load_observation_details(plane)
+        self.geometry_list.clear()
+        if plane:self.sigObservationSelectionChanged.emit(plane)
+        self._show_observation_inspection()
 
     def set_geometry_rows(self,rows: Sequence[Mapping[str,Any]]) -> None:
-        self.geometry_table.setRowCount(len(rows))
-        for r,row in enumerate(rows):
-            values=(row.get("plane",""),row.get("status",""),row.get("details",""))
-            for c,value in enumerate(values): self.geometry_table.setItem(r,c,QtWidgets.QTableWidgetItem(str(value)))
-        self.geometry_table.resizeColumnsToContents()
+        self._geometry_rows=[dict(row) for row in rows]
+        selected=None
+        current=self.geometry_list.currentItem()
+        if current is not None:selected=str(current.data(QtCore.Qt.UserRole) or "")
+        blocker=QtCore.QSignalBlocker(self.geometry_list); self.geometry_list.clear()
+        for row in self._geometry_rows:
+            section=str(row.get("section") or "")
+            title=str(row.get("section_title") or section)
+            status=str(row.get("status") or "Not calibrated")
+            orientation=str(row.get("orientation") or "—")
+            text="%s   ·   %s" % (title,orientation if status=="Calibrated" else status)
+            item=QtWidgets.QListWidgetItem(text); item.setData(QtCore.Qt.UserRole,section); item.setData(QtCore.Qt.UserRole+1,row)
+            self.geometry_list.addItem(item)
+            if section==selected:self.geometry_list.setCurrentItem(item)
+        del blocker
+        self.geometry_calibrate.setEnabled(bool(self.geometry_list.currentItem()))
+
+    def _geometry_selected(self) -> None:
+        self.geometry_calibrate.setEnabled(bool(self.geometry_list.currentItem()))
+        item=self.geometry_list.currentItem()
+        if item is None:return
+        self.sigWorkspaceResetRequested.emit()
+        row=dict(item.data(QtCore.Qt.UserRole+1) or {})
+        section=str(row.get("section") or "")
+        if section:self.select_section(section)
+        fields=(
+            ("Status",row.get("status")),("Orientation",row.get("orientation")),
+            ("Method",row.get("method")),("Created",row.get("created_at")),
+            ("Details",row.get("details")),
+        )
+        body="\n".join("%s: %s" % (label,value) for label,value in fields if value not in (None,""))
+        self.show_observation_inspection(
+            "%s / %s" % (self.observation_plane_name,row.get("section_title") or section),body
+        )
+
+    def _emit_geometry(self) -> None:
+        item=self.geometry_list.currentItem(); plane=self.observation_plane_name
+        if item is None or not plane:return
+        section=str(item.data(QtCore.Qt.UserRole) or "")
+        if section:self.sigGeometryCalibrationRequested.emit(section,plane)
+
+    def _load_observation_details(self,plane: str) -> None:
+        row=self._observation_rows.get(str(plane),{})
+        self.obs_name.setText(str(row.get("name") or ""))
+        self.obs_pixel.setValue(float(row.get("default_pixel_size_um") or 0.0))
+        self.obs_description.setPlainText(str(row.get("description") or ""))
+        self._configure_detector_editor(row.get("preferred_detector"))
+        self._set_observation_editing(False)
+
+    def _configure_detector_editor(self,current) -> None:
+        value=str(current or "").strip()
+        blocker=QtCore.QSignalBlocker(self.obs_detector_combo); self.obs_detector_combo.clear()
+        self.obs_detector_combo.addItem("None",None)
+        for detector in self._detectors:self.obs_detector_combo.addItem(detector,detector)
+        self.obs_detector_combo.addItem("Other…","__other__")
+        idx=self.obs_detector_combo.findData(value) if value else 0
+        if value and idx<0:
+            idx=self.obs_detector_combo.findData("__other__"); self.obs_detector_other.setText(value)
+        else:self.obs_detector_other.clear()
+        self.obs_detector_combo.setCurrentIndex(max(0,idx)); del blocker
+        self._obs_detector_changed()
+
+    def _obs_detector_changed(self,*_args) -> None:
+        other=self.obs_detector_combo.currentData()=="__other__"
+        self.obs_detector_other.setVisible(bool(other))
+        self.obs_detector_other.setEnabled(bool(other) and self._observation_edit_mode is not None)
+
+    def _preferred_detector_value(self) -> str | None:
+        value=self.obs_detector_combo.currentData()
+        if value=="__other__":return self.obs_detector_other.text().strip() or None
+        return str(value).strip() if value else None
+
+    def _set_observation_editing(self,editing: bool,new: bool=False) -> None:
+        self.obs_name.setReadOnly(not editing or not new)
+        self.obs_detector_combo.setEnabled(editing)
+        self.obs_pixel.setEnabled(editing)
+        self.obs_description.setReadOnly(not editing)
+        self.obs_save.setVisible(editing); self.obs_cancel.setVisible(editing)
+        self.observation_list.setEnabled(not editing)
+        self.observation_new.setEnabled(not editing); self.observation_edit.setEnabled(not editing and bool(self.observation_plane_name))
+        self.observation_delete.setEnabled(not editing and bool(self.observation_plane_name))
+        self._obs_detector_changed()
+
+    def _new_observation(self) -> None:
+        self.sigWorkspaceResetRequested.emit(); self._observation_edit_mode="new"; self._editing_observation_name=None
+        self.obs_name.clear(); self.obs_pixel.setValue(0.0); self.obs_description.clear(); self._configure_detector_editor(None)
+        self._set_observation_editing(True,new=True)
+        self.show_observation_inspection("New observation plane","Fill the observation-plane fields on the left, then Save.")
+
+    def _edit_observation(self) -> None:
+        plane=self.observation_plane_name
+        if not plane:return
+        self._observation_edit_mode="edit"; self._editing_observation_name=plane
+        self._set_observation_editing(True,new=False)
+
+    def _cancel_observation_edit(self) -> None:
+        self._observation_edit_mode=None; self._editing_observation_name=None
+        self._load_observation_details(self.observation_plane_name)
+        self._show_observation_inspection()
+
+    def _save_observation(self) -> None:
+        payload={
+            "name":self.obs_name.text().strip(),
+            "preferred_detector":self._preferred_detector_value(),
+            "default_pixel_size_um":None if self.obs_pixel.value()<=0 else float(self.obs_pixel.value()),
+            "description":self.obs_description.toPlainText().strip(),
+        }
+        if self._observation_edit_mode=="new":self.sigObservationCreateRequested.emit(payload)
+        elif self._observation_edit_mode=="edit" and self._editing_observation_name:
+            self.sigObservationUpdateRequested.emit(self._editing_observation_name,payload)
+
+    def finish_observation_edit(self) -> None:
+        self._observation_edit_mode=None; self._editing_observation_name=None
+        self._set_observation_editing(False)
+
+    def _delete_observation(self) -> None:
+        plane=self.observation_plane_name
+        if plane:self.sigObservationDeleteRequested.emit(plane)
+
+    def _show_observation_inspection(self) -> None:
+        plane=self.observation_plane_name
+        row=self._observation_rows.get(plane,{})
+        if not plane:
+            self.show_observation_inspection("Observation & Geometry","Select or create an observation plane."); return
+        lines=[]
+        if row.get("description"):lines.append(str(row["description"])+"\n")
+        lines.extend([
+            "Preferred detector: %s" % (row.get("preferred_detector") or "—"),
+            "Default pixel size: %s" % ("—" if row.get("default_pixel_size_um") is None else "%g µm/px" % row["default_pixel_size_um"]),
+            "\nSelect a section under Geometry by section to inspect or calibrate its orientation.",
+        ])
+        self.show_observation_inspection(plane,"\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # Shared dynamic right workspaces
+    # ------------------------------------------------------------------
+
+    def _build_workspace(self,separate: bool=False) -> QtWidgets.QWidget:
+        container=QtWidgets.QWidget(); layout=QtWidgets.QVBoxLayout(container); layout.setContentsMargins(6,0,0,0)
+        header=QtWidgets.QHBoxLayout(); title=QtWidgets.QLabel("Calibration")
+        font=title.font(); font.setPointSize(max(font.pointSize()+2,11)); font.setBold(True); title.setFont(font)
+        header.addWidget(title,1)
+        back=QtWidgets.QPushButton("Back to details"); back.setVisible(False); header.addWidget(back)
+        layout.addLayout(header)
+        stack=QtWidgets.QStackedWidget(); layout.addWidget(stack,1)
+        inspection=QtWidgets.QWidget(); iv=QtWidgets.QVBoxLayout(inspection)
+        text=QtWidgets.QLabel(); text.setAlignment(QtCore.Qt.AlignTop|QtCore.Qt.AlignLeft); text.setWordWrap(True)
+        text.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse); iv.addWidget(text); iv.addStretch(1)
+        host=QtWidgets.QWidget(); hv=QtWidgets.QVBoxLayout(host); hv.setContentsMargins(0,0,0,0)
+        stack.addWidget(inspection); stack.addWidget(host)
+        if not separate:
+            self.workspace_title=title; self.workspace_back=back; self.workspace_stack=stack
+            self.inspection_page=inspection; self.inspection_text=text; self.workspace_host=host; self.workspace_host_layout=hv
+            back.clicked.connect(self._mapping_back)
+        else:
+            self.obs_workspace_title=title; self.obs_workspace_back=back; self.obs_workspace_stack=stack
+            self.obs_inspection_page=inspection; self.obs_inspection_text=text; self.obs_workspace_host=host; self.obs_workspace_host_layout=hv
+            back.clicked.connect(self._observation_back)
+        return container
+
+    def show_inspection(self,title: str,body: str) -> None:
+        self._clear_workspace_widget()
+        self.workspace_title.setText(str(title)); self.inspection_text.setText(str(body)); self.workspace_back.setVisible(False)
+        self.workspace_stack.setCurrentWidget(self.inspection_page)
+
+    def show_observation_inspection(self,title: str,body: str) -> None:
+        self._clear_workspace_widget(observation=True)
+        self.obs_workspace_title.setText(str(title)); self.obs_inspection_text.setText(str(body)); self.obs_workspace_back.setVisible(False)
+        self.obs_workspace_stack.setCurrentWidget(self.obs_inspection_page)
+
+    def mount_workspace(self,widget: QtWidgets.QWidget,title: str,*,observation: bool=False) -> None:
+        self._clear_workspace_widget(observation=observation,delete=False)
+        widget.setParent(self.obs_workspace_host if observation else self.workspace_host)
+        widget.setVisible(True)
+        if observation:
+            self.obs_workspace_host_layout.addWidget(widget); self.obs_workspace_title.setText(str(title)); self.obs_workspace_back.setVisible(True)
+            self.obs_workspace_stack.setCurrentWidget(self.obs_workspace_host)
+        else:
+            self.workspace_host_layout.addWidget(widget); self.workspace_title.setText(str(title)); self.workspace_back.setVisible(True)
+            self.workspace_stack.setCurrentWidget(self.workspace_host)
+        self._workspace_widget=widget
+
+    def _clear_workspace_widget(self,*,observation: bool=False,delete: bool=False) -> None:
+        layout=self.obs_workspace_host_layout if observation else self.workspace_host_layout
+        while layout.count():
+            item=layout.takeAt(0); widget=item.widget()
+            if widget is not None:
+                widget.setVisible(False); widget.setParent(None)
+                if delete:widget.deleteLater()
+        if self._workspace_widget is not None and self._workspace_widget.parent() is None:
+            self._workspace_widget=None
+
+    def _mapping_back(self) -> None:
+        self.sigWorkspaceResetRequested.emit(); self._show_current_mapping_inspection()
+
+    def _observation_back(self) -> None:
+        self.sigWorkspaceResetRequested.emit(); self._show_observation_inspection()
+
 
 
 __all__ = [

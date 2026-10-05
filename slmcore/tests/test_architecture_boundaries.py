@@ -82,9 +82,9 @@ def test_patch8_calibration_management_has_distinct_persistent_domains():
     root = _package_root()
     ui = (root / "qt" / "calibration" / "management_dialogs.py").read_text(encoding="utf-8")
     manager = (root / "qt" / "application" / "calibration" / "manager.py").read_text(encoding="utf-8")
-    assert '"Mapping Calibration"' in ui
-    assert '"Observation Geometry"' in ui
-    assert '"Observation Planes…"' in ui
+    assert '"Mapping"' in ui
+    assert '"Observation & Geometry"' in ui
+    assert "sigObservationSelectionChanged" in ui
     assert "sigCalibrationRequested.connect(self.open_management)" in manager
     assert "sigCalibrationRequested.connect(self.open_dialog)" not in manager
 
@@ -112,3 +112,24 @@ def test_patch9_editable_lattice_core_is_neutral_and_fov_workflow_is_dedicated()
     feedback_ui = (root / "qt" / "cgh" / "session_window.py").read_text(encoding="utf-8")
     assert "Build fit from current feedback" not in feedback_ui
     assert "Persistent FOV mapping calibration moved to the dedicated Calibration" in feedback_ui
+
+
+def test_calibration_workspace_embeds_calibration_modes_in_one_window():
+    root = _package_root()
+    ui = (root / "qt" / "calibration" / "management_dialogs.py").read_text(encoding="utf-8")
+    manager = (root / "qt" / "application" / "calibration" / "manager.py").read_text(encoding="utf-8")
+    section_view = (root / "qt" / "sections" / "view.py").read_text(encoding="utf-8")
+    base_dialog = (root / "qt" / "calibration" / "dialog.py").read_text(encoding="utf-8")
+    fov_dialog = (root / "qt" / "calibration" / "fov_dialog.py").read_text(encoding="utf-8")
+    geometry_dialog = (root / "qt" / "calibration" / "geometry_calibration_dialog.py").read_text(encoding="utf-8")
+
+    assert 'QPushButton("Calibration")' in section_view
+    assert "mount_workspace" in ui
+    assert '"Mapping"' in ui
+    assert '"Observation & Geometry"' in ui
+    assert "open_dialog(section_key,embedded=True)" in manager
+    assert "open_fov_calibration(section_key,mapping_name,embedded=True)" in manager
+    assert "embedded=True" in manager
+    for source in (base_dialog,fov_dialog,geometry_dialog):
+        assert "embedded: bool=False" in source
+        assert "QtCore.Qt.Widget" in source

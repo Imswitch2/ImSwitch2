@@ -26,8 +26,12 @@ class GeometryCalibrationDialog(QtWidgets.QDialog):
         current_detector: str | None,localization_parameters: Mapping[str,Any] | None=None,
         section_title: str | None=None,
         parent=None,
+        embedded: bool=False,
     ) -> None:
         super().__init__(parent)
+        self._embedded=bool(embedded)
+        if self._embedded:
+            self.setWindowFlags(QtCore.Qt.Widget)
         self.section_key=str(section_key)
         self.section_title=str(section_title or self.section_key)
         self.setWindowTitle("Geometry calibration — %s" % self.section_title)
@@ -110,8 +114,9 @@ class GeometryCalibrationDialog(QtWidgets.QDialog):
             )
         )
 
-        close=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
-        close.rejected.connect(self.reject); root.addWidget(close)
+        if not self._embedded:
+            close=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+            close.rejected.connect(self.reject); root.addWidget(close)
         self.observation_combo.currentIndexChanged.connect(self._observation_changed)
         self.configure_observation_planes(observation_planes,current_observation_plane)
 

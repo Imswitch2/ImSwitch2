@@ -44,8 +44,12 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
         detectors: Sequence[str]=(),current_detector: str | None=None,
         section_title: str | None=None,
         parent: QtWidgets.QWidget | None=None,
+        embedded: bool=False,
     ) -> None:
         super().__init__(parent)
+        self._embedded=bool(embedded)
+        if self._embedded:
+            self.setWindowFlags(QtCore.Qt.Widget)
         self.section_key=str(section_key); self.mapping_name=str(mapping_name)
         self.section_title=str(section_title or self.section_key)
         self.setWindowTitle("FOV Calibration - %s / %s" % (self.mapping_name,self.section_title))
@@ -131,8 +135,9 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
         self.save_button.clicked.connect(self._save); save_row.addWidget(self.save_button)
         right_layout.addLayout(save_row); splitter.addWidget(right); splitter.setSizes([570,570])
 
-        buttons=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
-        buttons.rejected.connect(self.reject); root.addWidget(buttons)
+        if not self._embedded:
+            buttons=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+            buttons.rejected.connect(self.reject); root.addWidget(buttons)
         self.observation_combo.currentIndexChanged.connect(self._observation_changed)
         self.configure_observation_planes(observation_planes,current_observation_plane)
         self.set_editable_enabled(False); self.save_button.setEnabled(False)

@@ -60,17 +60,22 @@ class CalibrationDialog(QtWidgets.QDialog):
         current_detector: str | None=None,
         title: str="Calibration",
         parent: QtWidgets.QWidget | None=None,
+        embedded: bool=False,
     ) -> None:
         super().__init__(parent)
+        self._embedded=bool(embedded)
         self.setWindowTitle(str(title))
-        self.setWindowFlags(
-            self.windowFlags()
-            | QtCore.Qt.WindowMinimizeButtonHint
-            | QtCore.Qt.WindowMaximizeButtonHint
-        )
-        self.setMinimumSize(900,640)
-        self.resize(1180,760)
-        self.setAttribute(QtCore.Qt.WA_DeleteOnClose,True)
+        if self._embedded:
+            self.setWindowFlags(QtCore.Qt.Widget)
+        else:
+            self.setWindowFlags(
+                self.windowFlags()
+                | QtCore.Qt.WindowMinimizeButtonHint
+                | QtCore.Qt.WindowMaximizeButtonHint
+            )
+            self.setMinimumSize(900,640)
+            self.resize(1180,760)
+            self.setAttribute(QtCore.Qt.WA_DeleteOnClose,True)
 
         self._mapping_name = ""
         self._section_key = str(section_key or "").strip()
@@ -125,7 +130,8 @@ class CalibrationDialog(QtWidgets.QDialog):
             self._calibration_button,
             QtWidgets.QDialogButtonBox.AcceptRole,
         )
-        self._button_box.addButton(QtWidgets.QDialogButtonBox.Cancel)
+        if not self._embedded:
+            self._button_box.addButton(QtWidgets.QDialogButtonBox.Cancel)
         self._calibration_button.clicked.connect(
             self._request_calibration,
         )
@@ -497,7 +503,8 @@ class CalibrationDialog(QtWidgets.QDialog):
                     "candidate":self._target_calibration_candidate,
                 },
             )
-            self.accept()
+            if not self._embedded:
+                self.accept()
             return
         if method != LINEAR_PHASE_METHOD:
             return
@@ -509,7 +516,8 @@ class CalibrationDialog(QtWidgets.QDialog):
         values["mapping_name"] = self.mapping_name
         self._linear_status_label.setText("")
         self.sigCalibrationRequested.emit(method,values)
-        self.accept()
+        if not self._embedded:
+            self.accept()
 
     def _linear_phase_values(self) -> dict[str, float]:
         result: dict[str, float] = {}
