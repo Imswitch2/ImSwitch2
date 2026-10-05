@@ -77,6 +77,7 @@ class MultiFociVectorTarget(Target):
             conversion_context=(
                 None if context is None else context.calibration
             ),
+            changed_keys=changed_keys,
         )
         validate_lattice_params(resolved)
         return resolved, None

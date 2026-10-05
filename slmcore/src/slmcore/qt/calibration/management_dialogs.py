@@ -163,6 +163,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
     """Authoritative management home for mapping calibration and observation geometry."""
 
     sigContextChanged = QtCore.Signal(str,str)
+    sigMappingDeleteRequested = QtCore.Signal(str,str)
     sigBaseCalibrationRequested = QtCore.Signal(str,str)
     sigBaseCalibrationDeleteRequested = QtCore.Signal(str,str)
     sigFovCalibrationRequested = QtCore.Signal(str,str)
@@ -192,6 +193,8 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         context.addWidget(QtWidgets.QLabel("Mapping:"))
         self.mapping_combo = QtWidgets.QComboBox(); self.mapping_combo.addItems([str(v) for v in mappings])
         context.addWidget(self.mapping_combo,1)
+        self.delete_mapping_button = QtWidgets.QPushButton("Delete mapping…")
+        context.addWidget(self.delete_mapping_button)
         self.observation_planes_button = QtWidgets.QPushButton("Observation Planes…")
         context.addWidget(self.observation_planes_button)
         outer.addLayout(context)
@@ -208,6 +211,9 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
             i=self.mapping_combo.findText(current_mapping); self.mapping_combo.setCurrentIndex(max(0,i))
         self.section_combo.currentTextChanged.connect(self._context_changed)
         self.mapping_combo.currentTextChanged.connect(self._context_changed)
+        self.delete_mapping_button.clicked.connect(
+            lambda:self.sigMappingDeleteRequested.emit(self.section_key,self.mapping_name)
+        )
         self.observation_planes_button.clicked.connect(self.sigObservationPlanesRequested.emit)
 
     @property
@@ -281,11 +287,18 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     def set_mapping_summary(self,summary: Mapping[str,Any]) -> None:
         calibrated=bool(summary.get("calibrated",False))
-        self.base_status.setText("Calibrated" if calibrated else "Not calibrated")
+        load_error=str(summary.get("load_error") or "").strip()
+        if load_error:
+            self.base_status.setText("Error")
+        else:
+            self.base_status.setText("Calibrated" if calibrated else "Not calibrated")
         self.base_metrics.setText(str(summary.get("metrics") or "—"))
         self.base_matrix.setText(str(summary.get("matrix") or "—"))
-        self.base_provenance.setText(str(summary.get("provenance") or "—"))
-        self.base_delete.setEnabled(calibrated)
+        self.base_provenance.setText(
+            ("Load error: %s" % load_error)
+            if load_error else str(summary.get("provenance") or "—")
+        )
+        self.base_delete.setEnabled(calibrated or bool(load_error))
         default=str(summary.get("default_fov") or "").strip() or None
         self.fov_default.setText("Default: %s" % (default or "—"))
         rows=list(summary.get("fov_rows") or ())

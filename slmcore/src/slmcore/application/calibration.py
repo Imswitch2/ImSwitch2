@@ -941,8 +941,19 @@ class SLMCalibrationService:
 
     def runtime_replaced(self) -> None:
         self._synchronize_active_mappings_from_runtime()
-        if self._store_change_pending:
-            self.reconcile_pending_catalog_changes()
+        # A loaded config may carry an embedded calibration whose mapping no
+        # longer exists in the workspace catalog.  The catalog is authoritative:
+        # reconcile every runtime replacement instead of leaving an orphan
+        # calibration active but impossible to select/manage.
+        if self.mappings.store is not None:
+            self._store_change_pending = True
+        if (
+            self._store_change_pending
+            and self.session.editor_writes_allowed
+            and not self.session.automatic_operation_active
+        ):
+            self._reconcile_mapping_catalog()
+            return
         self._callbacks.on_mappings_changed()
 
     def session_state_changed(self) -> None:
@@ -987,6 +998,14 @@ class SLMCalibrationService:
                         getattr(calibration,"mapping_name",None) or ""
                     ).strip()
                     if calibration_mapping and not self.mappings.has(calibration_mapping):
+                        self._warning(
+                            "SLM mapping",
+                            (
+                                'Ignoring embedded calibration for missing mapping "%s" '
+                                'in section "%s".'
+                                % (calibration_mapping,section_key)
+                            ),
+                        )
                         self.session.set_section_calibration(section_key,None)
         except Exception as error:
             self._error("SLM mapping catalog synchronization failed",error)

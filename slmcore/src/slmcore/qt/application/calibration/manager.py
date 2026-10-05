@@ -265,6 +265,9 @@ class CalibrationManager(QtCore.QObject):
             )
             self._management_dialog=dialog
             dialog.sigContextChanged.connect(self._refresh_management_context)
+            dialog.sigMappingDeleteRequested.connect(
+                self._management_delete_mapping
+            )
             dialog.sigBaseCalibrationRequested.connect(
                 self._management_start_base_calibration
             )
@@ -310,8 +313,13 @@ class CalibrationManager(QtCore.QObject):
         if not section or not mapping:
             return
         try:
-            calibration=self.service.saved_calibration(section,mapping)
-            calibrated=bool(calibration.is_valid())
+            calibration=None
+            calibration_error=None
+            try:
+                calibration=self.service.saved_calibration(section,mapping)
+            except Exception as error:
+                calibration_error=error
+            calibrated=bool(calibration is not None and calibration.is_valid())
             matrix=calibration._effective_matrix() if calibrated else None
             matrix_text=(
                 "—" if matrix is None else
@@ -351,7 +359,11 @@ class CalibrationManager(QtCore.QObject):
                 })
             dialog.set_mapping_summary({
                 "calibrated":calibrated,
-                "metrics":("—" if not calibrated else "%.6g, %.6g" % (calibration.kx_per_um,calibration.ky_per_um)),
+                "load_error":None if calibration_error is None else str(calibration_error),
+                "metrics":(
+                    "—" if not calibrated else
+                    "%.6g, %.6g" % (calibration.kx_per_um,calibration.ky_per_um)
+                ),
                 "matrix":matrix_text,
                 "provenance":provenance,
                 "default_fov":default,
@@ -378,6 +390,25 @@ class CalibrationManager(QtCore.QObject):
             if not self.set_active_mapping(section_key,mapping_name):
                 return
         self.open_dialog(section_key)
+
+    @QtCore.Slot(str,str)
+    def _management_delete_mapping(self,section_key: str,mapping_name: str) -> None:
+        mapping=str(mapping_name or "").strip()
+        if not mapping:
+            return
+        if not confirm_mapping_deletion(mapping,self._management_dialog):
+            return
+        try:
+            deleted=self.service.delete_mapping(mapping)
+            self.refresh_mappings()
+            self.controller.sigInfo.emit(
+                "SLM Mapping",
+                'Deleted mapping "%s" and %d calibration file(s).'
+                % (mapping,len(deleted)),
+            )
+        except Exception as error:
+            self.refresh_mappings()
+            self._error("Delete SLM Mapping Failed",error)
 
     @QtCore.Slot(str,str)
     def _management_delete_base_calibration(self,section_key: str,mapping_name: str) -> None:

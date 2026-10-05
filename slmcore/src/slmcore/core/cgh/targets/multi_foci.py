@@ -108,6 +108,7 @@ class MultiFociTarget(Target):
             semantic_params,
             cls.target_params,
             conversion_context=context.calibration,
+            changed_keys=changed_keys,
         )
         # Square is a hard source-X -> target-Y constraint. Once links have
         # been applied, Y raster scoring must follow the linked semantic values

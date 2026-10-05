@@ -188,3 +188,58 @@ def test_missing_square_unit_from_old_target_state_defaults_to_slm():
 
     assert state.values["square"] is True
     assert state.values["square_unit"] == SLM_UNIT
+
+
+def test_metric_square_link_is_dormant_without_calibration_when_not_edited():
+    context = SectionContext(
+        geometry=SectionGeometry(
+            key="sec_0",x=0,y=0,width=512,height=512,
+        ),
+        pixel_size_um=1.0,
+        wavelength_nm=488,
+        pupil_radius_px=256,
+        center_offset_x_px=0,
+        center_offset_y_px=0,
+        calibration=None,
+    )
+    params = _params(
+        MultiFociVectorTarget,
+        square=True,
+        square_unit=METRIC_UNIT,
+        period_x_px=6.0,
+        period_y_px=9.0,
+        fov_x_px=180.0,
+        fov_y_px=270.0,
+    )
+
+    canonical,_ = MultiFociVectorTarget.canonicalize_params(
+        params,(),context=context,
+    )
+
+    assert canonical["period_x_px"] == 6.0
+    assert canonical["period_y_px"] == 9.0
+
+
+def test_editing_metric_square_link_without_calibration_still_requires_calibration():
+    context = SectionContext(
+        geometry=SectionGeometry(
+            key="sec_0",x=0,y=0,width=512,height=512,
+        ),
+        pixel_size_um=1.0,
+        wavelength_nm=488,
+        pupil_radius_px=256,
+        center_offset_x_px=0,
+        center_offset_y_px=0,
+        calibration=None,
+    )
+    params = _params(
+        MultiFociVectorTarget,
+        square=True,
+        square_unit=METRIC_UNIT,
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError,match="valid section calibration"):
+        MultiFociVectorTarget.canonicalize_params(
+            params,("period_x_px",),context=context,
+        )

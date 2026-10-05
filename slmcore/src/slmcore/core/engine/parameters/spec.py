@@ -125,11 +125,21 @@ def apply_param_links(
     params: Mapping[str,Any],
     specs: Mapping[str,ParamSpec],
     conversion_context: Any = None,
+    *,
+    changed_keys: Iterable[str]=(),
 ) -> dict[str, Any]:
-    """Apply active source -> target parameter links."""
+    """Apply active source -> target parameter links.
+
+    Unit-aware links whose semantic unit requires a conversion context may be
+    temporarily dormant when that context is unavailable.  This lets an
+    already-canonical SLM target survive removal of a mapping calibration and
+    be used to bootstrap a replacement calibration.  Actively editing any
+    part of that link still requires the conversion context.
+    """
 
     validate_param_links(specs)
     resolved = dict(params)
+    changed = {str(key) for key in changed_keys}
 
     for source,spec in specs.items():
         for link in spec.links:
@@ -141,6 +151,15 @@ def apply_param_links(
                 target_value = resolved[source]
             else:
                 unit = str(resolved[link.unit_by])
+                canonical_unit = spec.converter.canonical_unit
+                if conversion_context is None and unit != canonical_unit:
+                    relevant = {
+                        source,link.target,link.enabled_by,link.unit_by,
+                    }
+                    if not changed.intersection(relevant):
+                        # Preserve the already-canonical target value while the
+                        # metric constraint is temporarily unevaluable.
+                        continue
                 linked_value = spec.to_unit(
                     resolved[source],unit,conversion_context,
                 )

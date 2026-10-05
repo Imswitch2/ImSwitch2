@@ -26,6 +26,11 @@ CGH_IGNORED_CONTEXT_PATHS = frozenset({
     ("pupil_radius_px",),
     ("center_offset_x_px",),
     ("center_offset_y_px",),
+    # Mapping calibration influences target canonicalization when metric
+    # semantics are active, but it is not itself a CGH input once the target
+    # has been resolved into canonical SLM coordinates.  Hashing it here made
+    # every calibration change stale otherwise-identical SLM-unit CGHs.
+    ("calibration",),
 })
 
 

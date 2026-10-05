@@ -122,7 +122,7 @@ def test_mapping_selection_is_prepared_then_committed_headlessly(tmp_path):
     assert runtime.get_section_calibration_copy("sec_0").mapping_name == mapping
 
 
-def test_switching_mapping_changes_calibration_context_and_stales_current_cgh(tmp_path):
+def test_switching_mapping_keeps_slm_unit_cgh_current(tmp_path):
     runtime = _runtime(with_cgh=True)
     mapping_store = MappingStore(tmp_path)
     store = SLMCalibrationStore(tmp_path/"calibrations")
@@ -146,7 +146,7 @@ def test_switching_mapping_changes_calibration_context_and_stales_current_cgh(tm
     session.calibration.select_mapping(
         session.calibration.prepare_mapping_selection("sec_0",first)
     )
-    assert runtime.get_section_cgh_status("sec_0").result_state is CGHResultState.STALE
+    assert runtime.get_section_cgh_status("sec_0").result_state is CGHResultState.CURRENT
 
     job = runtime.prepare_section_base_cgh("sec_0")
     runtime.commit_section_cgh(
@@ -167,6 +167,64 @@ def test_switching_mapping_changes_calibration_context_and_stales_current_cgh(tm
     assert calibration.mapping_name == second
     assert calibration.kx_per_um == pytest.approx(0.03)
     assert calibration.ky_per_um == pytest.approx(0.04)
+    assert runtime.get_section_cgh_status("sec_0").result_state is CGHResultState.CURRENT
+
+
+def test_metric_square_mapping_change_stales_when_resolved_target_changes(tmp_path):
+    runtime = _runtime()
+    mapping_store = MappingStore(tmp_path)
+    store = SLMCalibrationStore(tmp_path/"calibrations")
+    first = mapping_store.add({"name":"100x"}).name
+    second = mapping_store.add({"name":"60x"}).name
+    store.save_calibration(
+        runtime.identity,"sec_0",first,
+        SLMSectionCalibration(
+            kx_per_um=0.01,ky_per_um=0.02,
+            section_geometry=section_geometry_to_dict(runtime.get_section_geometry("sec_0")),
+        ),
+    )
+    store.save_calibration(
+        runtime.identity,"sec_0",second,
+        SLMSectionCalibration(
+            kx_per_um=0.03,ky_per_um=0.04,
+            section_geometry=section_geometry_to_dict(runtime.get_section_geometry("sec_0")),
+        ),
+    )
+    session = SLMSession(
+        runtime=runtime,calibration_store=store,mapping_store=mapping_store,
+    )
+    session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",first)
+    )
+    runtime.apply_section_patch(
+        "sec_0",
+        {
+            ("cgh","active"):True,
+            ("cgh","selected_target"):"multi_foci_vector",
+            ("cgh","multi_foci_vector","params","square"):True,
+            ("cgh","multi_foci_vector","params","square_unit"):"metric",
+        },
+    )
+    job = runtime.prepare_section_base_cgh("sec_0")
+    runtime.commit_section_cgh(
+        "sec_0",
+        CGHResult(
+            generation=job.generation,spec=job.spec,target_name=job.target_name,
+            pattern=np.ones(job.spec.context.shape,dtype=np.complex128),
+        ),
+    )
+    before = runtime.get_section_parameter(
+        "sec_0",("cgh","multi_foci_vector","params","period_y_px"),
+    )
+
+    session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",second)
+    )
+
+    after = runtime.get_section_parameter(
+        "sec_0",("cgh","multi_foci_vector","params","period_y_px"),
+    )
+    assert after != before
     assert runtime.get_section_cgh_status("sec_0").result_state is CGHResultState.STALE
 
 
@@ -611,3 +669,104 @@ def test_target_measurement_pixel_size_uses_workflow_override_after_plane_fallba
     assert state.observation_plane_name == "External"
     assert state.source == "file"
     assert state.measurement.pixel_size_um == pytest.approx(0.75)
+
+
+def test_uncalibrated_mapping_can_keep_dormant_metric_target_and_bootstrap_reference(tmp_path):
+    runtime = _runtime()
+    mapping_store = MappingStore(tmp_path)
+    store = SLMCalibrationStore(tmp_path/"calibrations")
+    calibrated = mapping_store.add({"name":"calibrated"}).name
+    uncalibrated = mapping_store.add({"name":"new"}).name
+    _save_calibration(store,runtime,calibrated)
+    session = SLMSession(
+        runtime=runtime,calibration_store=store,mapping_store=mapping_store,
+    )
+    session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",calibrated)
+    )
+    runtime.apply_section_patch(
+        "sec_0",
+        {
+            ("cgh","active"):True,
+            ("cgh","selected_target"):"multi_foci_vector",
+            ("cgh","multi_foci_vector","params","square"):True,
+            ("cgh","multi_foci_vector","params","square_unit"):"metric",
+        },
+    )
+    before_x = runtime.get_section_parameter(
+        "sec_0",("cgh","multi_foci_vector","params","period_x_px"),
+    )
+    before_y = runtime.get_section_parameter(
+        "sec_0",("cgh","multi_foci_vector","params","period_y_px"),
+    )
+
+    assert session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",uncalibrated)
+    )
+    assert runtime.get_section_calibration_copy("sec_0") is None
+    assert runtime.get_section_parameter(
+        "sec_0",("cgh","multi_foci_vector","params","period_x_px"),
+    ) == before_x
+    assert runtime.get_section_parameter(
+        "sec_0",("cgh","multi_foci_vector","params","period_y_px"),
+    ) == before_y
+
+    state = session.calibration.ensure_target_reference("sec_0")
+    assert state.reference is not None
+    assert state.reference.target_type == "multi_foci_vector"
+
+
+def test_runtime_replacement_drops_embedded_calibration_for_missing_mapping(tmp_path):
+    runtime = _runtime()
+    mapping_store = MappingStore(tmp_path)
+    store = SLMCalibrationStore(tmp_path/"calibrations")
+    warnings = []
+    session = SLMSession(
+        runtime=runtime,
+        calibration_store=store,
+        mapping_store=mapping_store,
+        callbacks=SLMSessionCallbacks(
+            on_warning=lambda title,message:warnings.append((title,str(message))),
+        ),
+    )
+
+    replacement = _runtime()
+    replacement.set_section_calibration(
+        "sec_0",
+        SLMSectionCalibration(
+            mapping_name="deleted_mapping",
+            kx_per_um=0.01,
+            ky_per_um=0.02,
+            section_geometry=section_geometry_to_dict(
+                replacement.get_section_geometry("sec_0")
+            ),
+        ),
+    )
+
+    session.replace_runtime(replacement)
+
+    assert replacement.get_section_calibration_copy("sec_0") is None
+    assert session.calibration.active_mapping("sec_0") is None
+    assert any("deleted_mapping" in message for _title,message in warnings)
+
+
+def test_broken_mapping_calibration_does_not_block_mapping_deletion(tmp_path):
+    runtime = _runtime()
+    mapping_store = MappingStore(tmp_path)
+    store = SLMCalibrationStore(tmp_path/"calibrations")
+    mapping = mapping_store.add({"name":"broken"}).name
+    path = store.directory/runtime.identity.serial_number/"sec_0"/"broken.json"
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text('{"version": 1, "calibration": {}}\n',encoding="utf-8")
+    session = SLMSession(
+        runtime=runtime,calibration_store=store,mapping_store=mapping_store,
+    )
+
+    with pytest.raises(ValueError,match="Unsupported mapping-calibration store version"):
+        session.calibration.saved_calibration("sec_0",mapping)
+
+    deleted = session.calibration.delete_mapping(mapping)
+
+    assert str(path) in deleted
+    assert not path.exists()
+    assert not mapping_store.has(mapping)
