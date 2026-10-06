@@ -1152,7 +1152,7 @@ def test_retained_target_phase_roundtrips_through_runtime_config():
     )
 
 
-def test_inferred_missing_spot_is_usable_for_intensity_but_not_position():
+def test_inferred_missing_spot_is_usable_for_intensity_and_position():
     from slmcore.core.cgh.localization import infer_missing_localization
 
     runtime,section_key = _runtime()
@@ -1199,6 +1199,17 @@ def test_inferred_missing_spot_is_usable_for_intensity_but_not_position():
     runtime.apply_section_intensity_feedback(section_key)
     inspection = runtime.get_section_cgh_session_inspection(section_key)
     assert inspection.working_round is not None
+
+    runtime.apply_section_position_correction(section_key,reset_intensity=True)
+    correction = runtime.get_section_cgh_session_inspection(
+        section_key
+    ).position_correction
+    assert correction is not None
+    # Global-fit feedback gives an inferred site zero detector-space error:
+    # its accepted coordinate is the fitted expected lattice coordinate.
+    np.testing.assert_allclose(
+        correction.analysis.position_errors_px[:,1],np.zeros(2),
+    )
 
 
 def _test_fov_calibration(name: str,dx: float,dy: float):

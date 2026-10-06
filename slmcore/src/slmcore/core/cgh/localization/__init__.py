@@ -15,6 +15,7 @@ from .guidance import (
 )
 from .workflow import (
     infer_missing_localization,
+    localization_site_masks,
     localize_measurement,
     reuse_localization,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "detect_spots",
     "localization_context",
     "localize_lattice",
+    "localization_site_masks",
     "localize_measurement",
     "localize_spots",
     "infer_lattice_shape",

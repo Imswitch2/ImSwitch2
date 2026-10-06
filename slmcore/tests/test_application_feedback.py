@@ -361,6 +361,50 @@ def _attach_reference_localization(runtime,section_key="sec_0"):
     return localization
 
 
+def test_position_reference_accepts_inferred_but_not_unresolved_sites(tmp_path):
+    from dataclasses import replace
+
+    import pytest
+
+    from slmcore import PositionReferenceStore
+    from slmcore.core.cgh.localization import infer_missing_localization
+
+    store = PositionReferenceStore(tmp_path / "position_references")
+    runtime = _runtime()
+    session = SLMSession(runtime=runtime,position_reference_store=store)
+    _set_feedback_observation_planes(session,"sample")
+    full = _attach_reference_localization(runtime)
+    diagnostics = dict(full.diagnostics)
+    diagnostics.update({
+        "matched_mask":(True,False,True,True),
+        "matched_count":3,
+        "inferred_count":0,
+        "missing_count":1,
+    })
+    partial = replace(full,diagnostics=diagnostics)
+    params = dict(runtime.get_section_feedback_status("sec_0").localization_params)
+    runtime.commit_section_feedback_localization("sec_0",partial,params)
+
+    context = session.feedback.position_reference_context("sec_0")
+    assert not context.create_allowed
+    assert "Infer missing" in context.create_unavailable_reason
+    with pytest.raises(RuntimeError,match="Infer missing"):
+        session.feedback.add_position_reference("sec_0","partial")
+
+    inferred = infer_missing_localization(partial)
+    runtime.commit_section_feedback_localization("sec_0",inferred,params)
+    context = session.feedback.position_reference_context("sec_0")
+    assert context.create_allowed
+    reference = session.feedback.add_position_reference("sec_0","resolved")
+    assert reference.metadata["matched_count"] == 3
+    assert reference.metadata["inferred_count"] == 1
+    np.testing.assert_allclose(
+        reference.positions_px[:,1],
+        inferred.expected_positions_px[:,1] + np.asarray(inferred.crop_coord)[[2,0]],
+    )
+    session.dispose()
+
+
 def test_named_session_reference_is_shared_but_selection_is_transient(tmp_path):
     from slmcore import (
         PositionReferenceLifetime,PositionReferenceMode,PositionReferenceStore,
@@ -773,16 +817,30 @@ def test_fov_fit_uses_accepted_position_correction_after_apply(tmp_path):
     session.calibration.active_mapping = lambda _section:"sample"
     _set_feedback_observation_planes(session,"Main")
     session.feedback.refresh_fov_position_calibration_contexts()
-    _attach_reference_localization(runtime)
+    from dataclasses import replace
+    from slmcore.core.cgh.localization import infer_missing_localization
+    full = _attach_reference_localization(runtime)
+    diagnostics = dict(full.diagnostics)
+    diagnostics.update({
+        "matched_mask":(True,False,True,True),
+        "matched_count":3,
+        "inferred_count":0,
+        "missing_count":1,
+    })
+    partial = replace(full,diagnostics=diagnostics)
+    inferred = infer_missing_localization(partial)
+    params = dict(runtime.get_section_feedback_status("sec_0").localization_params)
+    runtime.commit_section_feedback_localization("sec_0",inferred,params)
     session.feedback.apply_position_correction("sec_0")
 
     inspection = runtime.get_section_cgh_session_inspection("sec_0")
     correction = inspection.position_correction
     assert correction is not None
+    matched = np.asarray(inferred.diagnostics["matched_mask"],dtype=bool)
     expected = (
         np.asarray(correction.corrected_positions_kxy)
         - np.asarray(correction.ideal_positions_kxy)
-    )
+    )[:,matched]
 
     # Once accepted, fitting must no longer depend on re-running the current
     # localization analysis. This is what keeps the fit available after an
@@ -799,6 +857,12 @@ def test_fov_fit_uses_accepted_position_correction_after_apply(tmp_path):
         runtime.compute_section_feedback_position_analysis = original
 
     np.testing.assert_allclose(candidate.sample_displacements_kxy,expected)
+    np.testing.assert_allclose(
+        candidate.sample_positions_kxy,
+        np.asarray(correction.ideal_positions_kxy)[:,matched],
+    )
+    assert candidate.provenance["matched_sample_count"] == 3
+    assert candidate.provenance["excluded_inferred_count"] == 1
     assert candidate.provenance["source"] == "accepted_position_correction"
     assert candidate.mapping_name == "sample"
     from slmcore.core.calibration import base_mapping_signature

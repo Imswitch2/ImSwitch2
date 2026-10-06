@@ -6,7 +6,7 @@ from typing import Any,Mapping
 
 import numpy as np
 
-from ..localization import LocalizationResult
+from ..localization import LocalizationResult,localization_site_masks
 from .model import (
     FeedbackMeasurement,
     PositionAnalysis,
@@ -140,19 +140,13 @@ def _fit_affine(source: np.ndarray,target: np.ndarray):
 def _require_complete_localization(
     localization: LocalizationResult,purpose: str,
 ) -> None:
-    matched = dict(localization.diagnostics or {}).get("matched_mask")
-    if matched is None:
-        # Old localization results were complete by construction.
-        return
-    matched = np.asarray(matched,dtype=bool)
-    if matched.shape != (localization.lattice_indices.shape[1],):
-        raise RuntimeError("Localization matched-mask shape is inconsistent")
-    missing = int(np.count_nonzero(~matched))
+    _matched,_inferred,resolved = localization_site_masks(localization)
+    missing = int(np.count_nonzero(~resolved))
     if missing:
         raise RuntimeError(
             "%s requires a complete target localization; %d of %d target spots "
-            "were not matched. Inspect the localization or adjust its settings."
-            % (purpose,missing,matched.size)
+            "remain unresolved. Match them or use Infer missing first."
+            % (purpose,missing,resolved.size)
         )
 
 

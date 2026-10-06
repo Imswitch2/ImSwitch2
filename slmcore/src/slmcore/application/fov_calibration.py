@@ -13,7 +13,7 @@ from ..core.cgh.execution.status import CGHResultState
 from ..core.cgh.feedback import orient_localization
 from ..core.cgh.localization.parameters import LOCALIZATION_PARAMS
 from ..core.cgh.localization.policy import suggest_localization_sources
-from ..core.cgh.localization.workflow import localize_measurement
+from ..core.cgh.localization.workflow import localize_measurement,localization_site_masks
 from ..core.measurement import (
     EditablePositionReferenceGeometry,ImageMeasurement,
     editable_position_reference_geometry,editable_reference_center_px,
@@ -313,13 +313,19 @@ class FOVCalibrationService:
         desired=editable_reference_positions(loc,state.editable_geometry)
         measured=np.asarray(loc.measured_positions_px,dtype=np.float64)
         registered=np.asarray(loc.expected_positions_px,dtype=np.float64)
+        matched,_inferred,_resolved=localization_site_masks(loc)
+        if int(np.count_nonzero(matched)) < 3:
+            raise RuntimeError(
+                "FOV fitting requires at least three genuinely measured spots"
+            )
         linear=_fit_affine_linear(registered,ideal)
-        displacement=linear@(desired-measured)
+        displacement=(linear@(desired-measured))[:,matched]
+        fit_positions=ideal[:,matched]
         correction=FOVMappingCorrection.fit(
             name="Current candidate",slm_serial=self.session.runtime.identity.serial_number,
             section_key=section_key,mapping_name=mapping_name,
             base_mapping_signature=base_mapping_signature(base),
-            ideal_positions_kxy=ideal,total_displacements_kxy=displacement,
+            ideal_positions_kxy=fit_positions,total_displacements_kxy=displacement,
             model=model,degree=degree,detector_name=state.measurement.detector,
             provenance={
                 "workflow":"editable_lattice_fov_calibration",
@@ -334,6 +340,9 @@ class FOVCalibrationService:
                     "created_at":geometry_calibration.created_at,
                 },
                 "desired_positions_source":"editable_lattice",
+                "matched_sample_count":int(np.count_nonzero(matched)),
+                "excluded_inferred_count":int(np.count_nonzero(_inferred)),
+                "excluded_unresolved_count":int(np.count_nonzero(~_resolved)),
             },
         )
         state.candidate=correction; return correction

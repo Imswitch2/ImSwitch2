@@ -8,6 +8,7 @@ from typing import Any,Callable,TYPE_CHECKING,TypedDict
 import numpy as np
 
 from ...core.cgh.feedback import FeedbackCapability,orient_localization
+from ...core.cgh.localization import localization_site_masks
 from ...core.calibration import FOVMappingCorrection,base_mapping_signature
 from ...core.cgh.coordinates import reference_px_to_k,k_to_reference_px
 from .component import FeedbackComponent
@@ -492,6 +493,26 @@ class FOVPositionCalibrationService(FeedbackComponent):
             detector = None if acquisition is None else acquisition.detector
             source = "current_position_analysis"
 
+        localization = (
+            None if correction is None
+            else correction.measurement.localization
+        )
+        if localization is None:
+            inspection = self._runtime.get_section_feedback_inspection(section)
+            localization = (
+                None if inspection.measurement is None
+                else inspection.measurement.localization
+            )
+        if localization is None:
+            raise RuntimeError("FOV fitting requires an accepted localization")
+        matched,inferred,resolved = localization_site_masks(localization)
+        if int(np.count_nonzero(matched)) < 3:
+            raise RuntimeError(
+                "FOV fitting requires at least three genuinely measured spots"
+            )
+        ideal = ideal[:,matched]
+        total_displacement = total_displacement[:,matched]
+
         observation_plane = self._active_observation_plane(section)
         geometry_provenance = {}
         if observation_plane and self._observation_geometry is not None:
@@ -519,6 +540,9 @@ class FOVPositionCalibrationService(FeedbackComponent):
             provenance={
                 "reference":dict(reference_metadata or {}),
                 "source":source,
+                "matched_sample_count":int(np.count_nonzero(matched)),
+                "excluded_inferred_count":int(np.count_nonzero(inferred)),
+                "excluded_unresolved_count":int(np.count_nonzero(~resolved)),
                 "observation_plane":observation_plane,
                 "detector":None if acquisition is None else acquisition.detector,
                 "measurement_source":None if acquisition is None else acquisition.source,

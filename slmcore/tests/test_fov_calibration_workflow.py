@@ -131,6 +131,42 @@ def test_dedicated_fov_workflow_saves_mapping_owned_correction_without_feedback(
     assert session.feedback.position_reference_context("sec_0").selection == feedback_selection
 
 
+
+def test_dedicated_fov_fit_excludes_inferred_samples(tmp_path,monkeypatch):
+    from dataclasses import replace
+
+    from slmcore.core.cgh.localization import infer_missing_localization
+
+    session,mapping,_workspace=_session(tmp_path)
+    service=session.fov_calibration
+    state=service.ensure_reference("sec_0",mapping)
+    service.commit_measurement(
+        "sec_0",mapping,ImageMeasurement(np.zeros((96,96)),source="file",pixel_size_um=0.2),
+    )
+    full=_localization()
+    diagnostics=dict(full.diagnostics)
+    matched=list(diagnostics["matched_mask"]); matched[4]=False
+    diagnostics.update({
+        "matched_mask":tuple(matched),
+        "matched_count":8,
+        "inferred_count":0,
+        "missing_count":1,
+    })
+    inferred=infer_missing_localization(replace(full,diagnostics=diagnostics))
+    monkeypatch.setattr(
+        "slmcore.application.fov_calibration.localize_measurement",
+        lambda *_args,**_kwargs:inferred,
+    )
+    service.run_localization("sec_0",mapping,state.localization_parameters)
+    correction=service.fit_candidate("sec_0",mapping,degree=1)
+
+    assert correction.sample_positions_kxy.shape[1] == 8
+    assert correction.provenance["matched_sample_count"] == 8
+    assert correction.provenance["excluded_inferred_count"] == 1
+    assert correction.provenance["excluded_unresolved_count"] == 0
+    session.dispose()
+
+
 def test_dedicated_fov_workflow_reports_missing_observation_geometry(tmp_path,monkeypatch):
     session,mapping,workspace=_session(tmp_path)
     workspace.geometry_orientation_calibration_store.delete("SER123","sec_0","Main")

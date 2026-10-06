@@ -18,7 +18,7 @@ from ...core.cgh.feedback import (
     reference_correspondence_options,reference_positions_for_localization,
     resolve_reference_correspondence,
 )
-from ...core.cgh.localization import LocalizationResult
+from ...core.cgh.localization import LocalizationResult,localization_site_masks
 from ..position_reference_store import (
     PositionReferenceLifetime,PositionReferenceRecord,PositionReferenceStore,
 )
@@ -377,6 +377,7 @@ class PositionReferenceService(FeedbackComponent):
             measurement.localization,self._feedback_orientation(section),
         )
         config_path = self._current_config_path()
+        matched,inferred,_resolved = localization_site_masks(localization)
         return PositionReference(
             name=name,
             plane_name=plane,
@@ -393,6 +394,8 @@ class PositionReferenceService(FeedbackComponent):
                     None if not config_path else Path(config_path).name
                 ),
                 "feedback_orientation":self._feedback_orientation(section).value,
+                "matched_count":int(np.count_nonzero(matched)),
+                "inferred_count":int(np.count_nonzero(inferred)),
             },
         )
 
@@ -602,8 +605,8 @@ class PositionReferenceService(FeedbackComponent):
         measurement = inspection.measurement
         if measurement is None or measurement.localization is None:
             return "Accept a localization before creating a position reference."
-        if not _localization_is_complete(measurement.localization):
-            return "Only a complete, genuinely localized target can be used as a reference."
+        if not _localization_is_resolved(measurement.localization):
+            return "Resolve every target spot before creating a reference; use Infer missing for unmatched sites."
         return ""
 
     def _on_position_reference_store_changed(self) -> None:
@@ -648,12 +651,6 @@ class PositionReferenceService(FeedbackComponent):
         self._position_reference_selections.clear()
 
 
-def _localization_is_complete(localization: LocalizationResult) -> bool:
-    count = int(localization.lattice_indices.shape[1])
-    matched_value = dict(getattr(localization,"diagnostics",{}) or {}).get(
-        "matched_mask"
-    )
-    if matched_value is None:
-        return True
-    matched = np.asarray(matched_value,dtype=bool)
-    return matched.shape == (count,) and bool(np.all(matched))
+def _localization_is_resolved(localization: LocalizationResult) -> bool:
+    _matched,_inferred,resolved = localization_site_masks(localization)
+    return bool(np.all(resolved))

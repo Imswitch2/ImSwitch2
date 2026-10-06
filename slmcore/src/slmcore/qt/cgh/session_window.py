@@ -2638,7 +2638,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
         position_localization_complete = bool(
             localized
             and status.localization_total_count > 0
-            and status.localization_matched_count == status.localization_total_count
+            and (
+                status.localization_matched_count + status.localization_inferred_count
+                == status.localization_total_count
+            )
         )
         reference_compatible = bool(
             self._position_reference_context.get("compatible",True)
@@ -2658,7 +2661,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         if localized and not position_localization_complete:
             position_tip = (
-                "Position correction requires every target spot to be genuinely localized."
+                "Resolve every target spot before position correction; use Infer missing for unmatched sites."
             )
         elif not reference_compatible:
             position_tip = str(

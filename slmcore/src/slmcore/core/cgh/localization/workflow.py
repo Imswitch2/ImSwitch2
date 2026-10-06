@@ -28,6 +28,44 @@ from .model import (
     SpotDetectionOptions,
 )
 
+
+def localization_site_masks(
+    localization: LocalizationResult,
+) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
+    """Return genuine, inferred and resolved lattice-site masks.
+
+    Older localization results had no explicit masks and were complete by
+    construction.  Inferred sites are accepted detector-space coordinates for
+    operational feedback, while ``matched`` remains the provenance marker for
+    genuine detector observations.
+    """
+    if not isinstance(localization,LocalizationResult):
+        raise TypeError("localization must be a LocalizationResult")
+    total = int(localization.lattice_indices.shape[1])
+    diagnostics = dict(localization.diagnostics or {})
+
+    matched_value = diagnostics.get("matched_mask")
+    matched = (
+        np.ones(total,dtype=bool)
+        if matched_value is None
+        else np.asarray(matched_value,dtype=bool)
+    )
+    if matched.shape != (total,):
+        raise RuntimeError("Localization matched-mask shape is inconsistent")
+
+    inferred_value = diagnostics.get("inferred_mask")
+    inferred = (
+        np.zeros(total,dtype=bool)
+        if inferred_value is None
+        else np.asarray(inferred_value,dtype=bool)
+    )
+    if inferred.shape != (total,):
+        raise RuntimeError("Localization inferred-mask shape is inconsistent")
+    if np.any(matched & inferred):
+        raise RuntimeError("Localization matched and inferred masks overlap")
+    return matched,inferred,matched | inferred
+
+
 def localize_measurement(
     measurement: ImageMeasurement,
     *,
