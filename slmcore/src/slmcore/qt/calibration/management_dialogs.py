@@ -961,13 +961,28 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     def _clear_workspace_widget(self,*,observation: bool=False,delete: bool=False) -> None:
         layout=self.obs_workspace_host_layout if observation else self.workspace_host_layout
+        mounted=self._workspace_widget
+        removed_mounted=False
         while layout.count():
             item=layout.takeAt(0); widget=item.widget()
             if widget is not None:
+                if widget is mounted:
+                    removed_mounted=True
                 widget.setVisible(False); widget.setParent(None)
                 if delete:widget.deleteLater()
-        if self._workspace_widget is not None and self._workspace_widget.parent() is None:
+        if removed_mounted:
             self._workspace_widget=None
+        elif mounted is not None:
+            # Embedded workflows are owned by their calibration managers and may
+            # be destroyed before the management workspace refreshes.  In that
+            # case Qt leaves us with a Python wrapper whose C++ object is gone;
+            # querying parent() raises RuntimeError rather than returning None.
+            try:
+                detached=mounted.parent() is None
+            except RuntimeError:
+                detached=True
+            if detached:
+                self._workspace_widget=None
 
     def _mapping_back(self) -> None:
         self.sigWorkspaceResetRequested.emit(); self._show_current_mapping_inspection()
