@@ -108,12 +108,12 @@ class GeometryCalibrationService:
 
     def _require_editor_mode(self) -> None:
         if not self.session.editor_writes_allowed:
-            raise RuntimeError("Geometry calibration is unavailable outside editor mode.")
+            raise RuntimeError("Geometry calibration is available only in editor mode. Reopen the SLM session with calibration editing enabled, then retry.")
 
     def _require_plane(self,plane_name: str | None) -> str:
         plane=str(plane_name or "").strip()
         if not plane:
-            raise RuntimeError("Select an observation plane before geometry calibration.")
+            raise RuntimeError("No observation plane is selected in the Calibration workspace. Select an observation plane on the left, then retry geometry calibration.")
         self.observation_planes.get(plane)
         return plane
 
@@ -152,7 +152,7 @@ class GeometryCalibrationService:
         calibration=self.session.runtime.get_section_calibration_copy(section_key)
         if calibration is None or not calibration.is_valid():
             raise RuntimeError(
-                "A valid base mapping calibration is required for metric geometry periods."
+                "Metric geometry periods require a base mapping calibration. Calibrate/select the mapping first, or use reference-pixel periods instead."
             )
         x,y=((float(value_um),0.0) if axis=="x" else (0.0,float(value_um)))
         kx,ky=calibration.um_to_kxy(x,y)
@@ -263,15 +263,15 @@ class GeometryCalibrationService:
         self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.payload is None:
-            raise RuntimeError("Compute the geometry calibration target before acquiring.")
+            raise RuntimeError("No geometry target has been computed. Click Compute target before acquiring an image.")
         if not workflow.frame_active:
-            raise RuntimeError("The geometry calibration target is not currently displayed. Compute it again before acquiring.")
+            raise RuntimeError("The geometry target is no longer displayed. Click Compute target again before acquiring an image.")
         source=str(source or "").strip()
         if not source:
             raise ValueError("Select a detector before acquisition.")
         m=self.measurements
         if m is None or not m.available:
-            raise RuntimeError("No host measurement provider is configured.")
+            raise RuntimeError("Live acquisition is unavailable because no measurement provider is connected. Connect a detector or load an image from file instead.")
         old=self._requests.pop(section,None)
         if old is not None:
             try: old.cancel()
@@ -297,7 +297,7 @@ class GeometryCalibrationService:
         self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.payload is None:
-            raise RuntimeError("Compute the geometry calibration target before loading a measurement.")
+            raise RuntimeError("Compute the geometry target before loading its measurement image so the expected lattice is defined.")
         workflow.measurement=measurement; workflow.localization=None
         workflow.localization_parameters=None; workflow.analysis=None
 
@@ -305,7 +305,7 @@ class GeometryCalibrationService:
         self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.payload is None or workflow.measurement is None:
-            raise RuntimeError("Geometry calibration needs a computed target and measurement.")
+            raise RuntimeError("Geometry localization needs both a computed target and an acquired/loaded image. Compute the target, acquire/load the image, then run localization.")
         payload=workflow.payload
         if parameters is None:
             parameters=dict(self.session.runtime.get_section_feedback_status(section).localization_params)
@@ -324,7 +324,7 @@ class GeometryCalibrationService:
         self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.payload is None or workflow.measurement is None or workflow.localization is None:
-            raise RuntimeError("Acquire/load and localize the geometry calibration target first.")
+            raise RuntimeError("No localized geometry target is available. Acquire/load the target image and run localization before Analyze.")
         analysis=analyze_geometry_orientation(
             workflow.measurement,workflow.localization,
             np.asarray(workflow.payload["target_intensities"],dtype=np.float64),
@@ -336,7 +336,7 @@ class GeometryCalibrationService:
         self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.analysis is None or not workflow.analysis.accepted:
-            raise RuntimeError("Analyze a confident geometry calibration before saving.")
+            raise RuntimeError("No accepted geometry analysis is ready to save. Run Analyze and resolve any ambiguous correspondence first.")
         calibration=GeometryOrientationCalibration(
             slm_serial=self.session.runtime.identity.serial_number,section_key=section,plane_name=plane,
             orientation=workflow.analysis.orientation,detector_name=workflow.detector_name,

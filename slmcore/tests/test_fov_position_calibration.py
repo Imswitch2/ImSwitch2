@@ -363,3 +363,45 @@ def test_base_mapping_signature_changes_with_section_geometry():
         "key":"sec_0","x":1,"y":0,"width":64,"height":64,
     }
     assert base_mapping_signature(first) != base_mapping_signature(changed)
+
+
+def test_mapping_service_refits_saved_fov_samples_without_acquisition(tmp_path):
+    from slmcore import MappingService,SLMIdentity
+
+    workspace = SLMWorkspace(tmp_path)
+    identity = SLMIdentity("slm","SER123")
+    service = MappingService(
+        workspace.mapping_store,workspace.fov_mapping_correction_store,lambda:identity,
+    )
+    original = _calibration("field A")
+    service.save_fov_correction(original)
+
+    refit = service.refit_fov_correction("sec_0","100x","field A",degree=1)
+
+    assert refit.name == "field A"
+    assert refit.degree == 1
+    np.testing.assert_allclose(refit.sample_positions_kxy,original.sample_positions_kxy)
+    np.testing.assert_allclose(refit.sample_displacements_kxy,original.sample_displacements_kxy)
+    assert refit.provenance["refit_from_saved_samples"]["previous_degree"] == 2
+    # Preview/refit is non-persistent until explicitly saved.
+    assert service.load_fov_correction("sec_0","100x","field A").degree == 2
+
+
+def test_mapping_service_renames_fov_correction_preserving_fit(tmp_path):
+    from slmcore import MappingService,SLMIdentity
+
+    workspace = SLMWorkspace(tmp_path)
+    identity = SLMIdentity("slm","SER123")
+    service = MappingService(
+        workspace.mapping_store,workspace.fov_mapping_correction_store,lambda:identity,
+    )
+    original = _calibration("field A")
+    service.save_fov_correction(original)
+
+    renamed = service.rename_fov_correction("sec_0","100x","field A","field B")
+
+    assert renamed.name == "field B"
+    assert service.fov_correction_names("sec_0","100x") == ("field B",)
+    restored = service.load_fov_correction("sec_0","100x","field B")
+    np.testing.assert_allclose(restored.coefficients_kxy,original.coefficients_kxy)
+    np.testing.assert_allclose(restored.sample_positions_kxy,original.sample_positions_kxy)

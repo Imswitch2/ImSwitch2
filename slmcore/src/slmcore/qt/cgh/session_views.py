@@ -775,7 +775,7 @@ class PositionCorrectionView(QtWidgets.QWidget):
     is presentation-only and never changes the represented correction values.
     """
 
-    DEFAULT_VECTOR_SCALE = 10.0
+    DEFAULT_VECTOR_SCALE = 2.0
 
     def __init__(self,parent: QtWidgets.QWidget | None=None) -> None:
         super().__init__(parent)

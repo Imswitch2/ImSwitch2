@@ -92,6 +92,56 @@ class MappingService:
         self._require_fov_store().save(correction,overwrite=overwrite)
         return correction
 
+    def rename_fov_correction(
+        self,section_key: str,mapping_name: str,old_name: str,new_name: str,
+    ) -> FOVMappingCorrection:
+        """Rename one persisted FOV correction without changing its fit data."""
+        old=str(old_name or "").strip(); new=str(new_name or "").strip()
+        if not old or not new:
+            raise ValueError("FOV correction names cannot be empty")
+        if old==new:
+            return self.load_fov_correction(section_key,mapping_name,old)
+        # The current store uses case-folded path slugs, so allowing a case-only
+        # rename would make old/new filesystem identities ambiguous.
+        if old.casefold()==new.casefold():
+            raise ValueError("Case-only FOV correction renames are not supported")
+        if self.fov_correction_exists(section_key,mapping_name,new):
+            raise FileExistsError(f'FOV mapping correction "{new}" already exists.')
+        current=self.load_fov_correction(section_key,mapping_name,old)
+        renamed=current.with_name(new)
+        self.save_fov_correction(renamed,overwrite=False)
+        try:
+            self.delete_fov_correction(section_key,mapping_name,old)
+        except Exception:
+            try:self.delete_fov_correction(section_key,mapping_name,new)
+            except Exception:pass
+            raise
+        return renamed
+
+    def refit_fov_correction(
+        self,section_key: str,mapping_name: str,name: str,*,degree: int,
+    ) -> FOVMappingCorrection:
+        """Refit one saved correction from its persisted source samples.
+
+        This is intentionally acquisition-free: the persisted sample positions
+        and displacements are the fit history.  The returned correction is not
+        saved until the caller explicitly overwrites the record.
+        """
+        current=self.load_fov_correction(section_key,mapping_name,name)
+        provenance=dict(current.provenance or {})
+        provenance["refit_from_saved_samples"]={
+            "name":current.name,"previous_degree":current.degree,
+        }
+        return FOVMappingCorrection.fit(
+            name=current.name,slm_serial=current.slm_serial,
+            section_key=current.section_key,mapping_name=current.mapping_name,
+            base_mapping_signature=current.base_mapping_signature,
+            ideal_positions_kxy=current.sample_positions_kxy,
+            total_displacements_kxy=current.sample_displacements_kxy,
+            model=current.model,degree=int(degree),detector_name=current.detector_name,
+            provenance=provenance,
+        )
+
     def delete_fov_correction(
         self,section_key: str,mapping_name: str,name: str,
     ) -> None:

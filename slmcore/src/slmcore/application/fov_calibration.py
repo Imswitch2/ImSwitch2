@@ -127,7 +127,26 @@ class FOVCalibrationService:
 
     def ensure_reference(self,section_key: str,mapping_name: str) -> FOVCalibrationState:
         state=self.ensure_context(section_key,mapping_name)
-        reference=self.session.runtime.get_section_base_target_localization_reference(section_key)
+        try:
+            reference=self.session.runtime.get_section_base_target_localization_reference(section_key)
+        except RuntimeError as error:
+            text=str(error)
+            if "No CGH target selected" in text:
+                raise RuntimeError(
+                    "No CGH target is selected for this section. Return to the SLM section, "
+                    "choose a feedback-capable CGH target, compute/apply it, then start FOV calibration."
+                ) from error
+            if "does not support feedback" in text:
+                raise RuntimeError(
+                    "The selected CGH target does not support the position feedback required for FOV calibration. "
+                    "Choose a feedback-capable CGH target, compute/apply it, then retry."
+                ) from error
+            if "Compute the CGH" in text or "Recompute the CGH" in text:
+                raise RuntimeError(
+                    "The current CGH target is not ready for FOV calibration. Compute and apply the CGH "
+                    "for this section, then retry."
+                ) from error
+            raise
         if state.reference is None or str(state.reference.target_signature)!=str(reference.target_signature):
             state.reference=reference; self._clear_measurement(state)
             params=_localization_defaults(); context=dict(reference.localization_context)
@@ -161,11 +180,11 @@ class FOVCalibrationService:
             raise RuntimeError("Select an observation plane before acquisition.")
         if pixel_size_um is not None: self.set_pixel_size_override(section_key,mapping_name,pixel_size_um)
         m=self.measurements
-        if m is None or not m.available: raise RuntimeError("Live acquisition requires a measurement provider.")
+        if m is None or not m.available: raise RuntimeError("Live acquisition is unavailable because no measurement provider is connected. Connect a detector or load an image from file instead.")
         if self.session.runtime.get_section_cgh_status(section_key).result_state is not CGHResultState.CURRENT:
-            raise RuntimeError("Live FOV calibration requires the current CGH target to be computed and applied.")
+            raise RuntimeError("The current CGH target is not computed/applied. Compute and apply the CGH for this section before acquiring an FOV-calibration image.")
         selected=str(source or self.preferred_source(section_key,mapping_name) or "").strip()
-        if not selected: raise RuntimeError("Select a detector/source before acquisition.")
+        if not selected: raise RuntimeError("Select a detector/source for the active observation plane before acquiring an FOV-calibration image.")
         state.source=selected
         old=self._requests.pop(str(section_key),None)
         if old is not None:
@@ -340,7 +359,8 @@ class FOVCalibrationService:
         geometry=self.observation_geometry.calibration(state.section_key,plane)
         if geometry is None:
             raise RuntimeError(
-                "Geometry not calibrated for Section %s × Plane %s. Calibrate geometry before correspondence-based FOV calibration."
+                "Geometry not calibrated for Section %s × Plane %s. "
+                "Open Geometry calibration from the Calibration workspace, save Manual or CGH-target geometry, then retry FOV localization."
                 % (state.section_key,plane)
             )
         return geometry

@@ -4,10 +4,130 @@ from __future__ import annotations
 
 from typing import Any,Mapping,Sequence
 
+import numpy as np
 from qtpy import QtCore,QtWidgets
 
 from ..measurement.localization_view import MeasurementLocalizationView
 from ..cgh.session_views import PositionCorrectionView,PositionReferenceView
+
+
+class SavedFOVCorrectionView(QtWidgets.QWidget):
+    """Read/modify view for one persisted polynomial FOV correction.
+
+    The persisted source samples are retained by ``FOVMappingCorrection`` so a
+    saved correction can be inspected and refit without returning to image
+    acquisition/localization.  This widget intentionally edits only the fit
+    derived from those saved samples.
+    """
+
+    sigRefitRequested=QtCore.Signal(int)
+    sigSaveUpdateRequested=QtCore.Signal()
+    sigRenameRequested=QtCore.Signal(str)
+
+    def __init__(self,parent: QtWidgets.QWidget | None=None) -> None:
+        super().__init__(parent)
+        self._correction=None
+        self._preview=None
+        root=QtWidgets.QVBoxLayout(self); root.setContentsMargins(4,4,4,4); root.setSpacing(6)
+
+        self.summary=QtWidgets.QLabel(); self.summary.setWordWrap(True)
+        self.summary.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        root.addWidget(self.summary)
+
+        controls=QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Polynomial degree:"))
+        self.degree_combo=QtWidgets.QComboBox()
+        self.degree_combo.addItem("Linear (1)",1)
+        self.degree_combo.addItem("Quadratic (2)",2)
+        self.degree_combo.addItem("Cubic (3)",3)
+        controls.addWidget(self.degree_combo)
+        self.refit_button=QtWidgets.QPushButton("Refit saved samples")
+        self.refit_button.clicked.connect(
+            lambda:self.sigRefitRequested.emit(int(self.degree_combo.currentData()))
+        )
+        controls.addWidget(self.refit_button)
+        self.save_update_button=QtWidgets.QPushButton("Save update")
+        self.save_update_button.clicked.connect(self.sigSaveUpdateRequested.emit)
+        self.save_update_button.setEnabled(False)
+        controls.addWidget(self.save_update_button)
+        self.rename_button=QtWidgets.QPushButton("Rename…")
+        self.rename_button.clicked.connect(self._rename)
+        controls.addWidget(self.rename_button)
+        controls.addStretch(1); root.addLayout(controls)
+
+        self.preview_label=QtWidgets.QLabel("Saved fit")
+        self.preview_label.setWordWrap(True); root.addWidget(self.preview_label)
+
+        tabs=QtWidgets.QTabWidget(); root.addWidget(tabs,1)
+        self.field_view=PositionCorrectionView(); tabs.addTab(self.field_view,"Polynomial field")
+        self.samples_view=PositionCorrectionView(); tabs.addTab(self.samples_view,"Saved samples")
+
+    @property
+    def correction(self):
+        return self._correction
+
+    @property
+    def preview(self):
+        return self._preview
+
+    def set_correction(self,correction,*,compatibility: str="",is_default: bool=False) -> None:
+        self._correction=correction; self._preview=None
+        if correction is None:
+            self.summary.setText("No saved FOV correction selected.")
+            self.field_view.clear(); self.samples_view.clear(); self.save_update_button.setEnabled(False)
+            return
+        index=self.degree_combo.findData(int(correction.degree))
+        if index>=0:self.degree_combo.setCurrentIndex(index)
+        self.summary.setText(
+            "%s · %s%s\n%d samples · RMS %.6g kxy · max %.6g kxy · coverage %.6g\nCreated: %s" % (
+                correction.name,compatibility or "Saved",
+                " · Default" if is_default else "",
+                correction.sample_count,correction.rms_residual_kxy,
+                correction.max_residual_kxy,correction.coverage_area,
+                correction.created_at or "—",
+            )
+        )
+        self.samples_view.set_data(
+            correction.sample_positions_kxy,correction.sample_displacements_kxy
+        )
+        self._show_field(correction)
+        self.preview_label.setText("Saved polynomial fit (degree %d)." % correction.degree)
+        self.save_update_button.setEnabled(False)
+
+    def set_preview(self,correction) -> None:
+        self._preview=correction
+        if correction is None:
+            if self._correction is not None:self._show_field(self._correction)
+            self.preview_label.setText("Saved fit")
+            self.save_update_button.setEnabled(False); return
+        self._show_field(correction)
+        self.preview_label.setText(
+            "Preview refit: degree %d · RMS %.6g kxy · max %.6g kxy" % (
+                correction.degree,correction.rms_residual_kxy,correction.max_residual_kxy
+            )
+        )
+        self.save_update_button.setEnabled(True)
+
+    def _show_field(self,correction) -> None:
+        samples=np.asarray(correction.sample_positions_kxy,dtype=np.float64)
+        if samples.shape[1] < 1:
+            self.field_view.clear(); return
+        xmin,xmax=float(np.min(samples[0])),float(np.max(samples[0]))
+        ymin,ymax=float(np.min(samples[1])),float(np.max(samples[1]))
+        xs=np.linspace(xmin,xmax,19) if xmax>xmin else np.array([xmin])
+        ys=np.linspace(ymin,ymax,19) if ymax>ymin else np.array([ymin])
+        xx,yy=np.meshgrid(xs,ys,indexing="xy")
+        positions=np.vstack((xx.reshape(-1),yy.reshape(-1)))
+        self.field_view.set_data(positions,correction.evaluate(positions))
+
+    def _rename(self) -> None:
+        correction=self._correction
+        if correction is None:return
+        name,ok=QtWidgets.QInputDialog.getText(
+            self,"Rename FOV correction","New name:",text=str(correction.name)
+        )
+        name=str(name or "").strip()
+        if ok and name and name!=correction.name:self.sigRenameRequested.emit(name)
 
 
 class FOVCalibrationDialog(QtWidgets.QDialog):
@@ -30,12 +150,12 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
     sigGeometryCalibrationRequested=QtCore.Signal(str)
 
     _GEOMETRY_FIELDS=(
-        ("period_x_px","Period X (px)"),
-        ("period_y_px","Period Y (px)"),
-        ("rotation_deg","Rotation (°)"),
-        ("lattice_angle_deg","Lattice angle (°)"),
-        ("offset_x_px","Offset X (px)"),
-        ("offset_y_px","Offset Y (px)"),
+        ("period_x_px","Period X"),
+        ("period_y_px","Period Y"),
+        ("rotation_deg","Rotation"),
+        ("lattice_angle_deg","Lattice angle"),
+        ("offset_x_px","Offset X"),
+        ("offset_y_px","Offset Y"),
     )
 
     def __init__(
@@ -56,33 +176,46 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
         self.resize(1180,820)
 
         root=QtWidgets.QVBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(6)
-        context=QtWidgets.QHBoxLayout(); context.setSpacing(8)
-        context.addWidget(QtWidgets.QLabel("Mapping: <b>%s</b>" % self.mapping_name))
-        context.addWidget(QtWidgets.QLabel("Section: <b>%s</b>" % self.section_title))
-        context.addSpacing(12); context.addWidget(QtWidgets.QLabel("Observation:"))
-        self.observation_combo=QtWidgets.QComboBox(); context.addWidget(self.observation_combo)
-        context.addWidget(QtWidgets.QLabel("Pixel size override:"))
+
+        method_row=QtWidgets.QHBoxLayout(); method_row.setSpacing(8)
+        method_row.addWidget(QtWidgets.QLabel("Method:"))
+        self.method_combo=QtWidgets.QComboBox()
+        self.method_combo.addItem("CGH target","cgh_target")
+        self.method_combo.addItem("Load calibration","load_calibration")
+        method_row.addWidget(self.method_combo)
+        method_row.addSpacing(12); method_row.addWidget(QtWidgets.QLabel("Observation:"))
+        self.observation_combo=QtWidgets.QComboBox(); method_row.addWidget(self.observation_combo)
+        method_row.addWidget(QtWidgets.QLabel("Pixel size override:"))
         self.pixel_size_spin=QtWidgets.QDoubleSpinBox(); self.pixel_size_spin.setRange(0.0,1e6)
         self.pixel_size_spin.setDecimals(6); self.pixel_size_spin.setSpecialValueText("auto")
         self.pixel_size_spin.setSuffix(" µm/px"); self.pixel_size_spin.setValue(0.0)
-        context.addWidget(self.pixel_size_spin); context.addStretch(1)
-        root.addLayout(context)
+        method_row.addWidget(self.pixel_size_spin); method_row.addStretch(1)
+        root.addLayout(method_row)
 
         self.geometry_warning=QtWidgets.QFrame(); warning_layout=QtWidgets.QHBoxLayout(self.geometry_warning)
         warning_layout.setContentsMargins(6,4,6,4)
-        self.geometry_warning_label=QtWidgets.QLabel(""); warning_layout.addWidget(self.geometry_warning_label,1)
+        self.geometry_warning_label=QtWidgets.QLabel(""); self.geometry_warning_label.setWordWrap(True)
+        warning_layout.addWidget(self.geometry_warning_label,1)
         self.geometry_calibrate_button=QtWidgets.QPushButton("Calibrate geometry…")
         self.geometry_calibrate_button.clicked.connect(self._request_geometry_calibration)
         warning_layout.addWidget(self.geometry_calibrate_button)
         self.geometry_warning.setVisible(False); root.addWidget(self.geometry_warning)
 
-        splitter=QtWidgets.QSplitter(QtCore.Qt.Horizontal); root.addWidget(splitter,1)
-        left=QtWidgets.QWidget(); left_layout=QtWidgets.QVBoxLayout(left); left_layout.setContentsMargins(0,0,4,0)
+        self.method_stack=QtWidgets.QStackedWidget(); root.addWidget(self.method_stack,1)
+
+        # CGH-target method: localization stays a cohesive workbench on the left.
+        # The equally weighted right side keeps FOV visualization dominant, with
+        # the compact editable lattice beside it and fit/save actions below.
+        cgh_page=QtWidgets.QWidget(); cgh_layout=QtWidgets.QVBoxLayout(cgh_page)
+        cgh_layout.setContentsMargins(0,0,0,0)
+        self.workflow_splitter=QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.workflow_splitter.setChildrenCollapsible(False)
+        cgh_layout.addWidget(self.workflow_splitter,1)
+
         self.measurement_view=MeasurementLocalizationView(
             parameters=localization_parameters,detectors=detectors,current_detector=current_detector,
-            show_metrics=False,show_infer_missing=False,show_accept=False,parent=left,
+            show_metrics=False,show_infer_missing=False,show_accept=False,parent=cgh_page,
         )
-        left_layout.addWidget(self.measurement_view,2)
         self.measurement_view.sigAcquireRequested.connect(
             lambda detector:self.sigAcquireRequested.emit(detector,self.pixel_size_um)
         )
@@ -90,57 +223,108 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
             lambda:self.sigLoadRequested.emit(self.pixel_size_um)
         )
         self.measurement_view.sigRunRequested.connect(self.sigLocalizationRequested.emit)
+        self.workflow_splitter.addWidget(self.measurement_view)
 
-        geometry_box=QtWidgets.QGroupBox("Editable desired lattice"); form=QtWidgets.QGridLayout(geometry_box)
+        right=QtWidgets.QWidget(); right_layout=QtWidgets.QVBoxLayout(right)
+        right_layout.setContentsMargins(4,0,4,0); right_layout.setSpacing(8)
+
+        top_splitter=QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        top_splitter.setChildrenCollapsible(False)
+        tabs=QtWidgets.QTabWidget(); tabs.setMinimumSize(300,320)
+        self.reference_view=PositionReferenceView(); tabs.addTab(self.reference_view,"Measured vs desired")
+        self.correction_view=PositionCorrectionView(); tabs.addTab(self.correction_view,"FOV fit")
+        top_splitter.addWidget(tabs)
+
+        geometry_box=QtWidgets.QGroupBox("Desired lattice"); form=QtWidgets.QGridLayout(geometry_box)
+        form.setContentsMargins(8,8,8,8); form.setHorizontalSpacing(6); form.setVerticalSpacing(4)
+        form.setColumnStretch(1,1)
         self.geometry_spins={}; self._geometry_lock_boxes={}
         for row,(key,label) in enumerate(self._GEOMETRY_FIELDS):
             form.addWidget(QtWidgets.QLabel(label),row,0)
             spin=QtWidgets.QDoubleSpinBox(); spin.setDecimals(5); spin.setRange(-1e6,1e6)
             if key in ("period_x_px","period_y_px"): spin.setRange(1e-6,1e6)
             if key=="lattice_angle_deg": spin.setRange(0.1,179.9)
+            spin.setSuffix(" px" if key.endswith("_px") else " °")
+            spin.setMinimumWidth(76)
             spin.valueChanged.connect(self._geometry_edited); form.addWidget(spin,row,1)
             self.geometry_spins[key]=spin
             if key in ("period_x_px","period_y_px","rotation_deg","lattice_angle_deg"):
-                lock=QtWidgets.QCheckBox("Lock"); lock.toggled.connect(self._geometry_edited)
+                lock=QtWidgets.QToolButton(); lock.setCheckable(True); lock.setAutoRaise(True)
+                lock.setFixedSize(22,22); lock.setText("🔓")
+                lock.setToolTip("Lock %s while fitting." % label.lower())
+                lock.toggled.connect(lambda checked,k=key:self._geometry_lock_toggled(k,bool(checked)))
                 form.addWidget(lock,row,2); self._geometry_lock_boxes[key]=lock
-        actions=QtWidgets.QHBoxLayout()
         self.square_button=QtWidgets.QPushButton("Square && straight")
         self.fit_center_button=QtWidgets.QPushButton("Fit center")
         self.reset_fit_button=QtWidgets.QPushButton("Reset from fit")
         self.square_button.clicked.connect(self.sigSquareStraightRequested.emit)
         self.fit_center_button.clicked.connect(self.sigFitCenterRequested.emit)
         self.reset_fit_button.clicked.connect(self.sigResetFromFitRequested.emit)
-        for button in (self.square_button,self.fit_center_button,self.reset_fit_button): actions.addWidget(button)
-        actions.addStretch(1); form.addLayout(actions,len(self._GEOMETRY_FIELDS),0,1,3)
-        left_layout.addWidget(geometry_box)
+        action_row=len(self._GEOMETRY_FIELDS)
+        form.addWidget(self.square_button,action_row,0,1,3)
+        form.addWidget(self.fit_center_button,action_row+1,0,1,3)
+        form.addWidget(self.reset_fit_button,action_row+2,0,1,3)
+        geometry_box.setMinimumWidth(190); geometry_box.setMaximumWidth(240)
+        top_splitter.addWidget(geometry_box)
+        top_splitter.setStretchFactor(0,1); top_splitter.setStretchFactor(1,0)
+        top_splitter.setSizes([430,210])
+        right_layout.addWidget(top_splitter,1)
 
-        fit_row=QtWidgets.QHBoxLayout(); fit_row.addWidget(QtWidgets.QLabel("Polynomial degree:"))
+        fit_box=QtWidgets.QGroupBox("FOV correction"); fit_layout=QtWidgets.QVBoxLayout(fit_box)
+        fit_layout.setContentsMargins(8,8,8,8); fit_layout.setSpacing(5)
+        fit_row=QtWidgets.QHBoxLayout(); fit_row.setSpacing(6); fit_row.addWidget(QtWidgets.QLabel("Polynomial degree:"))
         self.degree_combo=QtWidgets.QComboBox(); self.degree_combo.addItem("Quadratic (2)",2)
         self.degree_combo.addItem("Linear (1)",1); self.degree_combo.addItem("Cubic (3)",3)
-        fit_row.addWidget(self.degree_combo); self.fit_button=QtWidgets.QPushButton("Fit FOV candidate")
+        fit_row.addWidget(self.degree_combo); self.fit_button=QtWidgets.QPushButton("Fit candidate")
         self.fit_button.clicked.connect(lambda:self.sigFitCandidateRequested.emit(int(self.degree_combo.currentData())))
-        fit_row.addWidget(self.fit_button); fit_row.addStretch(1); left_layout.addLayout(fit_row)
-        splitter.addWidget(left)
-
-        right=QtWidgets.QWidget(); right_layout=QtWidgets.QVBoxLayout(right); right_layout.setContentsMargins(4,0,0,0)
-        tabs=QtWidgets.QTabWidget(); right_layout.addWidget(tabs,1)
-        self.reference_view=PositionReferenceView(); tabs.addTab(self.reference_view,"Measured vs desired")
-        self.correction_view=PositionCorrectionView(); tabs.addTab(self.correction_view,"FOV fit")
+        fit_row.addWidget(self.fit_button); fit_row.addStretch(1); fit_layout.addLayout(fit_row)
         self.candidate_label=QtWidgets.QLabel("No FOV candidate fitted."); self.candidate_label.setWordWrap(True)
-        right_layout.addWidget(self.candidate_label)
-        save_row=QtWidgets.QHBoxLayout(); save_row.addWidget(QtWidgets.QLabel("Save as:"))
+        fit_layout.addWidget(self.candidate_label)
+        save_row=QtWidgets.QHBoxLayout(); save_row.setSpacing(6); save_row.addWidget(QtWidgets.QLabel("Save as:"))
         self.name_edit=QtWidgets.QLineEdit(); self.name_edit.setPlaceholderText("FOV correction name")
-        save_row.addWidget(self.name_edit,1); self.default_check=QtWidgets.QCheckBox("Set as default")
-        save_row.addWidget(self.default_check); self.save_button=QtWidgets.QPushButton("Save correction")
-        self.save_button.clicked.connect(self._save); save_row.addWidget(self.save_button)
-        right_layout.addLayout(save_row); splitter.addWidget(right); splitter.setSizes([570,570])
+        save_row.addWidget(self.name_edit,1)
+        self.default_check=QtWidgets.QCheckBox("Set as default"); save_row.addWidget(self.default_check)
+        self.save_button=QtWidgets.QPushButton("Save correction"); self.save_button.clicked.connect(self._save)
+        save_row.addWidget(self.save_button); fit_layout.addLayout(save_row)
+        right_layout.addWidget(fit_box,0)
+        self.workflow_splitter.addWidget(right)
+        self.workflow_splitter.setStretchFactor(0,1); self.workflow_splitter.setStretchFactor(1,1)
+        self.workflow_splitter.setSizes([560,560])
+        self.method_stack.addWidget(cgh_page)
 
+        load_page=QtWidgets.QWidget(); load_layout=QtWidgets.QVBoxLayout(load_page)
+        load_layout.setContentsMargins(18,18,18,18)
+        load_title=QtWidgets.QLabel("Load calibration")
+        font=load_title.font(); font.setBold(True); load_title.setFont(font)
+        load_layout.addWidget(load_title)
+        load_help=QtWidgets.QLabel(
+            "Importing an existing FOV calibration is not implemented yet. "
+            "This is a separate calibration method and will not depend on the CGH-target workflow."
+        )
+        load_help.setWordWrap(True); load_layout.addWidget(load_help)
+        self.load_calibration_button=QtWidgets.QPushButton("Load calibration…")
+        self.load_calibration_button.setEnabled(False)
+        self.load_calibration_button.setToolTip("FOV calibration import is not implemented yet.")
+        load_layout.addWidget(self.load_calibration_button); load_layout.addStretch(1)
+        self.method_stack.addWidget(load_page)
         if not self._embedded:
             buttons=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
             buttons.rejected.connect(self.reject); root.addWidget(buttons)
         self.observation_combo.currentIndexChanged.connect(self._observation_changed)
+        self.method_combo.currentIndexChanged.connect(self._method_changed)
         self.configure_observation_planes(observation_planes,current_observation_plane)
+        self._method_changed()
         self.set_editable_enabled(False); self.save_button.setEnabled(False)
+
+    @property
+    def calibration_method(self) -> str:
+        return str(self.method_combo.currentData() or "cgh_target")
+
+    def _method_changed(self,*_args) -> None:
+        self.method_stack.setCurrentIndex(0 if self.calibration_method=="cgh_target" else 1)
+        self.geometry_warning.setVisible(
+            self.calibration_method=="cgh_target" and bool(self.geometry_warning_label.text())
+        )
 
     @property
     def pixel_size_um(self) -> float | None:
@@ -181,6 +365,7 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
             spin.blockSignals(True); spin.setValue(float(geometry[key])); spin.blockSignals(False)
         for key,box in self._geometry_lock_boxes.items():
             box.blockSignals(True); box.setChecked(bool((locks or {}).get(key,False))); box.blockSignals(False)
+            self._set_geometry_lock_icon(key,box.isChecked())
         self.set_editable_enabled(True)
 
     def set_reference_preview(self,preview: Mapping[str,Any] | None) -> None:
@@ -203,9 +388,12 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
     def set_geometry_missing(self,plane_name: str | None,missing: bool) -> None:
         if missing:
             self.geometry_warning_label.setText(
-                "Geometry not calibrated for Section %s × Plane %s" % (self.section_title,plane_name or "—")
+                "Observation geometry is required before FOV localization. "
+                "Calibrate this section × observation-plane pair manually or with a CGH target, then retry."
             )
-        self.geometry_warning.setVisible(bool(missing))
+        self.geometry_warning.setVisible(bool(missing) and self.calibration_method=="cgh_target")
+        if not missing:
+            self.geometry_warning_label.setText("")
 
     def set_editable_enabled(self,enabled: bool) -> None:
         for spin in self.geometry_spins.values(): spin.setEnabled(bool(enabled))
@@ -215,6 +403,15 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
 
     def set_error(self,error: Any) -> None:
         self.measurement_view.set_error(error)
+
+    def _set_geometry_lock_icon(self,key: str,checked: bool) -> None:
+        button=self._geometry_lock_boxes.get(key)
+        if button is not None:
+            button.setText("🔒" if checked else "🔓")
+
+    def _geometry_lock_toggled(self,key: str,checked: bool) -> None:
+        self._set_geometry_lock_icon(key,checked)
+        self._geometry_edited()
 
     def _geometry_edited(self,*_args) -> None:
         if not self.geometry_spins["period_x_px"].isEnabled(): return
@@ -235,4 +432,4 @@ class FOVCalibrationDialog(QtWidgets.QDialog):
         self.sigSaveRequested.emit(name,bool(self.default_check.isChecked()))
 
 
-__all__=["FOVCalibrationDialog"]
+__all__=["FOVCalibrationDialog","SavedFOVCorrectionView"]

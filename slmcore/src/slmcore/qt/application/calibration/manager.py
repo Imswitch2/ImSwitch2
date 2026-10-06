@@ -276,10 +276,15 @@ class CalibrationManager(QtCore.QObject):
         current_mapping=self.service.active_mapping(section_key)
         dialog=self._management_dialog
         if dialog is None:
+            identity=self.controller.runtime.identity
+            slm_label=identity.display_name or identity.key
+            if identity.serial_number and identity.serial_number not in slm_label:
+                slm_label="%s · %s" % (slm_label,identity.serial_number)
             dialog=CalibrationManagementDialog(
                 sections=sections,mappings=mappings,
                 section_titles=section_titles,
                 current_section=section_key,current_mapping=current_mapping,
+                slms=((identity.key,slm_label),),current_slm=identity.key,
                 parent=self.controller.section_collection.section_view(section_key).window(),
             )
             self._management_dialog=dialog
@@ -294,6 +299,9 @@ class CalibrationManager(QtCore.QObject):
             dialog.sigFovCalibrationRequested.connect(self._management_start_fov_calibration)
             dialog.sigFovSetDefaultRequested.connect(self._management_set_fov_default)
             dialog.sigFovDeleteRequested.connect(self._management_delete_fov)
+            dialog.sigFovRefitRequested.connect(self._management_refit_fov)
+            dialog.sigFovUpdateRequested.connect(self._management_update_fov)
+            dialog.sigFovRenameRequested.connect(self._management_rename_fov)
             dialog.sigGeometryCalibrationRequested.connect(self._management_start_geometry_calibration)
             dialog.sigObservationSelectionChanged.connect(self._refresh_observation_context)
             dialog.sigObservationCreateRequested.connect(self._management_create_observation)
@@ -423,6 +431,7 @@ class CalibrationManager(QtCore.QObject):
                     "max_residual":"%.6g kxy" % correction.max_residual_kxy,
                     "coverage":"%.6g" % correction.coverage_area,
                     "created_at":correction.created_at or "—",
+                    "correction":correction,
                 })
             dialog.set_mapping_summary({
                 "calibrated":calibrated,
@@ -762,7 +771,6 @@ class CalibrationManager(QtCore.QObject):
             service.save_candidate(section_key,state.mapping_name,name,overwrite=overwrite,set_default=set_default)
             self.controller.feedback_service.refresh_fov_position_calibration_contexts()
             self._refresh_management_context(section_key,state.mapping_name)
-            self.controller.sigInfo.emit("FOV Calibration",'Saved FOV correction "%s".' % name)
             if self._embedded_workflow==("fov",section_key):
                 self._management_finish_embedded_workflow(section_key)
         except Exception as error: self._fov_error(section_key,error)
@@ -795,6 +803,72 @@ class CalibrationManager(QtCore.QObject):
     def _fov_dialog_finished(self,section_key: str) -> None:
         self.controller.fov_calibration_service.discard(section_key)
         self._fov_dialogs.pop(section_key,None)
+
+    @QtCore.Slot(str,str,str,int)
+    def _management_refit_fov(
+        self,section_key: str,mapping_name: str,name: str,degree: int,
+    ) -> None:
+        try:
+            correction=self.controller.mapping_service.refit_fov_correction(
+                section_key,mapping_name,name,degree=int(degree),
+            )
+            if self._management_dialog is not None:
+                self._management_dialog.set_fov_refit_preview(correction)
+        except Exception as error:
+            self._error("Refit FOV correction failed",error)
+
+    @QtCore.Slot(str,str,str,object)
+    def _management_update_fov(
+        self,section_key: str,mapping_name: str,name: str,correction,
+    ) -> None:
+        try:
+            if correction is None or str(getattr(correction,"name","") or "")!=str(name):
+                raise RuntimeError("Refit the selected FOV correction before saving an update.")
+            self.controller.mapping_service.save_fov_correction(correction,overwrite=True)
+            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self._refresh_management_context(section_key,mapping_name)
+            if self._management_dialog is not None:
+                self._management_dialog.select_fov(name)
+            self.controller.sigInfo.emit(
+                "FOV Calibration",'Updated FOV correction "%s" from its saved samples.' % name,
+            )
+        except Exception as error:
+            self._error("Update FOV correction failed",error)
+
+    @QtCore.Slot(str,str,str,str)
+    def _management_rename_fov(
+        self,section_key: str,mapping_name: str,old_name: str,new_name: str,
+    ) -> None:
+        old=str(old_name or "").strip(); new=str(new_name or "").strip()
+        if not old or not new or old==new:return
+        try:
+            if old.casefold()==new.casefold():
+                raise ValueError("Case-only FOV correction renames are not supported.")
+            mappings=self.controller.mapping_service
+            was_default=(
+                self.controller.startup_preferences.default_fov_correction(
+                    section_key,mapping_name
+                )==old
+            )
+            mappings.rename_fov_correction(section_key,mapping_name,old,new)
+            try:
+                if was_default:
+                    self.controller.startup_preferences.set_default_fov_correction(
+                        section_key,mapping_name,new
+                    )
+            except Exception:
+                try:mappings.rename_fov_correction(section_key,mapping_name,new,old)
+                except Exception:pass
+                raise
+            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self._refresh_management_context(section_key,mapping_name)
+            if self._management_dialog is not None:
+                self._management_dialog.select_fov(new)
+            self.controller.sigInfo.emit(
+                "FOV Calibration",'Renamed FOV correction "%s" to "%s".' % (old,new),
+            )
+        except Exception as error:
+            self._error("Rename FOV correction failed",error)
 
     @QtCore.Slot(str,str,str)
     def _management_set_fov_default(self,section_key: str,mapping_name: str,name: str) -> None:

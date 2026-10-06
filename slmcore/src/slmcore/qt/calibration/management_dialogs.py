@@ -7,6 +7,8 @@ from typing import Any,Mapping,Sequence
 from qtpy import QtCore,QtWidgets
 
 from ...workspace import ObservationPlaneDefinition
+from .fov_dialog import SavedFOVCorrectionView
+from .geometry_calibration_dialog import GeometryOrientationPreview
 
 
 class ObservationPlaneEditorDialog(QtWidgets.QDialog):
@@ -221,6 +223,10 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
     sigFovCalibrationRequested = QtCore.Signal(str,str)
     sigFovSetDefaultRequested = QtCore.Signal(str,str,str)
     sigFovDeleteRequested = QtCore.Signal(str,str,str)
+    sigFovRefitRequested = QtCore.Signal(str,str,str,int)
+    sigFovUpdateRequested = QtCore.Signal(str,str,str,object)
+    sigFovRenameRequested = QtCore.Signal(str,str,str,str)
+    sigSlmChanged = QtCore.Signal(str)
     sigGeometryCalibrationRequested = QtCore.Signal(str,str)
     sigObservationSelectionChanged = QtCore.Signal(str)
     sigObservationCreateRequested = QtCore.Signal(object)
@@ -236,6 +242,8 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         section_titles: Mapping[str,str] | None=None,
         current_section: str | None=None,
         current_mapping: str | None=None,
+        slms: Sequence[tuple[str,str]] = (),
+        current_slm: str | None=None,
         parent: QtWidgets.QWidget | None=None,
     ) -> None:
         super().__init__(parent)
@@ -263,6 +271,17 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         outer.setSpacing(8)
 
         header=QtWidgets.QHBoxLayout()
+        header.addWidget(QtWidgets.QLabel("SLM:"))
+        self.slm_combo=QtWidgets.QComboBox()
+        for key,label in slms:
+            self.slm_combo.addItem(str(label),str(key))
+        if current_slm:
+            index=self.slm_combo.findData(str(current_slm))
+            if index>=0:self.slm_combo.setCurrentIndex(index)
+        self.slm_combo.setMinimumWidth(180)
+        self.slm_combo.setEnabled(self.slm_combo.count()>1)
+        header.addWidget(self.slm_combo)
+        header.addSpacing(12)
         header.addWidget(QtWidgets.QLabel("Section:"))
         self.section_combo=QtWidgets.QComboBox()
         self.section_combo.setMinimumWidth(180)
@@ -285,11 +304,20 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
             if i>=0:self.section_combo.setCurrentIndex(i)
         self.set_mapping_catalog(mappings,current_mapping=current_mapping)
         self.section_combo.currentIndexChanged.connect(self._section_changed)
+        self.slm_combo.currentIndexChanged.connect(self._slm_changed)
         self.tabs.currentChanged.connect(self._tab_changed)
 
     # ------------------------------------------------------------------
     # Basic selection state
     # ------------------------------------------------------------------
+
+    @property
+    def slm_key(self) -> str:
+        value=self.slm_combo.currentData()
+        return str(value).strip() if value is not None else ""
+
+    def _slm_changed(self,*_args: Any) -> None:
+        if self.slm_key:self.sigSlmChanged.emit(self.slm_key)
 
     @property
     def section_key(self) -> str:
@@ -462,6 +490,10 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         splitter.addWidget(left)
         splitter.addWidget(self._build_workspace())
         splitter.setSizes([300,980])
+        self.fov_inspector=SavedFOVCorrectionView()
+        self.fov_inspector.sigRefitRequested.connect(self._request_fov_refit)
+        self.fov_inspector.sigSaveUpdateRequested.connect(self._request_fov_update)
+        self.fov_inspector.sigRenameRequested.connect(self._request_fov_rename)
 
         self.mapping_list.currentItemChanged.connect(lambda *_args:self._mapping_changed())
         self.mapping_list.itemClicked.connect(self._mapping_clicked)
@@ -520,7 +552,10 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self._refresh_fov_actions()
         if self._inspection_kind=="base" and self.workspace_stack.currentWidget() is self.inspection_page:
             self._show_base_inspection()
-        elif self._inspection_kind=="fov" and self.workspace_stack.currentWidget() is self.inspection_page:
+        elif self._inspection_kind=="fov" and (
+            self.workspace_stack.currentWidget() is self.inspection_page
+            or self._workspace_widget is self.fov_inspector
+        ):
             self._show_fov_inspection()
 
     def _selected_fov(self) -> str | None:
@@ -568,21 +603,51 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         if item is None:
             self._inspection_kind="base"; self._show_base_inspection(); return
         row=dict(item.data(QtCore.Qt.UserRole+1) or {})
-        name=str(row.get("name") or item.data(QtCore.Qt.UserRole) or "FOV correction")
-        fields=(
-            ("Compatibility",row.get("compatibility")),
-            ("Default","Yes" if row.get("default") else "No"),
-            ("Model",row.get("model")),
-            ("Degree",row.get("degree")),
-            ("Samples",row.get("sample_count")),
-            ("RMS residual",row.get("rms_residual")),
-            ("Max residual",row.get("max_residual")),
-            ("Coverage",row.get("coverage")),
-            ("Created",row.get("created_at")),
-            ("Provenance",row.get("provenance")),
+        correction=row.get("correction")
+        if correction is None:
+            self.show_inspection(
+                "%s / %s" % (self.mapping_name,row.get("name") or "FOV correction"),
+                "The saved FOV correction could not be loaded.",
+            )
+            return
+        self.fov_inspector.set_correction(
+            correction,compatibility=str(row.get("compatibility") or ""),
+            is_default=bool(row.get("default")),
         )
-        lines=["FOV correction"]+["%s: %s" % (label,value) for label,value in fields if value not in (None,"")]
-        self.show_inspection("%s / %s" % (self.mapping_name,name),"\n".join(lines))
+        self.show_detail_widget(
+            self.fov_inspector,"%s / %s" % (self.mapping_name,correction.name)
+        )
+
+    def _request_fov_refit(self,degree: int) -> None:
+        name=self._selected_fov()
+        if name:
+            self.sigFovRefitRequested.emit(
+                self.section_key,self.mapping_name,name,int(degree)
+            )
+
+    def set_fov_refit_preview(self,correction) -> None:
+        self.fov_inspector.set_preview(correction)
+
+    def _request_fov_update(self) -> None:
+        name=self._selected_fov(); preview=self.fov_inspector.preview
+        if name and preview is not None:
+            self.sigFovUpdateRequested.emit(
+                self.section_key,self.mapping_name,name,preview
+            )
+
+    def _request_fov_rename(self,new_name: str) -> None:
+        name=self._selected_fov()
+        if name:
+            self.sigFovRenameRequested.emit(
+                self.section_key,self.mapping_name,name,str(new_name)
+            )
+
+    def select_fov(self,name: str | None) -> None:
+        target=str(name or "").strip()
+        for index in range(self.fov_list.count()):
+            item=self.fov_list.item(index)
+            if str(item.data(QtCore.Qt.UserRole) or "")==target:
+                self.fov_list.setCurrentItem(item); return
 
     # ------------------------------------------------------------------
     # Observation + geometry tab
@@ -600,8 +665,9 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         row=QtWidgets.QHBoxLayout()
         self.observation_new=QtWidgets.QPushButton("+ New")
         self.observation_edit=QtWidgets.QPushButton("Edit")
+        self.observation_edit.setVisible(False)
         self.observation_delete=QtWidgets.QPushButton("Delete")
-        row.addWidget(self.observation_new); row.addWidget(self.observation_edit); row.addWidget(self.observation_delete); row.addStretch(1)
+        row.addWidget(self.observation_new); row.addWidget(self.observation_delete); row.addStretch(1)
         pv.addLayout(row); lv.addWidget(planes)
 
         geometry=QtWidgets.QGroupBox("Geometry by section"); gv=QtWidgets.QVBoxLayout(geometry)
@@ -668,7 +734,7 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self._observation_selected()
 
     def _observation_selected(self) -> None:
-        if self._observation_edit_mode is not None:return
+        if self._observation_edit_mode=="new":return
         self.sigWorkspaceResetRequested.emit()
         plane=self.observation_plane_name
         self._load_observation_details(plane)
@@ -708,9 +774,20 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
             ("Details",row.get("details")),
         )
         body="\n".join("%s: %s" % (label,value) for label,value in fields if value not in (None,""))
-        self.show_observation_inspection(
-            "%s / %s" % (self.observation_plane_name,row.get("section_title") or section),body
-        )
+        title="%s / %s" % (self.observation_plane_name,row.get("section_title") or section)
+        if str(row.get("status") or "") == "Calibrated" and row.get("orientation"):
+            inspection=QtWidgets.QWidget()
+            layout=QtWidgets.QVBoxLayout(inspection); layout.setContentsMargins(0,0,0,0); layout.setSpacing(8)
+            text=QtWidgets.QLabel(body); text.setWordWrap(True)
+            text.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            layout.addWidget(text)
+            preview=GeometryOrientationPreview(inspection)
+            preview.setMinimumSize(420,300)
+            preview.set_orientation(str(row.get("orientation")))
+            layout.addWidget(preview,1)
+            self.show_detail_widget(inspection,title,observation=True)
+        else:
+            self.show_observation_inspection(title,body)
 
     def _emit_geometry(self) -> None:
         item=self.geometry_list.currentItem(); plane=self.observation_plane_name
@@ -724,7 +801,14 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self.obs_pixel.setValue(float(row.get("default_pixel_size_um") or 0.0))
         self.obs_description.setPlainText(str(row.get("description") or ""))
         self._configure_detector_editor(row.get("preferred_detector"))
-        self._set_observation_editing(False)
+        if plane:
+            self._observation_edit_mode="edit"
+            self._editing_observation_name=str(plane)
+            self._set_observation_editing(True,new=False)
+        else:
+            self._observation_edit_mode=None
+            self._editing_observation_name=None
+            self._set_observation_editing(False)
 
     def _configure_detector_editor(self,current) -> None:
         value=str(current or "").strip()
@@ -755,9 +839,13 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self.obs_pixel.setEnabled(editing)
         self.obs_description.setReadOnly(not editing)
         self.obs_save.setVisible(editing); self.obs_cancel.setVisible(editing)
-        self.observation_list.setEnabled(not editing)
-        self.observation_new.setEnabled(not editing); self.observation_edit.setEnabled(not editing and bool(self.observation_plane_name))
-        self.observation_delete.setEnabled(not editing and bool(self.observation_plane_name))
+        self.obs_save.setText("Create" if new else "Save changes")
+        # Existing planes stay directly selectable while their metadata fields
+        # remain editable.  New-plane creation is the only modal selection state.
+        self.observation_list.setEnabled(not new)
+        self.observation_new.setEnabled(not new)
+        self.observation_edit.setEnabled(False)
+        self.observation_delete.setEnabled(not new and bool(self.observation_plane_name))
         self._obs_detector_changed()
 
     def _new_observation(self) -> None:
@@ -790,7 +878,6 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
 
     def finish_observation_edit(self) -> None:
         self._observation_edit_mode=None; self._editing_observation_name=None
-        self._set_observation_editing(False)
 
     def _delete_observation(self) -> None:
         plane=self.observation_plane_name
@@ -846,6 +933,19 @@ class CalibrationManagementDialog(QtWidgets.QDialog):
         self._clear_workspace_widget(observation=True)
         self.obs_workspace_title.setText(str(title)); self.obs_inspection_text.setText(str(body)); self.obs_workspace_back.setVisible(False)
         self.obs_workspace_stack.setCurrentWidget(self.obs_inspection_page)
+
+    def show_detail_widget(self,widget: QtWidgets.QWidget,title: str,*,observation: bool=False) -> None:
+        self._clear_workspace_widget(observation=observation,delete=False)
+        host=self.obs_workspace_host if observation else self.workspace_host
+        layout=self.obs_workspace_host_layout if observation else self.workspace_host_layout
+        widget.setParent(host); widget.setVisible(True); layout.addWidget(widget)
+        if observation:
+            self.obs_workspace_title.setText(str(title)); self.obs_workspace_back.setVisible(False)
+            self.obs_workspace_stack.setCurrentWidget(self.obs_workspace_host)
+        else:
+            self.workspace_title.setText(str(title)); self.workspace_back.setVisible(False)
+            self.workspace_stack.setCurrentWidget(self.workspace_host)
+        self._workspace_widget=widget
 
     def mount_workspace(self,widget: QtWidgets.QWidget,title: str,*,observation: bool=False) -> None:
         self._clear_workspace_widget(observation=observation,delete=False)
