@@ -8,6 +8,7 @@ layer shows is announced through ``sigScanGeometryShown``, as
 ``ImageController`` does once the pixels are on the layer.
 """
 import dataclasses
+import json
 
 import numpy as np
 import pytest
@@ -26,7 +27,7 @@ from imswitch.imcontrol.model.scan_frame import (
 )
 from imswitch.imcontrol.model.managers.detectors._mock_sample import MockSample
 from imswitch.imcontrol.model.simple_scan import AxisRegion, plan_to_dicts
-from .test_simple_point_scan_controller import Rig, _edit
+from .test_simple_point_scan_controller import SETUP, Rig, _edit
 
 napari = pytest.importorskip('napari')
 
@@ -337,7 +338,8 @@ def test_a_real_overview_frame_is_what_the_rectangle_is_drawn_on(rig, qtbot):
 
 def _sampleUnder(geometry):
     """The mock sample (the setup's ``mockSample``) at each pixel's centre."""
-    sample = MockSample.from_property({'axes': {'X': 1.75, 'Y': 1.75}})
+    setup = json.loads(open(SETUP).read())
+    sample = MockSample.from_property(setup['detectors']['APD']['managerProperties']['mockSample'])
     x, y = geometry.axes
     xx, yy = np.meshgrid(x.first_um + np.arange(x.count) * x.step_um,
                          y.first_um + np.arange(y.count) * y.step_um)

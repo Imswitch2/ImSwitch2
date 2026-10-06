@@ -109,12 +109,72 @@ def test_the_overview_is_planned_within_budget_and_the_scanners_range(rig):
     overview = rig.scan._simple()['overview']
     assert overview.met is True
     assert overview.estimate_s <= 1.0
-    assert overview.field_um <= 35.0                     # ±10 V at 1.75 µm/V
+    # 60 µm unless the panel's slider says otherwise; the mock reaches 100
+    assert overview.field_um == pytest.approx(60.0, abs=0.5)
+    assert overview.note == ''
     assert overview.pixels * overview.step_um == pytest.approx(overview.field_um)
     assert overview.dwell_s == pytest.approx(
         rig.scan._scanLimits().min_dwell_s('X', overview.step_um))
     assert rig.widget.overviewButton.isChecked()
-    assert 'Full field' in rig.widget.overviewLabel.text()
+    assert 'Field 59.9' in rig.widget.overviewLabel.text()
+    assert rig.widget.overviewSizeLabel.text() == '60 µm'
+    assert rig.widget.overviewSizeMaxLabel.text() == '100 µm'
+
+
+def _settleOverview(rig):
+    QtTest.QTest.qWait(rig.scan._overviewTimer.interval() + 100)
+
+
+def test_the_size_slider_sets_the_overview(rig):
+    rig.widget.sigOverviewFieldChanged.emit(20.0)
+    _settleOverview(rig)
+
+    overview = rig.scan._simple()['overview']
+    assert overview.field_um == pytest.approx(20.0, abs=0.3)
+    assert overview.met is True and overview.estimate_s <= 1.0
+    run = rig.scan.currentPlan()                         # what the next overview scans
+    for axis in overview.axes:
+        assert run.regions[axis].length_um == pytest.approx(overview.field_um)
+    assert rig.widget.overviewSizeLabel.text() == '20 µm'
+    assert 'Field 20' in rig.widget.overviewLabel.text()
+
+
+def test_the_slider_spans_small_to_the_scanners_reach(rig):
+    slider = rig.widget.overviewSizeSlider
+    sizes = []
+    rig.widget.sigOverviewFieldChanged.connect(sizes.append)
+    slider.setValue(slider.maximum())
+    slider.setValue(slider.minimum())
+    assert sizes == [pytest.approx(100.0), pytest.approx(2.0)]
+
+
+def test_a_size_beyond_reach_is_kept_to_it_and_explained(rig):
+    rig.scan.setOverviewField(500.0)
+    _settleOverview(rig)
+    state = rig.scan._simple()
+    assert state['overviewFieldUm'] == pytest.approx(100.0)
+    overview = state['overview']
+    assert overview.field_um < 100.0                     # the turnaround needs some
+    assert 'beyond what the scanners reach' in overview.note
+    assert overview.note in rig.widget.overviewLabel.text()
+
+
+def test_the_overview_size_is_saved_with_the_panel(qtbot):
+    first = Rig()
+    try:
+        first.scan.setOverviewField(25.0)
+        _settleOverview(first)
+        saved = first.scan.getComponentState()
+    finally:
+        first.close()
+    assert saved['cloak']['overviewFieldUm'] == pytest.approx(25.0)
+    second = Rig()
+    try:
+        second.scan.applyComponentState(saved, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+        assert second.scan._simple()['overviewFieldUm'] == pytest.approx(25.0)
+        assert second.scan._simple()['overview'].field_um == pytest.approx(25.0, abs=0.3)
+    finally:
+        second.close()
 
 
 def test_the_default_acquisition_is_inside_the_overview(rig):
@@ -231,7 +291,7 @@ def test_the_dwell_never_goes_below_what_the_scanner_allows(rig):
 
 def test_a_region_beyond_the_scanners_range_is_explained(rig):
     rig.scan.setSimpleScanMode('acquisition')
-    regions = {axis: AxisRegion(0.0, 40.0, 0.5) for axis in ('X', 'Y')}
+    regions = {axis: AxisRegion(0.0, 140.0, 0.5) for axis in ('X', 'Y')}   # the mock reaches 100 µm
     _edit(rig, regions=regions)
     rig.scan._refreshEstimate()
     assert 'outside' in rig.widget.estimateNote.text()

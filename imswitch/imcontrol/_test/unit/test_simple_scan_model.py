@@ -5,7 +5,7 @@ conversion to and from Advanced-style dicts within the representable subset,
 refusals with reasons, channel-power validation, snapping and slider
 mappings, and the overview planner with injected estimate/fit functions.
 """
-import copy
+import dataclasses
 
 import pytest
 
@@ -63,7 +63,20 @@ def test_limits_come_from_the_setup_file(limits):
     assert [g.name for g in limits.gates] == ['405 (ON)', '488 (EXC)']
     assert limits.sample_rate == 100000
     assert limits.overview_axes == ('X', 'Y')
-    assert limits.overview_field_um() == pytest.approx(35.0)
+    assert limits.overview_reach_um() == pytest.approx(35.0)
+
+
+def test_the_overview_size_defaults_to_60_um_within_the_scanners_reach(limits):
+    assert limits.overview_size_range_um() == pytest.approx((2.0, 35.0))
+    # 60 µm asked for, but the mock scanners reach 35 µm
+    assert limits.overview_default_field_um() == pytest.approx(35.0)
+    wide = dataclasses.replace(limits, axes=tuple(
+        dataclasses.replace(axis, range_um=(-100.0, 100.0)) for axis in limits.axes))
+    assert wide.overview_default_field_um() == pytest.approx(60.0)
+    configured = dataclasses.replace(
+        wide, config={**wide.config, 'overviewFieldUm': 120.0, 'overviewMinFieldUm': 10.0})
+    assert configured.overview_default_field_um() == pytest.approx(120.0)
+    assert configured.overview_size_range_um() == pytest.approx((10.0, 200.0))
 
 
 def test_the_shortest_dwell_is_samples_or_scanner_speed_whichever_is_longer(limits):
@@ -279,7 +292,7 @@ def _timeModel(turnaround_s=4e-3):
 def test_the_overview_takes_the_most_pixels_within_budget(limits):
     estimate = _timeModel()
     overview = plan_overview(limits, estimate=estimate,
-                             fits=lambda *args: True, budget_s=1.0)
+                             fits=lambda *args: True, budget_s=1.0, field_um=35.0)
 
     assert overview.met is True
     # steps are kept to 1 nm (Advanced's precision), so the field is N whole
@@ -294,23 +307,34 @@ def test_the_overview_takes_the_most_pixels_within_budget(limits):
     assert overview.step_um * overview.pixels == pytest.approx(overview.field_um)
 
 
-def test_the_overview_shrinks_its_field_when_the_voltage_does_not_fit(limits):
+def test_the_size_asked_for_is_the_size_planned(limits):
+    for size in (5.0, 20.0, 33.0):
+        overview = plan_overview(limits, estimate=_timeModel(), budget_s=1.0,
+                                 fits=lambda *args: True, field_um=size)
+        assert overview.met is True and overview.note == ''
+        assert overview.field_um == pytest.approx(size, abs=overview.pixels * 1e-3)
+
+
+def test_a_size_beyond_reach_is_the_largest_that_fits_and_says_so(limits):
     overview = plan_overview(
-        limits, estimate=_timeModel(), budget_s=1.0,
-        fits=lambda field, pixels, step, dwell: field <= 25.0,
+        limits, estimate=_timeModel(), budget_s=1.0, field_um=30.0,
+        # judged on what is built: pixels x the 1 nm-grid step, as the
+        # controller's check does
+        fits=lambda field, pixels, step, dwell: pixels * step <= 25.0,
     )
     assert overview.met is True
-    assert overview.field_um <= 25.0
-    assert overview.field_um == pytest.approx(35.0 * 0.8 ** 2, abs=overview.pixels * 1e-3)
+    # the largest that fits, to within one 1 nm step at 512 px (0.26 µm)
+    assert 25.0 - 0.3 <= overview.field_um <= 25.0
+    assert '30 µm' in overview.note and 'reach' in overview.note
 
 
-def test_an_unreachable_budget_gives_the_fastest_overview_and_says_so(limits):
+def test_an_unreachable_budget_keeps_the_size_and_says_how_long_it_takes(limits):
     overview = plan_overview(limits, estimate=lambda *a: 5.0,
-                             fits=lambda *args: True, budget_s=1.0)
+                             fits=lambda *args: True, budget_s=1.0, field_um=30.0)
     assert overview.met is False
-    assert overview.pixels == 64
-    assert 'not reachable' in overview.note
-    assert '5' in overview.note
+    assert overview.field_um == pytest.approx(30.0, abs=overview.pixels * 1e-3)
+    assert overview.pixels == 64                       # the fastest that fits
+    assert 'about 5 s' in overview.note and 'smaller overview' in overview.note
 
 
 def test_nothing_fitting_is_reported(limits):

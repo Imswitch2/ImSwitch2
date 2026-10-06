@@ -35,8 +35,8 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
     'objectiveNA': None,
     'nyquistPixelSizeUm': None,
     'overviewAxes': None,
-    'overviewFieldUm': None,
-    'overviewMinFieldUm': None,
+    'overviewFieldUm': 60.0,
+    'overviewMinFieldUm': 2.0,
     'overviewMinPixels': 64,
     'overviewMaxPixels': 512,
     'overviewFrameTimeS': 1.0,
@@ -45,7 +45,7 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
 }
 
 #: Field an axis without a configured voltage range offers (mock axes).
-_UNBOUNDED_FIELD_UM = 100.0
+_UNBOUNDED_FIELD_UM = 200.0
 
 
 # ---------------------------------------------------------------------------
@@ -170,13 +170,26 @@ class ScanLimits:
             floor = max(floor, abs(float(step_um)) / limit * 1e-6)
         return snap_dwell_s(floor, self.sample_rate, minimum=floor)
 
-    def overview_field_um(self) -> float:
-        configured = self.config.get('overviewFieldUm')
-        if configured:
-            return float(configured)
+    def overview_reach_um(self) -> float:
+        """The largest overview the scanners' ranges allow: the narrowest
+        overview axis, from its voltage range (the turnaround needs some of
+        it, which the planner accounts for)."""
         widths = [self.axis(name).width_um for name in self.overview_axes]
         widths = [width for width in widths if width is not None]
         return min(widths) if widths else _UNBOUNDED_FIELD_UM
+
+    def overview_size_range_um(self) -> Tuple[float, float]:
+        """(smallest, largest) overview the panel offers."""
+        reach = self.overview_reach_um()
+        smallest = float(self.config.get('overviewMinFieldUm') or 2.0)
+        return min(smallest, reach), reach
+
+    def overview_default_field_um(self) -> float:
+        """The overview's size until the panel's slider says otherwise:
+        ``overviewFieldUm`` (60 µm unless the setup sets it), within reach."""
+        low, high = self.overview_size_range_um()
+        configured = self.config.get('overviewFieldUm') or CONFIG_DEFAULTS['overviewFieldUm']
+        return min(max(float(configured), low), high)
 
     def nyquist_um(self, wavelengths_nm: Sequence[float]) -> Tuple[Optional[float], str]:
         """The finest useful pixel, and where the number comes from."""
@@ -586,7 +599,8 @@ def plan_overview(
     budget_s: float,
     field_um: Optional[float] = None,
 ) -> OverviewPlan:
-    """Field, pixel count and dwell for the overview, chosen together.
+    """Pixel count and dwell for an overview of ``field_um`` (the panel's
+    size; the setup's default when None).
 
     ``estimate(field, pixels, step, dwell)`` is the frame time and
     ``fits(field, pixels, step, dwell)`` whether the waveform stays inside
@@ -594,17 +608,22 @@ def plan_overview(
     shortest allowed for the step. For a given field, fitting improves with
     more pixels (slower sweep, less overshoot) while time worsens, so the
     feasible pixel counts form an interval; the largest count within budget
-    is taken. With none, the field shrinks by 20 % down to the minimum field;
-    if nothing meets the budget, the fastest feasible overview is returned
-    with ``met=False`` and a note saying so.
+    is taken.
+
+    The size is the user's. It is kept when no pixel count meets the budget
+    (the fastest feasible overview, with a note giving its time), and only
+    reduced when the scanners cannot reach it: then to the largest size that
+    fits, with a note saying so.
     """
     axes = limits.overview_axes
     centres = tuple(limits.axis(name).centre_um for name in axes)
     fast = axes[0]
     low = int(limits.config['overviewMinPixels'])
     high = max(low, int(limits.config['overviewMaxPixels']))
-    full = float(field_um if field_um is not None else limits.overview_field_um())
-    smallest = float(limits.config.get('overviewMinFieldUm') or full / 8.0)
+    smallest, reach = limits.overview_size_range_um()
+    requested = float(field_um if field_um is not None
+                      else limits.overview_default_field_um())
+    requested = min(max(requested, smallest), reach)
 
     def sampling(field_, pixels):
         step = quantize_step_um(field_ / pixels)
@@ -645,31 +664,44 @@ def plan_overview(
         return OverviewPlan(axes, centres, quantize_um(pixels * step), pixels,
                             step, dwell, timeAt(field_, pixels), met, note)
 
-    current = full
-    while True:
-        fitting = smallestFitting(current)
-        inBudget = largestInBudget(current)
-        if fitting is not None and inBudget is not None and fitting <= inBudget:
-            return result(current, inBudget, True)
-        if current * 0.8 < smallest:
-            break
-        current *= 0.8
+    def planAt(field_, note=''):
+        """The overview at this size, or None when it does not fit."""
+        fitting = smallestFitting(field_)
+        if fitting is None:
+            return None
+        inBudget = largestInBudget(field_)
+        if inBudget is not None and fitting <= inBudget:
+            return result(field_, inBudget, True, note)
+        slowest = result(field_, fitting, False)
+        return dataclasses.replace(slowest, note=' '.join(filter(None, [
+            note,
+            f'At this size a frame takes about {slowest.estimate_s:.2g} s, more than '
+            f'the {budget_s:.3g} s aimed for; a smaller overview is faster.',
+        ])))
 
-    fitting = smallestFitting(smallest)
-    if fitting is None:
+    overview = planAt(requested)
+    if overview is not None:
+        return overview
+
+    # The scanners cannot reach the size asked for: the largest that fits.
+    if smallestFitting(smallest) is None:
         return result(
             smallest, high, False,
             f'No overview fits the scanners\' voltage range down to '
             f'{smallest:.3g} µm; check the scan axes\' vel_max, acc_max and '
             f'volt limits.'
         )
-    plan = result(smallest, fitting, False)
-    return OverviewPlan(
-        plan.axes, plan.centres_um, plan.field_um, plan.pixels, plan.step_um,
-        plan.dwell_s, plan.estimate_s, False,
-        f'About {budget_s:.3g} s per frame is not reachable on this setup; '
-        f'this overview takes about {plan.estimate_s:.2g} s.',
-    )
+    lo, hi = smallest, requested
+    for _ in range(10):
+        mid = (lo + hi) / 2.0
+        if smallestFitting(mid) is None:
+            hi = mid
+        else:
+            lo = mid
+    return planAt(lo, note=(
+        f'{requested:.3g} µm is beyond what the scanners reach with the turnaround; '
+        f'the overview is {lo:.3g} µm.'
+    ))
 
 
 class PointScanCloak(ScanCloak):

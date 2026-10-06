@@ -305,6 +305,7 @@ class PointScanView(ScanCloakView):
     sigModeRequested = QtCore.Signal(str)
     sigAcquisitionEdited = QtCore.Signal(object)       # SimpleScanPlan
     sigOverviewChannelChanged = QtCore.Signal(int)
+    sigOverviewFieldChanged = QtCore.Signal(float)     # µm, both axes
     sigDrawRegionClicked = QtCore.Signal()
     sigRegionDrawn = QtCore.Signal(object)             # world vertices [[row, col], ...]
     sigReferenceDetectorChanged = QtCore.Signal(str)
@@ -324,6 +325,7 @@ class PointScanView(ScanCloakView):
         self._pendingDrop = None
         self._pixelRange = (1.0, 0.1)
         self._dwellRange = (2e-5, 1e-2)
+        self._overviewSizeRange = (2.0, 60.0)
         self._updating = False
         self._buildUi()
 
@@ -360,10 +362,31 @@ class PointScanView(ScanCloakView):
         self.overviewChannelCombo.setToolTip('Which channel the overview fires.')
         self.overviewChannelCombo.currentIndexChanged.connect(self._onOverviewChannel)
         self.measuredLabel = QtWidgets.QLabel('')
-        layout.addWidget(self.overviewLabel, 0, 0, 1, 3)
-        layout.addWidget(QtWidgets.QLabel('Overview uses'), 1, 0)
-        layout.addWidget(self.overviewChannelCombo, 1, 1)
-        layout.addWidget(self.measuredLabel, 1, 2)
+        # The size: a point detector has no field of its own to show.
+        self.overviewSizeSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.overviewSizeSlider.setRange(0, _SLIDER_TICKS)
+        self.overviewSizeSlider.setToolTip(
+            'The overview\'s size, both axes: from small to the most the scanners reach. '
+            'Pixels and dwell follow it, for about one frame per second.')
+        self.overviewSizeSlider.valueChanged.connect(self._onOverviewSize)
+        self.overviewSizeLabel = QtWidgets.QLabel('')
+        font = self.overviewSizeLabel.font()
+        font.setBold(True)
+        self.overviewSizeLabel.setFont(font)
+        self.overviewSizeMinLabel = QtWidgets.QLabel('')
+        self.overviewSizeMaxLabel = QtWidgets.QLabel('')
+        sizeRow = QtWidgets.QHBoxLayout()
+        sizeRow.addWidget(self.overviewSizeMinLabel)
+        sizeRow.addWidget(self.overviewSizeSlider, 1)
+        sizeRow.addWidget(self.overviewSizeMaxLabel)
+        sizeRow.addSpacing(8)
+        sizeRow.addWidget(self.overviewSizeLabel)
+        layout.addWidget(QtWidgets.QLabel('Size'), 0, 0)
+        layout.addLayout(sizeRow, 0, 1, 1, 2)
+        layout.addWidget(self.overviewLabel, 1, 0, 1, 3)
+        layout.addWidget(QtWidgets.QLabel('Overview uses'), 2, 0)
+        layout.addWidget(self.overviewChannelCombo, 2, 1)
+        layout.addWidget(self.measuredLabel, 2, 2)
         self.content.addWidget(box)
 
         # --- region and dimensions ---
@@ -537,7 +560,7 @@ class PointScanView(ScanCloakView):
         if not self._updating and index >= 0:
             self.sigReferenceDetectorChanged.emit(self.referenceCombo.itemData(index))
 
-    def setSimpleScanState(self, *, mode, overview, overviewChannel, acquisition,
+    def setSimpleScanState(self, *, mode, overview, overviewChannel, overviewSize, acquisition,
                            pixelRange, dwellRange):
         self._updating = True
         try:
@@ -548,6 +571,7 @@ class PointScanView(ScanCloakView):
             self.acquisitionButton.setChecked(mode == 'acquisition')
             self.liveBox.setEnabled(mode == 'acquisition' and not self.isRunning())
             self._showModeControls(mode)
+            self._showOverviewSize(*overviewSize)
             self._showOverview(overview)
             self.overviewChannelCombo.clear()
             for index in range(max(1, len(acquisition.channels))):
@@ -599,18 +623,27 @@ class PointScanView(ScanCloakView):
     # Showing state
     # ------------------------------------------------------------------
 
+    def _showOverviewSize(self, size, low, high):
+        self._overviewSizeRange = (float(low), float(high))
+        self.overviewSizeSlider.setValue(round(
+            log_position(min(max(size, low), high), low, high) * _SLIDER_TICKS))
+        self.overviewSizeMinLabel.setText(f'{low:.3g} µm')
+        self.overviewSizeMaxLabel.setText(f'{high:.3g} µm')
+        self.overviewSizeLabel.setText(f'{size:.3g} µm')
+
     def _showOverview(self, overview):
         if overview is None:
             self.overviewLabel.setText('–')
             return
-        text = (f'Full field {overview.field_um:.3g} × {overview.field_um:.3g} µm · '
+        text = (f'Field {overview.field_um:.3g} × {overview.field_um:.3g} µm · '
                 f'{overview.pixels} × {overview.pixels} px of '
                 f'{_formatLength(overview.step_um)} · dwell {_formatTime(overview.dwell_s)} · '
                 f'≈ {_formatTime(overview.estimate_s)} per frame')
         if overview.note:
             text += f'\n{overview.note}'
         self.overviewLabel.setText(text)
-        self.overviewLabel.setStyleSheet('' if overview.met else 'color: #f0ad4e;')
+        self.overviewLabel.setStyleSheet(
+            '' if overview.met and not overview.note else 'color: #f0ad4e;')
 
     def _showAcquisition(self, plan):
         dims = list(plan.dims)
@@ -781,6 +814,13 @@ class PointScanView(ScanCloakView):
     # ------------------------------------------------------------------
     # Edits -> plan
     # ------------------------------------------------------------------
+
+    def _onOverviewSize(self, position):
+        low, high = self._overviewSizeRange
+        size = log_value(position / _SLIDER_TICKS, low, high)
+        self.overviewSizeLabel.setText(f'{size:.3g} µm')
+        if not self._updating:
+            self.sigOverviewFieldChanged.emit(size)
 
     def _onOverviewChannel(self, index):
         if not self._updating and index >= 0:

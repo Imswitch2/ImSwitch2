@@ -316,7 +316,8 @@ Key fields:
   * ``objectiveNA``: sets the pixel slider's finest end to the confocal Nyquist pixel, shortest selected wavelength / (8 · NA);
   * ``nyquistPixelSizeUm``: sets that end directly; STED setups need this;
   * ``overviewAxes``: the two positioners the overview scans (default: the first two scanning positioners);
-  * ``overviewFieldUm`` / ``overviewMinFieldUm``: the overview's field, and the smallest it may shrink to while fitting the frame-time target;
+  * ``overviewFieldUm``: the overview's size (both axes) until the panel's **Size** slider changes it (default 60 µm; a point detector has no field of view of its own, so this is a choice). It is kept within what the scanners reach;
+  * ``overviewMinFieldUm``: the smallest size the slider offers (default 2 µm); the largest is what the scanners reach;
   * ``overviewMinPixels`` / ``overviewMaxPixels``: the overview's pixel-count range (default 64 / 512);
   * ``overviewFrameTimeS``: the overview's frame-time target (default 1 s);
   * ``minSamplesPerPixel``: the shortest dwell in samples (default 2);

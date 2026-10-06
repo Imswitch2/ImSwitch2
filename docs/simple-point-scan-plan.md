@@ -1036,6 +1036,26 @@ Tests: monotonicity assumptions on the mock setup; the chosen `N` meets the
 budget and the next `N` does not; the fallback path; re-planning from a
 simulated overhead.
 
+**Changed 2026-10-06 (Lenny, after testing): the size is the user's.** A point
+detector has no field of view of its own, so how big an overview is cannot
+be derived, and a field that shrank on its own to meet the budget was
+unclear. `F` is now a panel parameter: a log **Size** slider in the Overview
+card, default 60 µm (`overviewFieldUm`), from `overviewMinFieldUm` (2 µm) to
+the scanners' reach, saved with the panel. Rules 4–5 change accordingly:
+
+- `N` is chosen for that `F` as in rule 2. If no `N` meets the budget, `F`
+  is **kept**: the fastest feasible `N` runs, and the note gives its frame
+  time ("a smaller overview is faster").
+- `F` shrinks only when no `N` fits the voltage range: by bisection, to the
+  largest size that does, with a note saying so. At the very edge of reach
+  this is slow, because the turnaround leaves no room for a fast sweep.
+
+The SimplePointScan mock's galvos now reach 100 µm (5 µm/V instead of
+1.75): at 35 µm the 60 µm default could not be shown, and a real
+confocal galvo reaches far more. On it, 10–90 µm all plan to about 1 s per
+frame (60 µm: 181 px, 0.998 s); 100 µm becomes 98.8 µm at 499 px, 6 s.
+Planning takes 30–150 ms, so the slider replans 150 ms after it settles.
+
 ## 7. Registration checklist
 
 A new `scanWidgetType` must be registered in all of these places:

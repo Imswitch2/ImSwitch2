@@ -90,6 +90,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         self._view.sigModeRequested.connect(self.setSimpleScanMode)
         self._view.sigAcquisitionEdited.connect(self._onAcquisitionEdited)
         self._view.sigOverviewChannelChanged.connect(self._onOverviewChannelChanged)
+        self._view.sigOverviewFieldChanged.connect(self.setOverviewField)
         self._view.sigRegionDrawn.connect(self._onRegionDrawn)
         self._view.sigDrawRegionClicked.connect(self._onDrawClicked)
         self._view.sigReferenceDetectorChanged.connect(self.setReferenceDetector)
@@ -99,6 +100,11 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         self._estimateTimer.setSingleShot(True)
         self._estimateTimer.setInterval(100)
         self._estimateTimer.timeout.connect(self._refreshEstimate)
+        # Planning an overview builds trial scans: wait for the slider to settle.
+        self._overviewTimer = QtCore.QTimer()
+        self._overviewTimer.setSingleShot(True)
+        self._overviewTimer.setInterval(150)
+        self._overviewTimer.timeout.connect(self._replanOverview)
 
         self._view.setLive(state['mode'] == OVERVIEW)
         self._pushToView()
@@ -125,6 +131,9 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
                 'mode': OVERVIEW,
                 'overviewChannel': 0,
                 'overheadS': 0.0,
+                # The overview's size: the panel's slider, the setup's
+                # default (60 µm) until it moves.
+                'overviewFieldUm': limits.overview_default_field_um(),
                 'overview': None,
                 'acquisition': None,
                 # The layer the rectangle is drawn on, and the scan geometry
@@ -291,6 +300,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         return {
             'mode': simple['mode'],
             'overviewChannel': simple['overviewChannel'],
+            'overviewFieldUm': simple['overviewFieldUm'],
             'reference': simple['reference'],
             'plan': self._cloak.plan_to_dict(simple['acquisition']),
         }
@@ -308,6 +318,9 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
         if planDict:
             stored['acquisition'] = self._cloak.plan_from_dict(planDict)
         stored['overviewChannel'] = int(extras.get('overviewChannel', 0))
+        if extras.get('overviewFieldUm'):
+            low, high = self._scanLimits().overview_size_range_um()
+            stored['overviewFieldUm'] = min(max(float(extras['overviewFieldUm']), low), high)
         if extras.get('mode') in (OVERVIEW, ACQUISITION):
             stored['mode'] = extras['mode']
             self._view.setLive(stored['mode'] == OVERVIEW)
@@ -409,7 +422,26 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
 
         budget = float(limits.config['overviewFrameTimeS']) - state['overheadS']
         return plan_overview(limits, estimate=estimate, fits=fits,
-                             budget_s=max(0.05, budget))
+                             budget_s=max(0.05, budget),
+                             field_um=state['overviewFieldUm'])
+
+    def setOverviewField(self, sizeUm: float):
+        """The overview's size (µm, both axes), within what the scanners
+        reach; pixels and dwell follow it."""
+        low, high = self._scanLimits().overview_size_range_um()
+        self._simple()['overviewFieldUm'] = min(max(float(sizeUm), low), high)
+        timer = self.__dict__.get('_overviewTimer')
+        if timer is not None:
+            timer.start()
+        else:
+            self._replanOverview()
+
+    def _replanOverview(self):
+        state = self._simple()
+        state['overview'] = self._planOverview()
+        self._clearFramePeriods()
+        self._pushToView()
+        self._scheduleEstimate()
 
     def _estimateFrameS(self, analog, digital):
         designer = self._get_scan_designer()
@@ -651,6 +683,7 @@ class ScanControllerSimplePointScan(ScanCloakController, ScanControllerAdvanced)
             mode=state['mode'],
             overview=state['overview'],
             overviewChannel=state['overviewChannel'],
+            overviewSize=(state['overviewFieldUm'], *limits.overview_size_range_um()),
             acquisition=acquisition,
             pixelRange=(coarse, fine),
             dwellRange=(limits.min_dwell_s(fast, step), limits.max_dwell_s),

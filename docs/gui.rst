@@ -367,8 +367,9 @@ the setup JSON; see :doc:`setupinfo-reference`. ``SimplePointScan`` is a
 beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
 its header switches between the two, on the same scan.
 
-- **Overview** scans the whole reachable field live, and shows the measured
-  frame rate.
+- **Overview** scans live at about one frame per second, and shows the
+  measured frame rate. Its **Size** slider sets the field (default 60 µm,
+  up to what the scanners reach); pixels and dwell follow it.
 - **Acquisition** scans a chosen region, with sliders for pixel size
   (overview to Nyquist) and dwell, and an estimate of the scan time.
 - **Draw in viewer** draws the region as a rectangle on the live image (on
