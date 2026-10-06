@@ -127,6 +127,7 @@ class ConfigLoadOutcome:
 class StartupRuntime:
     runtime: SLMRuntime
     config_path: str | None
+    config: SLMConfig | None = None
     warnings: tuple[str,...] = ()
 
 
@@ -273,6 +274,7 @@ class SLMConfigurationService:
             return StartupRuntime(
                 runtime=commit.runtime,
                 config_path=prepared.path,
+                config=prepared.config,
                 warnings=tuple(_warning_text(item) for item in prepared.warnings),
             )
         except Exception as error:
@@ -288,12 +290,22 @@ class SLMConfigurationService:
     def save_runtime(
         self,runtime: SLMRuntime,name: str,info: str="",*,overwrite: bool=False,
     ) -> SLMConfigMetadata:
+        return self.save_config(
+            runtime.create_config(),name,info,overwrite=overwrite,
+        )
+
+    def save_config(
+        self,config: SLMConfig,name: str,info: str="",*,overwrite: bool=False,
+    ) -> SLMConfigMetadata:
         return self.store.save(
-            self.store.destination(name),runtime.create_config(),info,overwrite=overwrite,
+            self.store.destination(name),config,info,overwrite=overwrite,
         )
 
     def compare_runtime(self,runtime: SLMRuntime,path: str):
-        return self.store.compare(path,runtime.create_config())
+        return self.compare_config(runtime.create_config(),path)
+
+    def compare_config(self,config: SLMConfig,path: str):
+        return self.store.compare(path,config)
 
     def read_metadata(self,path: str) -> SLMConfigMetadata:
         return self.store.read_metadata(path)

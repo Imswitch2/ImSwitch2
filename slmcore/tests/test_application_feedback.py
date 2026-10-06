@@ -1059,3 +1059,130 @@ def test_mapping_switch_uses_each_mappings_default_fov_state(tmp_path):
     assert context["applied"] is True
     assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field B"
     session.dispose()
+
+
+def test_config_restores_exact_named_fov_and_does_not_fallback_when_missing(tmp_path):
+    from slmcore import (
+        SLMConfigurationService,SLMDefinition,SLMRuntimeFactory,
+        SLMSectionsDefinition,SLMStartupPreferences,SLMWorkspace,
+    )
+    from slmcore.application.startup_preferences import StartupPreferencesState
+    from slmcore.core.engine.section import SectionSplitLayout
+
+    runtime = _runtime()
+    section_geometry = runtime.get_section_geometry("sec_0")
+    runtime.set_section_calibration(
+        "sec_0",
+        SLMSectionCalibration(
+            kx_per_um=0.01,
+            ky_per_um=0.012,
+            mapping_name="sample",
+            section_geometry=vars(section_geometry),
+        ),
+    )
+    # Recompute after adding the persisted calibration geometry so the saved
+    # round belongs to the exact context that the config will restore.
+    job = runtime.prepare_section_base_cgh("sec_0")
+    runtime.commit_section_cgh(
+        "sec_0",
+        CGHResult(
+            generation=job.generation,
+            spec=job.spec,
+            target_name=job.target_name,
+            pattern=np.ones(job.spec.context.shape,dtype=np.complex128),
+        ),
+    )
+
+    first = _fov_calibration_for_runtime(runtime,"field A",(0.01,-0.02))
+    second = _fov_calibration_for_runtime(runtime,"field B",(-0.03,0.04))
+    workspace = SLMWorkspace(tmp_path)
+    workspace.fov_mapping_correction_store.save(first)
+    workspace.fov_mapping_correction_store.save(second)
+
+    runtime.set_section_fov_position_calibration("sec_0",first)
+    job = runtime.prepare_section_base_cgh("sec_0")
+    runtime.commit_section_cgh(
+        "sec_0",
+        CGHResult(
+            generation=job.generation,
+            spec=job.spec,
+            target_name=job.target_name,
+            pattern=np.ones(job.spec.context.shape,dtype=np.complex128),
+        ),
+    )
+    assert runtime.get_section_cgh_status("sec_0").result_state.value == "current"
+
+    definition = SLMDefinition(
+        identity=runtime.identity,
+        geometry=runtime.geometry,
+        sections=SLMSectionsDefinition(
+            layout=SectionSplitLayout(n_sections=1,axis="x"),
+            customizable=True,
+        ),
+    )
+    factory = SLMRuntimeFactory(
+        definition=definition,registries=DEFAULT_REGISTRIES,
+    )
+    config_store = workspace.config_store(runtime.identity,DEFAULT_REGISTRIES)
+    configuration = SLMConfigurationService(
+        store=config_store,runtime_factory=factory,
+    )
+    preferences = StartupPreferencesState(
+        SLMStartupPreferences(fov_mapping_corrections={
+            "sec_0":{"mappings":{"sample":"field B"}},
+        }),
+        lambda _value:None,
+    )
+    session = SLMSession(
+        runtime=runtime,
+        runtime_factory=factory,
+        configuration_service=configuration,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
+        startup_preferences=preferences,
+    )
+    # The mapping catalog is not relevant to this focused config test; the
+    # embedded valid base calibration identifies the active mapping.
+    session.calibration.active_mapping = lambda _section:"sample"
+
+    saved = session.save_config("with_field_a")
+    saved_config,_ = config_store.load(saved.path)
+    state = saved_config.sections["sec_0"].fov_correction
+    assert state.name == "field A"
+    assert state.applied is True
+
+    # Change the live/default context to B, then load the config.  The saved A
+    # must win without changing the persistent default B.
+    session.feedback.select_fov_position_calibration("sec_0","field B")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field B"
+
+    outcome = session.load_config(str(saved.path))
+    assert outcome.warnings == ()
+    restored = session.runtime.get_section_fov_position_context("sec_0")["calibration"]
+    assert restored.name == "field A"
+    context = session.feedback.fov_position_calibration_context("sec_0")
+    assert context["applied_name"] == "field A"
+    assert context["default_name"] == "field B"
+    assert session.runtime.get_section_cgh_status("sec_0").result_state.value == "current"
+
+    # Turning FOV off keeps the selected name in a newly saved config.
+    session.feedback.set_fov_position_calibration_applied("sec_0",False)
+    off = session.save_config("field_a_off")
+    off_config,_ = config_store.load(off.path)
+    off_state = off_config.sections["sec_0"].fov_correction
+    assert off_state.name == "field A"
+    assert off_state.applied is False
+
+    # If A is later removed, loading the original config must not silently use
+    # current/default B.  It leaves FOV unset and reports an inline warning.
+    workspace.fov_mapping_correction_store.delete(
+        runtime.identity,"sec_0","sample","field A",
+    )
+    outcome = session.load_config(str(saved.path))
+    assert any(
+        "field A" in warning.message and "No FOV correction was applied" in warning.message
+        for warning in outcome.warnings
+    )
+    assert session.runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert session.runtime.get_section_cgh_status("sec_0").result_state.value == "stale"
+    session.dispose()

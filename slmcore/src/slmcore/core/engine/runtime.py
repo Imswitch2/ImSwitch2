@@ -591,6 +591,12 @@ class SLMRuntime:
             key,"set_fov_position_calibration",calibration,
         )
 
+    def restore_section_fov_position_calibration(
+        self,key: str,calibration,
+    ) -> None:
+        """Rebind config FOV context without treating it as a user edit."""
+        self._get_section(key).restore_fov_position_calibration(calibration)
+
     def set_section_position_correction_active(
         self,key: str,active: bool,*,reset_intensity: bool=False,
     ) -> SectionStateTransition | None:

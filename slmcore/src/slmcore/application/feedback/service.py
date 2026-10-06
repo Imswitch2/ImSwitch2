@@ -479,6 +479,13 @@ class SLMFeedbackService:
     ) -> None:
         return self._fov_calibration.set_fov_position_calibration_applied(section_key,applied)
 
+    def restore_config_fov_position_calibration(
+        self,section_key: str,name: str | None,applied: bool,
+    ) -> str | None:
+        return self._fov_calibration.restore_config_fov_position_calibration(
+            section_key,name,applied,
+        )
+
     def set_default_fov_position_calibration(self,section_key: str) -> None:
         return self._fov_calibration.set_default_fov_position_calibration(section_key)
 

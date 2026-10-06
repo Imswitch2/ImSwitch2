@@ -195,16 +195,20 @@ class SLMQtSessionFactory:
                 display_name=display_name,
                 apply_startup_calibration_defaults=False,
             )
-            # Apply persistent FOV defaults before the Qt binding captures section
-            # revisions.  FOV selection is external to CGH configs but changes the
-            # effective CGH target, so applying it later through a read-only UI
-            # synchronization could leave the retained SectionView one revision
-            # behind the runtime.
+            # Restore config-owned FOV intent (schema 3+) before the Qt binding
+            # captures section state.  Legacy configs retain the historical
+            # startup-default reconciliation through the session helper.
             initial_revisions = {
                 key:snapshot.revision
                 for key,snapshot in panel.section_collection.get_section_snapshots().items()
             }
-            application_session.feedback.apply_startup_fov_position_calibration_defaults()
+            if startup.config is not None:
+                startup_fov_warnings = application_session._restore_config_fov_states(
+                    startup.config
+                )
+            else:
+                application_session.feedback.apply_startup_fov_position_calibration_defaults()
+                startup_fov_warnings = ()
             synchronized_snapshots = application_session.runtime.get_section_snapshots()
             if any(
                 initial_revisions.get(key) != snapshot.revision
@@ -220,8 +224,13 @@ class SLMQtSessionFactory:
             )
             if startup.config_path is None:
                 application_session.calibration.apply_startup_defaults()
-            if startup.warnings:
-                panel.set_status("; ".join(startup.warnings),error=True)
+            startup_messages = list(startup.warnings)
+            startup_messages.extend(
+                str(getattr(item,"message",item))
+                for item in startup_fov_warnings
+            )
+            if startup_messages:
+                panel.set_status("; ".join(startup_messages),warning=True)
             return session,panel
         except Exception:
             if session is not None:

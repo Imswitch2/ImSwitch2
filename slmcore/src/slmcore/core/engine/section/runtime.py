@@ -828,6 +828,10 @@ class SLMSectionRuntime:
         self._commit_feedback_session(candidate,effective_changed)
         return effective_changed
 
+    def restore_fov_position_calibration(self,calibration) -> None:
+        """Restore config-owned FOV context without invalidating saved rounds."""
+        self._cgh_session.restore_fov_position_calibration(calibration)
+
     def set_position_correction_active(
         self,active: bool,*,reset_intensity: bool=False,
     ) -> bool:

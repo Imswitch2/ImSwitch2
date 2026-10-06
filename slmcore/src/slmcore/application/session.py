@@ -7,6 +7,8 @@ from typing import Any,Callable,Mapping,TYPE_CHECKING
 from ..core.cgh.execution.executor import CGHExecutionHandle,CGHExecutor
 from ..core.cgh.execution.result import CGHResult
 from ..core.engine.runtime import SLMRuntime
+from ..core.engine.state import ConfigWarning
+from ..core.config import FOVCorrectionConfigState,SLMConfig
 from ..core.engine.section import SectionPresentation
 from ..core.engine.state import GroupTopology
 from ..core.engine.transition import SectionStateTransition
@@ -144,6 +146,7 @@ class SLMSession:
         self._upload_defer_depth = 0
         self._upload_pending = False
         self._last_upload_error: Exception | None = None
+        self._config_fov_restore_active = False
 
         self.observation_planes = ObservationPlaneService(observation_plane_store)
         self.mappings = MappingService(
@@ -287,15 +290,29 @@ class SLMSession:
         self.calibration.prepare_runtime_change()
         self.geometry_calibration.prepare_runtime_change()
         self.cancel_all_cgh()
-        commit = service.commit_load(
-            self.runtime,
-            prepared,
-            calibration_mismatch_policy=calibration_mismatch_policy,
-            correction_mismatch_policy=correction_mismatch_policy,
-            require_complete=bool(require_complete),
-        )
-        if commit.runtime_replaced:
-            self.replace_runtime(commit.runtime)
+        self._config_fov_restore_active = True
+        try:
+            commit = service.commit_load(
+                self.runtime,
+                prepared,
+                calibration_mismatch_policy=calibration_mismatch_policy,
+                correction_mismatch_policy=correction_mismatch_policy,
+                require_complete=bool(require_complete),
+            )
+            if commit.runtime_replaced:
+                self.replace_runtime(commit.runtime)
+            else:
+                # Mapping selection is application-owned.  Reconcile it from
+                # the newly committed runtime calibration before resolving the
+                # saved mapping-scoped FOV reference.
+                self.calibration.runtime_replaced()
+
+            fov_warnings = self._restore_config_fov_states(
+                prepared.config,
+                skip_sections=commit.failed_section_snapshots,
+            )
+        finally:
+            self._config_fov_restore_active = False
 
         self._current_config_metadata = prepared.metadata
         outcome = ConfigLoadOutcome(
@@ -304,7 +321,7 @@ class SLMSession:
             report=commit.report,
             runtime_replaced=commit.runtime_replaced,
             failed_section_snapshots=commit.failed_section_snapshots,
-            warnings=prepared.warnings,
+            warnings=tuple(prepared.warnings) + tuple(fov_warnings),
         )
         self._notify(
             "on_config_committed",outcome,
@@ -313,6 +330,63 @@ class SLMSession:
         if outcome.frame_changed and self.editor_writes_allowed:
             self.publish_current_frame()
         return outcome
+
+    def _create_application_config(self) -> SLMConfig:
+        """Capture runtime state plus application-owned FOV selection intent."""
+        config = self.runtime.create_config()
+        for section_key,section in config.sections.items():
+            runtime_fov = self.runtime.get_section_fov_position_context(
+                section_key
+            ).get("calibration")
+            if runtime_fov is not None:
+                name = str(runtime_fov.name)
+                applied = True
+            else:
+                context = self.feedback.fov_position_calibration_context(
+                    section_key
+                )
+                name = str(context.get("selected_name") or "").strip() or None
+                applied = False
+            section.fov_correction = FOVCorrectionConfigState(
+                name=name,applied=applied,
+            )
+        return config
+
+    def _restore_config_fov_states(
+        self,config: SLMConfig,*,skip_sections=(),
+    ) -> tuple[ConfigWarning,...]:
+        """Rebind config FOV references without substituting another default."""
+        skipped = {str(key) for key in skip_sections}
+        warnings = []
+        for section_key in self.runtime.section_keys:
+            if section_key in skipped or section_key not in config.sections:
+                continue
+            saved = config.sections[section_key].fov_correction
+            if saved is None:
+                # Schema-1/2 configs did not record FOV intent.  Preserve the
+                # historical per-session/default choice, but rebind it through
+                # the non-destructive config restoration path so a saved CGH
+                # can become synced when the same FOV is still in use.
+                context = self.feedback.fov_position_calibration_context(
+                    section_key
+                )
+                applied = bool(context.get("applied",False))
+                name = (
+                    context.get("applied_name")
+                    if applied else context.get("selected_name")
+                )
+                warning = self.feedback.restore_config_fov_position_calibration(
+                    section_key,name,applied,
+                )
+            else:
+                warning = self.feedback.restore_config_fov_position_calibration(
+                    section_key,saved.name,saved.applied,
+                )
+            if warning:
+                warnings.append(ConfigWarning(
+                    ("sections",section_key,"fov_correction"),str(warning),
+                ))
+        return tuple(warnings)
 
     def load_config(
         self,
@@ -342,8 +416,8 @@ class SLMSession:
     ):
         self._require_active()
         self._require_editor_mode()
-        metadata = self._require_configuration().save_runtime(
-            self.runtime,name,info,overwrite=overwrite,
+        metadata = self._require_configuration().save_config(
+            self._create_application_config(),name,info,overwrite=overwrite,
         )
         self._current_config_metadata = metadata
         return metadata
@@ -351,7 +425,9 @@ class SLMSession:
     def compare_config(self,path: str):
         self._require_active()
         self._require_editor_mode()
-        return self._require_configuration().compare_runtime(self.runtime,path)
+        return self._require_configuration().compare_config(
+            self._create_application_config(),path,
+        )
 
     def read_config_metadata(self,path: str):
         return self._require_configuration().read_metadata(path)
@@ -1063,7 +1139,8 @@ class SLMSession:
     def _on_calibration_mappings_changed(self) -> None:
         # FOV remains mapping-scoped until its later ownership move. Observation
         # orientation/geometry are independent and must not be refreshed here.
-        self.feedback.refresh_fov_position_calibration_contexts()
+        if not self._config_fov_restore_active:
+            self.feedback.refresh_fov_position_calibration_contexts()
         self._notify("on_calibration_mappings_changed")
 
     def _calibration_callbacks(self) -> SLMCalibrationCallbacks:

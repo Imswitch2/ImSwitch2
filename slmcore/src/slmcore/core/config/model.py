@@ -34,7 +34,7 @@ from ..engine.corrections import ResolvedCorrections
 from ..engine.state import ConfigPath,ConfigWarning
 
 
-SLM_CONFIG_SCHEMA_VERSION = 2
+SLM_CONFIG_SCHEMA_VERSION = 3
 
 
 def migrate_slm_config_dict(
@@ -46,33 +46,68 @@ def migrate_slm_config_dict(
     signature semantics.  Those session objects are derived/recomputable and
     cannot be restored safely under schema 2, so the v1 -> v2 migration keeps
     the section/target configuration but drops only ``cgh_session``.
+
+    Schema 3 adds an optional application-level FOV-correction selection to
+    each section.  Schema-2 files simply have no recorded FOV intent; callers
+    retain the historical default/session reconciliation behavior for those
+    configs.
     """
     version = int(data.get("schema_version",SLM_CONFIG_SCHEMA_VERSION))
     if version == SLM_CONFIG_SCHEMA_VERSION:
         return dict(data),()
-    if version != 1:
+    if version not in (1,2):
         raise ValueError(
             f"Unsupported SLM config schema version {version}; "
-            f"expected 1 or {SLM_CONFIG_SCHEMA_VERSION}"
+            f"expected 1, 2 or {SLM_CONFIG_SCHEMA_VERSION}"
         )
 
     migrated = dict(data)
-    migrated_sections = {}
     warnings = []
-    sections = data.get("sections",{}) or {}
-    for key,section_data in sections.items():
-        section = dict(section_data)
-        if section.get("cgh_session") is not None:
-            warnings.append(ConfigWarning(
-                ("sections",str(key),"cgh_session"),
-                "Discarded legacy persisted CGH session while migrating "
-                "SLM config schema 1 to 2; recompute the CGH for this section.",
-            ))
-        section["cgh_session"] = None
-        migrated_sections[key] = section
-    migrated["sections"] = migrated_sections
+    if version == 1:
+        migrated_sections = {}
+        sections = data.get("sections",{}) or {}
+        for key,section_data in sections.items():
+            section = dict(section_data)
+            if section.get("cgh_session") is not None:
+                warnings.append(ConfigWarning(
+                    ("sections",str(key),"cgh_session"),
+                    "Discarded legacy persisted CGH session while migrating "
+                    "SLM config schema 1 to 2; recompute the CGH for this section.",
+                ))
+            section["cgh_session"] = None
+            migrated_sections[key] = section
+        migrated["sections"] = migrated_sections
     migrated["schema_version"] = SLM_CONFIG_SCHEMA_VERSION
     return migrated,tuple(warnings)
+
+
+@dataclass(frozen=True)
+class FOVCorrectionConfigState:
+    """Persisted FOV-correction selection for one section configuration.
+
+    ``None`` at the ``SLMSectionConfig`` level means a legacy config did not
+    record FOV intent.  An explicit state with ``name=None`` means the config
+    deliberately had no FOV correction selected/applied.
+    """
+
+    name: str | None = None
+    applied: bool = False
+
+    def __post_init__(self) -> None:
+        name = str(self.name or "").strip() or None
+        if self.applied and name is None:
+            raise ValueError("An applied FOV correction requires a saved name")
+        object.__setattr__(self,"name",name)
+        object.__setattr__(self,"applied",bool(self.applied))
+
+    def to_dict(self) -> dict[str,Any]:
+        return {"name":self.name,"applied":bool(self.applied)}
+
+    @classmethod
+    def from_dict(cls,data: Mapping[str,Any] | None):
+        if data is None:
+            return None
+        return cls(name=data.get("name"),applied=bool(data.get("applied",False)))
 
 
 @dataclass(frozen=True)
@@ -106,6 +141,7 @@ class SLMSectionConfig:
     correction_snapshot: ResolvedCorrections
     calibration: SLMSectionCalibration | None = None
     cgh_session: CGHSessionSnapshot | None = None
+    fov_correction: FOVCorrectionConfigState | None = None
     presentation: SectionPresentation = field(
         default_factory=SectionPresentation,
     )
@@ -132,6 +168,10 @@ class SLMSectionConfig:
                 else self.calibration.to_dict()
             ),
             "cgh_session":_cgh_session_snapshot_to_dict(self.cgh_session),
+            "fov_correction":(
+                None if self.fov_correction is None
+                else self.fov_correction.to_dict()
+            ),
             "correction_snapshot":self.correction_snapshot.to_dict(),
         }
 
@@ -161,6 +201,9 @@ class SLMSectionConfig:
             calibration=calibration,
             cgh_session = _cgh_session_snapshot_from_dict(
                 data.get("cgh_session")
+            ),
+            fov_correction=FOVCorrectionConfigState.from_dict(
+                data.get("fov_correction")
             ),
             correction_snapshot=ResolvedCorrections.from_dict(data["correction_snapshot"]),
         )

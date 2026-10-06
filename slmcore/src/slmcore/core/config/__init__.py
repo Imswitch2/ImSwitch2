@@ -1,5 +1,6 @@
 from .loading import SectionConfigLoadResult,SLMConfigLoadReport
 from .model import (
+    FOVCorrectionConfigState,
     SLM_CONFIG_SCHEMA_VERSION,
     SLMCompiledFrame,
     SLMConfig,
@@ -8,6 +9,7 @@ from .model import (
 )
 
 __all__ = [
+    "FOVCorrectionConfigState",
     "SectionConfigLoadResult",
     "SLM_CONFIG_SCHEMA_VERSION",
     "SLMCompiledFrame",

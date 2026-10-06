@@ -794,18 +794,27 @@ class SLMQtSession(QtCore.QObject):
         if hasattr(self,"_configuration"):
             self._configuration.synchronize_current_config()
 
-        messages = [_warning_text(item) for item in outcome.warnings]
+        warning_messages = [_warning_text(item) for item in outcome.warnings]
+        failure_messages = []
         if report is not None:
-            messages.extend(_warning_text(item) for item in report.warnings)
-            messages.extend(
+            warning_messages.extend(_warning_text(item) for item in report.warnings)
+            failure_messages.extend(
                 "%s: config restore failed: %s" % (key,error)
                 for key,error in report.failed_sections.items()
             )
-        messages.extend(
+        failure_messages.extend(
             "%s: UI synchronization failed: %s" % (key,error)
             for key,error in ui_failures.items()
         )
-        self.sigStatusChanged.emit("; ".join(messages),bool(messages))
+        messages = warning_messages + failure_messages
+        text = "; ".join(messages)
+        has_failures = bool(failure_messages)
+        self.sigStatusChanged.emit(text,has_failures)
+        if text and not has_failures:
+            # Config compatibility/missing-resource notices are warnings, not
+            # runtime failures.  Keep them visible in the compact elided status
+            # label without another modal dialog.
+            self.panel.set_status(text,warning=True)
 
     def _on_application_control_mode_changed(
         self,mode: SLMControlMode,fast_config_path: str | None,
@@ -943,6 +952,9 @@ class SLMQtSession(QtCore.QObject):
         return True
 
     def synchronize_section(self,section_key: str) -> None:
+        self.section_collection.set_cgh_status(
+            section_key,self.runtime.get_section_cgh_status(section_key),
+        )
         status = self.runtime.get_section_feedback_status(section_key)
         self.section_collection.set_feedback_status(section_key,status)
         self.section_collection.set_fov_position_calibration_context(

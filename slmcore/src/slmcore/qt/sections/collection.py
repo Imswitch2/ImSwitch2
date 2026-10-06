@@ -163,6 +163,9 @@ class SectionsCollectionView(QtCore.QObject):
     ) -> None:
         self.section_view(section_key).set_cgh_computing(computing)
 
+    def set_cgh_status(self,section_key: str,status) -> None:
+        self.section_view(section_key).apply_cgh_status(status)
+
     def set_feedback_status(self,section_key: str,status) -> None:
         self.section_view(section_key).apply_feedback_status(status)
 

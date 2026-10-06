@@ -58,7 +58,7 @@ def test_schema1_migration_discards_legacy_cgh_session_but_preserves_target_stat
 
     migrated,warnings = SLMConfig.from_dict(raw,DEFAULT_REGISTRIES)
 
-    assert migrated.schema_version == SLM_CONFIG_SCHEMA_VERSION == 2
+    assert migrated.schema_version == SLM_CONFIG_SCHEMA_VERSION == 3
     assert migrated.sections[section_key].cgh_session is None
     assert migrated.sections[section_key].state.cgh.selected_target == "multi_foci_vector"
     cgh_state = migrated.sections[section_key].state.to_dict()["cgh"]
@@ -80,9 +80,10 @@ def test_schema1_migration_discards_legacy_cgh_session_but_preserves_target_stat
     )
 
 
-def test_schema2_keeps_cgh_session_strictly_validated():
+def test_schema2_migrates_to_schema3_and_keeps_cgh_session_strictly_validated():
     runtime,section_key = _runtime_with_committed_cgh()
     raw = runtime.create_config().to_dict()
+    raw["schema_version"] = 2
     raw["sections"][section_key]["cgh_session"]["committed_target"][
         "target_signature"
     ] = "corrupt-v2-signature"
@@ -90,12 +91,14 @@ def test_schema2_keeps_cgh_session_strictly_validated():
     config,warnings = SLMConfig.from_dict(raw,DEFAULT_REGISTRIES)
 
     assert warnings == ()
+    assert config.schema_version == SLM_CONFIG_SCHEMA_VERSION == 3
+    assert config.sections[section_key].fov_correction is None
     assert config.sections[section_key].cgh_session is not None
     with pytest.raises(RuntimeError,match="target signature"):
         SLMRuntime.from_config(config,registries=DEFAULT_REGISTRIES)
 
 
-def test_hdf5_schema1_load_migrates_to_schema2_and_reports_original_metadata(tmp_path):
+def test_hdf5_schema1_load_migrates_to_current_schema_and_reports_original_metadata(tmp_path):
     runtime,section_key = _runtime_with_committed_cgh()
     store = SLMConfigStore(tmp_path,DEFAULT_REGISTRIES)
     path = store.save(
@@ -112,6 +115,6 @@ def test_hdf5_schema1_load_migrates_to_schema2_and_reports_original_metadata(tmp
     config,warnings = store.load(path)
 
     assert metadata.schema_version == 1
-    assert config.schema_version == 2
+    assert config.schema_version == SLM_CONFIG_SCHEMA_VERSION == 3
     assert config.sections[section_key].cgh_session is None
     assert any("schema 1 to 2" in warning.message for warning in warnings)

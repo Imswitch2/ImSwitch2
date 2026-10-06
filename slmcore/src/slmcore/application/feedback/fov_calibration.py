@@ -26,6 +26,8 @@ class FOVPositionCalibrationContext(TypedDict):
     mapping_name: str | None
     available_names: tuple[str,...]
     selected_name: str | None
+    selected_compatible: bool
+    applied_name: str | None
     applied: bool
     default_name: str | None
     default_compatible: bool
@@ -58,6 +60,7 @@ class _FOVPositionCalibrationSelection:
     """Mutable per-section/mapping selection; separate from the persisted default."""
 
     selected_name: str | None=None
+    applied_name: str | None=None
     applied: bool=False
 
 class FOVPositionCalibrationService(FeedbackComponent):
@@ -168,6 +171,9 @@ class FOVPositionCalibrationService(FeedbackComponent):
         if selection is None:
             selection = _FOVPositionCalibrationSelection(
                 selected_name=default_name if default_valid else None,
+                applied_name=(
+                    default_name if default_valid and default_compatible else None
+                ),
                 applied=bool(default_valid and default_compatible),
             )
             self._fov_position_calibration_selections[key] = selection
@@ -175,10 +181,21 @@ class FOVPositionCalibrationService(FeedbackComponent):
         if selected not in names:
             selected = None
             selection.selected_name = None
-        # Runtime Apply always means this mapping's authoritative default.
-        if selection.applied and not (default_valid and default_compatible):
+        applied_name = str(selection.applied_name or "").strip() or None
+        applied_calibration = None
+        if applied_name in names and mapping:
+            applied_calibration = self._load_fov_position_calibration(
+                section,mapping,applied_name
+            )
+        applied_compatible = self._correction_compatible(
+            section,applied_calibration
+        )
+        if selection.applied and not (applied_name and applied_compatible):
             selection.applied = False
-        applied = bool(selection.applied and default_valid and default_compatible)
+            selection.applied_name = None
+            applied_name = None
+            applied_calibration = None
+        applied = bool(selection.applied and applied_name and applied_compatible)
         runtime_context = self._runtime.get_section_fov_position_context(section)
         outside = np.asarray(runtime_context.get("outside_mask",()),dtype=bool)
         extrapolated_count = int(np.count_nonzero(outside)) if applied else 0
@@ -186,18 +203,23 @@ class FOVPositionCalibrationService(FeedbackComponent):
             None if selected is None or mapping is None
             else self._load_fov_position_calibration(section,mapping,selected)
         )
+        selected_compatible = self._correction_compatible(section,calibration)
         reason = None
-        if default_name and not default_valid:
+        if selected is not None and not selected_compatible:
+            reason = "The selected FOV correction is incompatible with the current base mapping calibration."
+        elif selected is None and default_name and not default_valid:
             reason = "The configured default FOV correction is not available for this mapping."
-        elif default_valid and not default_compatible:
+        elif selected is None and default_valid and not default_compatible:
             reason = "The default FOV correction is incompatible with the current base mapping calibration."
-        elif not default_name:
+        elif selected is None and not default_name:
             reason = "No default FOV correction is configured for this mapping."
         candidate = self._fov_position_calibration_candidates.get(key)
         return {
             "mapping_name":mapping,
             "available_names":tuple(names),
             "selected_name":selected,
+            "selected_compatible":bool(selected is not None and selected_compatible),
+            "applied_name":applied_name,
             "applied":applied,
             "default_name":default_name,
             "default_compatible":bool(default_valid and default_compatible),
@@ -250,10 +272,11 @@ class FOVPositionCalibrationService(FeedbackComponent):
     def select_fov_position_calibration(
         self,section_key: str,name: str | None,
     ) -> None:
-        """Select a saved correction for management/inspection only.
+        """Select a saved correction for inspection and a later Apply action.
 
-        Runtime Apply is intentionally independent and always refers to the
-        mapping's persistent default correction.
+        Selecting alone does not change the runtime correction; Apply uses the
+        selected compatible correction.  The mapping default remains the
+        initial/default selection only.
         """
         self._require_editor_mode()
         section = str(section_key)
@@ -273,7 +296,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
     def set_fov_position_calibration_applied(
         self,section_key: str,applied: bool,
     ) -> None:
-        """Enable/disable this mapping's compatible default correction for the session."""
+        """Enable/disable the selected compatible correction for the session."""
         self._require_editor_mode()
         section = str(section_key)
         mapping = self._active_mapping(section)
@@ -286,24 +309,90 @@ class FOVPositionCalibrationService(FeedbackComponent):
         applied = bool(applied)
         calibration = None
         if applied:
-            default_name = self._saved_fov_position_calibration_name(section,mapping)
-            if not default_name or not self._mappings.fov_correction_exists(
-                section,mapping,default_name
+            name = str(selection.selected_name or "").strip() or None
+            if name is None:
+                name = self._saved_fov_position_calibration_name(section,mapping)
+            if not name or not self._mappings.fov_correction_exists(
+                section,mapping,name
             ):
-                raise RuntimeError("No default FOV correction is available for this mapping")
+                raise RuntimeError("No selected FOV correction is available for this mapping")
             calibration = self._load_fov_position_calibration(
-                section,mapping,default_name
+                section,mapping,name
             )
             if not self._correction_compatible(section,calibration):
                 raise RuntimeError(
-                    "The default FOV correction is incompatible with the current base mapping calibration"
+                    "The selected FOV correction is incompatible with the current base mapping calibration"
                 )
             if selection.selected_name is None:
-                selection.selected_name = default_name
+                selection.selected_name = name
+            selection.applied_name = name
+        else:
+            selection.applied_name = None
         selection.applied = applied
         self._set_runtime_fov_position_calibration(section,calibration)
         self._section_changed(section)
         self._warn_fov_extrapolation(section)
+
+    def restore_config_fov_position_calibration(
+        self,section_key: str,name: str | None,applied: bool,
+    ) -> str | None:
+        """Restore one config's named FOV intent without invalidating saved CGH.
+
+        Returns a user-facing warning when the saved calibration cannot be
+        restored.  No default substitution is performed.
+        """
+        section = str(section_key)
+        mapping = self._active_mapping(section)
+        requested = str(name or "").strip() or None
+        key = (section,mapping)
+        selection = self._fov_position_calibration_selections.setdefault(
+            key,_FOVPositionCalibrationSelection(),
+        )
+        selection.selected_name = None
+        selection.applied_name = None
+        selection.applied = False
+
+        if mapping is None:
+            self._runtime.restore_section_fov_position_calibration(section,None)
+            if requested is None:
+                return None
+            return (
+                'Saved FOV correction "%s" could not be restored because no '
+                "mapping is active for this section." % requested
+            )
+
+        if requested is None:
+            self._runtime.restore_section_fov_position_calibration(section,None)
+            return None
+
+        if not self._mappings.fov_correction_exists(section,mapping,requested):
+            self._runtime.restore_section_fov_position_calibration(section,None)
+            return (
+                'Saved FOV correction "%s" is not available for mapping "%s". '
+                "No FOV correction was applied; select one manually if desired."
+                % (requested,mapping)
+            )
+
+        calibration = self._load_fov_position_calibration(
+            section,mapping,requested
+        )
+        selection.selected_name = requested
+        if applied:
+            if not self._correction_compatible(section,calibration):
+                self._runtime.restore_section_fov_position_calibration(section,None)
+                return (
+                    'Saved FOV correction "%s" is incompatible with the current '
+                    'base mapping "%s". No FOV correction was applied.'
+                    % (requested,mapping)
+                )
+            selection.applied = True
+            selection.applied_name = requested
+            self._runtime.restore_section_fov_position_calibration(
+                section,calibration
+            )
+        else:
+            self._runtime.restore_section_fov_position_calibration(section,None)
+        return None
 
     def set_default_fov_position_calibration(self,section_key: str) -> None:
         """Persist the selected compatible correction as this mapping's default."""
@@ -437,7 +526,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
                 "geometry_calibration":geometry_provenance or None,
                 "source_applied_correction":self.fov_position_calibration_context(
                     section
-                ).get("selected_name"),
+                ).get("applied_name"),
             },
         )
         self._fov_position_calibration_candidates[(section,mapping)] = calibration
@@ -468,7 +557,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         section = str(section_key)
         context = self.fov_position_calibration_context(section)
         mapping = context.get("mapping_name")
-        name = context.get("default_name")
+        name = context.get("applied_name")
         if not mapping or not name or not context.get("applied"):
             return ""
         candidate = self._fov_position_calibration_candidates.get((section,mapping))
@@ -517,7 +606,7 @@ class FOVPositionCalibrationService(FeedbackComponent):
         section = str(section_key)
         context = self.fov_position_calibration_context(section)
         mapping = context.get("mapping_name")
-        name = context.get("default_name")
+        name = context.get("applied_name")
         if not mapping or not name or not context.get("applied"):
             raise RuntimeError("An applied FOV calibration is required for replacement")
         candidate = self._fov_position_calibration_candidates.get((section,mapping))
@@ -607,12 +696,26 @@ class FOVPositionCalibrationService(FeedbackComponent):
             if selection is None:
                 selection = _FOVPositionCalibrationSelection(
                     selected_name=default_name if default_exists else None,
+                    applied_name=(
+                        default_name if default_exists and compatible else None
+                    ),
                     applied=bool(default_exists and compatible),
                 )
                 self._fov_position_calibration_selections[key] = selection
-            if selection.applied and not (default_exists and compatible):
+            applied_name = str(selection.applied_name or "").strip() or None
+            calibration = None
+            if applied_name and mapping and self._mappings.fov_correction_exists(
+                section,mapping,applied_name
+            ):
+                candidate = self._load_fov_position_calibration(
+                    section,mapping,applied_name
+                )
+                if self._correction_compatible(section,candidate):
+                    calibration = candidate
+            if selection.applied and calibration is None:
                 selection.applied = False
-            calibration = default_calibration if selection.applied else None
+                selection.applied_name = None
+            calibration = calibration if selection.applied else None
             self._set_runtime_fov_position_calibration(
                 section,calibration,notify=True,
             )

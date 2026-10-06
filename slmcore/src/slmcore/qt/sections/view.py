@@ -146,7 +146,9 @@ class SectionView(QtWidgets.QWidget):
             "Focused View — hidden settings remain active",self,
         )
         self.focused_editing_notice.setObjectName("SLMFocusedEditingNotice")
-        self.focused_editing_notice.setStyleSheet("color: #a66a00;")
+        self.focused_editing_notice.setStyleSheet(
+            "QLabel { color: #a66a00; } QToolTip { color: white; }"
+        )
         self.focused_editing_notice.setToolTip(
             "This is a Focused View. Hidden settings are unchanged "
             "and can still affect the output."
@@ -273,7 +275,7 @@ class SectionView(QtWidgets.QWidget):
 
             fov_apply = QtWidgets.QCheckBox("FOV")
             fov_apply.setToolTip(
-                "Apply this mapping's default compatible FOV correction."
+                "Apply the selected compatible FOV correction."
             )
             fov_apply.toggled.connect(
                 lambda checked:self.sigCghActionRequested.emit(
@@ -848,7 +850,7 @@ class SectionView(QtWidgets.QWidget):
         if checkbox is None:
             return
         ctx = self._fov_mapping_context
-        compatible = bool(ctx.get("default_compatible",False))
+        compatible = bool(ctx.get("selected_compatible",False))
         supported = bool(ctx.get("supported",False))
         blocker = QtCore.QSignalBlocker(checkbox)
         try:
@@ -873,7 +875,7 @@ class SectionView(QtWidgets.QWidget):
             "QCheckBox { color: #a66a00; }" if extrapolated else ""
         )
         checkbox.setToolTip(
-            reason or "Apply this mapping's default compatible FOV correction."
+            reason or "Apply the selected compatible FOV correction."
         )
 
     def set_snapshot(self,snapshot: SLMSectionSnapshot) -> None:

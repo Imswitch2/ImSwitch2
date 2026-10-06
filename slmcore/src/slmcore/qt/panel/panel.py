@@ -447,13 +447,16 @@ class SLMPanel(QtWidgets.QWidget):
             height += self._outer_layout.spacing() + max(0,preview_height)
         return height
 
-    def set_status(self,text: str,error: bool=False) -> None:
+    def set_status(
+        self,text: str,error: bool=False,warning: bool=False,
+    ) -> None:
         value = str(text or "")
         if error and value:
             value = "Error: " + value
         self.status_label.set_full_text(value)
+        color = "#a33" if error else ("#a66a00" if warning else "#888")
         self.status_label.setStyleSheet(
-            "color: %s;" % ("#a33" if error else "#888")
+            "QLabel { color: %s; } QToolTip { color: white; }" % color
         )
 
     @property

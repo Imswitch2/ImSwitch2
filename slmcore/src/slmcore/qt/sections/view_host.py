@@ -471,6 +471,7 @@ class SectionsViewHost(QtWidgets.QWidget):
         # maintaining a separate toolbar-button stylesheet.
         button = QtWidgets.QPushButton("Focused View",self)
         button.setAccessibleName("Focused View")
+        button.setStyleSheet("QToolTip { color: white; }")
         button.setCheckable(True)
         button.setAutoDefault(False)
         button.setDefault(False)

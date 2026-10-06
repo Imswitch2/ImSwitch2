@@ -1889,6 +1889,28 @@ class CGHSession:
         self._requires_fresh_initialization = True
         return True
 
+    def restore_fov_position_calibration(
+        self,calibration: FOVMappingCorrection | None,
+    ) -> None:
+        """Rebind persisted FOV context without mutating restored CGH history.
+
+        Config loading restores already-computed CGH rounds first.  Reapplying
+        the same FOV correction through the normal user-edit path would
+        deliberately invalidate position/intensity feedback state even when the
+        saved CGH was computed with that exact correction.  This restoration
+        hook only reinstates the external calibration context; normal status
+        signature checks then decide whether the restored CGH is synced or
+        stale.
+        """
+        if calibration is not None and not isinstance(
+            calibration,FOVMappingCorrection
+        ):
+            raise TypeError(
+                "calibration must be an FOVMappingCorrection or None"
+            )
+        self._fov_position_calibration = calibration
+        self.invalidate_prepared_compute()
+
     def _position_correction_stale_reason(
         self,context: SectionContext,
     ) -> str:

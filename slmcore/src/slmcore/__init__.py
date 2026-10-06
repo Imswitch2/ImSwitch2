@@ -65,6 +65,7 @@ from .core.calibration import FOVMappingCorrection,SLMSectionCalibration
 # Transitional public alias; persistent ownership is Mapping as of Patch 6.
 FOVPositionCalibration = FOVMappingCorrection
 from .core.config import (
+    FOVCorrectionConfigState,
     SectionConfigLoadResult,
     SLM_CONFIG_SCHEMA_VERSION,
     SLMCompiledFrame,
@@ -150,6 +151,7 @@ __all__ = [
     "ObservationPlaneService",
     "EditablePositionReferenceGeometry",
     "FOVMappingCorrection",
+    "FOVCorrectionConfigState",
     "GeometryCalibrationContext",
     "GeometryCalibrationPayload",
     "GeometryCalibrationService",
