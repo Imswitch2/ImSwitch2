@@ -391,6 +391,24 @@ conversion accepts independent moving/reference scales,
 under the generic setup `calibrations.transforms` section; startup loading does
 not imply automatic application.
 
+### 0.9 Grid-localization phase 3 (2026-10-06)
+
+The ImControl uLens strategy now separates **global grid geometry** from
+**individual-focus correspondence**. `imcontrol.model.ulenses_localizer` exposes
+`GridLocalizationResult` and `localize_grid()`: coarse spot detections establish
+a finite tilted lattice using dominant local-neighbour directions, finite
+row/column topology and optional alternating-row/column stagger. When `n_cols`
+and `n_rows` are supplied they are authoritative finite-topology priors; Auto
+mode instead infers the complete finite extent and can be retried with manual
+counts when ambiguous.
+
+The grid result is reusable independently of transform calibration. Transform
+calibration adds a second `refine_grid_foci()` stage around the predicted sites
+and pairs moving/reference foci by their common logical finite-grid indices.
+The historical axis-aligned `localizer()` remains unchanged for the existing
+`ULensesController` while the new API is validated. The separate `Foci grid`
+strategy also remains available during this validation period.
+
 ---
 
 ## Phase 1 — Frame registry and composition

@@ -2,65 +2,136 @@ import numpy as np
 import pytest
 
 from imswitch.imcontrol.model import transform_correspondence as module
-from imswitch.imcontrol.model.ulenses_localizer import LocalizationResult
+from imswitch.imcontrol.model.ulenses_localizer import GridLocalizationResult
 
 
-def test_ulenses_strategy_localizes_grid_then_uses_shared_matcher(monkeypatch):
-    localizations = iter(
-        [
-            LocalizationResult(20, 1, 30, 2, 4, 5, 100, 120),
-            LocalizationResult(22, 3, 28, 4, 4, 5, 100, 120),
-        ]
+def _grid_result(*, n_cols=4, n_rows=5, angle_offset=0.0, stagger_axis="rows"):
+    origin = np.array([3.0, 4.0])
+    basis_x = np.array([1.0 + angle_offset, 20.0])
+    basis_y = np.array([30.0, 1.0])
+    logical = np.asarray(
+        [(i, j) for j in range(n_rows) for i in range(n_cols)], dtype=np.int64
     )
-    guesses = []
+    points = []
+    for i, j in logical:
+        point = origin + i * basis_x + j * basis_y
+        if stagger_axis == "rows":
+            point = point + (j % 2) * 0.5 * basis_x
+        elif stagger_axis == "columns":
+            point = point + (i % 2) * 0.5 * basis_y
+        points.append(point)
+    points = np.asarray(points)
+    return GridLocalizationResult(
+        origin_rc=origin,
+        basis_x_rc=basis_x,
+        basis_y_rc=basis_y,
+        n_cols=n_cols,
+        n_rows=n_rows,
+        stagger_axis=stagger_axis,
+        stagger_fraction=0.5 if stagger_axis else 0.0,
+        grid_points_rc=points,
+        logical_indices=logical,
+        detected_points_rc=points,
+        num_cols=120,
+        num_rows=160,
+        diagnostics={"fit_rms_px": 0.1},
+    )
 
-    def fake_localizer(image, xp_guess, yp_guess):
-        guesses.append((xp_guess, yp_guess))
-        return next(localizations)
 
-    matcher_call = {}
+def test_ulenses_strategy_uses_grid_geometry_then_local_focus_refinement(monkeypatch):
+    grid = _grid_result()
+    localization_calls = []
 
-    def fake_matcher(source, target, **kwargs):
-        matcher_call.update(kwargs)
-        points = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-        return points, points + 1.0
+    def fake_localize_grid(image, **kwargs):
+        localization_calls.append(kwargs)
+        return grid
 
-    monkeypatch.setattr(module, "localizer", fake_localizer)
-    monkeypatch.setattr(module, "find_grid_correspondence", fake_matcher)
+    refinement_calls = []
+
+    def fake_refine(image, localized, **kwargs):
+        refinement_calls.append((localized, kwargs))
+        offset = 0.0 if len(refinement_calls) == 1 else 1.0
+        return localized.grid_points_rc + offset
+
+    monkeypatch.setattr(module, "localize_grid", fake_localize_grid)
+    monkeypatch.setattr(module, "refine_grid_foci", fake_refine)
 
     spec = module.ulenses_grid_strategy_spec(lambda: (12.0, 13.0))
-    result = spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
+    params = dict(spec.default_parameters)
+    params.update({"grid_size_mode": "manual", "n_cols": 4, "n_rows": 5})
+    result = spec.run(np.zeros((8, 8)), np.zeros((8, 8)), params)
 
-    assert guesses == [(12.0, 13.0), (12.0, 13.0)]
-    assert matcher_call["n_rows"] == 5
-    assert matcher_call["n_cols"] == 4
-    assert matcher_call["min_distance"] == 10
-    assert result.metadata["localization"]["moving"]["x_period_px"] == 20.0
-    assert result.metadata["localization"]["reference"]["y_period_px"] == 28.0
+    assert len(localization_calls) == 2
+    assert all(call["xp_guess"] == 12.0 for call in localization_calls)
+    assert all(call["yp_guess"] == 13.0 for call in localization_calls)
+    assert all(call["n_cols"] == 4 for call in localization_calls)
+    assert all(call["n_rows"] == 5 for call in localization_calls)
+    assert len(refinement_calls) == 2
+    assert result.pair_count == 20
+    assert np.allclose(result.target_points - result.source_points, 1.0)
+    assert result.metadata["grid_localization"]["moving"]["stagger_axis"] == "rows"
+
+
+def test_ulenses_strategy_auto_size_does_not_supply_counts(monkeypatch):
+    grid = _grid_result()
+    calls = []
+
+    def fake_localize_grid(image, **kwargs):
+        calls.append(kwargs)
+        return grid
+
+    monkeypatch.setattr(module, "localize_grid", fake_localize_grid)
+    monkeypatch.setattr(
+        module,
+        "refine_grid_foci",
+        lambda _image, localized, **_kwargs: localized.grid_points_rc,
+    )
+
+    spec = module.ulenses_grid_strategy_spec()
+    spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
+
+    assert len(calls) == 2
+    assert all(call["n_cols"] is None for call in calls)
+    assert all(call["n_rows"] is None for call in calls)
 
 
 def test_ulenses_strategy_refuses_different_grid_shapes(monkeypatch):
-    localizations = iter(
-        [
-            LocalizationResult(20, 1, 30, 2, 4, 5, 100, 120),
-            LocalizationResult(20, 1, 30, 2, 5, 5, 100, 120),
-        ]
-    )
+    localizations = iter([_grid_result(n_cols=4), _grid_result(n_cols=5)])
     monkeypatch.setattr(
         module,
-        "localizer",
-        lambda image, xp_guess, yp_guess: next(localizations),
+        "localize_grid",
+        lambda image, **kwargs: next(localizations),
     )
 
     spec = module.ulenses_grid_strategy_spec()
-    with pytest.raises(ValueError, match="disagree"):
+    with pytest.raises(ValueError, match="same finite focus set"):
         spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
 
 
-def test_ulenses_strategy_exposes_typed_localization_parameters():
+def test_ulenses_strategy_refuses_different_stagger_axes(monkeypatch):
+    localizations = iter([
+        _grid_result(stagger_axis="rows"),
+        _grid_result(stagger_axis="columns"),
+    ])
+    monkeypatch.setattr(
+        module,
+        "localize_grid",
+        lambda image, **kwargs: next(localizations),
+    )
+
+    spec = module.ulenses_grid_strategy_spec()
+    with pytest.raises(ValueError, match="stagger axis"):
+        spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
+
+
+def test_ulenses_strategy_exposes_typed_grid_and_focus_parameters():
     spec = module.ulenses_grid_strategy_spec()
 
-    assert "xp_guess_px" in spec.parameter_specs
-    assert spec.parameter_specs["xp_guess_px"].label == "X period guess (px)"
+    assert spec.parameter_specs["grid_size_mode"].choices == ("auto", "manual")
+    assert spec.parameter_specs["stagger_axis"].choices == (
+        "auto", "rows", "columns"
+    )
+    assert "grid_threshold_rel" in spec.parameter_specs
+    assert "focus_refine_radius" in spec.parameter_specs
     assert "residual_threshold" not in spec.default_parameters
     assert spec.default_parameters["use_ulenses_widget_guesses"] is True
