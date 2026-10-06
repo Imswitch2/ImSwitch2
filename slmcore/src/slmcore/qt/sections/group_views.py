@@ -46,6 +46,7 @@ class CghAction(str,Enum):
     CLEAR_CGH_SESSION = "clear_cgh_session"
     OPEN_MEASUREMENTS_CORRECTIONS = "open_measurements_corrections"
     FOV_CALIBRATION_APPLY = "fov_calibration_apply"
+    POSITION_SET_ACTIVE = "position_set_active"
 
 
 def visible_specs(
@@ -104,6 +105,7 @@ class FeedbackControls:
     container: QtWidgets.QWidget
     status_value_label: QtWidgets.QLabel
     feedback_summary_label: QtWidgets.QLabel
+    position_checkbox: QtWidgets.QCheckBox
     open_button: QtWidgets.QPushButton
 
 
@@ -810,10 +812,28 @@ class CghGroupView(BaseGroupView):
         feedback_title = QtWidgets.QLabel("Feedback:")
         grid.addWidget(feedback_title,1,0,alignment=QtCore.Qt.AlignVCenter)
 
+        feedback_cell = QtWidgets.QWidget()
+        feedback_layout = QtWidgets.QHBoxLayout(feedback_cell)
+        feedback_layout.setContentsMargins(0,0,0,0)
+        feedback_layout.setSpacing(7)
+
         feedback_summary = QtWidgets.QLabel("None")
         feedback_summary.setStyleSheet("color: #888;")
+        feedback_summary.setSizePolicy(
+            QtWidgets.QSizePolicy.Maximum,QtWidgets.QSizePolicy.Preferred,
+        )
+        feedback_layout.addWidget(feedback_summary)
+
+        position_checkbox = QtWidgets.QCheckBox("Position")
+        position_checkbox.toggled.connect(
+            lambda checked:self._emit_action(
+                CghAction.POSITION_SET_ACTIVE,{"active":bool(checked)},
+            )
+        )
+        feedback_layout.addWidget(position_checkbox)
+        feedback_layout.addStretch(1)
         grid.addWidget(
-            feedback_summary,1,1,alignment=(
+            feedback_cell,1,1,alignment=(
                 QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
             ),
         )
@@ -839,6 +859,7 @@ class CghGroupView(BaseGroupView):
             container=widget,
             status_value_label=status_value,
             feedback_summary_label=feedback_summary,
+            position_checkbox=position_checkbox,
             open_button=open_button,
         )
         return widget
@@ -906,22 +927,65 @@ class CghGroupView(BaseGroupView):
         }.get(result_state,"color: #888;"))
 
         capabilities = set(self._feedback_capabilities.get(selected,()))
-        parts = []
-        if selected is not None and capabilities and status is not None:
-            if FeedbackCapability.INTENSITY in capabilities:
-                parts.append("Intensity ×%d" % status.intensity_count)
-            if FeedbackCapability.POSITION_CORRECTION in capabilities:
-                parts.append(
-                    "Position %s" % ("ON" if status.position_active else "OFF")
-                )
-        controls.feedback_summary_label.setText(
-            " · ".join(parts) if parts else "None"
-        )
+        has_intensity = FeedbackCapability.INTENSITY in capabilities
+        has_position = FeedbackCapability.POSITION_CORRECTION in capabilities
+        if selected is not None and status is not None and has_intensity:
+            feedback_text = "Intensity ×%d" % status.intensity_count
+        elif selected is not None and status is not None and has_position:
+            feedback_text = ""
+        else:
+            feedback_text = "None"
+        controls.feedback_summary_label.setText(feedback_text)
         controls.feedback_summary_label.setToolTip(
             self._feedback_status_tooltip(status)
             if selected is not None and capabilities else ""
         )
 
+        checkbox = controls.position_checkbox
+        blocker = QtCore.QSignalBlocker(checkbox)
+        checkbox.setChecked(bool(status is not None and status.position_active))
+        del blocker
+        checkbox.setVisible(bool(selected is not None and has_position))
+        position_enabled = bool(
+            selected is not None
+            and has_position
+            and status is not None
+            and status.position_available
+            and not status.position_stale
+            and not status.adaptation_pending
+            and not status.feedback_compute_pending
+            and int(status.intensity_count) == 0
+            and not self._computing
+        )
+        checkbox.setEnabled(position_enabled)
+        if not has_position:
+            position_tip = ""
+        elif status is None:
+            position_tip = "No position-correction state is available."
+        elif int(status.intensity_count) > 0:
+            position_tip = (
+                "Reset intensity feedback before changing position correction."
+            )
+        elif status.position_stale:
+            position_tip = (
+                str(status.position_stale_reason).strip()
+                or "The stored position correction is stale."
+            )
+        elif not status.position_available:
+            position_tip = (
+                "No stored position correction is available. Open the session "
+                "to create one."
+            )
+        elif status.adaptation_pending or status.feedback_compute_pending:
+            position_tip = "Wait for the pending feedback update to finish."
+        elif self._computing:
+            position_tip = "CGH computation is in progress."
+        else:
+            position_tip = (
+                "Use or temporarily disable the stored position correction. "
+                "The CGH is recomputed automatically."
+            )
+        checkbox.setToolTip(position_tip)
 
         # Opening the workspace is also how a future saved session is loaded,
         # so it must not depend on a currently selected target.

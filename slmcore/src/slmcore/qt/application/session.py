@@ -727,6 +727,10 @@ class SLMQtSession(QtCore.QObject):
             self.feedback_service.set_fov_position_calibration_applied(
                 section_key,bool(values.get("applied",False)),
             )
+        elif cgh_action is CghAction.POSITION_SET_ACTIVE:
+            self._feedback.set_position_active_from_dashboard(
+                section_key,bool(values.get("active",False)),
+            )
 
     def _on_application_transition_committed(
         self,section_key: str,transition: SectionStateTransition,

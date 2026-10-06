@@ -8,7 +8,7 @@ from qtpy import QtCore
 
 from ....application.feedback import AutomaticFeedbackState
 from ....core.measurement import ImageMeasurement
-from ...cgh.session_window import CGHSessionWindow
+from ...cgh.session_window import CGHSessionWindow,MeasurementsAction
 from .actions import FeedbackActionRouter
 from .adaptation import FeedbackAdaptationCoordinator
 from .automatic import AutomaticFeedbackCoordinator
@@ -562,6 +562,15 @@ class FeedbackCoordinator(QtCore.QObject):
 
     def set_position_active(self,section_key: str,active: bool) -> None:
         self._adaptation.set_position_active(section_key,active)
+
+    def set_position_active_from_dashboard(
+        self,section_key: str,active: bool,
+    ) -> None:
+        """Route the compact CGH checkbox through normal feedback actions."""
+        self._actions.dispatch(
+            section_key,MeasurementsAction.POSITION_SET_ACTIVE.value,
+            {"active":bool(active)},
+        )
 
     def clear_position_correction(self,section_key: str) -> None:
         self._adaptation.clear_position_correction(section_key)

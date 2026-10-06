@@ -191,6 +191,9 @@ def test_cgh_group_keeps_target_in_header_and_status_in_session_dashboard():
         assert cgh.status_label is None
         assert cgh._feedback_controls.status_value_label.text() == "Current"
         assert "Intensity ×0" in cgh._feedback_controls.feedback_summary_label.text()
+        assert "Position" not in cgh._feedback_controls.feedback_summary_label.text()
+        assert cgh._feedback_controls.position_checkbox.text() == "Position"
+        assert not cgh._feedback_controls.position_checkbox.isEnabled()
         selector = cgh.param_section.metadata_field("selected_target")
         assert selector.label.text() == "Selected Target:"
         assert cgh.restore_target_button.text() == "Restore"
@@ -218,6 +221,25 @@ def test_cgh_group_keeps_target_in_header_and_status_in_session_dashboard():
             ("open_measurements_corrections",{}),
             ("clear_cgh_session",{}),
         ]
+
+        from dataclasses import replace
+        feedback_status = runtime.get_section_feedback_status(section_key)
+        view.apply_feedback_status(replace(
+            feedback_status,position_available=True,position_active=False,
+            position_stale=False,intensity_count=0,
+        ))
+        position_checkbox = cgh._feedback_controls.position_checkbox
+        assert position_checkbox.isEnabled()
+        position_checkbox.click()
+        assert actions[-1] == ("position_set_active",{"active":True})
+
+        view.apply_feedback_status(replace(
+            feedback_status,position_available=True,position_active=True,
+            position_stale=False,intensity_count=1,
+        ))
+        assert position_checkbox.isChecked()
+        assert not position_checkbox.isEnabled()
+        assert "Reset intensity feedback" in position_checkbox.toolTip()
 
         runtime.apply_section_patch(
             section_key,{
