@@ -1,19 +1,14 @@
 {
-  "__comment__": "Hardware-free setup for the SimplePointScan panel (scan.scanWidgetType \"SimplePointScan\"): overview and acquisition point scanning on the Advanced scan path. Two APDs (counter-input detectors) and three gated lasers on a SIMULATED NIDAQ (nidaq.simulation = true), so overview, region, pixel size, dwell and laser channels can be tried with NO real hardware. X/Y are galvo-like smooth axes with the example_sted speed limits (vel_max 0.1 um/us, acc_max 1e-4 um/us^2) at 5 um/V over +-10 V, so they reach 100 um; Z is a piezo-like STEPPED axis. Both APDs image the same synthetic sample (mockSample); two of them let the panel's reference-detector choice be tried. scan.simplePointScan gives the objective NA the pixel slider's Nyquist end is computed from.",
+  "__comment__": "The default ImSwitch2 setup: a hardware-free point-scanning microscope with one camera and one APD, everything simulated. The camera (AVManager mock) shows a live widefield image; the APD (counter-input detector on a SIMULATED NIDAQ, nidaq.simulation = true) images a synthetic sample of cells and beads from the galvo waveforms (mockSample), driven by the SimplePointScan panel: an overview (Size slider, default 60 um), a region drawn in the viewer, pixel size and dwell sliders, and three gated lasers in channels; the Advanced scan panel is one switch away. X/Y are galvo-like smooth axes reaching 100 um (5 um/V over +-10 V, vel_max 0.1 um/us, acc_max 1e-4 um/us^2); Z is a piezo-like stepped axis. To use real hardware, pick or edit another setup (Pick hardware setup...).",
   "detectors": {
-    "APD": {
-      "managerName": "APDManager",
+    "Camera": {
+      "managerName": "AVManager",
       "managerProperties": {
-        "ctrInputLine": "Dev1/ctr0",
-        "terminal": "PFI0",
-        "displayRotation": "0",
-        "displayFlipX": "False",
-        "displayFlipY": "False",
-        "mockSample": {
-          "axes": {
-            "X": 5.0,
-            "Y": 5.0
-          }
+        "cameraListIndex": "mock",
+        "cameraPixelSizeUm": 0.1,
+        "avcam": {
+          "exposure": 50,
+          "gain": 1
         }
       },
       "analogChannel": null,
@@ -21,11 +16,11 @@
       "forAcquisition": true,
       "forFocusLock": false
     },
-    "APD 2": {
+    "APD": {
       "managerName": "APDManager",
       "managerProperties": {
-        "ctrInputLine": "Dev1/ctr1",
-        "terminal": "PFI12",
+        "ctrInputLine": "Dev1/ctr0",
+        "terminal": "PFI0",
         "displayRotation": "0",
         "displayFlipX": "False",
         "displayFlipY": "False",

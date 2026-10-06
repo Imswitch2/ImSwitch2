@@ -105,6 +105,10 @@ class APDManager(DetectorManager):
         # for typical fluorescence; the TTL-multiplying path will reallocate
         # as float32 (to preserve NaN as a "no-data" marker) in initiateImage.
         self._image = np.zeros(fullShape, dtype=np.uint16)
+        # What live view shows until the first scan builds the real one: a
+        # camera's live view also asks every other acquisition detector for
+        # its latest frame, which used to fail here before any scan.
+        self._image_display = np.zeros(fullShape, dtype=np.uint16)
         # The sample clock is the NI-DAQ timer counter's pulse train: its rate
         # and terminal come from the manager that generates it, not from a
         # literal here (which named counter 2 whatever the setup file chose).

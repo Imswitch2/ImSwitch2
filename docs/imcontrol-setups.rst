@@ -16,7 +16,9 @@ The user directory is:
 * ``~/ImSwitchConfig/`` on macOS / Linux
 
 The first time you start the hardware control module you will be
-prompted to select a setup file.  To switch later, use
+prompted to select a setup file; ``simple_mock_setup.json`` is preselected,
+a hardware-free point-scanning microscope (one mock camera, one simulated
+APD, the SimplePointScan panel). To switch later, use
 **Tools → Pick hardware setup…** in the menu bar.
 
 .. tip::
