@@ -10,6 +10,8 @@ from imswitch.imcommon.algorithms.transforms import ParameterSpec
 from imswitch.imcommon.algorithms.transforms.correspondence import (
     CorrespondenceResult,
     CorrespondenceStrategySpec,
+    ImageLocalizationResult,
+    LocalizationDiagnostics,
 )
 from .ulenses_localizer import (
     GridLocalizationResult,
@@ -62,8 +64,6 @@ def _normalize(parameters: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("stagger_mode must be 'auto', 'none', or 'manual'")
     if normalized["stagger_axis"] not in ("auto", "rows", "columns"):
         raise ValueError("stagger_axis must be 'auto', 'rows', or 'columns'")
-    if normalized["stagger_mode"] == "manual" and normalized["stagger_axis"] == "auto":
-        raise ValueError("manual stagger requires Rows or Columns stagger axis")
     if not -1.0 <= normalized["stagger_fraction"] <= 1.0:
         raise ValueError("stagger_fraction must be within [-1, 1]")
     if not 0.0 <= normalized["grid_threshold_rel"] <= 1.0:
@@ -140,19 +140,15 @@ def ulenses_grid_strategy_spec(
 ) -> CorrespondenceStrategySpec:
     """Build the tilted/stagger-aware finite-grid correspondence strategy.
 
-    Global geometry and precise correspondence are intentionally separate:
-    :func:`localize_grid` first estimates finite lattice geometry from coarse
-    spots, then :func:`refine_grid_foci` refines the predicted sites locally.
-    The moving/reference focus sets are paired by their common finite logical
-    indices.  No transform-specific assumptions leak back into the grid
-    localizer itself.
+    Moving and Reference are localized independently.  Each image may therefore
+    use different detection/refinement parameters while correspondence is still
+    established from the common finite logical grid.
     """
 
-    def run(
-        source_image: np.ndarray,
-        target_image: np.ndarray,
+    def localize(
+        image: np.ndarray,
         parameters: Mapping[str, Any],
-    ) -> CorrespondenceResult:
+    ) -> ImageLocalizationResult:
         params = _normalize(parameters)
         xp_guess = params["xp_guess_px"]
         yp_guess = params["yp_guess_px"]
@@ -170,64 +166,100 @@ def ulenses_grid_strategy_spec(
             n_cols = None
             n_rows = None
 
-        grid_kwargs = {
-            "xp_guess": xp_guess,
-            "yp_guess": yp_guess,
-            "n_cols": n_cols,
-            "n_rows": n_rows,
-            "threshold_rel": params["grid_threshold_rel"],
-            "gaussian_sigma": params["grid_gaussian_sigma"],
-            "min_distance_fraction": params["grid_min_distance_fraction"],
-            "stagger_mode": params["stagger_mode"],
-            "stagger_axis": params["stagger_axis"],
-            "stagger_fraction": params["stagger_fraction"],
-        }
-        source_grid = localize_grid(source_image, **grid_kwargs)
-        target_grid = localize_grid(target_image, **grid_kwargs)
+        grid = localize_grid(
+            image,
+            xp_guess=xp_guess,
+            yp_guess=yp_guess,
+            n_cols=n_cols,
+            n_rows=n_rows,
+            threshold_rel=params["grid_threshold_rel"],
+            gaussian_sigma=params["grid_gaussian_sigma"],
+            min_distance_fraction=params["grid_min_distance_fraction"],
+            stagger_mode=params["stagger_mode"],
+            stagger_axis=params["stagger_axis"],
+            stagger_fraction=params["stagger_fraction"],
+        )
+        refined = refine_grid_foci(
+            image,
+            grid,
+            search_radius_px=params["focus_refine_radius"],
+            gaussian_sigma=params["focus_gaussian_sigma"],
+        )
+        metadata = _grid_localization_dict(grid)
+        metadata.update({
+            "x_period_guess_px": float(xp_guess),
+            "y_period_guess_px": float(yp_guess),
+            "grid_size_mode": params["grid_size_mode"],
+            "focus_refine_radius": params["focus_refine_radius"],
+            "focus_gaussian_sigma": params["focus_gaussian_sigma"],
+        })
+        return ImageLocalizationResult(
+            points=refined,
+            metadata=metadata,
+            diagnostics=LocalizationDiagnostics(
+                detected_points=grid.detected_points_rc,
+                predicted_points=grid.grid_points_rc,
+                refined_points=refined,
+                logical_indices=grid.logical_indices,
+                metadata=dict(grid.diagnostics),
+            ),
+            payload=grid,
+        )
+
+    def match(
+        source: ImageLocalizationResult,
+        target: ImageLocalizationResult,
+        source_parameters: Mapping[str, Any],
+        target_parameters: Mapping[str, Any],
+    ) -> CorrespondenceResult:
+        source_grid = source.payload
+        target_grid = target.payload
+        if not isinstance(source_grid, GridLocalizationResult) or not isinstance(
+            target_grid, GridLocalizationResult
+        ):
+            raise TypeError("uLenses correspondence requires grid-localization payloads")
         _check_same_finite_grid(source_grid, target_grid)
 
-        tilt = abs(_wrapped_grid_angle_difference(source_grid.angle_deg, target_grid.angle_deg))
-        if tilt > params["max_relative_tilt_deg"]:
+        tilt = abs(
+            _wrapped_grid_angle_difference(source_grid.angle_deg, target_grid.angle_deg)
+        )
+        tilt_limit = min(
+            float(source_parameters["max_relative_tilt_deg"]),
+            float(target_parameters["max_relative_tilt_deg"]),
+        )
+        if tilt > tilt_limit:
             raise ValueError(
                 f"the two localized grids differ in orientation by {tilt:.1f} degrees, "
-                f"past the {params['max_relative_tilt_deg']:.1f} degree correspondence "
-                "limit. The finite grid axes may be transposed."
+                f"past the {tilt_limit:.1f} degree correspondence limit. "
+                "The finite grid axes may be transposed."
             )
-
-        source_points = refine_grid_foci(
-            source_image,
-            source_grid,
-            search_radius_px=params["focus_refine_radius"],
-            gaussian_sigma=params["focus_gaussian_sigma"],
-        )
-        target_points = refine_grid_foci(
-            target_image,
-            target_grid,
-            search_radius_px=params["focus_refine_radius"],
-            gaussian_sigma=params["focus_gaussian_sigma"],
-        )
-        if source_points.shape != target_points.shape:
+        if source.points.shape != target.points.shape:
             raise RuntimeError("refined finite focus sets do not have matching shapes")
 
         return CorrespondenceResult(
-            source_points=source_points,
-            target_points=target_points,
+            source_points=source.points,
+            target_points=target.points,
             metadata={
                 "n_rows": int(source_grid.n_rows),
                 "n_cols": int(source_grid.n_cols),
-                "grid_size_mode": params["grid_size_mode"],
                 "relative_tilt_deg": float(tilt),
                 "grid_localization": {
-                    "moving": _grid_localization_dict(source_grid),
-                    "reference": _grid_localization_dict(target_grid),
-                    "x_period_guess_px": float(xp_guess),
-                    "y_period_guess_px": float(yp_guess),
+                    "moving": dict(source.metadata),
+                    "reference": dict(target.metadata),
                 },
                 "focus_refinement": {
-                    "search_radius_px": params["focus_refine_radius"],
-                    "gaussian_sigma": params["focus_gaussian_sigma"],
+                    "moving": {
+                        "search_radius_px": source_parameters["focus_refine_radius"],
+                        "gaussian_sigma": source_parameters["focus_gaussian_sigma"],
+                    },
+                    "reference": {
+                        "search_radius_px": target_parameters["focus_refine_radius"],
+                        "gaussian_sigma": target_parameters["focus_gaussian_sigma"],
+                    },
                 },
             },
+            source_localization=source,
+            target_localization=target,
         )
 
     return CorrespondenceStrategySpec(
@@ -235,102 +267,100 @@ def ulenses_grid_strategy_spec(
         label="uLenses grid",
         description=(
             "Localize a finite 2-D grid with arbitrary tilt and optional alternating "
-            "row/column stagger, then refine and pair the individual foci by their "
-            "logical grid indices. Auto grid size can be overridden with explicit "
-            "rows/columns when needed."
+            "row/column stagger, then refine and pair individual foci by logical index."
         ),
-        handler=run,
+        localize_handler=localize,
+        match_handler=match,
         parameter_specs={
             "use_ulenses_widget_guesses": ParameterSpec(
                 True, bool, "Use uLenses widget period guesses",
                 "Use the current uLenses widget X/Y periodicities as strong initial "
                 "period guidance. Disable this to use the explicit guesses below.",
+                group="Grid geometry",
             ),
             "xp_guess_px": ParameterSpec(
                 10.0, float, "X period guess (px)",
-                "Expected logical X period in camera pixels. It guides coarse spot "
-                "separation and finite-grid selection but does not fix the final fit.",
-                minimum=0.001, step=0.5, decimals=3,
+                "Expected logical X period in camera pixels.",
+                minimum=0.001, step=0.5, decimals=3, group="Grid geometry",
+                enabled_when=("use_ulenses_widget_guesses", False),
             ),
             "yp_guess_px": ParameterSpec(
                 10.0, float, "Y period guess (px)",
-                "Expected logical Y period in camera pixels. It guides localization "
-                "without constraining the final measured tilted basis.",
-                minimum=0.001, step=0.5, decimals=3,
+                "Expected logical Y period in camera pixels.",
+                minimum=0.001, step=0.5, decimals=3, group="Grid geometry",
+                enabled_when=("use_ulenses_widget_guesses", False),
             ),
             "grid_size_mode": ParameterSpec(
                 "auto", str, "Grid size",
-                "Auto infers the finite n_rows × n_cols grid from detected line "
-                "topology. If Auto fails or is ambiguous, choose Manual and enter "
+                "Auto infers the finite grid. If Auto fails, choose Manual and enter "
                 "the known finite grid size below.",
-                choices=("auto", "manual"),
+                choices=("auto", "manual"), group="Grid geometry",
             ),
             "n_cols": ParameterSpec(
-                10, int, "Grid columns (manual)",
-                "Known number of logical X sites. In Manual mode this is a strong "
-                "finite-topology prior and is used directly.",
-                minimum=2, step=1,
+                10, int, "Grid columns",
+                "Known logical X-site count. In Manual mode this is authoritative.",
+                minimum=2, step=1, group="Grid geometry",
+                enabled_when=("grid_size_mode", "manual"),
             ),
             "n_rows": ParameterSpec(
-                10, int, "Grid rows (manual)",
-                "Known number of logical Y sites. In Manual mode this is a strong "
-                "finite-topology prior and is used directly.",
-                minimum=2, step=1,
+                10, int, "Grid rows",
+                "Known logical Y-site count. In Manual mode this is authoritative.",
+                minimum=2, step=1, group="Grid geometry",
+                enabled_when=("grid_size_mode", "manual"),
             ),
             "stagger_mode": ParameterSpec(
                 "auto", str, "Stagger",
-                "Auto compares non-staggered, alternating-row and alternating-column "
-                "models. None disables stagger. Manual uses the axis/fraction below.",
-                choices=("auto", "none", "manual"),
+                "Auto compares no stagger, row stagger and column stagger. Manual "
+                "uses the axis/fraction below.",
+                choices=("auto", "none", "manual"), group="Grid geometry",
             ),
             "stagger_axis": ParameterSpec(
                 "auto", str, "Stagger axis",
-                "Rows means odd rows shift along logical X; Columns means odd columns "
-                "shift along logical Y. Auto lets localization choose the better model.",
-                choices=("auto", "rows", "columns"),
+                "Rows shifts odd rows along X; Columns shifts odd columns along Y.",
+                choices=("auto", "rows", "columns"), group="Grid geometry",
+                enabled_when=("stagger_mode", "manual"),
             ),
             "stagger_fraction": ParameterSpec(
-                0.5, float, "Stagger fraction (manual)",
-                "Alternating shift as a fraction of the corresponding lattice period. "
-                "For example 0.5 is a half-period stagger.",
+                0.5, float, "Stagger fraction",
+                "Alternating shift as a fraction of the corresponding lattice period.",
                 minimum=-1.0, maximum=1.0, step=0.05, decimals=3,
+                group="Grid geometry", enabled_when=("stagger_mode", "manual"),
             ),
             "grid_threshold_rel": ParameterSpec(
                 0.10, float, "Grid spot threshold",
-                "Relative threshold for the coarse spots used only to infer global "
-                "grid geometry. Increase to reject weak false detections; decrease "
-                "to retain dim grid sites.",
+                "Relative threshold for coarse spots used to infer global geometry. "
+                "Increase to reject weak false detections; decrease for dim sites.",
                 minimum=0.0, maximum=1.0, step=0.02, decimals=2,
+                group="Grid localization",
             ),
             "grid_gaussian_sigma": ParameterSpec(
                 1.0, float, "Grid detection smoothing (px)",
                 "Gaussian smoothing before coarse global-grid spot detection.",
                 minimum=0.0, step=0.1, decimals=2, advanced=True,
+                group="Grid localization",
             ),
             "grid_min_distance_fraction": ParameterSpec(
                 0.35, float, "Coarse spot distance / period",
-                "Minimum coarse-peak separation as a fraction of the smaller period "
-                "guess. This affects global grid localization, not final focus centers.",
-                minimum=0.05, maximum=1.0, step=0.05, decimals=2, advanced=True,
+                "Minimum coarse-peak separation as a fraction of the smaller period.",
+                minimum=0.05, maximum=1.0, step=0.05, decimals=2,
+                advanced=True, group="Grid localization",
             ),
             "focus_refine_radius": ParameterSpec(
                 5, int, "Focus refinement radius (px)",
-                "Local search radius around each predicted finite-grid site. This is "
-                "the precise per-focus correspondence stage used for transform fitting.",
-                minimum=0, step=1,
+                "Local search radius around each predicted finite-grid site.",
+                minimum=0, step=1, group="Focus correspondence",
             ),
             "focus_gaussian_sigma": ParameterSpec(
                 1.0, float, "Focus search smoothing (px)",
-                "Smoothing used only while selecting the local focus maximum before "
-                "sub-pixel center-of-mass refinement.",
+                "Smoothing used while selecting each local focus maximum.",
                 minimum=0.0, step=0.1, decimals=2, advanced=True,
+                group="Focus correspondence",
             ),
             "max_relative_tilt_deg": ParameterSpec(
                 30.0, float, "Maximum relative grid tilt (deg)",
-                "Safety limit between moving and reference grid orientations. The "
-                "global localizer itself supports tilted grids; this only guards the "
-                "finite-axis identity used for correspondence.",
+                "Safety limit between Moving and Reference grid orientations.",
                 minimum=0.1, maximum=45.0, step=1.0, decimals=1, advanced=True,
+                group="Correspondence",
             ),
         },
         normalize_parameters=_normalize,

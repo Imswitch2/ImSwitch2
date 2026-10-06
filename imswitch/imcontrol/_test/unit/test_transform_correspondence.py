@@ -135,3 +135,21 @@ def test_ulenses_strategy_exposes_typed_grid_and_focus_parameters():
     assert "focus_refine_radius" in spec.parameter_specs
     assert "residual_threshold" not in spec.default_parameters
     assert spec.default_parameters["use_ulenses_widget_guesses"] is True
+
+
+def test_ulenses_strategy_exposes_independent_localization_diagnostics(monkeypatch):
+    grid = _grid_result()
+    monkeypatch.setattr(module, "localize_grid", lambda image, **kwargs: grid)
+    monkeypatch.setattr(
+        module, "refine_grid_foci",
+        lambda _image, localized, **_kwargs: localized.grid_points_rc + 0.25,
+    )
+    spec = module.ulenses_grid_strategy_spec()
+    localized = spec.localize(np.zeros((16, 16)), spec.default_parameters)
+
+    assert localized.metadata["n_rows"] == grid.n_rows
+    assert localized.metadata["n_cols"] == grid.n_cols
+    assert localized.diagnostics is not None
+    np.testing.assert_allclose(localized.diagnostics.detected_points, grid.detected_points_rc)
+    np.testing.assert_allclose(localized.diagnostics.predicted_points, grid.grid_points_rc)
+    np.testing.assert_allclose(localized.diagnostics.refined_points, grid.grid_points_rc + 0.25)

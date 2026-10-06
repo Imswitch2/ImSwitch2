@@ -13,12 +13,16 @@ from .foci_grid import (
     order_grid_points,
 )
 from .registry import (
+    LocalizationDiagnostics,
+    ImageLocalizationResult,
     CorrespondenceResult,
     CorrespondenceStrategySpec,
     builtin_correspondence_specs,
 )
 
 __all__ = [
+    "LocalizationDiagnostics",
+    "ImageLocalizationResult",
     "CorrespondenceResult",
     "CorrespondenceStrategySpec",
     "builtin_correspondence_specs",

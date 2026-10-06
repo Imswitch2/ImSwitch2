@@ -7,5 +7,6 @@ them in whatever widget/controller pair it uses.
 """
 
 from .TransformCalibrationWidget import TransformCalibrationWidget
+from .TransformCalibrationWorkspace import TransformCalibrationWorkspace
 
-__all__ = ["TransformCalibrationWidget"]
+__all__ = ["TransformCalibrationWidget", "TransformCalibrationWorkspace"]

@@ -33,6 +33,8 @@ class ParameterSpec:
     decimals: int | None = None
     choices: tuple[Any, ...] | None = None
     advanced: bool = False
+    group: str | None = None
+    enabled_when: tuple[str, Any] | None = None
 
     def normalize(self, value: Any) -> Any:
         """Coerce ``value`` to the declared type and enforce simple bounds."""

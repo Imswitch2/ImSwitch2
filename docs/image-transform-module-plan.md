@@ -409,6 +409,27 @@ The historical axis-aligned `localizer()` remains unchanged for the existing
 `ULensesController` while the new API is validated. The separate `Foci grid`
 strategy also remains available during this validation period.
 
+### 0.10 Localization / transform inspection workspace (2026-10-06)
+
+The compact transform-calibration widget remains the complete fast path: acquire
+or load Moving/Reference images, run both localizations, fit the transform, and
+load/save/apply it without opening another window. Each image reports its own
+localization status and the transform reports a concise fit-quality status.
+
+Detailed tuning lives in one persistent detached workspace. Its Localization tab
+shows one selected image at a time (Moving/Reference combo), exposes that image's
+own parameter set, and can rerun only that localization. Strategies may now
+optionally implement single-image localization followed by a separate matching
+stage; uLens Grid and Foci Grid use this path. Parameter edits keep the previous
+overlay visible but mark it stale until rerun. Runtime localization diagnostics
+(detected, predicted and refined points) remain ephemeral and are not copied into
+persisted transform provenance.
+
+The Transform tab reuses the paired points and retained `ModelFit` to show the
+reference points, transformed Moving points, outliers and residual vectors while
+keeping transform-fit parameters independently editable. Both Inspect/Tune
+actions in the compact widget open the same workspace on the relevant tab.
+
 ---
 
 ## Phase 1 — Frame registry and composition

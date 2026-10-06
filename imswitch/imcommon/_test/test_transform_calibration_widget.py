@@ -49,7 +49,7 @@ def test_starts_with_nothing_calibrated(widget):
     assert widget.transform is None
     assert not widget.calibrateButton.isEnabled()
     assert not widget.saveTransformButton.isEnabled()
-    assert not widget.visualizeButton.isEnabled()
+    assert widget.localizationParametersButton.isEnabled()
 
 
 def test_calibrate_enables_saving_and_reports_residuals(widget):
@@ -100,7 +100,8 @@ def test_parameter_buttons_follow_strategy_and_model_specs(widget):
     assert widget.localizationParametersButton.isEnabled()
     assert widget.transformParametersButton.isEnabled()
     widget.setSelectedModel("identity")
-    assert not widget.transformParametersButton.isEnabled()
+    # Inspect/tune remains useful for transform diagnostics even with no fit params.
+    assert widget.transformParametersButton.isEnabled()
 
 
 def test_unknown_model_is_refused(widget):
@@ -208,9 +209,15 @@ def test_localization_parameter_change_invalidates_both_stages(widget):
     widget.calibrate()
     params = widget.localizationParameters()
     params["threshold_rel"] = 0.3
+    moving_result = widget.localizationResult("source")
+    reference_result = widget.localizationResult("target")
     widget.setLocalizationParameters(params)
 
     assert widget.correspondenceResult is None
+    assert widget.localizationResult("source") is moving_result
+    assert widget.localizationResult("target") is reference_result
+    assert widget.localizationIsStale("source")
+    assert widget.localizationIsStale("target")
     assert widget.transform is None
     assert not widget.fitTransformButton.isEnabled()
 
@@ -238,19 +245,13 @@ def test_every_model_choice_calibrates(widget, model, expected_kind):
     assert widget.matrixView.toPlainText()
 
 
-def test_constrained_choice_is_named_in_the_status(widget):
-    """'affine' is the stored kind for a rigid fit; the status must say rigid."""
+def test_compact_status_reports_fit_quality(widget):
     _load_grid_pair(widget)
     widget.setSelectedModel("rigid")
     widget.calibrate()
-    assert "rigid -> affine" in widget.statusLabel.text()
-
-
-def test_affine_choice_is_not_double_named(widget):
-    _load_grid_pair(widget)
-    widget.calibrate()
-    assert "affine -> affine" not in widget.statusLabel.text()
-    assert "[affine," in widget.statusLabel.text()
+    assert "pairs" in widget.statusLabel.text()
+    assert "RMS" in widget.statusLabel.text()
+    assert "max" in widget.statusLabel.text()
 
 
 def test_rotation90_choice_survives_a_save_reload(widget, tmp_path, monkeypatch):
@@ -274,7 +275,7 @@ def test_calibration_records_its_provenance_and_context(widget):
 
     transform = widget.transform
     assert transform.provenance["strategy"] == "foci_grid"
-    assert transform.provenance["localization_parameters"]["n_rows"] == 4
+    assert transform.provenance["localization_parameters"]["moving"]["n_rows"] == 4
     assert transform.provenance["fit_parameters"]["residual_threshold"] == 2.0
     assert transform.provenance["n_rows"] == 4
     assert transform.source_context.image_shape == (256, 256)
@@ -290,7 +291,9 @@ def test_failed_calibration_reports_and_clears(widget):
     widget.calibrate()
 
     assert widget.transform is None
-    assert "failed" in widget.statusLabel.text().lower()
+    assert "✕" in widget.sourceLocalizationStatusLabel.text()
+    assert "✕" in widget.targetLocalizationStatusLabel.text()
+    assert "waiting" in widget.statusLabel.text().lower()
     assert not widget.saveTransformButton.isEnabled()
 
 
@@ -324,7 +327,7 @@ def test_loading_a_transform_drops_stale_overlay_points(widget, tmp_path, monkey
     widget.loadTransform()
 
     assert widget.transform is not None
-    assert not widget.visualizeButton.isEnabled()
+    assert widget.localizationParametersButton.isEnabled()
 
 
 def test_clear_resets_everything(widget):
@@ -333,7 +336,7 @@ def test_clear_resets_everything(widget):
     widget.clear()
 
     assert widget.transform is None
-    assert widget.statusLabel.text() == "No transform"
+    assert widget.statusLabel.text() == "○ No transform"
     assert widget.residualLabel.text() == "Residuals: n/a"
     assert widget.matrixView.toPlainText() == ""
 
@@ -352,11 +355,13 @@ def test_non_2d_image_is_refused(widget):
         widget.setSourceImage(np.zeros((3, 4, 5)))
 
 
-def test_visualize_builds_a_dialog(widget):
+def test_visualize_opens_the_shared_workspace(widget, qtbot):
+    pytest.importorskip("pyqtgraph")
     _load_grid_pair(widget)
     widget.calibrate()
-    dialog = widget._buildVisualization()
-    assert dialog is not None
+    widget.visualize()
+    assert widget._workspace is not None
+    qtbot.addWidget(widget._workspace)
 
 
 # ---------------------------------------------------------------------------
@@ -435,3 +440,100 @@ def test_widget_calibration_matches_the_library_directly(widget):
     np.testing.assert_allclose(
         widget.transform.as_matrix(), expected.transform.matrix
     )
+
+
+def test_independent_localization_parameters_and_reruns(widget):
+    from imswitch.imcommon.algorithms.transforms.correspondence import (
+        CorrespondenceResult,
+        CorrespondenceStrategySpec,
+        ImageLocalizationResult,
+    )
+    from imswitch.imcommon.algorithms.transforms import ParameterSpec
+
+    calls = []
+
+    def localize(_image, parameters):
+        value = float(parameters["offset"])
+        calls.append(value)
+        points = np.array([[1.0, 2.0], [3.0, 4.0]]) + value
+        return ImageLocalizationResult(points, metadata={"offset": value})
+
+    def match(source, target, *_parameters):
+        return CorrespondenceResult(
+            source.points, target.points,
+            source_localization=source, target_localization=target,
+        )
+
+    widget.registerCorrespondenceStrategy(
+        CorrespondenceStrategySpec(
+            name="split_test", label="Split test", description="split",
+            parameter_specs={"offset": ParameterSpec(0.0, float, "Offset")},
+            localize_handler=localize, match_handler=match,
+        ),
+        select=True,
+    )
+    widget.setSourceImage(np.zeros((8, 8)))
+    widget.setTargetImage(np.zeros((8, 8)))
+    widget.setLocalizationParameters({"offset": 1.0}, "source")
+    widget.setLocalizationParameters({"offset": 2.0}, "target")
+
+    assert widget.runLocalizationForRole("source")
+    assert calls == [1.0]
+    assert widget.localizationResult("source") is not None
+    assert widget.localizationResult("target") is None
+
+    assert widget.runLocalizationForRole("target")
+    assert calls == [1.0, 2.0]
+    assert widget.buildCorrespondence()
+    assert widget.correspondenceResult is not None
+    np.testing.assert_allclose(
+        widget.correspondenceResult.target_points
+        - widget.correspondenceResult.source_points,
+        1.0,
+    )
+
+
+def test_main_localization_runs_both_with_their_own_parameters(widget):
+    from imswitch.imcommon.algorithms.transforms.correspondence import (
+        CorrespondenceResult,
+        CorrespondenceStrategySpec,
+        ImageLocalizationResult,
+    )
+    from imswitch.imcommon.algorithms.transforms import ParameterSpec
+
+    calls = []
+    def localize(_image, parameters):
+        value = float(parameters["threshold"])
+        calls.append(value)
+        return ImageLocalizationResult(np.array([[value, value]]))
+    def match(source, target, *_parameters):
+        return CorrespondenceResult(source.points, target.points)
+
+    widget.registerCorrespondenceStrategy(
+        CorrespondenceStrategySpec(
+            name="two_params", label="Two params", description="two",
+            parameter_specs={"threshold": ParameterSpec(0.1, float, "Threshold")},
+            localize_handler=localize, match_handler=match,
+        ), select=True,
+    )
+    widget.setSourceImage(np.zeros((8, 8)))
+    widget.setTargetImage(np.zeros((8, 8)))
+    widget.setLocalizationParameters({"threshold": 0.2}, "source")
+    widget.setLocalizationParameters({"threshold": 0.7}, "target")
+
+    assert widget.runLocalization()
+    assert calls == [0.2, 0.7]
+    assert "✓" in widget.sourceLocalizationStatusLabel.text()
+    assert "✓" in widget.targetLocalizationStatusLabel.text()
+
+
+def test_workspace_is_persistent_and_tab_specific(widget, qtbot):
+    pytest.importorskip("pyqtgraph")
+    widget.openWorkspace("localization")
+    first = widget._workspace
+    assert first is not None
+    qtbot.addWidget(first)
+    assert first.tabs.currentIndex() == 0
+    widget.openWorkspace("transform")
+    assert widget._workspace is first
+    assert first.tabs.currentIndex() == 1
