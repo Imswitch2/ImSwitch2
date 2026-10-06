@@ -6,6 +6,7 @@
             "managerName": "AVManager",
             "managerProperties": {
                 "cameraListIndex": "mock",
+                "cameraPixelSizeUm": 0.15,
                 "avcam": {
                     "exposure": 100,
                     "gain": 1
@@ -20,6 +21,7 @@
             "managerName": "ThorCamTSIManager",
             "managerProperties": {
                 "cameraSerial": "MOCK_TSI_12345",
+                "cameraPixelSizeUm": 0.15,
                 "dllLocation": "dlls/64_lib",
                 "defaults": {
                     "exposure_us": 50000,
@@ -89,7 +91,6 @@
             "managerName": "KinesisStageManager",
             "managerProperties": {
                 "snr": "MOCK_MLS203",
-                "posRangeUm": {"X": [0, 25000], "Y": [0, 25000]},
                 "homeOnInit": false
             },
             "axes": ["X", "Y"],

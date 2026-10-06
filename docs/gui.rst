@@ -764,8 +764,9 @@ Point-scan variant
 ~~~~~~~~~~~~~~~~~~
 
 ``"scanWidgetType": "PointScan"``, paired with ``GalvoScanDesigner`` and
-``PointScanTTLCycleDesigner`` (as in ``example_sted.json``), is the panel for
-galvo point scanning with point detectors, as in confocal and STED.  It differs
+``PointScanTTLCycleDesigner``, is the older panel for galvo point scanning with
+point detectors, as in confocal and STED; its features have moved to the
+``Advanced`` panel, which ``example_sted.json`` now uses.  It differs
 from ``Base`` in three ways:
 
 * **Dwell time (ms)** starts at 0.02 ms rather than 10 ms, and two rig delays
