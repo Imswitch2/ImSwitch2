@@ -823,3 +823,42 @@ def test_transform_mask_keeps_labels_intact():
     assert moved.dtype == np.uint8
     assert set(np.unique(moved)) <= {0, 3}
     assert moved[7, 7] == 3
+
+
+def test_transform_parameter_spec_normalizes_defaults_and_bounds():
+    from imswitch.imcommon.algorithms.transforms import (
+        ParameterSpec,
+        normalize_parameter_values,
+    )
+
+    specs = {
+        "threshold": ParameterSpec(
+            0.2, float, "Threshold", minimum=0.0, maximum=1.0, step=0.1
+        ),
+        "enabled": ParameterSpec(True, bool, "Enabled"),
+    }
+    assert normalize_parameter_values(specs, {}) == {
+        "threshold": 0.2,
+        "enabled": True,
+    }
+    assert normalize_parameter_values(
+        specs, {"threshold": "0.5", "enabled": "false", "ignored": 12}
+    ) == {"threshold": 0.5, "enabled": False}
+    with pytest.raises(ValueError, match="Threshold"):
+        normalize_parameter_values(specs, {"threshold": 2.0})
+
+
+def test_estimator_parameters_are_model_specific():
+    from imswitch.imcommon.algorithms.transforms import (
+        fit_parameter_defaults,
+        fit_parameter_specs,
+        normalize_fit_parameters,
+    )
+
+    assert set(fit_parameter_specs("affine")) == {
+        "residual_threshold",
+        "max_trials",
+    }
+    assert fit_parameter_defaults("affine")["residual_threshold"] == 2.0
+    assert fit_parameter_specs("identity") == {}
+    assert normalize_fit_parameters("identity", {"residual_threshold": 99}) == {}

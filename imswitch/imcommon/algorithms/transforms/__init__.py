@@ -38,10 +38,14 @@ from .estimate import (
     estimate_affine,
     estimator_names,
     estimator_specs,
+    fit_parameter_defaults,
+    fit_parameter_specs,
+    normalize_fit_parameters,
     fit_transform,
 )
 from .io import load, load_h5, load_json, save, save_h5, save_json
 from .model import AcquisitionContext, ResidualStats, SpatialTransform
+from .parameters import ParameterSpec, normalize_parameter_values, parameter_defaults
 from .models import (
     AffineTransform,
     ComposedTransform,
@@ -78,6 +82,12 @@ __all__ = [
     "EstimatorSpec",
     "ModelFit",
     "AffineFit",
+    "fit_parameter_specs",
+    "fit_parameter_defaults",
+    "normalize_fit_parameters",
+    "ParameterSpec",
+    "parameter_defaults",
+    "normalize_parameter_values",
     # persistence
     "save",
     "load",

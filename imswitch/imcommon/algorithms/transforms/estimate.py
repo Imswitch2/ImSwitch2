@@ -22,13 +22,14 @@ Coordinates are this module's ``(row, col)`` convention throughout.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
 from .base import TransformModel, as_points
 from .model import ResidualStats
+from .parameters import ParameterSpec, normalize_parameter_values, parameter_defaults
 from .models.affine import AffineTransform
 from .models.identity import IdentityTransform
 from .models.rotation import Rotation90Transform
@@ -41,18 +42,45 @@ __all__ = [
     "estimator_names",
     "fit_transform",
     "estimate_affine",
+    "fit_parameter_specs",
+    "fit_parameter_defaults",
+    "normalize_fit_parameters",
 ]
 
 
 @dataclass(frozen=True)
 class EstimatorSpec:
-    """One fittable model class, and what it costs to fit."""
+    """One fittable model class, what it costs to fit, and its UI parameters."""
 
     name: str
     label: str
     dof: int
     min_samples: int
     description: str
+    parameter_specs: Mapping[str, ParameterSpec] = field(default_factory=dict)
+
+    def parameter_defaults(self) -> dict[str, Any]:
+        return parameter_defaults(self.parameter_specs)
+
+    def normalize_parameters(self, values: Mapping[str, Any] | None) -> dict[str, Any]:
+        return normalize_parameter_values(self.parameter_specs, values)
+
+
+_RANSAC_PARAMETER_SPECS = {
+    "residual_threshold": ParameterSpec(
+        2.0, float, "Inlier residual threshold (px)",
+        "Maximum point-to-point residual counted as an inlier during robust fitting. "
+        "Decrease it to demand tighter agreement; increase it when localization noise "
+        "is genuinely larger.",
+        minimum=0.001, step=0.1, decimals=3,
+    ),
+    "max_trials": ParameterSpec(
+        500, int, "Maximum RANSAC trials",
+        "Maximum number of random consensus trials. Higher values can help when many "
+        "correspondences are outliers but make fitting slower.",
+        minimum=1, step=50, advanced=True,
+    ),
+}
 
 
 ESTIMATORS: dict[str, EstimatorSpec] = {
@@ -65,6 +93,7 @@ ESTIMATORS: dict[str, EstimatorSpec] = {
             "Rotation, anisotropic scale, shear and translation. The general "
             "case; use it when the two views may differ in aspect or skew."
         ),
+        parameter_specs=_RANSAC_PARAMETER_SPECS,
     ),
     "similarity": EstimatorSpec(
         name="similarity",
@@ -75,6 +104,7 @@ ESTIMATORS: dict[str, EstimatorSpec] = {
             "Rotation, one uniform scale and translation. The right choice for "
             "two detectors that differ in magnification but share square pixels."
         ),
+        parameter_specs=_RANSAC_PARAMETER_SPECS,
     ),
     "rigid": EstimatorSpec(
         name="rigid",
@@ -85,6 +115,7 @@ ESTIMATORS: dict[str, EstimatorSpec] = {
             "Rotation and translation, no scaling. For two views at the same "
             "magnification, where any fitted scale would be noise."
         ),
+        parameter_specs=_RANSAC_PARAMETER_SPECS,
     ),
     "translation": EstimatorSpec(
         name="translation",
@@ -95,6 +126,7 @@ ESTIMATORS: dict[str, EstimatorSpec] = {
             "A pure shift. The most constrained continuous fit, and often the "
             "honest one for two cameras on the same optical path."
         ),
+        parameter_specs=_RANSAC_PARAMETER_SPECS,
     ),
     "rotation90": EstimatorSpec(
         name="rotation90",
@@ -128,6 +160,38 @@ def estimator_specs() -> tuple[EstimatorSpec, ...]:
 def estimator_names() -> tuple[str, ...]:
     """Names accepted by :func:`fit_transform`."""
     return tuple(ESTIMATORS)
+
+
+def fit_parameter_specs(kind: str) -> Mapping[str, ParameterSpec]:
+    """Return the user-facing fit-parameter specs for one estimator."""
+    try:
+        return ESTIMATORS[str(kind)].parameter_specs
+    except KeyError:
+        raise ValueError(
+            f"unknown estimator {kind!r}; known estimators: {sorted(ESTIMATORS)}"
+        ) from None
+
+
+def fit_parameter_defaults(kind: str) -> dict[str, Any]:
+    """Return a fresh fit-parameter mapping for one estimator."""
+    try:
+        return ESTIMATORS[str(kind)].parameter_defaults()
+    except KeyError:
+        raise ValueError(
+            f"unknown estimator {kind!r}; known estimators: {sorted(ESTIMATORS)}"
+        ) from None
+
+
+def normalize_fit_parameters(
+    kind: str, values: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Validate only parameters that belong to the selected transform model."""
+    try:
+        return ESTIMATORS[str(kind)].normalize_parameters(values)
+    except KeyError:
+        raise ValueError(
+            f"unknown estimator {kind!r}; known estimators: {sorted(ESTIMATORS)}"
+        ) from None
 
 
 class ModelFit:

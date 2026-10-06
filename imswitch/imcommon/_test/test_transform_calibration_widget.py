@@ -89,6 +89,20 @@ def test_choosing_a_model_updates_the_hint(widget):
     assert "no scaling" in widget.modelHintLabel.text()
 
 
+def test_localization_and_transform_parameters_are_separate(widget):
+    assert "threshold_rel" in widget.localizationParameters()
+    assert "residual_threshold" not in widget.localizationParameters()
+    assert widget.transformParameters()["residual_threshold"] == 2.0
+    assert widget.transformParameters()["max_trials"] == 500
+
+
+def test_parameter_buttons_follow_strategy_and_model_specs(widget):
+    assert widget.localizationParametersButton.isEnabled()
+    assert widget.transformParametersButton.isEnabled()
+    widget.setSelectedModel("identity")
+    assert not widget.transformParametersButton.isEnabled()
+
+
 def test_unknown_model_is_refused(widget):
     with pytest.raises(ValueError, match="unknown model"):
         widget.setSelectedModel("projective")
@@ -130,6 +144,75 @@ def test_host_can_register_an_independent_correspondence_strategy(widget):
     assert widget.transform.provenance["strategy"] == "test_points"
     assert widget.transform.provenance["correspondence"]["provider"] == "test"
     np.testing.assert_allclose(widget.transform.as_matrix()[:2, 2], [2.0, -3.0])
+
+
+def test_localization_can_be_inspected_before_transform_fit(widget):
+    _load_grid_pair(widget)
+
+    assert widget.runLocalization()
+    assert widget.correspondenceResult is not None
+    assert widget.transform is None
+    assert widget.fitTransformButton.isEnabled()
+    assert widget.visualizeButton.isEnabled()
+    assert "paired points" in widget.localizationStatusLabel.text()
+
+    assert widget.fitTransform()
+    assert widget.transform is not None
+
+
+def test_transform_parameter_change_keeps_localization(widget):
+    _load_grid_pair(widget)
+    assert widget.runLocalization()
+    result = widget.correspondenceResult
+    assert widget.fitTransform()
+
+    params = widget.transformParameters()
+    params["residual_threshold"] = 3.0
+    widget.setTransformParameters(params)
+
+    assert widget.correspondenceResult is result
+    assert widget.transform is None
+    assert widget.fitTransformButton.isEnabled()
+
+
+def test_failed_transform_fit_keeps_localization(widget):
+    from imswitch.imcommon.algorithms.transforms.correspondence import (
+        CorrespondenceResult,
+        CorrespondenceStrategySpec,
+    )
+
+    point = np.array([[5.0, 5.0]])
+    widget.registerCorrespondenceStrategy(
+        CorrespondenceStrategySpec(
+            name="one_pair",
+            label="One pair",
+            description="One synthetic pair",
+            handler=lambda *_args: CorrespondenceResult(point, point + 1.0),
+        ),
+        select=True,
+    )
+    widget.setSourceImage(np.zeros((16, 16)))
+    widget.setTargetImage(np.zeros((16, 16)))
+    widget.setSelectedModel("affine")
+
+    assert widget.runLocalization()
+    result = widget.correspondenceResult
+    assert not widget.fitTransform()
+    assert widget.correspondenceResult is result
+    assert widget.transform is None
+    assert "fit failed" in widget.statusLabel.text().lower()
+
+
+def test_localization_parameter_change_invalidates_both_stages(widget):
+    _load_grid_pair(widget)
+    widget.calibrate()
+    params = widget.localizationParameters()
+    params["threshold_rel"] = 0.3
+    widget.setLocalizationParameters(params)
+
+    assert widget.correspondenceResult is None
+    assert widget.transform is None
+    assert not widget.fitTransformButton.isEnabled()
 
 
 @pytest.mark.parametrize(
@@ -191,6 +274,8 @@ def test_calibration_records_its_provenance_and_context(widget):
 
     transform = widget.transform
     assert transform.provenance["strategy"] == "foci_grid"
+    assert transform.provenance["localization_parameters"]["n_rows"] == 4
+    assert transform.provenance["fit_parameters"]["residual_threshold"] == 2.0
     assert transform.provenance["n_rows"] == 4
     assert transform.source_context.image_shape == (256, 256)
     assert transform.source_context.extra["file"] == "moving.tif"
@@ -254,9 +339,9 @@ def test_clear_resets_everything(widget):
 
 
 def test_parameter_validation_rejects_nonsense(widget):
-    with pytest.raises(ValueError, match="threshold_rel"):
+    with pytest.raises(ValueError, match="Focus threshold"):
         widget._normalizeParameters({**widget._parameters, "threshold_rel": 4.0})
-    with pytest.raises(ValueError, match="max_relative_tilt_deg"):
+    with pytest.raises(ValueError, match="Maximum relative grid tilt"):
         widget._normalizeParameters(
             {**widget._parameters, "max_relative_tilt_deg": 70.0}
         )

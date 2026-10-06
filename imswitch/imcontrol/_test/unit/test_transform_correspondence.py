@@ -55,3 +55,12 @@ def test_ulenses_strategy_refuses_different_grid_shapes(monkeypatch):
     spec = module.ulenses_grid_strategy_spec()
     with pytest.raises(ValueError, match="disagree"):
         spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
+
+
+def test_ulenses_strategy_exposes_typed_localization_parameters():
+    spec = module.ulenses_grid_strategy_spec()
+
+    assert "xp_guess_px" in spec.parameter_specs
+    assert spec.parameter_specs["xp_guess_px"].label == "X period guess (px)"
+    assert "residual_threshold" not in spec.default_parameters
+    assert spec.default_parameters["use_ulenses_widget_guesses"] is True

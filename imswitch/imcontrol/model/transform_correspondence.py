@@ -6,6 +6,7 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 
+from imswitch.imcommon.algorithms.transforms import ParameterSpec
 from imswitch.imcommon.algorithms.transforms.correspondence import (
     CorrespondenceResult,
     CorrespondenceStrategySpec,
@@ -144,14 +145,51 @@ def ulenses_grid_strategy_spec(
             "regular-grid matcher."
         ),
         handler=run,
-        default_parameters={
-            "use_ulenses_widget_guesses": True,
-            "xp_guess_px": 10.0,
-            "yp_guess_px": 10.0,
-            "threshold_rel": 0.2,
-            "refine_radius": 5,
-            "gaussian_sigma": 1.0,
-            "max_relative_tilt_deg": 30.0,
+        parameter_specs={
+            "use_ulenses_widget_guesses": ParameterSpec(
+                True, bool, "Use uLenses widget period guesses",
+                "When enabled, initialize the periodic localizer from the current "
+                "uLenses widget X/Y period values. Disable it to use the explicit "
+                "period guesses below.",
+            ),
+            "xp_guess_px": ParameterSpec(
+                10.0, float, "X period guess (px)",
+                "Initial horizontal period supplied to the current axis-aligned "
+                "uLens periodic localizer. Used only when widget guesses are disabled "
+                "or unavailable.",
+                minimum=0.001, step=0.5, decimals=3,
+            ),
+            "yp_guess_px": ParameterSpec(
+                10.0, float, "Y period guess (px)",
+                "Initial vertical period supplied to the current axis-aligned "
+                "uLens periodic localizer. Used only when widget guesses are disabled "
+                "or unavailable.",
+                minimum=0.001, step=0.5, decimals=3,
+            ),
+            "threshold_rel": ParameterSpec(
+                0.2, float, "Focus threshold",
+                "Relative peak threshold used by the individual-focus matcher after "
+                "the periodic grid geometry has been estimated. Increase it to reject "
+                "weak false detections; decrease it to include dim foci.",
+                minimum=0.0, maximum=1.0, step=0.02, decimals=2,
+            ),
+            "refine_radius": ParameterSpec(
+                5, int, "Center refinement radius (px)",
+                "Radius used for sub-pixel refinement of each matched focus center.",
+                minimum=0, step=1, advanced=True,
+            ),
+            "gaussian_sigma": ParameterSpec(
+                1.0, float, "Focus detection smoothing (px)",
+                "Gaussian smoothing used by the individual-focus detection stage.",
+                minimum=0.0, step=0.1, decimals=2, advanced=True,
+            ),
+            "max_relative_tilt_deg": ParameterSpec(
+                30.0, float, "Maximum relative grid tilt (deg)",
+                "Safety limit used by the current focus-ordering matcher. This does "
+                "not make the uLens periodic localizer itself rotation-aware; that is "
+                "the next algorithmic pass.",
+                minimum=0.1, maximum=45.0, step=1.0, decimals=1, advanced=True,
+            ),
         },
         normalize_parameters=_normalize,
     )

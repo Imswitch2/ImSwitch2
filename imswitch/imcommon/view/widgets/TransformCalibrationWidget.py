@@ -24,11 +24,16 @@ from imswitch.imcommon.algorithms.transforms import (
     AcquisitionContext,
     SpatialTransform,
     estimator_specs,
+    fit_parameter_defaults,
+    fit_parameter_specs,
+    normalize_fit_parameters,
+    ParameterSpec,
     fit_transform,
     load,
     save,
 )
 from imswitch.imcommon.algorithms.transforms.correspondence import (
+    CorrespondenceResult,
     CorrespondenceStrategySpec,
     builtin_correspondence_specs,
 )
@@ -46,8 +51,11 @@ DEFAULT_PARAMETERS: dict[str, Any] = {
     "threshold_rel": 0.2,
     "refine_radius": 5,
     "gaussian_sigma": 1.0,
-    "residual_threshold": 2.0,
     "max_relative_tilt_deg": 30.0,
+}
+DEFAULT_TRANSFORM_PARAMETERS: dict[str, Any] = {
+    "residual_threshold": 2.0,
+    "max_trials": 500,
 }
 
 IMAGE_FILTER = "Images (*.tif *.tiff *.npy *.png *.jpg *.jpeg *.h5 *.hdf5);;All files (*)"
@@ -102,10 +110,205 @@ def _first_h5_image(path: Path) -> np.ndarray:
     return found[0]
 
 
+class _ParameterEditorDialog(QtWidgets.QDialog):
+    """Small typed editor driven by transform-backend ``ParameterSpec`` values."""
+
+    def __init__(
+        self,
+        specs: dict[str, ParameterSpec],
+        values: dict[str, Any],
+        *,
+        title: str,
+        intro: str,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(620, 620)
+        self.setMinimumSize(500, 420)
+        self._specs = dict(specs)
+        self._editors: dict[str, QtWidgets.QWidget] = {}
+
+        root = QtWidgets.QVBoxLayout(self)
+        intro_label = QtWidgets.QLabel(intro)
+        intro_label.setWordWrap(True)
+        root.addWidget(intro_label)
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(4, 4, 4, 4)
+        content_layout.setSpacing(8)
+        scroll.setWidget(content)
+        root.addWidget(scroll, 1)
+
+        basic = [(name, spec) for name, spec in self._specs.items() if not spec.advanced]
+        advanced = [(name, spec) for name, spec in self._specs.items() if spec.advanced]
+        for name, spec in basic:
+            content_layout.addWidget(self._parameterCard(name, spec, values))
+
+        self._advancedButton = None
+        self._advancedWidget = None
+        if advanced:
+            self._advancedButton = QtWidgets.QToolButton()
+            self._advancedButton.setText("Advanced parameters")
+            self._advancedButton.setCheckable(True)
+            self._advancedButton.setChecked(False)
+            self._advancedButton.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+            self._advancedButton.setArrowType(QtCore.Qt.RightArrow)
+            content_layout.addWidget(self._advancedButton)
+
+            self._advancedWidget = QtWidgets.QWidget()
+            advanced_layout = QtWidgets.QVBoxLayout(self._advancedWidget)
+            advanced_layout.setContentsMargins(12, 0, 0, 0)
+            advanced_layout.setSpacing(8)
+            for name, spec in advanced:
+                advanced_layout.addWidget(self._parameterCard(name, spec, values))
+            self._advancedWidget.setVisible(False)
+            content_layout.addWidget(self._advancedWidget)
+            self._advancedButton.toggled.connect(self._toggleAdvanced)
+
+        content_layout.addStretch(1)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        defaults_button = buttons.addButton(
+            "Restore defaults", QtWidgets.QDialogButtonBox.ResetRole
+        )
+        defaults_button.clicked.connect(self._restoreDefaults)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    @classmethod
+    def edit(
+        cls,
+        parent: QtWidgets.QWidget,
+        specs: dict[str, ParameterSpec],
+        values: dict[str, Any],
+        *,
+        title: str,
+        intro: str,
+    ) -> dict[str, Any] | None:
+        dialog = cls(specs, values, title=title, intro=intro, parent=parent)
+        result = dialog.exec_() if hasattr(dialog, "exec_") else dialog.exec()
+        if result != QtWidgets.QDialog.Accepted:
+            return None
+        return dialog.values()
+
+    def _parameterCard(
+        self,
+        name: str,
+        spec: ParameterSpec,
+        values: dict[str, Any],
+    ) -> QtWidgets.QWidget:
+        card = QtWidgets.QFrame()
+        layout = QtWidgets.QVBoxLayout(card)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(3)
+
+        top = QtWidgets.QHBoxLayout()
+        label = QtWidgets.QLabel(spec.label)
+        label.setToolTip(spec.description)
+        top.addWidget(label)
+        top.addStretch(1)
+        editor = self._makeEditor(spec, values.get(name, spec.default))
+        editor.setToolTip(spec.description)
+        top.addWidget(editor)
+        layout.addLayout(top)
+
+        if spec.description:
+            description = QtWidgets.QLabel(spec.description)
+            description.setWordWrap(True)
+            description.setEnabled(False)
+            layout.addWidget(description)
+
+        self._editors[name] = editor
+        return card
+
+    def _makeEditor(self, spec: ParameterSpec, value: Any) -> QtWidgets.QWidget:
+        if spec.choices is not None:
+            editor = QtWidgets.QComboBox()
+            for choice in spec.choices:
+                editor.addItem(str(choice), choice)
+            index = editor.findData(value)
+            if index >= 0:
+                editor.setCurrentIndex(index)
+            return editor
+        if spec.value_type is bool:
+            editor = QtWidgets.QCheckBox()
+            editor.setChecked(bool(value))
+            return editor
+        if spec.value_type is int:
+            editor = QtWidgets.QSpinBox()
+            editor.setRange(
+                int(spec.minimum) if spec.minimum is not None else -2_000_000_000,
+                int(spec.maximum) if spec.maximum is not None else 2_000_000_000,
+            )
+            editor.setSingleStep(int(spec.step) if spec.step is not None else 1)
+            editor.setValue(int(value))
+            return editor
+        if spec.value_type is float:
+            editor = QtWidgets.QDoubleSpinBox()
+            editor.setDecimals(spec.decimals if spec.decimals is not None else 6)
+            editor.setRange(
+                float(spec.minimum) if spec.minimum is not None else -1e12,
+                float(spec.maximum) if spec.maximum is not None else 1e12,
+            )
+            editor.setSingleStep(float(spec.step) if spec.step is not None else 0.1)
+            editor.setValue(float(value))
+            return editor
+        editor = QtWidgets.QLineEdit(str(value))
+        return editor
+
+    def _editorValue(self, editor: QtWidgets.QWidget, spec: ParameterSpec) -> Any:
+        if isinstance(editor, QtWidgets.QComboBox):
+            return editor.currentData()
+        if isinstance(editor, QtWidgets.QCheckBox):
+            return editor.isChecked()
+        if isinstance(editor, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+            return editor.value()
+        if isinstance(editor, QtWidgets.QLineEdit):
+            return editor.text()
+        raise TypeError(f"unsupported parameter editor {type(editor).__name__}")
+
+    def values(self) -> dict[str, Any]:
+        return {
+            name: spec.normalize(self._editorValue(self._editors[name], spec))
+            for name, spec in self._specs.items()
+        }
+
+    def _restoreDefaults(self) -> None:
+        for name, spec in self._specs.items():
+            editor = self._editors[name]
+            value = spec.default
+            if isinstance(editor, QtWidgets.QComboBox):
+                index = editor.findData(value)
+                if index >= 0:
+                    editor.setCurrentIndex(index)
+            elif isinstance(editor, QtWidgets.QCheckBox):
+                editor.setChecked(bool(value))
+            elif isinstance(editor, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+                editor.setValue(value)
+            elif isinstance(editor, QtWidgets.QLineEdit):
+                editor.setText(str(value))
+
+    def _toggleAdvanced(self, checked: bool) -> None:
+        if self._advancedWidget is not None:
+            self._advancedWidget.setVisible(bool(checked))
+        if self._advancedButton is not None:
+            self._advancedButton.setArrowType(
+                QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow
+            )
+
+
 class TransformCalibrationWidget(QtWidgets.QWidget):
     """Fit a selectable transform model from selectable image correspondence."""
 
     sigCalibrated = QtCore.Signal(object)
+    sigLocalizationChanged = QtCore.Signal(object)
     sigTransformChanged = QtCore.Signal(object)
     sigSnapSourceRequested = QtCore.Signal()
     sigSnapTargetRequested = QtCore.Signal()
@@ -123,6 +326,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self._target_path: Path | None = None
         self._source_context = AcquisitionContext()
         self._target_context = AcquisitionContext()
+        self._correspondence_result: CorrespondenceResult | None = None
         self._transform: SpatialTransform | None = None
         self._transform_path: Path | None = None
         self._source_points: np.ndarray | None = None
@@ -131,7 +335,12 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
 
         self._correspondence_specs: dict[str, CorrespondenceStrategySpec] = {}
         self._strategy_parameters: dict[str, dict[str, Any]] = {}
-        self._parameters: dict[str, Any] = {}
+        self._parameters: dict[str, Any] = {}  # compatibility alias: localization only
+        self._model_specs = {spec.name: spec for spec in estimator_specs()}
+        self._model_parameters = {
+            name: fit_parameter_defaults(name) for name in self._model_specs
+        }
+        self._fit_parameters: dict[str, Any] = {}
 
         self._buildUi()
         for spec in builtin_correspondence_specs():
@@ -155,6 +364,11 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.correspondenceHintLabel = QtWidgets.QLabel()
         self.correspondenceHintLabel.setWordWrap(True)
         self.correspondenceHintLabel.setEnabled(False)
+        self.localizationParametersButton = guitools.BetterPushButton(
+            "Localization parameters..."
+        )
+        # Compatibility alias for Step-0 callers/tests.
+        self.editParametersButton = self.localizationParametersButton
 
         self.modelCombo = guitools.BetterComboBox()
         for spec in estimator_specs():
@@ -168,14 +382,21 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.modelHintLabel = QtWidgets.QLabel()
         self.modelHintLabel.setWordWrap(True)
         self.modelHintLabel.setEnabled(False)
+        self.transformParametersButton = guitools.BetterPushButton(
+            "Fit parameters..."
+        )
 
-        self.editParametersButton = guitools.BetterPushButton("Edit parameters")
-        self.calibrateButton = guitools.BetterPushButton("Calibrate")
-        self.visualizeButton = guitools.BetterPushButton("Visualize")
+        self.runLocalizationButton = guitools.BetterPushButton("Run localization")
+        # Compatibility alias: calibration used to be one combined action.
+        self.calibrateButton = self.runLocalizationButton
+        self.fitTransformButton = guitools.BetterPushButton("Fit transform")
+        self.visualizeButton = guitools.BetterPushButton("Inspect result")
         self.loadTransformButton = guitools.BetterPushButton("Load")
         self.saveTransformButton = guitools.BetterPushButton("Save")
         self.clearButton = guitools.BetterPushButton("Clear")
 
+        self.localizationStatusLabel = QtWidgets.QLabel("Localization: not run")
+        self.localizationStatusLabel.setWordWrap(True)
         self.statusLabel = QtWidgets.QLabel("No transform")
         self.statusLabel.setWordWrap(True)
         self.residualLabel = QtWidgets.QLabel("Residuals: n/a")
@@ -198,20 +419,24 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         correspondence = QtWidgets.QHBoxLayout()
         correspondence.addWidget(QtWidgets.QLabel("Localization / correspondence:"))
         correspondence.addWidget(self.correspondenceCombo, 1)
+        correspondence.addWidget(self.localizationParametersButton)
 
         model = QtWidgets.QHBoxLayout()
         model.addWidget(QtWidgets.QLabel("Transform model:"))
         model.addWidget(self.modelCombo, 1)
+        model.addWidget(self.transformParametersButton)
 
-        actions = QtWidgets.QGridLayout()
-        actions.addWidget(self.calibrateButton, 0, 0)
-        actions.addWidget(self.visualizeButton, 0, 1)
-        actions.addWidget(self.editParametersButton, 0, 2)
-        actions.addWidget(self.loadTransformButton, 1, 0)
-        actions.addWidget(self.saveTransformButton, 1, 1)
-        actions.addWidget(self.clearButton, 1, 2)
-        for column in range(3):
-            actions.setColumnStretch(column, 1)
+        actions = QtWidgets.QHBoxLayout()
+        actions.addWidget(self.runLocalizationButton)
+        actions.addWidget(self.fitTransformButton)
+        actions.addWidget(self.visualizeButton)
+        actions.addStretch(1)
+
+        persistence = QtWidgets.QHBoxLayout()
+        persistence.addWidget(self.loadTransformButton)
+        persistence.addWidget(self.saveTransformButton)
+        persistence.addWidget(self.clearButton)
+        persistence.addStretch(1)
 
         self.applyControls = QtWidgets.QWidget()
         apply_layout = QtWidgets.QHBoxLayout(self.applyControls)
@@ -230,11 +455,15 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.addLayout(images)
+        layout.addSpacing(6)
         layout.addLayout(correspondence)
         layout.addWidget(self.correspondenceHintLabel)
+        layout.addWidget(self.localizationStatusLabel)
+        layout.addSpacing(6)
         layout.addLayout(model)
         layout.addWidget(self.modelHintLabel)
         layout.addLayout(actions)
+        layout.addLayout(persistence)
         layout.addWidget(self.applyControls)
         layout.addWidget(self.statusLabel)
         layout.addWidget(self.residualLabel)
@@ -253,8 +482,12 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             self._correspondenceChanged
         )
         self.modelCombo.currentIndexChanged.connect(self._modelChanged)
-        self.editParametersButton.clicked.connect(self.editParameters)
-        self.calibrateButton.clicked.connect(self.calibrate)
+        self.localizationParametersButton.clicked.connect(
+            self.editLocalizationParameters
+        )
+        self.transformParametersButton.clicked.connect(self.editTransformParameters)
+        self.runLocalizationButton.clicked.connect(self.runLocalization)
+        self.fitTransformButton.clicked.connect(self.fitTransform)
         self.visualizeButton.clicked.connect(self.visualize)
         self.loadTransformButton.clicked.connect(self.loadTransform)
         self.saveTransformButton.clicked.connect(self.saveTransform)
@@ -283,7 +516,6 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         values = dict(spec.default_parameters)
         if parameters:
             values.update(parameters)
-        values.setdefault("residual_threshold", 2.0)
 
         existing = self.correspondenceCombo.findData(spec.name)
         if existing >= 0:
@@ -323,6 +555,12 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             return
         self._parameters = self._strategy_parameters[name]
         self.correspondenceHintLabel.setText(spec.description)
+        self.localizationParametersButton.setEnabled(
+            bool(spec.parameter_specs or self._parameters)
+        )
+        self._invalidateLocalization(
+            f"Localization: not run for {spec.label}", emit=True
+        )
 
     def selectedModel(self) -> str:
         return str(self.modelCombo.currentData())
@@ -337,10 +575,12 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.modelCombo.setCurrentIndex(index)
 
     def _modelChanged(self) -> None:
-        spec = next(
-            spec for spec in estimator_specs() if spec.name == self.selectedModel()
-        )
+        name = self.selectedModel()
+        spec = self._model_specs[name]
+        self._fit_parameters = self._model_parameters[name]
         self.modelHintLabel.setText(spec.description)
+        self.transformParametersButton.setEnabled(bool(spec.parameter_specs))
+        self._invalidateTransform(emit=True)
 
     # -- host-integration seams ------------------------------------------
 
@@ -394,17 +634,48 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         return self._transform
 
     @property
+    def correspondenceResult(self) -> CorrespondenceResult | None:
+        """Latest localization/correspondence result, independent of any fit."""
+        return self._correspondence_result
+
+    @property
     def currentTransformPath(self) -> Path | None:
         return self._transform_path
 
+    def localizationParameters(self) -> dict[str, Any]:
+        return dict(self._parameters)
+
+    def transformParameters(self) -> dict[str, Any]:
+        return dict(self._fit_parameters)
+
+    def setLocalizationParameters(self, values: dict[str, Any]) -> None:
+        """Validate parameters for the selected localizer and invalidate its result."""
+        strategy = self._correspondence_specs[self.selectedCorrespondence()]
+        normalized = strategy.normalize(values)
+        if normalized == self._parameters:
+            return
+        self._parameters = normalized
+        self._strategy_parameters[self.selectedCorrespondence()] = normalized
+        self._invalidateLocalization("Localization: parameters changed", emit=True)
+
+    def setTransformParameters(self, values: dict[str, Any]) -> None:
+        """Validate fit parameters while preserving the current localization."""
+        model = self.selectedModel()
+        normalized = normalize_fit_parameters(model, values)
+        if normalized == self._fit_parameters:
+            return
+        self._fit_parameters = normalized
+        self._model_parameters[model] = normalized
+        self._invalidateTransform(emit=True)
+
     def _updateEnabledState(self) -> None:
         has_images = self._source_image is not None and self._target_image is not None
+        has_localization = self._correspondence_result is not None
         has_transform = self._transform is not None
-        self.calibrateButton.setEnabled(has_images)
+        self.runLocalizationButton.setEnabled(has_images)
+        self.fitTransformButton.setEnabled(has_localization)
         self.saveTransformButton.setEnabled(has_transform)
-        self.visualizeButton.setEnabled(
-            has_transform and self._source_points is not None
-        )
+        self.visualizeButton.setEnabled(has_localization)
         has_target = self.applyTargetCombo.count() > 0
         self.applyCheck.setEnabled(has_transform and has_target)
         self.applyTargetCombo.setEnabled(has_transform and has_target)
@@ -425,9 +696,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.sourceLabel.setText(
             f"Moving: {name or 'in memory'}  {self._source_image.shape}"
         )
-        self._source_points = None
-        self._target_points = None
-        self._updateEnabledState()
+        self._invalidateLocalization("Localization: moving image changed", emit=True)
 
     def setTargetImage(
         self,
@@ -444,9 +713,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.targetLabel.setText(
             f"Reference: {name or 'in memory'}  {self._target_image.shape}"
         )
-        self._source_points = None
-        self._target_points = None
-        self._updateEnabledState()
+        self._invalidateLocalization("Localization: reference image changed", emit=True)
 
     # -- actions ----------------------------------------------------------
 
@@ -467,59 +734,129 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         setter(image, Path(path).name)
 
     def editParameters(self) -> None:
-        updated = guitools.JsonEditorDialog.edit_params(
+        """Compatibility alias for editing the selected localization strategy."""
+        self.editLocalizationParameters()
+
+    def editLocalizationParameters(self) -> None:
+        strategy = self._correspondence_specs[self.selectedCorrespondence()]
+        if strategy.parameter_specs:
+            updated = _ParameterEditorDialog.edit(
+                self,
+                dict(strategy.parameter_specs),
+                self._parameters,
+                title=f"{strategy.label} localization parameters",
+                intro=(
+                    "These parameters affect localization/correspondence only. "
+                    "Changing them invalidates the current localization and transform fit."
+                ),
+            )
+        elif self._parameters:
+            # Compatibility path for external strategies registered before the
+            # typed parameter contract existed.
+            updated = guitools.JsonEditorDialog.edit_params(
+                self,
+                self._parameters,
+                title=f"Edit {strategy.label} localization parameters",
+            )
+        else:
+            return
+        if updated is None:
+            return
+        try:
+            self.setLocalizationParameters(updated)
+        except (KeyError, TypeError, ValueError) as error:
+            self._warn("Invalid localization parameters", str(error))
+            return
+
+    def editTransformParameters(self) -> None:
+        model = self.selectedModel()
+        specs = dict(fit_parameter_specs(model))
+        if not specs:
+            return
+        updated = _ParameterEditorDialog.edit(
             self,
-            self._parameters,
-            title=f"Edit {self.selectedCorrespondence()} calibration parameters",
+            specs,
+            self._fit_parameters,
+            title=f"{self._model_specs[model].label} fit parameters",
+            intro=(
+                "These parameters affect transform fitting only. The current localization "
+                "is kept, so you can refit without detecting/matching the points again."
+            ),
         )
         if updated is None:
             return
         try:
-            self._parameters = self._normalizeParameters(updated)
-            self._strategy_parameters[self.selectedCorrespondence()] = self._parameters
-        except (KeyError, TypeError, ValueError) as error:
-            self._warn("Invalid parameters", str(error))
-
-    def calibrate(self) -> None:
-        if self._source_image is None or self._target_image is None:
+            self.setTransformParameters(updated)
+        except (TypeError, ValueError) as error:
+            self._warn("Invalid transform parameters", str(error))
             return
+
+    def runLocalization(self) -> bool:
+        if self._source_image is None or self._target_image is None:
+            return False
 
         strategy_name = self.selectedCorrespondence()
         strategy = self._correspondence_specs[strategy_name]
         try:
             params = self._normalizeParameters(self._parameters)
             result = strategy.run(self._source_image, self._target_image, params)
-            source_points = result.source_points
-            target_points = result.target_points
-            fit = fit_transform(
-                self.selectedModel(),
-                source_points,
-                target_points,
-                residual_threshold=params["residual_threshold"],
-                input_shape=tuple(self._source_image.shape),
-            )
         except Exception as error:
-            self._setStatus(f"Calibration failed: {error}")
-            self._transform = None
-            self._transform_path = None
+            self._correspondence_result = None
             self._source_points = None
             self._target_points = None
-            self.residualLabel.setText("Residuals: n/a")
-            self.matrixView.clear()
+            self.localizationStatusLabel.setText(f"Localization failed: {error}")
+            self._invalidateTransform(emit=True)
+            self._setStatus(f"Localization failed: {error}")
             self._updateEnabledState()
-            self.sigTransformChanged.emit(None)
-            return
+            self.sigLocalizationChanged.emit(None)
+            return False
 
-        self._source_points = source_points
-        self._target_points = target_points
+        self._parameters = params
+        self._strategy_parameters[strategy_name] = params
+        self._correspondence_result = result
+        self._source_points = result.source_points
+        self._target_points = result.target_points
+        label = strategy.label
+        self.localizationStatusLabel.setText(
+            f"Localization: {result.summary()} with {label}"
+        )
+        self._invalidateTransform(emit=True)
+        self._updateEnabledState()
+        self.sigLocalizationChanged.emit(result)
+        return True
+
+    def fitTransform(self) -> bool:
+        if self._correspondence_result is None or self._source_image is None:
+            return False
+
+        model = self.selectedModel()
+        try:
+            fit_params = normalize_fit_parameters(model, self._fit_parameters)
+            fit = fit_transform(
+                model,
+                self._correspondence_result.source_points,
+                self._correspondence_result.target_points,
+                input_shape=tuple(self._source_image.shape),
+                **fit_params,
+            )
+        except Exception as error:
+            self._invalidateTransform(emit=True)
+            self._setStatus(f"Transform fit failed: {error}")
+            self._updateEnabledState()
+            return False
+
+        self._fit_parameters = fit_params
+        self._model_parameters[model] = fit_params
+        result = self._correspondence_result
         correspondence_metadata = dict(result.metadata)
         provenance = {
-            "strategy": strategy_name,
+            "strategy": self.selectedCorrespondence(),
+            "localization_parameters": dict(self._parameters),
             "correspondence": correspondence_metadata,
             "estimator": fit.estimator,
+            "fit_parameters": dict(fit_params),
         }
-        # Preserve the compact Step-0 provenance keys for compatibility while
-        # making the full strategy metadata available under "correspondence".
+        # Preserve compact Step-0 provenance keys for compatibility.
         provenance.update(correspondence_metadata)
 
         self._transform = SpatialTransform(
@@ -534,9 +871,16 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         )
         self._transform_path = None
 
-        self._showTransform("Calibrated")
+        self._showTransform("Fitted")
         self.sigCalibrated.emit(self._transform)
         self.sigTransformChanged.emit(self._transform)
+        return True
+
+    def calibrate(self) -> bool:
+        """Backward-compatible one-shot localization + transform fit."""
+        if not self.runLocalization():
+            return False
+        return self.fitTransform()
 
     def setTransform(
         self,
@@ -546,10 +890,16 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         prefix: str = "Loaded",
     ) -> None:
         """Install a transform supplied by a host without using a file dialog."""
-        self._transform = transform
-        self._transform_path = None if path is None else Path(path)
+        self._correspondence_result = None
         self._source_points = None
         self._target_points = None
+        self.localizationStatusLabel.setText(
+            "Localization: not available for loaded transform"
+            if transform is not None
+            else "Localization: not run"
+        )
+        self._transform = transform
+        self._transform_path = None if path is None else Path(path)
         if transform is None:
             self._setStatus("No transform")
             self.residualLabel.setText("Residuals: n/a")
@@ -557,6 +907,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         else:
             self._showTransform(prefix)
         self._updateEnabledState()
+        self.sigLocalizationChanged.emit(None)
         self.sigTransformChanged.emit(transform)
 
     def loadTransform(self) -> None:
@@ -608,21 +959,22 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
 
     def clear(self) -> None:
         self.setApplyChecked(False)
-        self._transform = None
-        self._transform_path = None
+        self._correspondence_result = None
         self._source_points = None
         self._target_points = None
+        self.localizationStatusLabel.setText("Localization: not run")
+        self._transform = None
+        self._transform_path = None
         self._setStatus("No transform")
         self.residualLabel.setText("Residuals: n/a")
         self.matrixView.clear()
         self._updateEnabledState()
+        self.sigLocalizationChanged.emit(None)
         self.sigTransformChanged.emit(None)
 
     def visualize(self) -> None:
         if (
-            self._transform is None
-            or self._source_points is None
-            or self._target_points is None
+            self._correspondence_result is None
             or self._source_image is None
             or self._target_image is None
         ):
@@ -638,6 +990,28 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         dialog.show()
 
     # -- helpers ----------------------------------------------------------
+
+    def _invalidateLocalization(self, text: str, *, emit: bool) -> None:
+        had_result = self._correspondence_result is not None
+        self._correspondence_result = None
+        self._source_points = None
+        self._target_points = None
+        self.localizationStatusLabel.setText(text)
+        self._invalidateTransform(emit=emit)
+        self._updateEnabledState()
+        if emit and had_result:
+            self.sigLocalizationChanged.emit(None)
+
+    def _invalidateTransform(self, *, emit: bool) -> None:
+        had_transform = self._transform is not None
+        self._transform = None
+        self._transform_path = None
+        self._setStatus("No transform fit")
+        self.residualLabel.setText("Residuals: n/a")
+        self.matrixView.clear()
+        self._updateEnabledState()
+        if emit and had_transform:
+            self.sigTransformChanged.emit(None)
 
     def _showTransform(self, prefix: str) -> None:
         assert self._transform is not None
@@ -679,25 +1053,28 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         QtWidgets.QMessageBox.warning(self, title, text)
 
     def _normalizeParameters(self, params: dict) -> dict[str, Any]:
+        """Compatibility helper: normalize localization parameters only."""
         strategy = self._correspondence_specs[self.selectedCorrespondence()]
-        strategy_values = strategy.normalize(params)
-        normalized = dict(params)
-        normalized.update(strategy_values)
-        normalized["residual_threshold"] = float(params["residual_threshold"])
-        if normalized["residual_threshold"] <= 0:
-            raise ValueError("residual_threshold must be greater than 0")
-        return normalized
+        return strategy.normalize(params)
+
+    def _normalizeTransformParameters(self, params: dict) -> dict[str, Any]:
+        return normalize_fit_parameters(self.selectedModel(), params)
 
     def _buildVisualization(self) -> QtWidgets.QDialog:
         figure_canvas = _figure_canvas()
         from matplotlib.figure import Figure
 
-        assert self._transform is not None
+        assert self._correspondence_result is not None
         assert self._source_points is not None and self._target_points is not None
 
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Transform calibration")
-        dialog.resize(1000, 540)
+        dialog.setWindowTitle("Transform calibration result")
+        dialog.resize(1100, 620)
+        dialog.setWindowFlags(
+            dialog.windowFlags()
+            | QtCore.Qt.WindowMinimizeButtonHint
+            | QtCore.Qt.WindowMaximizeButtonHint
+        )
 
         figure = Figure(figsize=(10, 5), dpi=100)
         canvas = figure_canvas(figure)
@@ -709,35 +1086,43 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         source_axis.scatter(
             self._source_points[:, 1],
             self._source_points[:, 0],
-            s=30,
-            facecolors="none",
-            edgecolors="cyan",
-            linewidths=1.0,
-            label="detected (moving)",
+            s=34,
+            marker="+",
+            linewidths=1.2,
+            label="matched points (moving)",
         )
-        _format_axis(source_axis, self._source_image, "Moving")
+        _format_axis(source_axis, self._source_image, "Moving localization")
 
-        mapped = self._transform.map_points(self._source_points)
         target_axis.imshow(self._target_image, cmap="gray")
         target_axis.scatter(
             self._target_points[:, 1],
             self._target_points[:, 0],
             s=44,
             facecolors="none",
-            edgecolors="lime",
             linewidths=1.0,
-            label="detected (reference)",
+            label="matched points (reference)",
         )
-        target_axis.scatter(
-            mapped[:, 1],
-            mapped[:, 0],
-            s=12,
-            marker="x",
-            color="magenta",
-            linewidths=0.9,
-            label="moving, transformed",
-        )
-        _format_axis(target_axis, self._target_image, "Reference")
+        if self._transform is not None:
+            mapped = self._transform.map_points(self._source_points)
+            target_axis.scatter(
+                mapped[:, 1],
+                mapped[:, 0],
+                s=18,
+                marker="x",
+                linewidths=0.9,
+                label="moving after transform",
+            )
+            for reference, predicted in zip(self._target_points, mapped):
+                target_axis.plot(
+                    [reference[1], predicted[1]],
+                    [reference[0], predicted[0]],
+                    linewidth=0.7,
+                    alpha=0.55,
+                )
+            target_title = "Reference + transform residuals"
+        else:
+            target_title = "Reference localization"
+        _format_axis(target_axis, self._target_image, target_title)
         figure.tight_layout()
         canvas.draw()
         return dialog

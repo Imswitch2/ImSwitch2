@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 
+from ..parameters import ParameterSpec, normalize_parameter_values, parameter_defaults
 from .foci_grid import find_grid_correspondence
 
 __all__ = [
@@ -46,6 +47,17 @@ class CorrespondenceResult:
         object.__setattr__(self, "source_points", source)
         object.__setattr__(self, "target_points", target)
 
+    @property
+    def pair_count(self) -> int:
+        return int(self.source_points.shape[0])
+
+    def summary(self) -> str:
+        rows = self.metadata.get("n_rows")
+        cols = self.metadata.get("n_cols")
+        if rows is not None and cols is not None:
+            return f"{self.pair_count} paired points · {int(rows)}x{int(cols)} grid"
+        return f"{self.pair_count} paired points"
+
 
 CorrespondenceHandler = Callable[[np.ndarray, np.ndarray, Mapping[str, Any]], CorrespondenceResult]
 ParameterNormalizer = Callable[[Mapping[str, Any]], dict[str, Any]]
@@ -53,17 +65,33 @@ ParameterNormalizer = Callable[[Mapping[str, Any]], dict[str, Any]]
 
 @dataclass(frozen=True)
 class CorrespondenceStrategySpec:
-    """One selectable way of obtaining paired points from two images."""
+    """One selectable way of obtaining paired points from two images.
+
+    ``parameter_specs`` is the authoritative description of the localization
+    controls. ``default_parameters`` remains available for compatibility with
+    the first transform-calibration pass and host strategies written against
+    it; when specs are supplied their defaults are merged automatically.
+    """
 
     name: str
     label: str
     description: str
     handler: CorrespondenceHandler
+    parameter_specs: Mapping[str, ParameterSpec] = field(default_factory=dict)
     default_parameters: Mapping[str, Any] = field(default_factory=dict)
     normalize_parameters: ParameterNormalizer | None = None
 
+    def __post_init__(self) -> None:
+        defaults = parameter_defaults(self.parameter_specs)
+        defaults.update(dict(self.default_parameters))
+        object.__setattr__(self, "default_parameters", defaults)
+
     def normalize(self, parameters: Mapping[str, Any]) -> dict[str, Any]:
-        values = dict(parameters)
+        values = (
+            normalize_parameter_values(self.parameter_specs, parameters)
+            if self.parameter_specs
+            else dict(parameters)
+        )
         if self.normalize_parameters is not None:
             values = self.normalize_parameters(values)
         return values
@@ -159,14 +187,52 @@ def builtin_correspondence_specs() -> tuple[CorrespondenceStrategySpec, ...]:
                 "order the grids consistently, and pair corresponding sites."
             ),
             handler=_foci_grid_strategy,
-            default_parameters={
-                "n_rows": 10,
-                "n_cols": 10,
-                "min_distance": 10,
-                "threshold_rel": 0.2,
-                "refine_radius": 5,
-                "gaussian_sigma": 1.0,
-                "max_relative_tilt_deg": 30.0,
+            parameter_specs={
+                "n_rows": ParameterSpec(
+                    10, int, "Grid rows",
+                    "Number of focus rows expected in each image. The current "
+                    "grid matcher requires exactly rows × columns detections.",
+                    minimum=1, step=1,
+                ),
+                "n_cols": ParameterSpec(
+                    10, int, "Grid columns",
+                    "Number of focus columns expected in each image.",
+                    minimum=1, step=1,
+                ),
+                "min_distance": ParameterSpec(
+                    10, int, "Minimum focus distance (px)",
+                    "Minimum separation used by peak detection. Increase it when "
+                    "one focus is detected more than once; decrease it when valid "
+                    "neighbouring foci are being merged.",
+                    minimum=1, step=1,
+                ),
+                "threshold_rel": ParameterSpec(
+                    0.2, float, "Focus threshold",
+                    "Relative peak-intensity threshold after normalization and "
+                    "smoothing. Increase it to reject weak false detections; "
+                    "decrease it to include dim foci.",
+                    minimum=0.0, maximum=1.0, step=0.02, decimals=2,
+                ),
+                "refine_radius": ParameterSpec(
+                    5, int, "Center refinement radius (px)",
+                    "Radius of the local patch used for sub-pixel center-of-mass "
+                    "refinement around each detected focus.",
+                    minimum=0, step=1, advanced=True,
+                ),
+                "gaussian_sigma": ParameterSpec(
+                    1.0, float, "Detection smoothing (px)",
+                    "Gaussian smoothing applied before peak detection. Increase "
+                    "for noisy images; too much smoothing can merge close foci.",
+                    minimum=0.0, step=0.1, decimals=2, advanced=True,
+                ),
+                "max_relative_tilt_deg": ParameterSpec(
+                    30.0, float, "Maximum relative grid tilt (deg)",
+                    "Safety limit on the orientation difference between moving "
+                    "and reference grids. Beyond this, row/column ordering can be "
+                    "ambiguous and the current matcher refuses the correspondence.",
+                    minimum=0.1, maximum=45.0, step=1.0, decimals=1,
+                    advanced=True,
+                ),
             },
             normalize_parameters=_normalize_foci_parameters,
         ),
