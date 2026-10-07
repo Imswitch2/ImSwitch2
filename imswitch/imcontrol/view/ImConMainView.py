@@ -271,7 +271,11 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.resetLayoutAction.triggered.connect(self.resetDockLayout)
         view.addAction(self.resetLayoutAction)
 
-        self.hardwareStatusWidget = self.factory.createWidget(widgets.HardwareStatusWidget)
+        # Imported by class, not through the lazy ``widgets`` namespace: once
+        # anything imports the HardwareStatusWidget *module* directly, the
+        # package attribute of that name is the module, not the class.
+        from .widgets.HardwareStatusWidget import HardwareStatusWidget
+        self.hardwareStatusWidget = self.factory.createWidget(HardwareStatusWidget)
         self.hardwareStatusWidget.hide()
         self.hardwareStatusAction = QtWidgets.QAction('Hardware status…', self)
         self.hardwareStatusAction.setToolTip(
