@@ -1,10 +1,12 @@
 # ScanControllerLineStepPointScan.py
 import copy
 import json
+import time
 import traceback
 from typing import Dict, Any
 
 import numpy as np
+from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.scan_parameters import (
@@ -25,6 +27,53 @@ from ._acquisition_layout_source import (
     scan_driven_detector_names,
     validate_detector_edge_counts,
 )
+
+
+SCAN_PROGRESS_INTERVAL_MS = 250
+
+
+def scan_duration_s(scanInfoDict):
+    """Seconds one scan iteration takes on the card, or None if unknown.
+
+    ``tot_scan_time_s`` when the designer reports it (Galvo), otherwise the
+    sample count times the sample period (the contract's default for
+    ``tot_scan_time_s`` is 0).
+    """
+    info = scanInfoDict or {}
+    try:
+        total = float(info.get("tot_scan_time_s") or 0.0)
+        if total <= 0:
+            total = (
+                float(info.get("scan_samples_total") or 0)
+                * float(info.get("scan_time_step") or 0.0)
+            )
+    except (TypeError, ValueError):
+        return None
+    return total if total > 0 else None
+
+
+def _format_seconds(seconds):
+    seconds = max(0, int(round(seconds)))
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}:{seconds:02d}"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+
+def scan_progress(elapsed_s, duration_s, frame, show_frame):
+    """``(fraction, text)`` for the progress bar; fraction None = unknown."""
+    prefix = f"Frame {frame} · " if show_frame else ""
+    if duration_s is None:
+        return None, f"{prefix}{_format_seconds(elapsed_s)}"
+    if elapsed_s >= duration_s:
+        return 1.0, f"{prefix}finishing…"
+    return (
+        elapsed_s / duration_s,
+        f"{prefix}{_format_seconds(elapsed_s)} / {_format_seconds(duration_s)}",
+    )
 
 
 class ScanControllerAdvanced(SuperScanController):
@@ -97,6 +146,20 @@ class ScanControllerAdvanced(SuperScanController):
             self.plotSignalGraph()
         except Exception:
             self._logger.debug("[ScanControllerAdvanced] initial plotSignalGraph failed:\n%s", traceback.format_exc())
+
+        # Progress bar: elapsed card time of the running iteration, refreshed
+        # by a timer while this controller owns a run. The timer stops itself
+        # once the run is released, whichever way it ended.
+        self._progressRun = None
+        self._progressFrame = 0
+        self._progressStarted = None
+        self._progressDuration = None
+        self._progressTimer = QtCore.QTimer(self)
+        self._progressTimer.setInterval(SCAN_PROGRESS_INTERVAL_MS)
+        self._progressTimer.timeout.connect(self._updateScanProgress)
+        self._master.nidaqManager.sigScanStarted.connect(
+            self._onScanIterationStarted
+        )
 
         # Register for widget state persistence
         getWidgetStatePersistence().register('Scan', self)
@@ -784,6 +847,43 @@ class ScanControllerAdvanced(SuperScanController):
         except Exception:
             self._logger.error(traceback.format_exc())
             self.scanFailed()
+
+    def _onScanIterationStarted(self):
+        """NI-DAQ started an iteration; track it if this controller armed it."""
+        token = self._scanCoordinator.tokenForOwner(self)
+        if token is None:
+            return
+        run = self._scanCoordinator.runForOwner(self)
+        if run is not self._progressRun:
+            self._progressRun = run
+            self._progressFrame = 0
+        self._progressFrame += 1
+        self._progressStarted = time.monotonic()
+        self._progressDuration = scan_duration_s(
+            getattr(token, "scanInfoDict", None) or self.scanInfoDict
+        )
+        self._updateScanProgress()
+        self._progressTimer.start()
+
+    def _updateScanProgress(self):
+        run = self._scanCoordinator.runForOwner(self)
+        if run is None or run is not self._progressRun:
+            self._progressTimer.stop()
+            self._progressRun = None
+            hide = getattr(self._widget, "hideScanProgress", None)
+            if callable(hide):
+                hide()
+            return
+        show = getattr(self._widget, "showScanProgress", None)
+        if not callable(show):
+            return
+        fraction, text = scan_progress(
+            time.monotonic() - self._progressStarted,
+            self._progressDuration,
+            self._progressFrame,
+            show_frame=self._progressFrame > 1 or self._widget.repeatEnabled(),
+        )
+        show(fraction, text)
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)

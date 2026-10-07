@@ -175,6 +175,23 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.plotScanButton = guitools.BetterPushButton("Plot")
         self.plotIncludeTTLBox = QtWidgets.QCheckBox("include TTL")
 
+        # Scan progress: shown while a scan runs, unless switched off.
+        self.progressBox = QtWidgets.QCheckBox("Progress")
+        self.progressBox.setChecked(True)
+        self.progressBox.setToolTip("Show a progress bar while a scan runs")
+        self.scanProgressBar = QtWidgets.QProgressBar()
+        self.scanProgressBar.setRange(0, 1000)
+        self.scanProgressBar.setTextVisible(False)
+        self.scanProgressLabel = QtWidgets.QLabel()
+        self.scanProgressRow = QtWidgets.QWidget()
+        progressLayout = QtWidgets.QHBoxLayout(self.scanProgressRow)
+        progressLayout.setContentsMargins(0, 0, 0, 0)
+        progressLayout.addWidget(self.scanProgressBar, 1)
+        progressLayout.addWidget(self.scanProgressLabel)
+        self.scanProgressRow.setVisible(False)
+        self._scanProgressActive = False
+        self.progressBox.toggled.connect(self._refreshScanProgressVisibility)
+
         # Connect scan timing signals
         self.seqTimePar.textChanged.connect(lambda: self.sigSeqTimeParChanged.emit())
         self.seqTimePar.textChanged.connect(lambda: self._refreshDwellDeadTimeLabel())
@@ -235,12 +252,15 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.grid.addWidget(self.repeatBox, currentRow, 1)
         self.grid.addWidget(self.loadScanBtn, currentRow, 2)
         self.grid.addWidget(self.saveScanBtn, currentRow, 3)
+        self.grid.addWidget(self.progressBox, currentRow, 4)
         self.grid.addItem(
             QtWidgets.QSpacerItem(20, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum),
-            currentRow, 4, 1, 2
+            currentRow, 5
         )
         self.grid.addWidget(self.plotScanButton, currentRow, 6)
         self.grid.addWidget(self.plotIncludeTTLBox, currentRow, 7)
+        currentRow += 1
+        self.grid.addWidget(self.scanProgressRow, currentRow, 0, 1, -1)
         currentRow += 1
 
         # spacer
@@ -506,6 +526,37 @@ class ScanWidgetAdvanced(SuperScanWidget):
 
     def setIntraPixelPositionersMode(self, enabled: bool) -> None:
         self.intraPixelPositionersBox.setChecked(bool(enabled))
+
+    def progressEnabled(self) -> bool:
+        return bool(self.progressBox.isChecked())
+
+    def setProgressEnabled(self, enabled: bool) -> None:
+        self.progressBox.setChecked(bool(enabled))
+
+    def showScanProgress(self, fraction, text: str) -> None:
+        """Show the running scan's progress; ``fraction`` None means unknown."""
+        if fraction is None:
+            self.scanProgressBar.setRange(0, 0)  # busy indicator
+        else:
+            self.scanProgressBar.setRange(0, 1000)
+            self.scanProgressBar.setValue(
+                int(round(1000 * min(max(float(fraction), 0.0), 1.0)))
+            )
+        self.scanProgressLabel.setText(text)
+        self._scanProgressActive = True
+        self._refreshScanProgressVisibility()
+
+    def hideScanProgress(self) -> None:
+        self._scanProgressActive = False
+        self.scanProgressBar.setRange(0, 1000)
+        self.scanProgressBar.setValue(0)
+        self.scanProgressLabel.clear()
+        self._refreshScanProgressVisibility()
+
+    def _refreshScanProgressVisibility(self, *_args) -> None:
+        self.scanProgressRow.setVisible(
+            self._scanProgressActive and self.progressBox.isChecked()
+        )
 
     def isPlotTTLIncluded(self) -> bool:
         return bool(self.plotIncludeTTLBox.isChecked())
