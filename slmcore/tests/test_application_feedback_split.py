@@ -45,3 +45,26 @@ def test_focused_feedback_services_do_not_retain_owner_locators():
         source = inspect.getsource(service)
         for token in forbidden:
             assert token not in source, f"{service.__name__} retains owner locator {token}"
+
+
+def test_feedback_fov_runtime_service_has_no_calibration_producer_path():
+    import inspect
+
+    source = inspect.getsource(FOVPositionCalibrationService)
+    obsolete = (
+        "fit_fov_position_calibration",
+        "save_fov_position_calibration",
+        "replace_applied_fov_position_calibration",
+        "fov_position_calibration_replacement_warning",
+        "_fov_position_calibration_candidates",
+    )
+    for token in obsolete:
+        assert token not in source
+
+
+def test_transitional_fov_position_calibration_alias_is_removed():
+    import slmcore
+    import slmcore.core.cgh.feedback as feedback_core
+
+    assert not hasattr(slmcore,"FOVPositionCalibration")
+    assert not hasattr(feedback_core,"FOVPositionCalibration")

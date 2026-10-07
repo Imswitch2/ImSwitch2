@@ -71,9 +71,6 @@ class MeasurementsAction(str,Enum):
     POSITION_REFERENCE_ADD = "position_reference_add"
     POSITION_REFERENCE_PERSIST = "position_reference_persist"
     POSITION_REFERENCE_DELETE = "position_reference_delete"
-    FOV_CALIBRATION_FIT = "fov_calibration_fit"
-    FOV_CALIBRATION_SAVE = "fov_calibration_save"
-    FOV_CALIBRATION_REPLACE = "fov_calibration_replace"
     POSITION_SET_ACTIVE = "position_set_active"
     POSITION_CLEAR = "position_clear"
     COMPUTE_ADAPTED = "compute_adapted_hologram"
@@ -151,7 +148,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "create_unavailable_reason":"",
         }
         self._position_reference_preview = None
-        self._fov_calibration_context: dict[str,Any] = {}
         self._fov_calibration_preview = None
         self._geometry_calibration_context: dict[str,Any] = {}
         self._normal_localization_context = dict(localization_context or {})
@@ -1233,74 +1229,13 @@ class CGHSessionWindow(QtWidgets.QDialog):
     def set_fov_position_calibration_state(
         self,context: Mapping[str,Any] | None,preview: Mapping[str,Any] | None,
     ) -> None:
-        self._fov_calibration_context = dict(context or {})
-        self._fov_calibration_preview = None if preview is None else dict(preview)
-        self._refresh_fov_calibration_controls()
-        self._refresh_feedback_visualizations()
+        """Update the read-only FOV correction visualization.
 
-    def _refresh_fov_calibration_controls(self) -> None:
-        label = getattr(self,"fov_calibration_state_label",None)
-        if label is None:
-            return
-        context = dict(self._fov_calibration_context or {})
-        preview = self._fov_calibration_preview
-        candidate = context.get("candidate")
-        calibration = context.get("calibration")
-        if preview is not None and preview.get("source") == "candidate":
-            text = (
-                "Viewing current fit — not saved\n"
-                "%s degree %s · %d samples · RMS %s · max %s"
-                % (
-                    str(preview.get("model") or "polynomial").title(),
-                    preview.get("degree","—"),
-                    int(preview.get("sample_count",0) or 0),
-                    _format_float(preview.get("rms_residual_kxy")),
-                    _format_float(preview.get("max_residual_kxy")),
-                )
-            )
-        elif calibration is not None:
-            text = (
-                "Loaded: %s%s\n%s degree %s · %d samples · RMS %s · max %s"
-                % (
-                    calibration.name,
-                    " (applied)" if context.get("applied") else "",
-                    calibration.model.title(),calibration.degree,
-                    calibration.sample_count,
-                    _format_float(calibration.rms_residual_kxy),
-                    _format_float(calibration.max_residual_kxy),
-                )
-            )
-        else:
-            text = "No FOV calibration loaded"
-        extrapolated = int(context.get("extrapolated_count",0) or 0)
-        if extrapolated:
-            text += "\nWarning: extrapolating %d/%d current spots." % (
-                extrapolated,int(context.get("target_count",0) or 0),
-            )
-        label.setText(text)
-        label.setStyleSheet(
-            "color: %s;" % (_WARNING_COLOR if extrapolated else _MUTED_COLOR)
-        )
-        fit = getattr(self,"fov_calibration_fit_button",None)
-        save = getattr(self,"fov_calibration_save_button",None)
-        replace = getattr(self,"fov_calibration_replace_button",None)
-        current = self._selected_is_current_context() and not self._cgh_computing
-        if fit is not None:
-            fit.setEnabled(bool(
-                context.get("supported",False)
-                and (
-                    self._status.position_available
-                    or self._status.localization_available
-                )
-                and current
-            ))
-        if save is not None:
-            save.setEnabled(bool(candidate is not None and current))
-        if replace is not None:
-            replace.setEnabled(bool(
-                candidate is not None and context.get("applied")
-                and context.get("selected_name") and current
-            ))
+        Runtime Apply state is presented by the section-level FOV checkbox; the
+        feedback workspace no longer owns FOV fitting or persistence controls.
+        """
+        self._fov_calibration_preview = None if preview is None else dict(preview)
+        self._refresh_feedback_visualizations()
 
     def set_position_reference_state(
         self,context: Mapping[str,Any] | None,preview: Any=None,
@@ -1826,14 +1761,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._emit(
                 MeasurementsAction.POSITION_REFERENCE_PERSIST,{"name":name},
             )
-
-    def _save_fov_calibration_requested(self,*_args: Any) -> None:
-        name,ok = QtWidgets.QInputDialog.getText(
-            self,"Save FOV calibration","Calibration name:"
-        )
-        name = str(name or "").strip()
-        if ok and name:
-            self._emit(MeasurementsAction.FOV_CALIBRATION_SAVE,{"name":name})
 
     def _delete_position_reference_requested(self,*_args: Any) -> None:
         name = self._selected_managed_position_reference_name()
@@ -2571,7 +2498,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         self._refresh_feedback_orientation_controls()
         self._refresh_position_reference_controls()
-        self._refresh_fov_calibration_controls()
         self.feedback_tabs.setTabEnabled(0,True)
         self.feedback_tabs.setTabEnabled(1,position_available)
         if self.feedback_tabs.currentIndex() == 1 and not position_available:

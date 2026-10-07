@@ -124,13 +124,9 @@ class SLMFeedbackService:
             callbacks_provider=callbacks_provider,
             editor_writes_allowed=editor_writes_allowed,
             active_mapping=self._active_mapping_name,
-            active_observation_plane=self.active_observation_plane,
             startup_preferences=startup_preferences,
             cancel_cgh=lambda key:self._application_session.cancel_cgh(key),
-            feedback_orientation=self._geometry.feedback_orientation,
-            resolve_position_reference=self._references._resolve_position_reference,
             mappings=mappings,
-            observation_geometry=observation_geometry,
         )
         self._localization = LocalizationService(
             runtime_provider=runtime_provider,
@@ -491,32 +487,6 @@ class SLMFeedbackService:
 
     def delete_fov_position_calibration(self,section_key: str) -> str:
         return self._fov_calibration.delete_fov_position_calibration(section_key)
-
-    def fit_fov_position_calibration(
-        self,section_key: str,*,model: str="polynomial",degree: int=2,
-    ) -> FOVMappingCorrection:
-        return self._fov_calibration.fit_fov_position_calibration(
-            section_key,
-            model=model,
-            degree=degree,
-        )
-
-    def save_fov_position_calibration(
-        self,section_key: str,name: str,*,overwrite: bool=False,
-    ) -> FOVMappingCorrection:
-        return self._fov_calibration.save_fov_position_calibration(
-            section_key,
-            name,
-            overwrite=overwrite,
-        )
-
-    def fov_position_calibration_replacement_warning(
-        self,section_key: str,
-    ) -> str:
-        return self._fov_calibration.fov_position_calibration_replacement_warning(section_key)
-
-    def replace_applied_fov_position_calibration(self,section_key: str) -> str:
-        return self._fov_calibration.replace_applied_fov_position_calibration(section_key)
 
     def _set_runtime_fov_position_calibration(
         self,section_key: str,calibration: FOVMappingCorrection | None,
@@ -899,8 +869,3 @@ class SLMFeedbackService:
     def _require_editor_mode(self) -> None:
         if not self._application_session.editor_writes_allowed:
             raise RuntimeError("Operation unavailable in Fast Config mode")
-
-    @property
-    def _fov_position_calibration_candidates(self):
-        """Compatibility view of transient FOV candidates; not a public API."""
-        return self._fov_calibration._fov_position_calibration_candidates

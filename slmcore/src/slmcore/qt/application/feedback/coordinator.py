@@ -74,13 +74,7 @@ class FeedbackCoordinator(QtCore.QObject):
             synchronize_section=synchronize_section,
             report_error=self._error,
         )
-        self._fov_calibration = FOVPositionCalibrationCoordinator(
-            self._feedback_service,
-            window_for=self.window,
-            flush_section=flush_section,
-            synchronize_section=synchronize_section,
-            report_error=self._error,
-        )
+        self._fov_calibration = FOVPositionCalibrationCoordinator(self._feedback_service)
         self._geometry = GeometryOrientationCalibrationCoordinator(
             self._feedback_service,
             window_for=self.window,
@@ -106,7 +100,6 @@ class FeedbackCoordinator(QtCore.QObject):
             geometry=self._geometry,
             adaptation=self._adaptation,
             references=self._references,
-            fov_calibration=self._fov_calibration,
             automatic=self._automatic,
             editor_writes_allowed=editor_writes_allowed,
             compute_adapted_cgh=self._qt_session.compute_adapted_cgh,
@@ -531,17 +524,6 @@ class FeedbackCoordinator(QtCore.QObject):
 
     def delete_position_reference(self,section_key: str,name: str) -> None:
         self._references.delete_position_reference(section_key,name)
-
-    def fit_fov_position_calibration(
-        self,section_key: str,*,model: str="polynomial",degree: int=2,
-    ) -> None:
-        self._fov_calibration.fit(section_key,model=model,degree=degree)
-
-    def save_fov_position_calibration(self,section_key: str,name: str) -> None:
-        self._fov_calibration.save(section_key,name)
-
-    def replace_applied_fov_position_calibration(self,section_key: str) -> None:
-        self._fov_calibration.replace_applied(section_key)
 
     # ------------------------------------------------------------------
     # Public compatibility facade: feedback adaptation

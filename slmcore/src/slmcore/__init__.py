@@ -62,8 +62,6 @@ from .core.cgh.feedback import (
 )
 from .core.calibration import FOVMappingCorrection,SLMSectionCalibration
 
-# Transitional public alias; persistent ownership is Mapping as of Patch 6.
-FOVPositionCalibration = FOVMappingCorrection
 from .core.config import (
     FOVCorrectionConfigState,
     SectionConfigLoadResult,
@@ -155,7 +153,6 @@ __all__ = [
     "GeometryCalibrationContext",
     "GeometryCalibrationPayload",
     "GeometryCalibrationService",
-    "FOVPositionCalibration",
     "GeometryOrientationAnalysis",
     "GeometryOrientationCalibration",
     "PositionReference",

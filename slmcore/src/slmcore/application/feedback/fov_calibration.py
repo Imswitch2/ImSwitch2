@@ -1,22 +1,18 @@
-"""FOV position-calibration selection, fitting and runtime application."""
+"""FOV correction selection, inspection and runtime application."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any,Callable,TYPE_CHECKING,TypedDict
+from typing import Callable,TYPE_CHECKING,TypedDict
 
 import numpy as np
 
-from ...core.cgh.feedback import FeedbackCapability,orient_localization
-from ...core.cgh.localization import localization_site_masks
 from ...core.calibration import FOVMappingCorrection,base_mapping_signature
-from ...core.cgh.coordinates import reference_px_to_k,k_to_reference_px
 from .component import FeedbackComponent
 
 if TYPE_CHECKING:
     from ...core.engine.runtime import SLMRuntime
     from ..mapping import MappingService
-    from ..observation_geometry import ObservationGeometryService
     from ..startup_preferences import StartupPreferencesState
     from .contracts import SLMFeedbackCallbacks
 
@@ -35,14 +31,13 @@ class FOVPositionCalibrationContext(TypedDict):
     compatibility_reason: str | None
     supported: bool
     calibration: FOVMappingCorrection | None
-    candidate: FOVMappingCorrection | None
     extrapolated_count: int
     target_count: int
     max_extrapolation_kxy: float
     coverage_tolerance_kxy: float
 
 class FOVPositionCalibrationPreview(TypedDict):
-    """Sample and target displacement arrays for the candidate or saved field."""
+    """Sample and target displacement arrays for the selected saved correction."""
 
     source: str
     name: str | None
@@ -65,7 +60,7 @@ class _FOVPositionCalibrationSelection:
     applied: bool=False
 
 class FOVPositionCalibrationService(FeedbackComponent):
-    """Produce FOV candidates and manage runtime selection via MappingService."""
+    """Manage saved FOV correction selection and runtime application."""
 
     def __init__(
         self,
@@ -74,13 +69,9 @@ class FOVPositionCalibrationService(FeedbackComponent):
         callbacks_provider: Callable[[], "SLMFeedbackCallbacks"],
         editor_writes_allowed: Callable[[], bool],
         active_mapping: Callable[[str],str | None],
-        active_observation_plane: Callable[[str],str | None],
         startup_preferences: Callable[[], "StartupPreferencesState | None"],
         cancel_cgh: Callable[[str],None],
-        feedback_orientation: Callable[[str],Any],
-        resolve_position_reference: Callable[[str],tuple[Any,dict[str,Any]]],
         mappings: "MappingService",
-        observation_geometry: "ObservationGeometryService | None"=None,
     ) -> None:
         super().__init__(
             runtime_provider=runtime_provider,
@@ -88,18 +79,11 @@ class FOVPositionCalibrationService(FeedbackComponent):
             editor_writes_allowed=editor_writes_allowed,
         )
         self._active_mapping_provider = active_mapping
-        self._active_observation_plane_provider = active_observation_plane
         self._startup_preferences_provider = startup_preferences
         self._cancel_cgh = cancel_cgh
-        self._feedback_orientation = feedback_orientation
-        self._resolve_position_reference_callback = resolve_position_reference
         self._mappings = mappings
-        self._observation_geometry = observation_geometry
         self._fov_position_calibration_selections: dict[
             tuple[str,str | None],_FOVPositionCalibrationSelection
-        ] = {}
-        self._fov_position_calibration_candidates: dict[
-            tuple[str,str | None],FOVMappingCorrection
         ] = {}
         if self._mappings.fov_corrections_available:
             self._mappings.add_fov_correction_listener(
@@ -108,9 +92,6 @@ class FOVPositionCalibrationService(FeedbackComponent):
 
     def _active_mapping(self,section_key: str) -> str | None:
         return self._active_mapping_provider(section_key)
-
-    def _active_observation_plane(self,section_key: str) -> str | None:
-        return self._active_observation_plane_provider(section_key)
 
     def _fov_position_key(self,section_key: str) -> tuple[str,str | None]:
         section = str(section_key)
@@ -214,7 +195,6 @@ class FOVPositionCalibrationService(FeedbackComponent):
             reason = "The default FOV correction is incompatible with the current base mapping calibration."
         elif selected is None and not default_name:
             reason = "No default FOV correction is configured for this mapping."
-        candidate = self._fov_position_calibration_candidates.get(key)
         return {
             "mapping_name":mapping,
             "available_names":tuple(names),
@@ -227,7 +207,6 @@ class FOVPositionCalibrationService(FeedbackComponent):
             "compatibility_reason":reason,
             "supported":bool(runtime_context.get("supported",False)),
             "calibration":calibration,
-            "candidate":candidate,
             "extrapolated_count":extrapolated_count,
             "target_count":int(np.asarray(runtime_context["ideal_positions_kxy"]).shape[1]),
             "max_extrapolation_kxy":float(runtime_context.get("max_extrapolation_kxy",0.0)),
@@ -237,18 +216,15 @@ class FOVPositionCalibrationService(FeedbackComponent):
     def fov_position_calibration_preview(
         self,section_key: str,
     ) -> FOVPositionCalibrationPreview | None:
-        """Preview the candidate or selected field, falling back to its recorded samples."""
+        """Preview the selected saved correction at the current target when possible."""
         context = self.fov_position_calibration_context(section_key)
-        key = self._fov_position_key(section_key)
-        candidate = self._fov_position_calibration_candidates.get(key)
-        calibration = candidate if candidate is not None else context.get("calibration")
+        calibration = context.get("calibration")
         if calibration is None:
             return None
         current = self._runtime.get_section_fov_position_context(section_key)
         ideal = np.asarray(current["ideal_positions_kxy"],dtype=np.float64)
-        # Inspect the field at the current target when it is meaningful.  With
-        # no target (or an incompatible target), fall back to the calibration's
-        # own sample positions so the read-only FOV view remains usable.
+        # Inspect the field at the current target when meaningful. With no target
+        # (or an unsupported target), fall back to the correction's saved samples.
         if bool(current.get("supported",False)) and ideal.shape[1] > 0:
             preview_positions = ideal
         else:
@@ -257,8 +233,8 @@ class FOVPositionCalibrationService(FeedbackComponent):
             )
         predicted = calibration.evaluate(preview_positions)
         return {
-            "source":"candidate" if candidate is not None else "applied",
-            "name":None if candidate is not None else calibration.name,
+            "source":"selected",
+            "name":calibration.name,
             "model":calibration.model,
             "degree":calibration.degree,
             "sample_count":calibration.sample_count,
@@ -436,213 +412,8 @@ class FOVPositionCalibrationService(FeedbackComponent):
             and preferences.default_fov_correction(section,mapping) == name
         ):
             preferences.set_default_fov_correction(section,mapping,None)
-        self._fov_position_calibration_candidates.pop((section,mapping),None)
         self._section_changed(section)
         return str(name)
-
-    def fit_fov_position_calibration(
-        self,section_key: str,*,model: str="polynomial",degree: int=2,
-    ) -> FOVMappingCorrection:
-        """Build an unsaved field from accepted correction or current position analysis."""
-        self._require_editor_mode()
-        section = str(section_key)
-        mapping = self._active_mapping(section)
-        if mapping is None:
-            raise RuntimeError("Select a mapping before fitting an FOV correction")
-        status = self._runtime.get_section_feedback_status(section)
-        if FeedbackCapability.POSITION_CORRECTION not in set(status.capabilities):
-            raise RuntimeError("The current target does not support position correction")
-
-        # Prefer the accepted transient correction.  It remains authoritative
-        # after computing an adapted hologram, which lets users verify the
-        # correction experimentally and only then promote it to a persistent
-        # FOV calibration.  Fall back to a fresh analysis only before a
-        # correction has been accepted.
-        session_inspection = self._runtime.get_section_cgh_session_inspection(
-            section
-        )
-        correction = session_inspection.position_correction
-        if correction is not None:
-            ideal = np.asarray(
-                correction.ideal_positions_kxy,dtype=np.float64,
-            )
-            total_displacement = (
-                np.asarray(correction.corrected_positions_kxy,dtype=np.float64)
-                - ideal
-            )
-            reference_metadata = dict(correction.reference or {})
-            acquisition = correction.measurement.acquisition
-            detector = acquisition.detector
-            source = "accepted_position_correction"
-        else:
-            reference_positions,reference_metadata = self._resolve_position_reference_callback(
-                section
-            )
-            analysis = self._runtime.compute_section_feedback_position_analysis(
-                section,
-                orientation=self._feedback_orientation(section),
-                reference_positions_px=reference_positions,
-            )
-            current = self._runtime.get_section_fov_position_context(section)
-            ideal = np.asarray(current["ideal_positions_kxy"],dtype=np.float64)
-            total_displacement = (
-                np.asarray(analysis.corrected_positions_kxy,dtype=np.float64)-ideal
-            )
-            inspection = self._runtime.get_section_feedback_inspection(section)
-            acquisition = None if inspection.measurement is None else inspection.measurement.acquisition
-            detector = None if acquisition is None else acquisition.detector
-            source = "current_position_analysis"
-
-        localization = (
-            None if correction is None
-            else correction.measurement.localization
-        )
-        if localization is None:
-            inspection = self._runtime.get_section_feedback_inspection(section)
-            localization = (
-                None if inspection.measurement is None
-                else inspection.measurement.localization
-            )
-        if localization is None:
-            raise RuntimeError("FOV fitting requires an accepted localization")
-        matched,inferred,resolved = localization_site_masks(localization)
-        if int(np.count_nonzero(matched)) < 3:
-            raise RuntimeError(
-                "FOV fitting requires at least three genuinely measured spots"
-            )
-        ideal = ideal[:,matched]
-        total_displacement = total_displacement[:,matched]
-
-        observation_plane = self._active_observation_plane(section)
-        geometry_provenance = {}
-        if observation_plane and self._observation_geometry is not None:
-            geometry = self._observation_geometry.calibration(section,observation_plane)
-            if geometry is not None:
-                geometry_provenance = {
-                    "orientation":geometry.orientation.value,
-                    "protocol":geometry.protocol,
-                    "created_at":geometry.created_at,
-                }
-
-        base_signature = self._current_base_mapping_signature(section)
-        if base_signature is None:
-            raise RuntimeError(
-                "A valid base mapping calibration is required before fitting an FOV correction"
-            )
-        calibration = FOVMappingCorrection.fit(
-            name="Current candidate",
-            slm_serial=self._runtime.identity.serial_number,
-            section_key=section,mapping_name=mapping,
-            base_mapping_signature=base_signature,
-            ideal_positions_kxy=ideal,
-            total_displacements_kxy=total_displacement,
-            model=model,degree=degree,detector_name=detector,
-            provenance={
-                "reference":dict(reference_metadata or {}),
-                "source":source,
-                "matched_sample_count":int(np.count_nonzero(matched)),
-                "excluded_inferred_count":int(np.count_nonzero(inferred)),
-                "excluded_unresolved_count":int(np.count_nonzero(~resolved)),
-                "observation_plane":observation_plane,
-                "detector":None if acquisition is None else acquisition.detector,
-                "measurement_source":None if acquisition is None else acquisition.source,
-                "measurement_pixel_size_um":None if acquisition is None else acquisition.pixel_size_um,
-                "geometry_calibration":geometry_provenance or None,
-                "source_applied_correction":self.fov_position_calibration_context(
-                    section
-                ).get("applied_name"),
-            },
-        )
-        self._fov_position_calibration_candidates[(section,mapping)] = calibration
-        self._section_changed(section)
-        return calibration
-
-    def save_fov_position_calibration(
-        self,section_key: str,name: str,*,overwrite: bool=False,
-    ) -> FOVMappingCorrection:
-        """Persist the current candidate; selection/application follow store notifications."""
-        self._require_editor_mode()
-        section = str(section_key)
-        mapping = self._active_mapping(section)
-        if mapping is None:
-            raise RuntimeError("Select a mapping before saving an FOV correction")
-        candidate = self._fov_position_calibration_candidates.get((section,mapping))
-        if candidate is None:
-            raise RuntimeError("Build an FOV calibration fit before saving")
-        saved = candidate.with_name(str(name))
-        self._mappings.save_fov_correction(saved,overwrite=overwrite)
-        self._section_changed(section)
-        return saved
-
-    def fov_position_calibration_replacement_warning(
-        self,section_key: str,
-    ) -> str:
-        """Describe coverage changes before replacing an applied field; empty means none."""
-        section = str(section_key)
-        context = self.fov_position_calibration_context(section)
-        mapping = context.get("mapping_name")
-        name = context.get("applied_name")
-        if not mapping or not name or not context.get("applied"):
-            return ""
-        candidate = self._fov_position_calibration_candidates.get((section,mapping))
-        if candidate is None:
-            return ""
-        old = self._load_fov_position_calibration(section,mapping,name)
-        old_area = float(old.coverage_area)
-        new_area = float(candidate.coverage_area)
-        if old_area <= 0 or new_area <= 0:
-            return (
-                "Candidate and applied FOV calibration coverage could not be "
-                "compared reliably because one convex hull is degenerate."
-            ) if old_area != new_area else ""
-
-        old_outside_new,_,_ = candidate.coverage_extrapolation(
-            old.sample_positions_kxy
-        )
-        new_outside_old,_,_ = old.coverage_extrapolation(
-            candidate.sample_positions_kxy
-        )
-        lost = int(np.count_nonzero(old_outside_new))
-        added = int(np.count_nonzero(new_outside_old))
-        area_ratio = new_area/old_area
-        area_changed = area_ratio < 0.98 or area_ratio > 1.02
-        if lost or added or area_changed:
-            details = [
-                "candidate area %.1f%% of the previous convex-hull area"
-                % (100.0*area_ratio)
-            ]
-            if lost:
-                details.append(
-                    "%d/%d previous samples lie outside the candidate coverage"
-                    % (lost,old.sample_count)
-                )
-            if added:
-                details.append(
-                    "%d/%d candidate samples lie outside the previous coverage"
-                    % (added,candidate.sample_count)
-                )
-            return "Candidate measured coverage differs from the applied calibration (" + "; ".join(details) + ")."
-        return ""
-
-    def replace_applied_fov_position_calibration(self,section_key: str) -> str:
-        """Overwrite and reapply the selected record, then consume the fitted candidate."""
-        self._require_editor_mode()
-        section = str(section_key)
-        context = self.fov_position_calibration_context(section)
-        mapping = context.get("mapping_name")
-        name = context.get("applied_name")
-        if not mapping or not name or not context.get("applied"):
-            raise RuntimeError("An applied FOV calibration is required for replacement")
-        candidate = self._fov_position_calibration_candidates.get((section,mapping))
-        if candidate is None:
-            raise RuntimeError("Build a candidate FOV fit before replacing the applied calibration")
-        saved = candidate.with_name(name)
-        self._mappings.save_fov_correction(saved,overwrite=True)
-        self._fov_position_calibration_candidates.pop((section,mapping),None)
-        self._set_runtime_fov_position_calibration(section,saved)
-        self._section_changed(section)
-        self._warn_fov_extrapolation(section)
-        return name
 
     def _set_runtime_fov_position_calibration(
         self,section_key: str,calibration: FOVMappingCorrection | None,
@@ -700,12 +471,10 @@ class FOVPositionCalibrationService(FeedbackComponent):
     def refresh_fov_position_calibration_contexts(self) -> None:
         """Reconcile mapping defaults, compatibility and per-session Apply state."""
         runtime = self._runtime
-        active_keys = set()
         for section_key in tuple(runtime.section_keys):
             section = str(section_key)
             mapping = self._active_mapping(section)
             key = (section,mapping)
-            active_keys.add(key)
             default_name = self._saved_fov_position_calibration_name(section,mapping)
             default_exists = bool(
                 default_name and mapping
@@ -743,9 +512,6 @@ class FOVPositionCalibrationService(FeedbackComponent):
             self._set_runtime_fov_position_calibration(
                 section,calibration,notify=True,
             )
-        for key in tuple(self._fov_position_calibration_candidates):
-            if key not in active_keys and key[0] not in runtime.section_keys:
-                self._fov_position_calibration_candidates.pop(key,None)
 
     def _on_fov_mapping_correction_store_changed(self) -> None:
         self.refresh_fov_position_calibration_contexts()
@@ -755,4 +521,3 @@ class FOVPositionCalibrationService(FeedbackComponent):
             self._on_fov_mapping_correction_store_changed
         )
         self._fov_position_calibration_selections.clear()
-        self._fov_position_calibration_candidates.clear()

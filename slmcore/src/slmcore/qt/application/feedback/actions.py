@@ -10,7 +10,6 @@ from ...cgh.session_window import MeasurementsAction
 if TYPE_CHECKING:
     from .adaptation import FeedbackAdaptationCoordinator
     from .automatic import AutomaticFeedbackCoordinator
-    from .fov_calibration import FOVPositionCalibrationCoordinator
     from .geometry_calibration import GeometryOrientationCalibrationCoordinator
     from .localization import LocalizationCoordinator
     from .measurement import MeasurementCoordinator
@@ -28,7 +27,6 @@ class FeedbackActionRouter:
         geometry: "GeometryOrientationCalibrationCoordinator",
         adaptation: "FeedbackAdaptationCoordinator",
         references: "PositionReferenceCoordinator",
-        fov_calibration: "FOVPositionCalibrationCoordinator",
         automatic: "AutomaticFeedbackCoordinator",
         editor_writes_allowed: Callable[[],bool],
         compute_adapted_cgh: Callable[[str],None],
@@ -40,7 +38,6 @@ class FeedbackActionRouter:
         self._geometry = geometry
         self._adaptation = adaptation
         self._references = references
-        self._fov_calibration = fov_calibration
         self._automatic = automatic
         self._editor_writes_allowed = editor_writes_allowed
         self._compute_adapted_cgh = compute_adapted_cgh
@@ -170,18 +167,6 @@ class FeedbackActionRouter:
             self._references.delete_position_reference(
                 section_key,str(values.get("name") or "").strip(),
             )
-        elif request is MeasurementsAction.FOV_CALIBRATION_FIT:
-            self._fov_calibration.fit(
-                section_key,
-                model=str(values.get("model") or "polynomial"),
-                degree=int(values.get("degree") or 2),
-            )
-        elif request is MeasurementsAction.FOV_CALIBRATION_SAVE:
-            self._fov_calibration.save(
-                section_key,str(values.get("name") or "").strip(),
-            )
-        elif request is MeasurementsAction.FOV_CALIBRATION_REPLACE:
-            self._fov_calibration.replace_applied(section_key)
         elif request is MeasurementsAction.POSITION_SET_ACTIVE:
             ok,transition = self._adaptation.set_position_active(
                 section_key,bool(values.get("active",False)),
