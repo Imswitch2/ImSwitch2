@@ -218,7 +218,41 @@ class ManagerLaserState:
         return bool(self.manager.applyEnabled(bool(enabled), owner=token))
 
     def restore(self, value: float, enabled: bool, token: Optional[str] = None) -> None:
-        # Checked commands: a failed restore must fail the cleanup, never
-        # be reported as done.
-        self.manager.applyValue(value, owner=token)
-        self.manager.applyEnabled(bool(enabled), owner=token)
+        """Put the laser back, failing loudly but always ending safe.
+
+        Checked commands: a failed step fails the cleanup, never reported as
+        done. The emission switch is handled independently of the value:
+        a laser that was off is switched off first, so it never emits at a
+        sweep value; if the value cannot be restored, emission is switched
+        off and stays off -- never re-enabled at whatever the sweep left.
+        """
+        if not enabled:
+            off_error = self._try_off(token)
+            try:
+                self.manager.applyValue(value, owner=token)
+            except Exception as value_error:
+                state = ('emission is off' if off_error is None
+                         else f'switching emission off failed too: {off_error}')
+                raise RuntimeError(
+                    f'{self.name}: restoring the value failed ({value_error}); {state}'
+                ) from value_error
+            if off_error is not None:
+                raise off_error
+            return
+        try:
+            self.manager.applyValue(value, owner=token)
+        except Exception as value_error:
+            off_error = self._try_off(token)
+            state = ('emission switched off' if off_error is None
+                     else f'switching emission off failed too: {off_error}')
+            raise RuntimeError(
+                f'{self.name}: restoring the value failed ({value_error}); {state}'
+            ) from value_error
+        self.manager.applyEnabled(True, owner=token)
+
+    def _try_off(self, token) -> Optional[Exception]:
+        try:
+            self.manager.applyEnabled(False, owner=token)
+        except Exception as exc:
+            return exc
+        return None

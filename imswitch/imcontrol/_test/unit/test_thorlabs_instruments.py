@@ -347,26 +347,57 @@ def test_real_instrument_managers_start_absent_without_pyvisa_calls():
 
 
 # ------------------------------------------------------------- review fixes
-def test_one_instrument_closing_leaves_the_shared_visa_manager_to_the_other():
-    """Review: pyvisa shares one resource manager per VISA library and closing
-    it closes every session -- disconnecting the PAX (or failing to find it)
-    broke the PM100."""
+def test_instruments_never_close_the_shared_visa_manager():
+    """Review: pyvisa shares one resource manager per VISA library with every
+    VISA user in the process -- the other instrument, but also RS232 devices
+    opened through RS232Driver -- and closing it closes all their sessions.
+    No instrument closes it, not even the last one (pyvisa does at exit)."""
     pm_inst, rm = _pm100()
     pax_inst, _ = _pax()
+    serial_device = FakeInstrument({'?': 'ok'})        # e.g. an RS232Driver laser
     rm.resources[PAX_RESOURCE] = pax_inst
+    rm.resources['ASRL5::INSTR'] = serial_device
+    rm.open_resource('ASRL5::INSTR')
     pm = ThorlabsPM100Driver('P0011748', resource_manager_factory=rm)
     pax = ThorlabsPAX1000Driver('M01012314', resource_manager_factory=rm)
     pm.connect()
     pax.connect()
     pax.close()
-    assert not rm.closed and not pm_inst.closed
+    assert pax_inst.closed and not pm_inst.closed
     assert pm.read().values['power'] == 1.25e-3
 
     with pytest.raises(TransportError, match='not found'):
         ThorlabsPAX1000Driver('NOPE', resource_manager_factory=rm).connect()
-    assert not rm.closed                                   # a failed lookup either
     pm.close()
-    assert rm.closed                                       # the last user closes it
+    assert pm_inst.closed
+    assert not rm.closed and not serial_device.closed      # the last instrument too
+
+
+def test_connects_and_disconnects_racing_never_meet_a_closed_manager():
+    """Review: a connect overlapping the last disconnect could take the
+    manager that disconnect was closing. With no instrument closing it, any
+    interleaving keeps it usable."""
+    import threading
+
+    _, rm = _pm100()
+    errors = []
+
+    def cycle():
+        for _ in range(50):
+            driver = ThorlabsPM100Driver('P0011748', resource_manager_factory=rm)
+            try:
+                driver.connect()
+                driver.read()
+            except Exception as exc:        # pragma: no cover - reported below
+                errors.append(exc)
+            finally:
+                driver.close()
+    threads = [threading.Thread(target=cycle) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert errors == [] and not rm.closed
 
 
 def test_transport_failure_in_a_setting_or_action_faults_the_session():

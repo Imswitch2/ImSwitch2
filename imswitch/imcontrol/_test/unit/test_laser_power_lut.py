@@ -292,7 +292,7 @@ def test_procedure_through_a_real_nidaq_laser_manager(tmp_path, registry):
 
 
 # ---------------------------------------------- review: checked laser commands
-def _real_lut_setup(tmp_path, daq):
+def _real_lut_setup(tmp_path, daq, *, initially_on=True):
     from types import SimpleNamespace
 
     from imswitch.imcontrol.model.measurement.adapters import (
@@ -301,7 +301,7 @@ def _real_lut_setup(tmp_path, daq):
     )
 
     manager = nidaq_laser(daq)
-    shared = {'775': (1.0, True)}
+    shared = {'775': (1.0, initially_on)}
     state = ManagerLaserState(manager, get_value=lambda n: shared[n][0],
                               get_enabled=lambda n: shared[n][1])
     light = SimpleNamespace(emitted_w=lambda: (
@@ -325,11 +325,16 @@ def test_failed_emission_off_stops_the_procedure_before_zeroing(tmp_path, regist
     assert asked == []                       # never asked to confirm a dark that is not
 
 
-def test_failed_restore_is_a_failed_cleanup_not_done(tmp_path, registry):
+@pytest.mark.parametrize('initially_on', [True, False])
+def test_failed_restore_is_a_failed_cleanup_and_leaves_emission_off(tmp_path, registry,
+                                                                    initially_on):
+    """Review: a failed value restore skipped the emission step, so a laser
+    that was off stayed emitting at the sweep's last value (5 V)."""
     from imswitch.imcommon.model.measurement_run import CleanupOutcome
 
     daq = FakeDaq()
-    manager, state, meter, control = _real_lut_setup(tmp_path, daq)
+    manager, state, meter, control = _real_lut_setup(tmp_path, daq,
+                                                     initially_on=initially_on)
     calls = {'n': 0}
     real = daq.setAnalog
 
@@ -344,6 +349,26 @@ def test_failed_restore_is_a_failed_cleanup_not_done(tmp_path, registry):
                            confirm_dark=lambda: not daq.digital)
     assert report.run.cleanup is CleanupOutcome.FAILED
     assert 'DAQ analog write failed' in report.run.cleanup_detail
+    assert daq.voltage == 5.0                 # the value could not be restored ...
+    assert daq.digital is False               # ... so emission is off, not re-enabled
+    if initially_on:
+        assert 'emission switched off' in report.run.cleanup_detail
+
+
+def test_restoring_a_laser_that_was_off_never_emits_at_a_sweep_value(registry):
+    daq = FakeDaq()
+    manager = nidaq_laser(daq)
+    from imswitch.imcontrol.model.measurement.adapters import ManagerLaserState
+
+    state = ManagerLaserState(manager, get_value=lambda n: 0.5, get_enabled=lambda n: False)
+    daq.digital, daq.voltage = True, 5.0      # as the sweep left it
+    events = []
+    real_analog, real_digital = daq.setAnalog, daq.setDigital
+    daq.setAnalog = lambda *a, **k: events.append(('value', daq.digital)) or real_analog(*a, **k)
+    daq.setDigital = lambda t, e, **k: events.append(('switch', e)) or real_digital(t, e, **k)
+    state.restore(0.5, False)
+    assert events == [('switch', False), ('value', False)]     # off before the value
+    assert (daq.voltage, daq.digital) == (0.5, False)
 
 
 def test_checked_commands_raise_where_the_ordinary_ones_log():

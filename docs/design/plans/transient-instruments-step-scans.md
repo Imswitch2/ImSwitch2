@@ -915,8 +915,11 @@ P-4 rig gates still open: §6.6 per driver, USB removal mid-run.
 
 **P-4 review (8e27a5f69, six findings, all fixed).**
 1. VISA: pyvisa shares one resource manager per VISA library and closing it
-   closes every session. `VisaLink` now reference-counts it
-   (`_ResourceManagers`); the last link closes it.
+   closes every session. (Round 2: reference counting among instrument
+   links was not enough -- `RS232Driver` serial devices share the same
+   manager without joining the count, and the count raced a concurrent
+   connect. `VisaLink` now never closes the manager, like `RS232Driver`;
+   pyvisa closes it at exit.)
 2. `ElliptecRotatorManager.isSimulated` read a bus attribute that no longer
    exists; it is now `not bus.is_real(address)`. `RotatorManagerControl` and
    `LaserRawDriveControl` re-check simulation on every command (a bus can
@@ -930,7 +933,9 @@ P-4 rig gates still open: §6.6 per driver, USB removal mid-run.
    commands (NI-DAQ `setDigital(raise_on_error=)`, AA NAK = failure);
    `ManagerLaserState` uses them, so a failed emission-off stops the
    procedure before the dark confirmation and a failed restore is a FAILED
-   cleanup. `applyEnabled` returns False for a laser with no digital line
+   cleanup. (Round 2: the restore always ends safe -- a laser that was off
+   is switched off before its value is restored; if the value cannot be
+   restored, emission is switched off and never re-enabled.) `applyEnabled` returns False for a laser with no digital line
    (recorded as `emission_switched_off: false`).
 5. Cleanup steps run through `ControlExecutor.run_step` (deadline,
    quarantine, resource kept reserved until the step returns); the run now
