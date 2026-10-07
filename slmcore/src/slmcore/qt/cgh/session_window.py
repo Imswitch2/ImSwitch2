@@ -892,10 +892,12 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_reference_correction_model_combo = QtWidgets.QComboBox()
         self.position_reference_correction_model_combo.addItem("Per-spot","per_spot")
         self.position_reference_correction_model_combo.addItem("Affine","affine")
+        self.position_reference_correction_model_combo.addItem("Polynomial","polynomial")
         self.position_reference_correction_model_combo.setToolTip(
             "Per-spot applies each measured reference error independently. "
-            "Affine fits one continuous detector-space displacement field to "
-            "the matched spots and applies that field across the full lattice."
+            "Affine fits one continuous linear displacement field. Polynomial "
+            "fits a smooth second-order field (x², xy, y²) to capture nonlinear "
+            "curvature across the lattice."
         )
         self.position_reference_correction_model_combo.currentIndexChanged.connect(
             self._on_position_reference_correction_mode_changed
@@ -1363,7 +1365,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
             correction_model_combo.setToolTip(
                 reason or (
                     "Per-spot applies each saved-reference error independently; "
-                    "Affine fits one continuous displacement field to matched spots."
+                    "Affine fits one continuous linear field; Polynomial fits a "
+                    "smooth second-order field to matched spots."
                 )
             )
         affine_reset = getattr(self,"position_reference_affine_reset_button",None)

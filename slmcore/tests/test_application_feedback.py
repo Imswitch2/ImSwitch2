@@ -1250,3 +1250,34 @@ def test_named_reference_affine_correction_uses_one_continuous_field(tmp_path):
 
     reference_session.dispose()
     current_session.dispose()
+
+
+def test_quadratic_reference_correction_reproduces_smooth_nonlinear_field():
+    from slmcore.application.feedback.references import (
+        _apply_quadratic_displacement,_fit_quadratic_displacement,
+    )
+
+    xs,ys = np.meshgrid(
+        np.linspace(10.0,90.0,5),np.linspace(20.0,80.0,4),indexing="xy",
+    )
+    registered = np.vstack([xs.ravel(),ys.ravel()])
+    x = (registered[0]-50.0)/40.0
+    y = (registered[1]-50.0)/30.0
+    expected_error = np.vstack([
+        1.2 + 0.4*x - 0.25*y + 1.8*x*x - 0.7*x*y + 0.6*y*y,
+        -0.8 + 0.2*x + 0.5*y - 0.4*x*x + 0.9*x*y + 1.1*y*y,
+    ])
+
+    polynomial = _fit_quadratic_displacement(registered,expected_error)
+    fitted_error = _apply_quadratic_displacement(polynomial,registered)
+    np.testing.assert_allclose(fitted_error,expected_error,atol=1e-10)
+
+    # An affine field cannot reproduce the deliberately nonlinear curvature.
+    design = np.column_stack([
+        registered.T,np.ones(registered.shape[1],dtype=np.float64),
+    ])
+    affine_coefficients,_,_,_ = np.linalg.lstsq(
+        design,expected_error.T,rcond=None,
+    )
+    affine_error = (design@affine_coefficients).T
+    assert np.max(np.abs(affine_error-expected_error)) > 0.5

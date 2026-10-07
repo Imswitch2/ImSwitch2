@@ -34,9 +34,11 @@ _EDITABLE_POSITION_REFERENCE_LOCK_FIELDS = frozenset({
 })
 _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT = "per_spot"
 _POSITION_REFERENCE_CORRECTION_MODE_AFFINE = "affine"
+_POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL = "polynomial"
 _POSITION_REFERENCE_CORRECTION_MODES = frozenset({
     _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT,
     _POSITION_REFERENCE_CORRECTION_MODE_AFFINE,
+    _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL,
 })
 _UNSET = object()
 
@@ -357,6 +359,10 @@ class PositionReferenceService(FeedbackComponent):
             )
         elif affine_transform is not None:
             affine_transform = _normalize_affine_transform(affine_transform)
+        if correction_mode != _POSITION_REFERENCE_CORRECTION_MODE_AFFINE:
+            # Manual transforms belong only to affine mode. Polynomial is
+            # intentionally automatic-only in this experimental pass.
+            affine_transform = None
         if normalized_mode is PositionReferenceMode.EDITABLE and editable_geometry is None:
             inspection = self._runtime.get_section_feedback_inspection(section)
             measurement = inspection.measurement
@@ -696,6 +702,12 @@ class PositionReferenceService(FeedbackComponent):
                         for row in np.asarray(affine_transform,dtype=np.float64)
                     )
                 ),
+                "polynomial_degree":(
+                    2
+                    if selection.correction_mode
+                    == _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL
+                    else None
+                ),
             },
         }
         return effective_positions,raw_positions,metadata,affine_transform
@@ -709,9 +721,10 @@ class PositionReferenceService(FeedbackComponent):
         """Convert raw saved-reference errors into the selected correction field.
 
         ``per_spot`` preserves the historical behavior. ``affine`` fits one
-        detector-space affine displacement field to matched spots and samples
-        that same field at every registered lattice site. This deliberately
-        prevents one bad/missing site from receiving an independent correction.
+        detector-space affine displacement field to matched spots. ``polynomial``
+        fits a second-order detector-space displacement field with terms
+        ``1, x, y, x^2, xy, y^2``. Both constrained models are sampled at every
+        registered lattice site, so individual sites cannot move independently.
         """
         raw_reference = np.asarray(raw_reference_positions,dtype=np.float64)
         if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT:
@@ -723,13 +736,26 @@ class PositionReferenceService(FeedbackComponent):
         measured = np.asarray(
             localization.measured_positions_px,dtype=np.float64,
         )
+        matched,_inferred,_resolved = localization_site_masks(localization)
+
+        if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL:
+            if int(np.count_nonzero(matched)) < 6:
+                raise RuntimeError(
+                    "Polynomial reference correction requires at least six matched spots."
+                )
+            displacement = raw_reference-measured
+            polynomial = _fit_quadratic_displacement(
+                registered[:,matched],displacement[:,matched],
+            )
+            smooth_error = _apply_quadratic_displacement(polynomial,registered)
+            return measured+smooth_error,None
+
         transform = (
             None
             if selection.affine_transform is None
             else np.asarray(selection.affine_transform,dtype=np.float64)
         )
         if transform is None:
-            matched,_inferred,_resolved = localization_site_masks(localization)
             if int(np.count_nonzero(matched)) < 3:
                 raise RuntimeError(
                     "Affine reference correction requires at least three matched spots."
@@ -743,8 +769,7 @@ class PositionReferenceService(FeedbackComponent):
         affine_error = mapped_registered-registered
         # analyze_position() expects an effective detector-space reference and
         # converts (reference - measured) to the SLM correction. Adding the
-        # shared affine error to each measured point makes that error field
-        # exactly affine while retaining the existing runtime API.
+        # shared constrained error to each measured point retains that API.
         return measured+affine_error,transform
 
     def _position_reference_create_reason(self,section_key: str) -> str:
@@ -856,3 +881,63 @@ def _apply_affine_matrix(transform: np.ndarray,positions: np.ndarray) -> np.ndar
     if points.ndim != 2 or points.shape[0] != 2:
         raise ValueError("Affine positions must have shape (2, N)")
     return matrix[:,:2]@points + matrix[:,2,None]
+
+
+def _quadratic_design(
+    positions: np.ndarray,
+    *,
+    center: np.ndarray,
+    scale: np.ndarray,
+) -> np.ndarray:
+    points = np.asarray(positions,dtype=np.float64)
+    if points.ndim != 2 or points.shape[0] != 2:
+        raise ValueError("Polynomial positions must have shape (2, N)")
+    normalized = (points-center[:,None])/scale[:,None]
+    x,y = normalized
+    return np.column_stack([
+        np.ones(points.shape[1],dtype=np.float64),
+        x,y,x*x,x*y,y*y,
+    ])
+
+
+def _fit_quadratic_displacement(
+    source: np.ndarray,displacement: np.ndarray,
+) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
+    source = np.asarray(source,dtype=np.float64)
+    displacement = np.asarray(displacement,dtype=np.float64)
+    if (
+        source.shape != displacement.shape
+        or source.ndim != 2
+        or source.shape[0] != 2
+    ):
+        raise ValueError("Polynomial point arrays must share shape (2, N)")
+    if source.shape[1] < 6:
+        raise ValueError("At least six points are required for a quadratic fit")
+    center = np.mean(source,axis=1)
+    scale = np.ptp(source,axis=1)
+    if np.any(scale <= 1e-12):
+        raise ValueError("Polynomial reference fit has degenerate coordinates")
+    design = _quadratic_design(source,center=center,scale=scale)
+    coefficients,_,rank,_ = np.linalg.lstsq(design,displacement.T,rcond=None)
+    if int(rank) < 6:
+        raise ValueError("Polynomial reference fit is rank-deficient")
+    # Store output as 2 x 6 to mirror the detector-coordinate convention used
+    # elsewhere in the feedback code. Coordinates are normalized before fitting
+    # to avoid poor conditioning from detector-pixel x^2/y^2 terms.
+    return coefficients.T,center,scale
+
+
+def _apply_quadratic_displacement(
+    polynomial: tuple[np.ndarray,np.ndarray,np.ndarray],
+    positions: np.ndarray,
+) -> np.ndarray:
+    coefficients,center,scale = polynomial
+    matrix = np.asarray(coefficients,dtype=np.float64)
+    if matrix.shape != (2,6):
+        raise ValueError("Polynomial coefficients must have shape (2, 6)")
+    design = _quadratic_design(
+        positions,
+        center=np.asarray(center,dtype=np.float64).reshape(2),
+        scale=np.asarray(scale,dtype=np.float64).reshape(2),
+    )
+    return matrix@design.T
