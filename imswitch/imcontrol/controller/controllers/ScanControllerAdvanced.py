@@ -49,9 +49,10 @@ class ScanControllerAdvanced(SuperScanController):
         super().__init__(*args, **kwargs)
         seed_scan_delays_from_setup(self._widget, self._setupInfo)
 
-        # Snapshot of the parameters that produced the cached signalDict, so
-        # repeated scan frames can skip regenerating an identical signal.
-        self._lastBuiltParams = None
+        # The last full scan design and the parameters that produced it, so a
+        # recording's layout query, the run that follows it and repeated scan
+        # frames all share one build instead of regenerating identical signals.
+        self._designCache = None
 
         # Widget-state <-> scan-dict translation lives in a controller-free,
         # unit-testable serializer (audit 07). The controller binds widgets to it.
@@ -610,12 +611,7 @@ class ScanControllerAdvanced(SuperScanController):
 
     def getAcquisitionLayouts(self, detectorNames):
         """Return line-step-aware layouts from the generated scan signals."""
-        self.getParameters()
-        with self._positionSnapshotForScanDesign():
-            signalDict, scanInfo = self._make_full_scan(
-                self._analogParameterDict,
-                self._digitalParameterDict,
-            )
+        signalDict, scanInfo = self._buildScanSignals()
         if signalDict is None or scanInfo is None:
             raise RuntimeError(
                 "Advanced scan signal generation did not produce layout metadata"
@@ -737,28 +733,31 @@ class ScanControllerAdvanced(SuperScanController):
     def _buildScanSignals(self):
         self.getParameters()
         with self._positionSnapshotForScanDesign():
-            # Only rebuild the (expensive) scan signal if the parameters
-            # actually changed since the last build. Repeated scan frames
-            # reuse identical parameters, so this avoids regenerating a
-            # byte-identical galvo/TTL signal — and the per-frame stall it
-            # causes — on every repeat. Live parameter edits still trigger
-            # a rebuild because the snapshot then differs.
-            paramsSnapshot = (
-                copy.deepcopy(self._analogParameterDict),
-                copy.deepcopy(self._digitalParameterDict),
-            )
-            if (
-                self.signalDict is not None
-                and self.scanInfoDict is not None
-                and paramsSnapshot == self._lastBuiltParams
-            ):
-                return self.signalDict, self.scanInfoDict
-            # TTL cycle (linestep_enable) is the sole authority for per-laser emission
-            signalDict, scanInfoDict = self._make_full_scan(
-                self._analogParameterDict, self._digitalParameterDict
-            )
-            self._lastBuiltParams = paramsSnapshot
-            return signalDict, scanInfoDict
+            return self._cachedFullScan()
+
+    def _cachedFullScan(self):
+        """Full scan design for the current parameters, built at most once.
+
+        Call inside ``_positionSnapshotForScanDesign`` so the snapshot covers
+        the positions the design depends on. Designing a large scan takes
+        seconds on the GUI thread, and starting a recording used to pay it
+        twice: once for the acquisition layouts, once for the run. Parameters
+        identical to the last build -- that pair, or repeated scan frames --
+        now reuse its result; any parameter or position change rebuilds.
+        """
+        paramsSnapshot = (
+            copy.deepcopy(self._analogParameterDict),
+            copy.deepcopy(self._digitalParameterDict),
+        )
+        cache = self.__dict__.get("_designCache")
+        if cache is not None and cache[0] == paramsSnapshot:
+            return cache[1], cache[2]
+        # TTL cycle (linestep_enable) is the sole authority for per-laser emission
+        signalDict, scanInfoDict = self._make_full_scan(
+            self._analogParameterDict, self._digitalParameterDict
+        )
+        self._designCache = (paramsSnapshot, signalDict, scanInfoDict)
+        return signalDict, scanInfoDict
 
     def scanDone(self):
         """Called by the system when nidaq finishes."""

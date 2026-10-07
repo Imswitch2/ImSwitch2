@@ -181,7 +181,7 @@ def test_advanced_scan_cache_tracks_position_snapshot():
     )
     ctrl.signalDict = None
     ctrl.scanInfoDict = None
-    ctrl._lastBuiltParams = None
+    ctrl._designCache = None
     builds = []
 
     def make_full_scan(_analog, _digital):
@@ -201,6 +201,52 @@ def test_advanced_scan_cache_tracks_position_snapshot():
     assert third[1]['position'] == 4.0
     assert builds == [3.0, 4.0]
     assert 'axis_position_before_scan' not in ctrl._analogParameterDict
+
+
+def test_advanced_recording_layouts_and_run_share_one_design():
+    """Starting a recording asks for layouts, then runs: one build, not two.
+
+    Each build of a large scan stalls the GUI for seconds; the layout query
+    used to bypass the cache the run consults.
+    """
+    ctrl = ScanControllerAdvanced.__new__(ScanControllerAdvanced)
+    ctrl._analogParameterDict = {'target_device': ['Stage']}
+    ctrl._digitalParameterDict = {}
+    ctrl.getParameters = MagicMock()
+    ctrl._capturePositionersBeforeScan = lambda: ctrl._analogParameterDict.__setitem__(
+        'axis_position_before_scan', [[2.0]]
+    )
+    builds = []
+    design = ({'scanSignalsDict': {}}, {'n_linesteps': 1})
+
+    def make_full_scan(_analog, _digital):
+        builds.append(1)
+        return design
+
+    ctrl._make_full_scan = make_full_scan
+    layoutCalls = []
+    ctrl._layoutPulseCounts = MagicMock(return_value={})
+
+    import sys
+
+    module = sys.modules[ScanControllerAdvanced.__module__]
+
+    def fake_layouts(scanInfo, *_args, **_kwargs):
+        layoutCalls.append(scanInfo)
+        return {}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, 'build_advanced_scan_layouts', fake_layouts)
+        for helper in ('scan_driven_detector_names', 'scan_directions',
+                       'scan_devices', 'physical_kind_overrides'):
+            patch.setattr(module, helper, lambda *_a, **_k: None)
+        patch.setattr(module, 'validate_detector_edge_counts', lambda *_a: None)
+        ctrl.getAcquisitionLayouts(())
+        runDesign = ctrl._buildScanSignals()
+
+    assert builds == [1]
+    assert layoutCalls == [design[1]]
+    assert runDesign == design
 
 
 def test_point_scan_layout_design_receives_position_snapshot():
