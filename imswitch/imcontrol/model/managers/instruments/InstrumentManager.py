@@ -63,6 +63,7 @@ class InstrumentManager(DeviceManagerStatusMixin, ABC):
         self.__name = name
         self._instrumentInfo = instrumentInfo
         self._managerProperties = dict(getattr(instrumentInfo, 'managerProperties', None) or {})
+        self._lowLevelManagers = lowLevelManagers
         self.transient = bool(getattr(instrumentInfo, 'transient', False))
         connectOnStartup = bool(getattr(instrumentInfo, 'connectOnStartup', False))
         self._statusListeners: List[Callable[[str], None]] = []

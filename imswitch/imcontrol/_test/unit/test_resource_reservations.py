@@ -404,3 +404,57 @@ def test_instrument_settings_actions_and_windows_are_admitted(registry):
     session.run_action('zero', confirm_dark=True, owner=rsv.token)
     with pytest.raises(PermissionError, match='beam to be blocked'):
         session.run_action('zero', owner=rsv.token)
+
+
+# ---------------------------------------------------------- Standa rotators
+def _standa(monkeypatch, motor):
+    from imswitch.imcontrol.model.managers.rotators.StandaRotatorManager import (
+        StandaRotatorManager,
+    )
+
+    monkeypatch.setattr(StandaRotatorManager, '_getMotorObj', lambda self, *a: motor)
+    info = SimpleNamespace(managerProperties={'motorListIndex': 0, 'ximcLibLocation': 'x',
+                                              'stepsPerTurn': 200, 'microstepsPerStep': 256})
+    return StandaRotatorManager(info, 'hwp')
+
+
+class _StandaMotor:
+    """The StandaMotor surface the manager uses (the real class needs libximc)."""
+
+    def __init__(self, *, emulated=False, imported=True):
+        self.emulated, self._imported, self.pos = emulated, imported, 0.0
+
+    def get_pos(self):
+        return self.pos
+
+    def moveabs(self, deg):
+        self.pos = float(deg)
+
+
+def test_standa_is_audited_and_reads_back_fresh(monkeypatch, registry):
+    from imswitch.imcontrol.model.measurement.adapters import RotatorManagerControl
+    from imswitch.imcontrol.model.measurement.controls import READBACK_FRESH
+
+    motor = _StandaMotor()
+    manager = _standa(monkeypatch, motor)
+    assert manager.isSimulated is False
+    control = RotatorManagerControl(manager)
+    assert control.capabilities.readback == READBACK_FRESH
+    result = control.apply(30.0)
+    assert result.ok and result.measured == 30.0
+    motor.pos = 31.0                                    # moved by hand
+    assert control.read_position() == 31.0
+
+
+@pytest.mark.parametrize('motor', [_StandaMotor(emulated=True), _StandaMotor(imported=False)],
+                         ids=['libximc virtual controller', 'libximc not loaded'])
+def test_standa_without_a_controller_is_simulated_and_refused(monkeypatch, motor):
+    from imswitch.imcontrol.model.measurement.adapters import (
+        NotAuditedError,
+        RotatorManagerControl,
+    )
+
+    manager = _standa(monkeypatch, motor)
+    assert manager.isSimulated is True
+    with pytest.raises(NotAuditedError, match='simulated'):
+        RotatorManagerControl(manager)

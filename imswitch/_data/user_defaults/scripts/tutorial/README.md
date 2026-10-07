@@ -37,6 +37,7 @@ The tutorials are ordered so you only switch when a new block begins:
 | scanning 01-03 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
 | scanning 04 | `mixed_hamamatsu_apd_mock_scan_setup.json` | the same, plus a point detector (APD) |
 | scanning 05 | `galvo_apd_mock_scan_setup.json` | a point-scanning microscope with two lasers |
+| measurement 01 | `example_no_hardware.json` | two waveplates in front of a polarimeter |
 
 ## Running a tutorial
 
@@ -89,6 +90,16 @@ the file. To make your own settings, set up a scan in the Scan widget and
 save it with `api.imcontrol.saveScanParamsToFile(path)`.
 `scanning/scan_helpers.py` holds the steps of scanning 01 as functions for
 02-04.
+
+## measurement
+
+| Step | Script | Setup file | You learn |
+|---|---|---|---|
+| 01 | `01_polarisation_map.py` | `example_no_hardware.json` | instruments; a measurement run over two rotators; the Poincaré view in ImProcess |
+
+Instruments (power meters, polarimeters) are not cameras: they are read by
+measurement runs and scripts, and a run writes one `*.run.h5` file that
+ImProcess opens. See the Instruments page of the documentation.
 
 ## On your own microscope
 

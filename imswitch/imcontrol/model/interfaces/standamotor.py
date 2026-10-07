@@ -22,6 +22,9 @@ class StandaMotor():
         self._device_id = device_id
         self._steps_per_turn = steps_per_turn
         self._microsteps_per_step = microsteps_per_step
+        #: True when no controller was found and libximc's virtual controller
+        #: (xi-emu) was opened instead: it "moves", but nothing is connected.
+        self.emulated = False
         if self._imported:
             # This is device search and enumeration with probing. It gives more information about devices.
             probe_flags = pyximc.EnumerateFlags.ENUMERATE_PROBE
@@ -40,7 +43,9 @@ class StandaMotor():
                 uri = urllib.parse.urlunparse(urllib.parse.ParseResult(scheme="file", \
                         netloc=None, path=tempdir, params=None, query=None, fragment=None))
                 open_name = re.sub(r'^file', 'xi-emu', uri).encode()
-                self.__logger.debug("Controller not found, mock controller opened.")
+                self.emulated = True
+                self.__logger.warning("Standa controller not found: libximc's virtual "
+                                      "controller (xi-emu) opened instead.")
 
             if type(open_name) is str:
                 open_name = open_name.encode()

@@ -1,4 +1,5 @@
 """Instruments as transient setup devices (plan §5-6, P-4)."""
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -348,3 +349,155 @@ def test_laser_power_lut_from_a_script(tmp_path, registry):
     assert report.refused == [], report.refused
     assert report.lut_file.parent == tmp_path and report.lut_file.exists()
     assert (daq.voltage, daq.digital) == (1.0, False)          # restored
+
+
+# ---------------------------------------- rotator grid, panel, mock coupling
+def test_mock_pax_follows_the_rotators_it_names():
+    from imswitch.imcontrol.model.managers.instruments.MockPAXManager import MockPAXManager
+
+    plates = {'qwp': SimpleNamespace(position=0.0), 'hwp': SimpleNamespace(position=0.0)}
+
+    class Rotators(dict):
+        def getAllDeviceNames(self):
+            return list(self)
+    manager = MockPAXManager(
+        InstrumentInfo(managerName='MockPAXManager', connectOnStartup=True,
+                       managerProperties={'plate1Rotator': 'qwp', 'plate2Rotator': 'hwp',
+                                          'noiseDeg': 0.0}),
+        'pax', rotatorsManager=Rotators(plates))
+    session = manager.session
+
+    def azimuth():
+        window = session.sample_window(session.open_window(), 1, 1.0)
+        return window.samples[0].values['azimuth']
+    before = azimuth()
+    plates['hwp'].position = 22.5             # a half-wave plate turns linear light by 45°
+    assert abs(abs(azimuth() - before) - math.pi / 4) < 0.01
+    with pytest.raises(ValueError, match="no rotator 'nope'"):
+        MockPAXManager(InstrumentInfo(managerName='MockPAXManager', connectOnStartup=True,
+                                      managerProperties={'plate1Rotator': 'nope'}),
+                       'pax2', rotatorsManager=Rotators(plates))
+
+
+def _elliptec_mocks(monkeypatch):
+    from imswitch.imcontrol.model.interfaces import elliptecbus
+    from imswitch.imcontrol.model.managers.rotators.ElliptecRotatorManager import (
+        ElliptecRotatorManager,
+    )
+
+    elliptecbus._SharedElliptecBus._instances.clear()
+
+    def unavailable(*_):
+        raise OSError('no Elliptec bus')
+    monkeypatch.setattr(elliptecbus, '_open_elliptec_stage', unavailable)
+
+    def rotator(name, address):
+        return ElliptecRotatorManager(SimpleNamespace(managerProperties={
+            'port': 'MOCK_COM9', 'address': address, 'scale': 'stage',
+            'homeOnInit': False}), name)
+    return {'qwp': rotator('qwp', 0), 'hwp': rotator('hwp', 1)}
+
+
+def test_rotator_grid_refuses_simulated_rotators_unless_allowed(tmp_path, monkeypatch, registry):
+    from imswitch.imcommon.model.measurement_run import MeasurementRunFile
+    from imswitch.imcontrol.model.measurement.adapters import NotAuditedError
+
+    rotators = _elliptec_mocks(monkeypatch)
+    _, master = _serviceWith({'pax': _info(managerName='MockPAXManager', connectOnStartup=True,
+                                           managerProperties={})})
+    master.rotatorsManager = rotators
+    api = _instrumentsController(master)
+    with pytest.raises(NotAuditedError, match='simulated'):
+        api.measureRotatorGrid([('qwp', [0, 45]), ('hwp', [0, 22.5])], ['pax'],
+                               folder=str(tmp_path))
+    seen = []
+    report = api.measureRotatorGrid(
+        [('qwp', [0, 45]), ('hwp', [0, 22.5])], ['pax'], samples_per_point=2,
+        settle_s=0.0, folder=str(tmp_path), allow_simulated=True, progress=seen.append)
+    assert report.points_committed == 4 and len(seen) == 4
+    run = MeasurementRunFile.load(report.run_file)
+    assert run.control_names() == ['qwp', 'hwp']
+    assert all(c['simulated'] for c in run.metadata['controls'])
+    assert rotators['hwp'].position == 0.0               # returned to start
+
+
+def test_stop_from_imscripting_ends_the_run_and_reaches_the_script(tmp_path, monkeypatch,
+                                                                    registry):
+    from imswitch.imcommon.model.cancellation import (
+        CancelToken,
+        OperationCancelled,
+        clearCurrentCancelToken,
+        setCurrentCancelToken,
+    )
+
+    rotators = _elliptec_mocks(monkeypatch)
+    _, master = _serviceWith({'pax': _info(managerName='MockPAXManager', connectOnStartup=True,
+                                           managerProperties={})})
+    master.rotatorsManager = rotators
+    api = _instrumentsController(master)
+    token = CancelToken()
+    setCurrentCancelToken(token)
+    points = []
+
+    def progress(event):
+        points.append(event.point)
+        if len(points) == 2:
+            token.requestStop()            # the Stop button
+    try:
+        with pytest.raises(OperationCancelled):
+            api.measureRotatorGrid([('hwp', [float(a) for a in range(0, 90, 5)])], ['pax'],
+                                   samples_per_point=1, settle_s=0.05,
+                                   folder=str(tmp_path), allow_simulated=True,
+                                   progress=progress)
+    finally:
+        clearCurrentCancelToken()
+    assert 2 <= len(points) < 18
+    assert list(tmp_path.glob('*.run.h5'))              # the data so far is kept
+
+
+def test_live_panel_shows_readings_and_leaves_held_instruments_alone(qtbot, registry):
+    from imswitch.imcontrol.controller.controllers.InstrumentsController import (
+        InstrumentsController,
+    )
+    from imswitch.imcontrol.view.widgets.InstrumentsWidget import InstrumentsWidget
+
+    _, master = _serviceWith({'pm1': _info(transient=True, connectOnStartup=True),
+                              'pm2': _info(transient=True)})
+    widget = InstrumentsWidget(None)
+    qtbot.addWidget(widget)
+    controller = InstrumentsController(None, SimpleNamespace(sharedAttrs={}), master,
+                                       widget=widget, factory=None, moduleCommChannel=None)
+    try:
+        box = widget.boxes['pm1']
+        qtbot.waitUntil(lambda: box.valueLabels['power'].text().endswith('mW'), timeout=3000)
+        assert box.valueLabels['power'].text().startswith('2')       # 2 mW + noise
+        assert widget.boxes['pm2'].connectButton.text() == 'Connect'
+        assert not widget.boxes['pm2'].settingButtons['wavelength_nm'].isEnabled()
+
+        run = registry.reserve([instrument_key('pm1')], 'polarisation map')
+        controller._refreshStates()
+        assert 'in use by polarisation map' in box.stateLabel.text()
+        assert not box.actionButtons['zero'][0].isEnabled()
+        reads = master.instrumentsManager['pm1'].session._sequence
+        qtbot.wait(600)
+        assert master.instrumentsManager['pm1'].session._sequence == reads   # no live reads
+        registry.release(run.token)
+    finally:
+        controller.closeEvent()
+
+
+def test_live_values_are_formatted_for_reading():
+    from imswitch.imcommon.model.measurement_run import QuantitySpec
+    from imswitch.imcontrol.controller.controllers.InstrumentsController import (
+        format_quantity,
+        stokes_text,
+    )
+
+    power = QuantitySpec('power', 'W', 'optical.power')
+    assert format_quantity(power, 1.234e-3) == '1.234 mW'
+    assert format_quantity(power, 5.6e-7) == '560 nW'
+    assert format_quantity(power, 2.5e-5) == '25 µW'
+    assert format_quantity(QuantitySpec('azimuth', 'rad', 'x'), math.pi / 4) == '+45.00°'
+    assert format_quantity(QuantitySpec('dop', '', 'x'), 0.99512) == '0.995'
+    assert format_quantity(power, float('nan')) == '—'
+    assert stokes_text({'azimuth': 0.0, 'ellipticity': 0.0}) == '+1.000 / +0.000 / +0.000'

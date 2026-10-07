@@ -405,6 +405,8 @@ class MeasurementRunner:
                 'can_stop': caps.can_stop, 'settle_s': caps.settle_s,
                 'tolerance': caps.tolerance, 'start_position': starts.get(name),
                 'zero_reference': getattr(control, 'zero_reference', {'state': 'unknown'}),
+                # True only when the run explicitly allowed a simulated device.
+                'simulated': bool(getattr(control, 'simulated', False)),
             })
         instruments = {}
         for name, session in self.instruments.items():

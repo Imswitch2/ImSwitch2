@@ -78,8 +78,11 @@ class MasterController:
             **lowLevelManagers
         )
         # Measurement instruments; transient ones stay absent until connected.
+        # Simulated instruments may follow simulated devices (the mock PAX
+        # reads the mock waveplate rotators), hence rotatorsManager.
         self.instrumentsManager = InstrumentsManager(
             getattr(self.__setupInfo, 'instruments', None),
+            rotatorsManager=self.rotatorsManager,
             **lowLevelManagers
         )
 

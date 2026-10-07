@@ -21,6 +21,25 @@ class StandaRotatorManager(RotatorManager):
         
         self.get_pos()
 
+    def readPosition(self):
+        """ Fresh position in degrees (waits until the motor has stopped). """
+        self.get_pos()
+        return self._position
+
+    @property
+    def isSimulated(self) -> bool:
+        """ True for the mock fallback, and for libximc's virtual controller
+        (opened silently when no controller is found) or a library that did
+        not load: none of them moves a real mount. """
+        motor = getattr(self, '_motor', None)
+        return bool(
+            getattr(self, '_mock_fallback', False)
+            or motor is None
+            or type(motor).__name__.startswith('Mock')
+            or getattr(motor, 'emulated', False)
+            or not getattr(motor, '_imported', True)
+        )
+
     def get_info(self):
         info = self._motor.test_info()
         for info_piece in info:

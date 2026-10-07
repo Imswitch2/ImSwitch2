@@ -30,6 +30,15 @@
         "code:optional(get)"
       ]
     },
+    "plate1Rotator": {
+      "description": "Rotator whose position is the first waveplate's angle, instead of ``plate1Deg``.  Optional.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:string"
+      ]
+    },
     "plate2Deg": {
       "description": "Simulated angle of the second waveplate (half-wave).  Default 0.",
       "type": [
@@ -42,6 +51,15 @@
         "code:default:number",
         "code:float()",
         "code:optional(get)"
+      ]
+    },
+    "plate2Rotator": {
+      "description": "Rotator whose position is the second waveplate's angle, instead of ``plate2Deg``.  Optional.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "example:string"
       ]
     },
     "serial": {

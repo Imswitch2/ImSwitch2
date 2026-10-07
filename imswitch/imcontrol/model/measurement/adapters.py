@@ -40,6 +40,10 @@ from .controls import (
 AUDITED_ROTATORS = {
     'KinesisRotatorManager': dict(can_stop=False, settle_s=0.05, tolerance=0.05),
     'ElliptecRotatorManager': dict(can_stop=False, settle_s=0.05, tolerance=0.1),
+    # move_abs returns once the motor stopped (get_pos waits for stop); the
+    # ximc return codes are not checked, so the fresh readback is what proves
+    # a move. The soft stop (command_sstp) is not wired as a run stop yet.
+    'StandaRotatorManager': dict(can_stop=False, settle_s=0.05, tolerance=0.05),
 }
 AUDITED_RAW_DRIVE_LASERS = {
     'NidaqLaserManager': 'V',
@@ -76,12 +80,17 @@ class RotatorManagerControl(RunControl):
     """A rotation mount as a run control (degrees)."""
 
     def __init__(self, manager, *, settle_s: Optional[float] = None,
-                 tolerance: Optional[float] = None, allow_test_class: bool = False) -> None:
+                 tolerance: Optional[float] = None, allow_test_class: bool = False,
+                 allow_simulated: bool = False) -> None:
         if allow_test_class:
             spec = dict(can_stop=hasattr(manager, 'stop'), settle_s=0.0, tolerance=0.05)
         else:
             spec = dict(AUDITED_ROTATORS[_audited_name(manager, AUDITED_ROTATORS, 'rotator')])
-        if getattr(manager, 'isSimulated', False):
+        #: Simulated devices only on explicit request (a mock setup, a
+        #: tutorial); recorded per control in the run file.
+        self.allow_simulated = bool(allow_simulated)
+        self.simulated = bool(getattr(manager, 'isSimulated', False))
+        if self.simulated and not self.allow_simulated:
             raise NotAuditedError(
                 f'rotator {manager.name!r} fell back to a simulated device (hardware '
                 f'not found); a measurement run cannot use it')
@@ -103,6 +112,8 @@ class RotatorManagerControl(RunControl):
         # Checked on every command: a bus can fall back to its simulation
         # mid-run (Elliptec after a communication error), and a simulated
         # move "succeeds" without moving anything.
+        if self.allow_simulated:
+            return
         if getattr(self.manager, 'isSimulated', False):
             raise SimulatedDeviceError(
                 f'rotator {self.name!r} is running as a simulation (hardware not '

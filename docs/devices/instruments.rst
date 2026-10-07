@@ -93,6 +93,58 @@ timing has been checked on hardware (see the cards below) a read needs
 a qualified result (no LUT file).
 
 
+The Instruments panel
+=====================
+
+A setup with instruments gets an **Instruments** panel in Hardware Control
+(added even if ``availableWidgets`` does not list it). Each instrument shows
+its state, its live readings -- power with an SI prefix, azimuth and
+ellipticity in degrees, the degree of polarisation and the normalised Stokes
+vector s1 / s2 / s3 for a polarimeter -- its settings (the wavelength) and
+actions (Zero, after a "beam blocked" confirmation), and Connect /
+Disconnect.
+
+With **Live** on, a connected instrument is read continuously. While a
+measurement run or a script holds it, the panel makes no reads of its own:
+it shows the holder's samples and says who holds it, and its settings and
+actions are disabled. Live readings are a look, not a measurement: they do
+not need verified timing.
+
+
+Measuring on a grid of rotator positions
+========================================
+
+``api.imcontrol.measureRotatorGrid`` steps rotators over a grid and samples
+instruments after every move, into one ``*.run.h5`` file:
+
+.. code-block:: python
+
+    report = api.imcontrol.measureRotatorGrid(
+        [('qwp', [i * 5.0 for i in range(37)]),      # outer axis, 0 ... 180°
+         ('hwp', [i * 2.5 for i in range(37)])],     # inner axis, 0 ... 90°
+        ['pax1'], samples_per_point=5, allow_unverified_timing=True,
+    )
+    print(report.run_file)
+
+The rotators, the instruments and the waveform outputs are reserved for the
+whole run; the rotators return to where they started. **Stop** in
+ImScripting ends the run after the current point and keeps the data. Only
+rotators audited for measurement runs are accepted -- Standa, Kinesis and
+Elliptec mounts -- and never one that runs as a simulation (an unplugged
+Elliptec bus, a Standa without its controller), unless the run passes
+``allow_simulated=True`` (mock setups; recorded in the run file).
+
+**Viewing a polarisation map.** In ImProcess: *Tools → Load reconstructor
+→ Polarisation map*, open the ``*.run.h5`` file, and run *Polarisation map*
+from the Parameters panel. It shows the measured states on a 3D Poincaré
+sphere and the best angle pair for each target polarisation. The scripting
+tutorial ``measurement/01_polarisation_map.py`` does all of this on
+``example_no_hardware.json``.
+
+A half-wave plate turned by θ turns the polarisation by 4θ on the Poincaré
+sphere, a quarter-wave plate by about 2θ: give the HWP the finer step.
+
+
 Laser power LUT
 ===============
 
@@ -249,8 +301,11 @@ has one). Same quantities, setting and ``zero`` action as the PM100.
 MockPAXManager
 ==============
 
-A simulated PAX1000 behind two fixed waveplates, for hardware-free setups.
-Same quantities as the PAX1000.
+A simulated PAX1000 behind two waveplates, for hardware-free setups. Same
+quantities as the PAX1000. The waveplates are fixed angles, or follow two
+rotator entries of the setup (``plate1Rotator`` / ``plate2Rotator``), so
+moving those rotators changes the polarisation it reads --
+``example_no_hardware`` couples it to its mock QWP and HWP.
 
 **managerProperties**
 
@@ -267,6 +322,12 @@ Same quantities as the PAX1000.
    * - ``plate2Deg``
      - float
      - Simulated angle of the second waveplate (half-wave).  Default 0.
+   * - ``plate1Rotator``
+     - str
+     - Rotator whose position is the first waveplate's angle, instead of ``plate1Deg``.  Optional.
+   * - ``plate2Rotator``
+     - str
+     - Rotator whose position is the second waveplate's angle, instead of ``plate2Deg``.  Optional.
    * - ``noiseDeg``
      - float
      - Angular noise per reading.  Default 0.2.

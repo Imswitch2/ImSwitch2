@@ -73,7 +73,7 @@
         "Mock PAX": {
             "managerName": "MockPAXManager",
             "transient": true,
-            "managerProperties": {"plate1Deg": 0.0, "plate2Deg": 0.0}
+            "managerProperties": {"plate1Rotator": "Mock QWP", "plate2Rotator": "Mock HWP"}
         }
     },
     "positioners": {

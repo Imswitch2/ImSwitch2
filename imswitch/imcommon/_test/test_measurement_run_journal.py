@@ -270,3 +270,19 @@ def test_torn_tail_of_an_interrupted_journal_is_not_damage(tmp_path):
     contents = read_journal(tmp_path / 'run.journal')
     assert not contents.damaged
     assert contents.acquisition is AcquisitionOutcome.INTERRUPTED
+
+
+@pytest.mark.parametrize('name', ['Mock QWP', '488 (EXC)', 'pax-1.b', 'HWP #2'])
+def test_setup_names_with_spaces_and_brackets_are_used_as_they_are(name):
+    from imswitch.imcommon.model.measurement_run.journal import check_name
+
+    assert check_name('control', name) == name
+
+
+@pytest.mark.parametrize('name', ['a/b', 'a\\b', 'a:b', 'x?', ' x', 'x ', 'x.', '.', '..', '',
+                                  'tab\there'])
+def test_names_that_cannot_be_file_names_are_refused(name):
+    from imswitch.imcommon.model.measurement_run.journal import check_name
+
+    with pytest.raises(JournalError, match='cannot be used as a file name'):
+        check_name('control', name)

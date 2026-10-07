@@ -54,7 +54,10 @@ from .types import (
 JOURNAL_FORMAT = 'imswitch-run-journal'
 JOURNAL_VERSION = 1
 
-_NAME_RE = re.compile(r'^[A-Za-z0-9_.\-]+$')
+#: Setup names ("Mock QWP", "488 (EXC)") are used as they are. Refused: path
+#: separators, the characters Windows forbids in file names, control
+#: characters, leading/trailing spaces or dots, and "." / "..".
+_NAME_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _PROFILE_LEN = 32
 _REASON_LEN = 64
 _CAUSE_LEN = 64
@@ -71,10 +74,12 @@ class JournalError(RuntimeError):
 
 def check_name(kind: str, name: str) -> str:
     """Instrument and control names become file and dataset names."""
-    if not isinstance(name, str) or not _NAME_RE.match(name):
+    if (not isinstance(name, str) or not name or len(name) > 128
+            or _NAME_FORBIDDEN.search(name)
+            or name != name.strip(' .') or name in ('.', '..')):
         raise JournalError(
-            f'{kind} name {name!r} must consist of letters, digits, '
-            f'".", "_" or "-"'
+            f'{kind} name {name!r} cannot be used as a file name: no path separators, '
+            f'no <>:"|?*, no leading or trailing spaces or dots'
         )
     return name
 

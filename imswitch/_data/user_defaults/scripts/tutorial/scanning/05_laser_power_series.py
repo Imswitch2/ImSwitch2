@@ -20,8 +20,9 @@ Setup
                 the Laser widget shows). A value set on an on/off laser is
                 ignored.
 
-Next: that was the last tutorial. The workflows folder has complete
-      acquisitions for real microscopes.
+Next: measurement/01_polarisation_map.py -- instruments and measurement
+      runs. The workflows folder has complete acquisitions for real
+      microscopes.
 """
 
 import glob

@@ -263,7 +263,15 @@ class InstrumentSession:
             pass
 
     def add_sample_listener(self, callback: Callable[[str, Sample], None]) -> None:
+        """``callback(name, sample)`` for every accepted sample, whoever read
+        it (a run, a script, a live display) -- on the reading thread."""
         self._sample_listeners.append(callback)
+
+    def remove_sample_listener(self, callback) -> None:
+        try:
+            self._sample_listeners.remove(callback)
+        except ValueError:
+            pass
 
     # ------------------------------------------------------------ lifecycle
     def connect(self) -> InstrumentIdentity:

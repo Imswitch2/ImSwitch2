@@ -113,9 +113,9 @@ laser power LUT procedure are described in :doc:`devices/instruments`.
         r.rotator('hwp').apply(22.5, deadline_s=20)
         window = r.instrument('pax1').read(5, allow_unverified=True)
 
-Only devices audited for exclusive control can be reserved (real Kinesis
-and Elliptec rotators, NI-DAQ and AA AOTF lasers); a rotator running as a
-simulation is refused.
+Only devices audited for exclusive control can be reserved (real Standa,
+Kinesis and Elliptec rotators, NI-DAQ and AA AOTF lasers); a rotator running
+as a simulation is refused.
 
 .. _scripting-tutorials:
 

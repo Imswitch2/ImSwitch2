@@ -5,7 +5,9 @@
     "managerProperties": {
       "noiseDeg": 1.5,
       "plate1Deg": 1.5,
+      "plate1Rotator": "example",
       "plate2Deg": 1.5,
+      "plate2Rotator": "example",
       "serial": "example"
     }
   }

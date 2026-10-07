@@ -91,7 +91,8 @@ def test_no_hardware_profile_has_transient_mock_instruments():
     from imswitch.imcontrol.model.managers.InstrumentsManager import InstrumentsManager
 
     setup_info = _load_no_hardware_setup()
-    instruments = InstrumentsManager(setup_info.instruments)
+    rotators = RotatorsManager(setup_info.rotators)          # the mock PAX's waveplates
+    instruments = InstrumentsManager(setup_info.instruments, rotatorsManager=rotators)
     try:
         assert set(instruments.getAllDeviceNames()) == {"Mock power meter", "Mock PAX"}
         for _name, instrument in instruments:
@@ -100,3 +101,4 @@ def test_no_hardware_profile_has_transient_mock_instruments():
             assert instrument.connected
     finally:
         instruments.finalize()
+        rotators.finalize()

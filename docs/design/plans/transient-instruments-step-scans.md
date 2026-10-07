@@ -946,6 +946,32 @@ P-4 rig gates still open: §6.6 per driver, USB removal mid-run.
 Still not bounded by the executor: prepare steps (they rely on the
 drivers' own I/O timeouts).
 
+**Measuring from scripts + Instruments panel (2026-10-07, Lenny: measurements
+stay in ImScripting; no detector adapters).**
+- `api.imcontrol.measureRotatorGrid(axes, instruments, ...)`: a snake/raster
+  grid over rotators, sampled by instruments, one run file; ImScripting's
+  Stop ends the run after the current point (cancel-token watcher), the data
+  is kept. `allow_simulated=True` accepts simulated rotators (mock setups);
+  each control records `simulated` in the run file.
+- `StandaRotatorManager` audited for runs: fresh `readPosition`, and
+  `isSimulated` also for libximc's silent virtual controller (`xi-emu`, now
+  logged as a warning) and an unloaded library.
+- Journal names: setup names with spaces and brackets are used as they are
+  (only path separators, Windows-forbidden characters, control characters
+  and leading/trailing spaces or dots are refused).
+- `MockPAXManager` `plate1Rotator` / `plate2Rotator`: the mock polarimeter
+  follows rotator entries; `example_no_hardware.json` couples it to its
+  mock QWP / HWP. Instruments receive `rotatorsManager`.
+- Tutorial `scripts/tutorial/measurement/01_polarisation_map.py` (runs in
+  the shipped-tutorial test on `example_no_hardware.json`, ~35 s) and its
+  ImProcess steps.
+- Instruments panel (this is the §6.4 Readings dock, minimal): added
+  automatically for setups with instruments; live values (power SI-prefixed,
+  angles in degrees, DOP, Stokes), wavelength, Zero with confirmation,
+  Connect / Disconnect, Live toggle. Live reads only when connected and
+  unheld; while held it shows the holder's samples (session sample
+  listener) and who holds it.
+
 **P-5 (done on mocks).** `imcontrol/model/measurement/laser_lut.py`
 (`run_laser_lut`): prepare steps inside the reservation (record laser state,
 set + verify the meter wavelength, emission off, caller confirms the beam is
