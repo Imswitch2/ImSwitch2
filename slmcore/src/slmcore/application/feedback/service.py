@@ -31,8 +31,7 @@ from .contracts import (
     MeasurementDispatcher,SLMFeedbackCallbacks,
 )
 from .geometry_calibration import (
-    GeometryCalibrationPayload,GeometryOrientationCalibrationContext,
-    GeometryOrientationFeedbackService,_GeometryCalibrationWorkflow,
+    GeometryOrientationCalibrationContext,GeometryOrientationFeedbackService,
 )
 from .localization import LocalizationService
 from .measurement import MeasurementService
@@ -87,18 +86,6 @@ class SLMFeedbackService:
             editor_writes_allowed=editor_writes_allowed,
             active_feedback_plane=self._active_feedback_plane,
             startup_preferences=startup_preferences,
-            upload_frame=lambda frame:self._application_session.upload_frame(frame),
-            compute_geometry_orientation_cgh=(
-                lambda *args,**kwargs:
-                    self._application_session.compute_geometry_orientation_cgh(
-                        *args,**kwargs
-                    )
-            ),
-            upload_current_frame=(
-                lambda:self._application_session.upload_current_frame()
-            ),
-            request_measurement=self._measurement.request_measurement,
-            feedback_measurement_metadata=self._measurement.feedback_measurement_metadata,
             update_committed_analysis=self._update_committed_analysis,
             observation_geometry=observation_geometry,
             geometry_calibration=geometry_calibration,
@@ -440,22 +427,6 @@ class SLMFeedbackService:
             plane_name=plane_name,
         )
 
-    def _geometry_calibration_key(self,section_key: str) -> tuple[str,str | None]:
-        return self._geometry._geometry_calibration_key(section_key)
-
-    def _active_geometry_calibration_frame(
-        self,section_key: str,
-    ) -> tuple[str | None,_GeometryCalibrationWorkflow] | None:
-        return self._geometry._active_geometry_calibration_frame(section_key)
-
-    def _geometry_period_guess_px(
-        self,section_key: str,grid_x: int,grid_y: int,
-    ) -> tuple[float,float]:
-        return self._geometry._geometry_period_guess_px(section_key,grid_x,grid_y)
-
-    def _geometry_period_to_um(self,section_key: str,value: float,axis: str) -> float | None:
-        return self._geometry._geometry_period_to_um(section_key,value,axis)
-
     def geometry_period_from_um(self,section_key: str,value_um: float,axis: str) -> float:
         return self._geometry.geometry_period_from_um(section_key,value_um,axis)
 
@@ -502,15 +473,6 @@ class SLMFeedbackService:
         return self._geometry.set_geometry_orientation_calibration_measurement(
             section_key,
             measurement,
-        )
-
-    def _localize_geometry_orientation_workflow(
-        self,section_key: str,workflow: _GeometryCalibrationWorkflow,parameters: Mapping[str,Any] | None,
-    ) -> LocalizationResult:
-        return self._geometry._localize_geometry_orientation_workflow(
-            section_key,
-            workflow,
-            parameters,
         )
 
     def geometry_orientation_localization_candidate(
