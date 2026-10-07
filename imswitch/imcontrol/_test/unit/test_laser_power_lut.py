@@ -215,34 +215,57 @@ def test_zeroing_with_the_laser_on_would_have_corrupted_the_offset():
     assert driver.zeroed_with_w > 100 * driver.ambient_w
 
 
+class FakeDaq:
+    """NI-DAQ writes that NidaqManager would make; ``fail_digital`` /
+    ``fail_analog`` inject the DAQ errors the real manager would swallow
+    without ``raise_on_error``."""
+
+    def __init__(self):
+        self.voltage, self.digital = 0.0, False
+        self.fail_digital = self.fail_analog = False
+
+    def setAnalog(self, target, voltage, min_val, max_val, raise_on_error=False):
+        if self.fail_analog:
+            if raise_on_error:
+                raise OSError('DAQ analog write failed')
+            return False
+        self.voltage = voltage
+        return True
+
+    def setDigital(self, target, enabled, raise_on_error=False):
+        if self.fail_digital:
+            if raise_on_error:
+                raise OSError('DAQ digital write failed')
+            return False
+        self.digital = bool(enabled)
+        return True
+
+
+def nidaq_laser(daq, name='775', digital_line=0):
+    from types import SimpleNamespace
+
+    from imswitch.imcontrol.model.managers.lasers.NidaqLaserManager import NidaqLaserManager
+
+    info = SimpleNamespace(managerProperties={}, wavelength=775, valueRangeMin=0.0,
+                           valueRangeMax=5.0, valueRangeStep=0.01,
+                           getAnalogChannel=lambda: 'ao0',
+                           getDigitalLine=lambda: digital_line)
+    return NidaqLaserManager(info, name, nidaqManager=daq)
+
+
 def test_procedure_through_a_real_nidaq_laser_manager(tmp_path, registry):
     """Real manager path: guarded raw drive + enable/restore with the token,
     while the GUI path is refused during the run."""
     from types import SimpleNamespace
 
-    from imswitch.imcontrol.model.managers.lasers.NidaqLaserManager import NidaqLaserManager
     from imswitch.imcontrol.model.measurement.adapters import (
         LaserRawDriveControl,
         ManagerLaserState,
     )
     from imswitch.imcontrol.model.resources import ResourceReservedError
 
-    class FakeDaq:
-        def __init__(self):
-            self.voltage, self.digital = 0.0, False
-
-        def setAnalog(self, target, voltage, min_val, max_val, raise_on_error=False):
-            self.voltage = voltage
-            return True
-
-        def setDigital(self, target, enabled):
-            self.digital = bool(enabled)
-
     daq = FakeDaq()
-    info = SimpleNamespace(managerProperties={}, wavelength=775, valueRangeMin=0.0,
-                           valueRangeMax=5.0, valueRangeStep=0.01,
-                           getAnalogChannel=lambda: 'ao0')
-    manager = NidaqLaserManager(info, '775', nidaqManager=daq)
+    manager = nidaq_laser(daq)
     shared = {'775': (1.0, False)}
     state = ManagerLaserState(manager, get_value=lambda n: shared[n][0],
                               get_enabled=lambda n: shared[n][1])
@@ -266,3 +289,73 @@ def test_procedure_through_a_real_nidaq_laser_manager(tmp_path, registry):
     assert refused_gui == list(range(11))
     assert (daq.voltage, daq.digital) == (1.0, False)      # restored value, then off
     assert np.all(np.diff(_load_lut(report.lut_file)[:, 1]) > 0)
+
+
+# ---------------------------------------------- review: checked laser commands
+def _real_lut_setup(tmp_path, daq):
+    from types import SimpleNamespace
+
+    from imswitch.imcontrol.model.measurement.adapters import (
+        LaserRawDriveControl,
+        ManagerLaserState,
+    )
+
+    manager = nidaq_laser(daq)
+    shared = {'775': (1.0, True)}
+    state = ManagerLaserState(manager, get_value=lambda n: shared[n][0],
+                              get_enabled=lambda n: shared[n][1])
+    light = SimpleNamespace(emitted_w=lambda: (
+        0.01 * math.sin(0.5 * math.pi * daq.voltage / 5.0) ** 2 + 2e-5) if daq.digital else 0.0)
+    meter = InstrumentSession('pm1', MockPowerMeterDriver([light]))
+    meter.connect()
+    return manager, state, meter, LaserRawDriveControl(manager)
+
+
+def test_failed_emission_off_stops_the_procedure_before_zeroing(tmp_path, registry):
+    daq = FakeDaq()
+    daq.digital = True
+    manager, state, meter, control = _real_lut_setup(tmp_path, daq)
+    daq.fail_digital = True
+    asked = []
+    report = run_laser_lut(laser_control=control, laser=state, meter=meter, folder=tmp_path,
+                           settings=_settings(drive_values=[0.0, 1.0]),
+                           confirm_dark=lambda: asked.append(1) or True)
+    assert report.lut_file is None
+    assert any('switching emission off failed' in r for r in report.refused), report.refused
+    assert asked == []                       # never asked to confirm a dark that is not
+
+
+def test_failed_restore_is_a_failed_cleanup_not_done(tmp_path, registry):
+    from imswitch.imcommon.model.measurement_run import CleanupOutcome
+
+    daq = FakeDaq()
+    manager, state, meter, control = _real_lut_setup(tmp_path, daq)
+    calls = {'n': 0}
+    real = daq.setAnalog
+
+    def fail_after_sweep(*args, **kwargs):
+        calls['n'] += 1
+        if calls['n'] > 2:                   # the two sweep points pass; the restore fails
+            daq.fail_analog = True
+        return real(*args, **kwargs)
+    daq.setAnalog = fail_after_sweep
+    report = run_laser_lut(laser_control=control, laser=state, meter=meter, folder=tmp_path,
+                           settings=_settings(drive_values=[0.0, 5.0]),
+                           confirm_dark=lambda: not daq.digital)
+    assert report.run.cleanup is CleanupOutcome.FAILED
+    assert 'DAQ analog write failed' in report.run.cleanup_detail
+
+
+def test_checked_commands_raise_where_the_ordinary_ones_log():
+    from imswitch.imcontrol.model.managers.lasers.LaserManager import RawDriveError
+
+    daq = FakeDaq()
+    manager = nidaq_laser(daq)
+    daq.fail_digital = daq.fail_analog = True
+    manager.setEnabled(False)                # the GUI path still only logs
+    manager.setValue(1.0)
+    with pytest.raises(RawDriveError, match='emission off failed'):
+        manager.applyEnabled(False)
+    with pytest.raises(RawDriveError, match='analog write failed'):
+        manager.applyValue(1.0)
+    assert nidaq_laser(FakeDaq(), name='a', digital_line=None).applyEnabled(False) is False

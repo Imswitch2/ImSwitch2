@@ -17,7 +17,7 @@ import logging
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from imswitch.imcommon.model.measurement_run import ControlResult
 
@@ -151,6 +151,38 @@ class ControlExecutor:
             return ControlResult(control.name, requested=requested, ok=False,
                                  cause=f'{what} returned no ControlResult')
         return result
+
+    def run_step(self, resource: str, label: str, fn: Callable[[], object],
+                 deadline_s: float) -> Tuple[bool, str]:
+        """Run a hardware step that is not a control command (e.g. restoring
+        a laser) with the same rules: refused while ``resource`` is
+        quarantined; on a worker, waited for at most ``deadline_s``; a step
+        still running then quarantines ``resource`` until it returns.
+
+        Returns ``(ok, cause)``; ``cause`` is empty on success.
+        """
+        with self._lock:
+            if resource in self._busy:
+                return False, (f'backend {resource} is busy: an earlier operation is '
+                               f'still running (quarantined)')
+        box: Dict[str, object] = {}
+
+        def work():
+            try:
+                fn()
+            except Exception as exc:  # reported, never swallowed
+                box['error'] = exc
+
+        worker = threading.Thread(target=work, name=f'run-step-{label}', daemon=True)
+        worker.start()
+        worker.join(max(0.0, float(deadline_s)))
+        if worker.is_alive():
+            self._quarantine(resource, worker)
+            return False, f'{label} did not finish within {deadline_s:g} s'
+        if 'error' in box:
+            exc = box['error']
+            return False, f'{type(exc).__name__}: {exc}'
+        return True, ''
 
     def _quarantine(self, resource: str, worker: threading.Thread) -> None:
         event = threading.Event()

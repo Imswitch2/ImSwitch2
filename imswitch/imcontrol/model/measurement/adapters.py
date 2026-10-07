@@ -53,6 +53,15 @@ class NotAuditedError(ValueError):
     """The manager is not audited for measurement runs."""
 
 
+class SimulatedDeviceError(RuntimeError):
+    """The device is running as a simulation; a command would only pretend."""
+
+
+def _is_mock(manager) -> bool:
+    mode = getattr(manager, 'runtimeMode', None)
+    return getattr(mode, 'value', None) == 'mock'
+
+
 def _audited_name(manager, table, kind: str) -> str:
     # The exact class, not a subclass: a subclass may change behaviour.
     name = type(manager).__name__
@@ -90,9 +99,21 @@ class RotatorManagerControl(RunControl):
         )
         self.zero_reference = {'state': 'unknown'}
 
+    def _require_real(self) -> None:
+        # Checked on every command: a bus can fall back to its simulation
+        # mid-run (Elliptec after a communication error), and a simulated
+        # move "succeeds" without moving anything.
+        if getattr(self.manager, 'isSimulated', False):
+            raise SimulatedDeviceError(
+                f'rotator {self.name!r} is running as a simulation (hardware not '
+                f'answering); nothing was moved')
+
     def apply(self, value: float, token: Optional[str] = None) -> ControlResult:
+        self._require_real()
         self.manager.move_abs(float(value), owner=token)
+        self._require_real()
         measured = self.manager.readPosition()
+        self._require_real()
         return ControlResult(self.name, requested=float(value), measured=measured, ok=True)
 
     def stop(self) -> None:
@@ -101,7 +122,10 @@ class RotatorManagerControl(RunControl):
             stop()
 
     def read_position(self) -> Optional[float]:
-        return self.manager.readPosition()
+        self._require_real()
+        position = self.manager.readPosition()
+        self._require_real()
+        return position
 
 
 class LaserRawDriveControl(RunControl):
@@ -115,6 +139,10 @@ class LaserRawDriveControl(RunControl):
                 _audited_name(manager, AUDITED_RAW_DRIVE_LASERS, 'laser')]
         if not getattr(manager, 'supportsRawDrive', False):
             raise NotAuditedError(f'laser {manager.name!r} has no raw-drive command')
+        if _is_mock(manager):
+            raise NotAuditedError(
+                f'laser {manager.name!r} runs on a simulated backend; a measurement run '
+                f'cannot use it')
         self.manager = manager
         self.name = manager.name
         self.resource = laser_key(manager.name)
@@ -124,6 +152,9 @@ class LaserRawDriveControl(RunControl):
         )
 
     def apply(self, value: float, token: Optional[str] = None) -> ControlResult:
+        if _is_mock(self.manager):
+            raise SimulatedDeviceError(
+                f'laser {self.name!r} runs on a simulated backend; nothing was sent')
         applied = self.manager.applyRawDrive(float(value), owner=token)
         return ControlResult(self.name, requested=float(value),
                              acknowledged=float(applied), ok=True)
@@ -180,9 +211,14 @@ class ManagerLaserState:
     def read_state(self):
         return float(self._get_value(self.name)), bool(self._get_enabled(self.name))
 
-    def set_enabled(self, enabled: bool, token: Optional[str] = None) -> None:
-        self.manager.setEnabled(bool(enabled), owner=token)
+    def set_enabled(self, enabled: bool, token: Optional[str] = None) -> bool:
+        """Checked emission switch (raises on failure); ``False`` when the
+        laser has no switch -- then only the dark confirmation protects the
+        zero."""
+        return bool(self.manager.applyEnabled(bool(enabled), owner=token))
 
     def restore(self, value: float, enabled: bool, token: Optional[str] = None) -> None:
-        self.manager.setValue(value, owner=token)
-        self.manager.setEnabled(bool(enabled), owner=token)
+        # Checked commands: a failed restore must fail the cleanup, never
+        # be reported as done.
+        self.manager.applyValue(value, owner=token)
+        self.manager.applyEnabled(bool(enabled), owner=token)

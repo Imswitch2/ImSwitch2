@@ -19,6 +19,9 @@ class NidaqLaserManager(LaserManager):
 
         self._lut = None
         self._value_units = 'V'
+        getDigitalLine = getattr(laserInfo, 'getDigitalLine', None)
+        #: Without a digital line, emission has no switch (analog only).
+        self._hasEmissionSwitch = not callable(getDigitalLine) or getDigitalLine() is not None
         try:
             calib_csv_path = laserInfo.managerProperties["calibCsvPath"]
             self.create_lut_from_calib(calib_csv_path)
@@ -81,6 +84,33 @@ class NidaqLaserManager(LaserManager):
         if ok is False:
             raise RawDriveError(f'{self.name}: analog write failed')
         return voltage
+
+    def applyEnabled(self, enabled):
+        """ Digital emission line; raises on any DAQ failure. ``False`` when
+        the laser has no digital line (analog only: nothing to switch). """
+        if not self._hasEmissionSwitch:
+            return False
+        try:
+            ok = self._nidaqManager.setDigital(self.name, bool(enabled), raise_on_error=True)
+        except Exception as exc:
+            raise RawDriveError(
+                f'{self.name}: switching emission {"on" if enabled else "off"} failed: '
+                f'{exc}') from exc
+        if ok is False:
+            raise RawDriveError(
+                f'{self.name}: switching emission {"on" if enabled else "off"} failed')
+        return True
+
+    def applyValue(self, value):
+        """ The UI value through the calibration lookup (if loaded); raises
+        on a value the lookup cannot convert or on any DAQ failure. """
+        if self._lut is None:
+            return self.applyRawDrive(value)
+        voltage = float(self._lut(value))
+        if not np.isfinite(voltage):
+            raise RawDriveError(
+                f'{self.name}: {value!r} % is outside the calibration lookup')
+        return self.applyRawDrive(voltage)
 
     def setScanModeActive(self, active):
         if active:

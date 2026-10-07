@@ -321,12 +321,21 @@ class InstrumentSession:
         """Apply a setting; the readback is what applies. Re-matches profiles."""
         with self._command(owner, f'set {name}'):
             self._require_not_reading()
+            fault = None
             with self._lock:
                 self._require_ready()
                 self._config_rev += 1
-                applied = self.driver.set_setting(name, value)
-                self._evaluate_profile()
-                return applied
+                try:
+                    applied = self.driver.set_setting(name, value)
+                except TransportError as exc:
+                    fault = exc
+                else:
+                    self._evaluate_profile()
+                    return applied
+            # Outside the lock, like a read fault: listeners must not run
+            # while the instrument lock is held.
+            self.report_fault(str(fault) or 'transport error')
+            raise fault
 
     def run_action(self, name: str, *, confirm_dark: bool = False,
                    owner: Optional[str] = None, **kwargs: Any) -> None:
@@ -340,10 +349,18 @@ class InstrumentSession:
             )
         with self._command(owner, name):
             self._require_not_reading()
+            fault = None
             with self._lock:
                 self._require_ready()
                 self._config_rev += 1
-                self.driver.run_action(name, **kwargs)
+                try:
+                    self.driver.run_action(name, **kwargs)
+                except TransportError as exc:
+                    fault = exc
+                else:
+                    return
+            self.report_fault(str(fault) or 'transport error')
+            raise fault
 
     def _evaluate_profile(self) -> None:
         settings = self.driver.settings()

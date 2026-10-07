@@ -913,6 +913,34 @@ Differences from §6.6 and things the rig must confirm:
 
 P-4 rig gates still open: §6.6 per driver, USB removal mid-run.
 
+**P-4 review (8e27a5f69, six findings, all fixed).**
+1. VISA: pyvisa shares one resource manager per VISA library and closing it
+   closes every session. `VisaLink` now reference-counts it
+   (`_ResourceManagers`); the last link closes it.
+2. `ElliptecRotatorManager.isSimulated` read a bus attribute that no longer
+   exists; it is now `not bus.is_real(address)`. `RotatorManagerControl` and
+   `LaserRawDriveControl` re-check simulation on every command (a bus can
+   fall back mid-run, and a simulated move "succeeds"); laser controls also
+   refuse a mock-mode backend.
+3. Lifecycle transitions now admit a ticket on the resource of every
+   affected device (the handle's managers plus every device depending on
+   it) for the whole transition: refused while a run or script holds one,
+   and reservations wait for the transition.
+4. `LaserManager.applyEnabled / applyValue`: checked emission and value
+   commands (NI-DAQ `setDigital(raise_on_error=)`, AA NAK = failure);
+   `ManagerLaserState` uses them, so a failed emission-off stops the
+   procedure before the dark confirmation and a failed restore is a FAILED
+   cleanup. `applyEnabled` returns False for a laser with no digital line
+   (recorded as `emission_switched_off: false`).
+5. Cleanup steps run through `ControlExecutor.run_step` (deadline,
+   quarantine, resource kept reserved until the step returns); the run now
+   reserves every cleanup step's resource.
+6. A `TransportError` from `set_setting` / `run_action` faults the session
+   like a read does.
+
+Still not bounded by the executor: prepare steps (they rely on the
+drivers' own I/O timeouts).
+
 **P-5 (done on mocks).** `imcontrol/model/measurement/laser_lut.py`
 (`run_laser_lut`): prepare steps inside the reservation (record laser state,
 set + verify the meter wavelength, emission off, caller confirms the beam is

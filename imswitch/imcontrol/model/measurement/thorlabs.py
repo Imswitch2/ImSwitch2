@@ -26,6 +26,7 @@ interpreted either way), and PM100 zeroing completion
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -60,6 +61,50 @@ def _pyvisa_resource_manager(backend: str):
         raise TransportError(f'no VISA library for backend {backend!r}: {exc}') from exc
 
 
+class _ResourceManagers:
+    """Reference counts for VISA resource managers.
+
+    pyvisa hands out ONE resource manager per VISA library (a second
+    ``ResourceManager(backend)`` returns the same object), and closing it
+    closes every instrument session opened through it. So a link never
+    closes the manager itself: it releases its reference, and the manager is
+    closed when the last link using it lets go.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: Dict[int, List[Any]] = {}     # id(rm) -> [rm, count]
+
+    def acquire(self, factory: ResourceManagerFactory, backend: str):
+        rm = factory(backend)
+        with self._lock:
+            entry = self._counts.setdefault(id(rm), [rm, 0])
+            entry[1] += 1
+        return rm
+
+    def release(self, rm) -> None:
+        with self._lock:
+            entry = self._counts.get(id(rm))
+            if entry is None or entry[0] is not rm:
+                return
+            entry[1] -= 1
+            if entry[1] > 0:
+                return
+            del self._counts[id(rm)]
+        try:
+            rm.close()
+        except Exception:
+            pass
+
+    def users(self, rm) -> int:
+        with self._lock:
+            entry = self._counts.get(id(rm))
+            return entry[1] if entry is not None and entry[0] is rm else 0
+
+
+_resource_managers = _ResourceManagers()
+
+
 class VisaLink:
     """One VISA instrument, found by serial number. Every failure is a
     :class:`TransportError`."""
@@ -87,7 +132,7 @@ class VisaLink:
             return
         if not self.serial:
             raise TransportError(f'{self.label}: no serial number configured')
-        self._rm = self._factory(self.backend)
+        self._rm = _resource_managers.acquire(self._factory, self.backend)
         try:
             resources = tuple(self._rm.list_resources())
         except Exception as exc:
@@ -113,15 +158,18 @@ class VisaLink:
         self.resource_name = candidates[0]
 
     def close(self) -> None:
+        """Close this instrument's session; the shared resource manager only
+        when no other link uses it."""
         inst, rm = self._inst, self._rm
         self._inst = self._rm = None
         self.resource_name = None
-        for handle in (inst, rm):
-            if handle is not None:
-                try:
-                    handle.close()
-                except Exception:
-                    pass
+        if inst is not None:
+            try:
+                inst.close()
+            except Exception:
+                pass
+        if rm is not None:
+            _resource_managers.release(rm)
 
     def query(self, command: str) -> str:
         inst = self._require()

@@ -494,3 +494,49 @@ def test_settings_changed_inside_a_window_end_it(registry):
     assert not window.complete
     assert window.cause.value == 'cancelled'
     assert 'configuration changed' in window.detail
+
+
+def test_a_stuck_cleanup_step_is_bounded_and_keeps_its_resource(tmp_path, registry):
+    """Review: cleanup callbacks ran inline, so a 155 ms restore with a 10 ms
+    deadline was reported DONE (and a stuck one would hang the run)."""
+    import threading
+
+    from imswitch.imcontrol.model.measurement.controls import ControlExecutor
+    from imswitch.imcontrol.model.measurement.runner import CleanupStep
+
+    hwp, qwp, driver, session = _rig()
+    release = threading.Event()
+    executor = ControlExecutor()
+    report = MeasurementRunner(
+        sequence=grid([('hwp', [0, 10])]), controls=[hwp], instruments={'pax1': session},
+        folder=tmp_path, settings=_settings(cleanup_deadline_s=0.01), executor=executor,
+        cleanup_steps=[CleanupStep('restore laser', 'laser:775',
+                                   lambda token: release.wait(5))],
+    ).run()
+    assert report.acquisition is AcquisitionOutcome.COMPLETE
+    assert report.cleanup is CleanupOutcome.QUARANTINED
+    assert 'restore laser did not finish within 0.01 s' in report.cleanup_detail
+    assert executor.is_quarantined('laser:775')
+    assert registry.holder('laser:775') is not None      # still held while it runs
+    release.set()
+    assert executor.wait_released('laser:775', 5)
+    deadline = time.monotonic() + 5
+    while registry.holder('laser:775') is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert registry.holder('laser:775') is None
+
+
+def test_a_failing_cleanup_step_is_a_failed_cleanup(tmp_path):
+    from imswitch.imcontrol.model.measurement.controls import ControlExecutor
+    from imswitch.imcontrol.model.measurement.runner import CleanupStep
+
+    def broken(token):
+        raise OSError('DAQ write failed')
+    hwp, qwp, driver, session = _rig()
+    report = MeasurementRunner(
+        sequence=grid([('hwp', [0])]), controls=[hwp], instruments={'pax1': session},
+        folder=tmp_path, settings=_settings(), executor=ControlExecutor(),
+        cleanup_steps=[CleanupStep('restore laser', 'laser:775', broken)],
+    ).run()
+    assert report.cleanup is CleanupOutcome.FAILED
+    assert 'OSError: DAQ write failed' in report.cleanup_detail

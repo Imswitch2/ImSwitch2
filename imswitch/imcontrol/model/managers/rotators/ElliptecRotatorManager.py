@@ -181,8 +181,16 @@ class ElliptecRotatorManager(DeviceManagerStatusMixin, RotatorManager):
 
     @property
     def isSimulated(self) -> bool:
-        stage = getattr(getattr(self, '_bus', None), 'stage', None)
-        return type(stage).__name__.startswith('Mock')
+        """True unless this address is answered by real hardware now: the
+        shared bus falls back to cached (mock) positions per address, at
+        startup or after a communication error mid-run."""
+        bus = getattr(self, '_bus', None)
+        if bus is None:
+            return True
+        try:
+            return not bus.is_real(self._addr)
+        except Exception:
+            return True
 
     def _update_position(self) -> None:
         try:

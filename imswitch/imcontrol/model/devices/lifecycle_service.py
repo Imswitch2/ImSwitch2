@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 import threading
 
@@ -7,6 +8,7 @@ from imswitch.imcommon.model import initLogger
 
 from .acquisition_gate import MaintenanceBlockedError, get_acquisition_gate
 from .graph import DeviceRelationKind, HardwareDeviceId
+from .status import DeviceId
 from .lifecycle import (
     DeviceHandle,
     DeviceLifecycleAction,
@@ -366,14 +368,8 @@ class DeviceLifecycleService:
             # declare affectsAcquisition = False and skip the gate.
             affectsAcquisition = bool(getattr(lifecycle, "affectsAcquisition", True))
             try:
-                if affectsAcquisition:
-                    self._assertRuntimeTransitionSafe(verb)
-                    # Held for the whole adapter call: no scan or recording
-                    # can start until the backend replacement has finished.
-                    with get_acquisition_gate().maintenance(f"{verb} of {hardware_id}"):
-                        result = getattr(lifecycle, verb)()
-                else:
-                    result = getattr(lifecycle, verb)()
+                with self._ownDevices(hardware_id, handle, verb):
+                    result = self._runLifecycle(lifecycle, verb, hardware_id, affectsAcquisition)
             except MaintenanceBlockedError as exc:
                 raise DeviceLifecycleBlockedError(str(exc)) from None
             except DeviceLifecycleError:
@@ -409,3 +405,74 @@ class DeviceLifecycleService:
             return result
         finally:
             lock.release()
+
+    def _runLifecycle(self, lifecycle, verb, hardware_id, affectsAcquisition):
+        if affectsAcquisition:
+            self._assertRuntimeTransitionSafe(verb)
+            # Held for the whole adapter call: no scan or recording can start
+            # until the backend replacement has finished.
+            with get_acquisition_gate().maintenance(f"{verb} of {hardware_id}"):
+                return getattr(lifecycle, verb)()
+        return getattr(lifecycle, verb)()
+
+    def _affectedDeviceIds(self, hardware_id, handle) -> set:
+        """The logical devices a transition of ``hardware_id`` touches: its
+        own managers, plus every device that depends on it (a component of
+        it, or one that uses it as transport or control backend)."""
+        affected = set(handle.source_device_ids)
+        for relation in self._graph.relations:
+            if relation.target != hardware_id:
+                continue
+            source = relation.source
+            if isinstance(source, HardwareDeviceId):
+                dependent = self._handles.get(source)
+                if dependent is not None:
+                    affected.update(dependent.source_device_ids)
+            elif isinstance(source, DeviceId):
+                affected.add(source)
+        return affected
+
+    @contextmanager
+    def _ownDevices(self, hardware_id, handle, verb):
+        """Hold an admission ticket on every affected device's resource for
+        the whole transition, so it is refused while a measurement run or a
+        script reservation holds one of them -- and no reservation can start
+        until the transition is over (reservations wait for in-flight
+        commands)."""
+        from imswitch.imcontrol.model.resources import (
+            ReservationExpiredError,
+            ResourceReservedError,
+            get_resource_registry,
+            instrument_key,
+            laser_key,
+            positioner_key,
+            rotator_key,
+        )
+
+        keyFor = {
+            "rotator": rotator_key,
+            "laser": laser_key,
+            "positioner": positioner_key,
+            "instrument": instrument_key,
+        }
+        keys = sorted({
+            keyFor[device.kind](device.name)
+            for device in self._affectedDeviceIds(hardware_id, handle)
+            if device.kind in keyFor
+        })
+        registry = get_resource_registry()
+        tickets = []
+        try:
+            for key in keys:
+                try:
+                    tickets.append(
+                        registry.admit(key, None, label=f"{verb} of {hardware_id}")
+                    )
+                except (ResourceReservedError, ReservationExpiredError) as exc:
+                    raise DeviceLifecycleBlockedError(
+                        f"Device {verb} is blocked: {exc}"
+                    ) from None
+            yield
+        finally:
+            for ticket in reversed(tickets):
+                registry.release_ticket(ticket)

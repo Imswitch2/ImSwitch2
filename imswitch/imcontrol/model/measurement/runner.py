@@ -371,6 +371,8 @@ class MeasurementRunner:
     def _resources(self) -> List[str]:
         keys = {c.resource for c in self.controls.values()}
         keys |= {instrument_key(name) for name in self.instruments}
+        # A cleanup step restores a device: the run must own it too.
+        keys |= {step.resource for step in self._cleanup_steps}
         keys.add(WAVEFORM_OUTPUT)
         return sorted(keys)
 
@@ -622,10 +624,15 @@ class MeasurementRunner:
                     quarantined.append(step.resource)
                     notes.append(f'{step.label}: {step.resource} still busy; not done')
                     continue
-            try:
-                step.fn(self._token)
-            except Exception as exc:
-                failures.append(f'{step.label} failed: {type(exc).__name__}: {exc}')
+            # Bounded like every hardware command: a stuck restore must not
+            # hang the run; its resource stays quarantined (and reserved).
+            ok, cause = self.executor.run_step(
+                step.resource, step.label, lambda step=step: step.fn(self._token),
+                self.settings.cleanup_deadline_s)
+            if not ok:
+                if self.executor.is_quarantined(step.resource):
+                    quarantined.append(step.resource)
+                failures.append(f'{step.label} failed: {cause}')
         if quarantined:
             outcome = CleanupOutcome.QUARANTINED
         elif failures:

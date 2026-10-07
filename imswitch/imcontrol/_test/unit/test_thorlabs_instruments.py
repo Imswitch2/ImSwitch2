@@ -344,3 +344,50 @@ def test_real_instrument_managers_start_absent_without_pyvisa_calls():
     for manager in (pm, pax):
         assert manager.runtimeMode is DeviceRuntimeMode.ABSENT
         assert not manager.session.driver.link.is_open
+
+
+# ------------------------------------------------------------- review fixes
+def test_one_instrument_closing_leaves_the_shared_visa_manager_to_the_other():
+    """Review: pyvisa shares one resource manager per VISA library and closing
+    it closes every session -- disconnecting the PAX (or failing to find it)
+    broke the PM100."""
+    pm_inst, rm = _pm100()
+    pax_inst, _ = _pax()
+    rm.resources[PAX_RESOURCE] = pax_inst
+    pm = ThorlabsPM100Driver('P0011748', resource_manager_factory=rm)
+    pax = ThorlabsPAX1000Driver('M01012314', resource_manager_factory=rm)
+    pm.connect()
+    pax.connect()
+    pax.close()
+    assert not rm.closed and not pm_inst.closed
+    assert pm.read().values['power'] == 1.25e-3
+
+    with pytest.raises(TransportError, match='not found'):
+        ThorlabsPAX1000Driver('NOPE', resource_manager_factory=rm).connect()
+    assert not rm.closed                                   # a failed lookup either
+    pm.close()
+    assert rm.closed                                       # the last user closes it
+
+
+def test_transport_failure_in_a_setting_or_action_faults_the_session():
+    """Review: a USB failure while setting the wavelength left the meter
+    CONNECTED with the same sample generation."""
+    inst, rm = _pm100()
+    session = InstrumentSession('pm1', ThorlabsPM100Driver(
+        'P0011748', resource_manager_factory=rm, sleep=lambda s: None))
+    session.connect()
+    faults = []
+    session.add_fault_listener(lambda name, cause: faults.append(cause))
+    generation = session.generation
+    inst.unplugged = True
+    with pytest.raises(TransportError):
+        session.set_setting('wavelength_nm', 775)
+    assert session.faulted and session.generation == generation + 1
+    assert len(faults) == 1
+
+    inst.unplugged = False
+    session.connect()
+    inst.unplugged = True
+    with pytest.raises(TransportError):
+        session.run_action('zero', confirm_dark=True)
+    assert session.faulted

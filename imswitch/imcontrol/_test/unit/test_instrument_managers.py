@@ -319,24 +319,12 @@ def test_laser_power_lut_from_a_script(tmp_path, registry):
 
     import numpy as np
 
-    from imswitch.imcontrol.model.managers.lasers.NidaqLaserManager import NidaqLaserManager
     from imswitch.imcontrol.model.measurement.mocks import MockPowerMeterDriver
 
-    class FakeDaq:
-        voltage, digital = 0.0, False
-
-        def setAnalog(self, target, voltage, min_val, max_val, raise_on_error=False):
-            self.voltage = voltage
-            return True
-
-        def setDigital(self, target, enabled):
-            self.digital = bool(enabled)
+    from imswitch.imcontrol._test.unit.test_laser_power_lut import FakeDaq, nidaq_laser
 
     daq = FakeDaq()
-    info = SimpleNamespace(managerProperties={}, wavelength=775, valueRangeMin=0.0,
-                           valueRangeMax=5.0, valueRangeStep=0.01,
-                           getAnalogChannel=lambda: 'ao0')
-    laser = NidaqLaserManager(info, '775', nidaqManager=daq)
+    laser = nidaq_laser(daq)
     light = SimpleNamespace(emitted_w=lambda: (
         0.01 * math.sin(0.5 * math.pi * daq.voltage / 5.0) ** 2 + 2e-5) if daq.digital else 0.0)
     _, master = _serviceWith({'pm1': _info(transient=True)})

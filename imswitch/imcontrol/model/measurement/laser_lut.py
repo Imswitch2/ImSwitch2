@@ -52,7 +52,9 @@ class LaserState(Protocol):
     def read_state(self) -> Tuple[float, bool]:
         """Current (UI value, emission enabled)."""
 
-    def set_enabled(self, enabled: bool, token: Optional[str] = None) -> None: ...
+    def set_enabled(self, enabled: bool, token: Optional[str] = None) -> Optional[bool]:
+        """Switch emission; raise on failure. ``False``: the laser has no
+        emission switch (nothing sent)."""
 
     def restore(self, value: float, enabled: bool, token: Optional[str] = None) -> None:
         """Set the value first, then the enabled state."""
@@ -120,7 +122,7 @@ def run_laser_lut(
         return {'applied_nm': float(applied)}
 
     def dark_zero(token):
-        laser.set_enabled(False, token)
+        switched = laser.set_enabled(False, token)
         if not confirm_dark():
             raise DarkNotConfirmed('the beam was not confirmed blocked; not zeroing')
         zeroed = False
@@ -134,6 +136,8 @@ def run_laser_lut(
         values = np.array([s.values['power'] for s in window.samples], float)
         laser.set_enabled(True, token)
         return {
+            # False: no emission switch, only the dark confirmation.
+            'emission_switched_off': switched is not False,
             'zeroed': zeroed,
             'dark_mean_w': float(values.mean()) if values.size else None,
             'dark_std_w': float(values.std(ddof=1)) if values.size > 1 else None,

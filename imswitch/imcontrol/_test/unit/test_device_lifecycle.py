@@ -380,3 +380,67 @@ def test_failed_coolled_reconnect_keeps_mock_fallback_visible():
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
     assert manager.connectionState is DeviceConnectionState.ERROR
     assert "transport unavailable" in result.summary.lower()
+
+
+@pytest.mark.parametrize("group, key_fn", [("lasers", "laser_key"),
+                                           ("positioners", "positioner_key")])
+def test_reconnect_is_refused_while_a_run_or_script_holds_the_device(group, key_fn):
+    """Review: a reserved Märzhäuser stage refused ordinary moves, yet
+    reconnect replaced its backend under the reservation."""
+    from imswitch.imcontrol.model import resources
+
+    registry = resources.ResourceRegistry()
+    previous = resources.set_resource_registry(registry)
+    try:
+        hardware_id = HardwareDeviceId("laser", "managed:stage")
+        lifecycle = _Lifecycle(hardware_id)
+        master = _master()
+        setattr(master, f"{group}Manager", _Group({"stage": _LifecycleManager(lifecycle, name="stage")}))
+        service = DeviceLifecycleService(master, DeviceSupervisor(master))
+        key = getattr(resources, key_fn)("stage")
+
+        run = registry.reserve([key], "laser power LUT")
+        with pytest.raises(DeviceLifecycleBlockedError, match="laser power LUT"):
+            service.reconnect(hardware_id)
+        assert lifecycle.calls == 0
+
+        registry.release(run.token)
+        assert service.reconnect(hardware_id).success
+        assert lifecycle.calls == 1
+        assert registry.in_flight(key) == []             # tickets released
+    finally:
+        resources.set_resource_registry(previous)
+
+
+def test_a_reservation_waits_for_a_running_reconnect():
+    """While a transition runs it holds the devices: a reservation cannot
+    slip in under it."""
+    import threading
+
+    from imswitch.imcontrol.model import resources
+
+    registry = resources.ResourceRegistry()
+    previous = resources.set_resource_registry(registry)
+    try:
+        hardware_id = HardwareDeviceId("laser", "managed:one")
+        entered, release = threading.Event(), threading.Event()
+
+        class _Slow(_Lifecycle):
+            def reconnect(self):
+                entered.set()
+                release.wait(5)
+                return super().reconnect()
+
+        lifecycle = _Slow(hardware_id)
+        master = _master(lasers={"one": _LifecycleManager(lifecycle, name="one")})
+        service = DeviceLifecycleService(master, DeviceSupervisor(master))
+        worker = threading.Thread(target=service.reconnect, args=(hardware_id,))
+        worker.start()
+        assert entered.wait(2)
+        with pytest.raises(resources.ResourceReservedError):
+            registry.reserve([resources.laser_key("one")], "script", deadline_s=0.05)
+        release.set()
+        worker.join(5)
+        registry.reserve([resources.laser_key("one")], "script", deadline_s=1.0)
+    finally:
+        resources.set_resource_registry(previous)

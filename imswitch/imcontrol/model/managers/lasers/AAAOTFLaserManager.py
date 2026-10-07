@@ -325,6 +325,34 @@ class AAAOTFLaserManager(LaserManager):
                 f'AA channel {self._channel}: set_channel_amplitude {amplitude} failed')
         return float(amplitude)
 
+    def applyEnabled(self, enabled):
+        """ Channel emission; raises when the controller is absent (mock
+        mode), refuses the command, or does not answer. """
+        if self._isMock:
+            raise RawDriveError(
+                f'AA channel {self._channel}: the controller did not answer at '
+                f'startup (mock mode); nothing can be sent')
+        self._apply_ttl_control_mode(before_command=True)
+        try:
+            ok = self._run('set_channel_enabled', bool(enabled))
+        except Exception as exc:
+            raise RawDriveError(f'AA channel {self._channel}: {exc}') from exc
+        finally:
+            self._apply_ttl_control_mode(before_command=False)
+        if not ok:
+            raise RawDriveError(
+                f'AA channel {self._channel}: set_channel_enabled {bool(enabled)} failed')
+        return True
+
+    def applyValue(self, value):
+        """ The UI value through the calibration lookup (if loaded); raises
+        like :meth:`applyRawDrive`. """
+        amplitude = self._amplitude_for(value)
+        if amplitude is None:
+            raise RawDriveError(
+                f'AA channel {self._channel}: {value!r} cannot be converted to an amplitude')
+        return self.applyRawDrive(amplitude)
+
     def _amplitude_for(self, power):
         """Convert an ImSwitch value to a raw AOTF amplitude.
 

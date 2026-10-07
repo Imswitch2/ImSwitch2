@@ -52,7 +52,7 @@ class LaserManager(DeviceManagerStatusMixin, ABC):
     #: Mutating commands admitted through the resource registry
     #: (``imcontrol/model/resources.py``): refused while another owner
     #: reserves this device; ``owner=<token>`` passes a reservation.
-    _GUARDED_METHODS = ('setValue', 'setEnabled', 'applyRawDrive')
+    _GUARDED_METHODS = ('setValue', 'setEnabled', 'applyRawDrive', 'applyEnabled', 'applyValue')
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -182,6 +182,21 @@ class LaserManager(DeviceManagerStatusMixin, ABC):
         transient-instruments-step-scans.md`` §7.4): unlike :meth:`setValue`,
         a failure is never only logged — it raises :class:`RawDriveError`. """
         raise NotImplementedError(f'{type(self).__name__} has no raw-drive command')
+
+    def applyEnabled(self, enabled: bool) -> bool:
+        """ Switch emission like :meth:`setEnabled`, but raise
+        :class:`RawDriveError` on any failure instead of logging it.
+
+        Returns ``False`` when the laser has no emission switch at all (the
+        command is not sent), ``True`` when the switch was set. Implemented
+        with :meth:`applyRawDrive` (``supportsRawDrive``). """
+        raise NotImplementedError(f'{type(self).__name__} has no checked enable command')
+
+    def applyValue(self, value: Union[int, float]) -> float:
+        """ Set the UI value (through the calibration lookup if one is
+        loaded) like :meth:`setValue`, but raise :class:`RawDriveError` on any
+        failure; returns the raw drive applied. """
+        raise NotImplementedError(f'{type(self).__name__} has no checked value command')
 
     @abstractmethod
     def setEnabled(self, enabled: bool) -> None:

@@ -1152,8 +1152,12 @@ class NidaqManager(SignalInterface):
         if operationError is not None:
             raise operationError
 
-    def setDigital(self, target, enable):
-        """Set one digital line through a registered finite output task."""
+    def setDigital(self, target, enable, *, raise_on_error=False):
+        """Set one digital line through a registered finite output task.
+
+        Returns ``True`` on success and ``False`` when a DAQ error is handled
+        locally. With ``raise_on_error=True`` the original DAQ error is raised.
+        """
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
             line = self.__setupInfo.getDevice(target).getDigitalLine()
@@ -1163,7 +1167,7 @@ class NidaqManager(SignalInterface):
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
         tasklen = 100
         try:
-            return self._runOneShotOutput(
+            self._runOneShotOutput(
                 'setDigitalTask',
                 lambda: self.__createLineDOTask(
                     'setDigitalTask',
@@ -1176,6 +1180,7 @@ class NidaqManager(SignalInterface):
                 ),
                 enable * np.ones(tasklen, dtype=bool),
             )
+            return True
         except (
             nidaqmx._lib.DaqNotFoundError,
             nidaqmx._lib.DaqFunctionNotSupportedError,
@@ -1185,6 +1190,9 @@ class NidaqManager(SignalInterface):
                 ('setDigital', target, type(error).__name__, str(error)),
                 f'NI-DAQ digital write failed for {target}: {error}',
             )
+            if raise_on_error:
+                raise
+            return False
 
     @property
     def isSimulating(self) -> bool:
