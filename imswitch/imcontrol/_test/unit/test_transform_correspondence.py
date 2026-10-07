@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from imswitch.imcommon.algorithms.grid_localization import LOCALIZATION_DEFAULTS
 from imswitch.imcontrol.model import transform_correspondence as module
 from imswitch.imcontrol.model.ulenses_localizer import GridLocalizationResult
 
@@ -40,23 +41,23 @@ def _grid_result(*, n_cols=4, n_rows=5, angle_offset=0.0, stagger_axis="rows"):
     )
 
 
-def test_ulenses_strategy_uses_grid_geometry_then_local_focus_refinement(monkeypatch):
-    grid = _grid_result()
+def test_ulenses_strategy_uses_shared_backend_measured_positions(monkeypatch):
+    moving = _grid_result()
+    reference = _grid_result()
+    reference = GridLocalizationResult(
+        **{
+            **reference.__dict__,
+            "measured_points_rc": reference.measured_points_rc + 1.0,
+        }
+    )
     localization_calls = []
+    grids = iter([moving, reference])
 
     def fake_localize_grid(image, **kwargs):
         localization_calls.append(kwargs)
-        return grid
-
-    refinement_calls = []
-
-    def fake_refine(image, localized, **kwargs):
-        refinement_calls.append((localized, kwargs))
-        offset = 0.0 if len(refinement_calls) == 1 else 1.0
-        return localized.grid_points_rc + offset
+        return next(grids)
 
     monkeypatch.setattr(module, "localize_grid", fake_localize_grid)
-    monkeypatch.setattr(module, "refine_grid_foci", fake_refine)
 
     spec = module.ulenses_grid_strategy_spec(lambda: (12.0, 13.0))
     params = dict(spec.default_parameters)
@@ -68,11 +69,17 @@ def test_ulenses_strategy_uses_grid_geometry_then_local_focus_refinement(monkeyp
     assert all(call["yp_guess"] == 13.0 for call in localization_calls)
     assert all(call["n_cols"] == 4 for call in localization_calls)
     assert all(call["n_rows"] == 5 for call in localization_calls)
-    assert len(refinement_calls) == 2
+    assert all(call["registration_mode"] == "auto" for call in localization_calls)
+    assert all(
+        set(LOCALIZATION_DEFAULTS).issubset(call)
+        for call in localization_calls
+    )
+    assert all("threshold_rel" not in call for call in localization_calls)
+    assert all("gaussian_sigma" not in call for call in localization_calls)
+    assert all("min_distance_fraction" not in call for call in localization_calls)
     assert result.pair_count == 20
     assert np.allclose(result.target_points - result.source_points, 1.0)
     assert result.metadata["grid_localization"]["moving"]["stagger_axis"] == "rows"
-
 
 def test_ulenses_strategy_auto_size_does_not_supply_counts(monkeypatch):
     grid = _grid_result()
@@ -83,12 +90,6 @@ def test_ulenses_strategy_auto_size_does_not_supply_counts(monkeypatch):
         return grid
 
     monkeypatch.setattr(module, "localize_grid", fake_localize_grid)
-    monkeypatch.setattr(
-        module,
-        "refine_grid_foci",
-        lambda _image, localized, **_kwargs: localized.grid_points_rc,
-    )
-
     spec = module.ulenses_grid_strategy_spec()
     spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
 
@@ -133,8 +134,12 @@ def test_ulenses_strategy_exposes_typed_grid_and_focus_parameters():
     assert spec.parameter_specs["stagger_axis"].choices == (
         "auto", "rows", "columns"
     )
-    assert "grid_threshold_rel" in spec.parameter_specs
-    assert "focus_refine_radius" in spec.parameter_specs
+    assert "spot_threshold_rel" in spec.parameter_specs
+    assert "spot_blur_sigma" in spec.parameter_specs
+    assert "focus_search_window_px" in spec.parameter_specs
+    assert spec.parameter_specs["registration_mode"].choices == (
+        "auto", "finite_grid", "fft_lattice"
+    )
     assert "residual_threshold" not in spec.default_parameters
     assert spec.default_parameters["use_ulenses_widget_guesses"] is True
 
@@ -142,10 +147,6 @@ def test_ulenses_strategy_exposes_typed_grid_and_focus_parameters():
 def test_ulenses_strategy_exposes_independent_localization_diagnostics(monkeypatch):
     grid = _grid_result()
     monkeypatch.setattr(module, "localize_grid", lambda image, **kwargs: grid)
-    monkeypatch.setattr(
-        module, "refine_grid_foci",
-        lambda _image, localized, **_kwargs: localized.grid_points_rc + 0.25,
-    )
     spec = module.ulenses_grid_strategy_spec()
     localized = spec.localize(np.zeros((16, 16)), spec.default_parameters)
 
@@ -154,7 +155,7 @@ def test_ulenses_strategy_exposes_independent_localization_diagnostics(monkeypat
     assert localized.diagnostics is not None
     np.testing.assert_allclose(localized.diagnostics.detected_points, grid.detected_points_rc)
     np.testing.assert_allclose(localized.diagnostics.predicted_points, grid.grid_points_rc)
-    np.testing.assert_allclose(localized.diagnostics.refined_points, grid.grid_points_rc + 0.25)
+    np.testing.assert_allclose(localized.diagnostics.refined_points, grid.measured_points_rc)
 
 
 def test_ulenses_strategy_matches_only_indices_measured_in_both_images(monkeypatch):
@@ -168,24 +169,18 @@ def test_ulenses_strategy_matches_only_indices_measured_in_both_images(monkeypat
         **{
             **source_grid.__dict__,
             "matched_mask": source_mask,
-            "measured_points_rc": source_grid.grid_points_rc[source_mask],
+            "measured_points_rc": source_grid.grid_points_rc,
         }
     )
     target_grid = GridLocalizationResult(
         **{
             **target_grid.__dict__,
             "matched_mask": target_mask,
-            "measured_points_rc": target_grid.grid_points_rc[target_mask],
+            "measured_points_rc": target_grid.grid_points_rc,
         }
     )
     localizations = iter([source_grid, target_grid])
     monkeypatch.setattr(module, "localize_grid", lambda _image, **_kwargs: next(localizations))
-    monkeypatch.setattr(
-        module,
-        "refine_grid_foci",
-        lambda _image, localized, **_kwargs: localized.measured_points_rc,
-    )
-
     spec = module.ulenses_grid_strategy_spec()
     result = spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
 

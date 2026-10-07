@@ -147,12 +147,18 @@ class ULensesController(ImConWidgetController):
                 )
             elif method == 'grid':
                 n_cols, n_rows = self._widget.getGridSize()
+                settings = (
+                    self._widget.getGridLocalizationSettings()
+                    if hasattr(self._widget, 'getGridLocalizationSettings')
+                    else {}
+                )
                 grid = localize_grid(
                     img_frame,
                     xp_guess=upx / px,
                     yp_guess=upy / px,
                     n_cols=n_cols,
                     n_rows=n_rows,
+                    **settings,
                 )
                 self._gridLocalizationResult = grid
                 x_period = round(grid.x_period_px * px, 2)

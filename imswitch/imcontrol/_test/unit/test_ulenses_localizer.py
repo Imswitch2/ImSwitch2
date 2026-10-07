@@ -1,9 +1,11 @@
 import importlib
+import inspect
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from imswitch.imcommon.algorithms.grid_localization import LOCALIZATION_DEFAULTS
 from imswitch.imcontrol.model.ulenses_localizer import (
     GridLocalizationResult,
     LocalizationResult,
@@ -52,6 +54,42 @@ def _render_grid(
                 -((yy - point[0]) ** 2 + (xx - point[1]) ** 2) / (2 * sigma**2)
             )
     return image, np.asarray(points)
+
+def test_localize_grid_accepts_complete_shared_parameter_contract():
+    """The uLenses/Transform shared settings must bind directly to the API."""
+    signature = inspect.signature(localize_grid)
+    signature.bind_partial(
+        np.zeros((8, 8)),
+        **dict(LOCALIZATION_DEFAULTS),
+    )
+    for name, expected in LOCALIZATION_DEFAULTS.items():
+        assert signature.parameters[name].default == expected
+
+
+def test_localize_grid_keeps_pre_shared_parameter_aliases_compatible():
+    image, _ = _render_grid()
+    canonical = localize_grid(
+        image,
+        xp_guess=24.3,
+        yp_guess=22.2,
+        n_cols=6,
+        n_rows=5,
+        spot_threshold_rel=0.08,
+        spot_blur_sigma=0.9,
+        spot_min_distance_fraction=0.30,
+    )
+    legacy = localize_grid(
+        image,
+        xp_guess=24.3,
+        yp_guess=22.2,
+        n_cols=6,
+        n_rows=5,
+        threshold_rel=0.08,
+        gaussian_sigma=0.9,
+        min_distance_fraction=0.30,
+    )
+    np.testing.assert_allclose(canonical.grid_points_rc, legacy.grid_points_rc)
+    assert canonical.matched_count == legacy.matched_count
 
 
 def test_localizer_recovers_grid_periods_from_initial_guesses():
@@ -107,17 +145,20 @@ def test_localize_grid_auto_infers_finite_shape():
     assert result.stagger_fraction == pytest.approx(0.4, abs=0.06)
 
 
-def test_localize_grid_manual_counts_are_authoritative():
+def test_localize_grid_manual_counts_are_authoritative_but_allow_missing_sites():
     image, _ = _render_grid()
 
-    with pytest.raises(RuntimeError, match="manual finite topology"):
-        localize_grid(
-            image,
-            xp_guess=24.3,
-            yp_guess=22.2,
-            n_cols=7,
-            n_rows=5,
-        )
+    result = localize_grid(
+        image,
+        xp_guess=24.3,
+        yp_guess=22.2,
+        n_cols=7,
+        n_rows=5,
+    )
+
+    assert result.shape == (5, 7)
+    assert result.diagnostics["grid_size_source"] == "manual"
+    assert result.missing_count > 0
 
 
 def test_refine_grid_foci_preserves_grid_index_order():
@@ -177,6 +218,46 @@ def test_localize_grid_auto_crop_ignores_dim_outside_distractors():
     assert result.matched_count == 30
 
 
+def test_localize_grid_exact_half_stagger_keeps_overlay_on_spots():
+    n_cols = n_rows = 41
+    period = 11.0
+    origin = np.array([70.0, 80.0])
+    image = np.zeros((620, 620), dtype=np.float64)
+    expected = []
+    for j in range(n_rows):
+        for i in range(n_cols):
+            point = np.array([
+                origin[0] + j * period,
+                origin[1] + (i + 0.5 * (j % 2)) * period,
+            ])
+            expected.append(point)
+            image[int(round(point[0])), int(round(point[1]))] = 1.0
+    from scipy.ndimage import gaussian_filter
+    image = gaussian_filter(image, 1.0)
+
+    result = localize_grid(
+        image,
+        xp_guess=period,
+        yp_guess=period,
+        n_cols=n_cols,
+        n_rows=n_rows,
+        stagger_mode="auto",
+        stagger_axis="auto",
+        crop_threshold=0.05,
+        spot_threshold_rel=0.05,
+    )
+
+    assert result.matched_count == n_cols * n_rows
+    assert result.stagger_axis == "rows"
+    assert result.stagger_fraction == pytest.approx(0.5, abs=0.02)
+    expected = np.asarray(expected)
+    # This is the regression that the lighter implementation failed: the
+    # predicted overlay itself must land on the physical spots.
+    distances = np.linalg.norm(result.grid_points_rc - expected, axis=1)
+    assert np.median(distances) < 0.05
+    assert np.max(distances) < 0.1
+
+
 def test_search_missing_grid_foci_recovers_local_image_evidence():
     image, expected = _render_grid(missing={(2, 3)})
     missing_point = expected[3 * 6 + 2]
@@ -191,7 +272,7 @@ def test_search_missing_grid_foci_recovers_local_image_evidence():
         yp_guess=22.2,
         n_cols=6,
         n_rows=5,
-        threshold_rel=0.10,
+        spot_threshold_rel=0.10,
     )
     assert grid.missing_count == 1
 
@@ -315,6 +396,9 @@ def test_controller_grid_method_uses_manual_shape_and_preserves_legacy_offsets(m
         def getGridSize(self):
             return 6, 5
 
+        def getGridLocalizationSettings(self):
+            return {"registration_mode": "finite_grid", "spot_threshold_rel": 0.2}
+
         def setParameters(self, **kwargs):
             updates.append(kwargs)
 
@@ -337,6 +421,8 @@ def test_controller_grid_method_uses_manual_shape_and_preserves_legacy_offsets(m
     assert calls['kwargs']['yp_guess'] == pytest.approx(7.0)
     assert calls['kwargs']['n_cols'] == 6
     assert calls['kwargs']['n_rows'] == 5
+    assert calls['kwargs']['registration_mode'] == 'finite_grid'
+    assert calls['kwargs']['spot_threshold_rel'] == pytest.approx(0.2)
     assert fake_controller._gridLocalizationResult is grid
     # New localization updates physical periods only; legacy offsets survive.
     assert updates == [{
@@ -369,6 +455,9 @@ def test_controller_grid_method_auto_passes_no_shape(monkeypatch):
 
         def getGridSize(self):
             return None, None
+
+        def getGridLocalizationSettings(self):
+            return {}
 
         def setParameters(self, **_kwargs):
             pass

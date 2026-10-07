@@ -7,6 +7,9 @@ from typing import Any, Callable, Mapping
 import numpy as np
 
 from imswitch.imcommon.algorithms.transforms import ParameterSpec
+from imswitch.imcommon.algorithms.grid_localization import (
+    LOCALIZATION_DEFAULTS, LOCALIZATION_PARAMETER_INFO,
+)
 from imswitch.imcommon.algorithms.transforms.correspondence import (
     CorrespondenceResult,
     CorrespondenceStrategySpec,
@@ -18,7 +21,6 @@ from .ulenses_localizer import (
     GridLocalizationResult,
     GridLocalizationError,
     localize_grid,
-    refine_grid_foci,
     search_missing_grid_foci,
 )
 
@@ -26,39 +28,32 @@ __all__ = ["ulenses_grid_strategy_spec"]
 
 
 def _normalize(parameters: Mapping[str, Any]) -> dict[str, Any]:
-    normalized = {
-        "use_ulenses_widget_guesses": bool(
-            parameters.get("use_ulenses_widget_guesses", True)
-        ),
-        "xp_guess_px": float(parameters.get("xp_guess_px", 10.0)),
-        "yp_guess_px": float(parameters.get("yp_guess_px", 10.0)),
-        "grid_size_mode": str(parameters.get("grid_size_mode", "auto")),
-        "n_cols": int(parameters.get("n_cols", 10)),
-        "n_rows": int(parameters.get("n_rows", 10)),
-        "stagger_mode": str(parameters.get("stagger_mode", "auto")),
-        "stagger_axis": str(parameters.get("stagger_axis", "auto")),
-        "stagger_fraction": float(parameters.get("stagger_fraction", 0.5)),
-        "crop_threshold": float(parameters.get("crop_threshold", 0.4)),
-        "crop_margin_px": int(parameters.get("crop_margin_px", 1)),
-        "grid_threshold_rel": float(
-            parameters.get("grid_threshold_rel", parameters.get("threshold_rel", 0.10))
-        ),
-        "grid_gaussian_sigma": float(
-            parameters.get("grid_gaussian_sigma", 1.0)
-        ),
-        "grid_min_distance_fraction": float(
-            parameters.get("grid_min_distance_fraction", 0.35)
-        ),
-        "focus_refine_radius": int(
-            parameters.get("focus_refine_radius", parameters.get("refine_radius", 5))
-        ),
-        "focus_gaussian_sigma": float(
-            parameters.get("focus_gaussian_sigma", parameters.get("gaussian_sigma", 1.0))
-        ),
-        "max_relative_tilt_deg": float(
-            parameters.get("max_relative_tilt_deg", 30.0)
-        ),
+    supplied = dict(parameters or {})
+    # Compatibility aliases from the first ImControl grid-localizer passes.
+    aliases = {
+        "spot_threshold_rel": "grid_threshold_rel",
+        "spot_blur_sigma": "grid_gaussian_sigma",
+        "spot_min_distance_fraction": "grid_min_distance_fraction",
+        "focus_search_window_px": "focus_refine_radius",
     }
+    normalized = {
+        "use_ulenses_widget_guesses": bool(supplied.get("use_ulenses_widget_guesses", True)),
+        "xp_guess_px": float(supplied.get("xp_guess_px", 10.0)),
+        "yp_guess_px": float(supplied.get("yp_guess_px", 10.0)),
+        "grid_size_mode": str(supplied.get("grid_size_mode", "auto")),
+        "n_cols": int(supplied.get("n_cols", 10)),
+        "n_rows": int(supplied.get("n_rows", 10)),
+        "stagger_mode": str(supplied.get("stagger_mode", "auto")),
+        "stagger_axis": str(supplied.get("stagger_axis", "auto")),
+        "stagger_fraction": float(supplied.get("stagger_fraction", 0.5)),
+        "max_relative_tilt_deg": float(supplied.get("max_relative_tilt_deg", 30.0)),
+    }
+    for name, default in LOCALIZATION_DEFAULTS.items():
+        legacy = aliases.get(name)
+        raw = supplied.get(name, supplied.get(legacy, default) if legacy else default)
+        value_type = type(default)
+        normalized[name] = value_type(raw)
+
     if normalized["xp_guess_px"] <= 0 or normalized["yp_guess_px"] <= 0:
         raise ValueError("uLens period guesses must be positive")
     if normalized["grid_size_mode"] not in ("auto", "manual"):
@@ -69,26 +64,33 @@ def _normalize(parameters: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("stagger_mode must be 'auto', 'none', or 'manual'")
     if normalized["stagger_axis"] not in ("auto", "rows", "columns"):
         raise ValueError("stagger_axis must be 'auto', 'rows', or 'columns'")
-    if not -1.0 <= normalized["stagger_fraction"] <= 1.0:
-        raise ValueError("stagger_fraction must be within [-1, 1]")
-    if not 0.0 <= normalized["crop_threshold"] <= 1.0:
-        raise ValueError("crop_threshold must be between 0 and 1")
-    if normalized["crop_margin_px"] < 0:
-        raise ValueError("crop_margin_px must be non-negative")
-    if not 0.0 <= normalized["grid_threshold_rel"] <= 1.0:
-        raise ValueError("grid_threshold_rel must be between 0 and 1")
-    if normalized["grid_gaussian_sigma"] < 0:
-        raise ValueError("grid_gaussian_sigma must be non-negative")
-    if not 0.05 <= normalized["grid_min_distance_fraction"] <= 1.0:
-        raise ValueError("grid_min_distance_fraction must be within [0.05, 1]")
-    if normalized["focus_refine_radius"] < 0:
-        raise ValueError("focus_refine_radius must be at least 0")
-    if normalized["focus_gaussian_sigma"] < 0:
-        raise ValueError("focus_gaussian_sigma must be at least 0")
+    if not 0.0 <= normalized["stagger_fraction"] <= 1.0:
+        raise ValueError("stagger_fraction must be within [0, 1]")
+    if normalized["stagger_mode"] == "manual" and normalized["stagger_axis"] == "auto":
+        raise ValueError("manual stagger requires rows or columns")
     if not 0.0 < normalized["max_relative_tilt_deg"] <= 45.0:
         raise ValueError("max_relative_tilt_deg must be within (0, 45]")
     return normalized
 
+
+def _backend_parameter_specs() -> dict[str, ParameterSpec]:
+    specs: dict[str, ParameterSpec] = {}
+    for name, default in LOCALIZATION_DEFAULTS.items():
+        info = dict(LOCALIZATION_PARAMETER_INFO[name])
+        specs[name] = ParameterSpec(
+            default,
+            type(default),
+            info.pop("label"),
+            info.pop("tooltip", ""),
+            minimum=info.pop("minimum", None),
+            maximum=info.pop("maximum", None),
+            step=info.pop("step", None),
+            decimals=info.pop("decimals", None),
+            choices=tuple(info.pop("choices")) if "choices" in info else None,
+            advanced=bool(info.pop("advanced", False)),
+            group=info.pop("group", None),
+        )
+    return specs
 
 def _grid_localization_dict(result: GridLocalizationResult) -> dict[str, Any]:
     return {
@@ -162,23 +164,20 @@ def _localized_result_from_grid(
     *, xp_guess: float, yp_guess: float,
 ) -> ImageLocalizationResult:
     matched = np.asarray(grid.matched_mask, dtype=bool)
-    refined = refine_grid_foci(
-        image,
-        grid,
-        search_radius_px=params["focus_refine_radius"],
-        gaussian_sigma=params["focus_gaussian_sigma"],
-        matched_only=True,
-    )
+    # The shared SLMcore-compatible detector already supplies the subpixel
+    # measured coordinates used by registration. Reuse those directly so
+    # Transform and uLenses are inspecting the same localization evidence.
+    refined = np.asarray(grid.measured_points_rc[matched], dtype=np.float64)
     measured_indices = np.asarray(grid.logical_indices[matched], dtype=np.int64)
     metadata = _grid_localization_dict(grid)
     metadata.update({
         "x_period_guess_px": float(xp_guess),
         "y_period_guess_px": float(yp_guess),
         "grid_size_mode": params["grid_size_mode"],
-        "focus_refine_radius": params["focus_refine_radius"],
-        "focus_gaussian_sigma": params["focus_gaussian_sigma"],
         "matched_count": int(grid.matched_count),
         "missing_count": int(grid.missing_count),
+        "spot_center_method": params["focus_localization_method"],
+        "spot_center_window_px": params["focus_search_window_px"],
     })
     return ImageLocalizationResult(
         points=refined,
@@ -227,17 +226,16 @@ def ulenses_grid_strategy_spec(
             n_rows = None
 
         try:
+            backend_parameters = {
+                name: params[name] for name in LOCALIZATION_DEFAULTS
+            }
             grid = localize_grid(
                 image,
                 xp_guess=xp_guess,
                 yp_guess=yp_guess,
                 n_cols=n_cols,
                 n_rows=n_rows,
-                crop_threshold=params["crop_threshold"],
-                crop_margin_px=params["crop_margin_px"],
-                threshold_rel=params["grid_threshold_rel"],
-                gaussian_sigma=params["grid_gaussian_sigma"],
-                min_distance_fraction=params["grid_min_distance_fraction"],
+                **backend_parameters,
                 stagger_mode=params["stagger_mode"],
                 stagger_axis=params["stagger_axis"],
                 stagger_fraction=params["stagger_fraction"],
@@ -262,9 +260,9 @@ def ulenses_grid_strategy_spec(
         recovered = search_missing_grid_foci(
             image,
             grid,
-            search_radius_px=params["focus_refine_radius"],
-            gaussian_sigma=params["focus_gaussian_sigma"],
-            threshold_rel=max(0.01, 0.5 * params["grid_threshold_rel"]),
+            search_radius_px=params["focus_search_window_px"],
+            gaussian_sigma=params["spot_blur_sigma"],
+            threshold_rel=max(0.01, 0.5 * params["spot_threshold_rel"]),
         )
         return _localized_result_from_grid(
             image, recovered, params, xp_guess=xp_guess, yp_guess=yp_guess
@@ -329,14 +327,14 @@ def ulenses_grid_strategy_spec(
                     "moving": dict(source.metadata),
                     "reference": dict(target.metadata),
                 },
-                "focus_refinement": {
+                "spot_refinement": {
                     "moving": {
-                        "search_radius_px": source_parameters["focus_refine_radius"],
-                        "gaussian_sigma": source_parameters["focus_gaussian_sigma"],
+                        "method": source_parameters["focus_localization_method"],
+                        "window_px": source_parameters["focus_search_window_px"],
                     },
                     "reference": {
-                        "search_radius_px": target_parameters["focus_refine_radius"],
-                        "gaussian_sigma": target_parameters["focus_gaussian_sigma"],
+                        "method": target_parameters["focus_localization_method"],
+                        "window_px": target_parameters["focus_search_window_px"],
                     },
                 },
             },
@@ -348,8 +346,9 @@ def ulenses_grid_strategy_spec(
         name="ulenses_grid",
         label="uLenses grid",
         description=(
-            "Localize a finite 2-D grid with arbitrary tilt and optional alternating "
-            "row/column stagger, then refine and pair individual foci by logical index."
+            "Localize a finite 2-D grid with the SLMcore-compatible crop, spot "
+            "detection, stagger inference and robust registration pipeline, then "
+            "pair measured foci by logical index."
         ),
         localize_handler=localize,
         match_handler=match,
@@ -357,100 +356,60 @@ def ulenses_grid_strategy_spec(
         parameter_specs={
             "use_ulenses_widget_guesses": ParameterSpec(
                 True, bool, "Use uLenses widget period guesses",
-                "Use the current uLenses widget X/Y periodicities as strong initial "
+                "Use the current uLenses widget X/Y periodicities as SLMcore-style "
                 "period guidance. Disable this to use the explicit guesses below.",
                 group="Grid geometry",
             ),
             "xp_guess_px": ParameterSpec(
-                10.0, float, "X period guess (px)",
-                "Expected logical X period in camera pixels.",
+                10.0, float, "Expected period X (camera px)",
+                "Expected camera-space length of the logical X lattice period.",
                 minimum=0.001, step=0.5, decimals=3, group="Grid geometry",
                 enabled_when=("use_ulenses_widget_guesses", False),
             ),
             "yp_guess_px": ParameterSpec(
-                10.0, float, "Y period guess (px)",
-                "Expected logical Y period in camera pixels.",
+                10.0, float, "Expected period Y (camera px)",
+                "Expected camera-space length of the logical Y lattice period.",
                 minimum=0.001, step=0.5, decimals=3, group="Grid geometry",
                 enabled_when=("use_ulenses_widget_guesses", False),
             ),
             "grid_size_mode": ParameterSpec(
-                "auto", str, "Grid size",
-                "Auto infers the finite grid. If Auto fails, choose Manual and enter "
-                "the known finite grid size below.",
+                "auto", str, "Lattice size source",
+                "Auto infers finite X/Y point counts from the detected lattice; "
+                "Manual imposes the counts below.",
                 choices=("auto", "manual"), group="Grid geometry",
             ),
             "n_cols": ParameterSpec(
-                10, int, "Grid columns",
-                "Known logical X-site count. In Manual mode this is authoritative.",
+                10, int, "Lattice points X",
+                "Number of finite target sites along the logical X lattice axis.",
                 minimum=2, step=1, group="Grid geometry",
                 enabled_when=("grid_size_mode", "manual"),
             ),
             "n_rows": ParameterSpec(
-                10, int, "Grid rows",
-                "Known logical Y-site count. In Manual mode this is authoritative.",
+                10, int, "Lattice points Y",
+                "Number of finite target sites along the logical Y lattice axis.",
                 minimum=2, step=1, group="Grid geometry",
                 enabled_when=("grid_size_mode", "manual"),
             ),
             "stagger_mode": ParameterSpec(
-                "auto", str, "Stagger",
-                "Auto compares no stagger, row stagger and column stagger. Manual "
-                "uses the axis/fraction below.",
+                "auto", str, "Stagger source",
+                "Auto infers alternating stagger from the image. None forces zero "
+                "stagger. Manual imposes the value and axis below.",
                 choices=("auto", "none", "manual"), group="Grid geometry",
             ),
             "stagger_axis": ParameterSpec(
                 "auto", str, "Stagger axis",
-                "Rows shifts odd rows along X; Columns shifts odd columns along Y.",
+                "Rows matches SLMcore's canonical alternating-row model; Columns "
+                "uses the same backend on a transposed image for compatibility.",
                 choices=("auto", "rows", "columns"), group="Grid geometry",
                 enabled_when=("stagger_mode", "manual"),
             ),
             "stagger_fraction": ParameterSpec(
-                0.5, float, "Stagger fraction",
-                "Alternating shift as a fraction of the corresponding lattice period.",
-                minimum=-1.0, maximum=1.0, step=0.05, decimals=3,
+                0.5, float, "Stagger",
+                "Odd-row/column shift as a fraction of the corresponding lattice period.",
+                minimum=0.0, maximum=1.0, step=0.05, decimals=3,
                 group="Grid geometry", enabled_when=("stagger_mode", "manual"),
             ),
-            "crop_threshold": ParameterSpec(
-                0.40, float, "Crop threshold",
-                "Fraction of the brightest image value used to define the localization crop. "
-                "Increase to isolate the bright grid; decrease if dim outer spots are clipped.",
-                minimum=0.0, maximum=1.0, step=0.05, decimals=2,
-                group="Grid localization",
-            ),
-            "crop_margin_px": ParameterSpec(
-                1, int, "Crop margin (px)",
-                "Extra pixels retained around the automatically detected localization crop.",
-                minimum=0, step=1, group="Grid localization",
-            ),
-            "grid_threshold_rel": ParameterSpec(
-                0.10, float, "Grid spot threshold",
-                "Relative threshold for coarse spots used to infer global geometry. "
-                "Increase to reject weak false detections; decrease for dim sites.",
-                minimum=0.0, maximum=1.0, step=0.02, decimals=2,
-                group="Grid localization",
-            ),
-            "grid_gaussian_sigma": ParameterSpec(
-                1.0, float, "Grid detection smoothing (px)",
-                "Gaussian smoothing before coarse global-grid spot detection.",
-                minimum=0.0, step=0.1, decimals=2, advanced=True,
-                group="Grid localization",
-            ),
-            "grid_min_distance_fraction": ParameterSpec(
-                0.35, float, "Coarse spot distance / period",
-                "Minimum coarse-peak separation as a fraction of the smaller period.",
-                minimum=0.05, maximum=1.0, step=0.05, decimals=2,
-                advanced=True, group="Grid localization",
-            ),
-            "focus_refine_radius": ParameterSpec(
-                5, int, "Focus refinement radius (px)",
-                "Local search radius around each predicted finite-grid site.",
-                minimum=0, step=1, group="Focus correspondence",
-            ),
-            "focus_gaussian_sigma": ParameterSpec(
-                1.0, float, "Focus search smoothing (px)",
-                "Smoothing used while selecting each local focus maximum.",
-                minimum=0.0, step=0.1, decimals=2, advanced=True,
-                group="Focus correspondence",
-            ),
+            **_backend_parameter_specs(),
             "max_relative_tilt_deg": ParameterSpec(
                 30.0, float, "Maximum relative grid tilt (deg)",
                 "Safety limit between Moving and Reference grid orientations.",
