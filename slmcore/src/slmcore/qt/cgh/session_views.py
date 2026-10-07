@@ -753,12 +753,19 @@ class PositionReferenceView(QtWidgets.QWidget):
         self._affine_active = bool(
             correction_mode == "affine" and affine_transform is not None
         )
-        constrained_model = correction_mode in {"affine","polynomial"}
+        constrained_model = correction_mode in {
+            "translation","rigid","affine","polynomial",
+        }
         if constrained_model:
             self.raw_reference_item.setData(
                 x=raw_reference[0],y=raw_reference[1],
             )
-            model_label = "Affine" if correction_mode == "affine" else "Polynomial"
+            model_label = {
+                "translation":"Translation",
+                "rigid":"Rigid",
+                "affine":"Affine",
+                "polynomial":"Polynomial",
+            }[correction_mode]
             self.legend_label.setText(
                 "Measured ×   Global fit +   Saved reference ○   "
                 f"{model_label} target +   Vector: {model_label.lower()} correction"

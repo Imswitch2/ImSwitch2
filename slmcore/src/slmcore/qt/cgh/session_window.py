@@ -772,14 +772,16 @@ class CGHSessionWindow(QtWidgets.QDialog):
         correction_model_label = QtWidgets.QLabel("Correction model")
         saved_layout.addWidget(correction_model_label)
         self.position_reference_correction_model_combo = QtWidgets.QComboBox()
-        self.position_reference_correction_model_combo.addItem("Per-spot","per_spot")
+        self.position_reference_correction_model_combo.addItem("Translation","translation")
+        self.position_reference_correction_model_combo.addItem("Rigid","rigid")
         self.position_reference_correction_model_combo.addItem("Affine","affine")
         self.position_reference_correction_model_combo.addItem("Polynomial","polynomial")
+        self.position_reference_correction_model_combo.addItem("Per-spot","per_spot")
         self.position_reference_correction_model_combo.setToolTip(
-            "Per-spot applies each measured reference error independently. "
-            "Affine fits one continuous linear displacement field. Polynomial "
-            "fits a smooth nonlinear displacement field; choose order 2, 3, "
-            "or 4 below."
+            "Translation fits one common shift. Rigid fits translation + rotation. "
+            "Affine also allows scale and shear. Polynomial fits a smooth nonlinear "
+            "field of order 2, 3, or 4. Per-spot applies each measured reference "
+            "error independently."
         )
         self.position_reference_correction_model_combo.currentIndexChanged.connect(
             self._on_position_reference_correction_mode_changed
@@ -1073,9 +1075,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
             )
             correction_model_combo.setToolTip(
                 reason or (
-                    "Per-spot applies each saved-reference error independently; "
-                    "Affine fits one continuous linear field; Polynomial fits a "
-                    "smooth nonlinear field of selectable order 2, 3, or 4."
+                    "Translation fits one common shift; Rigid fits translation + "
+                    "rotation; Affine also allows scale and shear; Polynomial fits "
+                    "a smooth nonlinear field of selectable order 2, 3, or 4; "
+                    "Per-spot applies each saved-reference error independently."
                 )
             )
         polynomial_degree_label = getattr(

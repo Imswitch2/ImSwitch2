@@ -33,10 +33,14 @@ _EDITABLE_POSITION_REFERENCE_LOCK_FIELDS = frozenset({
     "period_x_px","period_y_px","rotation_deg","lattice_angle_deg",
 })
 _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT = "per_spot"
+_POSITION_REFERENCE_CORRECTION_MODE_TRANSLATION = "translation"
+_POSITION_REFERENCE_CORRECTION_MODE_RIGID = "rigid"
 _POSITION_REFERENCE_CORRECTION_MODE_AFFINE = "affine"
 _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL = "polynomial"
 _POSITION_REFERENCE_CORRECTION_MODES = frozenset({
     _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT,
+    _POSITION_REFERENCE_CORRECTION_MODE_TRANSLATION,
+    _POSITION_REFERENCE_CORRECTION_MODE_RIGID,
     _POSITION_REFERENCE_CORRECTION_MODE_AFFINE,
     _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL,
 })
@@ -742,11 +746,12 @@ class PositionReferenceService(FeedbackComponent):
     ) -> tuple[np.ndarray,np.ndarray | None]:
         """Convert raw saved-reference errors into the selected correction field.
 
-        ``per_spot`` preserves the historical behavior. ``affine`` fits one
-        detector-space affine displacement field to matched spots. ``polynomial``
-        fits a detector-space polynomial displacement field of selectable total
-        degree 2, 3, or 4. Both constrained models are sampled at every registered
-        lattice site, so individual sites cannot move independently.
+        ``per_spot`` preserves the historical behavior. ``translation`` fits one
+        common detector-space shift, ``rigid`` fits translation + rotation, and
+        ``affine`` fits one general linear displacement field. ``polynomial`` fits
+        a detector-space polynomial displacement field of selectable total degree
+        2, 3, or 4. Constrained models are sampled at every registered lattice
+        site, so individual sites cannot move independently.
         """
         raw_reference = np.asarray(raw_reference_positions,dtype=np.float64)
         if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT:
@@ -759,18 +764,39 @@ class PositionReferenceService(FeedbackComponent):
             localization.measured_positions_px,dtype=np.float64,
         )
         matched,_inferred,_resolved = localization_site_masks(localization)
+        matched_count = int(np.count_nonzero(matched))
+        displacement = raw_reference-measured
+
+        if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_TRANSLATION:
+            if matched_count < 1:
+                raise RuntimeError(
+                    "Translation reference correction requires at least one matched spot."
+                )
+            common_error = np.mean(displacement[:,matched],axis=1)
+            return measured+common_error[:,None],None
+
+        if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_RIGID:
+            if matched_count < 2:
+                raise RuntimeError(
+                    "Rigid reference correction requires at least two matched spots."
+                )
+            desired_registered = registered+displacement
+            transform = _fit_rigid_matrix(
+                registered[:,matched],desired_registered[:,matched],
+            )
+            mapped_registered = _apply_affine_matrix(transform,registered)
+            rigid_error = mapped_registered-registered
+            return measured+rigid_error,None
 
         if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL:
             degree = selection.polynomial_degree
             minimum_points = _polynomial_term_count(degree)
-            matched_count = int(np.count_nonzero(matched))
             if matched_count < minimum_points:
                 raise RuntimeError(
                     "Polynomial reference correction degree %d requires at least %d "
                     "matched spots; got %d."
                     % (degree,minimum_points,matched_count)
                 )
-            displacement = raw_reference-measured
             polynomial = _fit_polynomial_displacement(
                 registered[:,matched],displacement[:,matched],degree=degree,
             )
@@ -881,6 +907,29 @@ class PositionReferenceService(FeedbackComponent):
 def _localization_is_resolved(localization: LocalizationResult) -> bool:
     _matched,_inferred,resolved = localization_site_masks(localization)
     return bool(np.all(resolved))
+
+
+def _fit_rigid_matrix(source: np.ndarray,target: np.ndarray) -> np.ndarray:
+    source = np.asarray(source,dtype=np.float64)
+    target = np.asarray(target,dtype=np.float64)
+    if source.shape != target.shape or source.ndim != 2 or source.shape[0] != 2:
+        raise ValueError("Rigid point arrays must share shape (2, N)")
+    if source.shape[1] < 2:
+        raise ValueError("At least two points are required for a rigid fit")
+    source_center = np.mean(source,axis=1)
+    target_center = np.mean(target,axis=1)
+    source_zero = source-source_center[:,None]
+    target_zero = target-target_center[:,None]
+    if float(np.linalg.norm(source_zero)) < 1e-12:
+        raise ValueError("Rigid source points are degenerate")
+    covariance = target_zero@source_zero.T
+    u,_singular_values,vt = np.linalg.svd(covariance)
+    rotation = u@vt
+    if float(np.linalg.det(rotation)) < 0.0:
+        u[:,-1] *= -1.0
+        rotation = u@vt
+    translation = target_center-rotation@source_center
+    return np.column_stack([rotation,translation])
 
 
 def _fit_affine_matrix(source: np.ndarray,target: np.ndarray) -> np.ndarray:

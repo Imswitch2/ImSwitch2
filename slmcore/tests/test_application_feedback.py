@@ -1077,6 +1077,36 @@ def test_named_reference_affine_correction_uses_one_continuous_field(tmp_path):
     )
     per_spot,metadata = current_session.feedback._resolve_position_reference("sec_0")
     assert metadata["correction_model"]["mode"] == "per_spot"
+    per_spot_error = np.asarray(per_spot)-measured
+
+    current_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="488 reference",
+        correction_mode="translation",
+    )
+    translated,metadata = current_session.feedback._resolve_position_reference("sec_0")
+    assert metadata["correction_model"]["mode"] == "translation"
+    translation_error = np.asarray(translated)-measured
+    np.testing.assert_allclose(
+        translation_error,
+        np.repeat(np.mean(per_spot_error,axis=1)[:,None],translation_error.shape[1],axis=1),
+        atol=1e-10,
+    )
+
+    current_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="488 reference",
+        correction_mode="rigid",
+    )
+    rigid,metadata = current_session.feedback._resolve_position_reference("sec_0")
+    assert metadata["correction_model"]["mode"] == "rigid"
+    registered = np.asarray(modified.expected_positions_px,dtype=np.float64)
+    rigid_error = np.asarray(rigid)-measured
+    rigid_registered = registered+rigid_error
+    # A rigid fit may translate/rotate the lattice, but must preserve distances.
+    np.testing.assert_allclose(
+        np.linalg.norm(rigid_registered[:,1:]-rigid_registered[:,:-1],axis=0),
+        np.linalg.norm(registered[:,1:]-registered[:,:-1],axis=0),
+        atol=1e-10,
+    )
 
     current_session.feedback.set_position_reference(
         "sec_0",mode="reference",reference_name="488 reference",
@@ -1085,7 +1115,6 @@ def test_named_reference_affine_correction_uses_one_continuous_field(tmp_path):
     affine,metadata = current_session.feedback._resolve_position_reference("sec_0")
     assert metadata["correction_model"]["mode"] == "affine"
 
-    registered = np.asarray(modified.expected_positions_px,dtype=np.float64)
     affine_error = np.asarray(affine)-measured
     design = np.column_stack([
         registered.T,np.ones(registered.shape[1],dtype=np.float64),
@@ -1095,7 +1124,6 @@ def test_named_reference_affine_correction_uses_one_continuous_field(tmp_path):
     np.testing.assert_allclose(affine_error,fitted_error,atol=1e-10)
 
     # The bad site's correction is no longer its raw reference jump.
-    per_spot_error = np.asarray(per_spot)-measured
     assert not np.allclose(affine_error[:,-1],per_spot_error[:,-1])
 
     preview = current_session.feedback.position_reference_preview("sec_0")
