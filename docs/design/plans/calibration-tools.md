@@ -1,6 +1,6 @@
 # Calibration tools: optional instruments with a live readout
 
-Status: **plan, review round 0** (2026-10-06; Lenny's PM100D + PAX1000 helpers folded into §8). Branch `feat/calibration-tools`,
+Status: **SUPERSEDED 2026-10-07 by `transient-instruments-step-scans.md`** (instruments as transient setup devices with virtual sampled detectors, a software step scan and an ImProcess polarisation reconstructor). Kept for the instrument details and review rounds 0-1. Previous status: **plan, review round 1 answered** (2026-10-06; Lenny's PM100D + PAX1000 helpers folded into §8; round-1 findings → §5 freshness + actions, §6 sample path + shutdown, §8 zeroing; prior art → §9). Branch `feat/calibration-tools`,
 worktree `../Imswitch2-calibration-tools`. Nothing implemented.
 
 ## 1. Motivation
@@ -98,7 +98,8 @@ instruments are not re-entrant. Each session serialises driver I/O through
 one lock. The live poller uses a non-blocking acquire and *skips* a tick when
 a script holds the lock; it never queues behind it. A script can take the
 instrument exclusively (`with tool.exclusive():`) for a sweep; the window
-shows "In use by script" and greys the settings.
+shows "In use by script" and greys the settings and actions, but keeps
+updating from the script's own reads (one sample path, §6).
 
 ## 4. Manifest and registry
 
@@ -165,27 +166,75 @@ class Setting:
     choices: tuple = ()
 
 @dataclass(frozen=True)
+class Action:
+    name: str                 # 'zero'
+    label: str                # 'Zero'
+    confirm: str = ''         # shown before running; '' = no confirmation
+    requires_dark: bool = False   # see §8 zeroing: needs an explicit "beam blocked"
+    timeout_s: float = 10.0   # upper bound the driver waits for completion
+
+@dataclass(frozen=True)
 class Reading:
-    t: float                  # time.time()
+    t_host: float             # time.time() when the read returned
     values: Mapping[str, float]
+    sample_id: Hashable | None = None   # instrument-side identity, if the tool has one
+
+class Freshness(Enum):
+    PER_READ = 'per_read'     # every read() is a new measurement (verified per tool)
+    SAMPLE_ID = 'sample_id'   # read() may repeat; Reading.sample_id tells them apart
+    MIN_INTERVAL = 'min_interval'  # read() may repeat; a new one exists only after
+                                   # `min_interval_s` since the last accepted sample
 
 class CalibrationTool(ABC):
     connection_fields: ClassVar[tuple[ConnectionField, ...]]
     channels: ClassVar[tuple[Channel, ...]]
     settings: ClassVar[tuple[Setting, ...]] = ()
+    actions: ClassVar[tuple[Action, ...]] = ()
+    freshness: ClassVar[Freshness]
+    min_interval_s: ClassVar[float] = 0.0
     visa_match: ClassVar[tuple[str, ...]] = ()   # IDN / resource substrings for the Scan button
 
     @abstractmethod
     def connect(self, **params) -> InstrumentIdentity: ...   # vendor, model, serial, firmware
     @abstractmethod
-    def close(self) -> None: ...
+    def close(self) -> None: ...                 # must return within its VISA timeout
     @abstractmethod
     def read(self) -> Reading: ...
     def get_setting(self, name): ...
-    def set_setting(self, name, value): ...
+    def set_setting(self, name, value): ...      # returns the value that applies (readback)
+    def run_action(self, name, **kwargs): ...    # blocks until done or Action.timeout_s
     def make_view(self, parent):                  # optional custom Qt view; default None
         return None
 ```
+
+The driver methods are **never called directly** by the window, the poller
+or scripts — only by the session (§6), which serialises them under the
+session lock. That is what keeps an action such as zeroing from running
+between two reads of a script's sweep.
+
+**Freshness (what counts as a new measurement).** Host time cannot tell a
+repeated instrument sample from a new one, and equal values can be two genuine
+measurements, so neither is used to detect staleness. Each tool *declares*
+its rule (`freshness`), and the session applies it to every read:
+
+- `PER_READ` — accepted as-is. Only allowed once the rig check shows the
+  command triggers a fresh measurement (PM100 `READ?`: to verify, §8).
+- `SAMPLE_ID` — a reading whose `sample_id` equals the last accepted one is a
+  repeat: not published, not recorded, not averaged.
+- `MIN_INTERVAL` — a reading earlier than `min_interval_s` after the last
+  accepted one is a repeat. The fallback when the instrument exposes no
+  counter (e.g. one PAX waveplate revolution).
+
+A tool whose rule is unknown declares `MIN_INTERVAL` with a conservative
+interval, never `PER_READ`.
+
+**Actions** are declared, so the generic window renders them as buttons and
+scripts call them by name — no PM100-specific code in the window. An action
+with `confirm` shows that text first; one with `requires_dark` additionally
+needs an explicit "the beam is blocked" confirmation (a checkbox in the
+dialog; `confirm_dark=True` from a script — omitting it raises). While an
+action runs it holds the session lock, so the poller skips and script calls
+wait.
 
 - `visa_resource` fields get a **Scan** button: `list_resources()` filtered by
   `visa_match`, each candidate shown with its `*IDN?` serial, so the user picks
@@ -201,6 +250,23 @@ class CalibrationTool(ABC):
   `(tool id, connection identity)`: connect, close, the I/O lock (D-7), the
   live poller thread, the last N readings (ring buffer), and the CSV
   recorder.
+- **One sample path.** Every driver `read()` — from the poller, from a script's
+  `read()`, and each individual read inside `read_mean()` — goes through one
+  session method that (1) applies the freshness rule, (2) on a new sample
+  appends it to the ring buffer and (3) publishes it to subscribers. The
+  window and the CSV recorder are subscribers; nothing reads the driver
+  around this path. So during `exclusive()` the poller is paused but the
+  window still updates — from the script's own reads.
+- Each published sample carries its source (`live` / `script`). Subscribers
+  run on the reading thread and must not block: the window receives samples
+  through a queued Qt signal, the recorder through a queue drained by its own
+  writer thread.
+- **Recording semantics.** While recording, every published sample is written,
+  whatever its source, with a `source` column; repeats are never written
+  (they are not published). `read_mean()` does not write its mean as a row —
+  the individual samples are already there; a script that wants a marker
+  calls `tool.annotate('step 12: 3.5 mW set')`, written as a comment row with
+  the current time.
 - `CalibrationController` (controller) builds the menu from the registry,
   opens one `CalibrationToolWindow` per session, and exposes the scripting
   API (§7).
@@ -215,8 +281,24 @@ class CalibrationTool(ABC):
   persistence: these are properties of the computer, not of a session.
 - Closing the window closes the session unless a script holds it; then the
   window closes and the session stays until the script releases it.
-- Shutdown: the hub closes every session after the scripting drain and
-  before hardware managers are finalised (`shutdownModules` order).
+- **Shutdown** follows the existing fail-closed rule
+  (`imcommon/model/shutdown.py`: when the scripting drain fails,
+  `ImConMainController` skips hardware-manager finalization because the script
+  may still be inside a manager call). The hub runs, in ImControl's close
+  path, before the hardware managers:
+  1. refuse new `open` / `read` / action calls (they raise);
+  2. stop every poller and **join** it, bounded by the tool's VISA timeout +
+     margin (the poller only blocks inside one read, which that timeout
+     bounds); stop the recorder and flush its file;
+  3. if `shutdownState.hardwareFinalizationAllowed()` is false, **do not close
+     any driver**: a script may still hold the lock or be inside a VISA call,
+     and closing under it is concurrent access. Log which sessions were left
+     open; the OS releases the USB session at process exit;
+  4. otherwise close each session: acquire its lock with the same bound;
+     acquired → `close()` (which, for the PAX, stops the waveplate); not
+     acquired → skip and log, as in step 3.
+
+  Nothing in this sequence waits without a bound.
 
 Output: CSV with a header block — tool id, instrument identity, settings at
 start (wavelength!), ImSwitch version, start time — then `t, <channels…>`.
@@ -232,13 +314,25 @@ pm = api.imcontrol.openCalibrationTool('thorlabs.pm100', resource='USB0::…')
 api.imcontrol.listCalibrationTools()         # installed ids + open sessions
 pm.set('wavelength_nm', 488)
 pm.read()                                    # Reading
-pm.read_mean(n=20)                           # mean ± std per channel
+pm.read_mean(n=20, timeout_s=10)             # 20 DISTINCT samples, see below
+pm.action('zero', confirm_dark=True)         # declared actions, run under the lock
+pm.annotate('BFP, 775 nm, ND removed')       # comment row in a running recording
 with pm.exclusive():                         # pauses the live poller
     for p in powers:
         laser.setValue(p); time.sleep(0.5)
-        rows.append((p, pm.read_mean(10)['power']))
+        rows.append((p, pm.read_mean(10, timeout_s=10)['power']))
 pm.close()                                   # no-op if the window still shows it
 ```
+
+- `read_mean(n, timeout_s)` collects **n distinct samples** (freshness rule,
+  §5) started after the call, and returns per channel `mean`, `std`, `n` and
+  the samples' time span. If the deadline passes first it raises
+  `TimeoutError` naming how many it got — it never pads with repeats, which
+  would shrink the reported std. Each underlying read is published like any
+  other (§6). `timeout_s` defaults to `n × max(min_interval_s, last read
+  time) × 3`.
+- `action(name, **kw)` dispatches through the session lock; there is no way
+  to reach the driver around it.
 
 - `openCalibrationTool` with no connection arguments re-uses the open
   session for that id if there is exactly one, else raises with the list.
@@ -262,7 +356,9 @@ pm.close()                                   # no-op if the window still shows i
 - *Channel:* `power` (W, the window shows SI prefixes). *Settings:*
   `wavelength_nm` (read back after writing — the meter clamps it to the
   sensor's range and the readback is the value that applies). *Action:*
-  **Zero** (button + `tool.zero()`).
+  `zero` — `requires_dark=True`, confirm text "Block the beam at the sensor".
+- *Freshness:* `MIN_INTERVAL` with a conservative interval until the rig
+  check below shows `READ?` measures afresh; then `PER_READ`.
 
 To verify on the rig (P-2), not assumed:
 
@@ -295,6 +391,10 @@ To verify on the rig (P-2), not assumed:
   window shows degrees), `dop`, `power`, plus derived `s1 = cos2az·cos2el`,
   `s2 = sin2az·cos2el`, `s3 = sin2el` (normalised Stokes of the polarised part).
 - *Settings:* `wavelength_nm` → `SENS:WAV <metres>`.
+- *Freshness:* `SAMPLE_ID` if fields 0–8 of the packet include a revolution
+  counter or device timestamp (to check on the rig — that field becomes
+  `sample_id`); otherwise `MIN_INTERVAL` = one waveplate revolution at the
+  configured speed.
 - *Custom view:* Poincaré sphere — wireframe, axes, the session's points
   coloured by time, or by trajectory when the data carries a `traj_idx`
   column (the waveplate map writes one per sweep line). It can also **open a
@@ -328,12 +428,31 @@ transmission + noise), so the laser-LUT script runs end-to-end in CI.
      mW (`read_power() * 1E3`). The LUT states its units explicitly per
      column, in SI (W), and records the laser's own setting unit
      (`valueUnits` — for an AOM that may be V or %, not mW).
-   - **Zero with the laser off.** The script zeroes while the laser may still
-     be at its previous value, which bakes that light into the offset. The
-     procedure sets the laser to its minimum (or asks to block the beam)
-     before zeroing.
-   - **Restore the laser** to its value before the run, also on error or
-     Stop — the current script leaves it at `max_power`.
+   - **Zero in the dark, and "dark" is confirmed, not inferred.** The script
+     zeroes while the laser may still be at its previous value, which bakes
+     that light into the offset of every later reading. A minimum *value* is
+     not dark: the laser contract keeps value and enabled state apart
+     (`LaserManager.setValue` / `setEnabled`), an AOM/AOTF line leaks through
+     its finite extinction at drive 0, and other lasers may share the path.
+     The procedure (a) records the laser's value **and** enabled state,
+     (b) disables emission (`setLaserActive(False)`), (c) runs `zero` with
+     `confirm_dark=True` — which a script may only pass after the user
+     confirmed the beam is blocked (an ImScripting prompt; the example script
+     asks), then (d) re-enables for the sweep.
+   - **Restore value and enabled state** after the run, also on error or
+     Stop — the current script leaves the laser at `max_power`. Order: set
+     the value while still disabled, then restore the enabled state.
+     ImScripting has no laser *getters* today (`LaserController` exports only
+     `getLaserNames`, `setLaserActive`, `setLaserValue`), so P-1 adds
+     `getLaserValue` and `getLaserActive`.
+   - **A sweep starting at 0 switches the laser off.**
+     `LaserController._setLaserValue` disables a non-binary laser when it is
+     set to ≤ 0, and setting a positive value afterwards does not re-enable it.
+     The current script sweeps from 0, so unless the 775 line ignores its
+     enable state, every point after the first may have been measured with
+     emission off — **check the existing 775 LUT** for a flat curve. The
+     procedure calls `setLaserActive(True)` after each value change (or
+     sweeps from the first positive value and measures 0 separately).
    - **Partial runs.** An exception mid-loop leaves fewer readings than
      settings and `np.vstack` then fails, losing the data. Write rows as they
      are measured (or pair setting and reading per row), so a partial LUT
@@ -346,10 +465,14 @@ transmission + noise), so the laser-LUT script runs end-to-end in CI.
      while lasers are named after their wavelength.
    - Average several reads per step (`read_mean`) instead of one.
 
-   LUT CSV: header block (laser name, setting unit, wavelength, plane label —
-   BFP/sample/fibre, meter identity + sensor, zeroed yes/no, settle time,
-   reads per step, date, ImSwitch version, free-text notes — the script's
-   `notes` footer moves here), then `setting, power_W, power_std_W`.
+   LUT file: `#`-comment header block (laser name, setting unit, wavelength,
+   plane label — BFP/sample/fibre, meter identity + sensor, zeroed yes/no,
+   settle time, reads per step, date, ImSwitch version, free-text notes —
+   the script's `notes` footer moves here), then whitespace-separated
+   columns `setting power_W power_std_W`. **The first two columns must stay
+   setting / power**, because the existing `calibCsvPath` consumer (§9) reads
+   it with `np.loadtxt` and uses columns 0 and 1; `#` lines and a third
+   column are compatible with it.
 2. `waveplate_polarisation_map.py` — step two rotators over a grid, read the
    PAX at each position, write `traj_idx`, angle₁, angle₂, azimuth,
    ellipticity, DOP, power, s1, s2, s3 (one `traj_idx` per sweep line, so the
@@ -363,13 +486,36 @@ that is a QWP/HWP sweep measured with a polarisation *camera*. The PAX map is
 the same sweep with a different sensor. This plan does not touch it; whether
 to merge the two is Q-5.
 
-## 9. Later: lasers that use a power LUT (not in this plan)
+## 9. Existing LUT support, and what is left for later
 
-Sketch only, so the LUT format chosen in P-4 does not paint us into a corner:
-a laser setup entry gains an optional `powerCalibrationFile`; the laser
-widget shows "≈ x mW at BFP" next to the setting and can accept a target
-power. Needs its own plan (interpolation, wavelength, staleness warning,
-interaction with the illumination channel model).
+Round 0 missed that part of this already exists:
+
+- **`calibCsvPath`** (laser `managerProperties`) — `NidaqLaserManager` and
+  `AAAOTFLaserManager` load a two-column file (`np.loadtxt`: raw setting,
+  measured power), subtract the minimum, normalise to 0–100 % and drive the
+  laser through the inverse (`create_lut_from_calib`, `interp1d`); the UI
+  value becomes a % setpoint (`LaserManager.usesCalibrationLookup`). It
+  discards absolute power — only the curve's *shape* is used.
+- **`utility_scripts/aa_aotf_calibration.py`** — a standalone Qt utility
+  (ImSwitch closed) with its **own `PM100D` class** (same `READ?` /
+  `SENSE:CORR:WAV` / `SENSE:ZERO:INIT` commands), frequency and power sweeps
+  for AA AOTFs, an atomic LUT writer, and write-back of `calibCsvPath` etc. to
+  the setup with a `.bak`. It already does the restore-on-failure right
+  (switches the channel off after every sweep, on failure and on close).
+
+Consequences for this plan:
+
+- The LUT the procedure writes is a `calibCsvPath` file (column rule in §8),
+  so a lab can point a laser at it with no new consumer code.
+- There should be **one PM100 driver**: P-2 builds `thorlabs.pm100` from the
+  helpers and the utility's class, and the utility then imports it instead
+  of carrying its own (Q-8). The utility stays standalone — it needs the serial
+  ports ImSwitch would hold — so it uses the driver directly, not the hub.
+
+Later, its own plan: absolute power — keep the measured W alongside the %
+mapping so the laser widget can show "≈ x mW at BFP" and accept a target
+power (wavelength, staleness warning, interaction with the illumination
+channel model).
 
 ## 10. Phases
 
@@ -377,16 +523,28 @@ Each phase ends green on the unit lane and with the docs updated.
 
 - **P-0 Framework.** Contribution dataclass + parser + registry + CLI listing;
   `pluginapi.calibration` contract; `CalibrationHub` with lock, poller, ring
-  buffer, CSV; Calibration menu + Manage tools…; generic window; mock power
-  meter. Tests: manifest parsing (valid, missing fields, unknown category,
-  collision), `requires` check without import, hub lifecycle (connect /
-  read / exclusive / close / shutdown), poller skips while locked, window
-  under pytest-qt offscreen against the mock, menu greying when a requirement
-  is missing.
+  buffer, one sample path with freshness rules, declared actions, CSV
+  recorder with `source` column and annotations; Calibration menu + Manage
+  tools…; generic window; mock power meter (configurable to repeat samples,
+  so every freshness rule is testable). Tests: manifest parsing (valid,
+  missing fields, unknown category, collision), `requires` check without
+  import, hub lifecycle (connect / read / exclusive / action / close), poller
+  skips while locked, repeats neither published nor recorded nor averaged,
+  script reads during `exclusive()` reach the window and the recorder, an
+  action cannot interleave with a locked sweep, `requires_dark` refuses
+  without confirmation, **shutdown**: pollers joined within the bound, drivers
+  NOT closed after a failed scripting drain, a lock held past the bound is
+  skipped and logged; window under pytest-qt offscreen against the mock;
+  menu greying when a requirement is missing.
 - **P-1 Scripting API.** `openCalibrationTool` / `listCalibrationTools`,
-  handle with `read_mean` and `exclusive`; mock-laser LUT script running
-  end-to-end in a test.
-- **P-2 PM100.** Driver from Lenny's helpers; VISA Scan; wavelength setting.
+  handle with `read_mean(n, timeout_s)` (distinct samples, `TimeoutError` on
+  shortfall), `action`, `annotate`, `exclusive`; laser getters
+  `getLaserValue` / `getLaserActive` on `LaserController`; mock-laser LUT
+  script running end-to-end in a test, including value + enabled-state
+  restore on an injected failure.
+- **P-2 PM100.** Driver from Lenny's helpers and the AOTF utility's class
+  (one driver; the utility then imports it, Q-8); VISA Scan; wavelength
+  setting; `zero` action with completion wait.
   Unit tests against a fake VISA resource (scripted SCPI replies). Rig check:
   reading matches the Thorlabs Optical Power Monitor app.
 - **P-3 PAX1000.** Driver from Lenny's helpers; multi-channel plot; Poincaré
@@ -405,8 +563,9 @@ Each phase ends green on the unit lane and with the docs updated.
 - **Another program holds the instrument.** The Thorlabs app keeps the USB
   session open; connect must report that clearly.
 - **Script thread vs. poller vs. shutdown.** Covered by D-7 and the shutdown
-  order in §6; a hung VISA read must not hang shutdown (VISA timeout set on
-  connect, close with a bound).
+  sequence in §6, including the failed-drain case; a hung VISA read must not
+  hang shutdown (VISA timeout set on connect, every join and lock acquire
+  bounded).
 
 ## 12. Open questions for review
 
@@ -432,3 +591,8 @@ Each phase ends green on the unit lane and with the docs updated.
 - **Q-7 Name.** Menu "Calibration", contribution `calibration_tools`, class
   `CalibrationTool` — or "Instruments", since a power meter is useful for
   plain checks too, not only calibration?
+- **Q-8 One PM100 driver.** `utility_scripts/aa_aotf_calibration.py` carries
+  its own `PM100D`. Proposal: it imports the `thorlabs.pm100` driver after
+  P-2. Should the utility's power sweep itself also become a calibration
+  procedure inside ImSwitch, or stay standalone (it needs the AOTF serial
+  ports, which a running ImSwitch holds)?
