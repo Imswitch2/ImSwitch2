@@ -11,17 +11,17 @@ the input (axes, pixel size) and wraps the outputs. :func:`run_bead_analysis`
 is the shared first half: the panel's preview runs exactly what a fit runs,
 without publishing anything.
 
-Output ports: ``beads`` (the selected beads), ``summary`` (their statistics,
-the rejection counts and, when fitted, the aberration headline),
-``average_psf`` (the mean bead image, when requested and at least one bead
-qualifies), and with aberrations requested on a calibrated stack
-``aberrations`` (Zernike table), ``aberration_fit`` (data | model stack) and
-``wavefront`` (pupil phase map).
+Output ports: ``psf``, the measurement (one result holding the beads, their
+statistics and, when fitted, the aberrations; see
+:class:`~.result.PSFMeasurementResult`), and ``average_psf``, the mean bead
+as an ordinary image, when averaging is on and at least one bead qualifies.
+:func:`measure` turns an analysis into both, for this processor and for
+``psf-bead-select``'s re-selection alike.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import numpy as np
@@ -40,24 +40,16 @@ from imswitch.improcess.analysis.bead_psf import (
     focal_surface,
     rejection_reasons,
     roi_candidates,
-    select_beads,
     summarize,
 )
 from imswitch.improcess.analysis.psf_aberrations import ILLUMINATION_CHOICES
-from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors._extraction import extract_2d_plane, validate_axes
 from imswitch.improcess.processors.base import OutputSpec, Processor, ProcessorOutput
 
 from ._params import CALIBRATION_GROUP, SELECTION_FIELDS, build_form, selection_from_params
-from .result import (
-    AberrationsResult,
-    BeadTableResult,
-    PSFSummaryResult,
-    aberration_fit_image,
-    wavefront_image,
-)
+from .result import PSFMeasurementResult, averaged_psf_image
 
 SOURCES = ("auto", "rois", "full_image")
 
@@ -207,12 +199,7 @@ class PSFResolutionProcessor(Processor):
 
     def output_spec(self, params: dict | None = None, input_specs=None) -> OutputSpec:
         merged = {**self.default_params(), **(params or {})}
-        ports = ["beads", "summary"]
-        if merged.get("average_psf"):
-            ports.append("average_psf")
-        if merged.get("fit_aberrations"):
-            ports += ["aberrations", "aberration_fit", "wavefront"]
-        return OutputSpec(ports=tuple(ports))
+        return OutputSpec(ports=("psf", "average_psf") if merged.get("average_psf") else ("psf",))
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -225,55 +212,49 @@ class PSFResolutionProcessor(Processor):
     # ------------------------------------------------------------------ #
     def apply(self, result: ProcessingResult, params: dict) -> ProcessorOutput:
         p = {**self.default_params(), **(params or {})}
-        run = run_bead_analysis(result, p)
-        analysis, mask, selection = run.analysis, run.mask, run.selection
-        averaged = average_psf(run.data, analysis, mask) if p["average_psf"] else None
-        summary = run.summary()
+        return measure(run_bead_analysis(result, p), p, result.name)
 
-        aberration_fit = None
-        if p["fit_aberrations"]:
-            aberration_fit = self._aberrations(run, p, summary)
 
-        recorded = {k: v for k, v in p.items() if k != "rois"}
-        results: list[ProcessingResult] = [
-            BeadTableResult(f"{result.name} (PSF beads)", analysis, mask, selection, recorded),
-            PSFSummaryResult(
-                f"{result.name} (PSF summary)", summary, averaged,
-                focal_surface(analysis, mask, notes=summary["notes"]), field_trend(analysis, mask), recorded,
-                aberrations=aberration_fit, detection_fwhm=analysis.expected_fwhm(),
-            ),
-        ]
-        keys = ["beads", "summary"]
-        if averaged is not None:
-            results.append(_averaged_result(result.name, averaged, run.pixel_size, run.unit))
-            keys.append("average_psf")
-        if aberration_fit is not None:
-            results += [
-                AberrationsResult(f"{result.name} (aberrations)", aberration_fit, recorded),
-                aberration_fit_image(result.name, aberration_fit),
-                wavefront_image(result.name, aberration_fit),
-            ]
-            keys += ["aberrations", "aberration_fit", "wavefront"]
-        return ProcessorOutput(results, keys=keys)
+def measure(run: BeadRun, params: dict, source_name: str, suffix: str = "") -> ProcessorOutput:
+    """The outputs of one bead analysis: the measurement and the averaged PSF.
 
-    @staticmethod
-    def _aberrations(run: BeadRun, p: dict, summary: dict):
-        """The aberration fit, or ``None`` with ``summary["aberrations_skipped"]``
-        saying why it was not estimated."""
-        from imswitch.improcess.analysis.psf_aberrations import fit_aberrations_from_analysis
+    Averages the selected beads and fits the aberrations when ``params`` ask
+    for them. The measurement comes last, so it is the entry the results list
+    ends up on.
+    """
+    p = {**PSFResolutionProcessor.default_params(), **(params or {})}
+    analysis, mask = run.analysis, run.mask
+    averaged = average_psf(run.data, analysis, mask) if p["average_psf"] else None
+    summary = run.summary()
+    aberration_fit = _aberrations(run, p, summary) if p["fit_aberrations"] else None
+    measurement = PSFMeasurementResult(
+        f"{source_name} — PSF{suffix}", run, summary, source_name=source_name, averaged=averaged,
+        aberrations=aberration_fit, focal=focal_surface(analysis, mask, notes=summary["notes"]),
+        trend=field_trend(analysis, mask), params={k: v for k, v in p.items() if k != "rois"},
+    )
+    if averaged is None:
+        return ProcessorOutput([measurement], keys=("psf",))
+    image = averaged_psf_image(source_name, averaged, run.pixel_size, run.unit, suffix)
+    return ProcessorOutput([image, measurement], keys=("average_psf", "psf"))
 
-        missing = aberration_requirements(run.layout, p)
-        if missing:
-            summary["aberrations_skipped"] = missing
-            return None
-        try:
-            return fit_aberrations_from_analysis(
-                run.data, run.analysis, run.mask, lateral_half_nm=float(p["aberration_crop_nm"]),
-                z_flip=bool(p["z_flip"]), illumination=str(p.get("illumination", "auto")),
-            )
-        except ValueError as exc:
-            summary["aberrations_skipped"] = str(exc)
-            return None
+
+def _aberrations(run: BeadRun, p: dict, summary: dict):
+    """The aberration fit, or ``None`` with ``summary["aberrations_skipped"]``
+    saying why it was not estimated."""
+    from imswitch.improcess.analysis.psf_aberrations import fit_aberrations_from_analysis
+
+    missing = aberration_requirements(run.layout, p)
+    if missing:
+        summary["aberrations_skipped"] = missing
+        return None
+    try:
+        return fit_aberrations_from_analysis(
+            run.data, run.analysis, run.mask, lateral_half_nm=float(p["aberration_crop_nm"]),
+            z_flip=bool(p["z_flip"]), illumination=str(p.get("illumination", "auto")),
+        )
+    except ValueError as exc:
+        summary["aberrations_skipped"] = str(exc)
+        return None
 
 
 def aberration_requirements(layout: InputLayout, params: dict) -> str:
@@ -342,12 +323,21 @@ def run_bead_analysis(result: ProcessingResult, params: dict) -> BeadRun:
         analysis = analyze_beads(data, settings, candidates_yx=roi_candidates(image, rois), stack_2d=stack_2d)
     else:
         analysis = analyze_beads(data, settings, stack_2d=stack_2d)
-    selection = selection_from_params(p)
-    reasons = rejection_reasons(analysis, selection)
-    mask = np.array([r == "" for r in reasons], dtype=bool)
     if layout.note:
         analysis.warnings.append(layout.note)
-    return BeadRun(data, analysis, selection, mask, reasons, pixel_size, unit, layout)
+    return reselect(BeadRun(data, analysis, None, None, [], pixel_size, unit, layout), p)
+
+
+def reselect(run: BeadRun, params: dict) -> BeadRun:
+    """``run`` with the beads chosen by the selection fields of ``params``.
+
+    Cheap (no fitting): what the panel's range drag and ``psf-bead-select``
+    run.
+    """
+    selection = selection_from_params(params)
+    reasons = rejection_reasons(run.analysis, selection)
+    mask = np.array([r == "" for r in reasons], dtype=bool)
+    return replace(run, selection=selection, mask=mask, reasons=reasons)
 
 
 def input_layout(result: ProcessingResult, params: dict) -> InputLayout:
@@ -433,24 +423,3 @@ def resolve_input(result: ProcessingResult, params: dict) -> tuple[np.ndarray, t
         raise ValueError("The z step is set but the lateral pixel size is unknown: set 'Pixel size'.")
     analysed = 2 if layout.stack_axis is not None else data.ndim
     return data, (1.0,) * analysed, "px"
-
-
-def _averaged_result(name: str, averaged, pixel_size, unit: str) -> ArrayProcessingResult:
-    image = np.asarray(averaged.image, dtype=np.float32)
-    labels = ["Z", "Y", "X"] if image.ndim == 3 else ["Y", "X"]
-    scale = {"nm": 1e-3, "px": 1.0}[unit]  # published in um when calibrated, like the inputs
-    from imswitch.improcess.model.result import ViewMode
-
-    view_modes = (
-        [ViewMode("XY", (0, 1, 2)), ViewMode("XZ", (1, 0, 2)), ViewMode("YZ", (2, 0, 1))]
-        if image.ndim == 3 else None
-    )
-    return ArrayProcessingResult(
-        name=f"{name} (averaged PSF, n={averaged.n})",
-        data=image,
-        axis_labels=labels,
-        view_modes=view_modes,
-        axis_scales=[float(v) * scale for v in pixel_size],
-        scale_unit="um" if unit == "nm" else "px",
-        display_levels=(float(np.nanmin(image)), float(np.nanmax(image))),
-    )

@@ -74,7 +74,7 @@ def test_preview_marks_every_candidate_with_its_reason(qapp):
 
     panel.preview()
 
-    run = panel._previewRun
+    run = panel._beadRun
     assert run is not None and run.mask.any()
     preview = [layer for layer in viewer.layers if layer.name == PREVIEW_LAYER_NAME]
     assert len(preview) == 1 and len(preview[0].data) == len(run.analysis.beads)
@@ -84,7 +84,9 @@ def test_preview_marks_every_candidate_with_its_reason(qapp):
     assert "selected" in reasons and "crowded" in reasons  # (30, 30) and (32, 36) sit together
     assert panel.beadTable.rowCount() == len(run.analysis.beads)
     assert panel.beadTable.item(0, 1).text() == "selected"  # selected beads first
-    assert "candidates selected" in panel.summaryLabel.text()
+    assert "candidates selected" in panel.countLabel.text()
+    assert "Rejected: " in panel.previewReportLabel.text()  # the count is not repeated beneath
+    assert not panel.beadsSection.isHidden()
 
     panel.clearPreview()
     assert not [layer for layer in viewer.layers if layer.name == PREVIEW_LAYER_NAME]
@@ -111,17 +113,27 @@ def test_fit_reports_the_result_in_the_panel(qapp):
     panel.sigRunRequested.connect(controller)
     panel.run()
 
-    text = panel.summaryLabel.text()
-    assert "candidates selected" in text and "FWHM, half maximum" in text
-    assert text.endswith("results.")
+    # The measurement is published last, so the panel ends on its card.
+    assert not panel.resultBox.isHidden() and panel.setupBox.isHidden()
+    assert "FWHM lateral" in panel.headlineLabel.text() and "nm" in panel.headlineLabel.text()
+    # The details beneath the headline do not repeat it.
+    text = panel.reportLabel.text()
+    assert "FWHM, Gaussian fit" in text and "FWHM, half maximum" not in text
+    assert "candidates selected" in panel.countLabel.text()
+    assert panel.thumbnails.titles[:1] == ["Averaged PSF"]
+    assert panel.summaryTable.rowCount() > 0 and panel.beadTable.rowCount() > 0
+    assert panel.summaryLabel.text() == "Created 2 results."
 
 
 def test_form_opens_only_the_essentials(qapp):
     panel, _viewer = _panel_on(_field())
     sections = panel.form.sections
     assert sections["Beads"].isExpanded() and sections["Optics"].isExpanded() and sections["Outputs"].isExpanded()
-    for name in ("Selection", CALIBRATION_GROUP, "Advanced"):
+    for name in (CALIBRATION_GROUP, "Advanced"):
         assert not sections[name].isExpanded(), name
+    assert "Selection" not in sections  # the selection lives with the beads
+    assert not panel.selectForm.sections["Selection"].isExpanded()
+    assert panel.beadsSection.isHidden()  # nothing to show before a preview
     assert "from metadata" in panel.dataLabel.text()
 
 

@@ -6,8 +6,10 @@ import h5py
 import numpy as np
 
 from imswitch.improcess.analysis.psf_resolution import PSFResolutionAnalysis
+from imswitch.improcess.model.array_result import ArrayProcessingResult
+from imswitch.improcess.model.contrast import finite_range
 from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
-from imswitch.improcess.model.result import ProcessingResult, ViewMode
+from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
 
 
 class PSFResolutionResult(ProcessingResult):
@@ -135,104 +137,32 @@ class PSFResolutionResult(ProcessingResult):
 
 
 # --------------------------------------------------------------------------- #
-# Bead analysis results (params_version 2)
+# Bead analysis (params_version 2): one measurement, one result
 # --------------------------------------------------------------------------- #
-class _RowsTableResult(ProcessingResult):
-    """A table of dict rows with a fixed column order, saved as CSV or HDF5.
-
-    ``data`` is the numeric projection of the rows (non-numeric cells are
-    NaN) so the shared table/kind machinery sees an ordinary 2-D array.
-    """
-
-    kind = "table"
-    supported_formats = ("hdf5", "csv")
-    _row_axis = "Row"
-
-    def __init__(self, name: str, rows: list[dict], columns: list[str], attrs: dict | None = None):
-        self._rows = rows
-        self._columns = columns
-        self.attrs = dict(attrs or {})
-        data = np.array(
-            [[_as_float(row.get(column)) for column in columns] for row in rows], dtype=np.float32
-        ).reshape(len(rows), len(columns))
-        super().__init__(
-            name=name,
-            data=data,
-            axis_labels=[self._row_axis, "Metric"],
-            view_modes=[ViewMode("Table", (0, 1))],
-            display_levels=None,
-        )
-
-    def table_records(self) -> list[dict]:
-        return [{column: row.get(column) for column in self._columns} for row in self._rows]
-
-    def table_columns(self) -> list[str]:
-        return list(self._columns)
-
-    def plan_save(self, path: Path, fmt: str):
-        from imswitch.improcess.model.save_protocol import SavePlan, companion_json_path
-
-        path = Path(path)
-        if fmt == "csv":
-            return SavePlan(path, fmt, (companion_json_path(path),))
-        return SavePlan(path, fmt)
-
-    def write_files(self, plan, document) -> None:
-        from imswitch.improcess.model.save_protocol import embed_hdf5_path, write_companion_json
-
-        if plan.fmt == "hdf5":
-            self._save_hdf5(plan.primary)
-            embed_hdf5_path(plan.primary, document)
-        elif plan.fmt == "csv":
-            self._save_text(plan.primary)
-            write_companion_json(plan.primary, document)
-        else:
-            raise ValueError(f"{type(self).__name__} supports HDF5 or CSV/TXT, got {plan.fmt!r}")
-
-    def _save_hdf5(self, path: Path) -> None:
-        import json
-
-        records = self.table_records()
-        with h5py.File(str(path), "w") as h5:
-            h5.attrs["row_count"] = len(records)
-            for key, value in self.attrs.items():
-                h5.attrs[str(key)] = value if isinstance(value, (int, float, str)) else json.dumps(
-                    value, default=_json_default
-                )
-            table = h5.create_group("table")
-            for column in self._columns:
-                values = [row.get(column) for row in records]
-                if all(isinstance(v, (int, float, np.integer, np.floating)) or v is None for v in values):
-                    table.create_dataset(column, data=np.array([_as_float(v) for v in values]))
-                else:
-                    dtype = h5py.string_dtype(encoding="utf-8")
-                    table.create_dataset(column, data=np.array([str(v) for v in values], dtype=dtype))
-
-    def _save_text(self, path: Path) -> None:
-        import csv
-
-        with Path(path).open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(self._columns)
-            for row in self.table_records():
-                writer.writerow(["" if row[c] is None else row[c] for c in self._columns])
-
-
-def _as_float(value) -> float:
-    if isinstance(value, bool):
-        return float(value)
-    if isinstance(value, (int, float, np.integer, np.floating)):
-        return float(value)
-    return float("nan")
-
-
-def _json_default(value):
-    if isinstance(value, (np.integer, np.floating)):
-        return value.item()
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    return str(value)
-
+#: Marker colour per bead state (``""`` = selected), shared by the panel's
+#: preview and the measurement's viewer overlay.
+STATE_COLORS = {
+    "": "#33dd55",
+    "border": "#8c8c8c",
+    "crowded": "#ff9f1c",
+    "bright": "#d65bd6",
+    "saturated": "#d65bd6",
+    "fit_failed": "#ff4d4d",
+    "fit_quality": "#ff4d4d",
+    "ellipticity": "#ff4d4d",
+    "fwhm_outlier": "#ff4d4d",
+}
+#: Short tag drawn next to a rejected bead.
+STATE_TAGS = {
+    "border": "edge",
+    "crowded": "crowded",
+    "bright": "bright",
+    "saturated": "saturated",
+    "fit_failed": "no fit",
+    "fit_quality": "R²",
+    "ellipticity": "elliptic",
+    "fwhm_outlier": "FWHM",
+}
 
 #: How each width key reads in tables and reports.
 _AXIS_NAMES = {"lat": "lateral", "x": "x", "y": "y", "z": "axial (z)"}
@@ -254,56 +184,219 @@ def _width_keys(analysis) -> list[str]:
     return keys + [f"fwhm_{ax}_hm" for ax in ("lat", *analysis.axes)]
 
 
-class BeadTableResult(_RowsTableResult):
-    """The selected beads: positions and widths, one row each.
+class PSFMeasurementResult(ProcessingResult):
+    """One bead-based PSF measurement: everything ``psf-resolution`` found.
 
-    Only the beads that entered the statistics are listed (rejected ones are
-    counted in the summary and shown by the panel's preview). The full
-    :class:`~imswitch.improcess.analysis.bead_psf.BeadAnalysis`, rejected
-    candidates included, stays attached in memory so ``psf-bead-select`` can
-    re-select and re-summarize without refitting.
+    One results-list entry per measurement, whatever was asked for. Its parts
+    are views of the same measurement, not separate data:
+
+    * **viewer**: the analysed image with every bead candidate marked
+      (green = used, other colours = why it was rejected);
+    * **Results dock**: one headline row (:meth:`table_records`), so
+      repeated measurements line up as a comparison table;
+    * **Graph**: the FWHM histograms, the lateral FWHM across the field and,
+      when fitted, the Zernike coefficients;
+    * **PSF panel**: the report card (widths, averaged-PSF thumbnails,
+      aberrations, the bead list);
+    * **file**: one HDF5 with ``beads``, ``summary``, ``average_psf`` and
+      ``aberrations`` (or a bead CSV with summary / Zernike CSV companions).
+
+    The averaged PSF is *also* published on its own, as an ordinary image: it
+    is the one part with a use beyond describing the measurement.
+
+    ``run`` (the analysed data, every candidate and their rejection reasons)
+    stays attached in memory, so ``psf-bead-select`` can re-select without
+    refitting and recompute the average and the aberrations.
     """
 
-    _row_axis = "Bead"
+    kind = "table"
+    supported_formats = ("hdf5", "csv")
 
-    def __init__(self, name: str, analysis, mask, selection, params: dict | None = None):
-        self.analysis = analysis
-        self.mask = np.asarray(mask, dtype=bool)
-        self.selection = selection
+    def __init__(self, name: str, run, summary: dict, *, source_name: str = "", averaged=None,
+                 aberrations=None, focal=None, trend=None, params: dict | None = None):
+        self.run = run
+        self.summary = summary
+        self.averaged = averaged
+        self.aberrations = aberrations
+        self.focal = dict(focal or {})
+        self.trend = dict(trend or {})
         self.params = dict(params or {})
-        unit = analysis.unit
-        axes = analysis.axes
+        self.source_name = source_name
+        self.warnings = list(summary.get("warnings", []))
+        if aberrations is not None:
+            self.warnings += [w for w in aberrations.warnings if w not in self.warnings]
+        record = self.headline()
+        super().__init__(
+            name=name,
+            data=np.array([[_as_float(v) for v in record.values()]], dtype=np.float32),
+            axis_labels=["Measurement", "Metric"],
+            view_modes=[ViewMode("Table", (0, 1))],
+            display_levels=None,
+        )
+
+    # -- the pieces --------------------------------------------------------- #
+    @property
+    def analysis(self):
+        return self.run.analysis
+
+    @property
+    def mask(self) -> np.ndarray:
+        return self.run.mask
+
+    @property
+    def reasons(self) -> list[str]:
+        return self.run.reasons
+
+    @property
+    def unit(self) -> str:
+        return self.run.unit
+
+    def headline(self) -> dict:
+        """The measurement in one row: counts, half-maximum widths (median and
+        MAD of the selected beads), the Gaussian lateral width, the ratio to
+        the diffraction limit and, when fitted, the aberration totals."""
+        unit, stats = self.unit, self.summary["stats"]
+        row = {"source": self.source_name, "beads_used": self.summary["n_selected"],
+               "beads_found": self.summary["n_candidates"]}
+        for ax in self.analysis.axes[::-1]:  # x, y(, z)
+            s = stats.get(f"fwhm_{ax}_hm", {})
+            row[f"fwhm_{ax}_{unit}"] = s.get("median")
+            row[f"fwhm_{ax}_mad_{unit}"] = s.get("mad")
+        row[f"fwhm_lat_gauss_{unit}"] = stats.get("fwhm_lat", {}).get("median")
+        if self.analysis.ndim == 3:
+            row[f"fwhm_z_gauss_{unit}"] = stats.get("fwhm_z", {}).get("median")
+        for axis, ratio in self.summary.get("ratio_to_theory", {}).items():
+            row[f"ratio_{axis}_to_theory"] = ratio
+        if self.aberrations is not None:
+            row["aberration_rms_nm"] = self.aberrations.rms_nm
+            row["strehl"] = self.aberrations.strehl
+        return row
+
+    def bead_rows(self) -> list[dict]:
+        """Every candidate, with its state (``selected`` or why not)."""
+        from imswitch.improcess.analysis.bead_psf import reason_label
+
+        analysis, unit = self.analysis, self.unit
         width_keys = _width_keys(analysis)
-        plane = ["plane"] if getattr(analysis, "projected", False) else []
-        columns = ["id", *plane, *[f"{ax}_px" for ax in axes], *[f"{k}_{unit}" for k in width_keys],
-                   "ellipticity", "r2", *(["r2_z"] if analysis.ndim == 3 else []), "amplitude", "background"]
         rows = []
-        for bead, chosen in zip(analysis.beads, self.mask):
-            if not chosen:
-                continue
-            row = {
-                "id": bead["id"], "plane": bead.get("plane"),
-                "ellipticity": bead.get("ellipticity"), "r2": bead.get("r2"),
-                "r2_z": bead.get("r2_z"), "amplitude": bead.get("amp"), "background": bead.get("offset"),
-            }
-            for ax in axes:
-                row[f"{ax}_px"] = bead.get(ax)
+        for bead, chosen, reason in zip(analysis.beads, self.mask, self.reasons):
+            row = {"id": bead["id"], "selected": bool(chosen), "state": reason_label(reason)}
+            if analysis.projected:
+                row["plane"] = bead.get("plane")
+            for ax in analysis.axes:
+                row[f"{ax}_px"] = bead.get(ax, bead.get(f"{ax}_det"))
             for key in width_keys:
                 row[f"{key}_{unit}"] = bead.get(key)
+            row.update(ellipticity=bead.get("ellipticity"), r2=bead.get("r2"))
+            if analysis.ndim == 3:
+                row["r2_z"] = bead.get("r2_z")
+            row.update(amplitude=bead.get("amp"), background=bead.get("offset"))
             rows.append(row)
-        super().__init__(name, rows, columns, attrs={
-            "unit": unit, "source": analysis.source, "n_candidates": len(analysis.beads),
-        })
+        return rows
+
+    def summary_rows(self) -> list[dict]:
+        """Statistics of the selected beads, one row per width, plus scalars."""
+        from imswitch.improcess.analysis.bead_psf import reason_label
+
+        summary, averaged, unit = self.summary, self.averaged, self.unit
+        theory = summary.get("theory_fwhm_nm", {})
+        rows = []
+        for key, stats in summary["stats"].items():
+            axis = key.split("_")[1]
+            plain = key.count("_") == 1
+            rows.append({
+                "metric": width_label(key), "unit": unit, **stats,
+                "averaged_psf": (averaged.fwhm.get(key) if averaged is not None else None),
+                "theory": theory.get(axis) if plain and axis in ("lat", "z") else None,
+            })
+        rows.append({"metric": "beads selected", "value": summary["n_selected"]})
+        rows.append({"metric": "bead candidates", "value": summary["n_candidates"]})
+        for reason, count in summary.get("rejected", {}).items():
+            rows.append({"metric": f"rejected: {reason_label(reason)}", "value": count})
+        if averaged is not None:
+            rows.append({"metric": "beads averaged", "value": averaged.n})
+        detection = self.analysis.expected_fwhm()
+        if detection:
+            rows.append({"metric": "detection scale FWHM lateral", "unit": unit, "value": detection[-1]})
+            if len(detection) == 3:
+                rows.append({"metric": "detection scale FWHM axial (z)", "unit": unit, "value": detection[0]})
+        for axis, ratio in summary.get("ratio_to_theory", {}).items():
+            rows.append({"metric": f"ratio to theory ({_AXIS_NAMES.get(axis, axis)})", "value": ratio})
+        for key, value in self.focal.items():
+            rows.append({"metric": f"focal surface {key}", "unit": _focal_unit(key, unit), "value": value})
+        for key, value in self.trend.items():
+            rows.append({"metric": f"lateral FWHM trend {key}", "unit": unit, "value": value})
+        if self.aberrations is not None:
+            rows += _aberration_rows(self.aberrations)
+        return [{column: row.get(column) for column in SUMMARY_COLUMNS} for row in rows]
+
+    def report(self, headline: bool = True) -> str:
+        """A short plain-text report of the measurement.
+
+        ``headline=False`` leaves out what the panel's card already shows in
+        large type (the bead count, the half-maximum widths and the
+        diffraction limit): the details beneath it."""
+        return psf_report(self.summary, self.averaged, self.aberrations, count=headline, widths=headline)
+
+    # -- shared result contract --------------------------------------------- #
+    def table_records(self) -> list[dict]:
+        return [self.headline()]
+
+    def table_columns(self) -> list[str]:
+        return list(self.headline())
+
+    def display_layers(self) -> list[DisplayLayerSpec]:
+        """The analysed image behind a marker per bead candidate."""
+        image, labels, scales, unit = self._display_image()
+        layers = [DisplayLayerSpec(
+            name=f"{self.name} image", data=image, axis_labels=labels, axis_scales=scales,
+            scale_unit=unit, display_levels=finite_range(image), colormap="gray",
+            kind="image", role="context", component="image",
+        )]
+        beads = self.analysis.beads
+        if not beads:
+            return layers
+        axes = self.analysis.axes
+        points = np.array([[float(b.get(ax, b.get(f"{ax}_det"))) for ax in axes] for b in beads])
+        tags = [str(b["id"]) if not r else f"{b['id']} {STATE_TAGS.get(r, r)}"
+                for b, r in zip(beads, self.reasons)]
+        lateral_px = float(np.mean(self.analysis.expected_sigma_px[-2:])) * 2.3548
+        layers.append(DisplayLayerSpec(
+            name=f"{self.name} beads", data=points, axis_labels=labels, axis_scales=scales,
+            scale_unit=unit, kind="points", role="primary", component="beads",
+            layer_kwargs={
+                "size": max(4.0, 4.0 * lateral_px),
+                "face_color": "transparent",
+                "border_color": [STATE_COLORS.get(r, "#ff4d4d") for r in self.reasons],
+                "border_width": 0.12,
+                "border_width_is_relative": True,
+                "out_of_slice_display": True,
+                "features": {"label": tags, "state": [r or "selected" for r in self.reasons]},
+                "text": {"string": "{label}", "size": 8, "color": "white", "anchor": "upper_left"},
+                "opacity": 0.9,
+            },
+        ))
+        return layers
+
+    def _display_image(self):
+        """``(image, labels, scales, unit)`` the bead coordinates refer to:
+        the analysed stack, or for beads found on a projection, the projection."""
+        data = np.asarray(self.run.data)
+        if self.analysis.projected and data.ndim == 3:
+            data = data.max(axis=0)
+        labels = ["Z", "Y", "X"] if data.ndim == 3 else ["Y", "X"]
+        if self.unit == "nm":
+            return data, labels, [float(v) * 1e-3 for v in self.run.pixel_size[-data.ndim:]], "um"
+        return data, labels, [1.0] * data.ndim, "px"
 
     def plot_payloads(self) -> list[PlotPayload]:
-        unit = self.analysis.unit
-        fitted = [b for b in self.analysis.beads if "fwhm_lat" in b]
-        if not fitted:
-            return []
-        chosen = [b for b, m in zip(self.analysis.beads, self.mask) if m]
+        unit = self.unit
+        beads = self.analysis.beads
+        fitted = [b for b in beads if "fwhm_lat" in b]
+        chosen = [b for b, m in zip(beads, self.mask) if m]
         payloads = []
         for key, label in (("fwhm_lat", "lateral"), ("fwhm_z", "axial")):
-            if key == "fwhm_z" and self.analysis.ndim != 3:
+            if not fitted or (key == "fwhm_z" and self.analysis.ndim != 3):
                 continue
             series = [PlotSeries(name="all fitted", y=np.array([b[key] for b in fitted]), kind="histogram",
                                  style={"bins": 30})]
@@ -323,83 +416,101 @@ class BeadTableResult(_RowsTableResult):
                                    y=np.array([b["fwhm_lat"] for b in chosen]), kind="scatter")],
                 metadata={"unit": unit},
             ))
+        fit = self.aberrations
+        if fit is not None:
+            rows = fit.rows()
+            payloads.append(PlotPayload(
+                title=f"Zernike aberrations (RMS {fit.rms_nm:.1f} nm, Strehl {fit.strehl:.2f})",
+                x_label="Noll index", y_label="Coefficient (nm RMS)",
+                series=[PlotSeries(name="coefficient", x=np.array([r["noll"] for r in rows], dtype=np.float64),
+                                   y=np.array([r["coefficient_nm_rms"] for r in rows]), kind="scatter")],
+                metadata=aberration_scalars(fit),
+            ))
         return payloads
 
+    # -- saving ------------------------------------------------------------- #
+    def plan_save(self, path: Path, fmt: str):
+        from imswitch.improcess.model.save_protocol import SavePlan, companion_json_path
 
-class PSFSummaryResult(_RowsTableResult):
-    """Statistics of the selected beads, one row per width, plus scalar rows.
+        path = Path(path)
+        if fmt == "csv":
+            return SavePlan(path, fmt, (*self._csv_companions(path).values(), companion_json_path(path)))
+        return SavePlan(path, fmt)
 
-    Stat rows fill ``n``..``mad`` (and the averaged-bead and diffraction-limit
-    values when available); scalar rows (bead counts, rejections, tilt, field
-    trend, aberrations) put their number in ``value``.
-    """
+    def _csv_companions(self, path: Path) -> dict[str, Path]:
+        """The summary (and Zernike) tables written next to the bead CSV."""
+        from imswitch.improcess.model.save_protocol import strip_format_suffix
 
-    _row_axis = "Metric"
-    COLUMNS = ["metric", "unit", "n", "mean", "std", "sem", "median", "mad", "averaged_psf", "theory", "value"]
+        stem = strip_format_suffix(Path(path).name)
+        names = {"summary": f"{stem}_summary.csv"}
+        if self.aberrations is not None:
+            names["zernike"] = f"{stem}_zernike.csv"
+        return {key: Path(path).with_name(name) for key, name in names.items()}
 
-    def __init__(self, name: str, summary: dict, averaged=None, focal=None, trend=None,
-                 params: dict | None = None, aberrations=None, detection_fwhm=None):
-        from imswitch.improcess.analysis.bead_psf import reason_label
+    def write_files(self, plan, document) -> None:
+        from imswitch.improcess.model.save_protocol import embed_hdf5_path, write_companion_json
 
-        self.summary = summary
-        self.averaged = averaged
-        self.aberrations = aberrations
-        self.params = dict(params or {})
-        unit = summary["unit"]
-        theory = summary.get("theory_fwhm_nm", {})
-        rows = []
-        for key, stats in summary["stats"].items():
-            axis = key.split("_")[1]
-            plain = key.count("_") == 1
-            rows.append({
-                "metric": width_label(key), "unit": unit, **stats,
-                "averaged_psf": (averaged.fwhm.get(key) if averaged is not None else None),
-                "theory": theory.get(axis) if plain and axis in ("lat", "z") else None,
-            })
-        rows.append({"metric": "beads selected", "value": summary["n_selected"]})
-        rows.append({"metric": "bead candidates", "value": summary["n_candidates"]})
-        for reason, count in summary.get("rejected", {}).items():
-            rows.append({"metric": f"rejected: {reason_label(reason)}", "value": count})
-        if averaged is not None:
-            rows.append({"metric": "beads averaged", "value": averaged.n})
-        if detection_fwhm:
-            rows.append({"metric": "detection scale FWHM lateral", "unit": unit, "value": detection_fwhm[-1]})
-            if len(detection_fwhm) == 3:
-                rows.append({"metric": "detection scale FWHM axial (z)", "unit": unit, "value": detection_fwhm[0]})
-        for axis, ratio in summary.get("ratio_to_theory", {}).items():
-            rows.append({"metric": f"ratio to theory ({_AXIS_NAMES.get(axis, axis)})", "value": ratio})
-        for key, value in (focal or {}).items():
-            rows.append({"metric": f"focal surface {key}", "unit": _focal_unit(key, unit), "value": value})
-        for key, value in (trend or {}).items():
-            rows.append({"metric": f"lateral FWHM trend {key}", "unit": unit, "value": value})
-        if aberrations is not None:
-            rows += _aberration_rows(aberrations)
-        self.warnings = list(summary.get("warnings", []))
-        if aberrations is not None:
-            self.warnings += [w for w in aberrations.warnings if w not in self.warnings]
-        self.notes = list(summary.get("notes", []))
-        attrs = {"unit": unit, "warnings": self.warnings, "notes": self.notes,
-                 "selection": summary.get("selection", {})}
-        if summary.get("aberrations_skipped"):
-            attrs["aberrations_skipped"] = summary["aberrations_skipped"]
-        super().__init__(name, rows, list(self.COLUMNS), attrs=attrs)
+        if plan.fmt == "hdf5":
+            self._save_hdf5(plan.primary)
+            embed_hdf5_path(plan.primary, document)
+        elif plan.fmt == "csv":
+            _write_csv(plan.primary, self.bead_rows())
+            companions = self._csv_companions(plan.primary)
+            _write_csv(companions["summary"], self.summary_rows(), SUMMARY_COLUMNS)
+            if "zernike" in companions:
+                _write_csv(companions["zernike"], self.aberrations.rows(), ZERNIKE_COLUMNS)
+            write_companion_json(plan.primary, document)
+        else:
+            raise ValueError(f"{type(self).__name__} supports HDF5 or CSV/TXT, got {plan.fmt!r}")
 
-    def plot_payloads(self) -> list[PlotPayload]:
-        stats = {k: v for k, v in self.summary["stats"].items() if v.get("n")}
-        if not stats:
-            return []
-        keys = list(stats)
-        return [PlotPayload(
-            title="PSF FWHM summary (median, selected beads)",
-            x_label="metric #", y_label=f"FWHM ({self.summary['unit']})",
-            series=[PlotSeries(name="median", x=np.arange(len(keys), dtype=np.float64),
-                               y=np.array([stats[k]["median"] for k in keys]), kind="scatter")],
-            metadata={"metrics": ", ".join(width_label(k) for k in keys), "warnings": " | ".join(self.warnings)},
-        )]
+    def _save_hdf5(self, path: Path) -> None:
+        with h5py.File(str(path), "w") as h5:
+            attrs = {
+                "source": self.source_name, "unit": self.unit, "pixel_size": list(self.run.pixel_size),
+                "n_candidates": self.summary["n_candidates"], "n_selected": self.summary["n_selected"],
+                "warnings": self.warnings, "notes": list(self.summary.get("notes", [])),
+                "selection": self.summary.get("selection", {}), "params": self.params,
+                "report": self.report(),
+            }
+            if self.summary.get("aberrations_skipped"):
+                attrs["aberrations_skipped"] = self.summary["aberrations_skipped"]
+            _write_attrs(h5, attrs)
+            _write_table(h5.create_group("beads"), self.bead_rows())
+            _write_table(h5.create_group("summary"), self.summary_rows(), SUMMARY_COLUMNS)
+            if self.averaged is not None:
+                dataset = h5.create_dataset("average_psf", data=np.asarray(self.averaged.image, dtype=np.float32))
+                _write_attrs(dataset, {"n": self.averaged.n, "bead_ids": list(self.averaged.bead_ids),
+                                       "fwhm": self.averaged.fwhm, "pixel_size": list(self.run.pixel_size),
+                                       "unit": self.unit})
+            fit = self.aberrations
+            if fit is not None:
+                group = h5.create_group("aberrations")
+                _write_attrs(group, {**aberration_scalars(fit), "warnings": fit.warnings})
+                _write_table(group.create_group("zernike"), fit.rows(), ZERNIKE_COLUMNS)
+                group.create_dataset("wavefront_nm", data=fit.wavefront().astype(np.float32))
+                group.create_dataset("data", data=np.asarray(fit.data, dtype=np.float32))
+                group.create_dataset("model", data=np.asarray(fit.model, dtype=np.float32))
 
-    def report(self) -> str:
-        """A short plain-text report of the run, for the panel."""
-        return psf_report(self.summary, self.averaged, self.aberrations)
+
+SUMMARY_COLUMNS = ["metric", "unit", "n", "mean", "std", "sem", "median", "mad", "averaged_psf", "theory", "value"]
+ZERNIKE_COLUMNS = ["noll", "mode", "coefficient_nm_rms", "error_nm_rms", "milliwaves"]
+
+
+def aberration_scalars(fit) -> dict:
+    """The totals and fit quality of an aberration fit, flat."""
+    scalars = {
+        "rms_nm": fit.rms_nm, "strehl_marechal": fit.strehl, "r2": fit.r2,
+        "n_beads": fit.n_beads, "wavelength_nm": fit.wavelength_nm,
+        "illumination": getattr(fit, "illumination", "widefield"),
+    }
+    for name, pair in fit.pairs.items():
+        scalars[f"{name}_magnitude_nm_rms"] = pair["magnitude_nm_rms"]
+        scalars[f"{name}_angle_deg"] = pair["angle_deg"]
+    if getattr(fit, "blur_nm", None) is not None:
+        scalars["extra_blur_sigma_nm"] = fit.blur_nm
+    for key, value in (getattr(fit, "sheet", None) or {}).items():
+        scalars[f"light_sheet_{key}"] = value
+    return scalars
 
 
 def _aberration_rows(fit) -> list[dict]:
@@ -430,20 +541,26 @@ def _fmt_width(value: float, unit: str) -> str:
     return f"{value:.0f} {unit}" if unit == "nm" else f"{value:.2f} {unit}"
 
 
-def psf_report(summary: dict, averaged=None, aberrations=None) -> str:
-    """Plain-text report: counts, widths (both measures), aberrations, warnings."""
+def psf_report(summary: dict, averaged=None, aberrations=None, count: bool = True, widths: bool = True) -> str:
+    """Plain-text report: counts, widths (both measures), aberrations, warnings.
+
+    ``count`` / ``widths`` leave out the bead count and the half-maximum
+    widths with the diffraction limit, for a panel that shows them already."""
     from imswitch.improcess.analysis.bead_psf import reason_label
 
     unit = summary["unit"]
     stats = summary["stats"]
     lines = []
     rejected = ", ".join(f"{n} {reason_label(r)}" for r, n in summary.get("rejected", {}).items())
-    lines.append(
-        f"{summary['n_selected']} of {summary['n_candidates']} bead candidates selected"
-        + (f" (rejected: {rejected})." if rejected else ".")
-    )
+    if count:
+        lines.append(
+            f"{summary['n_selected']} of {summary['n_candidates']} bead candidates selected"
+            + (f" (rejected: {rejected})." if rejected else ".")
+        )
+    elif rejected:
+        lines.append(f"Rejected: {rejected}.")
 
-    def widths(suffix: str) -> str:
+    def axes(suffix: str) -> str:
         parts = []
         for axis, name in (("x", "x"), ("y", "y"), ("z", "z")):
             s = stats.get(f"fwhm_{axis}{suffix}")
@@ -453,24 +570,23 @@ def psf_report(summary: dict, averaged=None, aberrations=None) -> str:
         return ", ".join(parts)
 
     if summary["n_selected"]:
-        lines.append("FWHM, half maximum (median ± MAD): " + widths("_hm"))
-        lines.append("FWHM, Gaussian fit: " + widths(""))
+        if widths:
+            lines.append("FWHM, half maximum (median ± MAD): " + axes("_hm"))
+        lines.append("FWHM, Gaussian fit: " + axes(""))
         if "fwhm_lat_corr" in stats:
-            lines.append("FWHM, Gaussian, bead-corrected: " + widths("_corr"))
+            lines.append("FWHM, Gaussian, bead-corrected: " + axes("_corr"))
     if averaged is not None and averaged.fwhm:
         parts = [f"{ax} {_fmt_width(averaged.fwhm.get(f'fwhm_{ax}_hm'), unit)}"
                  for ax in ("x", "y", "z") if f"fwhm_{ax}_hm" in averaged.fwhm]
         lines.append(f"Averaged PSF ({averaged.n} beads), half maximum: " + ", ".join(parts))
     theory = summary.get("theory_fwhm_nm")
-    if theory:
+    if theory and widths:
         lines.append(
             f"Diffraction limit (widefield): lateral {_fmt_width(theory['lat'], 'nm')}"
             + (f", axial {_fmt_width(theory['z'], 'nm')}" if np.isfinite(theory.get("z", np.nan)) else "")
         )
     if aberrations is not None:
         lines.append(f"Aberrations: {aberrations.headline()}")
-        lines.append("  The Zernike table, the wavefront map and the data | model comparison are in the "
-                     "results list ('… (aberrations)', '… (wavefront …)', '… (aberration fit …)').")
     elif summary.get("aberrations_skipped"):
         lines.append(f"Aberrations: not estimated — {summary['aberrations_skipped']}.")
     warnings = list(summary.get("warnings", []))
@@ -488,79 +604,87 @@ def _focal_unit(key: str, unit: str) -> str:
     return unit
 
 
-class AberrationsResult(_RowsTableResult):
-    """Fitted Zernike modes (nm RMS); totals and fit quality in ``attrs`` and
-    the plot metadata, which the results dock lists alongside the curve."""
-
-    _row_axis = "Mode"
-    COLUMNS = ["noll", "mode", "coefficient_nm_rms", "error_nm_rms", "milliwaves"]
-
-    def __init__(self, name: str, fit, params: dict | None = None):
-        self.fit = fit
-        self.params = dict(params or {})
-        scalars = {
-            "rms_nm": fit.rms_nm, "strehl_marechal": fit.strehl, "r2": fit.r2,
-            "n_beads": fit.n_beads, "wavelength_nm": fit.wavelength_nm,
-            "illumination": getattr(fit, "illumination", "widefield"),
-        }
-        for name_, pair in fit.pairs.items():
-            scalars[f"{name_}_magnitude_nm_rms"] = pair["magnitude_nm_rms"]
-            scalars[f"{name_}_angle_deg"] = pair["angle_deg"]
-        if getattr(fit, "blur_nm", None) is not None:
-            scalars["extra_blur_sigma_nm"] = fit.blur_nm
-        for key, value in (getattr(fit, "sheet", None) or {}).items():
-            scalars[f"light_sheet_{key}"] = value
-        self.scalars = scalars
-        super().__init__(name, fit.rows(), list(self.COLUMNS), attrs={**scalars, "warnings": fit.warnings})
-
-    def plot_payloads(self) -> list[PlotPayload]:
-        rows = self.fit.rows()
-        return [PlotPayload(
-            title=f"Zernike aberrations (RMS {self.fit.rms_nm:.1f} nm, Strehl {self.fit.strehl:.2f})",
-            x_label="Noll index", y_label="Coefficient (nm RMS)",
-            series=[PlotSeries(name="coefficient", x=np.array([r["noll"] for r in rows], dtype=np.float64),
-                               y=np.array([r["coefficient_nm_rms"] for r in rows]), kind="scatter")],
-            metadata=dict(self.scalars),
-        )]
-
-
-def aberration_fit_image(name: str, fit) -> "ArrayProcessingResult":
-    """Data and model side by side (``[data | model]`` along x) as one stack,
-    so scrolling z or switching to the XZ / YZ view compares them directly."""
-    from imswitch.improcess.model.array_result import ArrayProcessingResult
-    from imswitch.improcess.model.result import ViewMode
-
-    data = np.asarray(fit.data, dtype=np.float32)
-    model = np.asarray(fit.model, dtype=np.float32)
-    gap = np.full(data.shape[:2] + (1,), float(np.nanmin(data)), dtype=np.float32)
-    stack = np.concatenate([data, gap, model], axis=2)
-    px = fit.pixel_size_nm or (1.0, 1.0, 1.0)
+def averaged_psf_image(source_name: str, averaged, pixel_size, unit: str, suffix: str = "") -> ArrayProcessingResult:
+    """The averaged bead as an ordinary image result (``Z, Y, X`` or ``Y, X``)."""
+    image = np.asarray(averaged.image, dtype=np.float32)
+    labels = ["Z", "Y", "X"] if image.ndim == 3 else ["Y", "X"]
+    scale = {"nm": 1e-3, "px": 1.0}[unit]  # published in um when calibrated, like the inputs
+    view_modes = (
+        [ViewMode("XY", (0, 1, 2)), ViewMode("XZ", (1, 0, 2)), ViewMode("YZ", (2, 0, 1))]
+        if image.ndim == 3 else None
+    )
     return ArrayProcessingResult(
-        name=f"{name} (aberration fit: data | model, R² {fit.r2:.2f})",
-        data=stack,
-        axis_labels=["Z", "Y", "X"],
-        view_modes=[ViewMode("XY", (0, 1, 2)), ViewMode("XZ", (1, 0, 2)), ViewMode("YZ", (2, 0, 1))],
-        axis_scales=[float(v) * 1e-3 for v in px],
-        scale_unit="um",
-        display_levels=(float(np.nanmin(stack)), float(np.nanmax(stack))),
-        metadata={"layout": "data | model along x", "r2": fit.r2},
+        name=f"{source_name} — averaged PSF{suffix}",
+        data=image,
+        axis_labels=labels,
+        view_modes=view_modes,
+        axis_scales=[float(v) * scale for v in pixel_size],
+        scale_unit="um" if unit == "nm" else "px",
+        display_levels=(float(np.nanmin(image)), float(np.nanmax(image))),
+        metadata={"beads_averaged": averaged.n, "bead_ids": list(averaged.bead_ids),
+                  "fwhm": {k: float(v) for k, v in averaged.fwhm.items()}, "unit": unit},
     )
 
 
-def wavefront_image(name: str, fit, size: int = 129) -> "ArrayProcessingResult":
-    """The fitted pupil phase (nm) over the unit pupil, 0 outside it."""
-    from imswitch.improcess.model.array_result import ArrayProcessingResult
+# --------------------------------------------------------------------------- #
+# File helpers
+# --------------------------------------------------------------------------- #
+def _as_float(value) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    return float("nan")
 
-    phase = np.nan_to_num(fit.wavefront(size), nan=0.0).astype(np.float32)
-    bound = float(np.max(np.abs(phase))) or 1.0
-    result = ArrayProcessingResult(
-        name=f"{name} (wavefront, {fit.rms_nm:.0f} nm RMS)",
-        data=phase,
-        axis_labels=["Y", "X"],
-        axis_scales=[2.0 / (size - 1)] * 2,
-        scale_unit="px",
-        display_levels=(-bound, bound),
-        metadata={"unit": "nm", "description": "pupil phase over the unit pupil (y down, x right)"},
-    )
-    result.setDisplayColormap("bwr")
-    return result
+
+def _json_default(value):
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return str(value)
+
+
+def _write_attrs(node, attrs: dict) -> None:
+    """Scalars as attributes, anything else as JSON text."""
+    import json
+
+    for key, value in attrs.items():
+        if value is None:
+            continue
+        if isinstance(value, (bool, int, float, str, np.integer, np.floating)):
+            node.attrs[str(key)] = value
+        else:
+            node.attrs[str(key)] = json.dumps(value, default=_json_default, ensure_ascii=False)
+
+
+def _columns(rows: list[dict], columns: list[str] | None) -> list[str]:
+    if columns is not None:
+        return list(columns)
+    seen: dict[str, None] = {}
+    for row in rows:
+        seen.update(dict.fromkeys(row))
+    return list(seen)
+
+
+def _write_table(group, rows: list[dict], columns: list[str] | None = None) -> None:
+    """One dataset per column: numbers as float64 (None -> NaN), else text."""
+    group.attrs["row_count"] = len(rows)
+    for column in _columns(rows, columns):
+        values = [row.get(column) for row in rows]
+        if all(isinstance(v, (int, float, np.integer, np.floating)) or v is None for v in values):
+            group.create_dataset(column, data=np.array([_as_float(v) for v in values], dtype=np.float64))
+        else:
+            dtype = h5py.string_dtype(encoding="utf-8")
+            group.create_dataset(column, data=np.array(["" if v is None else str(v) for v in values], dtype=dtype))
+
+
+def _write_csv(path: Path, rows: list[dict], columns: list[str] | None = None) -> None:
+    import csv
+
+    columns = _columns(rows, columns)
+    with Path(path).open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(columns)
+        for row in rows:
+            writer.writerow(["" if row.get(c) is None else row.get(c) for c in columns])

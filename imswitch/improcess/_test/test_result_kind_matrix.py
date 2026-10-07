@@ -75,7 +75,7 @@ def _sample_locs(count: int = 4) -> np.recarray:
 
 def _psf_bead_table():
     output = PSFResolutionProcessor().apply(_image_2d(), {"source": "full_image"})
-    return dict(zip(output.keys, output.results))["beads"]
+    return dict(zip(output.keys, output.results))["psf"]
 
 
 def _representative_results():

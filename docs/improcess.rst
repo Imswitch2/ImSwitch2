@@ -462,7 +462,7 @@ image-calculator        Processor      Pixel-wise arithmetic between two compati
 segmentation            Processor      Threshold + connected-component labels and ROI export
 label-morphology        Processor      Fill, erode, dilate, open, close or watershed 2D label masks
 psf-resolution          Processor      Bead PSF FWHM statistics (2D/3D), averaged PSF, optional Zernike aberrations
-psf-bead-select         Processor      Re-select the beads of a psf-resolution bead table (FWHM range, ellipticity, R²)
+psf-bead-select         Processor      Re-select the beads of a psf-resolution measurement (FWHM range, ellipticity, R²)
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
 multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
@@ -638,17 +638,16 @@ intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
      - Any rank >= 2 image-like result.  A ``Z`` axis with more than one
        plane makes it a 3-D analysis; every other extra axis collapses to
        index ``0``.
-     - Ports ``beads`` (``BeadTableResult``, one row per *selected* bead;
-       the rejected candidates stay in memory for re-selection),
-       ``summary`` (``PSFSummaryResult``: statistics, rejection counts,
-       aberration headline), ``average_psf`` (image) and, when requested on
-       calibrated 3-D data, ``aberrations`` (``AberrationsResult``, Zernike
-       modes 5-11), ``aberration_fit`` (data | model stack) and
-       ``wavefront`` (pupil phase map, nm).
+     - Port ``psf``: the measurement (``PSFMeasurementResult``, one entry
+       holding every bead candidate, the statistics and, when requested on
+       calibrated 3-D data, the Zernike aberrations); port ``average_psf``:
+       the averaged bead as an ordinary image, when averaging is on and a
+       bead qualifies.
    * - ``psf-bead-select``
      - Measurement
-     - A ``beads`` table from ``psf-resolution``.
-     - Ports ``beads`` and ``summary`` with the new selection; no refitting.
+     - A measurement from ``psf-resolution``.
+     - Ports ``psf`` and ``average_psf`` with the new selection; no refitting
+       (the average and the aberrations are recomputed).
    * - ``colocalization``
      - Measurement
      - Rank >= 3 image-like result with a compare axis containing at least two
@@ -991,19 +990,49 @@ Set ``"psfResolutionPanel": true`` in the ``processing`` block to show a
 bead/PSF resolution panel.  With an image selected it runs ``psf-resolution``.
 The panel shows what it will analyse (``3-D stack 114 × 408 × 776 (Z, Y, X);
 voxel 200 × 200 × 200 nm (from metadata)``); only *Beads*, *Optics* and
-*Outputs* are open, while *Selection*, *Calibration override* and
-*Advanced* are collapsed.
+*Outputs* are open, while *Calibration override* and *Advanced* are
+collapsed.  The panel reads top to bottom in the order of the work: setup,
+**Preview beads**, the bead selection, **Fit**.
 
 **Preview beads** runs the detection, the fits and the selection without
 publishing anything.  Every candidate is marked in the viewer (a points layer
 named *PSF bead preview*, drawn in 3-D so it follows the z slider and the
 XZ / YZ views): green beads are selected, grey ones sit at the image or data
 edge, orange ones are too close to another bead, violet ones are too bright
-or saturated, red ones failed the fit or the selection.  A list of the
-candidates, selected first, gives each bead's state and widths; clicking a
-row centres the viewer on that bead.  **Fit** runs the same analysis and
-publishes the results; the panel then reports the bead counts, both width
-measures, the averaged PSF and the aberrations.
+or saturated, red ones failed the fit or the selection.  *Bead selection*
+then shows the histogram of the fitted lateral FWHMs with the range in use
+shaded: dragging it, or editing the *Selection bounds*, re-selects at once
+(no refitting) and updates the markers, the count and the list.
+*Automatic range* returns to median ± k MAD.  The list of candidates,
+selected first, gives each bead's state and widths; clicking a row centres
+the viewer on that bead.
+
+**Fit** measures with that selection and publishes two results:
+
+* the **measurement**, ``<image> — PSF``: one entry for everything the
+  analysis found.  Selected, it shows the analysed image with a marker per
+  candidate in the viewer, the FWHM histograms, the lateral FWHM across the
+  field and the Zernike coefficients in the Graph, and adds **one row** to
+  the Results table (source, beads used and found, the half-maximum widths
+  with their MAD, the Gaussian lateral width, the ratio to the diffraction
+  limit and, when fitted, the aberration RMS and Strehl ratio), so repeated
+  measurements line up for comparison.  Saved as HDF5 it holds the beads
+  (every candidate, with its state), the summary, the averaged PSF and the
+  aberrations (Zernike table, wavefront, data and model); as CSV, the bead
+  table with ``_summary`` and ``_zernike`` CSVs beside it;
+* the **averaged PSF**, ``<image> — averaged PSF``: the aligned mean of the
+  selected beads as an ordinary image (XY / XZ / YZ views), for further
+  processing or comparison.
+
+The measurement is selected after a fit, and the panel shows its card: the
+lateral and axial FWHM in large type with the per-axis breakdown and the
+diffraction limit, the aberration total, thumbnails of the averaged PSF (XY,
+XZ), the wavefront and the aberration fit (data | model), the remaining
+details and warnings, and the statistics in *Summary* / *Aberrations* tabs.
+Its bead selection stays editable: changing it enables **Re-select**, which
+runs ``psf-bead-select`` and publishes a new measurement,
+``<image> — PSF (re-selected)``, with the average and the aberrations
+recomputed (the range is recorded in the provenance like any parameter).
 
 * **Beads from** — *Auto-detect beads* (LoG detection in the image or the
   stack itself), *ROI Manager* (one bead per ROI, forwarded through the
@@ -1045,8 +1074,7 @@ measures, the averaged PSF and the aberrations.
 * With **NA and wavelength**, the summary compares the result with the
   widefield diffraction limit (0.51 λ/NA laterally, 0.88 λ/(n − √(n² − NA²))
   axially).
-* The **beads** table lists the selected beads only.  The **summary**
-  reports mean, std, SEM, median and MAD of the selected beads for both
+* The **summary** reports mean, std, SEM, median and MAD of the selected beads for both
   width measures, the averaged-bead value, how many candidates were rejected
   and why, the detection scale, the lateral FWHM trend across the field and,
   for 3-D stacks whose beads lie on one surface, the focal-plane tilt and
@@ -1066,19 +1094,15 @@ measures, the averaged PSF and the aberrations.
   sheet, whose thickness and tilt are fitted with the aberrations (an oblique plane microscope's sheet is tilted; its tilt
   and a coma along the same direction look alike, so the coma's magnitude is
   the reliable part).  A widefield model fits light-sheet data badly, and the
-  report says so.  The results are the Zernike table, the data and the model
-  side by side (``aberration_fit``, scroll z or use the XZ / YZ view to
-  compare) and the wavefront over the pupil (``wavefront``).  Signs and
+  report says so.  The Zernike table, the data and the model side by side
+  and the wavefront over the pupil are part of the measurement (the card's
+  thumbnails and *Aberrations* tab, the saved HDF5).  Signs and
   angles depend on the z direction (*Flip z*) and image orientation;
   magnitudes do not.  The SLM pattern designer defines Noll modes 2/3, 7/8
   and 11 differently, so those coefficients cannot be applied there one to
   one.
 
-With a ``beads`` table selected, the panel switches to re-selection: a
-histogram of the fitted lateral FWHMs with a draggable range, the selection
-bounds and **Apply selection**, which runs ``psf-bead-select`` (the range is
-recorded in the provenance like any parameter).  Recorded first-version runs
-migrate to *Whole image* or *ROI Manager* with their pixel size in nm.
+Recorded first-version runs migrate to *Whole image* or *ROI Manager* with their pixel size in nm.
 
 Colocalization panel
 ====================

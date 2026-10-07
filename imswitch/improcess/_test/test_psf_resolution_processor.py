@@ -9,7 +9,7 @@ from imswitch.improcess.analysis.roi_manager import ROIRecord
 from imswitch.improcess.model import PlotPayload, ProcessingResult
 from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.processors.psf_resolution import (
-    BeadTableResult,
+    PSFMeasurementResult,
     PSFResolutionProcessor,
     PSFResolutionResult,
 )
@@ -74,6 +74,11 @@ def _outputs(output):
     return dict(zip(output.keys, output.results))
 
 
+def _used(measurement):
+    """The bead rows of a measurement that entered its statistics."""
+    return [row for row in measurement.bead_rows() if row["selected"]]
+
+
 def test_psf_resolution_processor_registered_and_fits_whole_image():
     """``full_image`` is the v1 behaviour without ROIs: one PSF for the frame."""
     image = _gaussian()
@@ -82,13 +87,13 @@ def test_psf_resolution_processor_registered_and_fits_whole_image():
     out = _outputs(PSFResolutionProcessor().apply(result, {"source": "full_image", "average_psf": False}))
 
     assert "psf-resolution" in available_processor_ids()
-    assert set(out) == {"beads", "summary"}
-    beads = out["beads"]
-    assert isinstance(beads, BeadTableResult) and beads.kind == "table"
-    (row,) = beads.table_records()
+    assert set(out) == {"psf"}
+    psf = out["psf"]
+    assert isinstance(psf, PSFMeasurementResult) and psf.kind == "table"
+    (row,) = _used(psf)
     assert row["fwhm_y_px"] == pytest.approx(2.354820045 * 2.4, rel=0.03)
     assert row["fwhm_x_px"] == pytest.approx(2.354820045 * 3.1, rel=0.03)
-    payloads = beads.plot_payloads()
+    payloads = psf.plot_payloads()
     assert payloads and all(isinstance(p, PlotPayload) for p in payloads)
 
 
@@ -100,8 +105,8 @@ def test_psf_resolution_processor_accepts_rois_param():
 
     out = _outputs(PSFResolutionProcessor().apply(result, {"source": "rois", "rois": rois}))
 
-    assert out["beads"].analysis.source == "rois"
-    (row,) = out["beads"].table_records()
+    assert out["psf"].analysis.source == "rois"
+    (row,) = _used(out["psf"])
     assert row["fwhm_x_px"] == pytest.approx(2.354820045 * 2.0, rel=0.05)
 
 
@@ -116,14 +121,14 @@ def test_pixel_size_comes_from_the_data_scale():
         name="image", data=_gaussian(), axis_labels=["Y", "X"], axis_scales=[0.1, 0.1], scale_unit="um"
     )
     out = _outputs(PSFResolutionProcessor().apply(result, {"source": "full_image"}))
-    (row,) = out["beads"].table_records()
+    (row,) = _used(out["psf"])
     assert row["fwhm_x_nm"] == pytest.approx(2.354820045 * 3.1 * 100.0, rel=0.03)
 
 
 def test_pixel_size_override_wins_over_the_data_scale():
     result = MinimalResult(name="image", data=_gaussian(), axis_labels=["Y", "X"])
     out = _outputs(PSFResolutionProcessor().apply(result, {"source": "full_image", "pixel_size_nm": 50.0}))
-    (row,) = out["beads"].table_records()
+    (row,) = _used(out["psf"])
     assert row["fwhm_x_nm"] == pytest.approx(2.354820045 * 3.1 * 50.0, rel=0.03)
 
 
@@ -139,10 +144,9 @@ def test_v1_params_migrate():
 
 
 def test_output_ports_follow_the_params():
-    spec = PSFResolutionProcessor().output_spec({"average_psf": False})
-    assert spec.ports == ("beads", "summary")
+    assert PSFResolutionProcessor().output_spec({"average_psf": False}).ports == ("psf",)
     spec = PSFResolutionProcessor().output_spec({"fit_aberrations": True})
-    assert spec.ports == ("beads", "summary", "average_psf", "aberrations", "aberration_fit", "wavefront")
+    assert spec.ports == ("psf", "average_psf")
 
 
 def test_psf_resolution_result_saves_hdf5(tmp_path):
@@ -178,21 +182,66 @@ def _bead_field(n=12, shape=(160, 160), sigma=1.8, seed=0):
     return image, centers
 
 
-def test_bead_table_lists_only_the_selected_beads():
+def test_a_measurement_is_one_result_with_a_headline_row():
     image, _ = _bead_field()
     image[80, 80] = 0  # a stray zero is still data
     result = MinimalResult(name="beads", data=image, axis_labels=["Y", "X"], axis_scales=[0.065, 0.065],
                            scale_unit="um")
-    out = _outputs(PSFResolutionProcessor().apply(result, {}))
-    beads, summary = out["beads"], out["summary"]
-    rows = beads.table_records()
-    assert 0 < len(rows) == int(beads.mask.sum()) < len(beads.analysis.beads)
-    assert "status" not in beads.table_columns() and "selected" not in beads.table_columns()
-    assert {"fwhm_x_hm_nm", "fwhm_lat_nm"} <= set(beads.table_columns())
-    metrics = {row["metric"] for row in summary.table_records()}
+    output = PSFResolutionProcessor().apply(result, {})
+    assert output.keys == ("average_psf", "psf")  # the measurement last: the list ends on it
+    out = _outputs(output)
+    psf, averaged = out["psf"], out["average_psf"]
+    assert psf.name == "beads — PSF" and averaged.name == "beads — averaged PSF"
+    assert averaged.kind == "image" and averaged.metadata["beads_averaged"] == psf.averaged.n
+
+    (headline,) = psf.table_records()
+    assert headline["source"] == "beads" and headline["beads_used"] == int(psf.mask.sum())
+    assert headline["beads_found"] == len(psf.analysis.beads) > headline["beads_used"] > 0
+    assert {"fwhm_x_nm", "fwhm_y_nm", "fwhm_x_mad_nm", "fwhm_lat_gauss_nm"} <= set(headline)
+    assert psf.data.shape == (1, len(headline))
+
+    rows = psf.bead_rows()
+    assert len(rows) == len(psf.analysis.beads)  # every candidate, with its state
+    assert sum(row["selected"] for row in rows) == headline["beads_used"]
+    assert {row["state"] for row in rows if not row["selected"]} - {"selected"}
+    assert {"fwhm_x_hm_nm", "fwhm_lat_nm"} <= set(rows[0])
+    metrics = {row["metric"] for row in psf.summary_rows()}
     assert "FWHM lateral (half maximum)" in metrics and "beads selected" in metrics
     assert any(metric.startswith("rejected: ") for metric in metrics)
-    assert "candidates selected" in summary.report()
+    assert "candidates selected" in psf.report()
+
+
+def test_a_measurement_shows_the_image_with_a_marker_per_candidate():
+    image, _ = _bead_field()
+    result = MinimalResult(name="beads", data=image, axis_labels=["Y", "X"], axis_scales=[0.065, 0.065],
+                           scale_unit="um")
+    psf = _outputs(PSFResolutionProcessor().apply(result, {}))["psf"]
+    context, markers = psf.display_layers()
+    assert context.role == "context" and np.shape(context.data) == image.shape
+    assert context.axis_scales == pytest.approx([0.065, 0.065]) and context.scale_unit == "um"
+    assert markers.kind == "points" and np.shape(markers.data) == (len(psf.analysis.beads), 2)
+    states = markers.layer_kwargs["features"]["state"]
+    assert states.count("selected") == int(psf.mask.sum())
+    assert any(title.startswith("Bead FWHM, lateral") for title in (p.title for p in psf.plot_payloads()))
+
+
+def test_reselecting_a_measurement_makes_a_new_one():
+    from imswitch.improcess.processors import PSFBeadSelectProcessor
+
+    image, _ = _bead_field()
+    result = MinimalResult(name="beads", data=image, axis_labels=["Y", "X"])
+    psf = _outputs(PSFResolutionProcessor().apply(result, {}))["psf"]
+    processor = PSFBeadSelectProcessor()
+    assert processor.accepts(psf) and not processor.accepts(result)
+    assert not PSFResolutionProcessor().accepts(psf)  # a measurement is not an image
+
+    output = processor.apply(psf, {"min_r2": 0.999})
+    assert output.keys[-1] == "psf"
+    again = _outputs(output)["psf"]
+    assert again.name == "beads — PSF (re-selected)" and again.source_name == "beads"
+    assert again.analysis is psf.analysis  # no refit
+    assert again.summary["n_selected"] < psf.summary["n_selected"]
+    assert again.params["min_r2"] == 0.999
 
 
 def test_input_layout_says_what_is_analysed():
@@ -217,7 +266,7 @@ def test_preview_run_matches_the_fit():
     result = MinimalResult(name="beads", data=image, axis_labels=["Y", "X"])
     run = run_bead_analysis(result, {})
     out = _outputs(PSFResolutionProcessor().apply(result, {}))
-    assert list(run.mask) == list(out["beads"].mask)
+    assert list(run.mask) == list(out["psf"].mask)
     assert len(run.reasons) == len(run.analysis.beads)
     assert all(r == "" for r, m in zip(run.reasons, run.mask) if m)
     assert any(r == "border" for r in run.reasons)  # the beads cut by the padding
@@ -238,8 +287,10 @@ def test_a_stack_without_z_is_not_cut_to_its_first_plane():
     assert "maximum projection" in layout.describe() and "label it Z" in layout.note
     run = run_bead_analysis(result, {})
     assert sorted(b["plane"] for b, m in zip(run.analysis.beads, run.mask) if m) == [1, 4, 6, 8]
-    beads = _outputs(PSFResolutionProcessor().apply(result, {}))["beads"]
-    assert "plane" in beads.table_columns() and len(beads.table_records()) == 4
+    psf = _outputs(PSFResolutionProcessor().apply(result, {}))["psf"]
+    assert all("plane" in row for row in psf.bead_rows()) and len(_used(psf)) == 4
+    context, _markers = psf.display_layers()
+    assert np.shape(context.data) == (120, 120)  # the projection the beads were found on
 
 
 def _calibrated_stack():
@@ -265,6 +316,6 @@ def test_a_skipped_aberration_fit_is_reported_in_place_of_the_results():
     image, _ = _bead_field()
     result = MinimalResult(name="beads", data=image, axis_labels=["Y", "X"])
     out = _outputs(PSFResolutionProcessor().apply(result, {"fit_aberrations": True}))
-    assert "aberrations" not in out
-    report = out["summary"].report()
+    assert out["psf"].aberrations is None
+    report = out["psf"].report()
     assert "Aberrations: not estimated" in report and "z-stack" in report

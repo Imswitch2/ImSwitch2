@@ -50,10 +50,8 @@ from imswitch.improcess.processors.multicolor_registration.result import (
 )
 from imswitch.improcess.processors.projection.result import ProjectionResult
 from imswitch.improcess.processors.psf_resolution.result import (
-    AberrationsResult,
-    BeadTableResult,
+    PSFMeasurementResult,
     PSFResolutionResult,
-    PSFSummaryResult,
 )
 from imswitch.improcess.processors.segmentation.result import SegmentationResult
 from imswitch.improcess.reconstructors.monalisa.result import MonalisaProcessingResult
@@ -200,9 +198,7 @@ def _factories(tmp_path):
         "frc": lambda: FRCResult("frc", frc_analysis, {"pixel_size": 1.0}),
         "colocalization": lambda: ColocalizationResult("coloc", coloc_analysis, {"threshold": 0.0}),
         "psf": lambda: PSFResolutionResult("psf", psf_analysis, {"pixel_size": 0.1}),
-        "psf-beads": lambda: _psf_bead_outputs()["beads"],
-        "psf-summary": lambda: _psf_bead_outputs()["summary"],
-        "psf-aberrations": _aberrations_result,
+        "psf-measurement": _psf_measurement,
         "segmentation": lambda: SegmentationResult("seg", seg_analysis),
         "denoise": lambda: DenoisedResult("den", _rng().random((4, 4)).astype(np.float32), ["Y", "X"],
                                           "n2v", "unet", 64, True),
@@ -229,7 +225,8 @@ def _psf_bead_outputs():
     return dict(zip(output.keys, output.results))
 
 
-def _aberrations_result():
+def _psf_measurement():
+    """A real measurement, with an aberration fit attached so every part is written."""
     from imswitch.improcess.analysis.psf_aberrations import AberrationFit
 
     fit = AberrationFit(
@@ -237,13 +234,15 @@ def _aberrations_result():
         pairs={}, shift_zyx_nm=(0.0, 0.0, 0.0), r2=0.97, model=np.zeros((3, 4, 4)),
         data=np.zeros((3, 4, 4)), wavelength_nm=520.0, n_beads=12,
     )
-    return AberrationsResult("aberr", fit, {"na": 1.4})
+    psf = _psf_bead_outputs()["psf"]
+    return PSFMeasurementResult(psf.name, psf.run, psf.summary, source_name=psf.source_name,
+                                averaged=psf.averaged, aberrations=fit, params=psf.params)
 
 
 _ALL = [
     "array", "labels", "roi-mask", "points-table", "localization", "view-only", "composite", "rgb",
-    "multicolor-apply", "projection", "frc", "colocalization", "psf", "psf-beads", "psf-summary",
-    "psf-aberrations", "segmentation", "denoise",
+    "multicolor-apply", "projection", "frc", "colocalization", "psf", "psf-measurement",
+    "segmentation", "denoise",
     "drift", "multicolor-registration", "monalisa", "snouty", "snouty-projections", "tiling",
     "widefield-starss",
 ]
@@ -259,8 +258,7 @@ def _cases():
         "view-only": ViewOnlyResult, "composite": CompositeResult, "rgb": RGBResult,
         "multicolor-apply": MulticolorApplyResult, "projection": ProjectionResult, "frc": FRCResult,
         "colocalization": ColocalizationResult, "psf": PSFResolutionResult,
-        "psf-beads": BeadTableResult, "psf-summary": PSFSummaryResult,
-        "psf-aberrations": AberrationsResult,
+        "psf-measurement": PSFMeasurementResult,
         "segmentation": SegmentationResult, "denoise": DenoisedResult, "drift": DriftCorrectedResult,
         "multicolor-registration": MulticolorRegistrationResult, "monalisa": MonalisaProcessingResult,
         "snouty": SnoutyResult, "snouty-projections": SnoutyProjectionsResult,

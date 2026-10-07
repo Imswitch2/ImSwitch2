@@ -160,6 +160,9 @@ def _control_for(f: ParamField) -> QtWidgets.QWidget:
         for option in f.options:
             control.addItem(labels.get(option, str(option)), option)
         control.setCurrentIndex(list(f.options).index(f.default))
+        # A long option must not widen a narrow dock panel.
+        control.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        control.setMinimumContentsLength(12)
     elif f.type == "int":
         control = QtWidgets.QSpinBox()
         control.setRange(int(f.min if f.min is not None else -2**31), int(f.max if f.max is not None else 2**31 - 1))
