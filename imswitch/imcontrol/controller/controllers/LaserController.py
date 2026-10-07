@@ -553,6 +553,17 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             self.setSharedAttr(laserName, _enabledAttr, False)
 
     @APIExport()
+    def getLaserValue(self, laserName: str):
+        """ The value the specified laser was last set to, in its own units
+        (a % setpoint when it uses a calibration LUT). """
+        return self._commChannel.sharedAttrs[(_attrCategory, laserName, _valueAttr)]
+
+    @APIExport()
+    def getLaserActive(self, laserName: str) -> bool:
+        """ Whether the specified laser's emission is switched on. """
+        return bool(self._commChannel.sharedAttrs[(_attrCategory, laserName, _enabledAttr)])
+
+    @APIExport()
     def getLaserNames(self) -> List[str]:
         """ Returns the device names of all lasers. These device names can be
         passed to other laser-related functions. """

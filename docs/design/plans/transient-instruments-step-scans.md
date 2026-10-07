@@ -1,6 +1,6 @@
 # Transient instruments and measurement runs
 
-Status: **plan r4 — accepted; P-1 and P-3 done** (2026-10-07). Implementation notes: §17. Branch
+Status: **plan r4 — accepted; P-1, P-3 done, P-5 done on mocks** (2026-10-07). Implementation notes: §17. Branch
 `feat/calibration-tools`, worktree `../Imswitch2-calibration-tools`. Nothing
 implemented. Dispositions: §14 (rounds 3 and 2), §15 (round 1).
 
@@ -782,8 +782,10 @@ grid images carry angle coordinates). Unexpected disconnects (#12) → §5.
 
 ## 16. Open questions
 
-- **Q-1 Reconnection branch:** does its author agree to P-0 (review, fixes,
-  tests on their branch), and to merging it before P-4?
+- **Q-1 Reconnection branch:** **decided 2026-10-07:** its author handed it
+  over; we take over `feat/device-reconnection`, fix it to our needs, and test
+  it together with this work (its core is tested; remaining bugs found along
+  the way).
 - **Q-2 Detector adapters:** **decided 2026-10-07 (Lenny): none for now.**
   Revisit only if a consumer genuinely needs instrument quantities as
   detectors.
@@ -844,4 +846,23 @@ instrument has been through it (P-4).
 Not yet: widgets greying out from registry state (a refused GUI command is
 refused and logged by the exception handler, nothing reaches hardware);
 instruments in the setup (P-4).
+
+**P-1 review (fixed, 8998b11a0).** Cancellation-safe runner, bounded instrument
+reads with retained ownership, asynchronous stop after quarantine, `corrupt`
+recovery outcome, configuration revision on boundaries, unit conversion in
+the polarisation map, verified-first matching.
+
+**P-5 (done on mocks).** `imcontrol/model/measurement/laser_lut.py`
+(`run_laser_lut`): prepare steps inside the reservation (record laser state,
+set + verify the meter wavelength, emission off, caller confirms the beam is
+blocked, zero, dark noise, emission on), raw-drive sweep, restore as a
+cleanup step. The runner gained `PrepareStep` / `CleanupStep`. Acceptance:
+`imcommon/model/measurement_run/power_lut.py`; construction (isotonic fit,
+plateau collapse, correction and dynamic-range limits) and the
+`calibCsvPath` writer: `imcommon/algorithms/power_lut.py`. Real lasers:
+`adapters.ManagerLaserState` + `LaserController.getLaserValue/getLaserActive`.
+Mocks: `MockLaser`, `MockPowerMeterDriver` (its zero bakes in whatever light
+is on). Still owed: the AA AOTF utility switching to the shared PM100 driver
+(needs the P-4 driver); a script entry point once instruments live in the
+setup (P-4); the 775 rig re-measure.
 

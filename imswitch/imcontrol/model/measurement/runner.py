@@ -86,6 +86,37 @@ class RunSettings:
 
 
 @dataclass(frozen=True)
+class PrepareStep:
+    """Runs inside the reservation before the first point (e.g. dark zero).
+
+    ``fn(token)`` may return a mapping, recorded in the run metadata under
+    ``preparation.<label>``. An exception fails the run before any point.
+    """
+
+    label: str
+    fn: Callable[[Optional[str]], Optional[Mapping[str, Any]]]
+
+
+@dataclass(frozen=True)
+class CleanupStep:
+    """Runs inside the reservation after acquisition (e.g. restore a laser).
+
+    Never dispatched while ``resource`` is quarantined; its outcome is part
+    of the cleanup outcome, never of the data.
+    """
+
+    label: str
+    resource: str
+    fn: Callable[[Optional[str]], None]
+    #: Also run after a movement failure (restoring a safe state usually should).
+    after_failure: bool = True
+
+
+class _PrepareFailed(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
 class ProgressEvent:
     point: int
     total: int
@@ -124,6 +155,8 @@ class MeasurementRunner:
         executor: Optional[ControlExecutor] = None,
         progress: Optional[Callable[[ProgressEvent], None]] = None,
         metadata: Optional[Mapping[str, Any]] = None,
+        prepare: Sequence[PrepareStep] = (),
+        cleanup_steps: Sequence[CleanupStep] = (),
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
     ) -> None:
@@ -138,6 +171,8 @@ class MeasurementRunner:
         self.registry = get_resource_registry()
         self.executor = executor if executor is not None else get_control_executor()
         self._progress = progress
+        self._prepare = tuple(prepare)
+        self._cleanup_steps = tuple(cleanup_steps)
         self._extra_metadata = dict(metadata or {})
         self._clock = clock
         self._wall = wall_clock
@@ -198,10 +233,14 @@ class MeasurementRunner:
                 session.add_fault_listener(self._on_fault)
             try:
                 starts = self._start_positions()
+                prepared = self._run_prepare()
                 self.folder.mkdir(parents=True, exist_ok=True)
+                metadata = self._metadata(starts)
+                if prepared:
+                    metadata['preparation'] = prepared
                 writer = RunJournalWriter(
                     self.journal_dir,
-                    metadata=self._metadata(starts),
+                    metadata=metadata,
                     instruments={name: s.quantities for name, s in self.instruments.items()},
                     controls=list(self.controls),
                     fsync=self.settings.fsync,
@@ -233,6 +272,9 @@ class MeasurementRunner:
                     detail = f'instrument fault: {self._fault}'
                 elif self._cancel.is_set() and not detail:
                     detail = self._cancel_reason
+            except _PrepareFailed as exc:
+                self.acquisition = AcquisitionOutcome.FAILED
+                detail = f'preparation failed: {exc}'
             except Exception as exc:
                 _logger.exception('measurement run %s failed', self.run_id)
                 self.acquisition = AcquisitionOutcome.FAILED
@@ -526,6 +568,18 @@ class MeasurementRunner:
         if seconds > 0:
             self._cancel.wait(seconds)
 
+    def _run_prepare(self) -> Dict[str, Any]:
+        prepared: Dict[str, Any] = {}
+        for step in self._prepare:
+            if self._cancel.is_set():
+                raise _PrepareFailed(f'{step.label}: cancelled')
+            try:
+                result = step.fn(self._token)
+            except Exception as exc:
+                raise _PrepareFailed(f'{step.label}: {exc}') from exc
+            prepared[step.label] = dict(result or {})
+        return prepared
+
     # --------------------------------------------------------------- cleanup
     def _cleanup(self, starts, movement_failed):
         quarantined: List[str] = []
@@ -558,6 +612,20 @@ class MeasurementRunner:
                 failures.append(f'{name}: return to {start:g} failed: {result.cause}')
         if movement_failed and self.settings.return_to_start:
             notes.append('no return to start after a movement failure')
+        for step in self._cleanup_steps:
+            if movement_failed and not step.after_failure:
+                notes.append(f'{step.label}: skipped after a movement failure')
+                continue
+            if self.executor.is_quarantined(step.resource):
+                if not self.executor.wait_released(step.resource,
+                                                   self.settings.cleanup_deadline_s):
+                    quarantined.append(step.resource)
+                    notes.append(f'{step.label}: {step.resource} still busy; not done')
+                    continue
+            try:
+                step.fn(self._token)
+            except Exception as exc:
+                failures.append(f'{step.label} failed: {type(exc).__name__}: {exc}')
         if quarantined:
             outcome = CleanupOutcome.QUARANTINED
         elif failures:

@@ -155,3 +155,34 @@ class PositionerAxisControl(RunControl):
 
     def read_position(self) -> Optional[float]:
         return float(self.manager.position[self.axis])
+
+
+class ManagerLaserState:
+    """The laser state the power-LUT procedure records and restores, for a
+    real laser manager.
+
+    Managers keep no readable value / enabled state; ``LaserController``
+    does. ``read_state`` therefore takes the controller's getters
+    (``api.imcontrol.getLaserValue`` / ``getLaserActive``). Restoring goes to
+    the manager with the reservation token — value first, then the enabled
+    state — so it is admitted while the procedure holds the laser.
+    """
+
+    def __init__(self, manager, *, get_value, get_enabled) -> None:
+        self.manager = manager
+        self.name = manager.name
+        self.wavelength_nm = float(manager.wavelength)
+        self.raw_unit = AUDITED_RAW_DRIVE_LASERS.get(type(manager).__name__, '')
+        self.uses_lut = bool(manager.usesCalibrationLookup())
+        self._get_value = get_value
+        self._get_enabled = get_enabled
+
+    def read_state(self):
+        return float(self._get_value(self.name)), bool(self._get_enabled(self.name))
+
+    def set_enabled(self, enabled: bool, token: Optional[str] = None) -> None:
+        self.manager.setEnabled(bool(enabled), owner=token)
+
+    def restore(self, value: float, enabled: bool, token: Optional[str] = None) -> None:
+        self.manager.setValue(value, owner=token)
+        self.manager.setEnabled(bool(enabled), owner=token)

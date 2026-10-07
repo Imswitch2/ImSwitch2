@@ -28,7 +28,9 @@ from .instrument import (
 )
 from ..resources import WAVEFORM_OUTPUT
 from .runner import (
+    CleanupStep,
     MeasurementRunner,
+    PrepareStep,
     ProgressEvent,
     RunRefused,
     RunReport,
@@ -36,6 +38,7 @@ from .runner import (
 )
 
 __all__ = [
+    'CleanupStep', 'PrepareStep',
     'ActionSpec', 'ControlCapabilities', 'ControlExecutor', 'InstrumentDriver',
     'InstrumentIdentity', 'InstrumentSession', 'MalformedReading',
     'MeasurementRunner', 'PointSequence', 'ProgressEvent', 'RASTER',
