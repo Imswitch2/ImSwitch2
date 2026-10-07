@@ -13,6 +13,7 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import DenoisedResult
@@ -43,6 +44,27 @@ class DenoiseProcessor(Processor):
         'pad': True,
         'clip_neg': True}
 
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'model_name', 'text', 'Vimentin_UNet_RCAN_lowSNR', label='Model name',
+                help='Name of the trained model directory under the denoising_models folder. Must contain config_train.json and model_best_state_dict.pt.',
+            ),
+            ParamField(
+                'model_type', 'select', 'Auto', label='Model type',
+                help="Auto picks UNetRCAN when the model name contains 'RCAN', otherwise UNet.",
+                options=('Auto', 'UNet', 'UNetRCAN'),
+            ),
+            ParamField(
+                'crop_size', 'int', 800, label='Crop size (px)',
+                help='Center-crop side length in pixels. Rounded down to a multiple of 16.',
+                min=16, max=100000, step=16,
+            ),
+            ParamField('pad', 'bool', True, label='Zero-pad to input size'),
+            ParamField('clip_neg', 'bool', True, label='Clip negative input to zero'),
+        )
+
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)
         # Lazy: the Denoiser triggers a torch import on construction, so build
@@ -54,8 +76,14 @@ class DenoiseProcessor(Processor):
         """Accept any result with at least a 2D image plane (the last two
         axes are treated as spatial)."""
         def _gate(result: ProcessingResult) -> bool:
+            # Evaluated whenever a result becomes current, so it must not read
+            # a lazy result's pixels just to learn how many axes it has.
             try:
-                return np.asarray(result.data).ndim >= 2
+                data = result.data
+                ndim = getattr(data, "ndim", None)
+                if ndim is None:
+                    ndim = np.asarray(data).ndim
+                return int(ndim) >= 2
             except Exception:
                 return False
         return _gate

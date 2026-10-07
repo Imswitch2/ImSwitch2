@@ -156,6 +156,10 @@ class _RecordingDispatcher:
             else:
                 self._awaiting = None
         if awaiting is not None:
+            # The session asked first, so the request it holds is its own,
+            # not the one tiling built for this tile: carry over what the
+            # point's recording should say about where it was.
+            awaiting.attributes = dict(getattr(request, 'attributes', {}) or {})
             # Mirror the terminal rather than assume one. Releasing the gate
             # on an unresolved request would arm the point without the stage
             # having reported arrival -- the single thing this handshake is
@@ -315,7 +319,8 @@ class _TriggeredTileSource:
         """
         controller = self._controller
         request = PositioningRequest(
-            self._pointIndex, timeout_s=controller._scanTimeoutS()
+            self._pointIndex, timeout_s=controller._scanTimeoutS(),
+            attributes=self.__dict__.get('pointAttributes') or {},
         )
         request.resolve()
         self._pointIndex += 1
@@ -827,6 +832,13 @@ class TilingController(ImConWidgetController):
                 gx += dx
                 gy += dy
 
+                # The same identity a snapshot tile carries, so a payload
+                # recorded for this tile says which tile it is and where the
+                # stage was commanded -- not only the manifest beside it.
+                tileSource.pointAttributes = self._tileAttrs(
+                    gx, gy,
+                    (origin_xy[0] + gx * step_um, origin_xy[1] + gy * step_um),
+                )
                 frame, wasFresh = tileSource.acquire()
                 if frame is None:
                     self._logger.error(
@@ -1542,7 +1554,15 @@ class TilingController(ImConWidgetController):
                                           folder)
         manager = self._master.recordingManager
         try:
-            recording.setPositioningProvider(dispatcher.provider)
+            try:
+                # Each item of this session is a tile, not a timepoint; the
+                # recording's acquisition layout says so.
+                recording.setPositioningProvider(
+                    dispatcher.provider, partitionKind='tile'
+                )
+            except TypeError:
+                # A host predating partition kinds still runs the session.
+                recording.setPositioningProvider(dispatcher.provider)
             recording.setCycleTerminalCallback(dispatcher.onPointFinished)
             manager.sigRecordingEndedDetailed.connect(
                 dispatcher.onWriterFinalised)

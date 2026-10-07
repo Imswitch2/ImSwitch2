@@ -154,7 +154,7 @@ Reading the report
 
 After a run the widget reports what alignment measured::
 
-    Tiling registration: 100/100 tiles registered, RMS correction 4.2 px,
+    Tile registration: 100/100 tiles registered, RMS correction 4.2 px,
     worst 11.8 px at grid (-3, 4). Whole-run solve: 100 tiles from 337
     measurement(s), 4 rejected as inconsistent, 12 still disagreed with the
     live placement.
@@ -222,8 +222,9 @@ Saving more than one detector
 A run saves the detector it aligns on, plus whatever the **Recording** widget is
 set to capture. That selection is the operator's existing answer to "what is my
 data", and tiling reads it rather than keeping a second one — the same
-arrangement as the output folder. The checkboxes in **Image Controls** only
-control which live views are shown; they do not select files for recording.
+arrangement as the output folder. The **Acquire with** checkboxes in **Image
+Controls** choose which detectors run in live view and take part in scans;
+they do not select files for recording.
 
 Each extra detector is captured at the same stage position as the tile, before
 the stage is allowed to move again, and gets the same fresh-frame proof the
@@ -277,21 +278,23 @@ than silently included — a scan-driven detector in free-running mode, for
 instance, since nothing would clock it.
 
 All of them share one solved layout, because they were all acquired at the same
-positions. Offline, the **Tiling mosaic** reconstructor's ``Detector`` picker
-chooses which to assemble; the geometry is identical whichever you pick.
+positions. Offline, the **Tiling mosaic** reconstructor's **Output source:**
+picker chooses which to assemble (*Aligned on*, the default, is the detector
+the run aligned on); the geometry is identical whichever you pick.
 
 
 Saved output
 ============
 
 ``Save tiles`` writes one folder per run, ``tiling_<YYYYMMDD_HHMMSS>``, into the
-Recording widget's output folder. It contains:
+Recording widget's output folder, or into ``tiling.measurementsRoot`` if the
+setup file sets it. It contains:
 
 Individual tiles
     Files in the configured ``saveFormat``: OME-TIFF (the default), HDF5 or
     Zarr. OME-TIFF carries each tile's stage position in the standard
     ``Plane/@PositionX|Y`` fields, so an OME-aware reader can place it directly.
-    HDF5 and Zarr are useful inside Imswitch2 but are not interchangeable with
+    HDF5 and Zarr are useful inside ImSwitch2 but are not interchangeable with
     OME-TIFF in external stitching programs.
 
 ``TileConfiguration.txt``
@@ -309,6 +312,23 @@ Individual tiles
     leading dimension as depth. Older manifests without these descriptors are
     still accepted using the legacy assumptions.
 
+    For a run that records a payload per tile, a payload's descriptors come
+    from its own recording: the writer names the axes from the recording's
+    acquisition layout wherever the layout gives every stored axis one OME
+    letter, and falls back to the frame-count guess only where it does not
+    (a camera frame stream over a raster, say). Snapshot tiles still use the
+    manifest's own guess from the Z step.
+
+Per-tile payload recordings
+    Each payload recorded for a tile identifies itself without the manifest:
+    its acquisition layout carries a ``tile`` partition (the tile's ordinal
+    and the run's tile count), and its shared attributes carry the same
+    ``Tiling:grid_x``/``grid_y``/``stage_x_um``/``stage_y_um`` a snapshot tile
+    carries. Such a run is the Recording widget's scan lapse with tiling
+    placing the stage, and the lapse's legacy ``recording:num_timepoints``
+    attribute still counts its items; the partition kind is what says they
+    are tiles, not timepoints.
+
 The stitched mosaic is written alongside them. All of it is written even for a
 stopped or partial run — whatever reached disk should still be a usable dataset
 rather than orphaned files.
@@ -319,7 +339,9 @@ Reassembling a saved run
 
 The **Tiling mosaic** reconstructor in ImProcess rebuilds a saved run offline,
 where there is no latency budget and every tile is in hand at once. Open any
-file from the run's folder; it finds the manifest beside it.
+file from the run's folder; it finds the manifest beside it. The reconstructor
+picker still offers what can read the file you selected (**View only**, for
+instance), and choosing one reopens that file.
 
 It lays the tiles out from the **commanded stage coordinates**, not the pixel
 positions saved in the manifest. Those are recorded after the live alignment
@@ -369,7 +391,7 @@ and take roughly fifteen seconds.
 Controller API
 ==============
 
-The Tiling controller exports these methods through Imswitch2's generated API:
+The Tiling controller exports these methods through ImSwitch2's generated API:
 
 ``startTiling()`` / ``stopTiling()``
     Start with the values currently shown in the widget, or request cancellation

@@ -8,6 +8,7 @@ from qtpy import QtWidgets
 
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
+from imswitch.imcommon.model import dirtools
 from imswitch.improcess.analysis.smlm_import import (
     read_generic_csv,
     read_localizations,
@@ -24,8 +25,56 @@ from imswitch.improcess.model.dataset_sources import (
     resolve_dataset_source,
     specs_for_reconstructor,
 )
+from imswitch.improcess.model.folder_preferences import (
+    FolderPreferences,
+    load_folder_preferences,
+    save_folder_preferences,
+)
+from imswitch.improcess.model.lapse_source import (
+    TIME_LAPSE_SOURCE_KIND,
+    NotATimeLapse,
+    discover_time_lapse,
+    lapses_in_file,
+)
 from .MultiDataFrameController import MultiDataFrameController
 from .basecontrollers import ImProcessWidgetController
+
+#: What ``_loadTimeLapseAsCurrent`` answers for a file holding several lapses
+#: when no item of one was picked: the dataset picker has to ask first.
+_PICK_A_LAPSE_ITEM = 'pick-lapse-item'
+
+
+def _accepts_time_lapse(reconstructor) -> bool:
+    return TIME_LAPSE_SOURCE_KIND in tuple(
+        getattr(reconstructor, 'accepted_source_kinds', ()) or ()
+    )
+
+
+def _picked_dataset(source) -> str | None:
+    """The dataset a path picked *inside* a container names, or None.
+
+    ``lapse.zarr/scan4/Camera`` resolves to the container ``lapse.zarr``; the
+    rest is which item the user meant. None when the container itself was
+    picked.
+    """
+    try:
+        inside = Path(source.original_path).relative_to(Path(source.path))
+    except (TypeError, ValueError):
+        return None
+    return inside.as_posix() if inside.parts else None
+
+
+def _route_as_current(controller, data_obj) -> str:
+    """Make a source that DataObj did not open itself the current one."""
+    main = controller._main
+    if main._currentDataObj is not None:
+        main._currentDataObj.checkAndUnloadData()
+    main._currentDataObj = data_obj
+    if data_obj.sourceReady:
+        controller._commChannel.sigCurrentDataChanged.emit(data_obj)
+        controller._widget.raiseCurrentDataDock()
+        return 'current'
+    return 'empty'
 
 
 class FileIOController(ImProcessWidgetController):
@@ -43,8 +92,12 @@ class FileIOController(ImProcessWidgetController):
     def __init__(self, *args, mainController=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._main = mainController
-        self._dataFolder = None
-        self._saveFolder = None
+        # Kept between sessions in improcess_options.json (Preferences >
+        # Default folders…); None means the dialogs start where the system
+        # puts them.
+        folders = load_folder_preferences()
+        self._dataFolder = folders.dataFolder or None
+        self._saveFolder = folders.saveFolder or None
 
         # Multi-dataset controllers are only used by _loadFromPath
         self.multiDataFrameController = self._factory.createController(
@@ -53,6 +106,9 @@ class FileIOController(ImProcessWidgetController):
         self.pickDatasetsController = self._factory.createController(
             PickDatasetsController, self._widget.pickDatasetsDialog
         )
+        if self._dataFolder is not None:
+            # The add-data dialog starts in the saved folder too.
+            self._commChannel.sigDataFolderChanged.emit(self._dataFolder)
 
     def quickLoadData(self):
         dataPath = self._requestLoadPath()
@@ -209,6 +265,13 @@ class FileIOController(ImProcessWidgetController):
             dataPath = str(source.path)
             if source.format_id == TILING_MANIFEST_SPEC.id:
                 return self._loadMetadataAsCurrent(source)
+            lapseItemToPick = False
+            if _accepts_time_lapse(getattr(self._main, '_activeReconstructor', None)):
+                outcome = self._loadTimeLapseAsCurrent(source)
+                if outcome == _PICK_A_LAPSE_ITEM:
+                    lapseItemToPick = True
+                elif outcome is not None:
+                    return outcome
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
             self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
@@ -227,6 +290,18 @@ class FileIOController(ImProcessWidgetController):
             datasetsToRoute = list(self.pickDatasetsController.getSelectedDatasets())
             if not datasetsToRoute:
                 return 'empty'
+
+        if lapseItemToPick and len(datasetsToRoute) == 1:
+            # The file holds several lapses; the item picked says which one.
+            try:
+                outcome = self._loadTimeLapseAsCurrent(source, datasetsToRoute[0])
+            except Exception as exc:
+                self._logger.error(
+                    f"Could not open the time lapse of {datasetsToRoute[0]}: {exc}"
+                )
+                outcome = None
+            if outcome is not None:
+                return outcome
 
         if prefer_as_current and len(datasetsToRoute) == 1:
             try:
@@ -348,14 +423,54 @@ class FileIOController(ImProcessWidgetController):
             )
             return 'empty'
 
-        if self._main._currentDataObj is not None:
-            self._main._currentDataObj.checkAndUnloadData()
-        self._main._currentDataObj = data_obj
-        if data_obj.sourceReady:
-            self._commChannel.sigCurrentDataChanged.emit(data_obj)
-            self._widget.raiseCurrentDataDock()
-            return 'current'
-        return 'empty'
+        return _route_as_current(self, data_obj)
+
+    def _loadTimeLapseAsCurrent(self, source, dataset=None):
+        """Open the whole lapse ``source`` belongs to, or return None.
+
+        Only asked while a reconstructor that takes lapses is active, as the
+        tiling manifest is only resolved for one that takes manifests. Opening
+        the lapse reads the picked item's attributes and lists its siblings;
+        no sibling is opened. A file that is not a lapse -- a single recording,
+        a tiling tile -- returns None and opens as the image it is, with the
+        reason logged, so choosing the reconstructor never makes a file
+        unopenable.
+
+        The lapse is the one of the item picked: ``dataset``, or the path
+        picked inside the container (``lapse.zarr/scan4/Camera``). Where only
+        the file was picked and it holds more than one lapse, returns
+        ``_PICK_A_LAPSE_ITEM`` and the caller asks which item, rather than
+        opening the first lapse and leaving the others unreachable.
+        """
+        if dataset is None:
+            dataset = _picked_dataset(source)
+        try:
+            index = discover_time_lapse(source.path, dataset)
+            if dataset is None:
+                lapses = lapses_in_file(index)
+                if lapses > 1:
+                    self._logger.info(
+                        f"{Path(source.path).name} holds {lapses} time lapses; "
+                        "pick an item of the one to open."
+                    )
+                    return _PICK_A_LAPSE_ITEM
+        except NotATimeLapse as exc:
+            self._logger.info(f"Opening as a single image: {exc}")
+            return None
+        except Exception as exc:
+            self._logger.warning(
+                f"Could not read {source.original_path} as a time lapse: {exc}"
+            )
+            return None
+        data_obj = DataObj.fromMetadataSource(
+            index.name,
+            index.anchor.path,
+            TIME_LAPSE_SOURCE_KIND,
+            index,
+            originalPath=source.original_path,
+        )
+        self._logger.info(index.describe())
+        return _route_as_current(self, data_obj)
 
     def _loadAsCurrent(self, name, datasetName, dataPath, *, virtual: bool = False):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
@@ -386,10 +501,8 @@ class FileIOController(ImProcessWidgetController):
                 # The estimate is a courtesy; the load below reports its own
                 # failures the way it always has.
                 self._logger.debug(f'No materialisation estimate: {exc!r}')
-            if notice:
-                signal = getattr(self._commChannel, 'sigStatusMessage', None)
-                if signal is not None:
-                    signal.emit(notice)
+            if notice and hasattr(self._commChannel, 'sigStatusMessage'):
+                self._commChannel.sigStatusMessage.emit(notice)
             dataObj.checkAndLoadData()
         ready = getattr(self._main._currentDataObj, 'sourceReady', None)
         if ready is None:
@@ -407,15 +520,39 @@ class FileIOController(ImProcessWidgetController):
     def saveFolderChanged(self, saveFolder):
         self._saveFolder = saveFolder
 
-    def setDataFolder(self):
-        dataFolder = guitools.askForFolderPath(self._widget)
-        if dataFolder:
-            self._commChannel.sigDataFolderChanged.emit(dataFolder)
+    def openFolderPreferences(self):
+        """Show the default-folders editor, seeded with the folders in force."""
+        dialog = self._widget.folderPreferencesDialog
+        dialog.setValues(FolderPreferences(dataFolder=self._dataFolder or '',
+                                           saveFolder=self._saveFolder or ''))
+        self._widget.showFolderPreferencesDialog()
 
-    def setSaveFolder(self):
-        saveFolder = guitools.askForFolderPath(self._widget)
-        if saveFolder:
-            self._commChannel.sigSaveFolderChanged.emit(saveFolder)
+    def saveFolderPreferences(self, values):
+        """Save the default folders to improcess_options.json and use them now.
+
+        Either may be empty, meaning no default. A folder that cannot be one
+        (a relative path, an existing file) keeps the dialog open with the
+        reason, as does a file that cannot be written.
+        """
+        dialog = self._widget.folderPreferencesDialog
+        folders = {}
+        for field, label in (('dataFolder', 'Open data from'),
+                             ('saveFolder', 'Save results to')):
+            try:
+                folders[field] = dirtools.checkedFolderPath(values.get(field), allowEmpty=True)
+            except ValueError as error:
+                dialog.setStatus(f'{label}: {error}')
+                return
+        try:
+            save_folder_preferences(FolderPreferences(**folders))
+        except OSError as error:
+            self._logger.error(f'Could not save the default folders: {error}', exc_info=True)
+            dialog.setStatus(f'Could not save the default folders: {error}')
+            return
+        self._commChannel.sigDataFolderChanged.emit(folders['dataFolder'] or None)
+        self._commChannel.sigSaveFolderChanged.emit(folders['saveFolder'] or None)
+        dialog.setStatus('')
+        dialog.accept()
 
     def saveCurrent(self, dataType):
         """ Saves the reconstructed image or coefficients from the current

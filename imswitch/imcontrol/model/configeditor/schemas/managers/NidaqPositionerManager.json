@@ -14,6 +14,15 @@
         "example:number"
       ]
     },
+    "defaultReferenceVoltage": {
+      "description": "Optional analog voltage used by the explicit open-loop reference",
+      "x-imswitch-kind": "number",
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)",
+        "docs:number"
+      ]
+    },
     "maxVolt": {
       "description": "Maximum allowed analog voltage.",
       "x-imswitch-kind": "integer",

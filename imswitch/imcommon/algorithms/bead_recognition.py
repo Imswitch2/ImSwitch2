@@ -181,6 +181,9 @@ class BeadRecResultRecord:
     source_path: str | None = None
     timestamp: float | None = None
     scaled: bool = False
+    #: ``(y, x)`` in µm: one scan step per pixel, or the finer step on both
+    #: axes when the image was rescaled to square pixels. None when unknown.
+    pixel_size_um: tuple[float, float] | None = None
 
     def metadata(self) -> dict[str, object]:
         """Return JSON-safe metadata without image pixel data."""
@@ -190,6 +193,9 @@ class BeadRecResultRecord:
             "source_path": self.source_path,
             "timestamp": self.timestamp,
             "scaled": self.scaled,
+            "pixel_size_um": (
+                list(self.pixel_size_um) if self.pixel_size_um is not None else None
+            ),
         }
 
 

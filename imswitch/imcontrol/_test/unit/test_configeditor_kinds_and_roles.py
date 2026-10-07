@@ -124,7 +124,7 @@ class TestKindReader:
         assert schema["required"] == ["axes", "managerName"]
         assert schema["additionalProperties"] is True
         assert list(schema["properties"]) == sorted(schema["properties"])
-        assert schema["properties"]["resetOnClose"]["default"] is True
+        assert schema["properties"]["resetOnClose"]["default"] is False
 
     def test_every_kind_has_a_checked_in_schema_the_loader_finds(self):
         for kind in kinds.KIND_INFO_CLASSES:
@@ -160,7 +160,7 @@ class TestTopLevelFields:
         assert fields["axes"].type == "text" and fields["axes"].required and not fields["axes"].required_by_schema
         assert fields["axes"].default == "", "required, no dataclass default: blank"
         assert fields["forScanning"].type == "bool" and fields["forScanning"].default is False
-        assert fields["resetOnClose"].default is True
+        assert fields["resetOnClose"].default is False
         assert fields["analogChannel"].type == "text" and fields["analogChannel"].nullable
         assert fields["physicalActuator"].type == "text" and fields["physicalActuator"].default is None, "the dataclass default"
         assert all(f.location == "top" and f.group == "Device" for f in fields.values())
@@ -287,7 +287,8 @@ class TestRoleDiagnostics:
                 if device.get("managerName") == "MockPositionerManager" and device.get("forScanning"):
                     mocks += 1
             assert _codes(validate_setup_data(setup, registry), "role.") == [], name
-        assert mocks == 13
+        # 13, plus mock_scan_monalisa_live.json's three.
+        assert mocks == 16
 
 
 class TestKindDiagnostics:

@@ -15,6 +15,7 @@ estimate builds the scan with 2 and 3 steps on every slow axis and
 extrapolates, and is held here to 1 % of full builds.
 """
 import copy
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -181,6 +182,11 @@ def _advancedController(channel, analog):
     ctrl.__dict__.update(
         _commChannel=channel,
         _setupInfo=setup,
+        # The positions a scan design starts from.
+        _master=SimpleNamespace(positionersManager={
+            axis: SimpleNamespace(axes=[axis], position={axis: 0.0})
+            for axis in ('X', 'Y', 'Z')
+        }),
         _widget=_Widget(),
         _logger=_Logger(),
         _scanCoordinator=ScanExecutionCoordinator(None, None),
@@ -193,10 +199,11 @@ def _advancedController(channel, analog):
             'sequence_time': analog['sequence_time'], 'advanced_mode': False,
         },
         _positionersScan=['X', 'Y', 'None'],
-        _lastBuiltParams=None,
+        _designCache=None,
         signalDict=None,
         scanInfoDict=None,
         TTLDevices={},
+        _suppressUnreferencedScanWarning=True,
     )
     ctrl.getParameters = lambda: None
     channel.source = ctrl

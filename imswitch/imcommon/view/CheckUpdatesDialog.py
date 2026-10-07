@@ -1,3 +1,5 @@
+import sys
+
 from qtpy import QtCore, QtWidgets
 
 import imswitch
@@ -53,18 +55,40 @@ class CheckUpdatesDialog(QtWidgets.QDialog):
         self.linkLabel.setText('')
         self.linkLabel.setVisible(False)
 
+    #: What to do with the download, per platform.  The standalone builds are
+    #: installers now -- a Setup .exe that upgrades in place and a disk image you
+    #: drag across.  The text this replaced came from the 1.x zip bundles and told
+    #: users to extract into a new folder and *not* overwrite the old install,
+    #: which is the opposite of what both installers want.
+    _BUNDLE_UPDATE_STEPS = {
+        'win32': (
+            'To update, download the installer below and run it. It upgrades this'
+            ' installation in place, so there is no need to uninstall first.'
+            '\n\nWindows will warn that the installer is unsigned: choose'
+            ' "More info" and then "Run anyway".'
+        ),
+        'darwin': (
+            'To update, download the disk image below and drag ImSwitch2 into your'
+            ' Applications folder, replacing the version already there.'
+            '\n\nmacOS will refuse to open it the first time because it is unsigned:'
+            ' right-click ImSwitch2 and choose "Open".'
+        ),
+    }
+    _BUNDLE_UPDATE_FALLBACK = 'To update, download the new version below.'
+
     def showPyInstallerUpdate(self, newVersion):
+        steps = self._BUNDLE_UPDATE_STEPS.get(sys.platform, self._BUNDLE_UPDATE_FALLBACK)
         self.informationLabel.setText(
-            f'ImSwitch {newVersion} is now available. '
+            f'ImSwitch2 {newVersion} is now available.'
             f' Your current version is {imswitch.__version__}.'
-            f'\n\nTo update, download the new version archive from the link below and extract it'
-            f' into a new folder. Do NOT overwrite your current installation; instead, delete it'
-            f' after you have updated.'
+            f'\n\n{steps}'
+            f'\n\nYour settings and hardware setups in ImSwitchConfig are kept.'
         )
         self.linkLabel.setText(
             'The new version may be downloaded from '
-            '<a href="https://github.com/kasasxav/ImSwitch/releases" style="color: orange">'
-            'the GitHub releases page'
+            f'<a href="https://github.com/{imswitch.__github_repo__}/releases/latest"'
+            ' style="color: orange">'
+            'the latest release'
             '</a>'
             '.'
         )
@@ -72,14 +96,14 @@ class CheckUpdatesDialog(QtWidgets.QDialog):
 
     def showPyPIUpdate(self, newVersion):
         self.informationLabel.setText(
-            f'ImSwitch {newVersion} is now available. '
+            f'ImSwitch2 {newVersion} is now available.'
             f' Your current version is {imswitch.__version__}.'
-            f'\n\nTo update, run the command: pip install --upgrade imswitch'
+            f'\n\nTo update, run the command: pip install --upgrade {imswitch.__distname__}'
         )
         self.linkLabel.setText(
             'The changelog is available '
-            '<a href="https://imswitch.readthedocs.io/en/stable/changelog.html"'
-            'style="color: orange">'
+            f'<a href="https://github.com/{imswitch.__github_repo__}/blob/main/docs/changelog.rst"'
+            ' style="color: orange">'
             'here'
             '</a>'
             '.'

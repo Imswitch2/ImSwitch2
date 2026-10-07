@@ -2,40 +2,13 @@ import csv
 import io
 from qtpy import QtWidgets, QtCore
 
-
-def merge_columns(existing: list[str], incoming) -> list[str]:
-    """Returns a NEW list: existing columns in order, then any incoming columns not already present (stringified, deduped)."""
-    result = list(existing)
-    for column in incoming:
-        column = str(column)
-        if column not in result:
-            result.append(column)
-    return result
-
-
-def format_table_value(value) -> str:
-    """None→""; NaN→"" (guard `value != value`); float→f"{v:.6g}"; else str(value)."""
-    if value is None:
-        return ""
-    try:
-        if value != value:
-            return ""
-    except Exception:
-        pass
-    if isinstance(value, float):
-        return f"{value:.6g}"
-    return str(value)
-
-
-def records_to_csv(columns: list[str], records: list[dict]) -> str:
-    """CSV text with header row = columns and one row per record using format_table_value(record.get(col, ""))."""
-    output = io.StringIO()
-    writer = csv.writer(output, lineterminator='\n')
-    writer.writerow(columns)
-    for record in records:
-        row = [format_table_value(record.get(col, "")) for col in columns]
-        writer.writerow(row)
-    return output.getvalue()
+# Row formatting is shared with imcontrol's Line Profile panel (one Profile
+# widget for both apps), so it is defined once in the common layer.
+from imswitch.imcommon.model.result_records import (  # noqa: F401
+    format_table_value,
+    merge_columns,
+    records_to_csv,
+)
 
 
 def _coerce_cell(text: str):

@@ -17,6 +17,7 @@ from imswitch.imcontrol.model.simple_scan import (
     dicts_to_plan,
     log_position,
     log_value,
+    normalize_plan,
     plan_overview,
     plan_to_dicts,
     power_refusal,
@@ -219,8 +220,23 @@ def test_the_plan_survives_json():
 # ---------------------------------------------------------------------------
 
 def test_power_on_a_gate_without_an_analog_channel_is_refused(limits):
-    plan = _plan(channel_power_on=True, channel_power={'488 (EXC)': (100.0, 50.0)})
+    plan = _plan(channel_power_on=True, channel_power={'405 (ON)': (100.0, 50.0)})
     assert 'no analog channel' in power_refusal(plan, limits)
+
+
+@pytest.mark.parametrize('power, enabled', [
+    ({}, {}),
+    ({'488 (EXC)': (80.0, 20.0)}, {}),
+    ({'488 (EXC)': (60.0,)}, {}),
+    ({'488 (EXC)': (100.0, 100.0)}, {'488 (EXC)': True}),
+    ({}, {'488 (EXC)': False}),
+])
+def test_channel_power_round_trips_through_the_dicts(limits, power, enabled):
+    """The dicts hold every power-capable laser at every channel; what
+    comes back is the plan as normalize puts it."""
+    assert limits.gate('488 (EXC)').power_capable
+    plan = _plan(channel_power_on=True, channel_power=power, channel_power_enabled=enabled)
+    assert dicts_to_plan(*plan_to_dicts(plan, limits), limits) == normalize_plan(plan)
 
 
 def test_power_outside_0_to_100_is_refused(setup):

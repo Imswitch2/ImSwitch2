@@ -2,18 +2,18 @@
   "coverage": {
     "alias_spellings": 9,
     "constrained": 46,
-    "docs_agree": 137,
-    "docs_documented": 137,
-    "keys": 216,
+    "docs_agree": 138,
+    "docs_documented": 138,
+    "keys": 218,
     "managers": 62,
-    "none_default_only": 30,
-    "none_only": 17,
-    "optional": 154,
+    "none_default_only": 32,
+    "none_only": 18,
+    "optional": 156,
     "reads_any": 57,
     "refs": 15,
     "required": 62,
     "typed_by_code": 96,
-    "typed_with_docs": 159,
+    "typed_with_docs": 160,
     "typed_with_examples": 130,
     "uncertain": 0,
     "unresolved_reads": 3,
@@ -416,7 +416,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 3
     },
     "OxxiusCombinerLaserManager": {
@@ -672,7 +672,7 @@
         "PositionerManager"
       ],
       "overridden": false,
-      "properties": 3,
+      "properties": 4,
       "required": 3
     }
   },

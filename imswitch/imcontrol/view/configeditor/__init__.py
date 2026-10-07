@@ -1,7 +1,7 @@
 """ImSwitch Config Studio -- the visual editor for hardware setup files.
 
 Lives inside the package rather than beside it so that it ships with every
-install: imcontrol opens it from ``Tools > Edit hardware configuration...``,
+install: imcontrol opens it from ``Hardware > Edit hardware configuration...``,
 and an installed or frozen ImSwitch has no ``utility_scripts/`` directory to
 reach into. ``utility_scripts/imswitch_config_editor.py`` is kept as a
 launcher for the standalone run.

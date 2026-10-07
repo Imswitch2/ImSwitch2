@@ -471,6 +471,7 @@ def dicts_to_plan(analog: Mapping[str, Any], digital: Mapping[str, Any],
         for name, value in (digital.get('linestep_power_enabled') or {}).items()
         if name in power
     }
+    power, enabled = _canonical_power(power, enabled, len(lanes))
     return SimpleScanPlan(
         dims=tuple(dims),
         regions=regions,
@@ -551,13 +552,32 @@ def normalize_plan(plan: 'SimpleScanPlan') -> 'SimpleScanPlan':
         if step != region.step_um:
             length = snap_length_um(region.length_um, step)
         regions[name] = AxisRegion(quantize_um(region.center_um), length, step)
-    return dataclasses.replace(
+    normalized = dataclasses.replace(
         plan,
         regions=regions,
         park={name: quantize_um(value) for name, value in plan.park.items()},
         phase_delay_us=float(round(plan.phase_delay_us)),
         d3step_delay_us=float(round(plan.d3step_delay_us)),
     )
+    power, enabled = _canonical_power(
+        plan.channel_power, plan.channel_power_enabled, len(plan.channels))
+    return dataclasses.replace(normalized, channel_power=power, channel_power_enabled=enabled)
+
+
+def _canonical_power(power, enabled, steps):
+    """Channel power as the dicts store it -- one value per channel -- and
+    only for the lasers set off the defaults (full power, power control on).
+    The dicts name every power-capable laser; a plan names only those."""
+    enabled = {name: False for name, value in enabled.items() if not value}
+    power = {
+        name: tuple(_per_step(power.get(name), steps))
+        for name in list(power) + [name for name in enabled if name not in power]
+    }
+    power = {
+        name: values for name, values in power.items()
+        if name in enabled or any(v != 100.0 for v in values)
+    }
+    return power, enabled
 
 
 def log_value(position: float, low: float, high: float) -> float:

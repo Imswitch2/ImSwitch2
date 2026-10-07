@@ -49,7 +49,7 @@ except ImportError:
         def Task(*_args, **_kwargs):
             raise ImportError(
                 'nidaqmx is required for NI-DAQ hardware. '
-                'Install it with: pip install "imswitch[hardware]"'
+                'Install it with: pip install "imswitch2[hardware]"'
             )
 
     nidaqmx = _UnavailableNidaqmx()
@@ -116,7 +116,7 @@ class NidaqManager(SignalInterface):
             if hasNidaqDevices and not self.__simulating:
                 raise ImportError(
                     'nidaqmx is required for NI-DAQ hardware in this setup. '
-                    'Install it with: pip install "imswitch[hardware]"'
+                    'Install it with: pip install "imswitch2[hardware]"'
                 )
             if hasNidaqDevices:
                 self.__logger.info(
@@ -1124,8 +1124,17 @@ class NidaqManager(SignalInterface):
                 f'NI-DAQ digital write failed for {target}: {error}',
             )
 
-    def setAnalog(self, target, voltage, min_val=-1, max_val=1):
-        """Set one analog channel through a registered finite output task."""
+    @property
+    def isSimulating(self) -> bool:
+        """Whether this NI-DAQ manager is running without real hardware."""
+        return self.__simulating
+
+    def setAnalog(self, target, voltage, min_val=-1, max_val=1, *, raise_on_error=False):
+        """Set one analog channel through a registered finite output task.
+
+        Returns ``True`` on success and ``False`` when a DAQ error is handled
+        locally. With ``raise_on_error=True`` the original DAQ error is raised.
+        """
         with self._getFinalizeLock():
             self._assertResourceCreationAllowed()
             channel = self.__setupInfo.getDevice(target).getAnalogChannel()
@@ -1135,7 +1144,7 @@ class NidaqManager(SignalInterface):
         acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
         tasklen = 10
         try:
-            return self._runOneShotOutput(
+            self._runOneShotOutput(
                 'setAnalogTask',
                 lambda: self.__createChanAOTask(
                     'setAnalogTask',
@@ -1150,6 +1159,7 @@ class NidaqManager(SignalInterface):
                 ),
                 voltage * np.ones(tasklen, dtype=float),
             )
+            return True
         except (
             nidaqmx._lib.DaqNotFoundError,
             nidaqmx._lib.DaqFunctionNotSupportedError,
@@ -1159,6 +1169,9 @@ class NidaqManager(SignalInterface):
                 ('setAnalog', target, type(error).__name__, str(error)),
                 f'NI-DAQ analog write failed for {target}: {error}',
             )
+            if raise_on_error:
+                raise
+            return False
 
     def runScan(self, signalDic, scanInfoDict):
         # Serialize the complete arm transaction with finalize().  Taking only

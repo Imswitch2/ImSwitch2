@@ -3201,6 +3201,64 @@ class WriterThread(threading.Thread):
         leading.sort(key=order.__getitem__)
         return ''.join(leading) + 'YX'
 
+    #: OME letter for each storage axis or loop kind that has exactly one.
+    #: ``cycle``, ``repeat`` and ``tcspc_bin`` have none, and a frame axis
+    #: that unfolds several loops -- a camera frame stream over a raster --
+    #: has none either; both leave the naming to ``_logical_axes``.
+    _LAYOUT_AXIS_LETTERS = {
+        'detector_y': 'Y', 'detector_x': 'X',
+        'scan_y': 'Y', 'scan_x': 'X', 'scan_z': 'Z', 'plane': 'Z',
+        'condition': 'C', 'time': 'T',
+    }
+
+    @classmethod
+    def _layout_logical_axes(cls, layout, n_frames, logical_rank):
+        """The payload's axes as its acquisition layout declares them, or None.
+
+        The layout lists the stored axes in array order, so where every one
+        of them has a single OME letter the axis names are known rather than
+        guessed. ``None`` whenever that does not hold -- no layout, an axis
+        with no letter, a frame axis unfolding several loops, a rank the
+        layout does not account for, or a result not ending in ``YX`` -- and
+        the caller keeps the frame-count guess.
+        """
+        if layout is None:
+            return None
+        letters = []
+        for axis in layout.storage_axes:
+            if axis == 'frame':
+                if n_frames <= 1:
+                    continue                    # the writer's wrapper, dropped
+                unfolding = [
+                    loop for loop in layout.event_loops
+                    if loop.storage_axis is None and int(loop.count) > 1
+                ]
+                if len(unfolding) != 1:
+                    return None
+                letter = cls._LAYOUT_AXIS_LETTERS.get(unfolding[0].kind)
+            else:
+                letter = cls._LAYOUT_AXIS_LETTERS.get(axis)
+            if letter is None:
+                return None
+            letters.append(letter)
+        axes = ''.join(letters)
+        if (len(axes) != logical_rank or len(set(axes)) != len(axes)
+                or not axes.endswith('YX')):
+            return None
+        return axes
+
+    def _declared_layout(self, detectorName):
+        """This detector's recorded acquisition layout, or None."""
+        encoded = (self._attrs.get(detectorName) or {}).get(
+            'AcquisitionLayout:json'
+        )
+        if not encoded:
+            return None
+        try:
+            return decode_acquisition_layout(encoded)
+        except Exception:
+            return None
+
     def _final_payload_locators(self, payload_info):
         locators = {}
         for detectorName, info in payload_info.items():
@@ -3220,13 +3278,28 @@ class WriterThread(threading.Thread):
             logical_shape = (
                 stored_shape[1:] if remove_frame_wrapper else stored_shape
             )
-            axes = self._logical_axes(
+            guessed = self._logical_axes(
                 self._recordingMode,
                 n_frames,
                 self._scanDims,
                 len(logical_shape),
                 self._scanDrivenDetectors.get(detectorName, False),
             )
+            # The layout, where it names every axis, rather than the guess:
+            # the manifest of a tiling run takes these for each payload, and
+            # two descriptions of one array that can disagree unchecked are
+            # worse than one.
+            declared = self._layout_logical_axes(
+                self._declared_layout(detectorName), n_frames,
+                len(logical_shape),
+            )
+            axes = declared or guessed
+            if declared and declared != guessed:
+                logger.info(
+                    f'Payload axes for "{detectorName}": the acquisition layout '
+                    f'names them {declared}; the frame-count guess would have '
+                    f'said {guessed}.'
+                )
             stored_axes = f'T{axes}' if remove_frame_wrapper else axes
             if len(set(stored_axes)) != len(stored_axes):
                 raise ValueError(

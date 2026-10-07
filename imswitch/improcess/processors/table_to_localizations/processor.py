@@ -26,6 +26,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 UNITS = ("px", "nm", "um", "table")
@@ -56,6 +57,28 @@ class TableToLocalizationsProcessor(Processor):
             "pixel_size_nm": 100.0,
             "z_step_nm": 0.0,
         }
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('x_column', 'text', 'x', label='X column'),
+            ParamField('y_column', 'text', 'y', label='Y column'),
+            ParamField('z_column', 'text', '', label='Z column (optional)'),
+            ParamField('frame_column', 'text', '', label='Frame column (optional)'),
+            ParamField('photons_column', 'text', '', label='Photons column (optional)'),
+            ParamField('sigma_column', 'text', '', label='Sigma column (optional)'),
+            ParamField(
+                'unit', 'select', 'px', label='Coordinate unit',
+                options=('px', 'nm', 'um', 'table'),
+            ),
+            ParamField(
+                'pixel_size_nm', 'float', 100.0, label='Pixel size (nm)', min=0.001, max=100000,
+                decimals=3,
+            ),
+            ParamField(
+                'z_step_nm', 'float', 0.0, label='Z step (nm)', min=0, max=100000, decimals=3,
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

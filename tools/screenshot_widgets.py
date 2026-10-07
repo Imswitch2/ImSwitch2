@@ -1,4 +1,4 @@
-"""Auto-screenshot every Imswitch2 widget for the docs.
+"""Auto-screenshot every ImSwitch2 widget for the docs.
 
 Runs a headless (offscreen) Qt application, walks
 ``imswitch.imcontrol.view.widgets`` for every ``Widget`` subclass, tries
@@ -18,6 +18,14 @@ Regenerate one widget only::
 
 Pass ``--show`` to render to the real desktop instead of offscreen (use
 when you want to capture a tooltip, menu, or other transient UI).
+
+Captures use ImSwitch2's own dark style sheet, so they look like the
+running application; ``--light`` captures in the plain Qt style instead.
+Offscreen captures are rendered at twice the pixel density (``--scale 2``, the
+default), so they stay sharp on high-resolution screens; the docs show them at
+half their pixel width. With ``--show`` the density is the screen's own.
+``--out DIR`` writes somewhere other than ``docs/images/auto`` (to compare
+a run before replacing the committed images).
 
 Notes
 -----
@@ -41,8 +49,10 @@ import importlib
 import inspect
 import os
 import pkgutil
+import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -58,8 +68,32 @@ os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false")
 os.environ.setdefault("IMSWITCH_FULL_APP", "1")
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT_DIR = ROOT / "docs" / "images" / "auto"
+# Set by --out; an environment variable so the per-widget child processes
+# write to the same place.
+OUT_DIR = Path(os.environ.get("IMSWITCH_SCREENSHOT_OUT") or ROOT / "docs" / "images" / "auto")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _style_app(app) -> None:
+    """Style the capture the way ImSwitch2 styles itself.
+
+    The application applies this sheet in ``prepareApp``; a bare
+    ``QApplication`` would render the standalone widgets in the platform's
+    light style, unlike anything a user sees.  ``--light`` (via
+    ``IMSWITCH_SCREENSHOT_LIGHT``, which the child processes inherit) keeps
+    the plain style.
+    """
+    if os.environ.get("IMSWITCH_SCREENSHOT_LIGHT"):
+        return
+    from imswitch.imcommon.view.guitools.stylesheet import getBaseStyleSheet
+    app.setStyleSheet(getBaseStyleSheet())
 
 
 def _import_widget_module(modname: str):
@@ -173,8 +207,9 @@ def _populate_scan(w) -> None:
 
 
 def _populate_recording(w) -> None:
-    w.setDetectorList([("Hamamatsu Orca-Flash 4.0", "Camera0"),
-                       ("APD-PMT counter", "APD1")])
+    # {detectorName: detectorModel}, as RecordingController passes it.
+    w.setDetectorList({"Camera0": "Hamamatsu Orca-Flash 4.0",
+                       "APD1": "APD-PMT counter"})
 
 
 def _populate_settings(w) -> None:
@@ -279,12 +314,16 @@ def _populate_align_average(w) -> None:
 
 
 def _populate_align_xy(w) -> None:
-    """Push a synthetic single-axis trace."""
+    """Show a synthetic ROI projection: a spot on a noisy background.
+
+    ``ProjectionGraph.updateGraph`` takes the whole profile at once, as
+    ``AlignXYController`` passes it.
+    """
     import numpy as np
-    t = np.linspace(0, 4 * np.pi, 150)
-    series = 0.4 * np.sin(t * 1.3) + np.random.default_rng(2).standard_normal(150) * 0.05
-    for v in series:
-        w.updateGraph(float(v))
+    x = np.arange(200)
+    profile = (100 + 800 * np.exp(-((x - 110) / 12.0) ** 2)
+               + np.random.default_rng(2).standard_normal(200) * 15)
+    w.updateGraph(profile)
 
 
 def _populate_tiling(w) -> None:
@@ -302,7 +341,8 @@ def _populate_leicastand(w) -> None:
 
 
 def _populate_bftimelapse(w) -> None:
-    w.setDetectorList(["Camera0", "APD1"])
+    # {detectorName: detectorManager}; only the names are used.
+    w.setDetectorList({"Camera0": None, "APD1": None})
 
 
 def _populate_rotation_scan(w) -> None:
@@ -374,6 +414,9 @@ def _get_options():
     dict won't do.  ``optionsBasic`` is a fully populated test fixture.
     """
     from imswitch.imcontrol._test import optionsBasic
+    # WatcherWidget lists this folder when it is built; in a fresh HOME it
+    # does not exist yet.
+    os.makedirs(optionsBasic.watcher.outputFolder, exist_ok=True)
     return optionsBasic
 
 
@@ -413,12 +456,22 @@ def _grab(widget, path: Path) -> None:
         QtCore.QEventLoop.AllEvents, 200
     )
     pixmap = widget.grab()
-    pixmap.save(str(path), "PNG")
     widget.hide()
+    # Logical size: at --scale 2 an empty 22x22 frame is 44x44 pixels.
+    ratio = pixmap.devicePixelRatio() or 1
+    width, height = pixmap.width() / ratio, pixmap.height() / ratio
+    if width < 32 or height < 32:
+        # A widget whose content its controller adds renders as an empty
+        # frame of a few pixels; a blank image is worse than none.
+        raise RuntimeError(
+            f"empty capture ({width:g}x{height:g}): its content is "
+            "added by the controller; use --mock-setup for a populated one"
+        )
+    pixmap.save(str(path), "PNG")
 
 
 def _capture_mock_setup(setup_name: str) -> int:
-    """Spin up the full Imswitch2 main view with a mock setup and grab every dock.
+    """Spin up the full ImSwitch2 main view with a mock setup and grab every dock.
 
     Uses the same ``prepareUI`` helper as the UI tests, so each widget is
     constructed with its controller wired up: laser rows are populated
@@ -439,21 +492,36 @@ def _capture_mock_setup(setup_name: str) -> int:
     setup = ViewSetupInfo.from_json(setup_path.read_text())
 
     app = getApp()
+    # Nobody is there to answer a modal: a restore warning at start-up or the
+    # "save widget state?" question on close would stall the pass until its
+    # timeout. Answer No, which also keeps the mock session out of the saved
+    # state.
+    def _no(*_args, **_kwargs):
+        return QtWidgets.QMessageBox.No
+
+    for dialog in ("question", "warning", "information", "critical"):
+        setattr(QtWidgets.QMessageBox, dialog, staticmethod(_no))
     main_view = prepareUI(optionsBasic, setup)
 
-    main_view.resize(1400, 900)
+    # A common full-HD screen, so the docks get the room they would have in use.
+    main_view.resize(1920, 1080)
     main_view.show()
     QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 500)
     # Let any deferred painting / napari init settle.
     QtCore.QThread.msleep(200)
     QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 500)
+    # Size the panels for what they now hold, as Tools -> Reset panel layout
+    # does: before the window was shown they were empty and asked for little.
+    if hasattr(main_view, "resetDockLayout"):
+        main_view.resetDockLayout()
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 500)
 
     successes = failures = 0
 
     # 1) the whole window
     try:
         main_view.grab().save(str(OUT_DIR / "mock-main-window.png"), "PNG")
-        print(f"  wrote {(OUT_DIR / 'mock-main-window.png').relative_to(ROOT)}")
+        print(f"  wrote {_display_path(OUT_DIR / 'mock-main-window.png')}")
         successes += 1
     except Exception as exc:  # noqa: BLE001
         print(f"  skip mock-main-window: {type(exc).__name__}: {exc}")
@@ -469,7 +537,7 @@ def _capture_mock_setup(setup_name: str) -> int:
             if pix.isNull() or pix.width() < 4 or pix.height() < 4:
                 raise RuntimeError("empty pixmap (widget may be hidden inside a tab)")
             pix.save(str(path), "PNG")
-            print(f"  wrote {path.relative_to(ROOT)}")
+            print(f"  wrote {_display_path(path)}")
             successes += 1
         except Exception as exc:  # noqa: BLE001
             print(f"  skip mock-{key}: {type(exc).__name__}: {exc}")
@@ -479,7 +547,7 @@ def _capture_mock_setup(setup_name: str) -> int:
 
     main_view.close()
     app.processEvents()
-    print(f"\nMock-setup done: {successes} written, {failures} skipped → {OUT_DIR.relative_to(ROOT)}")
+    print(f"\nMock-setup done: {successes} written, {failures} skipped → {_display_path(OUT_DIR)}")
     return 0 if failures == 0 else 1
 
 
@@ -489,6 +557,11 @@ def _capture_one(name: str) -> int:
     from qtpy import QtWidgets
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    _style_app(app)
+    # In the application ImConMainView has imported this submodule before any
+    # widget is built, and SLMWidget relies on that (it uses pg.dockarea
+    # after importing only pyqtgraph); import it here to match.
+    import pyqtgraph.dockarea  # noqa: F401
 
     target = None
     for cand_name, cls in _discover_widget_classes():
@@ -506,7 +579,7 @@ def _capture_one(name: str) -> int:
         _grab(widget, out)
         widget.deleteLater()
         app.processEvents()
-        print(f"  wrote {out.relative_to(ROOT)}")
+        print(f"  wrote {_display_path(out)}")
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"  skip {name}: {type(exc).__name__}: {exc}")
@@ -556,7 +629,7 @@ def main() -> int:
         nargs="?",
         const="example_no_hardware.json",
         help=(
-            "Also launch Imswitch2 with the given mock setup file "
+            "Also launch ImSwitch2 with the given mock setup file "
             "(default: example_no_hardware.json) and screenshot every "
             "populated dock as docs/images/auto/mock-<dock>.png."
         ),
@@ -566,15 +639,50 @@ def main() -> int:
         action="store_true",
         help="Skip per-widget capture; only run --mock-setup.",
     )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=2.0,
+        metavar="FACTOR",
+        help="Pixel density of offscreen captures (default 2: sharp on "
+             "high-resolution screens). Ignored with --show, which uses the "
+             "screen's own density.",
+    )
+    parser.add_argument(
+        "--light",
+        action="store_true",
+        help="Capture in the plain Qt style instead of ImSwitch2's dark style sheet.",
+    )
+    parser.add_argument(
+        "--out",
+        metavar="DIR",
+        help="Write the images to DIR instead of docs/images/auto.",
+    )
     args = parser.parse_args()
 
     if args.show:
         os.environ.pop("QT_QPA_PLATFORM", None)
+    elif args.scale and args.scale != 1 and not (args.single or args.single_mock):
+        # Before any QApplication exists; the child processes inherit it.
+        os.environ["QT_SCALE_FACTOR"] = f"{args.scale:g}"
+    if args.light:
+        os.environ["IMSWITCH_SCREENSHOT_LIGHT"] = "1"
+    if args.out:
+        global OUT_DIR
+        OUT_DIR = Path(args.out).resolve()
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        os.environ["IMSWITCH_SCREENSHOT_OUT"] = str(OUT_DIR)
 
     if args.single:
         return _capture_one(args.single)
     if args.single_mock:
-        return _capture_mock_setup(args.single_mock)
+        rc = _capture_mock_setup(args.single_mock)
+        # Every image is on disk. napari/vispy teardown at interpreter exit
+        # can segfault, which would turn a good pass into a failed one, so
+        # leave without it.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(rc)
 
     mock_rc = 0
     if args.mock_setup or args.mock_only:
@@ -584,14 +692,25 @@ def main() -> int:
         cmd = [sys.executable, str(Path(__file__).resolve()), "--single-mock", setup_name]
         if args.show:
             cmd.append("--show")
+        env = os.environ.copy()
+        # A throwaway ImSwitchConfig, so the capture does not depend on (or
+        # restore) the widget state saved on this computer. Windows resolves
+        # the folder from Documents, not HOME, and keeps the real one.
+        scratch_home = None
+        if os.name != "nt":
+            scratch_home = tempfile.mkdtemp(prefix="imswitch-screenshots-")
+            env["HOME"] = scratch_home
         try:
-            proc = subprocess.run(cmd, env=os.environ.copy(), timeout=120)
+            proc = subprocess.run(cmd, env=env, timeout=120)
             mock_rc = proc.returncode if proc.returncode >= 0 else 1
             if proc.returncode < 0:
                 print(f"  mock setup: child killed by signal {-proc.returncode}")
         except subprocess.TimeoutExpired:
             print("  mock setup: timeout after 120s")
             mock_rc = 1
+        finally:
+            if scratch_home:
+                shutil.rmtree(scratch_home, ignore_errors=True)
         if args.mock_only:
             return mock_rc
 
@@ -602,6 +721,7 @@ def main() -> int:
         from qtpy import QtWidgets
 
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+        _style_app(app)
         successes = failures = 0
         for name in names:
             rc = _capture_one(name)
@@ -610,7 +730,7 @@ def main() -> int:
             else:
                 failures += 1
         app.processEvents()
-        print(f"\nDone: {successes} written, {failures} skipped → {OUT_DIR.relative_to(ROOT)}")
+        print(f"\nDone: {successes} written, {failures} skipped → {_display_path(OUT_DIR)}")
         return 0 if failures == 0 else 1
 
     # Subprocess-per-widget: isolates crashes (SIGSEGV from OpenGL contexts
@@ -638,7 +758,7 @@ def main() -> int:
         else:
             failures += 1
 
-    print(f"\nDone: {successes} written, {failures} skipped → {OUT_DIR.relative_to(ROOT)}")
+    print(f"\nDone: {successes} written, {failures} skipped → {_display_path(OUT_DIR)}")
     return 0 if (failures == 0 and mock_rc == 0) else 1
 
 

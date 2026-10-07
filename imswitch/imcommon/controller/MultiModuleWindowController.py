@@ -65,8 +65,10 @@ class MultiModuleWindowController(WidgetController):
         ostools.openFolderInOS(dirtools.UserFileDirs.Root)
 
     def showDocs(self):
-        """ Opens the ImSwitch documentation in a web browser. """
-        webbrowser.open(f'https://imswitch.readthedocs.io/en/v{imswitch.__version__}/')
+        """ Opens the ImSwitch2 documentation in a web browser. """
+        # The docs folder on GitHub until ImSwitch2 has a Read the Docs
+        # project; then its /en/stable/. imswitch.readthedocs.io is upstream's.
+        webbrowser.open(f'https://github.com/{imswitch.__github_repo__}/tree/main/docs')
 
     def checkUpdates(self):
         """ Checks if there are any updates to ImSwitch available and notifies

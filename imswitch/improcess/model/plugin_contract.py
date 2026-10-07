@@ -162,9 +162,14 @@ def check_plugin_contract(plugin_cls, parent=None) -> list[str]:
         def test_contract(qapp):
             assert check_plugin_contract(MyProcessor) == []
 
-    Needs a Qt application, like any widget. Returns the problems; an empty
-    list means the contract holds. Also records the outcome on the class.
+    Needs a Qt application, like any widget. Returns the problems -- the
+    widget's disagreements with ``default_params()`` and the field spec's
+    (:func:`~imswitch.improcess.model.param_spec.spec_problems`); an empty
+    list means the contract holds. Also records the widget outcome on the
+    class.
     """
+    from imswitch.improcess.model.param_spec import spec_problems
+
     plugin = plugin_cls()
     if parent is None:
         from qtpy import QtWidgets
@@ -174,8 +179,13 @@ def check_plugin_contract(plugin_cls, parent=None) -> list[str]:
     if widget is None:
         # A plugin driven from a widget it does not own (legacy MoNaLISA):
         # only the declaration itself can be checked.
-        return [] if has_param_contract(plugin_cls) else ["default_params is not overridden"]
-    return record_widget_check(plugin, widget)
+        problems = [] if has_param_contract(plugin_cls) else ["default_params is not overridden"]
+    else:
+        problems = record_widget_check(plugin, widget)
+    # The field spec is Qt-free, but it is part of the same contract: a
+    # declared choice list or bound that contradicts the defaults is as
+    # misleading to a form as a widget that contradicts them.
+    return [*problems, *spec_problems(plugin_cls)]
 
 
 def _same(a: Any, b: Any) -> bool:

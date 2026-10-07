@@ -8,7 +8,7 @@
       ]
     },
     "digitalPorts": {
-      "description": "COM ports to connect to; only the first is used.  **Required**.",
+      "description": "COM ports to connect to.  Several ports gang several lasers behind one manager, as for ``Cobolt0601LaserManager``.  **Required**.",
       "x-imswitch-kind": "array",
       "x-imswitch-source": [
         "code:required",

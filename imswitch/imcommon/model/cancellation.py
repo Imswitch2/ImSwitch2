@@ -204,6 +204,26 @@ def checkpoint():
         token.checkpoint()
 
 
+def interruptThread(threadIdent, exception=OperationCancelled):
+    """Raise ``exception`` asynchronously in the thread ``threadIdent``, at its
+    next bytecode. Returns whether the injection was accepted.
+
+    The escalation for a run that never reaches a cooperative checkpoint (a
+    user's loop): it cannot interrupt a long call into C code, which ends
+    first. If more than one thread state matched, the injection is undone, so
+    it can never poison another thread.
+    """
+    import ctypes
+
+    accepted = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+        ctypes.c_ulong(threadIdent), ctypes.py_object(exception)
+    )
+    if accepted > 1:
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(threadIdent), None)
+        return False
+    return accepted == 1
+
+
 def cancellableSleep(seconds, pollIntervalS=0.05):
     """Sleep in slices, honouring the current cancel token."""
     deadline = time.monotonic() + max(0.0, float(seconds))

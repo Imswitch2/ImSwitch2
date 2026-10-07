@@ -196,6 +196,16 @@
       "opts": []
     },
     {
+      "key": "logPanel",
+      "label": "Show log panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Open the ImProcess Log dock at startup. The panel is always available from View > Log; this only decides whether it starts open. Worth enabling for a standalone bundle, which has no console behind it.",
+      "opts": []
+    },
+    {
       "key": "smlmRenderPanel",
       "label": "Show SMLM render controls",
       "type": "bool",
@@ -212,28 +222,36 @@
       "default": false,
       "req": false,
       "grp": "Viewer",
-      "tip": "Draw SMLM localization results as GPU-rendered summed Gaussians (napari-storm) instead of the built-in low-resolution histogram preview. Requires the optional 'storm' extra: pip install imswitch[storm]. Without it this setting has no effect and results keep the preview.",
+      "tip": "Draw SMLM localization results as GPU-rendered summed Gaussians (napari-storm) instead of the built-in low-resolution histogram preview. Requires the optional 'storm' extra: pip install imswitch2[storm]. Without it this setting has no effect and results keep the preview.",
       "opts": []
     },
     {
       "key": "reconstructors",
       "label": "Reconstructors",
       "type": "multiselect",
-      "default": ["view-only"],
+      "default": [
+        "view-only"
+      ],
       "req": true,
       "grp": "Plugins",
       "tip": "Built-in reconstructor plugin IDs to register for this setup. Select 'monalisa' for MoNaLISA, including the live fast-Gauss path.",
-      "opts": ["__improcess_reconstructors__"]
+      "opts": [
+        "__improcess_reconstructors__"
+      ]
     },
     {
       "key": "processors",
       "label": "Processors",
       "type": "multiselect",
-      "default": ["drift-correct"],
+      "default": [
+        "drift-correct"
+      ],
       "req": false,
       "grp": "Plugins",
       "tip": "Built-in processor plugin IDs to register for this setup. Leave empty to disable processors.",
-      "opts": ["__improcess_processors__"]
+      "opts": [
+        "__improcess_processors__"
+      ]
     }
   ]
 }

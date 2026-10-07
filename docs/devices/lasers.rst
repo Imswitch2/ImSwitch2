@@ -2,12 +2,21 @@
 Lasers — reference
 ********************
 
-This page documents every ``LaserManager`` implementation in ImSwitch.
+This page documents the ``LaserManager`` implementations in ImSwitch2.
 For each manager you get the setup-file JSON it expects, field-by-field,
-plus any required low-level managers and vendor libraries.
+plus any required low-level managers and vendor libraries.  Six managers
+have no card here yet: ``ESP32LEDMatrixManager``,
+``ESP32LightSheetManager``, ``GRBLLaserManager``, ``OxxiusLaserManager``,
+``OxxiusCombinerLaserManager`` and ``TriggerScopeLaserManager``.
 
 For the manager-writing-side perspective see
 :doc:`/adding-device-support`.
+
+**Vendor libraries.**  The ``hardware`` extra (``pip install -e
+".[hardware]"``, see :doc:`../installation`) installs ``pyvisa`` /
+``pyvisa-py``, which the RS-232 devices and the bundled Cobolt 06-01 driver
+use, plus ``nidaqmx`` and ``microscope`` (for
+``PyMicroscopeLaserManager``).  ``pyserial`` is a core dependency.
 
 
 How lasers are configured
@@ -15,7 +24,7 @@ How lasers are configured
 
 Lasers live under the top-level ``"lasers"`` dict in your setup JSON.
 Each entry deserialises into a
-:class:`~imswitch.imcontrol.model.SetupInfo.LaserInfo`, which extends
+``LaserInfo`` (``imswitch.imcontrol.model.SetupInfo``), which extends
 the generic ``DeviceInfo`` with laser-specific fields:
 
 * ``analogChannel`` — analog output identifier (NI-DAQ string or
@@ -27,6 +36,11 @@ the generic ``DeviceInfo`` with laser-specific fields:
 * ``valueRangeStep`` — UI step size (default ``1.0``).
 * ``freqRangeMin`` / ``freqRangeMax`` / ``freqRangeInit`` — optional
   frequency-modulation range (defaults ``0``).
+* ``powerDevice`` — name of another laser entry that sets this one's
+  power, for a beam path where the gate and the power are separate
+  hardware (a TTL-gated line whose power an AOTF channel sets, for
+  example).  A scan that gates this laser switches that device on for its
+  duration.  Default ``null``: the entry owns both gate and power.
 
 Which of these a manager actually consumes depends on the manager —
 each section below lists its "LaserInfo fields used".
@@ -39,11 +53,14 @@ Every laser manager accepts ``calibCsvPath`` in its ``managerProperties``
 present the laser widget becomes a 0–100 % setpoint instead of the raw
 ``valueRangeMin``–``valueRangeMax`` range: ``LaserController`` asks
 ``usesCalibrationLookup()``, which is true whenever the key is set.
-``AAAOTFLaserManager`` and ``NidaqLaserManager`` read the file itself — a
-two-column CSV of ``raw, measured`` power — and map the percentage onto
-the raw range through it.  A manager that does not read the file still
-switches its widget to percent when the key is set, so only set it for a
-manager that implements the lookup.
+``AAAOTFLaserManager`` and ``NidaqLaserManager`` read the file itself
+with ``numpy.loadtxt``: two columns, raw value then measured power, one
+pair per line, separated by **whitespace** (a comma-separated file does not
+load; lines starting with ``#`` are ignored).  The measured column is
+rescaled so that its minimum is 0 % and its maximum 100 %, and the
+percentage is mapped onto the raw range through it.  A manager that does
+not read the file still switches its widget to percent when the key is
+set, so only set it for a manager that implements the lookup.
 
 .. code-block:: json
 
@@ -69,10 +86,12 @@ Choosing between Cobolt variants
 
 Four Cobolt-family managers coexist for historical reasons; pick one:
 
-* ``Cobolt0601LaserManager`` — Lantz-based.  Uses the
-  ``cobolt.cobolt0601.Cobolt0601_f2`` Lantz driver via
-  ``LantzLaserManager``.  Drives APC and modulation modes through raw
-  SCPI strings (``cp``, ``em``, ``slmp``, ``sdmes``).
+* ``Cobolt0601LaserManager`` — uses the bundled Cobolt 06-01 driver
+  ``cobolt.cobolt0601.Cobolt0601_f2`` from
+  ``imswitch.imcontrol.model.lantzdrivers`` via ``LantzLaserManager``.
+  Despite the package name the driver has no Lantz dependency; it talks
+  over ``pyvisa`` through ``RS232Driver``.  Drives APC and modulation
+  modes through raw SCPI strings (``cp``, ``em``, ``slmp``, ``sdmes``).
 * ``Cobolt0601NewLaserManager`` — pyserial-based.  Talks to the
   in-tree ``PyCoboltManager`` (``Cobolt06`` class) which wraps
   ``pyserial`` directly.  Has an explicit mock fallback to
@@ -155,12 +174,14 @@ filter, controlled over RS232.
      - *(unset)*
      - Optional path to a 2-column CSV (raw, measured).  If present, a
        LUT is built and ``valueUnits`` switches from ``"arb"`` to ``"%"``.
+       The columns are whitespace-separated; see *Power calibration file*
+       above.
    * - ``useMockOnFailure``
      - bool
      - ``true``
      - When the controller does not answer the startup commands (a pyvisa
        timeout, say), send a best-effort channel OFF and continue with this
-       channel in mock mode instead of aborting ImSwitch. Set to ``false``
+       channel in mock mode instead of aborting ImSwitch2. Set to ``false``
        when a missing AOTF must be a startup error. Configuration errors
        abort startup either way.
 
@@ -184,15 +205,16 @@ cannot be opened at all, and this manager enters mock mode (see
 
 **Source**
 
-`AAAOTFLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py>`_
+`AAAOTFLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py>`_
 
 
 Cobolt0601LaserManager
 ======================
 
-Cobolt 06-01 series lasers via the Lantz driver
-``cobolt.cobolt0601.Cobolt0601_f2``.  Inherits from
-``LantzLaserManager``.  Uses digital modulation mode for scans.
+Cobolt 06-01 series lasers via the bundled driver
+``cobolt.cobolt0601.Cobolt0601_f2`` (in
+``imswitch.imcontrol.model.lantzdrivers``; no Lantz dependency).  Inherits
+from ``LantzLaserManager``.  Uses digital modulation mode for scans.
 
 **Setup JSON**
 
@@ -237,22 +259,26 @@ None.
 
 **Vendor library**
 
-``imswitch.imcontrol.model.interfaces.lantzlasers.LantzLaser`` wrapping
-the Lantz ``cobolt.cobolt0601.Cobolt0601_f2`` driver (imported at
-module top level in ``LantzLaserManager``).  No in-manager mock
-fallback — failures propagate.
+``imswitch.imcontrol.model.interfaces.lantzlasers.LantzLaser`` (imported
+at module top level in ``LantzLaserManager``) wrapping the bundled
+``Cobolt0601_f2`` driver from
+``imswitch.imcontrol.model.lantzdrivers.cobolt.cobolt0601``, which uses
+``pyvisa`` through ``RS232Driver``.  If the driver cannot be imported or
+the laser does not initialise, ``getLaser`` logs a warning and loads the
+mock ``Cobolt0601_f2`` from ``imswitch.imcontrol.model.lantzdrivers_mock``
+instead; the error propagates only if the mock fails too.
 
 **Source**
 
-`Cobolt0601LaserManager.py <../../imswitch/imcontrol/model/managers/lasers/Cobolt0601LaserManager.py>`_
+`Cobolt0601LaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/Cobolt0601LaserManager.py>`_
 
 
 Cobolt0601NewLaserManager
 =========================
 
 Cobolt 06-01 series lasers via the in-tree pyserial driver
-(``PyCoboltManager.Cobolt06``).  Independent of Lantz.  Has an explicit
-mock fallback.
+(``PyCoboltManager.Cobolt06``).  Independent of the ``lantzdrivers``
+package.  Has an explicit mock fallback.
 
 **Setup JSON**
 
@@ -290,7 +316,7 @@ mock fallback.
    * - ``useMockOnFailure``
      - bool
      - Defaults to ``true``. When the configured port cannot be opened, start
-       with ``MockCobolt06`` instead of aborting ImSwitch startup. Set it to
+       with ``MockCobolt06`` instead of aborting ImSwitch2 startup. Set it to
        ``false`` for a hardware-required setup where a missing laser must be
        reported as an error.
    * - ``simulation``
@@ -368,7 +394,7 @@ for headless operation.
 
 **Source**
 
-`Cobolt0601NewLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py>`_
+`Cobolt0601NewLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py>`_
 
 
 CoboltLaserManager
@@ -395,7 +421,7 @@ Inherited verbatim from ``Cobolt0601LaserManager``:
      - Meaning
    * - ``digitalPorts``
      - list[str]
-     - COM ports to connect to; only the first is used.  **Required**.
+     - COM ports to connect to.  Several ports gang several lasers behind one manager, as for ``Cobolt0601LaserManager``.  **Required**.
 
 **LaserInfo fields used**
 
@@ -407,11 +433,12 @@ None.
 
 **Vendor library**
 
-Same as ``Cobolt0601LaserManager`` (Lantz ``cobolt.cobolt0601.Cobolt0601_f2``).
+Same as ``Cobolt0601LaserManager`` (bundled ``cobolt.cobolt0601.Cobolt0601_f2``
+driver, with the mock driver as fallback).
 
 **Source**
 
-`CoboltLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py>`_
+`CoboltLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py>`_
 
 
 CoolLEDLaserManager
@@ -462,6 +489,8 @@ channel (A–H) over RS232.
 * ``freqRangeMin``, ``freqRangeMax``, ``freqRangeInit`` — if all three
   are non-``null``, the manager declares itself ``isModulated=True``
   (the modulation getters/setters are otherwise inherited base no-ops).
+  They default to ``0``, not ``null``, so an entry that leaves them out is
+  modulated; set one of them to ``null`` explicitly to turn modulation off.
 * Standard base-class fields.
 
 **Low-level dependencies**
@@ -477,7 +506,7 @@ enters its own mock mode and silently drops commands.
 
 **Source**
 
-`CoolLEDLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py>`_
+`CoolLEDLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py>`_
 
 
 ESP32LEDLaserManager
@@ -532,8 +561,9 @@ interface.
 
 * ``rs232sManager[<rs232device>]`` — the manager calls
   ``_rs232manager._squid.set_laser(channel, power)`` on this object.
-  The RS232 sub-manager therefore must expose a ``_squid`` attribute
-  with a ``set_laser`` method.
+  Only a ``SQUIDManager`` RS-232 device has a ``_squid`` attribute; an
+  ``ESP32Manager`` device exposes ``_esp32`` instead, so with one of those
+  the first ``setEnabled`` / ``setValue`` fails with ``AttributeError``.
 
 **Vendor library**
 
@@ -543,35 +573,31 @@ the RS232 lookup fails, the manager enters mock mode and drops
 
 **Source**
 
-`ESP32LEDLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py>`_
+`ESP32LEDLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py>`_
 
 
 LEDMatrixManager
 ================
 
-**Abstract base class** for LED-matrix managers.  Despite the name in
-the file list, ``LEDMatrixManager`` is *not* itself a ``LaserManager``
-subclass and is not directly instantiable — it defines the ABC that
-concrete LED-matrix managers (e.g. external implementations) must
-implement.  It mirrors the ``LaserManager`` shape on an ``LEDMatrixInfo``
-dataclass.
+**Unused legacy abstract base class.**  ``LEDMatrixManager`` mirrors the
+``LaserManager`` shape but is not a ``LaserManager`` subclass, and nothing
+in the tree subclasses it.  There is no ``LEDMatrixInfo`` dataclass and no
+``"leds"`` setup section: ``LEDMatrixInfo`` is only the name of its
+constructor argument.  The bundled ``ESP32LEDMatrixManager`` subclasses
+``LaserManager``, not this class.  Naming ``LEDMatrixManager`` as a
+``managerName`` fails, because it is abstract.
 
 **Setup JSON**
 
-Not applicable directly.  Concrete subclasses (none currently bundled
-in ``model/managers/lasers/``) would use the ``"leds"`` / matrix entry
-shape consumed by ``LEDMatrixInfo``.
+Not applicable.
 
 **managerProperties**
 
-None at the abstract level — defined per concrete subclass.
+None.
 
 **LaserInfo fields used**
 
-None.  Instead, the base reads ``LEDMatrixInfo.wavelength``,
-``valueRangeMin``, ``valueRangeMax``, ``valueRangeStep``, and (when
-``isModulated`` is set) ``freqRangeMin``, ``freqRangeMax``,
-``freqRangeInit``.
+Not applicable.
 
 **Low-level dependencies**
 
@@ -583,32 +609,27 @@ None.
 
 **Source**
 
-`LEDMatrixManager.py <../../imswitch/imcontrol/model/managers/lasers/LEDMatrixManager.py>`_
+`LEDMatrixManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/LEDMatrixManager.py>`_
 
 
 LantzLaserManager
 =================
 
-**Base class** for fully-digital lasers driven through a Lantz driver
-(``cobolt.cobolt0601.Cobolt0601_f2`` etc.).  Concrete managers
-(e.g. ``Cobolt0601LaserManager``) supply the ``driver`` argument.  Can
-be used directly if a setup needs a generic Lantz-backed laser.
+**Base class** for fully-digital lasers driven through a driver from
+``imswitch.imcontrol.model.lantzdrivers`` — today only the bundled Cobolt
+06-01 driver ``cobolt.cobolt0601.Cobolt0601_f2``.  The package name is
+historical: there is no Lantz dependency.  Concrete managers
+(``Cobolt0601LaserManager``) supply ``isBinary``, ``valueUnits``,
+``valueDecimals`` and the ``driver`` argument, and implement
+``setEnabled`` / ``setValue``.
 
 **Setup JSON**
 
-.. code-block:: json
-
-    "lasers": {
-        "GenericLantz": {
-            "managerName": "LantzLaserManager",
-            "managerProperties": {
-                "digitalPorts": ["COM4"]
-            },
-            "wavelength": 488,
-            "valueRangeMin": 0,
-            "valueRangeMax": 100
-        }
-    }
+Not applicable: ``LantzLaserManager`` cannot be named as a
+``managerName``.  The setup loader passes only the device info, the name
+and the low-level managers, and the class leaves the base class's abstract
+methods unimplemented.
+Use a concrete subclass such as ``Cobolt0601LaserManager``.
 
 **managerProperties**
 
@@ -641,11 +662,14 @@ None.
 
 ``imswitch.imcontrol.model.interfaces.lantzlasers.LantzLaser``
 (top-level import).  Driver module names are passed as strings (e.g.
-``'cobolt.cobolt0601.Cobolt0601_f2'``).  No mock fallback at this layer.
+``'cobolt.cobolt0601.Cobolt0601_f2'``).  ``getLaser`` in that module loads
+the named driver from ``lantzdrivers`` and, when the driver is missing or
+fails to initialise, logs a warning and loads the matching mock from
+``lantzdrivers_mock``.
 
 **Source**
 
-`LantzLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py>`_
+`LantzLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py>`_
 
 
 MPBLaserManager
@@ -712,9 +736,10 @@ schema — fields below are derived from the constructor.
 
 **LaserInfo fields used**
 
-* Standard base-class fields only.  Min/max power are read from the
-  laser itself (``GETPOWERSETPTLIM 0``) at startup, not from
-  ``valueRangeMin``/``Max``.
+* Standard base-class fields only.  The power widget's range comes from
+  ``valueRangeMin`` / ``valueRangeMax`` as usual; the laser's own setpoint
+  limits, read at startup with ``GETPOWERSETPTLIM 0``, apply on top of it:
+  every setpoint is clipped to them before it is sent.
 
 **Low-level dependencies**
 
@@ -736,7 +761,7 @@ setpoint reached by a graceful ramp.
 
 **Source**
 
-`MPBLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py>`_
+`MPBLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py>`_
 
 
 NidaqLaserManager
@@ -775,6 +800,8 @@ Lasers controlled by an NI-DAQ board's analog and/or digital outputs.
      - *(unset)*
      - Optional path to a 2-column calibration CSV.  When present, a
        LUT is built and ``valueUnits`` switches from ``"V"`` to ``"%"``.
+       The columns are whitespace-separated; see *Power calibration file*
+       above.
 
 Otherwise the manager takes **no managerProperties** — the class
 docstring explicitly says "Manager properties: None".  Wiring comes
@@ -800,7 +827,7 @@ None directly.  All NI-DAQmx traffic goes through the
 
 **Source**
 
-`NidaqLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/NidaqLaserManager.py>`_
+`NidaqLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/NidaqLaserManager.py>`_
 
 
 PulseGeneratorLaserManager
@@ -860,15 +887,18 @@ wired.
 
 **Source**
 
-`PulseGeneratorLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/PulseGeneratorLaserManager.py>`_
+`PulseGeneratorLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/PulseGeneratorLaserManager.py>`_
 
 
 PulseStreamerLaserManager
 =========================
 
-Swabian Pulse Streamer 8/2.  Predecessor of
-``PulseGeneratorLaserManager`` — drives a single PulseStreamer's
-digital and analog outputs directly.
+Swabian Pulse Streamer 8/2.  **Legacy.**  This manager expects a
+``pulseStreamerManager`` low-level manager, which ``MasterController`` no
+longer constructs, so it always starts in mock mode (with a warning) and
+drops every call.  Setup validation also flags a ``pulseStreamer`` section
+as legacy.  Use ``PulseGeneratorLaserManager`` with a pulse-generator
+backend instead.
 
 **Setup JSON**
 
@@ -903,17 +933,18 @@ None.  The class docstring lists ``digitalChannel`` /
 **Low-level dependencies**
 
 * ``pulseStreamerManager`` — accessed as
-  ``lowLevelManagers["pulseStreamerManager"]``.  If lookup fails the
-  manager enters mock mode and silently drops calls.
+  ``lowLevelManagers["pulseStreamerManager"]``.  It is never provided, so
+  the lookup fails and the manager enters mock mode and silently drops
+  calls.
 
 **Vendor library**
 
-None directly — uses the PulseStreamer low-level manager.  Mock
-fallback when the manager lookup raises.
+None directly — it would use the PulseStreamer low-level manager, which
+is not constructed (see above).
 
 **Source**
 
-`PulseStreamerLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py>`_
+`PulseStreamerLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py>`_
 
 
 PyCoboltManager
@@ -944,14 +975,13 @@ None.
 
 **Vendor library**
 
-``pyserial`` — imported lazily inside ``CoboltLaser.connect`` and
-``send_cmd`` (so ImSwitch remains importable without ``pyserial``
-installed; the error message instructs the user to
-``pip install pyserial``).  No mock fallback within this module.
+``pyserial`` (a core dependency of ImSwitch2) — imported lazily inside
+``CoboltLaser.connect`` and ``send_cmd``.  No mock fallback within this
+module.
 
 **Source**
 
-`PyCoboltManager.py <../../imswitch/imcontrol/model/managers/lasers/PyCoboltManager.py>`_
+`PyCoboltManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/PyCoboltManager.py>`_
 
 
 PyMicroscopeLaserManager
@@ -1025,4 +1055,4 @@ any import or construction failure the manager enters mock mode
 
 **Source**
 
-`PyMicroscopeLaserManager.py <../../imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py>`_
+`PyMicroscopeLaserManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py>`_

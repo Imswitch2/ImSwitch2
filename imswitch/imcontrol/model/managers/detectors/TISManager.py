@@ -13,7 +13,10 @@ class TISManager(DetectorManager):
     - ``cameraListIndex`` -- the camera's index in the TIS camera list (list
       indexing starts at 0); set this string to an invalid value, e.g. the
       string "mock" to load a mocker
-    - ``tis`` -- dictionary of TIS camera properties
+    - ``tis`` -- dictionary of TIS camera properties. Only ``image_width``
+      and ``image_height`` are used. ``exposure``, ``gain`` and ``brightness``
+      are not applied at startup: the camera keeps its own settings, and the
+      parameters show what it reports
     - ``cameraPixelSizeUm`` -- optically effective (sample-plane) pixel size in
       micrometers, i.e. physical sensor pitch divided by total optical
       magnification. Exposed at runtime as the 'Camera pixel size' detector
@@ -29,22 +32,38 @@ class TISManager(DetectorManager):
         self._adjustingParameters = False
         self.__image = None
 
+        notApplied = []
         for propertyName, propertyValue in detectorInfo.managerProperties['tis'].items():
+            if propertyName in self._CAMERA_PROPERTIES:
+                # These never reached the camera before (CameraTIS assigned
+                # them to the wrong object), so shipped setups carry
+                # placeholder zeros here. Applying them now would start the
+                # camera at minimum exposure.
+                notApplied.append(propertyName)
+                continue
             self._camera.setPropertyValue(propertyName, propertyValue)
+        if notApplied:
+            self.__logger.info(
+                f'Not applying startup {", ".join(notApplied)} from '
+                f'managerProperties["tis"]; the camera keeps its current settings.'
+            )
 
         fullShape = (self._camera.getPropertyValue('image_width'),
                      self._camera.getPropertyValue('image_height'))
 
         self.crop(hpos=0, vpos=0, hsize=fullShape[0], vsize=fullShape[1])
 
-        # Prepare parameters
+        # Prepare parameters, starting from what the camera reports
         parameters = {
-            'exposure': DetectorNumberParameter(group='Misc', value=100, valueUnits='ms',
-                                                editable=True),
-            'gain': DetectorNumberParameter(group='Misc', value=1, valueUnits='arb.u.',
-                                            editable=True),
-            'brightness': DetectorNumberParameter(group='Misc', value=1, valueUnits='arb.u.',
-                                                  editable=True),
+            'exposure': DetectorNumberParameter(
+                group='Misc', value=self._readCameraProperty('exposure', 100),
+                valueUnits='ms', editable=True),
+            'gain': DetectorNumberParameter(
+                group='Misc', value=self._readCameraProperty('gain', 1),
+                valueUnits='arb.u.', editable=True),
+            'brightness': DetectorNumberParameter(
+                group='Misc', value=self._readCameraProperty('brightness', 1),
+                valueUnits='arb.u.', editable=True),
             'Camera pixel size': DetectorManager.makeCameraPixelSizeParameter(
                 detectorInfo
             ),
@@ -53,7 +72,7 @@ class TISManager(DetectorManager):
         # Prepare actions
         actions = {
             'More properties': DetectorAction(group='Misc',
-                                              func=self._camera.openPropertiesGUI)
+                                              func=self.openPropertiesDialog)
         }
 
         super().__init__(detectorInfo, name, fullShape=fullShape, supportedBinnings=[1],
@@ -91,12 +110,28 @@ class TISManager(DetectorManager):
         contain a key with the specified parameter name, an error will be
         raised."""
 
+        if name in self._CAMERA_PROPERTIES:
+            # The camera clamps to its range (and rounds gain/brightness to
+            # integer device units): keep what it reports, not the request.
+            # A rejected write raises before the parameter changes.
+            value = self._camera.setPropertyValue(name, value)
+
         super().setParameter(name, value)
 
-        if name in self._CAMERA_PROPERTIES:
-            self._camera.setPropertyValue(name, value)
-
         return self.parameters
+
+    def _readCameraProperty(self, name, fallback):
+        """The camera's current value of ``name``, or ``fallback``."""
+        try:
+            value = self._camera.getPropertyValue(name)
+        except Exception as e:
+            # pyicic's IC_Exception carries its text in .message, not str().
+            self.__logger.warning(
+                f'Could not read {name} from the camera: {getattr(e, "message", e)}'
+            )
+            return fallback
+        # CameraTIS reports an unknown property as False.
+        return fallback if value is None or isinstance(value, bool) else value
 
     def getParameter(self, name):
         """Gets a parameter value and returns the value.
@@ -166,6 +201,10 @@ class TISManager(DetectorManager):
 
     def openPropertiesDialog(self):
         self._camera.openPropertiesGUI()
+        # The vendor dialog writes the camera directly; pick up its changes.
+        for name in self._CAMERA_PROPERTIES:
+            parameter = self.parameters[name]
+            parameter.value = self._readCameraProperty(name, parameter.value)
 
     def _getTISObj(self, cameraId):
         try:

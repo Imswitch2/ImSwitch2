@@ -1,14 +1,15 @@
-****************************************
-ImProcess Workflows (Cookbook)
-****************************************
+*******************
+ImProcess workflows
+*******************
 
 Overview
 ========
 
 An ImProcess **workflow** reconstructs and processes data without the GUI:
 a batch of recordings through the same reconstructor and the same
-processing steps, from a script, a terminal, or a scheduled job. It is the
-processing counterpart of :doc:`scripting-wfs-workflows`.
+processing steps, from a terminal, a scheduled job, or any Python
+process, including an ImScripting script (:doc:`scripting`). The GUI runs
+the same workflow files (see :ref:`workflows-replay`).
 
 A workflow is an ordered list of **steps**:
 
@@ -96,14 +97,16 @@ Steps and references
      - ``id``, ``reconstructor``, ``inputs`` (reconstructions by that reconstructor); no ``params`` — consolidation merges what the reconstructions already are
      - ``out``
    * - ``Process``
-     - ``id``, ``processor`` (plugin id), ``params``, ``inputs`` (ordered)
+     - ``id``, ``processor`` (plugin id), ``params``, ``inputs`` (ordered), ``restriction`` (optional ROI restriction in the form the provenance records it; the run is narrowed to those regions, as the GUI's "apply within ROI" does)
      - what the processor declares (see below)
    * - ``Save``
      - ``id``, ``input`` (one reference), ``fmt``, ``path_template``
      - none
 
 A reference is ``"step"`` (the step's only, or first, port) or
-``"step.port"``. Step ids use letters, digits, ``_`` and ``-``.
+``"step.port"``. Step ids use letters, digits, ``_`` and ``-``. In a
+workflow file each step names its type with ``step:`` (``kind:`` is
+accepted as well).
 
 Parameters and defaults
 -----------------------
@@ -112,7 +115,10 @@ Parameters and defaults
 **widget default** — the value a freshly opened parameter panel would have
 handed the plugin — from ``default_params()``, which is pinned to the widget
 by a test. ``python -m imswitch.improcess.workflows list`` prints every
-plugin's id, version, ports and defaults.
+plugin's id, version, ports and defaults; with ``--json`` it also prints
+each parameter's **field** (its type, choices, bounds, unit and help) from
+the plugin's ``param_spec()``, which is what the workflow editor builds its
+forms from (see :ref:`workflows-editor`).
 
 The keys a step may set are the plugin's ``param_keys()``: its defaults plus
 any ``extra_param_keys`` it declares for settings no widget default names
@@ -137,8 +143,9 @@ A processor declares its output ports through ``output_spec(params)``:
 * named ports when there are several (``subtract-background`` with
   ``output_background: true`` yields ``signal`` and ``background``);
 * a **pattern** when the ports depend on the data (``stack-split`` and
-  ``channel-split`` yield ``C0, C1, …`` — one per slice, as many as the
-  input has).
+  ``channel-split`` yield one port per slice, as many as the input has,
+  named after the split axis and the index along it: ``C0, C1, …`` for
+  channels, ``Z0, Z1, …`` for a Z split).
 
 ``validate`` checks every reference against the declared ports or pattern
 before anything runs, and the runner checks the ports actually produced
@@ -148,6 +155,49 @@ with the input's position appended (``out``, ``out1``, ``out2`` …).
 
 Multi-input processors (``channel-merge``, ``image-calculator``,
 ``colocalization``, ``frc`` …) take their inputs in the order listed.
+
+.. _workflows-python-steps:
+
+Python steps
+------------
+
+The ``python`` processor runs a few lines of Python as a step, for a
+transformation no processor covers.  Its two parameters are the ``code`` and
+the ``ports`` it produces (comma-separated, ``out`` by default); a later step
+refers to a port like any other (``split.a``), and ``validate`` checks the
+reference against ``ports`` before anything runs::
+
+    - step: process
+      id: split
+      processor: python
+      params:
+        ports: a, b
+        code: |
+          ax = 0
+          group = (np.arange(data.shape[ax]) // 3) % 2
+          outputs = {
+              "a": np.take(data, np.flatnonzero(group == 0), axis=ax),
+              "b": np.take(data, np.flatnonzero(group == 1), axis=ax),
+          }
+      inputs: [rec]
+    - step: process
+      id: blur
+      processor: filter
+      params: {radius: 1.0}
+      inputs: [split.a]
+
+Saving a workflow writes a multi-line parameter in YAML **block style**
+(``code: |``), so a file reads like the script it carries rather than a quoted
+line full of ``\n``; it loads back to exactly the same text.  The code is
+recorded whole in the provenance of every result the step makes, which is what
+lets **Export workflow of current result…** and replay reproduce it.  What the
+code can use, the rules for its outputs and how errors are reported are in
+:ref:`improcess-python-step`; a runnable file is
+``examples/improcess_workflows/python_step_interleave.yaml``.
+
+The code runs with the full access of the process, so a workflow file from
+someone else can run their code: the GUI asks once before running a file that
+contains Python steps.  The command line does not ask.
 
 Saves
 -----
@@ -162,8 +212,10 @@ is given ``overwrite=True`` (``--overwrite``).
 source's file name without suffixes), ``{step}`` (the save step's id),
 ``{input_step}``, ``{name}`` (the result's display name), ``{fmt}``,
 ``{ext}`` (the format's default suffix: ``.ome.tif``, ``.h5``, ``.ome.zarr``,
-``.csv``, ``.hdf5``). The default is
-``{out_dir}/{source_stem}_{step}{ext}``.
+``.csv``, ``.hdf5`` for ``picasso``, ``.tif`` for ``imagej``, ``.json``).
+The default is ``{out_dir}/{source_stem}_{step}{ext}``. A template that
+resolves outside the output directory (through ``..`` or an absolute
+path elsewhere) is refused.
 
 Formats are what the result type supports (``tiff``, ``hdf5``, ``zarr``;
 ``csv`` / ``picasso`` for localizations; ``imagej`` for MoNaLISA's classic
@@ -227,7 +279,7 @@ are released.
 ``bootstrap_registry()`` builds a **fresh** plugin registry for the run —
 every built-in unless a setup's ``processing`` block (or explicit id lists)
 narrows it, plus the drop-in plugins from the user plugins folder — and
-stamps each plugin's version (the ImSwitch distribution version for
+stamps each plugin's version (the ImSwitch2 version for
 built-ins, a digest of the file for drop-ins). Every call returns a new
 registry; two runs share plugin instances only if you pass the same
 registry object to both. The command line never does: each batch row gets
@@ -301,6 +353,68 @@ reason, and a result it produced in the GUI carries the same reason in its
 provenance, so ``replay`` refuses that step too. The same applies to a
 plugin whose widget was found to disagree with its declaration. See
 :ref:`improcess-headless-contract` for what to declare and how to test it.
+
+.. _workflows-editor:
+
+The workflow editor
+===================
+
+**File → Workflow editor…** opens a window to build, edit, validate and
+run workflow files without writing YAML by hand. It is a sibling of the
+hardware configuration editor and works the same way: what it offers comes
+from the code, not from a list of its own.
+
+* The **palette** on the left lists every step kind and every installed
+  plugin — built-in reconstructors and processors by category, drop-in
+  plugins under their own heading — as the same registry a run uses sees
+  them. A plugin that cannot run headlessly (see
+  :ref:`improcess-headless-contract`) is listed greyed, with the reason.
+  Double-click an entry, or select it and press **Add step**, to add a
+  step after the selected one; a processing or save step takes the step it
+  follows as its input.
+* The **step list** in the middle shows the steps in execution order, with
+  the plugin, the inputs and an issue marker; **▲ Up**, **▼ Down** and
+  **Remove** reorder and delete. A step is never moved in front of one of
+  its inputs.
+* The **step form** on the right edits the selected step: a source's path
+  and dataset (or nothing, to bind it when the workflow runs), a
+  reconstruction's reconstructor and source, a processing step's
+  processor, ordered inputs (with the ports the earlier steps declare: a
+  channel split's ``C0, C1, …`` are typed after the step id) and
+  parameters, a save's input, format and path template. Parameter forms
+  are built from each plugin's ``param_spec()``: choices are combo boxes,
+  bounded numbers spin boxes with their unit, and a value that differs
+  from the plugin's default shows a *back to default* button. Only what
+  differs from the defaults is written to the file, as when the file is
+  written by hand.
+* The **issues** panel lists everything ``validate`` would report — an
+  unknown plugin, a reference to a port nobody produces, a parameter the
+  plugin does not take, a wrong arity — plus what the editor can add to
+  it: a value that is not one of its field's, a path template with a
+  placeholder nobody fills, two saves writing one file. Clicking an issue
+  selects its step. **Run…** refuses while any remain.
+
+**Run…** runs the workflow exactly as **File → Run workflow…** runs a
+file: it asks for the output folder and whether saves may overwrite, runs
+on a worker thread, adds every result to the reconstruction list, shows
+each step in the editor's status bar, and **Cancel run** stops it at the
+next step, or inside a running processor step (a Python step's loop included:
+it is interrupted after a moment; a save or a reconstruction finishes first). **Run on selected results…** is the editor's form of *Run
+workflow on selected results…*. Relative source paths in a saved workflow
+resolve against the file's folder, in the editor and in the File menu
+actions alike, as they do on the command line.
+
+**File → Edit workflow of current result…** opens the editor on the steps
+that made the current result — the replay of its provenance, with
+parameters equal to the plugin defaults dropped — so a recipe can be
+changed and run again, or saved for other data. It refuses, with every
+reason, exactly when ``replay`` would.
+
+Workflow files open from and save to ``~/ImSwitchConfig/improcess_workflows``
+by default (the folder next to ``improcess_plugins``); the editor's file
+list shows what is there. Saving rewrites the file from the steps: a
+hand-written file's comments and layout are not kept, as a setup file's
+are not kept by the configuration editor.
 
 .. _workflows-replay:
 
@@ -384,7 +498,7 @@ two branches and a merge comes back as exactly that) and their ROI
 restriction; and finally a ``Save`` with a **parameterised** destination —
 never the original path. Parameters recorded under an older
 ``params_version`` are migrated by the plugin; a newer one is refused.
-Version drift (ImSwitch, a plugin) and a streaming origin are warnings.
+Version drift (ImSwitch2, a plugin) and a streaming origin are warnings.
 
 Replay refuses, listing every reason, when the graph contains a step that
 cannot be run again:
@@ -421,7 +535,10 @@ the steps and most of the settings, and a language model can turn it into a
 workflow draft for you to check. Give it three things:
 
 1. **the provenance** — ``python -m imswitch.improcess.workflows
-   show-provenance FILE --json`` (or the Metadata panel's copy action);
+   show-provenance FILE --json`` (or, in the GUI, select the result,
+   right-click its *Provenance* group in the Metadata panel and choose
+   **Copy subtree as JSON**; the panel is hidden by default, see
+   :doc:`improcess`, "Metadata panel");
 2. **the plugin catalogue** — ``python -m imswitch.improcess.workflows list
    --json``: every plugin id, its default parameters and its ports;
 3. **this page**, which is the schema.
@@ -430,7 +547,7 @@ A prompt that works:
 
 .. code-block:: text
 
-   You are writing an ImSwitch ImProcess workflow file (YAML, schema 1) as
+   You are writing an ImSwitch2 ImProcess workflow file (YAML, schema 1) as
    described in the attached documentation page. Attached are (a) the
    provenance document of a result file and (b) the catalogue of installed
    plugins with their default parameters and output ports.
@@ -464,9 +581,48 @@ and wrong arity; what it cannot check is whether a guessed parameter value
 is the one that was used, which is why summarised parameters must stay
 marked.
 
+Command-line reference
+======================
+
+``python -m imswitch.improcess.workflows [--no-user-plugins] COMMAND …``;
+``--no-user-plugins`` goes before the command and leaves out the drop-in
+plugins from the user plugins folder.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Command
+     - Options
+   * - ``validate WORKFLOW``
+     - Prints every issue that can be known before running.
+   * - ``list``
+     - ``--json`` for the machine-readable catalogue: every plugin's id,
+       version, defaults, ports and ``fields`` (each parameter's type,
+       choices, bounds, unit and help).
+   * - ``run WORKFLOW --out DIR``
+     - ``--input PATH[::DATASET] …`` (one run per input, bound to the only
+       source, or to the source named with ``--source ID``);
+       ``--manifest CSV``; ``--bind SOURCE=PATH[::DATASET]`` (repeatable);
+       ``--source-root DIR``; ``--overwrite``; ``--mode run|replay``
+       (default ``run``); ``--allow-drift``; ``--hash-sources``;
+       ``--verify-hash``; ``--summary NAME`` (the summary CSV inside
+       ``--out``, default ``<workflow name>_summary.csv``).
+   * - ``replay FILE``
+     - ``--out-workflow PATH`` (``.yaml`` or ``.json``; default: print the
+       YAML); ``--fmt FMT`` (format of the replayed save, default the
+       file's own); ``--run`` with ``--out DIR``; ``--overwrite``;
+       ``--allow-drift``; ``--verify-hash``.
+   * - ``show-provenance FILE``
+     - ``--json`` for the full document; ``--no-validate`` skips the
+       graph's consistency check, to inspect a document that fails it.
+
 Related documentation
 =====================
 
 * :doc:`improcess` — the ImProcess module, its plugins and result flow
 * :doc:`improcess-napari-plugins` — sending results to napari plugins
-* :doc:`scripting-wfs-workflows` — the acquisition-side cookbook this one mirrors
+* :doc:`scripting` — ImScripting; a script can run a workflow on the data
+  it has just recorded
+* :doc:`scripting-wfs-workflows` — scripting acquisition workflows on the
+  microscope

@@ -891,6 +891,33 @@ def record_external_table(result, path, *, table_format: str, reader: str = "sml
     return result
 
 
+def record_console_result(result, *, selection=()):
+    """Record that ``result`` was made in the ImProcess console.
+
+    An ``opaque`` node with no inputs, on purpose: the console cannot know
+    which of the lines typed into it made the array, or from which result, so
+    claiming a lineage would be guessing. ``selection`` -- the results that were
+    selected when it was published -- is kept as a label, which is context and
+    not a claim. The Python step is the recorded, replayable form of the same
+    code (the console's *Send to Python step*).
+    """
+    node_id, node = make_node(
+        "opaque",
+        outputs=(DEFAULT_PORT,),
+        extra={
+            "label": "Made in the console",
+            "console": True,
+            "selected_when_published": [_describe(item) for item in selection],
+            "reasons": [
+                "made interactively in the ImProcess console; "
+                "which code produced it is not recorded"
+            ],
+        },
+    )
+    _attach(result, {node_id: node}, node_id, DEFAULT_PORT)
+    return result
+
+
 # --------------------------------------------------------------------------
 # derived linear history
 # --------------------------------------------------------------------------
@@ -1052,6 +1079,7 @@ __all__ = [
     "output_ref",
     "primary_chain",
     "record_consolidation",
+    "record_console_result",
     "record_external_table",
     "record_import",
     "record_process",

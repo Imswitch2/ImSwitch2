@@ -1,10 +1,12 @@
 # ScanControllerLineStepPointScan.py
 import copy
 import json
+import time
 import traceback
 from typing import Dict, Any
 
 import numpy as np
+from qtpy import QtCore
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.scan_parameters import (
@@ -25,6 +27,53 @@ from ._acquisition_layout_source import (
     scan_driven_detector_names,
     validate_detector_edge_counts,
 )
+
+
+SCAN_PROGRESS_INTERVAL_MS = 250
+
+
+def scan_duration_s(scanInfoDict):
+    """Seconds one scan iteration takes on the card, or None if unknown.
+
+    ``tot_scan_time_s`` when the designer reports it (Galvo), otherwise the
+    sample count times the sample period (the contract's default for
+    ``tot_scan_time_s`` is 0).
+    """
+    info = scanInfoDict or {}
+    try:
+        total = float(info.get("tot_scan_time_s") or 0.0)
+        if total <= 0:
+            total = (
+                float(info.get("scan_samples_total") or 0)
+                * float(info.get("scan_time_step") or 0.0)
+            )
+    except (TypeError, ValueError):
+        return None
+    return total if total > 0 else None
+
+
+def _format_seconds(seconds):
+    seconds = max(0, int(round(seconds)))
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}:{seconds:02d}"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+
+def scan_progress(elapsed_s, duration_s, frame, show_frame):
+    """``(fraction, text)`` for the progress bar; fraction None = unknown."""
+    prefix = f"Frame {frame} · " if show_frame else ""
+    if duration_s is None:
+        return None, f"{prefix}{_format_seconds(elapsed_s)}"
+    if elapsed_s >= duration_s:
+        return 1.0, f"{prefix}finishing…"
+    return (
+        elapsed_s / duration_s,
+        f"{prefix}{_format_seconds(elapsed_s)} / {_format_seconds(duration_s)}",
+    )
 
 
 class ScanControllerAdvanced(SuperScanController):
@@ -49,9 +98,10 @@ class ScanControllerAdvanced(SuperScanController):
         super().__init__(*args, **kwargs)
         seed_scan_delays_from_setup(self._widget, self._setupInfo)
 
-        # Snapshot of the parameters that produced the cached signalDict, so
-        # repeated scan frames can skip regenerating an identical signal.
-        self._lastBuiltParams = None
+        # The last full scan design and the parameters that produced it, so a
+        # recording's layout query, the run that follows it and repeated scan
+        # frames all share one build instead of regenerating identical signals.
+        self._designCache = None
 
         # Widget-state <-> scan-dict translation lives in a controller-free,
         # unit-testable serializer (audit 07). The controller binds widgets to it.
@@ -96,6 +146,20 @@ class ScanControllerAdvanced(SuperScanController):
             self.plotSignalGraph()
         except Exception:
             self._logger.debug("[ScanControllerAdvanced] initial plotSignalGraph failed:\n%s", traceback.format_exc())
+
+        # Progress bar: elapsed card time of the running iteration, refreshed
+        # by a timer while this controller owns a run. The timer stops itself
+        # once the run is released, whichever way it ended.
+        self._progressRun = None
+        self._progressFrame = 0
+        self._progressStarted = None
+        self._progressDuration = None
+        self._progressTimer = QtCore.QTimer(self)
+        self._progressTimer.setInterval(SCAN_PROGRESS_INTERVAL_MS)
+        self._progressTimer.timeout.connect(self._updateScanProgress)
+        self._master.nidaqManager.sigScanStarted.connect(
+            self._onScanIterationStarted
+        )
 
         # Register for widget state persistence
         getWidgetStatePersistence().register('Scan', self)
@@ -142,7 +206,13 @@ class ScanControllerAdvanced(SuperScanController):
         # only remaining bound is the NI-DAQ task's generic +-10 V range, so
         # e.g. a Z scan centered at 0 um on a 0..10 V piezo would reach the
         # hardware.
-        if hasattr(scan_des, "checkSignalComp"):
+        if hasattr(scan_des, "signalCompatibilityRefusal"):
+            refusal = scan_des.signalCompatibilityRefusal(
+                scanParameters, self._setupInfo, scanInfoDict
+            )
+            if refusal:
+                raise ScanDesignRefusedError(refusal)
+        elif hasattr(scan_des, "checkSignalComp"):
             if not scan_des.checkSignalComp(
                 scanParameters, self._setupInfo, scanInfoDict
             ):
@@ -372,24 +442,26 @@ class ScanControllerAdvanced(SuperScanController):
                 include_ttl = False
 
             ttlSignalsDict = None
-            if include_ttl:
-                try:
-                    signalDict, scanInfoDict = self._make_full_scan(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
-                except ScanDesignRefusedError as error:
-                    self._logger.warning(f"Nothing to plot: {error}")
-                    return
-                scanSignalsDict = signalDict.get("scanSignalsDict", {})
-                ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
-            else:
-                try:
-                    scanSignalsDict, _, scanInfoDict = self._make_scan_only(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
-                except ScanDesignRefusedError as error:
-                    self._logger.warning(f"Nothing to plot: {error}")
-                    return
+            with self._positionSnapshotForScanDesign():
+                if include_ttl:
+                    try:
+                        signalDict, scanInfoDict = self._make_full_scan(
+                            self._analogParameterDict, self._digitalParameterDict
+                        )
+                    except ScanDesignRefusedError as error:
+                        self._logger.warning(f"Nothing to plot: {error}")
+                        return
+                    scanSignalsDict = signalDict.get("scanSignalsDict", {})
+                    ttlSignalsDict = signalDict.get("TTLCycleSignalsDict", {})
+                else:
+                    # The speed rule (P0) can refuse the scan-only design too.
+                    try:
+                        scanSignalsDict, _, scanInfoDict = self._make_scan_only(
+                            self._analogParameterDict, self._digitalParameterDict
+                        )
+                    except ScanDesignRefusedError as error:
+                        self._logger.warning(f"Nothing to plot: {error}")
+                        return
             if not scanSignalsDict:
                 self._logger.warning("No scan curves to plot")
                 return
@@ -627,11 +699,7 @@ class ScanControllerAdvanced(SuperScanController):
 
     def getAcquisitionLayouts(self, detectorNames):
         """Return line-step-aware layouts from the generated scan signals."""
-        self.getParameters()
-        signalDict, scanInfo = self._make_full_scan(
-            self._analogParameterDict,
-            self._digitalParameterDict,
-        )
+        signalDict, scanInfo = self._buildScanSignals()
         if signalDict is None or scanInfo is None:
             raise RuntimeError(
                 "Advanced scan signal generation did not produce layout metadata"
@@ -742,15 +810,7 @@ class ScanControllerAdvanced(SuperScanController):
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
-            # Set non-scanned positioners to center (same behavior as your PointScan controller)
-            for index, positionerName in enumerate(self._analogParameterDict["target_device"]):
-                if positionerName not in self._positionersScan:
-                    try:
-                        position = self._analogParameterDict["axis_centerpos"][index]
-                        self._master.positionersManager[positionerName].setPosition(position, 0)
-                    except Exception:
-                        self._logger.warning("Failed to set %s to center:\n%s",
-                                             positionerName, traceback.format_exc())
+            self._setNonScanPositionersToCenter()
 
             self._armScanIteration(self.signalDict, self.scanInfoDict)
 
@@ -760,28 +820,31 @@ class ScanControllerAdvanced(SuperScanController):
 
     def _buildScanSignals(self):
         self.getParameters()
+        with self._positionSnapshotForScanDesign():
+            return self._cachedFullScan()
 
-        # Only rebuild the (expensive) scan signal if the parameters
-        # actually changed since the last build. Repeated scan frames
-        # reuse identical parameters, so this avoids regenerating a
-        # byte-identical galvo/TTL signal — and the per-frame stall it
-        # causes — on every repeat. Live parameter edits still trigger
-        # a rebuild because the snapshot then differs.
+    def _cachedFullScan(self):
+        """Full scan design for the current parameters, built at most once.
+
+        Call inside ``_positionSnapshotForScanDesign`` so the snapshot covers
+        the positions the design depends on. Designing a large scan takes
+        seconds on the GUI thread, and starting a recording used to pay it
+        twice: once for the acquisition layouts, once for the run. Parameters
+        identical to the last build -- that pair, or repeated scan frames --
+        now reuse its result; any parameter or position change rebuilds.
+        """
         paramsSnapshot = (
             copy.deepcopy(self._analogParameterDict),
             copy.deepcopy(self._digitalParameterDict),
         )
-        if (
-            self.signalDict is not None
-            and self.scanInfoDict is not None
-            and paramsSnapshot == self._lastBuiltParams
-        ):
-            return self.signalDict, self.scanInfoDict
+        cache = self.__dict__.get("_designCache")
+        if cache is not None and cache[0] == paramsSnapshot:
+            return cache[1], cache[2]
         # TTL cycle (linestep_enable) is the sole authority for per-laser emission
         signalDict, scanInfoDict = self._make_full_scan(
             self._analogParameterDict, self._digitalParameterDict
         )
-        self._lastBuiltParams = paramsSnapshot
+        self._designCache = (paramsSnapshot, signalDict, scanInfoDict)
         return signalDict, scanInfoDict
 
     def scanDone(self):
@@ -809,6 +872,43 @@ class ScanControllerAdvanced(SuperScanController):
         except Exception:
             self._logger.error(traceback.format_exc())
             self.scanFailed()
+
+    def _onScanIterationStarted(self):
+        """NI-DAQ started an iteration; track it if this controller armed it."""
+        token = self._scanCoordinator.tokenForOwner(self)
+        if token is None:
+            return
+        run = self._scanCoordinator.runForOwner(self)
+        if run is not self._progressRun:
+            self._progressRun = run
+            self._progressFrame = 0
+        self._progressFrame += 1
+        self._progressStarted = time.monotonic()
+        self._progressDuration = scan_duration_s(
+            getattr(token, "scanInfoDict", None) or self.scanInfoDict
+        )
+        self._updateScanProgress()
+        self._progressTimer.start()
+
+    def _updateScanProgress(self):
+        run = self._scanCoordinator.runForOwner(self)
+        if run is None or run is not self._progressRun:
+            self._progressTimer.stop()
+            self._progressRun = None
+            hide = getattr(self._widget, "hideScanProgress", None)
+            if callable(hide):
+                hide()
+            return
+        show = getattr(self._widget, "showScanProgress", None)
+        if not callable(show):
+            return
+        fraction, text = scan_progress(
+            time.monotonic() - self._progressStarted,
+            self._progressDuration,
+            self._progressFrame,
+            show_frame=self._progressFrame > 1 or self._widget.repeatEnabled(),
+        )
+        show(fraction, text)
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)

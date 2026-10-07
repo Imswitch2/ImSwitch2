@@ -193,3 +193,118 @@ def test_multifile_lapse_advances_onto_midwrite_store_with_barrier(tmp_path):
 
     assert chunks2[-1].end == fps * n_tp
     assert np.all(np.concatenate([c.data for c in chunks2], axis=0) == 2)
+
+
+# --- skipped timepoints ----------------------------------------------------
+#
+# An acquisition can drop a timepoint: t0, t1, t2, t4, t5. The recorder writes
+# in order, so a LATER file existing means the missing one is never coming and
+# the source jumps to it, keeping each file's TRUE index. The skipped index is
+# never streamed, which is what leaves it blank in the session's pre-zeroed
+# output and makes the viewer's timepoint slider step straight over it.
+
+
+def _write_gapped_lapse(tmp_path, present, fps, n_tp):
+    for t in present:
+        _write_lapse_file(tmp_path / f"rec_scan__0{t}__CAM.zarr",
+                          np.full((fps, 4, 5), t + 1, dtype=np.int16), n_tp)
+    return str(tmp_path / "rec_scan__00__CAM.zarr")
+
+
+def _drain(src, guard_limit=300):
+    chunks, guard = [], 0
+    while not src.is_complete() and guard < guard_limit:
+        chunks.extend(src.poll())
+        guard += 1
+    return chunks
+
+
+def test_multifile_lapse_skips_a_missing_timepoint(tmp_path):
+    """A gap must not wedge the stream, and must not shift later timepoints."""
+    fps, n_tp = 9, 6
+    seed = _write_gapped_lapse(tmp_path, [0, 1, 2, 4, 5], fps, n_tp)
+
+    src = ZarrMultiFileLapseSource(seed)
+    src.open(seed)
+    chunks = _drain(src)
+    assert src.is_complete() is True     # would hang forever before the skip
+    src.close()
+
+    # Only the present timepoints streamed, each at its true global range.
+    assert sum(c.data.shape[0] for c in chunks) == fps * 5
+    assert chunks[-1].end == fps * n_tp   # last file is t5, not t4
+
+    by_timepoint = {}
+    for chunk in chunks:
+        by_timepoint.setdefault(chunk.start // fps, []).append(chunk.data)
+    assert sorted(by_timepoint) == [0, 1, 2, 4, 5]   # t3 never streamed
+    for t, blocks in by_timepoint.items():
+        assert np.all(np.concatenate(blocks, axis=0) == t + 1), t
+
+
+def test_multifile_lapse_does_not_skip_a_timepoint_that_is_merely_late(tmp_path):
+    """With nothing later on disk, a missing file is 'not written yet' -- wait."""
+    fps, n_tp = 9, 3
+    seed = _write_gapped_lapse(tmp_path, [0], fps, n_tp)
+
+    src = ZarrMultiFileLapseSource(seed)
+    src.open(seed)
+    chunks = [c for _ in range(10) for c in src.poll()]
+    assert max(c.end for c in chunks) == fps    # still only t0
+    assert src.is_complete() is False
+
+    # t1 finally lands: it is used, not skipped over.
+    _write_lapse_file(tmp_path / "rec_scan__01__CAM.zarr",
+                      np.full((fps, 4, 5), 2, dtype=np.int16), n_tp)
+    more = [c for _ in range(10) for c in src.poll()]
+    src.close()
+    assert [c.start // fps for c in more] == [1] * len(more)
+
+
+def test_multifile_lapse_waits_for_a_midwrite_store_instead_of_skipping_it(tmp_path):
+    """A mid-write next timepoint is the next real one -- don't jump past it.
+
+    Skipping ahead here would silently drop a timepoint that was moments from
+    being complete.
+    """
+    fps, n_tp = 9, 3
+    _write_lapse_file(tmp_path / "rec_scan__00__CAM.zarr",
+                      np.full((fps, 4, 5), 1, dtype=np.int16), n_tp)
+    # t1 exists but is mid-write with no commit barrier; t2 is already done.
+    _write_lapse_file(tmp_path / "rec_scan__01__CAM.zarr",
+                      np.full((fps, 4, 5), 2, dtype=np.int16), n_tp, writing=True)
+    _write_lapse_file(tmp_path / "rec_scan__02__CAM.zarr",
+                      np.full((fps, 4, 5), 3, dtype=np.int16), n_tp)
+
+    seed = str(tmp_path / "rec_scan__00__CAM.zarr")
+    src = ZarrMultiFileLapseSource(seed)
+    src.open(seed)
+    chunks = [c for _ in range(10) for c in src.poll()]
+    assert max(c.end for c in chunks) == fps      # held at t0, did not reach t2
+    assert src.is_complete() is False
+
+    # t1 completes -> it is picked up next, ahead of t2.
+    root = zarr.open(str(tmp_path / "rec_scan__01__CAM.zarr"), mode="a")
+    root["chunks"].attrs["writing"] = False
+    more = [c for _ in range(10) for c in src.poll()]
+    src.close()
+    assert min(c.start // fps for c in more) == 1
+
+
+def test_timepoint_count_spans_a_gap_when_metadata_is_absent(tmp_path):
+    """Without Rec:LapseTime the count comes from the highest index on disk.
+
+    A contiguous walk would stop at the gap and cap the range, dropping every
+    file after it.
+    """
+    fps = 9
+    for t in [0, 1, 4]:
+        _write_lapse_file(tmp_path / f"rec_scan__0{t}__CAM.zarr",
+                          np.full((fps, 4, 5), t + 1, dtype=np.int16), None)
+
+    seed = str(tmp_path / "rec_scan__00__CAM.zarr")
+    src = ZarrMultiFileLapseSource(seed)
+    info = src.open(seed)
+    src.close()
+
+    assert info.expected_frames == fps * 5   # spans t0..t4, not just t0..t1

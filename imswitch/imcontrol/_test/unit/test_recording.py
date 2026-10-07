@@ -1068,6 +1068,8 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     ctrl.recordingEnded()
     assert ctrl.lapseCurrent == 1
     assert widget.lapseNumUpdates == [1]
+    # One lapse point is not the end of the recording: nothing public yet.
+    assert commChannel.sigRecordingEnded.emit_calls == 0
     assert len(_FakeTimer.created) == 1
     cadenceTimer = _FakeTimer.created[-1]
     assert cadenceTimer.started_ms == 0  # getTimelapseFreq() * 1000
@@ -1093,10 +1095,12 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     assert widget.recButtonSets[-1] is False
     assert widget.fieldsEnabledCalls[-1] is True
     assert recMgr.start_calls == 2  # no third cycle
-    # Natural completion (not a soft stop): the manual sigRecordingEnded emit
-    # is soft-stop-only, matching RecordingManager suppressing it for
-    # ScanOnce/ScanLapse (see RecordingWorker._record's finally block).
-    assert commChannel.sigRecordingEnded.emit_calls == 0
+    # Natural completion publishes recordingEnded exactly once. The worker
+    # holds the legacy signal back in the scan modes, so this is the only
+    # place a script (or the joystick re-enable) can learn the recording --
+    # every lapse point, every file -- is finished. It used to be soft-stop
+    # only, and a script waiting for it after a completed lapse hung.
+    assert commChannel.sigRecordingEnded.emit_calls == 1
 
 
 def test_recording_arm_failure_aborts_without_starting_scan_and_pairs_lifecycle():

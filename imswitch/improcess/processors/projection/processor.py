@@ -6,6 +6,7 @@ from qtpy import QtWidgets
 
 from imswitch.improcess.analysis.projections import axis_index_from_label, project_array
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 from .result import ProjectionResult
@@ -22,6 +23,29 @@ class ProjectionProcessor(Processor):
     @classmethod
     def default_params(cls) -> dict:
         return {'axis': 'Auto', 'mode': 'max', 'start': None, 'stop': None}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'axis', 'select', 'Auto', label='Axis',
+                options=('Auto', 'T', 'Z', 'C', 'D0', 'D1', 'D2'),
+            ),
+            ParamField(
+                'mode', 'select', 'max', label='Mode',
+                options=('max', 'mean', 'sum', 'median', 'std'),
+            ),
+            ParamField(
+                'start', 'int', None, label='First slice',
+                help="First slice to project (1-based); 'first' = 1", min=0, max=999999,
+                nullable=True,
+            ),
+            ParamField(
+                'stop', 'int', None, label='Last slice',
+                help="Last slice to project, inclusive; 'last' = end of axis", min=0, max=999999,
+                nullable=True,
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

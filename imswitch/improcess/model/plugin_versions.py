@@ -27,7 +27,9 @@ def imswitch_version() -> str:
     try:
         from importlib.metadata import version
 
-        return str(version("imswitch"))
+        from imswitch import __distname__
+
+        return str(version(__distname__))
     except Exception:
         try:
             from imswitch import __version__

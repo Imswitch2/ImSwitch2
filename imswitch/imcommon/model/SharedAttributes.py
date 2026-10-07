@@ -10,7 +10,7 @@ from imswitch.imcommon.framework import Signal, SignalInterface
 JSON_ATTR_PREFIX = '__imswitch_json__:'
 
 # Attribute category holding free text the operator wrote about this session
-# rather than a value some device reported (Tools -> Session notes...). It is a
+# rather than a value some device reported (File -> Session notes...). It is a
 # category of its own so the recording storers can find it again -- both to
 # write it into the structured metadata group and to turn it into an OME
 # annotation, which is the only way it reaches an OME-TIFF at all.

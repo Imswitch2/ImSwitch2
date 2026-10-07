@@ -23,6 +23,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 
 #: Common labels offered for the new stack axis; any custom string is valid.
@@ -43,6 +44,28 @@ class StackCombineProcessor(Processor):
         # Set by the Stack/Combine dialog in the GUI, by the step's params in
         # a workflow. ``name`` empty means "derive one from the mode".
         return {"mode": "stack", "join_axis": 0, "name": "", "axis_label": "Z"}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField(
+                'mode', 'select', 'stack', label='Mode',
+                help='stack: a new axis holds the inputs; concatenate: the inputs are joined along an existing axis',
+                options=('stack', 'concatenate'),
+            ),
+            ParamField(
+                'join_axis', 'int', 0, label='Join axis',
+                help='Index of the existing axis to concatenate along (concatenate mode)', min=0,
+            ),
+            ParamField(
+                'name', 'text', '', label='Result name',
+                help='Empty derives a name from the mode',
+            ),
+            ParamField(
+                'axis_label', 'text', 'Z', label='New axis label',
+                help='Label of the new axis (stack mode)',
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

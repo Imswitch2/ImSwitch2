@@ -3,7 +3,7 @@ Wire a Teensy pulse generator into your setup
 *********************************************
 
 This guide walks you through adding a Teensy / Arduino pulse generator
-(running the ImSwitch v4 firmware) to an existing ImSwitch setup file
+(running the ImSwitch v4 firmware) to an existing ImSwitch2 setup file
 and driving one or more lasers from it.
 
 The whole pipeline is hardware-free testable: if the Teensy isn't
@@ -15,7 +15,7 @@ end-to-end before any hardware arrives.
 Prerequisites
 =============
 
-- An ImSwitch checkout you can edit.
+- An ImSwitch2 checkout you can edit.
 - (Optional, for real hardware) A Teensy 4.1 with
   ``arduino_code_teensy4p1_v4.txt`` flashed.  The firmware sketch
   lives in the WidefieldStarss repo under ``teensy/``.
@@ -42,7 +42,9 @@ Step 2 — Add the ``teensyPulse`` block to your setup file
 Open your hardware setup JSON (under
 ``~/ImSwitchConfig/imcontrol_setups/<your_setup>.json`` once installed,
 or ``imswitch/_data/user_defaults/imcontrol_setups/`` in the source
-tree) and add a top-level ``teensyPulse`` entry::
+tree) and add a top-level ``teensyPulse`` entry.  The shipped
+``imswitch/_data/user_defaults/imcontrol_setups/example_kiralux_teensy.json``
+already has one and makes a good starting point::
 
     {
       "detectors": { ... },
@@ -60,11 +62,14 @@ tree) and add a top-level ``teensyPulse`` entry::
       }
     }
 
-Field reference (see :class:`~imswitch.imcontrol.model.SetupInfo.TeensyPulseInfo`):
+Field reference (see ``TeensyPulseInfo`` in ``imswitch/imcontrol/model/SetupInfo.py``):
 
 * ``port`` — serial port (``COM7`` on Windows, ``/dev/ttyACM0`` or
-  ``/dev/cu.usbmodemNNNNN`` on macOS/Linux).  Set to ``null`` to skip
-  the real driver entirely and force the mock backend.
+  ``/dev/cu.usbmodemNNNNN`` on macOS/Linux).  Leaving it ``null`` or
+  empty skips the real driver and uses the mock backend, but only while
+  ``useMockOnFailure`` is ``true``; with ``useMockOnFailure: false`` an
+  empty port stops start-up with a ``RuntimeError``.  To run without a
+  pulse generator at all, remove the whole ``teensyPulse`` block.
 * ``baud`` — defaults to 115200, matches the firmware.
 * ``pinMap`` — optional name→channel mapping.  Purely a passthrough
   for scripts; not enforced by the manager.
@@ -74,7 +79,7 @@ Field reference (see :class:`~imswitch.imcontrol.model.SetupInfo.TeensyPulseInfo
 * ``mockNChannels`` / ``mockMinPulseUs`` / ``mockMaxSteps`` — only
   used in mock mode (defaults: 16, 1, 256).
 
-That's the entire integration on the hardware side.  Restart ImSwitch
+That's the entire integration on the hardware side.  Restart ImSwitch2
 and check the logs — you should see one of:
 
 .. code-block:: text
@@ -91,11 +96,14 @@ or, with no hardware/no port:
 Step 3 — Drive a laser through the pulse generator
 ==================================================
 
-The old way was to pick ``PulseStreamerLaserManager`` and rely on a
-Pulse Streamer being present.  The new way is to pick
-``PulseGeneratorLaserManager``, which works with *any*
-``PulseGeneratorManager`` backend — Teensy today, PulseStreamer once
-its manager is migrated, future NI/FPGA backends.
+Pick ``PulseGeneratorLaserManager`` for the laser.  It drives whichever
+``PulseGeneratorManager`` backend the setup provides; today that is
+always the Teensy (``TeensyPulseManager``), the only backend built from a
+setup file.  ``PulseStreamerManager`` implements the same interface but
+is not constructed from a ``pulseStreamer`` block yet.  The older
+``PulseStreamerLaserManager`` looks for a ``pulseStreamerManager``
+low-level manager that ImSwitch2 no longer provides, so it always runs in
+mock mode and drives nothing.
 
 In your setup file, change the laser's ``managerName`` and put its
 pulse-generator channel under ``digitalLine``::
@@ -120,7 +128,7 @@ pulse-generator channel under ``digitalLine``::
   currently does not; the manager downgrades to binary automatically
   if you set one anyway, with a warning).
 
-Restart ImSwitch.  The laser widget's enable button now drives the
+Restart ImSwitch2.  The laser widget's enable button now drives the
 configured pulse-generator channel.
 
 
@@ -168,7 +176,7 @@ Step 5 — Verify with real hardware
 ==================================
 
 Plug in the Teensy, set ``port`` to the actual device, restart
-ImSwitch.  Confirm the log line reads
+ImSwitch2.  Confirm the log line reads
 ``Connected to Teensy on <port> (v4.0, ...)``.
 
 Then walk the rest of the smoke-test checklist
@@ -180,8 +188,10 @@ Troubleshooting
 ===============
 
 **"No Teensy port configured" even though I set ``port``.**
-Check the JSON: the value must be a string (``"COM7"``), not a number
-or null.  Empty string also triggers the mock path.
+Check the JSON: the value must be a non-empty string (``"COM7"``).
+``null``, an empty string or ``0`` take the mock path.  Any other number
+is handed to the serial driver and fails with the "Failed to open Teensy"
+message below instead.
 
 **"Failed to open Teensy on <port>" with a SerialException.**
 Either the port doesn't exist (typo, wrong device), is held by
@@ -214,5 +224,5 @@ See also
 
 - :doc:`add-pulse-generator-backend` — write a new backend for a different timing device.
 - :doc:`/adding-device-support` — generic guide for adding any device manager.
-- ``docs/design/ARCHITECTURE.md`` — pulse generator subsystem design.
-- ``docs/design/plans/ws-integration.md`` — full Teensy integration plan, including the v4 wire protocol spec.
+- `Pulse generator subsystem <https://github.com/Imswitch2/ImSwitch2/blob/main/docs/design/ARCHITECTURE.md#pulse-generator-subsystem>`_
+  in the repository's architecture note — design, including the v4 wire protocol.

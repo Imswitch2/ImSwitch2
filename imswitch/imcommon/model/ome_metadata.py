@@ -278,7 +278,11 @@ class OmeImageMeta:
                 float(by_name.get('x', 1.0))]
 
 
-def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
+def build_ome_xml(
+    meta: 'OmeImageMeta',
+    shape: Sequence[int],
+    plane: Optional[Dict[str, Any]] = None,
+) -> str:
     """ASCII-safe OME-XML string for a data array of ``shape`` described by ``meta``.
 
     Used where OME metadata can't be written natively at stream time and must be
@@ -330,6 +334,10 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
 
     md.update(meta.annotation_metadata())
     md.update(meta.plane_position_metadata(shp))
+    if plane:
+        # Further per-plane attributes (``DeltaT``), one entry per plane,
+        # beside any stage position already there.
+        md['Plane'] = {**dict(md.get('Plane') or {}), **dict(plane)}
 
     dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
     xml = tifffile.OmeXml()

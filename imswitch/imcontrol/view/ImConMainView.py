@@ -8,10 +8,12 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
+from imswitch.imcommon.view.LogWidget import LogWidget
 from . import widgets
 from .PickSetupDialog import PickSetupDialog
 from .SessionNotesDialog import SessionNotesDialog
 from .MemoryLimitsDialog import MemoryLimitsDialog
+from .RecordingFolderDialog import RecordingFolderDialog
 
 
 class _ResizeOnlyWhatMoved:
@@ -163,6 +165,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigOpenSessionNotes = QtCore.Signal()
     sigOpenConfigEditor = QtCore.Signal()
     sigOpenMemoryLimits = QtCore.Signal()
+    sigOpenRecordingFolder = QtCore.Signal()
     # Emitted on show/hide (i.e. module tab switches in the multi-module
     # window) so the ShortcutManager only keeps the visible module's set live.
     sigModuleVisibilityChanged = QtCore.Signal(bool)
@@ -182,6 +185,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.pickDatasetsDialog = PickDatasetsDialog(self, allowMultiSelect=False)
         self.sessionNotesDialog = SessionNotesDialog(self)
         self.memoryLimitsDialog = MemoryLimitsDialog(self)
+        self.recordingFolderDialog = RecordingFolderDialog(self)
 
         self.viewSetupInfo = viewSetupInfo
 
@@ -190,11 +194,32 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.docks = {}
         self.widgets = {}
 
-        # Menu Bar
+        # Menu bar. Each menu answers one question:
+        #   File        -- what goes into, or comes back out of, saved files
+        #   Hardware    -- which microscope this is, and how it is described
+        #   View        -- how the panels are arranged
+        #   Shortcuts   -- the key bindings
+        #   Preferences -- settings of this computer, kept in
+        #                  imcontrol_options.json; MultiModuleWindow appends
+        #                  the application-wide ones, and the Help menu.
         menuBar = self.menuBar()
         file = menuBar.addMenu('&File')
-        tools = menuBar.addMenu('&Tools')
+        hardware = menuBar.addMenu('&Hardware')
+        view = menuBar.addMenu('&View')
         self.shortcutsMenu = menuBar.addMenu('&Shortcuts')
+        preferences = menuBar.addMenu('&Preferences')
+        for menu in (file, hardware, view, preferences):
+            menu.setToolTipsVisible(True)
+
+        self.sessionNotesAction = QtWidgets.QAction('Session notes…', self)
+        self.sessionNotesAction.setToolTip(
+            'Free text attached to the metadata of every recording saved'
+            ' during this session'
+        )
+        self.sessionNotesAction.triggered.connect(self.sigOpenSessionNotes)
+        file.addAction(self.sessionNotesAction)
+
+        file.addSeparator()
 
         self.loadParamsAction = QtWidgets.QAction('Load parameters from saved HDF5 file…', self)
         self.loadParamsAction.triggered.connect(self.sigLoadParamsFromHDF5)
@@ -205,26 +230,21 @@ class ImConMainView(QtWidgets.QMainWindow):
         file.addAction(self.loadParamsZarrAction)
 
         file.addSeparator()
-        
+
         self.saveWidgetStateAction = QtWidgets.QAction('Save Widget States…', self)
         self.saveWidgetStateAction.triggered.connect(self.sigSaveWidgetState)
         file.addAction(self.saveWidgetStateAction)
-        
+
         self.loadWidgetStateAction = QtWidgets.QAction('Load Widget States…', self)
         self.loadWidgetStateAction.triggered.connect(self.sigLoadWidgetState)
         file.addAction(self.loadWidgetStateAction)
 
         self.pickSetupAction = QtWidgets.QAction('Pick hardware setup…', self)
-        self.pickSetupAction.triggered.connect(self.sigPickSetup)
-        tools.addAction(self.pickSetupAction)
-
-        self.sessionNotesAction = QtWidgets.QAction('Session notes…', self)
-        self.sessionNotesAction.setToolTip(
-            'Free text attached to the metadata of every recording saved'
-            ' during this session'
+        self.pickSetupAction.setToolTip(
+            'Choose which setup file this microscope runs on. ImSwitch restarts.'
         )
-        self.sessionNotesAction.triggered.connect(self.sigOpenSessionNotes)
-        tools.addAction(self.sessionNotesAction)
+        self.pickSetupAction.triggered.connect(self.sigPickSetup)
+        hardware.addAction(self.pickSetupAction)
 
         self.configEditorAction = QtWidgets.QAction('Edit hardware configuration…', self)
         self.configEditorAction.setToolTip(
@@ -232,15 +252,16 @@ class ImConMainView(QtWidgets.QMainWindow):
             ' Saved changes take effect when ImSwitch is restarted.'
         )
         self.configEditorAction.triggered.connect(self.sigOpenConfigEditor)
-        tools.addAction(self.configEditorAction)
+        hardware.addAction(self.configEditorAction)
 
-        self.memoryLimitsAction = QtWidgets.QAction('Memory limits…', self)
-        self.memoryLimitsAction.setToolTip(
-            'How much memory ImSwitch may use on this computer for recording'
-            ' buffers and automatic ImProcess work. Applied when saved.'
+        # Checkable, but left unconnected until the dock it toggles exists --
+        # the menu bar is built before the dock area.
+        self.logAction = QtWidgets.QAction('Log', self, checkable=True)
+        self.logAction.setToolTip(
+            'Show the ImSwitch2 log. Records are buffered from startup at Debug'
+            ' level, so opening this shows what already happened.'
         )
-        self.memoryLimitsAction.triggered.connect(self.sigOpenMemoryLimits)
-        tools.addAction(self.memoryLimitsAction)
+        view.addAction(self.logAction)
 
         self.resetLayoutAction = QtWidgets.QAction('Reset panel layout', self)
         self.resetLayoutAction.setToolTip(
@@ -248,13 +269,29 @@ class ImConMainView(QtWidgets.QMainWindow):
             ' sizes its contents ask for.'
         )
         self.resetLayoutAction.triggered.connect(self.resetDockLayout)
-        tools.addAction(self.resetLayoutAction)
-        
+        view.addAction(self.resetLayoutAction)
+
         # Add Configure Shortcuts action to Shortcuts menu
         self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
         self.configureShortcutsAction.triggered.connect(self.sigOpenShortcutEditor)
         self.shortcutsMenu.addAction(self.configureShortcutsAction)
         self.shortcutsMenu.addSeparator()
+
+        self.recordingFolderAction = QtWidgets.QAction('Recordings folder…', self)
+        self.recordingFolderAction.setToolTip(
+            'Where recordings and snapshots are saved by default on this'
+            ' computer. Applied when saved.'
+        )
+        self.recordingFolderAction.triggered.connect(self.sigOpenRecordingFolder)
+        preferences.addAction(self.recordingFolderAction)
+
+        self.memoryLimitsAction = QtWidgets.QAction('Memory limits…', self)
+        self.memoryLimitsAction.setToolTip(
+            'How much memory ImSwitch may use on this computer for recording'
+            ' buffers and automatic ImProcess work. Applied when saved.'
+        )
+        self.memoryLimitsAction.triggered.connect(self.sigOpenMemoryLimits)
+        preferences.addAction(self.memoryLimitsAction)
 
         # Window
         self.setWindowTitle('ImSwitch')
@@ -315,10 +352,30 @@ class ImConMainView(QtWidgets.QMainWindow):
             self.dockArea, 'left'
         )
 
+        # --- Log panel ---
+        # Deliberately not a _DEFAULT_*_DOCK_INFOS entry: those drive the widget
+        # and controller factories by name, and the log view is a plain view onto
+        # the process-wide buffer with no controller behind it.  For the same
+        # reason it stays out of self.widgets, which ImConMainController iterates
+        # to build a <Key>Controller for every entry.
+        #
+        # Built even when hidden -- it costs an empty text view, and a standalone
+        # bundle has no console behind it, so on macOS the log is otherwise
+        # unreachable.  The records it shows were buffered from startup, long
+        # before anyone opens the panel.
+        self.docks['Log'] = Dock('Log', size=(1, 1))
+        self.logWidget = LogWidget()
+        self.docks['Log'].addWidget(self.logWidget)
+        self.dockArea.addDock(self.docks['Log'], 'bottom')
+        if 'Log' not in enabledDockKeys:
+            self.docks['Log'].hide()
+        self.logAction.setChecked(not self.docks['Log'].isHidden())
+        self.logAction.toggled.connect(self._setLogVisible)
+
         # Add dock area to layout
         layout.addWidget(self.dockArea)
 
-        # The arrangement this setup file asks for, kept for Tools > Reset
+        # The arrangement this setup file asks for, kept for View > Reset
         # panel layout.  Taken before anything has had a chance to move.
         self._defaultDockState = self.dockArea.saveState()
 
@@ -390,6 +447,11 @@ class ImConMainView(QtWidgets.QMainWindow):
             # viewer's width share has to be expressed against the panel
             # columns it sits next to rather than as a bare number.
             self.docks['Image'].setStretch(widestPanel * _IMAGE_WIDTH_MULTIPLE, 1)
+
+    def _setLogVisible(self, visible):
+        dock = self.docks.get('Log')
+        if dock is not None:
+            dock.show() if visible else dock.hide()
 
     def resetDockLayout(self):
         """ Put the panels back where this hardware setup puts them.
@@ -521,6 +583,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.memoryLimitsDialog.raise_()
         self.memoryLimitsDialog.activateWindow()
 
+    def showRecordingFolderDialog(self):
+        """Raise the recordings-folder editor."""
+        self.recordingFolderDialog.show()
+        self.recordingFolderDialog.raise_()
+        self.recordingFolderDialog.activateWindow()
+
     def showSessionNotesDialog(self):
         """Raise the (modeless) session-notes editor, opening it if needed."""
         self.sessionNotesDialog.show()
@@ -635,6 +703,10 @@ class _DockInfo:
 # in the setup JSON so the dock title doesn't have to be specified separately.
 # Falls back to the raw key name for unknown/future widgets.
 _DOCK_DISPLAY_NAMES = {
+    # Not a factory-built widget (see the Log dock in __init__), but listed
+    # here so the config editor offers it in availableWidgets and does not
+    # flag a setup that asks for it as naming an unknown widget.
+    'Log': 'Log',
     'Autofocus': 'Autofocus',
     'FocusLock': 'Focus Lock',
     'EtSTED': 'EtSTED',

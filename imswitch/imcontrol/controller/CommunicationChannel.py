@@ -713,7 +713,7 @@ class CommunicationChannel(SignalInterface):
     def setSessionNote(self, note: str) -> None:
         """ Set the free-text note attached to recordings made from now on.
 
-        The same text the Tools -> Session notes... dialog edits. Recordings
+        The same text the File -> Session notes... dialog edits. Recordings
         snapshot the shared attributes when they start, so this reaches every
         file saved after the call and none saved before it. Pass '' to clear.
         """

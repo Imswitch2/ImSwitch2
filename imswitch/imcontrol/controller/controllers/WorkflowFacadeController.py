@@ -164,6 +164,7 @@ class WorkflowFacadeController(ImConWidgetController):
 
         Args:
             **kwargs: Forwarded to ``build_facade_from_master``. Common arguments:
+
                 - ``laser_aliases`` (dict[str, str]): logical → setup laser names
                 - ``detector_name`` (str): name of detector/camera to expose
                 - ``xy_positioner_name`` (str): name of XY positioner

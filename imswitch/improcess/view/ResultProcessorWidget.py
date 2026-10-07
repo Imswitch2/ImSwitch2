@@ -5,6 +5,7 @@ import weakref
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.view.ResultInputList import ResultInputListWidget
+from imswitch.improcess.view.runstate import RunState
 
 #: "Apply to" scopes offered for single-input processors.
 SCOPE_CURRENT = "current"
@@ -30,6 +31,9 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     """``(inputs, params)`` — ``inputs`` is the ordered list of results to run
     on. A list is always emitted, even for one result, so the controller has a
     single code path; it still accepts a bare result from custom panels."""
+
+    sigCancelRequested = QtCore.Signal()
+    """**Cancel** was pressed while a run was going."""
 
     def __init__(self, processor, parent=None):
         super().__init__(parent)
@@ -123,6 +127,8 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         layout.addWidget(self.statusLabel)
         layout.addWidget(self.runButton)
+        self._runState = RunState(self.runButton, layout, self.sigCancelRequested.emit)
+        self.cancelButton = self._runState.cancelButton
         layout.addStretch()
         self.setLayout(layout)
 
@@ -148,7 +154,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
         if result is None or not hasattr(result, "processor_input_choices"):
             self.statusLabel.setText("No compatible result selected.")
-            self.runButton.setEnabled(False)
+            self._setRunEnabled(False)
             self.inputCombo.blockSignals(False)
             return
 
@@ -225,6 +231,19 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         if self.scopeCombo is None:
             return SCOPE_CURRENT
         return str(self.scopeCombo.currentData() or SCOPE_CURRENT)
+
+    def setParameterValues(self, values: dict) -> bool:
+        """Put ``values`` in the parameter widget, if it lets them be set.
+
+        Opt-in, like ``setResult``: a widget that declares ``set_values(dict)``
+        takes the keys it is given and leaves the rest (the console uses it to
+        hand code to the Python step). Returns whether the widget took them.
+        """
+        setter = getattr(self.paramWidget, "set_values", None)
+        if not callable(setter):
+            return False
+        setter(dict(values))
+        return True
 
     def parameterValues(self) -> dict:
         getter = getattr(self.paramWidget, "get_values", None)
@@ -341,6 +360,18 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     def setStatusText(self, text: str) -> None:
         self.statusLabel.setText(text)
 
+    # -- a run in progress --------------------------------------------------------
+
+    def isRunning(self) -> bool:
+        return self._runState.running
+
+    def setRunning(self, running: bool) -> None:
+        """Show that a run is going (Run off, Cancel on) or that it ended."""
+        self._runState.setRunning(running)
+
+    def _setRunEnabled(self, allowed: bool) -> None:
+        self._runState.setRunEnabled(allowed)
+
     # -- internals --------------------------------------------------------
 
     def _scopeChanged(self, _index: int) -> None:
@@ -350,7 +381,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
     def _refreshSingleInput(self, has_choices: bool) -> None:
         inputs = self.selectedInputs()
-        self.runButton.setEnabled(bool(inputs))
+        self._setRunEnabled(bool(inputs))
         if not has_choices and not inputs:
             self.statusLabel.setText(
                 f"{self.processor.name} does not apply to the current result."
@@ -364,13 +395,15 @@ class ResultProcessorWidget(QtWidgets.QWidget):
     def _refreshMultiInput(self) -> None:
         inputs = self.inputWidget.checked_results()
         ok, reason = _check_inputs(self.processor, inputs)
-        self.runButton.setEnabled(ok)
+        self._setRunEnabled(ok)
         if ok:
             self.statusLabel.setText(f"Will run on {len(inputs)} results.")
         else:
             self.statusLabel.setText(reason)
 
     def _run(self) -> None:
+        if self._runState.running:
+            return
         inputs = self.selectedInputs()
         if not inputs:
             self.setStatusText("No processor input selected.")

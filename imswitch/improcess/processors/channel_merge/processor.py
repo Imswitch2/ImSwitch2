@@ -16,6 +16,7 @@ from imswitch.improcess.processors._axis_split import (
     axis_scales_for_result,
     shape_for_result,
 )
+from imswitch.improcess.model.param_spec import ParamField
 from imswitch.improcess.processors.base import Processor
 from imswitch.improcess.processors.combine import combine_compatibility
 
@@ -44,6 +45,16 @@ class ChannelMergeProcessor(Processor):
         # than the parameter widget, but they are parameters all the same:
         # a workflow must be able to set them, and a typo must be caught.
         return {"name": "Merged channels", "axis_label": CHANNEL_AXIS_LABEL}
+
+    @classmethod
+    def param_spec(cls) -> tuple:
+        return (
+            ParamField('name', 'text', 'Merged channels', label='Result name'),
+            ParamField(
+                'axis_label', 'text', 'C', label='Channel axis label',
+                help='Label of the new channel axis the inputs are stacked along',
+            ),
+        )
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

@@ -5,7 +5,9 @@ import matplotlib.pyplot as plt
 
 from scipy.interpolate import BPoly
 
-from .basesignaldesigners import ScanDesigner, ScanInfoContract
+from .basesignaldesigners import (
+    ScanDesigner, ScanInfoContract, scan_voltage_range_refusal,
+)
 from ..errors import ScanDesignRefusedError
 from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
@@ -89,18 +91,18 @@ class GalvoScanDesigner(ScanDesigner):
         as a configured axis collapses to one step (inactive axes are
         filtered out of the signals but stayed in the indexing).
         """
+        return not self.signalCompatibilityRefusal(
+            scanParameters, setupInfo, scanInfo
+        )
+
+    def signalCompatibilityRefusal(self, scanParameters, setupInfo, scanInfo):
+        """Return an actionable reason when the scan leaves voltage limits."""
         for name, (mn, mx) in zip(scanInfo.get('axis_names', []),
                                   scanInfo.get('minmaxes', [])):
-            if name == 'None' or 'Mock' in name:
-                continue
-            props = setupInfo.positioners[name].managerProperties
-            minv = props.get('minVolt')
-            maxv = props.get('maxVolt')
-            if minv is not None and mn < minv:
-                return False
-            if maxv is not None and mx > maxv:
-                return False
-        return True
+            refusal = scan_voltage_range_refusal(setupInfo, name, (mn, mx))
+            if refusal:
+                return refusal
+        return ''
 
     def checkSignalLength(self, scanParameters, setupInfo):
         return not self.signalLengthRefusal(scanParameters, setupInfo)
@@ -421,7 +423,10 @@ class GalvoScanDesigner(ScanDesigner):
             phase_delay=parameterDict['phase_delay'],
             smooth_axes=self.__smooth_axis,
             axis_names=self.axis_devs_order,
-            minmaxes=[[min(axis_signals[i]), max(axis_signals[i])] for i in range(axis_count_scan)],
+            # np.min/np.max: the builtins iterate element by element, which
+            # took ~0.5 s per axis on a 10 M-sample scan.
+            minmaxes=[[float(np.min(axis_signals[i])), float(np.max(axis_signals[i]))]
+                      for i in range(axis_count_scan)],
             tot_scan_time_s=tot_scan_time,
         )
         scanInfoDict = contract.to_dict()
