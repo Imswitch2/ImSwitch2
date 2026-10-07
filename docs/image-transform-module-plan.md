@@ -203,6 +203,16 @@ layer transform, no resampling — the default for verification and overlay) and
 `warp()` (resampling, for when warped pixel data is genuinely needed). Step 0
 only needs the first.
 
+**Current ImControl limitation (2026-10-07).** Transform Calibration now fits
+and persists normalized polynomial models (degree 2/3/4), but its live display
+`Apply` path remains affine-only. ImControl currently applies a calibration by
+setting Napari's `layer.affine`, which is deliberately resample-free and cannot
+represent a nonlinear polynomial. Polynomial transforms can therefore be fit,
+saved, loaded and inspected (including as a sampled displacement field), but
+cannot yet be enabled as a live display correction. Supporting that requires a
+separate explicit live-frame nonlinear resampling path; do **not** approximate
+the polynomial with an affine matrix just to make live Apply appear to work.
+
 **D8 — Correspondence strategies are pluggable; fitting is shared.** The tree
 already has four ways to get corresponding points: regular foci grid
 (`foci_affine`), bead RANSAC matching (etSTED auto-cal, multicolor

@@ -226,6 +226,7 @@ def test_localization_parameter_change_invalidates_both_stages(widget):
     "model, expected_kind",
     [
         ("affine", "affine"),
+        ("polynomial", "polynomial"),
         ("similarity", "affine"),
         ("rigid", "affine"),
         ("translation", "affine"),
@@ -252,6 +253,20 @@ def test_compact_status_reports_fit_quality(widget):
     assert "pairs" in widget.statusLabel.text()
     assert "RMS" in widget.statusLabel.text()
     assert "max" in widget.statusLabel.text()
+
+
+def test_polynomial_fit_disables_affine_only_live_apply(widget):
+    _load_grid_pair(widget)
+    widget.setHostIntegrationEnabled(True)
+    widget.setApplyTargets([("Live test", {"kind": "live_source", "name": "cam"})])
+    widget.setSelectedModel("polynomial")
+
+    assert widget.calibrate()
+    assert widget.transform.kind == "polynomial"
+    assert not widget.applyCheck.isEnabled()
+    assert not widget.setStartupButton.isEnabled()
+    assert "live Apply is not available" in widget.applyCapabilityLabel.text()
+    assert "Polynomial transform" in widget.matrixView.toPlainText()
 
 
 def test_rotation90_choice_survives_a_save_reload(widget, tmp_path, monkeypatch):

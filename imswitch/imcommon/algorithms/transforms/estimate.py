@@ -12,10 +12,11 @@ Three things are deliberately separate here:
 * **Scoring** -- RANSAC, residuals, inliers -- is shared by all of them, so
   every model is judged the same way and its residuals mean the same thing.
 
-The continuous models all *produce* an affine, because a rigid or similarity
-transform is an affine whose linear part happens to be constrained. The
-constraint belongs to the fit, not to the stored matrix; which estimator was
-used is recorded on the fit and travels into the record's provenance.
+The rigid/similarity/translation estimators all *produce* an affine, because
+their constraints live in the fit rather than in a separate stored matrix
+type. Polynomial fitting is the deliberate nonlinear exception: it produces a
+normalized :class:`PolynomialTransform` and is scored through the same robust
+residual/inlier contract as the linear estimators.
 
 Coordinates are this module's ``(row, col)`` convention throughout.
 """
@@ -32,6 +33,7 @@ from .model import ResidualStats
 from .parameters import ParameterSpec, normalize_parameter_values, parameter_defaults
 from .models.affine import AffineTransform
 from .models.identity import IdentityTransform
+from .models.polynomial import PolynomialTransform, polynomial_term_count
 from .models.rotation import Rotation90Transform
 
 __all__ = [
@@ -82,6 +84,17 @@ _RANSAC_PARAMETER_SPECS = {
     ),
 }
 
+_POLYNOMIAL_PARAMETER_SPECS = {
+    "degree": ParameterSpec(
+        2, int, "Polynomial degree",
+        "Spatial polynomial order. Degree 2 is the recommended default; degrees "
+        "3 and 4 can model stronger field-dependent distortion but are easier to "
+        "overfit and should be judged with the transform-field preview.",
+        minimum=2, maximum=4, step=1, choices=(2, 3, 4), group="Polynomial",
+    ),
+    **_RANSAC_PARAMETER_SPECS,
+}
+
 
 ESTIMATORS: dict[str, EstimatorSpec] = {
     "affine": EstimatorSpec(
@@ -94,6 +107,19 @@ ESTIMATORS: dict[str, EstimatorSpec] = {
             "case; use it when the two views may differ in aspect or skew."
         ),
         parameter_specs=_RANSAC_PARAMETER_SPECS,
+    ),
+    "polynomial": EstimatorSpec(
+        name="polynomial",
+        label="Polynomial",
+        dof=12,
+        min_samples=6,
+        description=(
+            "Normalized 2-D polynomial mapping for field-dependent distortion. "
+            "Degree 2/3/4 uses 6/10/15 terms per output coordinate. Fitting, "
+            "saving and inspection are supported; ImControl live Apply is not "
+            "available yet because the current live path is affine-only."
+        ),
+        parameter_specs=_POLYNOMIAL_PARAMETER_SPECS,
     ),
     "similarity": EstimatorSpec(
         name="similarity",
@@ -230,6 +256,7 @@ def fit_transform(
     max_trials: int = 500,
     random_state: int | None = 0,
     input_shape: tuple[int, int] | None = None,
+    degree: int = 2,
 ) -> ModelFit:
     """Fit ``kind`` to paired points and report how well it did.
 
@@ -257,10 +284,15 @@ def fit_transform(
             f"source and target must have matching shapes, got {source.shape} "
             f"and {target.shape}"
         )
-    if len(source) < spec.min_samples:
-        pairs = "pair" if spec.min_samples == 1 else "pairs"
+    required_samples = (
+        polynomial_term_count(int(degree))
+        if spec.name == "polynomial"
+        else spec.min_samples
+    )
+    if len(source) < required_samples:
+        pairs = "pair" if required_samples == 1 else "pairs"
         raise ValueError(
-            f"fitting {spec.name!r} needs at least {spec.min_samples} point "
+            f"fitting {spec.name!r} needs at least {required_samples} point "
             f"{pairs}, got {len(source)}"
         )
     if residual_threshold <= 0:
@@ -272,6 +304,15 @@ def fit_transform(
         model: TransformModel = IdentityTransform(ndim=2)
     elif spec.name == "rotation90":
         model = _fit_rotation90(source, target, input_shape)
+    elif spec.name == "polynomial":
+        model = _ransac_polynomial(
+            source,
+            target,
+            degree=int(degree),
+            threshold=float(residual_threshold),
+            max_trials=int(max_trials),
+            random_state=random_state,
+        )
     else:
         model = AffineTransform(
             _ransac(
@@ -472,3 +513,55 @@ def _ransac(
 
     # No consensus: fall back to every pair, and let the residuals say so.
     return fit_fn(source, target)
+
+
+def _ransac_polynomial(
+    source: np.ndarray,
+    target: np.ndarray,
+    *,
+    degree: int,
+    threshold: float,
+    max_trials: int,
+    random_state: int | None,
+) -> PolynomialTransform:
+    """Robustly fit a normalized polynomial using the shared inlier semantics."""
+    min_samples = polynomial_term_count(degree)
+    count = len(source)
+    if count == min_samples:
+        return PolynomialTransform.fit(source, target, degree=degree)
+
+    generator = np.random.default_rng(random_state)
+    best_inliers = np.zeros(count, dtype=bool)
+    best_median = float("inf")
+
+    for _ in range(max_trials):
+        sample = generator.choice(count, min_samples, replace=False)
+        try:
+            candidate = PolynomialTransform.fit(
+                source[sample], target[sample], degree=degree
+            )
+        except (ValueError, np.linalg.LinAlgError):
+            continue
+        residual = np.linalg.norm(candidate.map_points(source) - target, axis=1)
+        inliers = residual < threshold
+        n_inliers = int(np.sum(inliers))
+        if n_inliers < min_samples:
+            continue
+        median = float(np.median(residual[inliers]))
+        if (
+            n_inliers > int(np.sum(best_inliers))
+            or (n_inliers == int(np.sum(best_inliers)) and median < best_median)
+        ):
+            best_inliers = inliers
+            best_median = median
+        if best_inliers.all():
+            break
+
+    if int(np.sum(best_inliers)) >= min_samples:
+        try:
+            return PolynomialTransform.fit(
+                source[best_inliers], target[best_inliers], degree=degree
+            )
+        except (ValueError, np.linalg.LinAlgError):
+            pass
+    return PolynomialTransform.fit(source, target, degree=degree)

@@ -394,9 +394,15 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.modelCombo = guitools.BetterComboBox()
         for spec in estimator_specs():
             self.modelCombo.addItem(spec.label, spec.name)
+            if spec.name == "polynomial":
+                requirement = (
+                    "Needs at least 6 / 10 / 15 point pairs for degree 2 / 3 / 4."
+                )
+            else:
+                requirement = f"Needs at least {spec.min_samples} point pair(s)."
             self.modelCombo.setItemData(
                 self.modelCombo.count() - 1,
-                f"{spec.description}\n\nNeeds at least {spec.min_samples} point pair(s).",
+                f"{spec.description}\n\n{requirement}",
                 QtCore.Qt.ToolTipRole,
             )
         self.modelCombo.setCurrentIndex(0)
@@ -462,6 +468,9 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         apply_layout = QtWidgets.QHBoxLayout(self.applyControls)
         apply_layout.setContentsMargins(0, 0, 0, 0)
         self.applyCheck = QtWidgets.QCheckBox("Apply")
+        self.applyCapabilityLabel = QtWidgets.QLabel("")
+        self.applyCapabilityLabel.setWordWrap(True)
+        self.applyCapabilityLabel.setVisible(False)
         self.applyTargetCombo = guitools.BetterComboBox()
         self.applyTargetCombo.setMinimumWidth(170)
         self.setStartupButton = guitools.BetterPushButton("Set as startup")
@@ -489,6 +498,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         layout.addSpacing(6)
         layout.addLayout(persistence)
         layout.addWidget(self.applyControls)
+        layout.addWidget(self.applyCapabilityLabel)
         layout.addWidget(self.hostStatusLabel)
         layout.addWidget(self.matrixView)
         layout.addStretch()
@@ -617,9 +627,13 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
 
     def setHostIntegrationEnabled(self, enabled: bool) -> None:
         """Show live-snap/apply controls when a host provides those services."""
+        self._hostIntegrationEnabled = bool(enabled)
         self.snapSourceButton.setVisible(bool(enabled))
         self.snapTargetButton.setVisible(bool(enabled))
         self.applyControls.setVisible(bool(enabled))
+        if not enabled:
+            self.applyCapabilityLabel.setVisible(False)
+        self._updateEnabledState()
 
     def setApplyTargets(
         self,
@@ -763,9 +777,45 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self.localizationParametersButton.setEnabled(True)
         self.transformParametersButton.setEnabled(True)
         has_target = self.applyTargetCombo.count() > 0
-        self.applyCheck.setEnabled(has_transform and has_target)
-        self.applyTargetCombo.setEnabled(has_transform and has_target)
-        self.setStartupButton.setEnabled(has_transform)
+        # Live display correction is deliberately resample-free today: ImControl
+        # writes a homogeneous matrix to Napari ``layer.affine``.  Nonlinear
+        # models (currently Polynomial) are valid fitted/saved transforms but
+        # need a separate live-frame resampling implementation before Apply can
+        # be enabled.  Never approximate them with an affine matrix here.
+        supports_live_apply = bool(
+            has_transform and self._transform is not None
+            and self._transform.as_matrix() is not None
+        )
+        live_apply_reason = (
+            "Polynomial transforms can be fitted, saved, loaded and inspected, "
+            "but live Apply is not available yet. The current live display path "
+            "uses Napari's affine transform without resampling; nonlinear Apply "
+            "will require an explicit live-frame resampling path."
+        )
+        enabled = has_transform and has_target and supports_live_apply
+        self.applyCheck.setEnabled(enabled)
+        self.applyTargetCombo.setEnabled(enabled)
+        self.setStartupButton.setEnabled(has_transform and supports_live_apply)
+        if (
+            has_transform
+            and not supports_live_apply
+            and bool(getattr(self, "_hostIntegrationEnabled", False))
+        ):
+            self.applyCheck.setToolTip(live_apply_reason)
+            self.applyTargetCombo.setToolTip(live_apply_reason)
+            self.setStartupButton.setToolTip(live_apply_reason)
+            self.applyCapabilityLabel.setText(live_apply_reason)
+            self.applyCapabilityLabel.setVisible(True)
+        else:
+            self.applyCheck.setToolTip(
+                "Apply this affine calibration to the selected display target."
+            )
+            self.applyTargetCombo.setToolTip("")
+            self.setStartupButton.setToolTip(
+                "Save/use this named transform as the calibration loaded at startup."
+            )
+            self.applyCapabilityLabel.clear()
+            self.applyCapabilityLabel.setVisible(False)
 
     @staticmethod
     def _normalizeRole(role: str) -> str:
@@ -1331,13 +1381,21 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             )
             self.residualLabel.setText(f"Residuals: {residuals.summary()}")
         matrix = self._transform.as_matrix()
-        self.matrixView.setPlainText(
-            "not an affine model -- no matrix"
-            if matrix is None
-            else "\n".join(
-                "  ".join(f"{value:+10.5f}" for value in row) for row in matrix
+        if matrix is None:
+            degree = getattr(self._transform.model, "degree", None)
+            text = (
+                f"Polynomial transform · degree {int(degree)}\n"
+                "Inspect / tune… → Transform field shows the fitted nonlinear mapping."
+                if degree is not None
+                else "Non-affine transform — no homogeneous matrix."
             )
-        )
+            self.matrixView.setPlainText(text)
+        else:
+            self.matrixView.setPlainText(
+                "\n".join(
+                    "  ".join(f"{value:+10.5f}" for value in row) for row in matrix
+                )
+            )
         self._updateEnabledState()
 
     def _setStatus(self, text: str) -> None:

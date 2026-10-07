@@ -296,7 +296,9 @@ class _LocalizationViewer(QtWidgets.QWidget):
             self.plot.autoRange()
 
 
-class _TransformViewer(QtWidgets.QWidget):
+class _TransformCorrespondenceViewer(QtWidgets.QWidget):
+    """Reference-image view of fitted correspondences and residual vectors."""
+
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
@@ -307,13 +309,59 @@ class _TransformViewer(QtWidgets.QWidget):
         self.plot.hideAxis("left")
         self.plot.hideAxis("bottom")
         self.image_item = pg.ImageItem(axisOrder="row-major")
-        self.reference = pg.ScatterPlotItem(symbol="o", size=9, pen=pg.mkPen("#55aa55", width=1.4), brush=None)
-        self.mapped = pg.ScatterPlotItem(symbol="x", size=9, pen=pg.mkPen("#4c8bd8", width=1.3))
-        self.outliers = pg.ScatterPlotItem(symbol="x", size=11, pen=pg.mkPen("#ff9966", width=1.6))
+        self.reference = pg.ScatterPlotItem(
+            symbol="o", size=9, pen=pg.mkPen("#55aa55", width=1.4), brush=None
+        )
+        self.mapped = pg.ScatterPlotItem(
+            symbol="x", size=9, pen=pg.mkPen("#4c8bd8", width=1.3)
+        )
+        self.outliers = pg.ScatterPlotItem(
+            symbol="x", size=11, pen=pg.mkPen("#ff9966", width=1.6)
+        )
         self.residuals = pg.PlotDataItem(pen=pg.mkPen("#ff6666", width=1.0))
-        for item in (self.image_item, self.residuals, self.reference, self.mapped, self.outliers):
+        for item in (
+            self.image_item,
+            self.residuals,
+            self.reference,
+            self.mapped,
+            self.outliers,
+        ):
             self.plot.addItem(item)
         root.addWidget(self.plot, 1)
+
+        controls = QtWidgets.QHBoxLayout()
+        self.reference_check = QtWidgets.QCheckBox("Reference ○")
+        self.mapped_check = QtWidgets.QCheckBox("Transformed moving ×")
+        self.outliers_check = QtWidgets.QCheckBox("Outliers ×")
+        self.residuals_check = QtWidgets.QCheckBox("Residuals —")
+        for check in (
+            self.reference_check,
+            self.mapped_check,
+            self.outliers_check,
+            self.residuals_check,
+        ):
+            check.setChecked(True)
+            controls.addWidget(check)
+        controls.addStretch(1)
+        root.addLayout(controls)
+
+        self.reference_check.setToolTip(
+            "Localized reference-image positions used as transform targets."
+        )
+        self.mapped_check.setToolTip(
+            "Moving-image positions after applying the fitted transform (inliers)."
+        )
+        self.outliers_check.setToolTip(
+            "Transformed Moving positions whose residual exceeds the fit threshold."
+        )
+        self.residuals_check.setToolTip(
+            "Actual residual vector from each reference position to the corresponding "
+            "transformed Moving position. Vector lengths are not magnified."
+        )
+        self.reference_check.toggled.connect(self.reference.setVisible)
+        self.mapped_check.toggled.connect(self.mapped.setVisible)
+        self.outliers_check.toggled.connect(self.outliers.setVisible)
+        self.residuals_check.toggled.connect(self.residuals.setVisible)
         self._key = None
 
     def setData(self, owner: "TransformCalibrationWidget") -> None:
@@ -322,6 +370,10 @@ class _TransformViewer(QtWidgets.QWidget):
         fit = owner.fitResult
         if image is None:
             self.image_item.setVisible(False)
+            self.reference.setData([], [])
+            self.mapped.setData([], [])
+            self.outliers.setData([], [])
+            self.residuals.setData([], [])
             return
         self.image_item.setVisible(True)
         self.image_item.setImage(np.asarray(image), autoLevels=True)
@@ -331,14 +383,14 @@ class _TransformViewer(QtWidgets.QWidget):
             self.outliers.setData([], [])
             self.residuals.setData([], [])
         else:
-            target = result.target_points
+            target = np.asarray(result.target_points, dtype=np.float64)
             self.reference.setData(x=target[:, 1], y=target[:, 0])
             if fit is None:
                 self.mapped.setData([], [])
                 self.outliers.setData([], [])
                 self.residuals.setData([], [])
             else:
-                mapped = np.asarray(fit.mapped_points)
+                mapped = np.asarray(fit.mapped_points, dtype=np.float64)
                 inliers = np.asarray(fit.inliers, dtype=bool)
                 self.mapped.setData(x=mapped[inliers, 1], y=mapped[inliers, 0])
                 self.outliers.setData(x=mapped[~inliers, 1], y=mapped[~inliers, 0])
@@ -351,6 +403,263 @@ class _TransformViewer(QtWidgets.QWidget):
         if key != self._key:
             self._key = key
             self.plot.autoRange()
+
+
+class _TransformFieldViewer(QtWidgets.QWidget):
+    """SLMcore-inspired sampled displacement-field view of the fitted transform."""
+
+    DEFAULT_VECTOR_SCALE = 2.0
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._source_points: np.ndarray | None = None
+        self._displacements: np.ndarray | None = None
+        self._bounds: tuple[float, float, float, float] | None = None
+        self._colormap = pg.colormap.get("viridis")
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.plot = pg.PlotWidget()
+        self.plot.setAspectLocked(True)
+        self.plot.getViewBox().invertY(True)
+        self.plot.hideAxis("left")
+        self.plot.hideAxis("bottom")
+        self.vectors = pg.PlotDataItem(pen=pg.mkPen("#888888", width=1.0))
+        self.origins = pg.ScatterPlotItem(size=7, pen=None)
+        self.endpoints = pg.ScatterPlotItem(
+            size=4, pen=None, brush=pg.mkBrush("#dddddd")
+        )
+        for item in (self.vectors, self.origins, self.endpoints):
+            self.plot.addItem(item)
+        root.addWidget(self.plot, 1)
+
+        controls = QtWidgets.QGridLayout()
+        magnitude_title = QtWidgets.QLabel("Color = |displacement|")
+        magnitude_title.setToolTip(
+            "Color encodes the actual fitted Moving→Reference displacement magnitude "
+            "at each sampled Moving-image position."
+        )
+        controls.addWidget(magnitude_title, 0, 0)
+        gradient = QtWidgets.QFrame()
+        gradient.setFixedSize(78, 10)
+        gradient.setStyleSheet(
+            "QFrame {"
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #440154, stop:0.5 #21918c, stop:1 #fde725);"
+            "border: 1px solid rgba(160,160,160,90);"
+            "}"
+        )
+        controls.addWidget(gradient, 0, 1)
+        self.magnitude_range = QtWidgets.QLabel("0 → — px")
+        controls.addWidget(self.magnitude_range, 0, 2)
+        vector_legend = QtWidgets.QLabel("Vector: Moving ● → mapped ○")
+        vector_legend.setToolTip(
+            "Vectors start at sampled Moving-image coordinates. The light endpoint "
+            "is the position after applying the fitted transform and the display-only "
+            "vector scale."
+        )
+        controls.addWidget(vector_legend, 0, 3)
+        controls.addWidget(QtWidgets.QLabel("Vector scale:"), 0, 4)
+        self.vector_scale = QtWidgets.QDoubleSpinBox()
+        self.vector_scale.setRange(1.0, 1000.0)
+        self.vector_scale.setDecimals(1)
+        self.vector_scale.setSingleStep(1.0)
+        self.vector_scale.setValue(self.DEFAULT_VECTOR_SCALE)
+        self.vector_scale.setSuffix("×")
+        self.vector_scale.setToolTip(
+            "Display-only magnification of transform displacement vectors. "
+            "Color and reported magnitudes remain unscaled."
+        )
+        self.vector_scale.valueChanged.connect(self._updatePlot)
+        controls.addWidget(self.vector_scale, 0, 5)
+        self.reset_button = QtWidgets.QPushButton("Reset View")
+        self.reset_button.clicked.connect(self.resetView)
+        controls.addWidget(self.reset_button, 0, 6)
+        controls.setColumnStretch(3, 1)
+        self.summary = QtWidgets.QLabel("Transform field unavailable")
+        self.summary.setWordWrap(True)
+        controls.addWidget(self.summary, 1, 0, 1, 7)
+        root.addLayout(controls)
+        self.clear()
+
+    def clear(self) -> None:
+        self._source_points = None
+        self._displacements = None
+        self._bounds = None
+        self.vectors.setData([], [])
+        self.origins.setData([], [])
+        self.endpoints.setData([], [])
+        self.magnitude_range.setText("0 → — px")
+        self.summary.setText("Fit a transform to inspect its displacement field.")
+        self.vector_scale.setEnabled(False)
+        self.reset_button.setEnabled(False)
+
+    def setData(self, owner: "TransformCalibrationWidget") -> None:
+        result = owner.correspondenceResult
+        transform = owner.transform
+        if transform is None:
+            self.clear()
+            return
+        if result is not None:
+            source = np.asarray(result.source_points, dtype=np.float64)
+            if source.ndim != 2 or source.shape[1] != 2 or len(source) == 0:
+                self.clear()
+                return
+            low = np.min(source, axis=0)
+            high = np.max(source, axis=0)
+        else:
+            model = getattr(transform, "model", None)
+            if hasattr(model, "domain_min") and hasattr(model, "domain_max"):
+                low = np.asarray(model.domain_min, dtype=np.float64)
+                high = np.asarray(model.domain_max, dtype=np.float64)
+            elif transform.source_context.image_shape is not None:
+                height, width = tuple(transform.source_context.image_shape)[-2:]
+                low = np.array([0.0, 0.0], dtype=np.float64)
+                high = np.array([max(0.0, height - 1.0), max(0.0, width - 1.0)])
+            else:
+                self.clear()
+                return
+        ys = np.linspace(low[0], high[0], 19) if high[0] > low[0] else np.array([low[0]])
+        xs = np.linspace(low[1], high[1], 19) if high[1] > low[1] else np.array([low[1]])
+        yy, xx = np.meshgrid(ys, xs, indexing="ij")
+        samples = np.column_stack([yy.ravel(), xx.ravel()])
+        mapped = np.asarray(transform.map_points(samples), dtype=np.float64)
+        self._source_points = samples
+        self._displacements = mapped - samples
+        self._bounds = (float(low[0]), float(high[0]), float(low[1]), float(high[1]))
+        self._updatePlot()
+        self.vector_scale.setEnabled(True)
+        self.reset_button.setEnabled(True)
+        self.resetView()
+
+    def _updatePlot(self, *_args: Any) -> None:
+        source = self._source_points
+        displacement = self._displacements
+        if source is None or displacement is None:
+            self.vectors.setData([], [])
+            self.origins.setData([], [])
+            self.endpoints.setData([], [])
+            return
+        magnitudes = np.linalg.norm(displacement, axis=1)
+        maximum = float(np.max(magnitudes)) if magnitudes.size else 0.0
+        normalized = magnitudes / maximum if maximum > 0.0 else np.zeros_like(magnitudes)
+        brushes = [pg.mkBrush(color) for color in self._colormap.map(normalized, mode="qcolor")]
+        scale = float(self.vector_scale.value())
+        endpoints = source + scale * displacement
+        count = len(source)
+        x = np.empty(2 * count, dtype=np.float64)
+        y = np.empty(2 * count, dtype=np.float64)
+        x[0::2], x[1::2] = source[:, 1], endpoints[:, 1]
+        y[0::2], y[1::2] = source[:, 0], endpoints[:, 0]
+        self.vectors.setData(x=x, y=y, connect="pairs")
+        self.origins.setData(x=source[:, 1], y=source[:, 0], brush=brushes, pen=None)
+        self.endpoints.setData(
+            x=endpoints[:, 1], y=endpoints[:, 0], brush=pg.mkBrush("#dddddd"), pen=None
+        )
+        median = float(np.median(magnitudes)) if magnitudes.size else 0.0
+        self.magnitude_range.setText(f"0 → {maximum:.4g} px")
+        self.summary.setText(
+            f"{count} sampled positions · actual displacement median {median:.4g} px · "
+            f"max {maximum:.4g} px · vectors shown at {scale:g}×"
+        )
+
+    def resetView(self, *_args: Any) -> None:
+        if self._bounds is None:
+            return
+        y0, y1, x0, x1 = self._bounds
+        dy = max(y1 - y0, 1.0)
+        dx = max(x1 - x0, 1.0)
+        self.plot.setXRange(x0 - 0.05 * dx, x1 + 0.05 * dx, padding=0.0)
+        self.plot.setYRange(y0 - 0.05 * dy, y1 + 0.05 * dy, padding=0.0)
+
+
+class _TransformViewer(QtWidgets.QWidget):
+    """Switchable correspondence / transform-field inspection surface."""
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.stack = QtWidgets.QStackedWidget()
+        self.correspondence = _TransformCorrespondenceViewer()
+        self.field = _TransformFieldViewer()
+        self.stack.addWidget(self.correspondence)
+        self.stack.addWidget(self.field)
+        root.addWidget(self.stack, 1)
+
+    def setView(self, view: str) -> None:
+        self.stack.setCurrentWidget(
+            self.field if str(view) == "field" else self.correspondence
+        )
+
+    def setData(self, owner: "TransformCalibrationWidget") -> None:
+        self.correspondence.setData(owner)
+        self.field.setData(owner)
+
+
+
+def _formatTransformDetails(transform: Any, fit: Any) -> str:
+    """Human-readable transform summary; raw coefficients/matrix remain secondary."""
+    estimator = None
+    if fit is not None:
+        estimator = getattr(fit, "estimator", None)
+    if not estimator:
+        estimator = dict(getattr(transform, "provenance", {}) or {}).get("estimator")
+    estimator = str(estimator or getattr(transform, "kind", "transform"))
+    lines = [f"Model: {estimator}"]
+
+    matrix = transform.as_matrix()
+    if matrix is not None and np.asarray(matrix).shape == (3, 3):
+        matrix = np.asarray(matrix, dtype=np.float64)
+        linear = matrix[:2, :2]
+        row_axis = linear[:, 0]
+        col_axis = linear[:, 1]
+        row_scale = float(np.linalg.norm(row_axis))
+        col_scale = float(np.linalg.norm(col_axis))
+        denom = max(row_scale * col_scale, np.finfo(float).eps)
+        axis_angle = float(
+            np.degrees(np.arccos(np.clip(np.dot(row_axis, col_axis) / denom, -1.0, 1.0)))
+        )
+        # Image coordinates use +row downward and +col rightward.  This angle is
+        # therefore the clockwise rotation of the mapped +col axis on screen.
+        rotation = float(np.degrees(np.arctan2(col_axis[0], col_axis[1])))
+        lines.extend(
+            [
+                f"Translation: row {matrix[0, 2]:+.4f} px · col {matrix[1, 2]:+.4f} px",
+                f"Axis scale: row {row_scale:.6f} · col {col_scale:.6f}",
+                f"Mapped +col rotation: {rotation:+.4f} deg",
+                f"Mapped axis angle: {axis_angle:.4f} deg (90 deg = no shear)",
+                f"Linear determinant: {float(np.linalg.det(linear)):+.6f}",
+                "",
+                "Homogeneous matrix (row, col):",
+            ]
+        )
+        lines.extend(
+            "  ".join(f"{value:+10.6f}" for value in row) for row in matrix
+        )
+        return "\n".join(lines)
+
+    model = getattr(transform, "model", None)
+    degree = getattr(model, "degree", None)
+    if degree is not None:
+        coefficients = np.asarray(getattr(model, "coefficients"), dtype=np.float64)
+        domain_min = np.asarray(getattr(model, "domain_min"), dtype=np.float64)
+        domain_max = np.asarray(getattr(model, "domain_max"), dtype=np.float64)
+        lines.extend(
+            [
+                f"Degree: {int(degree)} · {coefficients.shape[1]} terms/output",
+                "Calibration coverage (Moving coordinates):",
+                f"  row {domain_min[0]:.3f} .. {domain_max[0]:.3f} px",
+                f"  col {domain_min[1]:.3f} .. {domain_max[1]:.3f} px",
+                "",
+                "Live Apply: unavailable for polynomial transforms in this version.",
+                "Use the Transform field view to inspect the fitted nonlinear mapping.",
+            ]
+        )
+        return "\n".join(lines)
+
+    lines.append("No affine matrix is available for this transform model.")
+    return "\n".join(lines)
 
 
 class TransformCalibrationWorkspace(QtWidgets.QDialog):
@@ -450,6 +759,14 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
     def _buildTransformTab(self) -> QtWidgets.QWidget:
         page = QtWidgets.QWidget()
         root = QtWidgets.QVBoxLayout(page)
+        view_row = QtWidgets.QHBoxLayout()
+        view_row.addWidget(QtWidgets.QLabel("View:"))
+        self.transformViewCombo = QtWidgets.QComboBox()
+        self.transformViewCombo.addItem("Correspondence", "correspondence")
+        self.transformViewCombo.addItem("Transform field", "field")
+        view_row.addWidget(self.transformViewCombo)
+        view_row.addStretch(1)
+        root.addLayout(view_row)
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.transformViewer = _TransformViewer()
         splitter.addWidget(self.transformViewer)
@@ -470,16 +787,19 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         self.transformStatus = QtWidgets.QLabel()
         self.transformStatus.setWordWrap(True)
         right_layout.addWidget(self.transformStatus)
-        self.matrixView = QtWidgets.QPlainTextEdit()
-        self.matrixView.setReadOnly(True)
-        self.matrixView.setMaximumHeight(150)
-        right_layout.addWidget(self.matrixView)
+        self.transformDetailsView = QtWidgets.QPlainTextEdit()
+        self.transformDetailsView.setReadOnly(True)
+        self.transformDetailsView.setMaximumHeight(230)
+        right_layout.addWidget(self.transformDetailsView)
+        # Compatibility alias used by a few early workspace tests/callers.
+        self.matrixView = self.transformDetailsView
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([760, 440])
         root.addWidget(splitter, 1)
 
+        self.transformViewCombo.currentIndexChanged.connect(self._transformViewChanged)
         self.workspaceModelCombo.currentIndexChanged.connect(self._workspaceModelChanged)
         self.transformForm.sigValuesChanged.connect(self._transformParametersChanged)
         self.fitButton.clicked.connect(self.owner.fitTransform)
@@ -510,6 +830,11 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         for index in range(self.owner.modelCombo.count()):
             self.workspaceModelCombo.addItem(
                 self.owner.modelCombo.itemText(index), self.owner.modelCombo.itemData(index)
+            )
+            self.workspaceModelCombo.setItemData(
+                self.workspaceModelCombo.count() - 1,
+                self.owner.modelCombo.itemData(index, QtCore.Qt.ToolTipRole),
+                QtCore.Qt.ToolTipRole,
             )
         index = self.workspaceModelCombo.findData(self.owner.selectedModel())
         if index >= 0:
@@ -581,6 +906,9 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         )
 
     def _refreshTransformPanel(self) -> None:
+        self.transformViewer.setView(
+            str(self.transformViewCombo.currentData() or "correspondence")
+        )
         self.transformViewer.setData(self.owner)
         if not self._skipTransformFormSync:
             self.transformForm.setParameters(
@@ -590,23 +918,26 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         transform = self.owner.transform
         if transform is None:
             self.transformStatus.setText(self.owner.statusLabel.text())
-            self.matrixView.clear()
+            self.transformDetailsView.clear()
         else:
             residuals = transform.residuals
-            self.transformStatus.setText(
-                "Transform fitted." if residuals is None else residuals.summary()
-            )
-            matrix = transform.as_matrix()
-            self.matrixView.setPlainText(
-                "not an affine model -- no matrix"
-                if matrix is None
-                else "\n".join(
-                    "  ".join(f"{value:+10.5f}" for value in row) for row in matrix
+            fit = self.owner.fitResult
+            if residuals is None:
+                self.transformStatus.setText("Transform fitted.")
+            else:
+                self.transformStatus.setText(
+                    f"{residuals.n_points} pairs · {residuals.n_inliers} inliers · "
+                    f"RMS {residuals.rms:.3f} {residuals.unit} · "
+                    f"median {residuals.median:.3f} {residuals.unit} · "
+                    f"max {residuals.max:.3f} {residuals.unit}"
                 )
-            )
+            self.transformDetailsView.setPlainText(_formatTransformDetails(transform, fit))
 
     def _localizationSelectionChanged(self, *_args: Any) -> None:
         self._refreshLocalizationPanel()
+
+    def _transformViewChanged(self, *_args: Any) -> None:
+        self._refreshTransformPanel()
 
     def _methodChanged(self, *_args: Any) -> None:
         name = self.methodCombo.currentData()

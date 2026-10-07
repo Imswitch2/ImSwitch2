@@ -50,6 +50,7 @@ from .models import (
     AffineTransform,
     ComposedTransform,
     IdentityTransform,
+    PolynomialTransform,
     Rotation90Transform,
 )
 
@@ -69,6 +70,7 @@ __all__ = [
     "AffineTransform",
     "ComposedTransform",
     "IdentityTransform",
+    "PolynomialTransform",
     "Rotation90Transform",
     # record
     "SpatialTransform",

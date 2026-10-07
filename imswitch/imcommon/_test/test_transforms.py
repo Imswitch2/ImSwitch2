@@ -22,6 +22,7 @@ from imswitch.imcommon.algorithms.transforms import (
     AffineTransform,
     ComposedTransform,
     IdentityTransform,
+    PolynomialTransform,
     ResidualStats,
     Rotation90Transform,
     SpatialTransform,
@@ -233,7 +234,61 @@ def test_rotation_stack_transforms_every_plane():
 
 
 def test_registry_holds_the_step0_kinds():
-    assert set(model_kinds()) >= {"identity", "rotation90", "affine", "composed"}
+    assert set(model_kinds()) >= {
+        "identity", "rotation90", "affine", "composed", "polynomial"
+    }
+
+
+def test_polynomial_fit_recovers_quadratic_with_outliers():
+    ys = np.linspace(20.0, 220.0, 15)
+    xs = np.linspace(30.0, 230.0, 15)
+    yy, xx = np.meshgrid(ys, xs, indexing="ij")
+    source = np.column_stack([yy.ravel(), xx.ravel()])
+    y = source[:, 0] - 120.0
+    x = source[:, 1] - 130.0
+    truth = np.empty_like(source)
+    truth[:, 0] = source[:, 0] + 2.0 + 0.0012 * x * x + 0.0004 * x * y
+    truth[:, 1] = source[:, 1] - 3.0 - 0.0008 * y * y + 0.0003 * x * y
+
+    observed = truth.copy()
+    outliers = np.array([3, 57, 149])
+    observed[outliers] += np.array([20.0, -15.0])
+
+    fit = fit_transform(
+        "polynomial",
+        source,
+        observed,
+        degree=2,
+        residual_threshold=0.5,
+        max_trials=500,
+    )
+
+    assert isinstance(fit.transform, PolynomialTransform)
+    assert fit.transform.degree == 2
+    assert fit.residuals.n_inliers == len(source) - len(outliers)
+    keep = np.ones(len(source), dtype=bool)
+    keep[outliers] = False
+    error = np.linalg.norm(fit.transform.map_points(source[keep]) - truth[keep], axis=1)
+    assert float(np.max(error)) < 1e-6
+
+
+def test_polynomial_params_and_numerical_inverse_round_trip():
+    ys = np.linspace(0.0, 100.0, 12)
+    xs = np.linspace(0.0, 120.0, 13)
+    yy, xx = np.meshgrid(ys, xs, indexing="ij")
+    source = np.column_stack([yy.ravel(), xx.ravel()])
+    target = source.copy()
+    target[:, 0] += 1.5 + 0.0008 * (source[:, 1] - 60.0) ** 2
+    target[:, 1] -= 2.0 + 0.0006 * (source[:, 0] - 50.0) ** 2
+    model = PolynomialTransform.fit(source, target, degree=2)
+
+    rebuilt = model_from_params(model.kind, model.to_params())
+    np.testing.assert_allclose(rebuilt.map_points(source), model.map_points(source))
+
+    round_tripped = model.inverse().map_points(model.map_points(source))
+    error = np.linalg.norm(round_tripped - source, axis=1)
+    assert float(np.median(error)) < 0.02
+    assert float(np.max(error)) < 0.1
 
 
 @pytest.mark.parametrize("model", sample_models(), ids=lambda m: m.kind)
