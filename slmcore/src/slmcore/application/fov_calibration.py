@@ -300,7 +300,7 @@ class FOVCalibrationService:
         geometry_calibration=self._require_geometry(state)
         base=self.calibration_service.saved_calibration(section_key,mapping_name)
         if not base.is_valid(): raise RuntimeError("Calibrate the base mapping before fitting an FOV correction.")
-        ideal=np.asarray(self.session.runtime.get_section_fov_position_context(section_key)["ideal_positions_kxy"],dtype=np.float64)
+        ideal=np.asarray(self.session.runtime.get_section_fov_mapping_context(section_key)["ideal_positions_kxy"],dtype=np.float64)
         loc=state.localization
         reference_indices=np.asarray(state.reference.resolution.lattice_indices)
         localized_indices=np.asarray(loc.lattice_indices)

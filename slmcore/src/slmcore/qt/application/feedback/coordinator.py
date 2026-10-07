@@ -12,7 +12,7 @@ from ...cgh.session_window import CGHSessionWindow,MeasurementsAction
 from .actions import FeedbackActionRouter
 from .adaptation import FeedbackAdaptationCoordinator
 from .automatic import AutomaticFeedbackCoordinator
-from .fov_calibration import FOVPositionCalibrationCoordinator
+from .fov_mapping import FOVMappingRuntimeCoordinator
 from .geometry_calibration import GeometryOrientationCalibrationCoordinator
 from .localization import LocalizationCoordinator
 from .measurement import MeasurementCoordinator
@@ -74,7 +74,7 @@ class FeedbackCoordinator(QtCore.QObject):
             synchronize_section=synchronize_section,
             report_error=self._error,
         )
-        self._fov_calibration = FOVPositionCalibrationCoordinator(self._feedback_service)
+        self._fov_mapping = FOVMappingRuntimeCoordinator(qt_session.fov_mapping_runtime_service)
         self._geometry = GeometryOrientationCalibrationCoordinator(
             self._feedback_service,
             window_for=self.window,
@@ -184,7 +184,7 @@ class FeedbackCoordinator(QtCore.QObject):
                         self._windows.pop(key,None)
                 )
                 self._references.synchronize(section_key,window)
-                self._fov_calibration.synchronize(section_key,window)
+                self._fov_mapping.synchronize(section_key,window)
                 self._geometry.synchronize(section_key,window)
             else:
                 window.configure_observation_planes(
@@ -267,7 +267,7 @@ class FeedbackCoordinator(QtCore.QObject):
             self._geometry.orientation_ui_context(section_key),
         )
         self._references.synchronize(section_key,window)
-        self._fov_calibration.synchronize(section_key,window)
+        self._fov_mapping.synchronize(section_key,window)
         self._geometry.synchronize(section_key,window)
         self._automatic.configure_availability(window)
         self._automatic.apply_state_to_window(section_key,window)
@@ -486,10 +486,10 @@ class FeedbackCoordinator(QtCore.QObject):
     ) -> None:
         self._references.synchronize(section_key,window)
 
-    def _synchronize_fov_position_calibration(
+    def _synchronize_fov_mapping_correction(
         self,section_key: str,window: CGHSessionWindow,
     ) -> None:
-        self._fov_calibration.synchronize(section_key,window)
+        self._fov_mapping.synchronize(section_key,window)
 
     def _synchronize_geometry_orientation_calibration(
         self,section_key: str,window: CGHSessionWindow,

@@ -88,7 +88,7 @@ class CGHSession:
         self._position_params = _default_values(POSITION_CORRECTION_PARAMS)
         self._localization_reference = None
         self._position_correction: PositionCorrection | None = None
-        self._fov_position_calibration: FOVMappingCorrection | None = None
+        self._fov_mapping_correction: FOVMappingCorrection | None = None
         self._position_reference_round: CGHRound | None = None
         self._position_active = False
         self._prefer_previous_initialization = False
@@ -103,8 +103,8 @@ class CGHSession:
         return self._target.clone() if self._target is not None else None
 
     @property
-    def fov_position_calibration(self) -> FOVMappingCorrection | None:
-        return self._fov_position_calibration
+    def fov_mapping_correction(self) -> FOVMappingCorrection | None:
+        return self._fov_mapping_correction
 
     @property
     def session_snapshot(self) -> CGHSessionSnapshot | None:
@@ -139,7 +139,7 @@ class CGHSession:
         candidate._position_params = dict(self._position_params)
         candidate._localization_reference = self._localization_reference
         candidate._position_correction = self._position_correction
-        candidate._fov_position_calibration = self._fov_position_calibration
+        candidate._fov_mapping_correction = self._fov_mapping_correction
         candidate._position_reference_round = self._position_reference_round
         candidate._position_active = self._position_active
         candidate._prefer_previous_initialization = self._prefer_previous_initialization
@@ -1097,7 +1097,7 @@ class CGHSession:
         measurement_baseline = np.asarray(
             target.resolution.spot_positions_kxy,dtype=np.float64,
         )
-        root_baseline = self._fov_baseline_positions(base_target)
+        root_baseline = self._fov_mapping_baseline_positions(base_target)
         analysis = analyze_position(
             oriented_measurement,
             ideal_positions_kxy=ideal_positions,
@@ -1652,7 +1652,7 @@ class CGHSession:
         return compute_feedback_target_signature(
             target_signature=target_state.target_signature,
             position_signature=compute_position_layers_signature(
-                fov_calibration=self._fov_position_calibration,
+                fov_mapping_correction=self._fov_mapping_correction,
                 position_correction=(
                     self._position_correction
                     if include_position and self._position_active else None
@@ -1782,7 +1782,7 @@ class CGHSession:
             )
         positions = None
         if FeedbackCapability.POSITION_CORRECTION in set(target.feedback_capabilities):
-            positions = self._fov_baseline_positions(target)
+            positions = self._fov_mapping_baseline_positions(target)
             if (
                 include_position
                 and self._position_active
@@ -1797,20 +1797,20 @@ class CGHSession:
             spot_intensities=intensities,
         )
 
-    def _fov_baseline_positions(self,target: Target) -> np.ndarray:
+    def _fov_mapping_baseline_positions(self,target: Target) -> np.ndarray:
         base = target.resolution
         ideal = np.asarray(base.ideal_spot_positions_kxy,dtype=np.float64)
-        calibration = self._fov_position_calibration
+        calibration = self._fov_mapping_correction
         if calibration is None:
             return ideal
         if FeedbackCapability.POSITION_CORRECTION not in set(target.feedback_capabilities):
             return ideal
         return calibration.corrected_positions(ideal)
 
-    def fov_position_context(
+    def fov_mapping_context(
         self,state: CGHState,context: SectionContext,
     ) -> Mapping[str,Any]:
-        calibration = self._fov_position_calibration
+        calibration = self._fov_mapping_correction
         if state.selected_target is None:
             empty = np.empty((2,0),dtype=np.float64)
             return {
@@ -1821,7 +1821,7 @@ class CGHSession:
                 "outside_mask":np.empty((0,),dtype=bool),
                 "max_extrapolation_kxy":0.0,
                 "coverage_tolerance_kxy":0.0,
-                "calibration":calibration,
+                "correction":calibration,
             }
         target_state = self._resolve_requested_target_state(state,context)
         target = self._build_target(target_state,context)
@@ -1844,10 +1844,10 @@ class CGHSession:
             "outside_mask":np.array(outside,copy=True),
             "max_extrapolation_kxy":float(maximum),
             "coverage_tolerance_kxy":float(tolerance),
-            "calibration":calibration,
+            "correction":calibration,
         }
 
-    def set_fov_position_calibration(
+    def set_fov_mapping_correction(
         self,state: CGHState,context: SectionContext,
         calibration: FOVMappingCorrection | None,
     ) -> bool:
@@ -1861,22 +1861,22 @@ class CGHSession:
             FeedbackCapability.POSITION_CORRECTION
             in self._feedback_capabilities(state)
         )
-        previous = self._fov_position_calibration
+        previous = self._fov_mapping_correction
         if (
             previous is calibration
             or (previous is not None and calibration is not None
                 and previous.to_dict() == calibration.to_dict())
         ):
             return False
-        self._fov_position_calibration = calibration
+        self._fov_mapping_correction = calibration
         if not effective_changed:
-            # Keep the selected/default calibration ready for a future compatible
+            # Keep the selected/default correction ready for a future compatible
             # target, but do not disturb an intensity-only or non-CGH session.
             return False
 
         self.invalidate_prepared_compute()
         # Keep the previous absolute correction for inspection, but changing
-        # the FOV-calibrated root baseline makes it inapplicable until a fresh
+        # the FOV-corrected root baseline makes it inapplicable until a fresh
         # position correction is measured against the new baseline.
         self._position_reference_round = None
         self._position_active = False
@@ -1889,7 +1889,7 @@ class CGHSession:
         self._requires_fresh_initialization = True
         return True
 
-    def restore_fov_position_calibration(
+    def restore_fov_mapping_correction(
         self,calibration: FOVMappingCorrection | None,
     ) -> None:
         """Rebind persisted FOV context without mutating restored CGH history.
@@ -1898,7 +1898,7 @@ class CGHSession:
         the same FOV correction through the normal user-edit path would
         deliberately invalidate position/intensity feedback state even when the
         saved CGH was computed with that exact correction.  This restoration
-        hook only reinstates the external calibration context; normal status
+        hook only reinstates the external mapping-correction context; normal status
         signature checks then decide whether the restored CGH is synced or
         stale.
         """
@@ -1908,7 +1908,7 @@ class CGHSession:
             raise TypeError(
                 "calibration must be an FOVMappingCorrection or None"
             )
-        self._fov_position_calibration = calibration
+        self._fov_mapping_correction = calibration
         self.invalidate_prepared_compute()
 
     def _position_correction_stale_reason(
@@ -1925,14 +1925,14 @@ class CGHSession:
             self._validate_position_correction_for_resolution(
                 correction,target.resolution,
             )
-            current_baseline = self._fov_baseline_positions(target)
+            current_baseline = self._fov_mapping_baseline_positions(target)
         except Exception as error:
             return "Position correction is stale: %s" % error
         if not np.allclose(
             correction.baseline_positions_kxy,current_baseline,
             rtol=1e-9,atol=1e-12,
         ):
-            return "Position correction is stale because the FOV calibration changed."
+            return "Position correction is stale because the FOV mapping correction changed."
         return ""
 
     @staticmethod

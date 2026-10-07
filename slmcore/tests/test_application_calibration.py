@@ -381,9 +381,9 @@ def test_delete_mapping_cascades_owned_fov_defaults_and_runtime_state(tmp_path):
     workspace.fov_mapping_correction_store.save(second)
     workspace.fov_mapping_correction_store.save(other_slm)
 
-    session.feedback.select_fov_position_calibration("sec_0","field A")
-    session.feedback.set_fov_position_calibration_applied("sec_0",True)
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is not None
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
+    session.fov_mapping_runtime.set_fov_mapping_correction_applied("sec_0",True)
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"] is not None
 
     deleted = session.calibration.delete_mapping(mapping)
 
@@ -410,7 +410,7 @@ def test_delete_mapping_cascades_owned_fov_defaults_and_runtime_state(tmp_path):
     assert preferences.default_fov_correction("sec_0",other) == "field B"
     assert session.calibration.active_mapping("sec_0") is None
     assert runtime.get_section_calibration_copy("sec_0") is None
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"] is None
     assert saved_preferences
     session.dispose()
 

@@ -148,7 +148,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "create_unavailable_reason":"",
         }
         self._position_reference_preview = None
-        self._fov_calibration_preview = None
+        self._fov_mapping_preview = None
         self._geometry_calibration_context: dict[str,Any] = {}
         self._normal_localization_context = dict(localization_context or {})
         self._set_feedback_orientation_context_state(feedback_orientation_context)
@@ -692,7 +692,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_view_combo = QtWidgets.QComboBox()
         self.position_view_combo.addItem("Detector overlay","detector")
         self.position_view_combo.addItem("Position correction","kxy")
-        self.position_view_combo.addItem("FOV calibration","fov")
+        self.position_view_combo.addItem("FOV correction","fov")
         self.position_view_combo.currentIndexChanged.connect(
             self._on_position_view_changed,
         )
@@ -706,10 +706,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._on_position_reference_center_dragged,
         )
         self.position_correction_view = PositionCorrectionView(viewer)
-        self.fov_calibration_view = PositionCorrectionView(viewer)
+        self.fov_mapping_view = PositionCorrectionView(viewer)
         self.position_view_stack.addWidget(self.position_reference_view)
         self.position_view_stack.addWidget(self.position_correction_view)
-        self.position_view_stack.addWidget(self.fov_calibration_view)
+        self.position_view_stack.addWidget(self.fov_mapping_view)
         viewer_layout.addWidget(self.position_view_stack,1)
         layout.addWidget(viewer,1)
 
@@ -958,10 +958,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
         controls_layout.addWidget(separator)
         controls_layout.addSpacing(2)
 
-        # Persistent FOV mapping calibration moved to the dedicated Calibration
-        # Manager workflow in Patch 9. Position Feedback remains focused on
-        # transient measurement/reference corrections and no longer produces
-        # or saves FOV calibration candidates.
+        # Persistent FOV fitting lives in the dedicated Calibration workspace.
+        # Position Feedback only inspects the currently selected mapping correction
+        # alongside transient measurement/reference corrections.
 
         controls_layout.addStretch(1)
         layout.addWidget(controls,0)
@@ -1226,7 +1225,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 self.measurement_view.set_ordering_editable(False)
         self.measurement_view.set_accept_enabled(False)
 
-    def set_fov_position_calibration_state(
+    def set_fov_mapping_correction_state(
         self,context: Mapping[str,Any] | None,preview: Mapping[str,Any] | None,
     ) -> None:
         """Update the read-only FOV correction visualization.
@@ -1234,7 +1233,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         Runtime Apply state is presented by the section-level FOV checkbox; the
         feedback workspace no longer owns FOV fitting or persistence controls.
         """
-        self._fov_calibration_preview = None if preview is None else dict(preview)
+        self._fov_mapping_preview = None if preview is None else dict(preview)
         self._refresh_feedback_visualizations()
 
     def set_position_reference_state(
@@ -2477,11 +2476,11 @@ class CGHSessionWindow(QtWidgets.QDialog):
             else:
                 self.position_correction_view.set_correction(correction)
 
-        fov_preview = self._fov_calibration_preview
+        fov_preview = self._fov_mapping_preview
         if fov_preview is None:
-            self.fov_calibration_view.clear()
+            self.fov_mapping_view.clear()
         else:
-            self.fov_calibration_view.set_data(
+            self.fov_mapping_view.set_data(
                 ideal_positions_kxy=fov_preview.get("current_positions_kxy"),
                 displacement_kxy=fov_preview.get("current_displacements_kxy"),
             )
@@ -2532,7 +2531,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 position_text = "Correction cleared · hologram pending"
             position_color = _WARNING_COLOR
         elif position_stale:
-            position_text = "Stored correction stale · FOV calibration changed"
+            position_text = "Stored correction stale · FOV mapping correction changed"
             position_color = _WARNING_COLOR
         elif status.position_available and status.position_active:
             position_text,position_color = "Correction active",_OK_COLOR

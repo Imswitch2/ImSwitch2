@@ -502,7 +502,7 @@ class PositionReferenceService(FeedbackComponent):
                     None if editable_geometry is None else editable_geometry.to_dict()
                 ),
                 "ideal_positions_kxy":np.asarray(
-                    self._runtime.get_section_fov_position_context(
+                    self._runtime.get_section_fov_mapping_context(
                         section_key
                     )["ideal_positions_kxy"]
                 ),

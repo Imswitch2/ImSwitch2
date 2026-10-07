@@ -1306,7 +1306,7 @@ def test_fov_change_retains_position_correction_as_stale_and_blocks_reenable():
     runtime,section_key = _runtime()
     calibration_a = _test_fov_calibration("a",0.001,-0.001)
     calibration_b = _test_fov_calibration("b",0.004,0.002)
-    runtime.set_section_fov_position_calibration(section_key,calibration_a)
+    runtime.set_section_fov_mapping_correction(section_key,calibration_a)
     _commit_job(runtime,section_key)
     _measurement,localization = _attach_localized_measurement(runtime,section_key)
     reference = np.asarray(localization.expected_positions_px,dtype=np.float64).copy()
@@ -1317,13 +1317,13 @@ def test_fov_change_retains_position_correction_as_stale_and_blocks_reenable():
     _commit_job(runtime,section_key)
     assert runtime.get_section_feedback_status(section_key).position_active
 
-    runtime.set_section_fov_position_calibration(section_key,calibration_b)
+    runtime.set_section_fov_mapping_correction(section_key,calibration_b)
     status = runtime.get_section_feedback_status(section_key)
     assert status.position_available
     assert not status.position_active
     assert status.position_stale
-    assert "FOV calibration changed" in status.position_stale_reason
-    with pytest.raises(RuntimeError,match="FOV calibration changed"):
+    assert "FOV mapping correction changed" in status.position_stale_reason
+    with pytest.raises(RuntimeError,match="FOV mapping correction changed"):
         runtime.set_section_position_correction_active(section_key,True)
 
     transition = runtime.clear_section_position_correction(section_key)

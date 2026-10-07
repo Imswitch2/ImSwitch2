@@ -815,22 +815,22 @@ class SLMSectionRuntime:
             reference_positions_px=reference_positions_px,
         )
 
-    def get_fov_position_context(self):
-        return self._cgh_session.fov_position_context(
+    def get_fov_mapping_context(self):
+        return self._cgh_session.fov_mapping_context(
             self.state.cgh,self._build_context(self.state),
         )
 
-    def set_fov_position_calibration(self,calibration) -> bool:
+    def set_fov_mapping_correction(self,calibration) -> bool:
         candidate = self._cgh_session.clone()
-        effective_changed = candidate.set_fov_position_calibration(
+        effective_changed = candidate.set_fov_mapping_correction(
             self.state.cgh,self._build_context(self.state),calibration,
         )
         self._commit_feedback_session(candidate,effective_changed)
         return effective_changed
 
-    def restore_fov_position_calibration(self,calibration) -> None:
+    def restore_fov_mapping_correction(self,calibration) -> None:
         """Restore config-owned FOV context without invalidating saved rounds."""
-        self._cgh_session.restore_fov_position_calibration(calibration)
+        self._cgh_session.restore_fov_mapping_correction(calibration)
 
     def set_position_correction_active(
         self,active: bool,*,reset_intensity: bool=False,

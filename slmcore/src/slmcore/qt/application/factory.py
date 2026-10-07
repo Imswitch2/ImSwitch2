@@ -207,7 +207,7 @@ class SLMQtSessionFactory:
                     startup.config
                 )
             else:
-                application_session.feedback.apply_startup_fov_position_calibration_defaults()
+                application_session.fov_mapping_runtime.apply_startup_fov_mapping_defaults()
                 startup_fov_warnings = ()
             synchronized_snapshots = application_session.runtime.get_section_snapshots()
             if any(

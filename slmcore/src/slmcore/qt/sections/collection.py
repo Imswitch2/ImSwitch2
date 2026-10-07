@@ -169,10 +169,10 @@ class SectionsCollectionView(QtCore.QObject):
     def set_feedback_status(self,section_key: str,status) -> None:
         self.section_view(section_key).apply_feedback_status(status)
 
-    def set_fov_position_calibration_context(
+    def set_fov_mapping_correction_context(
         self,section_key: str,context,
     ) -> None:
-        self.section_view(section_key).set_fov_position_calibration_context(
+        self.section_view(section_key).set_fov_mapping_correction_context(
             context
         )
 

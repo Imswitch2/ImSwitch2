@@ -30,6 +30,7 @@ from .feedback import (
 )
 from .calibration import SLMCalibrationCallbacks,SLMCalibrationService
 from .fov_calibration import FOVCalibrationService
+from .fov_mapping_runtime import FOVMappingRuntimeService
 from .geometry_calibration import GeometryCalibrationPayload,GeometryCalibrationService
 from .section_layout import PreparedSectionLayoutChange,SLMSectionLayoutService
 
@@ -169,7 +170,6 @@ class SLMSession:
             measurements=measurement_dispatcher,
             callbacks=self._feedback_callbacks(),
             position_reference_store=position_reference_store,
-            mappings=self.mappings,
             observation_geometry=self.observation_geometry,
             geometry_calibration=self.geometry_calibration,
         )
@@ -183,6 +183,19 @@ class SLMSession:
             display_name=self.display_name,
             measurements=measurement_dispatcher,
             callbacks=self._calibration_callbacks(),
+        )
+        self.fov_mapping_runtime = FOVMappingRuntimeService(
+            runtime_provider=lambda:self.runtime,
+            editor_writes_allowed=lambda:bool(self.editor_writes_allowed),
+            active_mapping=lambda key:self.calibration.active_mapping(key),
+            startup_preferences=lambda:self.startup_preferences,
+            cancel_cgh=lambda key:self.cancel_cgh(key),
+            section_changed=lambda key:self._notify(
+                "on_section_refresh_requested",key,
+            ),
+            transition_committed=lambda key,transition:
+                self._handle_committed_transition(key,transition),
+            mappings=self.mappings,
         )
         self.fov_calibration = FOVCalibrationService(
             self,
@@ -335,14 +348,14 @@ class SLMSession:
         """Capture runtime state plus application-owned FOV selection intent."""
         config = self.runtime.create_config()
         for section_key,section in config.sections.items():
-            runtime_fov = self.runtime.get_section_fov_position_context(
+            runtime_fov = self.runtime.get_section_fov_mapping_context(
                 section_key
-            ).get("calibration")
+            ).get("correction")
             if runtime_fov is not None:
                 name = str(runtime_fov.name)
                 applied = True
             else:
-                context = self.feedback.fov_position_calibration_context(
+                context = self.fov_mapping_runtime.fov_mapping_context(
                     section_key
                 )
                 name = str(context.get("selected_name") or "").strip() or None
@@ -367,7 +380,7 @@ class SLMSession:
                 # historical per-session/default choice, but rebind it through
                 # the non-destructive config restoration path so a saved CGH
                 # can become synced when the same FOV is still in use.
-                context = self.feedback.fov_position_calibration_context(
+                context = self.fov_mapping_runtime.fov_mapping_context(
                     section_key
                 )
                 applied = bool(context.get("applied",False))
@@ -375,11 +388,11 @@ class SLMSession:
                     context.get("applied_name")
                     if applied else context.get("selected_name")
                 )
-                warning = self.feedback.restore_config_fov_position_calibration(
+                warning = self.fov_mapping_runtime.restore_config_fov_mapping_correction(
                     section_key,name,applied,
                 )
             else:
-                warning = self.feedback.restore_config_fov_position_calibration(
+                warning = self.fov_mapping_runtime.restore_config_fov_mapping_correction(
                     section_key,saved.name,saved.applied,
                 )
             if warning:
@@ -1137,10 +1150,10 @@ class SLMSession:
         self._notify("on_automatic_feedback_changed",state)
 
     def _on_calibration_mappings_changed(self) -> None:
-        # FOV remains mapping-scoped until its later ownership move. Observation
-        # orientation/geometry are independent and must not be refreshed here.
+        # FOV runtime state is mapping-scoped. Observation orientation/geometry
+        # are independent and must not be refreshed here.
         if not self._config_fov_restore_active:
-            self.feedback.refresh_fov_position_calibration_contexts()
+            self.fov_mapping_runtime.refresh_fov_mapping_contexts()
         self._notify("on_calibration_mappings_changed")
 
     def _calibration_callbacks(self) -> SLMCalibrationCallbacks:
@@ -1219,6 +1232,7 @@ class SLMSession:
         if self._disposed:
             return
         self.feedback.dispose()
+        self.fov_mapping_runtime.dispose()
         self.calibration.dispose()
         self.geometry_calibration.dispose()
         for section_key in tuple(self.runtime.section_keys):

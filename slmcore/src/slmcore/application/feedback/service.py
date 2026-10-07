@@ -19,7 +19,6 @@ from ...core.cgh.feedback import (
     PositionReference,PositionReferenceMode,
 )
 from ...core.cgh.localization import LocalizationResult
-from ...core.calibration import FOVMappingCorrection
 from ...core.measurement import ImageMeasurement
 from ...core.engine.transition import SectionStateTransition
 from ..position_reference_store import (
@@ -30,10 +29,6 @@ from .automatic import AutomaticFeedbackRunner
 from .contracts import (
     AutomaticFeedbackState,FeedbackOrientationContext,FeedbackParameterUpdateResult,
     MeasurementDispatcher,SLMFeedbackCallbacks,
-)
-from .fov_calibration import (
-    FOVPositionCalibrationContext,FOVPositionCalibrationPreview,
-    FOVPositionCalibrationService,
 )
 from .geometry_calibration import (
     GeometryCalibrationPayload,GeometryOrientationCalibrationContext,
@@ -48,7 +43,6 @@ from .references import (
 
 if TYPE_CHECKING:
     from ..session import SLMSession
-    from ..mapping import MappingService
     from ..observation_geometry import ObservationGeometryService
     from ..geometry_calibration import GeometryCalibrationService
 
@@ -63,7 +57,6 @@ class SLMFeedbackService:
         measurements: MeasurementDispatcher | None=None,
         callbacks: SLMFeedbackCallbacks | None=None,
         position_reference_store: PositionReferenceStore | None=None,
-        mappings: "MappingService",
         observation_geometry: "ObservationGeometryService | None"=None,
         geometry_calibration: "GeometryCalibrationService | None"=None,
     ) -> None:
@@ -118,15 +111,6 @@ class SLMFeedbackService:
             feedback_orientation=self._geometry.feedback_orientation,
             current_config_path=lambda:self._application_session.current_config_path,
             store=position_reference_store,
-        )
-        self._fov_calibration = FOVPositionCalibrationService(
-            runtime_provider=runtime_provider,
-            callbacks_provider=callbacks_provider,
-            editor_writes_allowed=editor_writes_allowed,
-            active_mapping=self._active_mapping_name,
-            startup_preferences=startup_preferences,
-            cancel_cgh=lambda key:self._application_session.cancel_cgh(key),
-            mappings=mappings,
         )
         self._localization = LocalizationService(
             runtime_provider=runtime_provider,
@@ -440,80 +424,6 @@ class SLMFeedbackService:
         return self._references._on_position_reference_store_changed()
 
     # ------------------------------------------------------------------
-    # FOV position calibration
-    # ------------------------------------------------------------------
-
-    def _fov_position_key(self,section_key: str) -> tuple[str,str | None]:
-        return self._fov_calibration._fov_position_key(section_key)
-
-    def _saved_fov_position_calibration_name(
-        self,section_key: str,plane_name: str | None,
-    ) -> str | None:
-        return self._fov_calibration._saved_fov_position_calibration_name(
-            section_key,
-            plane_name,
-        )
-
-    def _load_fov_position_calibration(
-        self,section_key: str,plane_name: str,name: str,
-    ) -> FOVMappingCorrection:
-        return self._fov_calibration._load_fov_position_calibration(section_key,plane_name,name)
-
-    def fov_position_calibration_context(self,section_key: str) -> FOVPositionCalibrationContext:
-        return self._fov_calibration.fov_position_calibration_context(section_key)
-
-    def fov_position_calibration_preview(self,section_key: str) -> FOVPositionCalibrationPreview | None:
-        return self._fov_calibration.fov_position_calibration_preview(section_key)
-
-    def select_fov_position_calibration(
-        self,section_key: str,name: str | None,
-    ) -> None:
-        return self._fov_calibration.select_fov_position_calibration(section_key,name)
-
-    def set_fov_position_calibration_applied(
-        self,section_key: str,applied: bool,
-    ) -> None:
-        return self._fov_calibration.set_fov_position_calibration_applied(section_key,applied)
-
-    def restore_config_fov_position_calibration(
-        self,section_key: str,name: str | None,applied: bool,
-    ) -> str | None:
-        return self._fov_calibration.restore_config_fov_position_calibration(
-            section_key,name,applied,
-        )
-
-    def set_default_fov_position_calibration(self,section_key: str) -> None:
-        return self._fov_calibration.set_default_fov_position_calibration(section_key)
-
-    def delete_fov_position_calibration(self,section_key: str) -> str:
-        return self._fov_calibration.delete_fov_position_calibration(section_key)
-
-    def _set_runtime_fov_position_calibration(
-        self,section_key: str,calibration: FOVMappingCorrection | None,
-        *,notify: bool=True,
-    ) -> None:
-        # Context refreshes happen for all sections on plane/catalog changes.
-        # Do not cancel a CGH request or create redundant callbacks when this
-        # section already holds the exact same persistent field.
-        return self._fov_calibration._set_runtime_fov_position_calibration(
-            section_key,
-            calibration,
-            notify=notify,
-        )
-
-    def _warn_fov_extrapolation(self,section_key: str) -> None:
-        return self._fov_calibration._warn_fov_extrapolation(section_key)
-
-    def apply_startup_fov_position_calibration_defaults(self) -> None:
-        return self._fov_calibration.apply_startup_fov_position_calibration_defaults()
-
-    def refresh_fov_position_calibration_contexts(self) -> None:
-        return self._fov_calibration.refresh_fov_position_calibration_contexts()
-
-    def _on_fov_mapping_correction_store_changed(self) -> None:
-        return self._fov_calibration._on_fov_mapping_correction_store_changed()
-
-    # ------------------------------------------------------------------
     # Feedback orientation and geometry calibration
     # ------------------------------------------------------------------
 
@@ -803,7 +713,6 @@ class SLMFeedbackService:
     def dispose(self) -> None:
         self.prepare_runtime_change()
         self._references.dispose()
-        self._fov_calibration.dispose()
         self._geometry.dispose()
 
     # ------------------------------------------------------------------

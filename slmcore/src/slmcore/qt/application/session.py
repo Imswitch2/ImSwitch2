@@ -182,6 +182,10 @@ class SLMQtSession(QtCore.QObject):
         return self._application_session.observation_geometry
 
     @property
+    def fov_mapping_runtime_service(self):
+        return self._application_session.fov_mapping_runtime
+
+    @property
     def fov_calibration_service(self):
         return self._application_session.fov_calibration
 
@@ -723,8 +727,8 @@ class SLMQtSession(QtCore.QObject):
             self.clear_cgh_session(section_key)
         elif cgh_action is CghAction.OPEN_MEASUREMENTS_CORRECTIONS:
             self._feedback.open_window(section_key)
-        elif cgh_action is CghAction.FOV_CALIBRATION_APPLY:
-            self.feedback_service.set_fov_position_calibration_applied(
+        elif cgh_action is CghAction.FOV_MAPPING_APPLY:
+            self.fov_mapping_runtime_service.set_fov_mapping_correction_applied(
                 section_key,bool(values.get("applied",False)),
             )
         elif cgh_action is CghAction.POSITION_SET_ACTIVE:
@@ -961,8 +965,8 @@ class SLMQtSession(QtCore.QObject):
         )
         status = self.runtime.get_section_feedback_status(section_key)
         self.section_collection.set_feedback_status(section_key,status)
-        self.section_collection.set_fov_position_calibration_context(
-            section_key,self.feedback_service.fov_position_calibration_context(
+        self.section_collection.set_fov_mapping_correction_context(
+            section_key,self.fov_mapping_runtime_service.fov_mapping_context(
                 section_key
             ),
         )

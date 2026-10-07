@@ -5,9 +5,6 @@ from .contracts import (
     AutomaticFeedbackState,FeedbackOrientationContext,FeedbackParameterUpdateResult,
     MeasurementDispatcher,MeasurementRequest,SLMFeedbackCallbacks,
 )
-from .fov_calibration import (
-    FOVPositionCalibrationContext,FOVPositionCalibrationPreview,
-)
 from .geometry_calibration import (
     GeometryCalibrationPayload,GeometryOrientationCalibrationContext,
 )
@@ -21,8 +18,6 @@ __all__ = [
     "AutomaticFeedbackState",
     "FeedbackOrientationContext",
     "FeedbackParameterUpdateResult",
-    "FOVPositionCalibrationContext",
-    "FOVPositionCalibrationPreview",
     "GeometryCalibrationPayload",
     "GeometryOrientationCalibrationContext",
     "MeasurementDispatcher",

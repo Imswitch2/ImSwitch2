@@ -769,7 +769,7 @@ class CalibrationManager(QtCore.QObject):
                 )
                 if answer!=QtWidgets.QMessageBox.Yes: return
             service.save_candidate(section_key,state.mapping_name,name,overwrite=overwrite,set_default=set_default)
-            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self.controller.fov_mapping_runtime_service.refresh_fov_mapping_contexts()
             self._refresh_management_context(section_key,state.mapping_name)
             if self._embedded_workflow==("fov",section_key):
                 self._management_finish_embedded_workflow(section_key)
@@ -825,7 +825,7 @@ class CalibrationManager(QtCore.QObject):
             if correction is None or str(getattr(correction,"name","") or "")!=str(name):
                 raise RuntimeError("Refit the selected FOV correction before saving an update.")
             self.controller.mapping_service.save_fov_correction(correction,overwrite=True)
-            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self.controller.fov_mapping_runtime_service.refresh_fov_mapping_contexts()
             self._refresh_management_context(section_key,mapping_name)
             if self._management_dialog is not None:
                 self._management_dialog.select_fov(name)
@@ -860,7 +860,7 @@ class CalibrationManager(QtCore.QObject):
                 try:mappings.rename_fov_correction(section_key,mapping_name,new,old)
                 except Exception:pass
                 raise
-            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self.controller.fov_mapping_runtime_service.refresh_fov_mapping_contexts()
             self._refresh_management_context(section_key,mapping_name)
             if self._management_dialog is not None:
                 self._management_dialog.select_fov(new)
@@ -878,7 +878,7 @@ class CalibrationManager(QtCore.QObject):
             if not calibration.is_valid() or correction.base_mapping_signature != base_mapping_signature(calibration):
                 raise RuntimeError("Incompatible FOV corrections cannot be set as default.")
             self.controller.startup_preferences.set_default_fov_correction(section_key,mapping_name,name)
-            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self.controller.fov_mapping_runtime_service.refresh_fov_mapping_contexts()
             self._refresh_management_context(section_key,mapping_name)
         except Exception as error:
             self._error("Set default FOV correction failed",error)
@@ -911,7 +911,7 @@ class CalibrationManager(QtCore.QObject):
             self.controller.mapping_service.delete_fov_correction(section_key,mapping_name,name)
             if self.controller.startup_preferences.default_fov_correction(section_key,mapping_name)==name:
                 self.controller.startup_preferences.set_default_fov_correction(section_key,mapping_name,None)
-            self.controller.feedback_service.refresh_fov_position_calibration_contexts()
+            self.controller.fov_mapping_runtime_service.refresh_fov_mapping_contexts()
             self._refresh_management_context(section_key,mapping_name)
         except Exception as error:
             self._error("Delete FOV correction failed",error)

@@ -279,7 +279,7 @@ class SectionView(QtWidgets.QWidget):
             )
             fov_apply.toggled.connect(
                 lambda checked:self.sigCghActionRequested.emit(
-                    self.section_key,CghAction.FOV_CALIBRATION_APPLY.value,
+                    self.section_key,CghAction.FOV_MAPPING_APPLY.value,
                     {"applied":bool(checked)},
                 )
             )
@@ -842,7 +842,7 @@ class SectionView(QtWidgets.QWidget):
             if isinstance(group_view,CghGroupView):
                 group_view.apply_feedback_status(status)
 
-    def set_fov_position_calibration_context(
+    def set_fov_mapping_correction_context(
         self,context: Mapping[str,Any] | None,
     ) -> None:
         self._fov_mapping_context = dict(context or {})
@@ -861,7 +861,7 @@ class SectionView(QtWidgets.QWidget):
         checkbox.setEnabled(enabled)
         reason = str(ctx.get("compatibility_reason") or "").strip()
         if not supported:
-            reason = "The current target does not support FOV position correction."
+            reason = "The current target does not support FOV mapping correction."
         extrapolated = int(ctx.get("extrapolated_count",0) or 0)
         target_count = int(ctx.get("target_count",0) or 0)
         if extrapolated:

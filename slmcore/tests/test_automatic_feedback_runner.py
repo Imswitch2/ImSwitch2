@@ -212,7 +212,7 @@ def test_stop_during_cgh_waits_for_that_cgh_then_stops():
 def test_stale_position_correction_blocks_automatic_feedback_start():
     service = _Service()
     service.application_session.runtime.feedback_status = _FeedbackStatus(
-        stale=True,reason="Position correction is stale because the FOV calibration changed.",
+        stale=True,reason="Position correction is stale because the FOV mapping correction changed.",
     )
     runner = AutomaticFeedbackRunner(service)
 
@@ -222,4 +222,4 @@ def test_stale_position_correction_blocks_automatic_feedback_start():
     assert not runner.active
     assert service.acquisitions == []
     assert service.errors
-    assert "FOV calibration changed" in str(service.errors[-1][1])
+    assert "FOV mapping correction changed" in str(service.errors[-1][1])

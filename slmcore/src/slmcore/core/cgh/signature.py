@@ -99,20 +99,22 @@ def compute_position_correction_signature(value: Any) -> CGHSignature | None:
 
 
 def compute_position_layers_signature(
-    *,fov_calibration: Any=None,position_correction: Any=None,
+    *,fov_mapping_correction: Any=None,position_correction: Any=None,
 ) -> CGHSignature | None:
     """Return a stable signature for persistent + transient position layers.
 
-    Preserve the historical signature exactly when no FOV calibration is
+    Preserve the historical signature exactly when no FOV mapping correction is
     active so existing saved CGH snapshots remain compatible.
     """
     position = compute_position_correction_signature(position_correction)
-    if fov_calibration is None:
+    if fov_mapping_correction is None:
         return position
     payload = (
-        fov_calibration.to_dict()
-        if hasattr(fov_calibration,"to_dict") else fov_calibration
+        fov_mapping_correction.to_dict()
+        if hasattr(fov_mapping_correction,"to_dict") else fov_mapping_correction
     )
+    # Keep the historical payload key so cleanup-only API renames do not
+    # invalidate already-saved CGH feedback signatures.
     return _compute_signature({
         "fov_position_calibration":payload,
         "position_correction_signature":position,

@@ -3,7 +3,7 @@
 from slmcore.application import SLMFeedbackService as application_feedback_service
 from slmcore.application.feedback import AutomaticFeedbackRunner,SLMFeedbackService
 from slmcore.application.feedback.adaptation import FeedbackAdaptationService
-from slmcore.application.feedback.fov_calibration import FOVPositionCalibrationService
+from slmcore.application.fov_mapping_runtime import FOVMappingRuntimeService
 from slmcore.application.feedback.geometry_calibration import GeometryOrientationFeedbackService
 from slmcore.application.feedback.localization import LocalizationService
 from slmcore.application.feedback.measurement import MeasurementService
@@ -21,7 +21,6 @@ def test_feedback_workflows_have_focused_application_services():
         MeasurementService,
         LocalizationService,
         PositionReferenceService,
-        FOVPositionCalibrationService,
         GeometryOrientationFeedbackService,
         FeedbackAdaptationService,
     )
@@ -36,7 +35,6 @@ def test_focused_feedback_services_do_not_retain_owner_locators():
         MeasurementService,
         LocalizationService,
         PositionReferenceService,
-        FOVPositionCalibrationService,
         GeometryOrientationFeedbackService,
         FeedbackAdaptationService,
     )
@@ -47,10 +45,11 @@ def test_focused_feedback_services_do_not_retain_owner_locators():
             assert token not in source, f"{service.__name__} retains owner locator {token}"
 
 
-def test_feedback_fov_runtime_service_has_no_calibration_producer_path():
+def test_fov_mapping_runtime_is_not_feedback_owned_and_has_no_calibration_producer_path():
     import inspect
 
-    source = inspect.getsource(FOVPositionCalibrationService)
+    source = inspect.getsource(FOVMappingRuntimeService)
+    assert FOVMappingRuntimeService.__module__ == "slmcore.application.fov_mapping_runtime"
     obsolete = (
         "fit_fov_position_calibration",
         "save_fov_position_calibration",

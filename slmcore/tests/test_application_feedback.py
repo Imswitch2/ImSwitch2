@@ -586,17 +586,17 @@ def test_fov_default_is_mapping_scoped_and_apply_off_is_temporary(tmp_path):
     )
     session.calibration.active_mapping = lambda _section:"sample"
 
-    session.feedback.apply_startup_fov_position_calibration_defaults()
-    context = session.feedback.fov_position_calibration_context("sec_0")
+    session.fov_mapping_runtime.apply_startup_fov_mapping_defaults()
+    context = session.fov_mapping_runtime.fov_mapping_context("sec_0")
     assert context["selected_name"] == "field A"
     assert context["applied"] is True
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field A"
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"].name == "field A"
 
-    session.feedback.set_fov_position_calibration_applied("sec_0",False)
-    context = session.feedback.fov_position_calibration_context("sec_0")
+    session.fov_mapping_runtime.set_fov_mapping_correction_applied("sec_0",False)
+    context = session.fov_mapping_runtime.fov_mapping_context("sec_0")
     assert context["applied"] is False
     assert context["default_name"] == "field A"
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"] is None
     assert saved == []
 
     session.dispose()
@@ -619,18 +619,18 @@ def test_fov_management_selection_does_not_change_applied_default(tmp_path):
         startup_preferences=preferences,
     )
     session.calibration.active_mapping = lambda _section:"sample"
-    session.feedback.refresh_fov_position_calibration_contexts()
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
 
-    session.feedback.select_fov_position_calibration("sec_0","field A")
-    session.feedback.set_default_fov_position_calibration("sec_0")
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
+    session.fov_mapping_runtime.set_default_fov_mapping_correction("sec_0")
     assert saved[-1].fov_mapping_corrections["sec_0"].mappings["sample"] == "field A"
 
-    session.feedback.select_fov_position_calibration("sec_0","field B")
-    context = session.feedback.fov_position_calibration_context("sec_0")
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field B")
+    context = session.fov_mapping_runtime.fov_mapping_context("sec_0")
     assert context["applied"] is True
     assert context["selected_name"] == "field B"
     assert context["default_name"] == "field A"
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field A"
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"].name == "field A"
 
     session.dispose()
 
@@ -648,22 +648,22 @@ def test_switching_default_fov_calibration_marks_position_feedback_stale(tmp_pat
     preferences = StartupPreferencesState(SLMStartupPreferences(),lambda _value:None)
     session = SLMSession(runtime=runtime,fov_mapping_correction_store=store,startup_preferences=preferences)
     session.calibration.active_mapping = lambda _section:"sample"
-    session.feedback.refresh_fov_position_calibration_contexts()
-    session.feedback.select_fov_position_calibration("sec_0","field A")
-    session.feedback.set_default_fov_position_calibration("sec_0")
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
+    session.fov_mapping_runtime.set_default_fov_mapping_correction("sec_0")
 
     _attach_reference_localization(runtime)
     session.feedback.apply_position_correction("sec_0")
     assert runtime.get_section_feedback_status("sec_0").position_active is True
 
-    session.feedback.select_fov_position_calibration("sec_0","field B")
-    session.feedback.set_default_fov_position_calibration("sec_0")
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field B")
+    session.fov_mapping_runtime.set_default_fov_mapping_correction("sec_0")
     status = runtime.get_section_feedback_status("sec_0")
     assert status.position_active is False
     assert status.position_available is True
     assert status.position_stale is True
-    assert "FOV calibration changed" in status.position_stale_reason
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field B"
+    assert "FOV mapping correction changed" in status.position_stale_reason
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"].name == "field B"
 
     session.dispose()
 
@@ -694,10 +694,10 @@ def test_fov_preview_falls_back_to_saved_samples_without_cgh_target(tmp_path):
         fov_mapping_correction_store=workspace.fov_mapping_correction_store,
     )
     session.calibration.active_mapping = lambda _section:"sample"
-    session.feedback.refresh_fov_position_calibration_contexts()
-    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
 
-    preview = session.feedback.fov_position_calibration_preview("sec_0")
+    preview = session.fov_mapping_runtime.fov_mapping_preview("sec_0")
     assert preview is not None
     np.testing.assert_allclose(preview["current_positions_kxy"],points)
     assert preview["current_positions_kxy"].shape[1] > 0
@@ -720,15 +720,15 @@ def test_mapping_switch_clears_previous_runtime_fov_when_new_mapping_has_no_defa
     )
     active = {"plane":"sample"}
     session.calibration.active_mapping = lambda _section:active["plane"]
-    session.feedback.refresh_fov_position_calibration_contexts()
-    session.feedback.select_fov_position_calibration("sec_0","field A")
-    session.feedback.set_default_fov_position_calibration("sec_0")
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field A"
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
+    session.fov_mapping_runtime.set_default_fov_mapping_correction("sec_0")
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"].name == "field A"
 
     active["plane"] = "other"
-    session.feedback.refresh_fov_position_calibration_contexts()
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
-    assert session.feedback.fov_position_calibration_context("sec_0")["applied"] is False
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"] is None
+    assert session.fov_mapping_runtime.fov_mapping_context("sec_0")["applied"] is False
     session.dispose()
 
 
@@ -757,14 +757,14 @@ def test_reading_fov_context_does_not_mutate_runtime_before_explicit_startup_app
     )
     session.calibration.active_mapping = lambda _section:"sample"
 
-    context = session.feedback.fov_position_calibration_context("sec_0")
+    context = session.fov_mapping_runtime.fov_mapping_context("sec_0")
     assert context["selected_name"] == "field A"
     assert context["applied"] is True
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"] is None
     assert transitions == []
 
-    session.feedback.apply_startup_fov_position_calibration_defaults()
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field A"
+    session.fov_mapping_runtime.apply_startup_fov_mapping_defaults()
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"].name == "field A"
     assert len(transitions) == 1
     session.dispose()
 
@@ -786,20 +786,20 @@ def test_delete_fov_calibration_clears_selection_runtime_and_default(tmp_path):
         startup_preferences=preferences,
     )
     session.calibration.active_mapping = lambda _section:"sample"
-    session.feedback.refresh_fov_position_calibration_contexts()
-    session.feedback.select_fov_position_calibration("sec_0","field A")
-    session.feedback.set_default_fov_position_calibration("sec_0")
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
+    session.fov_mapping_runtime.set_default_fov_mapping_correction("sec_0")
     assert preferences.default_fov_correction("sec_0","sample") == "field A"
 
-    deleted = session.feedback.delete_fov_position_calibration("sec_0")
+    deleted = session.fov_mapping_runtime.delete_fov_mapping_correction("sec_0")
 
     assert deleted == "field A"
     assert not store.exists(runtime.identity,"sec_0","sample","field A")
-    context = session.feedback.fov_position_calibration_context("sec_0")
+    context = session.fov_mapping_runtime.fov_mapping_context("sec_0")
     assert context["selected_name"] is None
     assert context["applied"] is False
     assert context["default_name"] is None
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"] is None
     assert saved[-1].fov_mapping_corrections == {}
     session.dispose()
 
@@ -829,9 +829,9 @@ def test_feedback_observation_plane_switch_does_not_change_mapping_fov_or_cgh(tm
     assert session.feedback.active_observation_plane("sec_0") is None
     assert session.feedback.select_observation_plane("sec_0","Main")
 
-    session.feedback.refresh_fov_position_calibration_contexts()
-    session.feedback.select_fov_position_calibration("sec_0","field A")
-    session.feedback.set_default_fov_position_calibration("sec_0")
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
+    session.fov_mapping_runtime.set_default_fov_mapping_correction("sec_0")
     # Applying FOV intentionally stales the generated hologram. Recompute once so
     # the checkpoint can prove that observation switching itself does not stale it.
     job = runtime.prepare_section_base_cgh("sec_0")
@@ -850,8 +850,8 @@ def test_feedback_observation_plane_switch_does_not_change_mapping_fov_or_cgh(tm
     before_status = runtime.get_section_cgh_status("sec_0")
     before_result = runtime.get_section_cgh_result_copy("sec_0")
     before_calibration = runtime.get_section_calibration_copy("sec_0")
-    before_fov = runtime.get_section_fov_position_context("sec_0")
-    assert before_fov["calibration"].name == "field A"
+    before_fov = runtime.get_section_fov_mapping_context("sec_0")
+    assert before_fov["correction"].name == "field A"
     assert runtime.get_section_feedback_inspection("sec_0").measurement is not None
 
     assert session.feedback.select_observation_plane("sec_0","Intermediate")
@@ -862,12 +862,12 @@ def test_feedback_observation_plane_switch_does_not_change_mapping_fov_or_cgh(tm
     np.testing.assert_array_equal(
         runtime.get_section_cgh_result_copy("sec_0").pattern,before_result.pattern,
     )
-    after_fov = runtime.get_section_fov_position_context("sec_0")
-    assert after_fov["calibration"].name == "field A"
+    after_fov = runtime.get_section_fov_mapping_context("sec_0")
+    assert after_fov["correction"].name == "field A"
     np.testing.assert_allclose(
         after_fov["baseline_positions_kxy"],before_fov["baseline_positions_kxy"],
     )
-    assert session.feedback.fov_position_calibration_context("sec_0")["applied"] is True
+    assert session.fov_mapping_runtime.fov_mapping_context("sec_0")["applied"] is True
     # Measurement/localization state belongs to the old observation context and is
     # intentionally invalidated without changing generated pattern state.
     assert runtime.get_section_feedback_inspection("sec_0").measurement is None
@@ -961,25 +961,25 @@ def test_recalibrating_base_mapping_keeps_fov_record_but_disables_apply(tmp_path
         startup_preferences=preferences,
     )
     session.calibration.active_mapping = lambda _section:"sample"
-    session.feedback.select_fov_position_calibration("sec_0","field A")
-    session.feedback.set_default_fov_position_calibration("sec_0")
-    assert session.feedback.fov_position_calibration_context("sec_0")["applied"] is True
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
+    session.fov_mapping_runtime.set_default_fov_mapping_correction("sec_0")
+    assert session.fov_mapping_runtime.fov_mapping_context("sec_0")["applied"] is True
 
     runtime.set_section_calibration(
         "sec_0",SLMSectionCalibration(
             kx_per_um=0.02,ky_per_um=0.012,mapping_name="sample",
         ),
     )
-    session.feedback.refresh_fov_position_calibration_contexts()
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
 
-    context = session.feedback.fov_position_calibration_context("sec_0")
+    context = session.fov_mapping_runtime.fov_mapping_context("sec_0")
     assert context["default_name"] == "field A"
     assert context["default_compatible"] is False
     assert context["applied"] is False
     assert workspace.fov_mapping_correction_store.exists(
         runtime.identity,"sec_0","sample","field A"
     )
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"] is None
     session.dispose()
 
 
@@ -1007,15 +1007,15 @@ def test_mapping_switch_uses_each_mappings_default_fov_state(tmp_path):
         startup_preferences=preferences,
     )
     session.calibration.active_mapping = lambda _section:active["mapping"]
-    session.feedback.apply_startup_fov_position_calibration_defaults()
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field A"
+    session.fov_mapping_runtime.apply_startup_fov_mapping_defaults()
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"].name == "field A"
 
     active["mapping"] = "other"
-    session.feedback.refresh_fov_position_calibration_contexts()
-    context = session.feedback.fov_position_calibration_context("sec_0")
+    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
+    context = session.fov_mapping_runtime.fov_mapping_context("sec_0")
     assert context["default_name"] == "field B"
     assert context["applied"] is True
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field B"
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"].name == "field B"
     session.dispose()
 
 
@@ -1057,7 +1057,7 @@ def test_config_restores_exact_named_fov_and_does_not_fallback_when_missing(tmp_
     workspace.fov_mapping_correction_store.save(first)
     workspace.fov_mapping_correction_store.save(second)
 
-    runtime.set_section_fov_position_calibration("sec_0",first)
+    runtime.set_section_fov_mapping_correction("sec_0",first)
     job = runtime.prepare_section_base_cgh("sec_0")
     runtime.commit_section_cgh(
         "sec_0",
@@ -1110,21 +1110,21 @@ def test_config_restores_exact_named_fov_and_does_not_fallback_when_missing(tmp_
 
     # Change the live/default context to B, then load the config.  The saved A
     # must win without changing the persistent default B.
-    session.feedback.select_fov_position_calibration("sec_0","field B")
-    session.feedback.set_fov_position_calibration_applied("sec_0",True)
-    assert runtime.get_section_fov_position_context("sec_0")["calibration"].name == "field B"
+    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field B")
+    session.fov_mapping_runtime.set_fov_mapping_correction_applied("sec_0",True)
+    assert runtime.get_section_fov_mapping_context("sec_0")["correction"].name == "field B"
 
     outcome = session.load_config(str(saved.path))
     assert outcome.warnings == ()
-    restored = session.runtime.get_section_fov_position_context("sec_0")["calibration"]
+    restored = session.runtime.get_section_fov_mapping_context("sec_0")["correction"]
     assert restored.name == "field A"
-    context = session.feedback.fov_position_calibration_context("sec_0")
+    context = session.fov_mapping_runtime.fov_mapping_context("sec_0")
     assert context["applied_name"] == "field A"
     assert context["default_name"] == "field B"
     assert session.runtime.get_section_cgh_status("sec_0").result_state.value == "current"
 
     # Turning FOV off keeps the selected name in a newly saved config.
-    session.feedback.set_fov_position_calibration_applied("sec_0",False)
+    session.fov_mapping_runtime.set_fov_mapping_correction_applied("sec_0",False)
     off = session.save_config("field_a_off")
     off_config,_ = config_store.load(off.path)
     off_state = off_config.sections["sec_0"].fov_correction
@@ -1141,6 +1141,6 @@ def test_config_restores_exact_named_fov_and_does_not_fallback_when_missing(tmp_
         "field A" in warning.message and "No FOV correction was applied" in warning.message
         for warning in outcome.warnings
     )
-    assert session.runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert session.runtime.get_section_fov_mapping_context("sec_0")["correction"] is None
     assert session.runtime.get_section_cgh_status("sec_0").result_state.value == "stale"
     session.dispose()

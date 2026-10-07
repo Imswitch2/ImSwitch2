@@ -111,7 +111,7 @@ def test_patch9_editable_lattice_core_is_neutral_and_fov_workflow_is_dedicated()
     assert "controller._feedback.open_fov_calibration" not in manager
     feedback_ui = (root / "qt" / "cgh" / "session_window.py").read_text(encoding="utf-8")
     assert "Build fit from current feedback" not in feedback_ui
-    assert "Persistent FOV mapping calibration moved to the dedicated Calibration" in feedback_ui
+    assert "Persistent FOV fitting lives in the dedicated Calibration workspace" in feedback_ui
 
 
 def test_calibration_workspace_embeds_calibration_modes_in_one_window():

@@ -193,7 +193,7 @@ def _runtime():
 
 def test_runtime_fov_layer_changes_baseline_without_becoming_cgh_config_state():
     runtime = _runtime()
-    before = runtime.get_section_fov_position_context("sec_0")
+    before = runtime.get_section_fov_mapping_context("sec_0")
     ideal = before["ideal_positions_kxy"]
     calibration = FOVMappingCorrection.fit(
         name="runtime map",slm_serial="SER123",section_key="sec_0",
@@ -201,9 +201,9 @@ def test_runtime_fov_layer_changes_baseline_without_becoming_cgh_config_state():
         total_displacements_kxy=_synthetic_displacement(_grid()),degree=2,
     )
 
-    transition = runtime.set_section_fov_position_calibration("sec_0",calibration)
+    transition = runtime.set_section_fov_mapping_correction("sec_0",calibration)
     assert transition is not None
-    after = runtime.get_section_fov_position_context("sec_0")
+    after = runtime.get_section_fov_mapping_context("sec_0")
     np.testing.assert_allclose(
         after["baseline_positions_kxy"],
         ideal+calibration.evaluate(ideal),
@@ -213,7 +213,7 @@ def test_runtime_fov_layer_changes_baseline_without_becoming_cgh_config_state():
     # Persistent FOV selection is deliberately external to CGH config snapshots.
     config = runtime.create_config()
     restored = SLMRuntime.from_config(config,registries=DEFAULT_REGISTRIES)
-    restored_context = restored.get_section_fov_position_context("sec_0")
+    restored_context = restored.get_section_fov_mapping_context("sec_0")
     np.testing.assert_allclose(
         restored_context["baseline_positions_kxy"],
         restored_context["ideal_positions_kxy"],
@@ -227,15 +227,15 @@ def test_fov_context_is_inert_without_selected_cgh_target():
         section_geometries=split_slm_geometry(geometry,1),
         registries=DEFAULT_REGISTRIES,
     )
-    context = runtime.get_section_fov_position_context("sec_0")
+    context = runtime.get_section_fov_mapping_context("sec_0")
     assert context["supported"] is False
     assert context["ideal_positions_kxy"].shape == (2,0)
 
     calibration = _calibration("ready for later")
-    transition = runtime.set_section_fov_position_calibration("sec_0",calibration)
+    transition = runtime.set_section_fov_mapping_correction("sec_0",calibration)
     assert transition is None
-    held = runtime.get_section_fov_position_context("sec_0")
-    assert held["calibration"].name == "ready for later"
+    held = runtime.get_section_fov_mapping_context("sec_0")
+    assert held["correction"].name == "ready for later"
     assert held["baseline_positions_kxy"].shape == (2,0)
 
 
@@ -264,7 +264,7 @@ def test_fov_change_does_not_discard_feedback_on_unsupported_target():
     before = runtime.get_section_feedback_inspection("sec_0")
     assert before.measurement is not None
 
-    transition = runtime.set_section_fov_position_calibration(
+    transition = runtime.set_section_fov_mapping_correction(
         "sec_0",_calibration("held map"),
     )
     assert transition is None
@@ -274,13 +274,13 @@ def test_fov_change_does_not_discard_feedback_on_unsupported_target():
         after.measurement.acquisition.measurement_id
         == before.measurement.acquisition.measurement_id
     )
-    assert runtime.get_section_fov_position_context("sec_0")["supported"] is False
+    assert runtime.get_section_fov_mapping_context("sec_0")["supported"] is False
 
 
 def test_multifoci_fov_numerical_path_is_characterized_point_by_point():
     """Pin the Phase-1 numerical contract before FOV ownership moves."""
     runtime = _runtime()
-    ideal_context = runtime.get_section_fov_position_context("sec_0")
+    ideal_context = runtime.get_section_fov_mapping_context("sec_0")
     ideal = ideal_context["ideal_positions_kxy"]
 
     # The target resolver owns the ideal lattice. Keep its exact current output
@@ -307,8 +307,8 @@ def test_multifoci_fov_numerical_path_is_characterized_point_by_point():
         total_displacements_kxy=displacement, degree=1,
     )
 
-    runtime.set_section_fov_position_calibration("sec_0", calibration)
-    corrected = runtime.get_section_fov_position_context("sec_0")
+    runtime.set_section_fov_mapping_correction("sec_0", calibration)
+    corrected = runtime.get_section_fov_mapping_context("sec_0")
     expected_displacement = np.vstack([
         0.01 + 0.04 * expected_ideal[0] - 0.02 * expected_ideal[1],
         -0.015 + 0.01 * expected_ideal[0] + 0.03 * expected_ideal[1],

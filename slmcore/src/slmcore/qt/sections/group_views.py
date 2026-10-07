@@ -45,7 +45,7 @@ class CghAction(str,Enum):
     PROPAGATION = "propagation"
     CLEAR_CGH_SESSION = "clear_cgh_session"
     OPEN_MEASUREMENTS_CORRECTIONS = "open_measurements_corrections"
-    FOV_CALIBRATION_APPLY = "fov_calibration_apply"
+    FOV_MAPPING_APPLY = "fov_mapping_apply"
     POSITION_SET_ACTIVE = "position_set_active"
 
 
