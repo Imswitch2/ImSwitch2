@@ -1163,3 +1163,38 @@ def test_quadratic_reference_correction_reproduces_smooth_nonlinear_field():
     )
     affine_error = (design@affine_coefficients).T
     assert np.max(np.abs(affine_error-expected_error)) > 0.5
+
+
+def test_polynomial_reference_correction_supports_orders_two_three_four():
+    from slmcore.application.feedback.references import (
+        _apply_polynomial_displacement,_fit_polynomial_displacement,
+        _polynomial_term_count,
+    )
+
+    xs,ys = np.meshgrid(
+        np.linspace(10.0,90.0,7),np.linspace(20.0,80.0,7),indexing="xy",
+    )
+    registered = np.vstack([xs.ravel(),ys.ravel()])
+    x = (registered[0]-50.0)/40.0
+    y = (registered[1]-50.0)/30.0
+
+    base_x = 1.2 + 0.4*x - 0.25*y + 1.8*x*x - 0.7*x*y + 0.6*y*y
+    base_y = -0.8 + 0.2*x + 0.5*y - 0.4*x*x + 0.9*x*y + 1.1*y*y
+    cubic_x = 0.35*x**3 - 0.22*x*x*y + 0.18*x*y*y - 0.11*y**3
+    cubic_y = -0.28*x**3 + 0.16*x*x*y + 0.21*x*y*y + 0.09*y**3
+    quartic_x = 0.14*x**4 - 0.10*x**3*y + 0.08*x*x*y*y - 0.06*x*y**3 + 0.04*y**4
+    quartic_y = -0.12*x**4 + 0.09*x**3*y - 0.07*x*x*y*y + 0.05*x*y**3 + 0.03*y**4
+
+    expected_by_degree = {
+        2:np.vstack([base_x,base_y]),
+        3:np.vstack([base_x+cubic_x,base_y+cubic_y]),
+        4:np.vstack([base_x+cubic_x+quartic_x,base_y+cubic_y+quartic_y]),
+    }
+    assert [_polynomial_term_count(degree) for degree in (2,3,4)] == [6,10,15]
+
+    for degree,expected_error in expected_by_degree.items():
+        polynomial = _fit_polynomial_displacement(
+            registered,expected_error,degree=degree,
+        )
+        fitted_error = _apply_polynomial_displacement(polynomial,registered)
+        np.testing.assert_allclose(fitted_error,expected_error,atol=1e-10)

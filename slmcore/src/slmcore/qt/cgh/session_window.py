@@ -124,6 +124,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "editable_geometry":None,
             "editable_locks":{},
             "correction_mode":"per_spot",
+            "polynomial_degree":2,
             "affine_transform":None,
             "fit_geometry":None,
             "observation_plane_name":None,
@@ -777,13 +778,32 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_reference_correction_model_combo.setToolTip(
             "Per-spot applies each measured reference error independently. "
             "Affine fits one continuous linear displacement field. Polynomial "
-            "fits a smooth second-order field (x², xy, y²) to capture nonlinear "
-            "curvature across the lattice."
+            "fits a smooth nonlinear displacement field; choose order 2, 3, "
+            "or 4 below."
         )
         self.position_reference_correction_model_combo.currentIndexChanged.connect(
             self._on_position_reference_correction_mode_changed
         )
         saved_layout.addWidget(self.position_reference_correction_model_combo)
+
+        self.position_reference_polynomial_degree_label = QtWidgets.QLabel(
+            "Polynomial order"
+        )
+        saved_layout.addWidget(self.position_reference_polynomial_degree_label)
+        self.position_reference_polynomial_degree_combo = QtWidgets.QComboBox()
+        for degree in (2,3,4):
+            self.position_reference_polynomial_degree_combo.addItem(
+                str(degree),degree
+            )
+        self.position_reference_polynomial_degree_combo.setToolTip(
+            "Total polynomial degree of the continuous detector-space correction "
+            "field. Higher orders can model more complex warping but require "
+            "more matched spots and can follow localization noise more closely."
+        )
+        self.position_reference_polynomial_degree_combo.currentIndexChanged.connect(
+            self._on_position_reference_polynomial_degree_changed
+        )
+        saved_layout.addWidget(self.position_reference_polynomial_degree_combo)
 
         self.position_reference_affine_reset_button = QtWidgets.QPushButton(
             "Reset affine fit"
@@ -1022,6 +1042,20 @@ class CGHSessionWindow(QtWidgets.QDialog):
             finally:
                 del correction_blocker
 
+        polynomial_degree = int(context.get("polynomial_degree") or 2)
+        polynomial_degree_combo = getattr(
+            self,"position_reference_polynomial_degree_combo",None,
+        )
+        if polynomial_degree_combo is not None:
+            polynomial_blocker = QtCore.QSignalBlocker(polynomial_degree_combo)
+            try:
+                polynomial_index = polynomial_degree_combo.findData(polynomial_degree)
+                polynomial_degree_combo.setCurrentIndex(
+                    polynomial_index if polynomial_index >= 0 else 0
+                )
+            finally:
+                del polynomial_blocker
+
         change_allowed = bool(
             context.get("change_allowed",True)
             and not self._cgh_computing
@@ -1041,7 +1075,30 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 reason or (
                     "Per-spot applies each saved-reference error independently; "
                     "Affine fits one continuous linear field; Polynomial fits a "
-                    "smooth second-order field to matched spots."
+                    "smooth nonlinear field of selectable order 2, 3, or 4."
+                )
+            )
+        polynomial_degree_label = getattr(
+            self,"position_reference_polynomial_degree_label",None,
+        )
+        if polynomial_degree_label is not None:
+            polynomial_degree_label.setVisible(
+                mode == "reference" and correction_mode == "polynomial"
+            )
+        if polynomial_degree_combo is not None:
+            polynomial_degree_combo.setVisible(
+                mode == "reference" and correction_mode == "polynomial"
+            )
+            polynomial_degree_combo.setEnabled(
+                change_allowed
+                and mode == "reference"
+                and correction_mode == "polynomial"
+                and bool(reference_name)
+            )
+            polynomial_degree_combo.setToolTip(
+                reason or (
+                    "Polynomial order 2 needs at least 6 matched spots, order 3 "
+                    "needs 10, and order 4 needs 15."
                 )
             )
         affine_reset = getattr(self,"position_reference_affine_reset_button",None)
@@ -1372,6 +1429,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 "reference_name":name,
                 "correspondence":"auto",
                 "correction_mode":self._selected_position_reference_correction_mode(),
+                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
             })
         self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
@@ -1391,6 +1449,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 "reference_name":name,
                 "correspondence":"auto",
                 "correction_mode":self._selected_position_reference_correction_mode(),
+                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
             },
         )
 
@@ -1399,6 +1458,36 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if combo is None:
             return "per_spot"
         return str(combo.currentData() or "per_spot")
+
+    def _selected_position_reference_polynomial_degree(self) -> int:
+        combo = getattr(self,"position_reference_polynomial_degree_combo",None)
+        if combo is None:
+            return 2
+        value = combo.currentData()
+        return int(2 if value is None else value)
+
+    def _on_position_reference_polynomial_degree_changed(self,_index: int) -> None:
+        if str(self.position_reference_combo.currentData()) != "reference":
+            return
+        if self._selected_position_reference_correction_mode() != "polynomial":
+            return
+        name = self._selected_managed_position_reference_name()
+        if not name:
+            return
+        degree = self._selected_position_reference_polynomial_degree()
+        current = int(self._position_reference_context.get("polynomial_degree") or 2)
+        if degree == current:
+            return
+        self._emit(
+            MeasurementsAction.POSITION_REFERENCE_SET,
+            {
+                "mode":"reference",
+                "reference_name":name,
+                "correction_mode":"polynomial",
+                "polynomial_degree":degree,
+                "affine_transform":None,
+            },
+        )
 
     def _on_position_reference_correction_mode_changed(self,_index: int) -> None:
         if str(self.position_reference_combo.currentData()) != "reference":
@@ -1418,6 +1507,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 "mode":"reference",
                 "reference_name":name,
                 "correction_mode":correction_mode,
+                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
                 # Entering a model always starts from its automatic fit rather
                 # than reviving manual handles from another model state.
                 "affine_transform":None,
@@ -1460,6 +1550,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 "reference_name":name,
                 "correspondence":correspondence,
                 "correction_mode":self._selected_position_reference_correction_mode(),
+                "polynomial_degree":self._selected_position_reference_polynomial_degree(),
                 "affine_transform":None,
             },
         )

@@ -327,6 +327,7 @@ class SLMFeedbackService:
         editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
         correspondence: Any | None=None,
         correction_mode: str | None=None,
+        polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
     ) -> PositionReferenceSelection:
         kwargs = {
@@ -336,6 +337,7 @@ class SLMFeedbackService:
             "editable_locks":editable_locks,
             "correspondence":correspondence,
             "correction_mode":correction_mode,
+            "polynomial_degree":polynomial_degree,
         }
         if affine_transform is not _UNSET:
             kwargs["affine_transform"] = affine_transform

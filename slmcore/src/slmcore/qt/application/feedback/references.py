@@ -67,6 +67,7 @@ class PositionReferenceCoordinator:
             ),
             "correspondence":selection.correspondence.value,
             "correction_mode":selection.correction_mode,
+            "polynomial_degree":selection.polynomial_degree,
             "affine_transform":(
                 None
                 if selection.affine_transform is None
@@ -106,6 +107,7 @@ class PositionReferenceCoordinator:
         editable_locks: Mapping[str,Any] | None=None,
         correspondence: str | None=None,
         correction_mode: str | None=None,
+        polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
     ) -> None:
         """Flush editor changes before applying a reference selection mapping."""
@@ -118,6 +120,7 @@ class PositionReferenceCoordinator:
                 "editable_locks":editable_locks,
                 "correspondence":correspondence,
                 "correction_mode":correction_mode,
+                "polynomial_degree":polynomial_degree,
             }
             if affine_transform is not _UNSET:
                 kwargs["affine_transform"] = affine_transform

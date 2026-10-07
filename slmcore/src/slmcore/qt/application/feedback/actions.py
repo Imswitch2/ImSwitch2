@@ -122,6 +122,7 @@ class FeedbackActionRouter:
                 "editable_locks":values.get("editable_locks"),
                 "correspondence":values.get("correspondence"),
                 "correction_mode":values.get("correction_mode"),
+                "polynomial_degree":values.get("polynomial_degree"),
             }
             if "affine_transform" in values:
                 kwargs["affine_transform"] = values.get("affine_transform")

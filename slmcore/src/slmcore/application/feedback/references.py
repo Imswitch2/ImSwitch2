@@ -66,6 +66,13 @@ def _normalize_position_reference_correction_mode(value: Any) -> str:
     return mode
 
 
+def _normalize_position_reference_polynomial_degree(value: Any) -> int:
+    degree = int(2 if value is None else value)
+    if degree not in (2,3,4):
+        raise ValueError("Position-reference polynomial degree must be 2, 3, or 4")
+    return degree
+
+
 def _normalize_affine_transform(value: Any) -> tuple[tuple[float,...],...] | None:
     if value is None:
         return None
@@ -89,6 +96,7 @@ class PositionReferenceSelection:
     editable_locks: frozenset[str]=frozenset()
     correspondence: ReferenceCorrespondence=ReferenceCorrespondence.AUTO
     correction_mode: str=_POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT
+    polynomial_degree: int=2
     affine_transform: tuple[tuple[float,...],...] | None=None
 
     def __post_init__(self) -> None:
@@ -106,6 +114,9 @@ class PositionReferenceSelection:
         correction_mode = _normalize_position_reference_correction_mode(
             self.correction_mode
         )
+        polynomial_degree = _normalize_position_reference_polynomial_degree(
+            self.polynomial_degree
+        )
         affine_transform = _normalize_affine_transform(self.affine_transform)
         if mode is PositionReferenceMode.REFERENCE and reference_name is None:
             raise ValueError("Named position-reference mode requires a name")
@@ -115,6 +126,7 @@ class PositionReferenceSelection:
         object.__setattr__(self,"editable_locks",locks)
         object.__setattr__(self,"correspondence",correspondence)
         object.__setattr__(self,"correction_mode",correction_mode)
+        object.__setattr__(self,"polynomial_degree",polynomial_degree)
         object.__setattr__(self,"affine_transform",affine_transform)
 
 @dataclass(frozen=True)
@@ -165,6 +177,7 @@ class PositionReferencePreview(TypedDict):
     baseline_positions_kxy: np.ndarray
     displacement_kxy: np.ndarray
     correction_mode: str
+    polynomial_degree: int
     affine_transform: np.ndarray | None
     reference: PositionReferenceResolutionMetadata
 
@@ -232,6 +245,7 @@ class PositionReferenceService(FeedbackComponent):
                 editable_locks=selection.editable_locks,
                 correspondence=selection.correspondence,
                 correction_mode=selection.correction_mode,
+                polynomial_degree=selection.polynomial_degree,
                 affine_transform=selection.affine_transform,
             )
             self._position_reference_selections[key] = selection
@@ -319,6 +333,7 @@ class PositionReferenceService(FeedbackComponent):
         editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
         correspondence: ReferenceCorrespondence | str | None=None,
         correction_mode: str | None=None,
+        polynomial_degree: int | None=None,
         affine_transform: Any=_UNSET,
     ) -> PositionReferenceSelection:
         """Select a reference for this plane without persisting or applying a correction."""
@@ -349,6 +364,11 @@ class PositionReferenceService(FeedbackComponent):
             )
         correction_mode = _normalize_position_reference_correction_mode(
             correction_mode
+        )
+        if polynomial_degree is None:
+            polynomial_degree = previous.polynomial_degree
+        polynomial_degree = _normalize_position_reference_polynomial_degree(
+            polynomial_degree
         )
         if affine_transform is _UNSET:
             affine_transform = (
@@ -381,6 +401,7 @@ class PositionReferenceService(FeedbackComponent):
             editable_locks=_normalize_editable_locks(editable_locks),
             correspondence=correspondence,
             correction_mode=correction_mode,
+            polynomial_degree=polynomial_degree,
             affine_transform=affine_transform,
         )
         plane = self._active_feedback_plane(section)
@@ -592,6 +613,7 @@ class PositionReferenceService(FeedbackComponent):
                 ),
                 "displacement_kxy":np.asarray(analysis.correction_kxy),
                 "correction_mode":selection.correction_mode,
+                "polynomial_degree":selection.polynomial_degree,
                 "affine_transform":(
                     None
                     if affine_transform is None
@@ -703,7 +725,7 @@ class PositionReferenceService(FeedbackComponent):
                     )
                 ),
                 "polynomial_degree":(
-                    2
+                    selection.polynomial_degree
                     if selection.correction_mode
                     == _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL
                     else None
@@ -722,9 +744,9 @@ class PositionReferenceService(FeedbackComponent):
 
         ``per_spot`` preserves the historical behavior. ``affine`` fits one
         detector-space affine displacement field to matched spots. ``polynomial``
-        fits a second-order detector-space displacement field with terms
-        ``1, x, y, x^2, xy, y^2``. Both constrained models are sampled at every
-        registered lattice site, so individual sites cannot move independently.
+        fits a detector-space polynomial displacement field of selectable total
+        degree 2, 3, or 4. Both constrained models are sampled at every registered
+        lattice site, so individual sites cannot move independently.
         """
         raw_reference = np.asarray(raw_reference_positions,dtype=np.float64)
         if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT:
@@ -739,15 +761,20 @@ class PositionReferenceService(FeedbackComponent):
         matched,_inferred,_resolved = localization_site_masks(localization)
 
         if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_POLYNOMIAL:
-            if int(np.count_nonzero(matched)) < 6:
+            degree = selection.polynomial_degree
+            minimum_points = _polynomial_term_count(degree)
+            matched_count = int(np.count_nonzero(matched))
+            if matched_count < minimum_points:
                 raise RuntimeError(
-                    "Polynomial reference correction requires at least six matched spots."
+                    "Polynomial reference correction degree %d requires at least %d "
+                    "matched spots; got %d."
+                    % (degree,minimum_points,matched_count)
                 )
             displacement = raw_reference-measured
-            polynomial = _fit_quadratic_displacement(
-                registered[:,matched],displacement[:,matched],
+            polynomial = _fit_polynomial_displacement(
+                registered[:,matched],displacement[:,matched],degree=degree,
             )
-            smooth_error = _apply_quadratic_displacement(polynomial,registered)
+            smooth_error = _apply_polynomial_displacement(polynomial,registered)
             return measured+smooth_error,None
 
         transform = (
@@ -826,6 +853,7 @@ class PositionReferenceService(FeedbackComponent):
                 editable_locks=selection.editable_locks,
                 correspondence=selection.correspondence,
                 correction_mode=selection.correction_mode,
+                polynomial_degree=selection.polynomial_degree,
                 affine_transform=None,
             )
             return
@@ -839,6 +867,7 @@ class PositionReferenceService(FeedbackComponent):
             editable_geometry=editable_position_reference_geometry(oriented),
             correspondence=selection.correspondence,
             correction_mode=selection.correction_mode,
+            polynomial_degree=selection.polynomial_degree,
         )
 
     def dispose(self) -> None:
@@ -883,61 +912,96 @@ def _apply_affine_matrix(transform: np.ndarray,positions: np.ndarray) -> np.ndar
     return matrix[:,:2]@points + matrix[:,2,None]
 
 
-def _quadratic_design(
+def _polynomial_term_count(degree: int) -> int:
+    degree = _normalize_position_reference_polynomial_degree(degree)
+    return (degree+1)*(degree+2)//2
+
+
+def _polynomial_design(
     positions: np.ndarray,
     *,
     center: np.ndarray,
     scale: np.ndarray,
+    degree: int,
 ) -> np.ndarray:
     points = np.asarray(positions,dtype=np.float64)
     if points.ndim != 2 or points.shape[0] != 2:
         raise ValueError("Polynomial positions must have shape (2, N)")
+    degree = _normalize_position_reference_polynomial_degree(degree)
     normalized = (points-center[:,None])/scale[:,None]
     x,y = normalized
-    return np.column_stack([
-        np.ones(points.shape[1],dtype=np.float64),
-        x,y,x*x,x*y,y*y,
-    ])
+    terms = [np.ones(points.shape[1],dtype=np.float64)]
+    for total_degree in range(1,degree+1):
+        for y_power in range(total_degree+1):
+            x_power = total_degree-y_power
+            terms.append((x**x_power)*(y**y_power))
+    return np.column_stack(terms)
 
 
-def _fit_quadratic_displacement(
-    source: np.ndarray,displacement: np.ndarray,
-) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
+def _fit_polynomial_displacement(
+    source: np.ndarray,displacement: np.ndarray,*,degree: int=2,
+) -> tuple[np.ndarray,np.ndarray,np.ndarray,int]:
     source = np.asarray(source,dtype=np.float64)
     displacement = np.asarray(displacement,dtype=np.float64)
+    degree = _normalize_position_reference_polynomial_degree(degree)
     if (
         source.shape != displacement.shape
         or source.ndim != 2
         or source.shape[0] != 2
     ):
         raise ValueError("Polynomial point arrays must share shape (2, N)")
-    if source.shape[1] < 6:
-        raise ValueError("At least six points are required for a quadratic fit")
+    term_count = _polynomial_term_count(degree)
+    if source.shape[1] < term_count:
+        raise ValueError(
+            "At least %d points are required for a degree-%d polynomial fit"
+            % (term_count,degree)
+        )
     center = np.mean(source,axis=1)
     scale = np.ptp(source,axis=1)
     if np.any(scale <= 1e-12):
         raise ValueError("Polynomial reference fit has degenerate coordinates")
-    design = _quadratic_design(source,center=center,scale=scale)
+    design = _polynomial_design(
+        source,center=center,scale=scale,degree=degree,
+    )
     coefficients,_,rank,_ = np.linalg.lstsq(design,displacement.T,rcond=None)
-    if int(rank) < 6:
+    if int(rank) < term_count:
         raise ValueError("Polynomial reference fit is rank-deficient")
-    # Store output as 2 x 6 to mirror the detector-coordinate convention used
-    # elsewhere in the feedback code. Coordinates are normalized before fitting
-    # to avoid poor conditioning from detector-pixel x^2/y^2 terms.
-    return coefficients.T,center,scale
+    # Store output as 2 x terms. Coordinates are normalized before fitting to
+    # avoid poor conditioning from high powers of detector-pixel coordinates.
+    return coefficients.T,center,scale,degree
 
 
-def _apply_quadratic_displacement(
-    polynomial: tuple[np.ndarray,np.ndarray,np.ndarray],
+def _apply_polynomial_displacement(
+    polynomial: tuple[np.ndarray,np.ndarray,np.ndarray,int],
     positions: np.ndarray,
 ) -> np.ndarray:
-    coefficients,center,scale = polynomial
+    coefficients,center,scale,degree = polynomial
+    degree = _normalize_position_reference_polynomial_degree(degree)
     matrix = np.asarray(coefficients,dtype=np.float64)
-    if matrix.shape != (2,6):
-        raise ValueError("Polynomial coefficients must have shape (2, 6)")
-    design = _quadratic_design(
+    term_count = _polynomial_term_count(degree)
+    if matrix.shape != (2,term_count):
+        raise ValueError(
+            "Polynomial coefficients must have shape (2, %d)" % term_count
+        )
+    design = _polynomial_design(
         positions,
         center=np.asarray(center,dtype=np.float64).reshape(2),
         scale=np.asarray(scale,dtype=np.float64).reshape(2),
+        degree=degree,
     )
     return matrix@design.T
+
+
+def _fit_quadratic_displacement(
+    source: np.ndarray,displacement: np.ndarray,
+) -> tuple[np.ndarray,np.ndarray,np.ndarray,int]:
+    """Backward-compatible degree-2 wrapper for the experimental helper."""
+    return _fit_polynomial_displacement(source,displacement,degree=2)
+
+
+def _apply_quadratic_displacement(
+    polynomial: tuple[np.ndarray,np.ndarray,np.ndarray,int],
+    positions: np.ndarray,
+) -> np.ndarray:
+    """Backward-compatible degree-2 wrapper for the experimental helper."""
+    return _apply_polynomial_displacement(polynomial,positions)
