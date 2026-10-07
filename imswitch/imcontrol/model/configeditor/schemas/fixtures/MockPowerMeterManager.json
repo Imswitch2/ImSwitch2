@@ -2,6 +2,10 @@
   "category": "instruments",
   "device": {
     "managerName": "MockPowerMeterManager",
-    "managerProperties": {}
+    "managerProperties": {
+      "noiseW": 1.5,
+      "powerW": 1.5,
+      "serial": "example"
+    }
   }
 }

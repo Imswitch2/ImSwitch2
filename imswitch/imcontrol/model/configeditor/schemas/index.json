@@ -1,23 +1,23 @@
 {
   "coverage": {
     "alias_spellings": 9,
-    "constrained": 47,
+    "constrained": 56,
     "docs_agree": 137,
     "docs_documented": 137,
-    "keys": 217,
-    "managers": 64,
-    "none_default_only": 34,
-    "none_only": 16,
-    "optional": 153,
-    "reads_any": 59,
+    "keys": 235,
+    "managers": 66,
+    "none_default_only": 36,
+    "none_only": 18,
+    "optional": 169,
+    "reads_any": 61,
     "refs": 15,
-    "required": 64,
-    "typed_by_code": 98,
-    "typed_with_docs": 161,
-    "typed_with_examples": 131,
+    "required": 66,
+    "typed_by_code": 114,
+    "typed_with_docs": 177,
+    "typed_with_examples": 147,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 57,
+    "with_keys": 61,
     "writes": 0
   },
   "dialect": "https://json-schema.org/draft/2020-12/schema",
@@ -401,7 +401,7 @@
         "InstrumentManager"
       ],
       "overridden": false,
-      "properties": 0,
+      "properties": 4,
       "required": 0
     },
     "MockPositionerManager": {
@@ -421,7 +421,7 @@
         "InstrumentManager"
       ],
       "overridden": false,
-      "properties": 0,
+      "properties": 3,
       "required": 0
     },
     "NidaqLaserManager": {
@@ -679,6 +679,26 @@
       "overridden": false,
       "properties": 2,
       "required": 0
+    },
+    "ThorlabsPAX1000Manager": {
+      "category": "instruments",
+      "classes": [
+        "ThorlabsPAX1000Manager",
+        "InstrumentManager"
+      ],
+      "overridden": false,
+      "properties": 7,
+      "required": 1
+    },
+    "ThorlabsPM100Manager": {
+      "category": "instruments",
+      "classes": [
+        "ThorlabsPM100Manager",
+        "InstrumentManager"
+      ],
+      "overridden": false,
+      "properties": 4,
+      "required": 1
     },
     "TriggerScopeLaserManager": {
       "category": "lasers",

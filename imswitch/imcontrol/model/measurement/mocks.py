@@ -17,7 +17,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from imswitch.imcommon.algorithms.polarisation import TwoPlateModel, angles_from_direction
-from imswitch.imcommon.model.measurement_run import ControlResult, QuantitySpec, TimingRule
+from imswitch.imcommon.model.measurement_run import ControlResult, TimingRule
 
 from .controls import READBACK_FRESH, ControlCapabilities, RunControl
 from .instrument import (
@@ -30,6 +30,7 @@ from .instrument import (
     TimingProfile,
     TransportError,
 )
+from .quantities import PAX_QUANTITIES, POWER_QUANTITY  # noqa: F401 (re-exported)
 
 
 class MockRotatorControl(RunControl):
@@ -112,14 +113,6 @@ class MockRotatorControl(RunControl):
 
     def read_position(self) -> Optional[float]:
         return self._now_angle()
-
-
-PAX_QUANTITIES = (
-    QuantitySpec('azimuth', 'rad', 'polarisation.azimuth', -math.pi / 2, math.pi / 2),
-    QuantitySpec('ellipticity', 'rad', 'polarisation.ellipticity', -math.pi / 4, math.pi / 4),
-    QuantitySpec('dop', '', 'polarisation.dop', 0.0, 1.05),
-    QuantitySpec('power', 'W', 'optical.power', 0.0),
-)
 
 
 class MockPAXDriver(InstrumentDriver):
@@ -336,7 +329,7 @@ class MockPowerMeterDriver(InstrumentDriver):
     into every later reading, as a real meter would.
     """
 
-    quantities = (QuantitySpec('power', 'W', 'optical.power', -1.0, 10.0),)
+    quantities = (POWER_QUANTITY,)
     settings_spec = (SettingSpec('wavelength_nm', 'Wavelength', 'nm'),)
     actions_spec = (ActionSpec('zero', 'Zero', confirm='Block the beam at the sensor',
                                requires_dark=True),)

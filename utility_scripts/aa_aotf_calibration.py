@@ -434,72 +434,55 @@ class AOTFTransportPool:
 
 
 class PM100D:
-    """Minimal direct-SCPI wrapper based on the supplied calibration script."""
+    """The utility's view of a PM100D: ImSwitch's shared PM100 driver
+    (``imswitch.imcontrol.model.measurement.thorlabs``), so the utility and
+    ImSwitch's instruments send the same commands."""
 
-    def __init__(self, serial: str, backend: str = "", timeout_ms: int = 2000):
+    def __init__(self, serial: str, backend: str = "", timeout_ms: int = 2000,
+                 resource_manager_factory=None):
+        from imswitch.imcontrol.model.measurement.thorlabs import ThorlabsPM100Driver
+
         self.serial = str(serial).strip()
-        self.backend = backend
-        self.timeout_ms = int(timeout_ms)
-        self._resource_manager = None
-        self._instrument = None
-        self.resource_name = None
+        self._driver = ThorlabsPM100Driver(
+            self.serial, backend=backend, timeout_ms=timeout_ms,
+            resource_manager_factory=resource_manager_factory,
+        )
+        self._identity = None
 
     @property
     def connected(self) -> bool:
-        return self._instrument is not None
+        return self._driver.link.is_open
+
+    @property
+    def resource_name(self):
+        return self._driver.link.resource_name
 
     def connect(self) -> None:
         if self.connected:
             return
         if not self.serial:
             raise ValueError("Enter the PM100D serial number")
-        import pyvisa
-
-        self._resource_manager = pyvisa.ResourceManager(self.backend)
-        resources = self._resource_manager.list_resources()
-        self.resource_name = next(
-            (resource for resource in resources if self.serial in resource),
-            None,
-        )
-        if self.resource_name is None:
-            self.close()
-            raise RuntimeError(
-                f"PM100D serial {self.serial!r} not found. VISA resources: "
-                f"{resources}"
-            )
-        self._instrument = self._resource_manager.open_resource(
-            self.resource_name, timeout=self.timeout_ms
-        )
+        self._identity = self._driver.connect()
 
     def close(self) -> None:
-        if self._instrument is not None:
-            try:
-                self._instrument.close()
-            finally:
-                self._instrument = None
-        if self._resource_manager is not None:
-            try:
-                self._resource_manager.close()
-            finally:
-                self._resource_manager = None
-        self.resource_name = None
-
-    def _require(self):
-        if self._instrument is None:
-            raise RuntimeError("The PM100D is not connected")
-        return self._instrument
+        self._driver.close()
+        self._identity = None
 
     def identify(self) -> str:
-        return self._require().query("*IDN?").strip()
+        identity = self._identity
+        if identity is None:
+            raise RuntimeError("The PM100D is not connected")
+        return f"{identity.vendor},{identity.model},{identity.serial},{identity.firmware}"
 
     def read_power_mw(self) -> float:
-        return float(self._require().query("READ?")) * 1e3
+        return self._driver.read().values["power"] * 1e3
 
     def set_wavelength_nm(self, wavelength_nm: float) -> None:
-        self._require().write(f"SENSE:CORR:WAV {float(wavelength_nm)}")
+        self._driver.set_setting("wavelength_nm", wavelength_nm)
 
     def zero(self) -> None:
-        self._require().write("SENSE:ZERO:INIT")
+        """Zero the sensor and wait until the meter reports it done."""
+        self._driver.run_action("zero")
 
 
 class SweepWorker(QtCore.QObject):
@@ -913,7 +896,7 @@ class AOTFCalibrationWindow(QtWidgets.QMainWindow):
             if response != QtWidgets.QMessageBox.Yes:
                 return
             meter.zero()
-            self.log("PM100D zeroing initiated")
+            self.log("PM100D zeroed")
         except Exception as exc:
             self.show_error("Could not zero PM100D", exc)
 

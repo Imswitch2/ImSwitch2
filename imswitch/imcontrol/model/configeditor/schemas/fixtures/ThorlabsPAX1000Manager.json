@@ -1,0 +1,15 @@
+{
+  "category": "instruments",
+  "device": {
+    "managerName": "ThorlabsPAX1000Manager",
+    "managerProperties": {
+      "powerUnit": "example",
+      "serial": "example",
+      "timeoutMs": 1,
+      "updateBoundS": 1.5,
+      "updatePeriodS": 1.5,
+      "visaBackend": "example",
+      "wavelengthNm": null
+    }
+  }
+}

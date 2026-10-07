@@ -15,11 +15,11 @@ class MockPowerMeterManager(InstrumentManager):
     - ``serial`` -- reported serial number (default "MOCK-PM")
     """
 
-    def _createDriver(self, properties):
-        power = float(properties.get('powerW', 1e-3))
+    def _createDriver(self):
+        power = float(self._managerProperties.get('powerW', 1e-3))
         source = SimpleNamespace(emitted_w=lambda: power)
         return MockPowerMeterDriver(
             [source], transmission=1.0,
-            noise_w=float(properties.get('noiseW', 2e-7)),
-            serial=str(properties.get('serial', 'MOCK-PM')),
+            noise_w=float(self._managerProperties.get('noiseW', 2e-7)),
+            serial=str(self._managerProperties.get('serial', 'MOCK-PM')),
         )

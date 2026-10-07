@@ -298,8 +298,8 @@
       "unresolved": 0
     },
     {
-      "constrained": 0,
-      "keys": 0,
+      "constrained": 3,
+      "keys": 4,
       "name": "MockPAXManager",
       "refs": 0,
       "required": 0,
@@ -316,8 +316,8 @@
       "unresolved": 0
     },
     {
-      "constrained": 0,
-      "keys": 0,
+      "constrained": 2,
+      "keys": 3,
       "name": "MockPowerMeterManager",
       "refs": 0,
       "required": 0,
@@ -559,6 +559,24 @@
       "unresolved": 0
     },
     {
+      "constrained": 3,
+      "keys": 7,
+      "name": "ThorlabsPAX1000Manager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
+      "constrained": 1,
+      "keys": 4,
+      "name": "ThorlabsPM100Manager",
+      "refs": 0,
+      "required": 1,
+      "uncertain": 0,
+      "unresolved": 0
+    },
+    {
       "constrained": 0,
       "keys": 3,
       "name": "TriggerScopeLaserManager",
@@ -579,23 +597,23 @@
   ],
   "totals": {
     "alias_spellings": 9,
-    "constrained": 47,
+    "constrained": 56,
     "docs_agree": 135,
     "docs_documented": 135,
-    "keys": 215,
-    "managers": 64,
-    "none_default_only": 33,
-    "none_only": 16,
-    "optional": 151,
-    "reads_any": 58,
+    "keys": 233,
+    "managers": 66,
+    "none_default_only": 35,
+    "none_only": 18,
+    "optional": 167,
+    "reads_any": 60,
     "refs": 14,
-    "required": 64,
-    "typed_by_code": 98,
-    "typed_with_docs": 159,
-    "typed_with_examples": 131,
+    "required": 66,
+    "typed_by_code": 114,
+    "typed_with_docs": 175,
+    "typed_with_examples": 147,
     "uncertain": 0,
     "unresolved_reads": 3,
-    "with_keys": 56,
+    "with_keys": 60,
     "writes": 0
   }
 }

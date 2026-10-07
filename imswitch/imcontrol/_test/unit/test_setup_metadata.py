@@ -93,10 +93,12 @@ _UNREGISTERED_CORE_MANAGERS = {
     ("stand", "LeicaDMIStandManager"),
     # Offered since the schema-extraction work: shipped setups select it by name.
     ("rs232", "RS232Manager"),
-    # Hardware-free instruments for mock setups (real ones come as plugins
-    # or in-tree drivers registered with the instruments kind).
+    # Measurement instruments: hardware-free mocks for mock setups, and the
+    # Thorlabs PM100 / PAX1000 over VISA.
     ("instrument", "MockPAXManager"),
     ("instrument", "MockPowerMeterManager"),
+    ("instrument", "ThorlabsPAX1000Manager"),
+    ("instrument", "ThorlabsPM100Manager"),
 }
 
 

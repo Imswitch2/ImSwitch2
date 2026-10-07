@@ -61,8 +61,8 @@ def test_permanent_and_connect_on_startup_instruments_connect():
 
 def test_failed_startup_connect_is_disconnected_with_error_never_mock():
     class Unplugged(MockPowerMeterManager):
-        def _createDriver(self, properties):
-            driver = super()._createDriver(properties)
+        def _createDriver(self):
+            driver = super()._createDriver()
             driver.unplugged = True
             return driver
 

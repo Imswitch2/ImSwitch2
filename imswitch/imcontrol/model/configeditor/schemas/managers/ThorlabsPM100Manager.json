@@ -2,44 +2,47 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
   "properties": {
-    "noiseW": {
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
-      "x-imswitch-kind": "number",
-      "x-imswitch-source": [
-        "code:default:number",
-        "code:float()",
-        "code:optional(get)"
-      ]
-    },
-    "powerW": {
-      "type": [
-        "integer",
-        "number",
-        "string"
-      ],
-      "x-imswitch-kind": "number",
-      "x-imswitch-source": [
-        "code:default:number",
-        "code:float()",
-        "code:optional(get)"
-      ]
-    },
     "serial": {
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:required",
+        "code:str()"
+      ]
+    },
+    "timeoutMs": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "integer",
+      "x-imswitch-source": [
+        "code:default:integer",
+        "code:int()",
+        "code:optional(get)"
+      ]
+    },
+    "visaBackend": {
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
         "code:optional(get)"
       ]
+    },
+    "wavelengthNm": {
+      "x-imswitch-nullable": true,
+      "x-imswitch-source": [
+        "code:optional(get)"
+      ]
     }
   },
-  "title": "MockPowerMeterManager managerProperties",
+  "required": [
+    "serial"
+  ],
+  "title": "ThorlabsPM100Manager managerProperties",
   "type": "object",
   "x-imswitch-classes": [
-    "MockPowerMeterManager",
+    "ThorlabsPM100Manager",
     "InstrumentManager"
   ]
 }

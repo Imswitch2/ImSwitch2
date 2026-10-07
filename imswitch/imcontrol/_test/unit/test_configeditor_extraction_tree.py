@@ -62,16 +62,17 @@ def report(extractions):
 # ── the numbers the plan quotes ───────────────────────────────────────────
 def test_the_coverage_the_plan_is_built_on(report):
     # 65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
-    assert report.managers == 64, "61 plus RS232Manager, plus the two mock instruments"
+    assert report.managers == 66, "61 plus RS232Manager, plus two mock and two Thorlabs instruments"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
     # methods other than __init__ are all followed now.
     # ... plus RS232Manager itself, once the catalog stopped skipping it.
     # Four fewer since the removed camera managers (see above): 59 -> 55.
-    # 58: the mock instruments read their simulated properties.
-    assert report.reads_any == 58
-    assert report.with_keys == 56
+    # 60: the four instrument managers read self._managerProperties, which
+    # their base binds from the InstrumentInfo, so all four list their keys.
+    assert report.reads_any == 60
+    assert report.with_keys == 60
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
     # 218 before the merge with the acquisition-layout branch: the removed
@@ -80,19 +81,22 @@ def test_the_coverage_the_plan_is_built_on(report):
     # useMockOnFailure. 213: LeicaDMIZPositionerManager's shared-hardware
     # calibCsvPath boundary read. 215 after open-loop positioner reference
     # defaults added defaultReferenceVoltage to NI-DAQ and TriggerScope.
-    assert report.keys == 215
+    # 233: the instrument managers' 18 keys (mocks 7, PM100 4, PAX1000 7).
+    assert report.keys == 233
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 64 after the device-reconnection rebase: CoolLED and MPB read
     # rs232device unguarded at construction now (their status descriptors
     # reuse that name instead of re-reading it), so it is required, as it is
     # for every other RS232-backed laser.
-    assert report.required == 64, "62 + CoolLED/MPB rs232device"
-    assert report.optional == 151
+    assert report.required == 66, "62 + CoolLED/MPB rs232device + PM100/PAX serial"
+    assert report.optional == 167
     assert report.refs == 14
     # 33: MHXYStage and PiezoconceptZ read rs232device with .get() (None
     # default) for their status descriptors instead of inside try/except.
-    assert report.none_default_only == 33
+    # 35: PM100 and PAX1000 read wavelengthNm with .get() (None = keep the
+    # instrument's own).
+    assert report.none_default_only == 35
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -112,7 +116,8 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
     # 98 after the device-reconnection rebase: Elliptec's address (int()) and
     # port (str()) are coerced in code.
-    assert report.typed_by_code == 98
+    # 114: the 16 instrument keys read through float()/int()/str().
+    assert report.typed_by_code == 114
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -287,5 +292,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 64
+    assert totals["managers"] == 66
 

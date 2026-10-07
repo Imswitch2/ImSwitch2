@@ -1,0 +1,12 @@
+{
+  "category": "instruments",
+  "device": {
+    "managerName": "ThorlabsPM100Manager",
+    "managerProperties": {
+      "serial": "example",
+      "timeoutMs": 1,
+      "visaBackend": "example",
+      "wavelengthNm": null
+    }
+  }
+}

@@ -23,7 +23,7 @@ Design: ``docs/design/plans/transient-instruments-step-scans.md`` §5-6.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, List
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.devices.graph import (
@@ -62,12 +62,12 @@ class InstrumentManager(DeviceManagerStatusMixin, ABC):
         self.__logger = initLogger(self, instanceName=name)
         self.__name = name
         self._instrumentInfo = instrumentInfo
-        properties = dict(getattr(instrumentInfo, 'managerProperties', None) or {})
+        self._managerProperties = dict(getattr(instrumentInfo, 'managerProperties', None) or {})
         self.transient = bool(getattr(instrumentInfo, 'transient', False))
         connectOnStartup = bool(getattr(instrumentInfo, 'connectOnStartup', False))
         self._statusListeners: List[Callable[[str], None]] = []
 
-        self.session = InstrumentSession(name, self._createDriver(properties))
+        self.session = InstrumentSession(name, self._createDriver())
         self.session.add_fault_listener(self._onSessionFault)
         self._lifecycle = _InstrumentLifecycle(self)
 
@@ -84,8 +84,10 @@ class InstrumentManager(DeviceManagerStatusMixin, ABC):
 
     # ------------------------------------------------------------- contract
     @abstractmethod
-    def _createDriver(self, properties: Dict[str, Any]) -> InstrumentDriver:
-        """The driver for this instrument (not connected yet)."""
+    def _createDriver(self) -> InstrumentDriver:
+        """The driver for this instrument (not connected yet), configured
+        from ``self._managerProperties`` -- read there with ``.get`` /
+        subscripts so the config editor can list the keys."""
 
     @property
     def name(self) -> str:

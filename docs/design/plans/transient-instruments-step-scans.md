@@ -872,7 +872,29 @@ the polarisation map, verified-first matching.
   (shown only for devices that offer them) and an "Instruments" group; a
   not-connected instrument is neutral, not a connection issue.
 - Not yet: `FAULTED` is shown as `ERROR` (no separate state); the Readings
-  dock (§6.4); real drivers (step 3); scripting access (step 4).
+  dock (§6.4); scripting access (step 4).
+
+**P-4 step 3 (done against a fake VISA; rig gates open).**
+`imcontrol/model/measurement/thorlabs.py`: `VisaLink` (resource by serial,
+every VISA failure a `TransportError`, pyvisa imported on connect only),
+`ThorlabsPM100Driver`, `ThorlabsPAX1000Driver`; managers
+`ThorlabsPM100Manager` / `ThorlabsPAX1000Manager` (`serial` required).
+Quantity specs shared with the mocks (`measurement/quantities.py`).
+Instrument managers read `self._managerProperties` (bound by the base from
+the `InstrumentInfo`), so the config editor lists their keys.
+Differences from §6.6 and things the rig must confirm:
+- PM100 zero sends `SENS:CORR:COLL:ZERO:INIT` (the manual's form; the old
+  script sent `SENSE:ZERO:INIT` and never checked it), checks `SYST:ERR?`,
+  and waits for `SENS:CORR:COLL:ZERO:STAT?` to read 0 (15 s bound).
+- PAX: `SENS:CALC?` / `SENS:WAV?` readbacks; a query the firmware does not
+  answer keeps the commanded value and lists the setting in
+  `unconfirmed_settings` instead of refusing to connect. Wavelength readback
+  below 1 is taken as metres.
+- PAX power field unit: manager property `powerUnit` (`W` default, `mW`).
+- PAX timing: `UPDATE_BOUND` with `updateBoundS` 0.5 / `updatePeriodS` 0.1,
+  unverified; `last_fields` keeps the whole packet for identifying fields 0-8.
+- The AA AOTF utility's `PM100D` is now an adapter over the shared driver;
+  its Zero blocks until the meter reports zeroing done.
 
 **P-5 (done on mocks).** `imcontrol/model/measurement/laser_lut.py`
 (`run_laser_lut`): prepare steps inside the reservation (record laser state,

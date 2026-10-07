@@ -2,6 +2,11 @@
   "category": "instruments",
   "device": {
     "managerName": "MockPAXManager",
-    "managerProperties": {}
+    "managerProperties": {
+      "noiseDeg": 1.5,
+      "plate1Deg": 1.5,
+      "plate2Deg": 1.5,
+      "serial": "example"
+    }
   }
 }
