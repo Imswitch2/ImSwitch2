@@ -28,6 +28,7 @@ class HardwareStatusController(ImConWidgetController):
         super().__init__(*args, **kwargs)
         self._reconnectWorker = None
         self._reconnectMessage = ""
+        self._closing = False
         self._widget.sigRefreshRequested.connect(self.refresh)
         self._widget.sigReconnectRequested.connect(self.reconnect)
         self.refresh()
@@ -46,6 +47,9 @@ class HardwareStatusController(ImConWidgetController):
         )
 
     def reconnect(self, hardware_id):
+        if self._closing:
+            self._widget.setReconnectBusy(False, "Reconnect refused: shutting down")
+            return
         lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
         if lifecycleService is None:
             self._widget.setReconnectBusy(False, "Reconnect service unavailable")
@@ -81,3 +85,23 @@ class HardwareStatusController(ImConWidgetController):
         if self._reconnectWorker is worker:
             self._reconnectWorker = None
             self._widget.setReconnectBusy(False, self._reconnectMessage)
+
+    # Shutdown barrier: a reconnect still running may install a new backend,
+    # so hardware managers must not be finalized until it has returned.
+    def closeEvent(self) -> bool:
+        self._closing = True
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        beginShutdown = getattr(lifecycleService, 'beginShutdown', None)
+        if callable(beginShutdown):
+            beginShutdown()
+        super().closeEvent()
+        return self.shutdownComplete()
+
+    def shutdownComplete(self) -> bool:
+        """Whether no reconnect worker (and no service operation) is running."""
+        worker = self.__dict__.get('_reconnectWorker')
+        if worker is not None and worker.isRunning():
+            return False
+        lifecycleService = getattr(self.__dict__.get('_master'), 'deviceLifecycleService', None)
+        inFlight = getattr(lifecycleService, 'operationsInFlight', None)
+        return not (callable(inFlight) and inFlight())

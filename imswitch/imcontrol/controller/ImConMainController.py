@@ -847,6 +847,13 @@ class ImConMainController(MainController):
                     exc_info=True,
                 )
         
+        # No device reconnect may start once shutdown has begun (API, scripts
+        # and the Hardware status window alike); running ones are waited for
+        # by the HardwareStatusController's shutdown barrier.
+        lifecycleService = getattr(self.__masterController, 'deviceLifecycleService', None)
+        if lifecycleService is not None:
+            lifecycleService.beginShutdown()
+
         controllersClosed = True
         if self.__factory is not None:
             controllersClosed = self.__factory.closeAllCreatedControllers(

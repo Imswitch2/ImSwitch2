@@ -217,6 +217,14 @@ class _PIStageLifecycle:
 
         try:
             backend, usb_description = self._manager._buildRealBackend()
+            # Installing reads the joystick state and sets the speed over USB:
+            # a failure there is a reconnect failure too, with the status to
+            # match (the mock from _prepareBackendReconnect stays installed).
+            self._manager._installRealBackend(
+                backend,
+                usb_description,
+                summary="PI stage reconnected",
+            )
         except Exception as exc:
             self._manager._markReconnectFailure(exc)
             return DeviceLifecycleResult(
@@ -228,11 +236,6 @@ class _PIStageLifecycle:
                 affected_device_ids=(device_id,),
             )
 
-        self._manager._installRealBackend(
-            backend,
-            usb_description,
-            summary="PI stage reconnected",
-        )
         return DeviceLifecycleResult(
             hardware_id=self.hardware_id,
             action=DeviceLifecycleAction.RECONNECT,

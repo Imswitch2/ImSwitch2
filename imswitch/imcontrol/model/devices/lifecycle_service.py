@@ -5,6 +5,7 @@ import threading
 
 from imswitch.imcommon.model import initLogger
 
+from .acquisition_gate import MaintenanceBlockedError, get_acquisition_gate
 from .graph import DeviceRelationKind, HardwareDeviceId
 from .lifecycle import (
     DeviceHandle,
@@ -41,6 +42,22 @@ class DeviceLifecycleService:
         }
         self._listeners = []
         self._listenersLock = threading.RLock()
+        self._shutdownLock = threading.Lock()
+        self._shuttingDown = False
+        self._inFlight = 0
+
+    def beginShutdown(self) -> None:
+        """Refuse every new lifecycle operation from now on.
+
+        Operations already running finish; :meth:`operationsInFlight` tells
+        the shutdown barrier whether they have.
+        """
+        with self._shutdownLock:
+            self._shuttingDown = True
+
+    def operationsInFlight(self) -> int:
+        with self._shutdownLock:
+            return self._inFlight
 
     def _buildHandles(self, graph) -> dict:
         grouped = {}
@@ -248,6 +265,19 @@ class DeviceLifecycleService:
                 f"Reconnect is not supported for {hardware_id!r}."
             )
 
+        with self._shutdownLock:
+            if self._shuttingDown:
+                raise DeviceLifecycleBlockedError(
+                    "Device reconnect is refused: the application is shutting down."
+                )
+            self._inFlight += 1
+        try:
+            return self._reconnectAdmitted(hardware_id, handle, lifecycle)
+        finally:
+            with self._shutdownLock:
+                self._inFlight -= 1
+
+    def _reconnectAdmitted(self, hardware_id, handle, lifecycle) -> DeviceLifecycleResult:
         lock = self._operationLocks[hardware_id]
         if not lock.acquire(blocking=False):
             raise DeviceLifecycleBusyError(
@@ -256,7 +286,12 @@ class DeviceLifecycleService:
         try:
             self._assertRuntimeTransitionSafe()
             try:
-                result = lifecycle.reconnect()
+                # Held for the whole adapter call: no scan or recording can
+                # start until the backend replacement has finished.
+                with get_acquisition_gate().maintenance(f"reconnect of {hardware_id}"):
+                    result = lifecycle.reconnect()
+            except MaintenanceBlockedError as exc:
+                raise DeviceLifecycleBlockedError(str(exc)) from None
             except DeviceLifecycleError:
                 # Expected lifecycle policy failures (for example a detector
                 # still owned by an acquisition lease) should reach the caller
