@@ -3,6 +3,9 @@ from typing import List, Union, Dict, Any
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
+from imswitch.imcontrol.model.devices.status import (
+    DeviceNotConnectedError, device_usable, not_connected_reason,
+)
 from ..basecontrollers import (
     ComponentStateApplyMode,
     ImConWidgetController,
@@ -58,13 +61,19 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 (lManager.freqRangeMin, lManager.freqRangeMax, lManager.freqRangeInit) if lManager.isModulated else (0, 0, 0),
             )
             # Ensure laser/LED is off and at zero power on startup, regardless of
-            # hardware state left over from a previous session.
-            self._master.lasersManager[lName].setEnabled(False)
-            if not lManager.isBinary:
-                self.valueChanged(lName, valueRangeMin)
+            # hardware state left over from a previous session. A laser that
+            # is not connected refuses this; it is greyed out below instead.
+            try:
+                self._master.lasersManager[lName].setEnabled(False)
+                if not lManager.isBinary:
+                    self.valueChanged(lName, valueRangeMin)
+            except DeviceNotConnectedError as exc:
+                self._logger.info(f'Laser {lName} not connected at startup: {exc}')
+                self._widget.setLaserActive(lName, False, emitSignal=False)
 
             self.setSharedAttr(lName, _enabledAttr, self._widget.isLaserActive(lName))
             self.setSharedAttr(lName, _valueAttr, self._widget.getValue(lName))
+        self._refreshLaserUsability()
 
         # Load presets
         for laserPresetName in self._setupInfo.laserPresets:
@@ -119,9 +128,29 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         if lifecycleService is not None and listener is not None:
             lifecycleService.removeListener(listener)
             self._deviceLifecycleListener = None
-        self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(False))
-        self._master.lasersManager.execOnAll(lambda l: l.setValue(0))
-        self._master.lasersManager.execOnAll(lambda l: l.setEnabled(False))
+        # Only connected lasers can be switched off; an absent one is dark.
+        for action in (lambda l: l.setScanModeActive(False),
+                       lambda l: l.setValue(0),
+                       lambda l: l.setEnabled(False)):
+            self._master.lasersManager.execOnAll(action, condition=device_usable)
+
+    def _refreshLaserUsability(self, names=None):
+        """Grey out lasers that are not connected (absent at startup,
+        unplugged, faulted) and enable the ones that are."""
+        for name, manager in self._master.lasersManager:
+            if names is not None and name not in names:
+                continue
+            usable = device_usable(manager)
+            self._widget.setLaserUsable(name, usable,
+                                        '' if usable else not_connected_reason(manager))
+
+    def _refuseNotConnected(self, laserName, exc):
+        """A command reached a laser that is not connected: keep the panel
+        dark, say why, and grey the row."""
+        self._logger.warning(str(exc))
+        self._widget.setLaserActive(laserName, False, emitSignal=False)
+        self.setSharedAttr(laserName, _enabledAttr, False)
+        self._refreshLaserUsability((laserName,))
 
     def _deviceLifecycleChanged(self, result):
         deactivated = tuple(
@@ -129,12 +158,20 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             for device_id in getattr(result, 'deactivated_device_ids', ())
             if getattr(device_id, 'kind', None) == 'laser'
         )
-        if not deactivated:
+        affected = tuple(
+            device_id.name
+            for device_id in getattr(result, 'affected_device_ids', ())
+            if getattr(device_id, 'kind', None) == 'laser'
+        )
+        if not deactivated and not affected:
             return
 
-        self._invokeOnControllerThreadIfNeeded(
-            lambda: self._applyLifecycleDeactivation(deactivated)
-        )
+        def apply():
+            if deactivated:
+                self._applyLifecycleDeactivation(deactivated)
+            if affected:
+                self._refreshLaserUsability(affected)
+        self._invokeOnControllerThreadIfNeeded(apply)
 
     def _applyLifecycleDeactivation(self, device_ids):
         knownLasers = {name for name, _ in self._master.lasersManager}
@@ -150,7 +187,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def toggleLaser(self, laserName, enabled):
         """ Enable or disable laser (on/off)."""
-        applied = self._master.lasersManager[laserName].setEnabled(enabled)
+        try:
+            applied = self._master.lasersManager[laserName].setEnabled(enabled)
+        except DeviceNotConnectedError as exc:
+            self._refuseNotConnected(laserName, exc)
+            return
         # Managers may explicitly reject an unsafe enable (for example an MPB
         # laser with no positive setpoint). Keep the toggle and shared state
         # fail-closed instead of displaying ON while the hardware remains dark.
@@ -536,7 +577,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             self.settingAttr = False
 
     def _setLaserValue(self, laserName, value):
-        self._master.lasersManager[laserName].setValue(value)
+        try:
+            self._master.lasersManager[laserName].setValue(value)
+        except DeviceNotConnectedError as exc:
+            self._refuseNotConnected(laserName, exc)
+            return
         self._widget.setValue(laserName, value, emitSignal=False)
         self.setSharedAttr(laserName, _valueAttr, value)
         try:

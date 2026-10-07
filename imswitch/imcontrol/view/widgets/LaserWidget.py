@@ -166,6 +166,15 @@ class LaserWidget(Widget):
         leaving its power setpoint editable. """
         self.laserModules[laserName].setEnableEditable(editable)
 
+    def setLaserUsable(self, laserName, usable, reason=''):
+        """ Grey out a laser that is not connected (absent at startup,
+        unplugged, faulted); ``reason`` becomes its tooltip. """
+        module = self.laserModules[laserName]
+        module.setActivatable(usable)
+        module.setEditable(usable)
+        module.setEnableEditable(usable)
+        module.setToolTip('' if usable else reason)
+
     def setValue(self, laserName, value, emitSignal=True):
         """ Sets the value of the specified laser, in the units that the laser
         uses. """

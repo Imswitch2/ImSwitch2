@@ -66,7 +66,7 @@
       ]
     },
     "useMockOnFailure": {
-      "description": "Continue in mock mode after an initialization failure. A best-effort",
+      "description": "Defaults to ``false``: after an initialization failure (a best-effort",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:default:boolean",

@@ -77,6 +77,16 @@ class RotatorWidget(Widget):
 
         self.numPositioners += 1
 
+    def setRotatorUsable(self, name, usable, reason=''):
+        """ Grey out a rotator that is not connected (absent at startup,
+        unplugged, faulted); ``reason`` becomes the tooltip. """
+        for key, widget in self.pars.items():
+            if not key.endswith(name):
+                continue
+            widget.setEnabled(bool(usable))
+            if key.startswith(('Label', 'Position')):
+                widget.setToolTip('' if usable else reason)
+
     def getRelStepSize(self, name):
         """ Returns the step size of the rotation mount, in degrees. """
         return float(self.pars['RelStepEdit'+name].text())

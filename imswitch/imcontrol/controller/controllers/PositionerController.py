@@ -3,6 +3,9 @@ from typing import Dict, List, Any
 
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.devices.status import (
+    DeviceNotConnectedError, device_usable, not_connected_reason,
+)
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
 from qtpy.QtCore import QTimer
@@ -118,6 +121,8 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
         self._commChannel.sigSetSpeed.connect(lambda speed: self.setSpeedGUI(speed))
 
+
+        self._refreshPositionerUsability()
 
         # Connect PositionerWidget signals
         self._widget.sigStepUpClicked.connect(self.stepUp)
@@ -744,16 +749,30 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
 
     def _refreshLifecycleAffectedPositioners(self, device_ids):
         known = {name for name, _ in self._master.positionersManager}
-        for device_id in device_ids:
-            if device_id.name not in known:
+        names = tuple(d.name for d in device_ids if d.name in known)
+        self._refreshPositionerUsability(names)
+        for name in names:
+            if not device_usable(self._master.positionersManager[name]):
                 continue
             try:
-                self.updatePosition(device_id.name, 'all')
+                self.updatePosition(name, 'all')
             except Exception:
                 self._logger.warning(
-                    f'Could not refresh {device_id.name} after a lifecycle change',
+                    f'Could not refresh {name} after a lifecycle change',
                     exc_info=True,
                 )
+
+    def _refreshPositionerUsability(self, names=None):
+        """Grey out stages that are not connected (absent at startup,
+        unplugged, faulted) and enable the ones that are."""
+        for name, manager in self._master.positionersManager:
+            if names is not None and name not in names:
+                continue
+            if not self._isPositionerShownInWidget(manager):
+                continue
+            usable = device_usable(manager)
+            self._widget.setPositionerUsable(
+                name, usable, '' if usable else not_connected_reason(manager))
 
     def getPos(self):
         return self._master.positionersManager.execOnAll(lambda p: p.position)
@@ -765,7 +784,11 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         """Move positioner by ``dist`` in the specified axis."""
         pManager = self._master.positionersManager[positionerName]
         shouldAutoReenableJoystick = self._shouldAutoReenableJoystickAfterMove(pManager)
-        result = pManager.move(dist, axis)
+        try:
+            result = pManager.move(dist, axis)
+        except DeviceNotConnectedError:
+            self._refreshPositionerUsability((positionerName,))
+            raise
         if not self._isLiveUpdateEnabled(positionerName, pManager):
             if not self._applyPositionResult(positionerName, axis, result):
                 self.updatePosition(positionerName, axis)
@@ -775,7 +798,11 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
         """Move the positioner to an absolute position."""
         pManager = self._master.positionersManager[positionerName]
         shouldAutoReenableJoystick = self._shouldAutoReenableJoystickAfterMove(pManager)
-        result = pManager.setPosition(position, axis)
+        try:
+            result = pManager.setPosition(position, axis)
+        except DeviceNotConnectedError:
+            self._refreshPositionerUsability((positionerName,))
+            raise
         if not self._isLiveUpdateEnabled(positionerName, pManager):
             if not self._applyPositionResult(positionerName, axis, result):
                 self.updatePosition(positionerName, axis)

@@ -246,14 +246,21 @@ def test_positioner_panel_refreshes_reconnected_stages_on_the_ui_thread():
     )
     from imswitch.imcontrol.model.devices.graph import DeviceId
 
+    class _Stages(dict):
+        def __iter__(self):
+            return iter(self.items())
+
     calls = []
+    stage = SimpleNamespace(forPositioning=True, isUsable=True)
     controller = PositionerController.__new__(PositionerController)
     controller.__dict__.update(
-        _master=SimpleNamespace(positionersManager=[('XY', object()), ('Z', object())]),
+        _master=SimpleNamespace(positionersManager=_Stages(XY=stage, Z=stage)),
+        _widget=SimpleNamespace(setPositionerUsable=lambda *a: None),
     )
-    controller.updatePosition = lambda name, axis: calls.append((name, axis))
+    controller.__dict__['_isPositionerShownInWidget'] = lambda m: True
+    controller.__dict__['updatePosition'] = lambda name, axis: calls.append((name, axis))
     queued = []
-    controller._invokeOnControllerThreadIfNeeded = queued.append
+    controller.__dict__['_invokeOnControllerThreadIfNeeded'] = queued.append
 
     controller._deviceLifecycleChanged(SimpleNamespace(affected_device_ids=(
         DeviceId('laser', '488'), DeviceId('positioner', 'XY'), DeviceId('positioner', 'Other'))))

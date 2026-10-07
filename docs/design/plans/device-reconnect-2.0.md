@@ -361,3 +361,34 @@ porting the ten lifecycles (R-4) is cheaper once the holder exists.
   SQUID stage and TriggerScope get the default hook (they keep no device
   state; `RS232Manager` heals their status on the next I/O).
 
+**R-2 (done 2026-10-08).**
+- `DeviceNotConnectedError`; `DeviceManagerStatusMixin.isUsable` (a
+  configured mock always, a real device only while connected; UNKNOWN
+  counts as usable for managers that record nothing) and
+  `_requireConnected(what)`; module helpers `device_usable(manager)` /
+  `not_connected_reason(manager)` for panels.
+- `transient` / `connectOnStartup` on `DeviceInfo` (every kind); kinds
+  schemas regenerated; setup reference updated.
+- MPB and AA AOTF: `useMockOnFailure` defaults to False; without it a unit
+  that does not answer is left `REAL` + `ERROR` with the error shown, the
+  immediate OFF still attempted, every command raising
+  `DeviceNotConnectedError` until a reconnect repeats the startup exchange.
+  `useMockOnFailure: false` no longer aborts startup. The startup exchange
+  forces `REAL` for its duration so an earlier opt-in mock cannot swallow it.
+- Panels: `LaserWidget.setLaserUsable`, `PositionerWidget.setPositionerUsable`,
+  `RotatorWidget.setRotatorUsable` grey the rows with the reason as tooltip;
+  their controllers refresh usability at startup and on every lifecycle
+  result naming their devices, skip position reads of absent devices, and
+  the Laser panel turns a refused command into a warning, a dark toggle and
+  a greyed row (its startup OFF and its close-time OFF skip absent lasers).
+  FlipMirror already greys through `setRowState(connected=)`.
+- `DetectorsManager.acquire` / `startAcquisition` refuse an absent detector
+  by name (`DeviceNotConnectedError`), so scans, recordings and live view
+  never start on a detector that is not there.
+- Not yet (R-3): the managers that still install a fallback mock (Kinesis,
+  Standa, cameras, SLMs, Teensy, Cobolt-new, ESP32, PulseStreamer,
+  PyMicroscope, Swabian) keep doing so until they adopt the backend holder;
+  flipping their default without the holder would abort startup instead of
+  leaving the device absent. The Settings widget still lists an absent
+  detector (greying it is R-3 with the camera managers).
+

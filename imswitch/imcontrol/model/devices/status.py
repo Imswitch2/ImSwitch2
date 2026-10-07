@@ -182,6 +182,22 @@ class DeviceManagerStatusMixin:
         )
 
 
+def device_usable(manager) -> bool:
+    """Whether a panel may send commands to ``manager``: its ``isUsable``,
+    or True for a manager that records no status."""
+    return bool(getattr(manager, "isUsable", True))
+
+
+def not_connected_reason(manager) -> str:
+    """What to show on a greyed-out row."""
+    summary = getattr(manager, "connectionStatusSummary", None)
+    details = getattr(manager, "connectionStatusDetails", None)
+    text = summary or "Not connected"
+    if details and details not in text:
+        text = f"{text}: {details}"
+    return f"{text}\nReconnect it from Hardware \u2192 Hardware status."
+
+
 @dataclass(frozen=True, order=True)
 class DeviceId:
     """Stable runtime identity for one configured hardware endpoint."""
