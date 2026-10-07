@@ -3,13 +3,13 @@ import pytest
 
 from slmcore import (
     DEFAULT_REGISTRIES,CalibrationMismatchPolicy,GeometryOrientationCalibration,
-    ImageMeasurement,MappingStore,ObservationPlaneDefinition,ObservationPlaneStore,
+    FOVMappingCorrection,ImageMeasurement,MappingStore,ObservationPlaneDefinition,ObservationPlaneStore,
     SLMCalibrationStore,SLMGeometry,SLMGeometryOrientationCalibrationStore,SLMIdentity,
     SLMRuntime,SLMSectionCalibration,SLMSession,SLMSessionCallbacks,
-    SLMStartupPreferences,
+    SLMStartupPreferences,SLMWorkspace,
 )
 from slmcore.application.startup_preferences import StartupPreferencesState
-from slmcore.core.calibration import section_geometry_to_dict
+from slmcore.core.calibration import base_mapping_signature,section_geometry_to_dict
 from slmcore.core.cgh import CGHResult
 from slmcore.core.cgh.execution.status import CGHResultState
 from slmcore.core.cgh.localization import LocalizationResult
@@ -337,6 +337,82 @@ def test_store_catalog_deletion_reconciles_runtime_and_preference(tmp_path):
     assert runtime.get_section_calibration_copy("sec_0") is None
     assert preferences.default_mapping("sec_0") is None
     assert saved_preferences
+
+
+def test_delete_mapping_cascades_owned_fov_defaults_and_runtime_state(tmp_path):
+    from dataclasses import replace
+
+    runtime = _runtime()
+    workspace = SLMWorkspace(tmp_path)
+    mapping = workspace.mapping_store.add({"name":"100x"}).name
+    other = workspace.mapping_store.add({"name":"60x"}).name
+    _save_calibration(workspace.calibration_store,runtime,mapping)
+    _save_calibration(workspace.calibration_store,runtime,other)
+
+    saved_preferences = []
+    preferences = StartupPreferencesState(
+        SLMStartupPreferences(fov_mapping_corrections={
+            "sec_0":{"mappings":{mapping:"field A",other:"field B"}},
+        }),
+        saved_preferences.append,
+    )
+    session = SLMSession(
+        runtime=runtime,
+        calibration_store=workspace.calibration_store,
+        mapping_store=workspace.mapping_store,
+        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
+        startup_preferences=preferences,
+    )
+    session.calibration.select_mapping(
+        session.calibration.prepare_mapping_selection("sec_0",mapping)
+    )
+
+    signature = base_mapping_signature(runtime.get_section_calibration_copy("sec_0"))
+    positions = np.asarray(((-0.1,0.1,-0.1,0.1),(-0.1,-0.1,0.1,0.1)))
+    displacement = np.asarray(((0.01,0.01,0.01,0.01),(-0.02,-0.02,-0.02,-0.02)))
+    first = FOVMappingCorrection.fit(
+        name="field A",slm_serial=runtime.identity.serial_number,
+        section_key="sec_0",mapping_name=mapping,base_mapping_signature=signature,
+        ideal_positions_kxy=positions,total_displacements_kxy=displacement,degree=1,
+    )
+    second = replace(first,name="field B",mapping_name=other)
+    other_slm = replace(first,name="other SLM",slm_serial="SER999")
+    workspace.fov_mapping_correction_store.save(first)
+    workspace.fov_mapping_correction_store.save(second)
+    workspace.fov_mapping_correction_store.save(other_slm)
+
+    session.feedback.select_fov_position_calibration("sec_0","field A")
+    session.feedback.set_fov_position_calibration_applied("sec_0",True)
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is not None
+
+    deleted = session.calibration.delete_mapping(mapping)
+
+    assert deleted
+    assert not workspace.mapping_store.has(mapping)
+    assert workspace.mapping_store.has(other)
+    assert not workspace.calibration_store.load_calibration(
+        runtime.identity,"sec_0",mapping,
+    ).is_valid()
+    assert workspace.calibration_store.load_calibration(
+        runtime.identity,"sec_0",other,
+    ).is_valid()
+    assert workspace.fov_mapping_correction_store.list(
+        runtime.identity,"sec_0",mapping,
+    ) == ()
+    assert workspace.fov_mapping_correction_store.list(
+        "SER999","sec_0",mapping,
+    ) == ()
+    assert workspace.fov_mapping_correction_store.list(
+        runtime.identity,"sec_0",other,
+    ) == ("field B",)
+    assert preferences.default_mapping("sec_0") is None
+    assert preferences.default_fov_correction("sec_0",mapping) is None
+    assert preferences.default_fov_correction("sec_0",other) == "field B"
+    assert session.calibration.active_mapping("sec_0") is None
+    assert runtime.get_section_calibration_copy("sec_0") is None
+    assert runtime.get_section_fov_position_context("sec_0")["calibration"] is None
+    assert saved_preferences
+    session.dispose()
 
 
 def test_delete_calibration_keeps_active_mapping_and_mapping_definition(tmp_path):

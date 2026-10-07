@@ -181,6 +181,30 @@ class StartupPreferencesState:
             values.pop(section,None)
         self._commit(replace(self._value,fov_mapping_corrections=values))
 
+    def remove_mapping(self,mapping_name: str) -> None:
+        """Remove all startup/default state owned by one mapping profile."""
+        from ..setup import FOVMappingCorrectionPreferences
+        mapping = str(mapping_name or "").strip()
+        if not mapping:
+            raise ValueError("mapping_name must not be empty")
+
+        default_mappings = {
+            section:value for section,value in self._value.default_mappings.items()
+            if str(value or "").strip() != mapping
+        }
+        fov_values = {}
+        for section,settings in self._value.fov_mapping_corrections.items():
+            mappings = dict(settings.mappings)
+            mappings.pop(mapping,None)
+            if mappings:
+                fov_values[section] = FOVMappingCorrectionPreferences(mappings=mappings)
+
+        self._commit(replace(
+            self._value,
+            default_mappings=default_mappings,
+            fov_mapping_corrections=fov_values,
+        ))
+
     # Compatibility helper for the first pre-release section-only behavior.
     def set_feedback_orientation(self,section_key: str,value: Any) -> None:
         self.set_feedback_orientation_default(section_key,value)

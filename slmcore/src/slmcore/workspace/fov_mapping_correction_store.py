@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import shutil
 from typing import Any,Callable
 
 from ..core.calibration.fov_mapping_correction import FOVMappingCorrection
@@ -112,6 +113,37 @@ class FOVMappingCorrectionStore:
             directory = directory.parent
         self._notify()
         return path
+
+    def delete_mapping(self,mapping_name: str) -> tuple[Path,...]:
+        """Delete every persisted correction owned by one workspace mapping.
+
+        Mapping definitions are workspace-wide, so their dependent corrections
+        are removed across all SLM serials and sections, matching base-calibration
+        deletion semantics.
+        """
+        mapping_dir_name = _slug(mapping_name,"Mapping")
+        deleted: list[Path] = []
+        if not self.directory.is_dir():
+            return ()
+        for serial_dir in tuple(self.directory.iterdir()):
+            if not serial_dir.is_dir():
+                continue
+            for section_dir in tuple(serial_dir.iterdir()):
+                if not section_dir.is_dir():
+                    continue
+                mapping_dir = section_dir/mapping_dir_name
+                if not mapping_dir.is_dir():
+                    continue
+                deleted.extend(path for path in mapping_dir.rglob("*") if path.is_file())
+                shutil.rmtree(mapping_dir)
+                for parent in (section_dir,serial_dir):
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+        if deleted:
+            self._notify()
+        return tuple(deleted)
 
     def add_listener(self,callback: Callable[[],None]) -> None:
         if callback not in self._listeners:

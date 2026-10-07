@@ -149,6 +149,15 @@ class MappingService:
             self._identity,section_key,mapping_name,name,
         )
 
+    def delete_fov_corrections_for_mapping(
+        self,mapping_name: str,
+    ) -> tuple[str,...]:
+        """Delete all FOV corrections owned by one workspace mapping."""
+        store = self.fov_correction_store
+        if store is None:
+            return ()
+        return tuple(str(path) for path in store.delete_mapping(mapping_name))
+
     def add_fov_correction_listener(self,callback: Callable[[],None]) -> None:
         self._require_fov_store().add_listener(callback)
 

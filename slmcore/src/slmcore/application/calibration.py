@@ -284,10 +284,21 @@ class SLMCalibrationService:
         return self._require_mappings().add(dict(definition or {})).name
 
     def delete_mapping(self,mapping_name: str) -> tuple[str,...]:
+        """Delete a mapping profile and every persistent resource it owns.
+
+        The mapping definition is removed last so catalog reconciliation can
+        clear active runtime mapping/FOV state only after dependent persistent
+        records and defaults have been removed.
+        """
         self._require_editor_mode()
-        name = self._require_mappings().get(mapping_name).name
-        self._require_mappings().delete(name)
-        return self._require_store().delete_mapping_calibrations(name)
+        mappings = self._require_mappings()
+        name = mappings.get(mapping_name).name
+        if self.preferences is not None:
+            self.preferences.remove_mapping(name)
+        mappings.delete_fov_corrections_for_mapping(name)
+        deleted = self._require_store().delete_mapping_calibrations(name)
+        mappings.delete(name)
+        return deleted
 
     def saved_calibration(
         self,section_key: str,mapping_name: str,
