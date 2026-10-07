@@ -3,6 +3,7 @@
   "additionalProperties": true,
   "properties": {
     "powerUnit": {
+      "description": "Unit of the power field of a reading: ``\"W\"`` (default) or ``\"mW\"``.  Check against the Thorlabs software.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -10,6 +11,7 @@
       ]
     },
     "serial": {
+      "description": "Serial number, as in the VISA resource string.  Required.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:required",
@@ -17,6 +19,7 @@
       ]
     },
     "timeoutMs": {
+      "description": "VISA timeout in ms.  Default 5000.",
       "type": [
         "integer",
         "number",
@@ -30,6 +33,7 @@
       ]
     },
     "updateBoundS": {
+      "description": "A reading returned this long after a read started was measured entirely after it.  Default 0.5.",
       "type": [
         "integer",
         "number",
@@ -43,6 +47,7 @@
       ]
     },
     "updatePeriodS": {
+      "description": "Minimum spacing of distinct readings.  Default 0.1.",
       "type": [
         "integer",
         "number",
@@ -56,6 +61,7 @@
       ]
     },
     "visaBackend": {
+      "description": "pyvisa backend: ``\"\"`` (NI-VISA, default) or ``\"@py\"`` (pyvisa-py).",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -63,9 +69,12 @@
       ]
     },
     "wavelengthNm": {
+      "description": "Wavelength set on connect.  Optional.",
+      "x-imswitch-kind": "number",
       "x-imswitch-nullable": true,
       "x-imswitch-source": [
-        "code:optional(get)"
+        "code:optional(get)",
+        "docs:number"
       ]
     }
   },

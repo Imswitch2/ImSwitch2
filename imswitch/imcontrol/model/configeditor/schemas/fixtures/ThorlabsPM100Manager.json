@@ -6,7 +6,7 @@
       "serial": "example",
       "timeoutMs": 1,
       "visaBackend": "example",
-      "wavelengthNm": null
+      "wavelengthNm": 1.5
     }
   }
 }

@@ -244,3 +244,119 @@ def test_hardware_status_controller_refreshes_on_an_instrument_fault():
     assert status.connection is DeviceConnectionState.ERROR
     assert ids['connectableHardwareIds'] == (pm1,)
     assert ids['disconnectableHardwareIds'] == (pm1,)
+
+
+# ------------------------------------------------- scripting (P-4 step 4)
+def _instrumentsController(master):
+    from imswitch.imcontrol.controller.controllers.InstrumentsController import (
+        InstrumentsController,
+    )
+    controller = InstrumentsController.__new__(InstrumentsController)
+    controller._InstrumentsController__logger = SimpleNamespace(
+        info=lambda *a: None, warning=lambda *a: None)
+    controller.__dict__['_master'] = master
+    return controller
+
+
+def _reservationController(master):
+    from imswitch.imcontrol.controller.controllers.ReservationController import (
+        ReservationController,
+    )
+    controller = ReservationController.__new__(ReservationController)
+    controller._ReservationController__logger = SimpleNamespace(info=lambda *a: None)
+    controller.__dict__['_master'] = master
+    return controller
+
+
+def test_script_reservation_reads_sets_and_zeroes_an_instrument(registry):
+    from imswitch.imcontrol.model.resources import ReservationExpiredError, ResourceReservedError
+
+    service, master = _serviceWith({'pm1': _info(transient=True, connectOnStartup=True)})
+    master.deviceLifecycleService = service
+    api = _instrumentsController(master)
+    with _reservationController(master).reserve(instruments=['pm1'], owner='script') as r:
+        pm1 = r.instrument('pm1')
+        assert pm1.connected and pm1.identity.serial == 'MOCK-PM'
+        assert pm1.set('wavelength_nm', 775) == 775.0
+        with pytest.raises(PermissionError):
+            pm1.action('zero')                        # needs the beam blocked
+        pm1.action('zero', confirm_dark=True)
+        window = pm1.read(3, allow_unverified=True)
+        assert window.complete and len(window.samples) == 3
+        with pytest.raises(ResourceReservedError):
+            api.readInstrument('pm1')                 # anybody else is refused
+        with pytest.raises(DeviceLifecycleBlockedError):
+            api.disconnectInstrument('pm1')
+    with pytest.raises(ReservationExpiredError):
+        pm1.read()
+    assert len(api.readInstrument('pm1', n=2)) == 2
+
+
+def test_instruments_api_lists_connects_and_reads():
+    service, master = _serviceWith({'pm1': _info(transient=True),
+                                    'pax1': _info(managerName='MockPAXManager',
+                                                  managerProperties={})})
+    master.deviceLifecycleService = service
+    api = _instrumentsController(master)
+    rows = {row['name']: row for row in api.getInstruments()}
+    assert rows['pm1']['connected'] is False and rows['pm1']['identity'] is None
+    assert rows['pax1']['connected'] is True
+    assert [q['name'] for q in rows['pax1']['quantities']] == [
+        'azimuth', 'ellipticity', 'dop', 'power']
+
+    assert api.connectInstrument('pm1')['action'] == 'connect'
+    reading = api.readInstrument('pm1')[0]
+    assert reading['power'] == pytest.approx(2e-3, abs=1e-5)
+    api.disconnectInstrument('pm1')
+    with pytest.raises(RuntimeError, match='no reading|not connected'):
+        api.readInstrument('pm1')
+    with pytest.raises(KeyError, match='instruments: pax1, pm1'):
+        api.readInstrument('nope')
+
+
+def test_laser_power_lut_from_a_script(tmp_path, registry):
+    import math
+
+    import numpy as np
+
+    from imswitch.imcontrol.model.managers.lasers.NidaqLaserManager import NidaqLaserManager
+    from imswitch.imcontrol.model.measurement.mocks import MockPowerMeterDriver
+
+    class FakeDaq:
+        voltage, digital = 0.0, False
+
+        def setAnalog(self, target, voltage, min_val, max_val, raise_on_error=False):
+            self.voltage = voltage
+            return True
+
+        def setDigital(self, target, enabled):
+            self.digital = bool(enabled)
+
+    daq = FakeDaq()
+    info = SimpleNamespace(managerProperties={}, wavelength=775, valueRangeMin=0.0,
+                           valueRangeMax=5.0, valueRangeStep=0.01,
+                           getAnalogChannel=lambda: 'ao0')
+    laser = NidaqLaserManager(info, '775', nidaqManager=daq)
+    light = SimpleNamespace(emitted_w=lambda: (
+        0.01 * math.sin(0.5 * math.pi * daq.voltage / 5.0) ** 2 + 2e-5) if daq.digital else 0.0)
+    _, master = _serviceWith({'pm1': _info(transient=True)})
+    master.lasersManager = {'775': laser}
+    meter = master.instrumentsManager['pm1']
+    meter.session.driver = MockPowerMeterDriver([light])
+    meter.getDeviceLifecycle().connect()
+    api = _instrumentsController(master)
+    api.__dict__['_commChannel'] = SimpleNamespace(sharedAttrs={})
+
+    with pytest.raises(ValueError, match='confirm_dark is required'):
+        api.measureLaserPowerLut('775', 'pm1', [0, 1])
+    with pytest.raises(RuntimeError, match='no Laser panel'):
+        api.measureLaserPowerLut('775', 'pm1', [0, 1], confirm_dark=lambda: True)
+
+    api._commChannel.sharedAttrs.update({('Laser', '775', 'Value'): 1.0,
+                                         ('Laser', '775', 'Enabled'): False})
+    report = api.measureLaserPowerLut(
+        '775', 'pm1', list(np.linspace(0, 5, 11)), confirm_dark=lambda: not daq.digital,
+        folder=str(tmp_path), samples_per_point=3, settle_s=0.0)
+    assert report.refused == [], report.refused
+    assert report.lut_file.parent == tmp_path and report.lut_file.exists()
+    assert (daq.voltage, daq.digital) == (1.0, False)          # restored

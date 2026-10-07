@@ -106,7 +106,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # Cobolt scanResumeSettleMs, PI runtime_timeout_ms, and Leica stand
     # availableCubes are now documented by their cards.
     # NidaqPositionerManager.defaultReferenceVoltage is now documented too.
-    assert (report.docs_agree, report.docs_documented) == (135, 135)
+    # 153: docs/devices/instruments.rst documents the 18 instrument keys.
+    assert (report.docs_agree, report.docs_documented) == (153, 153)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):

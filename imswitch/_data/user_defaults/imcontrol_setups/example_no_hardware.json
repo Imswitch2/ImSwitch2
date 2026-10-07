@@ -64,6 +64,18 @@
             }
         }
     },
+    "instruments": {
+        "Mock power meter": {
+            "managerName": "MockPowerMeterManager",
+            "transient": true,
+            "managerProperties": {"powerW": 0.001}
+        },
+        "Mock PAX": {
+            "managerName": "MockPAXManager",
+            "transient": true,
+            "managerProperties": {"plate1Deg": 0.0, "plate2Deg": 0.0}
+        }
+    },
     "positioners": {
         "Mock X": {
             "analogChannel": null,

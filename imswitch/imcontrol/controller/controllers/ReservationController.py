@@ -73,6 +73,51 @@ class BoundLaser(BoundControl):
         self.control.manager.setEnabled(bool(enabled), owner=token)
 
 
+class BoundInstrument:
+    """One reserved instrument: reads, settings and actions carry the
+    reservation token, so nobody else can change it between them."""
+
+    def __init__(self, handle: 'ReservationHandle', session) -> None:
+        self._handle = handle
+        self.session = session
+        self.name = session.name
+
+    @property
+    def connected(self) -> bool:
+        return self.session.connected and not self.session.faulted
+
+    @property
+    def identity(self):
+        return self.session.identity
+
+    @property
+    def quantities(self):
+        return self.session.quantities
+
+    def settings(self) -> dict:
+        return self.session.settings()
+
+    def read(self, n: int = 1, deadline_s: float = 10.0, *,
+             allow_unverified: bool = False):
+        """``n`` samples acquired after this call: a ``WindowResult`` with
+        ``samples`` (each has ``values``), ``complete`` and ``cause``. With
+        unverified timing (until the instrument's rig check) pass
+        ``allow_unverified=True``."""
+        token = self._handle._require_active()
+        boundary = self.session.open_window(allow_unverified=allow_unverified, owner=token)
+        return self.session.sample_window(boundary, int(n), float(deadline_s), owner=token)
+
+    def set(self, name: str, value):
+        """Apply a setting; returns the value the instrument applied."""
+        return self.session.set_setting(name, value, owner=self._handle._require_active())
+
+    def action(self, name: str, *, confirm_dark: bool = False) -> None:
+        """Run an action (e.g. ``zero``; actions that need the beam blocked
+        require ``confirm_dark=True``)."""
+        self.session.run_action(name, confirm_dark=confirm_dark,
+                                owner=self._handle._require_active())
+
+
 class ReservationHandle:
     """Owner-bound access to the devices of one reservation."""
 
@@ -106,12 +151,17 @@ class ReservationHandle:
     def laser(self, name: str) -> BoundLaser:
         return BoundLaser(self, self._get('laser', name))
 
+    def instrument(self, name: str) -> BoundInstrument:
+        return BoundInstrument(self, self._get('instrument', name))
+
     def positioner(self, name: str, axis: str) -> BoundControl:
         return BoundControl(self, self._get('positioner', f'{name}.{axis}'))
 
     def control(self, name: str) -> RunControl:
         """The underlying run control (e.g. to hand to a measurement runner)."""
-        for (_kind, key), control in self._controls.items():
+        for (kind, key), control in self._controls.items():
+            if kind == 'instrument':
+                continue
             if key == name or control.name == name:
                 return control
         raise KeyError(f'{name!r} is not part of this reservation')
@@ -157,6 +207,7 @@ class ReservationController(ImConWidgetController):
         rotators: Iterable[str] = (),
         lasers: Iterable[str] = (),
         positioners: Iterable[Sequence[str]] = (),
+        instruments: Iterable[str] = (),
         *,
         waveform_outputs: bool = True,
         owner: str = 'script',
@@ -164,7 +215,9 @@ class ReservationController(ImConWidgetController):
     ) -> ReservationHandle:
         """ Reserve audited devices for exclusive, owner-bound use.
 
-        ``positioners`` is a list of ``(positioner, axis)`` pairs. With
+        ``positioners`` is a list of ``(positioner, axis)`` pairs;
+        ``instruments`` names entries of the setup's ``instruments`` section
+        (``handle.instrument(name).read(...)``). With
         ``waveform_outputs`` (default) no waveform scan can start while the
         reservation is held. Waits up to ``deadline_s`` for commands already
         running on those devices; refuses if one is still running, if another
@@ -178,6 +231,8 @@ class ReservationController(ImConWidgetController):
         for name, axis in positioners:
             controls[('positioner', f'{name}.{axis}')] = PositionerAxisControl(
                 self._master.positionersManager[name], axis)
+        for name in instruments:
+            controls[('instrument', name)] = self._master.instrumentsManager[name].session
         keys = {c.resource for c in controls.values()}
         if waveform_outputs:
             keys.add(WAVEFORM_OUTPUT)

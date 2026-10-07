@@ -896,6 +896,23 @@ Differences from §6.6 and things the rig must confirm:
 - The AA AOTF utility's `PM100D` is now an adapter over the shared driver;
   its Zero blocks until the meter reports zeroing done.
 
+**P-4 step 4 (done).**
+- Scripts: `api.imcontrol.reserve(instruments=[...])` →
+  `handle.instrument(name)` with `read(n, deadline_s, allow_unverified)`,
+  `set`, `action(..., confirm_dark=)`, all carrying the token. API-only
+  `InstrumentsController`: `getInstruments`, `connectInstrument`,
+  `disconnectInstrument` (through the lifecycle service), `readInstrument`
+  (a quick unverified look, refused while held), `measureLaserPowerLut`
+  (`confirm_dark` required; laser state from the Laser panel's shared
+  attributes, refused without one; runs default to
+  `ImSwitchConfig/measurement_runs`).
+- `example_no_hardware.json` carries a transient mock power meter and mock
+  PAX (history regenerated).
+- Docs: `docs/devices/instruments.rst` (setup, Hardware status, scripting,
+  LUT, a card per manager), a reservations section in `scripting.rst`.
+
+P-4 rig gates still open: §6.6 per driver, USB removal mid-run.
+
 **P-5 (done on mocks).** `imcontrol/model/measurement/laser_lut.py`
 (`run_laser_lut`): prepare steps inside the reservation (record laser state,
 set + verify the meter wavelength, emission off, caller confirms the beam is

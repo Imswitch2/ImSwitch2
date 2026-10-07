@@ -3,6 +3,7 @@
   "additionalProperties": true,
   "properties": {
     "noiseW": {
+      "description": "RMS noise per reading.  Default 2e-7.",
       "type": [
         "integer",
         "number",
@@ -16,6 +17,7 @@
       ]
     },
     "powerW": {
+      "description": "Simulated optical power at the sensor.  Default 0.001.",
       "type": [
         "integer",
         "number",
@@ -29,6 +31,7 @@
       ]
     },
     "serial": {
+      "description": "Reported serial number.  Default ``\"MOCK-PM\"``.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",

@@ -155,12 +155,20 @@ class ImConMainController(MainController):
             widget=None,  # API-only, no widget
         )
 
+        # InstrumentsController exports the setup's instruments to scripts:
+        # list / connect / read, and the laser power LUT procedure.
+        self.instrumentsController = self.__factory.createController(
+            controllers.InstrumentsController,
+            widget=None,  # API-only, no widget
+        )
+
         # Generate API
         self.__api = None
         apiObjs = (
             list(self.controllers.values())
             + [self.setupModeController, self.__commChannel,
-               self.workflowFacadeController, self.reservationController]
+               self.workflowFacadeController, self.reservationController,
+               self.instrumentsController]
         )
         self.__api = generateAPI(
             apiObjs,

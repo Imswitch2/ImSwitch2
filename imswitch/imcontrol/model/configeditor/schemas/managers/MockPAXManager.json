@@ -3,6 +3,7 @@
   "additionalProperties": true,
   "properties": {
     "noiseDeg": {
+      "description": "Angular noise per reading.  Default 0.2.",
       "type": [
         "integer",
         "number",
@@ -16,6 +17,7 @@
       ]
     },
     "plate1Deg": {
+      "description": "Simulated angle of the first waveplate (quarter-wave).  Default 0.",
       "type": [
         "integer",
         "number",
@@ -29,6 +31,7 @@
       ]
     },
     "plate2Deg": {
+      "description": "Simulated angle of the second waveplate (half-wave).  Default 0.",
       "type": [
         "integer",
         "number",
@@ -42,6 +45,7 @@
       ]
     },
     "serial": {
+      "description": "Reported serial number.  Default ``\"MOCK-PAX\"``.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",

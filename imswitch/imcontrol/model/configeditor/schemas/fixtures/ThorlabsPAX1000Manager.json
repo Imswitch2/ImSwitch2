@@ -9,7 +9,7 @@
       "updateBoundS": 1.5,
       "updatePeriodS": 1.5,
       "visaBackend": "example",
-      "wavelengthNm": null
+      "wavelengthNm": 1.5
     }
   }
 }
