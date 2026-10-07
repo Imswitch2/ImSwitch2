@@ -22,6 +22,15 @@ class DeviceInfo:
     managerProperties: Dict[str, Any] = field(default_factory=dict)
     """ Properties to be read by the manager. Empty when omitted. """
 
+    transient: bool = False
+    """ Declared but not required at startup: left absent (not an error, no
+    mock) until connected from the Hardware status window or a script. For
+    devices that are plugged in only when needed. """
+
+    connectOnStartup: bool = False
+    """ For a transient device: still try to connect at startup; a failure
+    leaves it absent with the error shown, never in mock. """
+
     def getAnalogChannel(self):
         """ :meta private: """
         if isinstance(self.analogChannel, int):
@@ -632,15 +641,8 @@ class FlipMirrorInfo:
 @dataclass(frozen=True, kw_only=True)
 class InstrumentInfo(DeviceInfo):
     """ A measurement instrument: one physical device sampled as a whole
-    (``docs/design/plans/transient-instruments-step-scans.md``). """
-
-    transient: bool = False
-    """ Declared but not required: absent at startup without error or mock,
-    connected and disconnected at runtime from the Hardware status window. """
-
-    connectOnStartup: bool = False
-    """ For a transient instrument: still try to connect at startup (a
-    failure leaves it disconnected, never in mock). """
+    (``docs/design/plans/transient-instruments-step-scans.md``). Usually
+    ``transient``. """
 
 
 @dataclass_json(undefined=Undefined.INCLUDE)

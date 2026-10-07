@@ -408,16 +408,16 @@ def test_transport_exceptions_map_to_the_shared_taxonomy():
                    'L1O1')
 
 
-def test_strict_frequency_startup_write_failure_is_a_startup_error():
+def test_frequency_startup_write_failure_leaves_the_channel_not_connected():
     rs232 = FakeRS232(raise_cmds={'I0': OSError('port gone')})
-    with pytest.raises(DeviceInitializationError) as excinfo:
-        _build(
-            rs232=rs232,
-            protocolProfile='aa.frequency-startup',
-            frequencyMHz=143.0,
-            useMockOnFailure=False,
-        )
-    assert isinstance(excinfo.value.__cause__, TransportFailure)
+    m, _ = _build(
+        rs232=rs232,
+        protocolProfile='aa.frequency-startup',
+        frequencyMHz=143.0,
+        useMockOnFailure=False,
+    )
+    assert m.connectionState.value == 'error' and m._isMock is False
+    assert 'port gone' in m.connectionStatusDetails
     assert rs232.cmds == ['I0', 'L1O0']
 
 
@@ -431,21 +431,40 @@ def _timeout(command):
     return {command: TimeoutError('VI_ERROR_TMO (-1073807339): Timeout expired')}
 
 
-def test_unanswered_startup_continues_in_mock_mode_after_an_off(caplog):
+def test_unanswered_startup_leaves_the_channel_not_connected(caplog):
     """A pyvisa timeout at startup used to propagate out of the manager and
-    abort ImSwitch."""
+    abort ImSwitch; then it installed a mock. P-2: the channel is not
+    connected, shows the error, and refuses commands until reconnected."""
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+
     rs232 = FakeRS232(raise_cmds=_timeout('L1I1O0'))
     with caplog.at_level('WARNING'):
         m, _ = _build(rs232=rs232)
-    assert m._isMock is True
+    assert m._isMock is False
+    assert m.runtimeMode.value == 'real'
+    assert m.connectionState.value == 'error'
+    assert rs232.cmds == ['L1I1O0', 'L1O0']
+    assert 'Not connected' in caplog.text
+    assert not [r for r in caplog.records if r.levelname == 'CRITICAL']
+    rs232.cmds.clear()
+    with pytest.raises(DeviceNotConnectedError, match='refused'):
+        m.setEnabled(True)
+    assert rs232.cmds == []
+
+
+@pytest.mark.parametrize('opt_in', [True, 'true', 'yes', 1])
+def test_unanswered_startup_continues_in_mock_mode_on_request(caplog, opt_in):
+    rs232 = FakeRS232(raise_cmds=_timeout('L1I1O0'))
+    with caplog.at_level('WARNING'):
+        m, _ = _build(rs232=rs232, useMockOnFailure=opt_in)
+    assert m._isMock is True and m.runtimeMode.value == 'mock'
     assert rs232.cmds == ['L1I1O0', 'L1O0']
     assert 'mock mode' in caplog.text
-    assert not [r for r in caplog.records if r.levelname == 'CRITICAL']
 
 
 def test_mock_mode_sends_nothing_further():
     rs232 = FakeRS232(raise_cmds=_timeout('L1I0'))
-    m, _ = _build(rs232=rs232, ttlToggling=True)
+    m, _ = _build(rs232=rs232, ttlToggling=True, useMockOnFailure=True)
     rs232.cmds.clear()
     m.setValue(500)
     m.setEnabled(True)
@@ -459,29 +478,30 @@ def test_unacknowledged_off_is_reported_as_critical(caplog):
     rs232 = FakeRS232(raise_cmds={**_timeout('L1I1O0'), **_timeout('L1O0')})
     with caplog.at_level('WARNING'):
         m, _ = _build(rs232=rs232)
-    assert m._isMock is True
+    assert m.connectionState.value == 'error'
     assert rs232.cmds == ['L1I1O0', 'L1O0']
     critical = [r for r in caplog.records if r.levelname == 'CRITICAL']
     assert critical and 'was not acknowledged' in critical[0].getMessage()
 
 
 @pytest.mark.parametrize('strict', [False, 'false', 'no', 0])
-def test_strict_startup_raises_a_startup_error_after_the_off(strict):
+def test_an_explicit_no_mock_is_not_connected_rather_than_a_startup_error(strict):
+    """``useMockOnFailure: false`` used to abort startup; it now means what
+    the default means: not connected, reconnect it later."""
     rs232 = FakeRS232(raise_cmds=_timeout('L1I1O0'))
-    with pytest.raises(DeviceInitializationError, match='useMockOnFailure') as excinfo:
-        _build(rs232=rs232, useMockOnFailure=strict)
-    assert isinstance(excinfo.value.__cause__, CommandTimeout)
+    m, _ = _build(rs232=rs232, useMockOnFailure=strict)
+    assert m._isMock is False and m.connectionState.value == 'error'
     assert rs232.cmds == ['L1I1O0', 'L1O0']
 
 
-def test_frequency_startup_failure_falls_back_to_mock_by_default():
+def test_frequency_startup_failure_is_not_connected_by_default():
     rs232 = FakeRS232(raise_cmds={'I0': OSError('port gone')})
     m, _ = _build(
         rs232=rs232,
         protocolProfile='aa.frequency-startup',
         frequencyMHz=143.0,
     )
-    assert m._isMock is True
+    assert m._isMock is False and m.connectionState.value == 'error'
     assert rs232.cmds == ['I0', 'L1O0']
 
 
@@ -570,7 +590,7 @@ def test_mock_state_is_derived_so_the_channel_comes_back_after_a_port_reconnect(
     back the channel still sent nothing."""
     rs232 = FakeRS232(raise_cmds=_timeout('L1I1O0'))
     m, _ = _build(rs232=rs232)
-    assert m._isMock is True
+    assert m._isMock is False and m.connectionState.value == 'error'
 
     rs232.raise_cmds.clear()                       # the controller answers again
     rs232.cmds.clear()
@@ -581,14 +601,17 @@ def test_mock_state_is_derived_so_the_channel_comes_back_after_a_port_reconnect(
     assert rs232.cmds[-1] == 'L1O0'                # ... and ended with channel OFF, verified
 
 
-def test_reconnect_without_an_answer_keeps_the_channel_mock_with_the_error():
+def test_reconnect_without_an_answer_leaves_the_channel_not_connected():
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+
     m, rs232 = _build()
     assert m._isMock is False
     rs232.raise_cmds.update(_timeout('L1I1O0'))
     errors = m._onTransportReconnected(True)
     assert errors and 'Timeout' in errors[0]
-    assert m._isMock is True
-    assert m.connectionState.value == 'error'
+    assert m._isMock is False and m.connectionState.value == 'error'
+    with pytest.raises(DeviceNotConnectedError):
+        m.setEnabled(True)
     assert m._onTransportReconnected(False) == ['transport unavailable']
 
 

@@ -36,6 +36,11 @@ class DeviceFailureKind(str, Enum):
     UNKNOWN = "unknown"
 
 
+class DeviceNotConnectedError(RuntimeError):
+    """A command for a real device that is not connected (absent at startup,
+    disconnected, or faulted). Nothing was sent; reconnect the device."""
+
+
 class DeviceManagerStatusMixin:
     """Canonical passive status contract for hardware device managers.
 
@@ -87,6 +92,25 @@ class DeviceManagerStatusMixin:
             self.__dict__.get('_deviceRuntimeMode', DeviceRuntimeMode.REAL),
             summary, details, failure_kind,
         )
+
+    @property
+    def isUsable(self) -> bool:
+        """Whether commands reach a backend: a configured mock always, a
+        real device only while connected (UNKNOWN counts as usable: legacy
+        managers that never record status)."""
+        mode = self.runtimeMode
+        if mode is DeviceRuntimeMode.MOCK:
+            return True
+        return self.connectionState not in (
+            DeviceConnectionState.ERROR, DeviceConnectionState.DISCONNECTED)
+
+    def _requireConnected(self, what: str = "command") -> None:
+        """Refuse a command on a real device that is not connected."""
+        if self.isUsable:
+            return
+        summary = self.connectionStatusSummary or "not connected"
+        raise DeviceNotConnectedError(
+            f"{getattr(self, 'name', type(self).__name__)}: {what} refused, {summary}")
 
     def statusSnapshot(self):
         """(connection, mode, summary, details, failure_kind), consistent."""

@@ -273,8 +273,18 @@ def test_aa_aotf_raw_drive_refuses_mock_mode():
 
     manager, rs232 = _build()
     assert manager.applyRawDrive(512) == 512.0
-    manager._controllerAnswered = False        # as after a failed startup exchange
+    manager._setConnectionError('no answer', summary='mock', mock_active=True)   # opt-in mock
     with pytest.raises(RawDriveError, match='mock mode'):
+        manager.applyRawDrive(100)
+
+
+def test_aa_aotf_raw_drive_refuses_a_controller_that_is_not_connected():
+    from imswitch.imcontrol._test.unit.test_aa_aotf_laser_manager import _build
+
+    manager, rs232 = _build()
+    manager._controllerAnswered = False        # as after a failed startup exchange
+    manager._setConnectionError('no answer', summary='AA AOTF not connected')
+    with pytest.raises(RawDriveError, match='refused, AA AOTF not connected'):
         manager.applyRawDrive(100)
 
 

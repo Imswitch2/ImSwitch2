@@ -155,15 +155,49 @@ def test_startup_failure_attempts_immediate_off_before_mock_fallback():
 
 
 @pytest.mark.nohardware
-def test_strict_startup_failure_raises_after_immediate_off():
+def test_startup_failure_leaves_the_laser_not_connected_by_default():
+    """P-2: without the opt-in there is no mock and no startup error -- the
+    laser is not connected, shows the error, and refuses commands until it
+    is reconnected (the immediate OFF is still attempted first)."""
+    from imswitch.imcontrol.model.devices import DeviceNotConnectedError
+
     fake = FakeMPB(mode=1, output=1000)
     fake.fail_commands.add('GETPOWERSETPTLIM 0')
 
-    with pytest.raises(RuntimeError, match='initialization failed'):
-        _manager(fake, useMockOnFailure=False)
+    manager = _manager(fake, useMockOnFailure=False)
 
     assert fake.commands[-1] == 'SETLDENABLE 0'
     assert fake.enabled is False
+    assert manager._isMock is False
+    assert manager.runtimeMode.value == 'real'
+    assert manager.connectionState.value == 'error'
+    assert 'not connected' in manager.connectionStatusSummary
+    fake.commands.clear()
+    with pytest.raises(DeviceNotConnectedError, match='emission switch refused'):
+        manager.setEnabled(True)
+    with pytest.raises(DeviceNotConnectedError):
+        manager.setValue(100)
+    assert fake.commands == []                       # nothing sent to an unknown unit
+    assert manager.safeDisable() is True             # nothing to darken either
+
+    fake.fail_commands.clear()                       # plugged back in
+    assert manager._onTransportReconnected(True) == []
+    assert manager.connectionState.value == 'connected'
+    manager.setValue(500)                            # MPB refuses ON without a setpoint
+    manager.setEnabled(True)
+    assert fake.enabled is True
+
+
+@pytest.mark.nohardware
+def test_the_opt_in_is_what_the_setup_says_it_is():
+    """``useMockOnFailure: true`` keeps today's behaviour: a mock stands in."""
+    fake = FakeMPB(mode=1, output=1000)
+    fake.fail_commands.add('GETPOWERSETPTLIM 0')
+    manager = _manager(fake, useMockOnFailure=True)
+    assert manager._isMock is True and manager.runtimeMode.value == 'mock'
+    fake.commands.clear()
+    manager.setEnabled(True)                         # swallowed by the mock
+    assert fake.commands == []
 
 
 @pytest.mark.nohardware

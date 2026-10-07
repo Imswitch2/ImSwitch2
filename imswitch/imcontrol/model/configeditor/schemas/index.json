@@ -25,7 +25,7 @@
   "kinds": {
     "detector": {
       "class": "DetectorInfo",
-      "fields": 6,
+      "fields": 8,
       "required": 1
     },
     "flip_mirror": {
@@ -40,17 +40,17 @@
     },
     "laser": {
       "class": "LaserInfo",
-      "fields": 12,
+      "fields": 14,
       "required": 4
     },
     "positioner": {
       "class": "PositionerInfo",
-      "fields": 14,
+      "fields": 16,
       "required": 2
     },
     "rotator": {
       "class": "DeviceInfo",
-      "fields": 4,
+      "fields": 6,
       "required": 1
     },
     "rs232": {
@@ -60,7 +60,7 @@
     },
     "slm": {
       "class": "SLMsInfo",
-      "fields": 14,
+      "fields": 16,
       "required": 8
     },
     "stand": {

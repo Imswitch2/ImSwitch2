@@ -225,7 +225,11 @@ class TestMaterialize:
         }
         assert props["cameraSerial"]["nullable"] is True
         assert props["cameraSerial"]["tip"].startswith("Camera serial number")
-        assert {f["key"] for f in form["top"]} == {"analogChannel", "digitalLine", "forAcquisition", "forFocusLock"}
+        assert {f["key"] for f in form["top"]} == {
+            "analogChannel", "digitalLine", "forAcquisition", "forFocusLock",
+            # Every device can be declared transient (device-reconnect-2.0 P-2).
+            "transient", "connectOnStartup",
+        }
 
     def test_a_union_kind_gets_the_text_box_even_over_a_template_int(self):
         form = editor._schema_for_manager("HamamatsuManager")

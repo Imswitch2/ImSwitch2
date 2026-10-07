@@ -22,11 +22,11 @@
     },
     "connectOnStartup": {
       "default": false,
-      "description": "For a transient instrument: still try to connect at startup (a failure leaves it disconnected, never in mock).",
+      "description": "For a transient device: still try to connect at startup; a failure leaves it absent with the error shown, never in mock.",
       "type": "boolean",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
-        "dataclass:InstrumentInfo.connectOnStartup: bool"
+        "dataclass:DeviceInfo.connectOnStartup: bool"
       ]
     },
     "digitalLine": {
@@ -65,11 +65,11 @@
     },
     "transient": {
       "default": false,
-      "description": "Declared but not required: absent at startup without error or mock, connected and disconnected at runtime from the Hardware status window.",
+      "description": "Declared but not required at startup: left absent (not an error, no mock) until connected from the Hardware status window or a script. For devices that are plugged in only when needed.",
       "type": "boolean",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
-        "dataclass:InstrumentInfo.transient: bool"
+        "dataclass:DeviceInfo.transient: bool"
       ]
     }
   },
