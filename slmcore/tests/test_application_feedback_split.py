@@ -61,7 +61,7 @@ def test_fov_mapping_runtime_is_not_feedback_owned_and_has_no_calibration_produc
         assert token not in source
 
 
-def test_transitional_fov_position_calibration_alias_is_removed():
+def test_legacy_fov_position_calibration_alias_is_absent():
     import slmcore
     import slmcore.core.cgh.feedback as feedback_core
 

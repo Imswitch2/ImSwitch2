@@ -1081,7 +1081,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             )
         else:
             save_button.setToolTip(
-                "Persist this orientation as a manual geometry calibration for the active plane."
+                "Persist this orientation as a manual geometry calibration for the active observation plane."
                 if plane is not None
                 else "Persist this orientation as the section default."
             )
@@ -1126,7 +1126,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         plane=self._geometry_calibration_context.get('observation_plane_name')
         if calibration is not None:
             self.geometry_calibration_status_label.setText(
-                'Status: Calibrated for %s — %s' % (plane or 'active plane',make_display_name(calibration.orientation.value))
+                'Status: Calibrated for %s — %s' % (plane or 'active observation plane',make_display_name(calibration.orientation.value))
             )
         elif plane:
             self.geometry_calibration_status_label.setText('Status: Not calibrated for %s' % plane)

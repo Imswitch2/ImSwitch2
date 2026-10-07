@@ -5,6 +5,17 @@ def _package_root() -> Path:
     return Path(__file__).resolve().parents[1] / "src" / "slmcore"
 
 
+def test_public_non_qt_exports_resolve():
+    import slmcore
+    import slmcore.application as application
+    import slmcore.workspace as workspace
+
+    for module in (slmcore,application,workspace):
+        missing = [name for name in module.__all__ if not hasattr(module,name)]
+        assert missing == []
+        assert len(module.__all__) == len(set(module.__all__))
+
+
 def test_non_qt_package_does_not_import_qt():
     root = _package_root()
     offenders = []
@@ -78,7 +89,7 @@ def test_normal_qt_application_mutations_route_through_application_session():
     assert binding.count("self.runtime.restore_section_current_cgh_target(") == 1
 
 
-def test_patch8_calibration_management_has_distinct_persistent_domains():
+def test_calibration_management_has_distinct_persistent_domains():
     root = _package_root()
     ui = (root / "qt" / "calibration" / "management_dialogs.py").read_text(encoding="utf-8")
     manager = (root / "qt" / "application" / "calibration" / "manager.py").read_text(encoding="utf-8")
@@ -89,7 +100,7 @@ def test_patch8_calibration_management_has_distinct_persistent_domains():
     assert "sigCalibrationRequested.connect(self.open_dialog)" not in manager
 
 
-def test_patch8_observation_plane_editor_is_shared_by_measurement_selectors():
+def test_observation_plane_editor_is_shared_by_measurement_selectors():
     root = _package_root()
     calibration = (root / "qt" / "calibration" / "dialog.py").read_text(encoding="utf-8")
     feedback = (root / "qt" / "cgh" / "session_window.py").read_text(encoding="utf-8")
@@ -99,7 +110,7 @@ def test_patch8_observation_plane_editor_is_shared_by_measurement_selectors():
     assert "ObservationPlaneEditorDialog" in manager
 
 
-def test_patch9_editable_lattice_core_is_neutral_and_fov_workflow_is_dedicated():
+def test_editable_lattice_core_is_neutral_and_fov_workflow_is_dedicated():
     root = _package_root()
     neutral = root / "core" / "measurement" / "reference_geometry.py"
     assert neutral.exists()

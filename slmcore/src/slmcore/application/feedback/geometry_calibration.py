@@ -223,7 +223,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         return normalized
 
     def save_feedback_orientation(self,section_key: str) -> FeedbackOrientation:
-        """Persist the current transient orientation for the active plane/default."""
+        """Persist the current transient orientation for the active observation plane/default."""
         self._require_editor_mode()
         section = str(section_key)
         orientation = self.feedback_orientation(section)

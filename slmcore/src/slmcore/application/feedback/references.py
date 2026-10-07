@@ -444,7 +444,7 @@ class PositionReferenceService(FeedbackComponent):
         return self._position_reference_store.persist(plane,str(name))
 
     def delete_position_reference(self,section_key: str,name: str) -> None:
-        """Delete the active plane's shared record and let store listeners reconcile users."""
+        """Delete the active observation plane's shared record and reconcile users."""
         self._require_editor_mode()
         plane = self._active_feedback_plane(section_key)
         if plane is None:

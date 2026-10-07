@@ -85,10 +85,10 @@ from qtpy import QtWidgets
 
 from slmcore import (
     SectionSplitLayout,
+    SLMDefinition,
     SLMGeometry,
     SLMIdentity,
-    SLMSectionsSetup,
-    SLMSetup,
+    SLMSectionsDefinition,
     SLMWorkspace,
 )
 from slmcore.host import MockSLMDeviceProvider, SLMHostServices
@@ -97,7 +97,7 @@ from slmcore.qt import SLMQtSessionFactory
 
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-setup = SLMSetup(
+definition = SLMDefinition(
     identity=SLMIdentity(
         key="slm",
         serial_number="example-serial",
@@ -108,7 +108,7 @@ setup = SLMSetup(
         height=1080,
         pixel_size_um=8.0,
     ),
-    sections=SLMSectionsSetup(
+    sections=SLMSectionsDefinition(
         layout=SectionSplitLayout(n_sections=1),
     ),
 )
@@ -117,7 +117,7 @@ workspace = SLMWorkspace("slm_data")
 factory = SLMQtSessionFactory(workspace=workspace)
 
 session, panel = factory.create(
-    setup=setup,
+    definition=definition,
     host_services=SLMHostServices(
         device=MockSLMDeviceProvider(),
     ),
@@ -130,7 +130,7 @@ panel.show()
 app.exec()
 ```
 
-A standalone application that uses a canonical setup JSON file can instead provide `setup_file=...` to `SLMQtSessionFactory.create()`. In that case, `slmcore` can persist startup preferences directly in that setup file.
+When using a canonical setup JSON file, load it first with `load_slm_setup_file()` and pass the resulting `SLMDefinition` and `SLMStartupPreferences` to `create()`. Passing the same `setup_file=...` lets the factory persist later startup-preference changes back into that file.
 
 For the complete standalone reference host, see:
 
@@ -174,7 +174,7 @@ ImSwitch/slmcore/src/slmcore/
 ImSwitch can therefore use the public API normally:
 
 ```python
-from slmcore import SLMSetup, SLMStartupPreferences, SLMWorkspace
+from slmcore import SLMDefinition, SLMStartupPreferences, SLMWorkspace
 from slmcore.host import SLMDeviceProvider, SLMHostServices
 from slmcore.qt import SLMQtSessionFactory
 ```
@@ -214,7 +214,7 @@ The optional dependency groups are:
 
 ## Architecture
 
-`slmcore` is divided into six top-level architectural areas:
+`slmcore` is divided into six top-level architectural areas. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the detailed ownership and calibration model:
 
 ```text
 src/slmcore/
@@ -261,12 +261,20 @@ The default layout is:
 
 ```text
 <root>/
+├── mappings.json
+├── observation_planes.json
 ├── configs/<serial>/
 ├── corrections/<serial>/
-└── calibrations/
+├── calibrations/<serial>/<section>/<mapping>.json
+├── fov_mapping_corrections/<serial>/<section>/<mapping>/<correction>.json
+├── geometry_orientation_calibrations/<serial>/<section>/<observation-plane>.json
+└── position_references/<observation-plane>/<reference>.json
 ```
 
-Persistent resources are namespaced using `SLMIdentity.serial_number`.
+Base mapping calibrations, FOV corrections, and geometry calibrations are scoped by
+physical `SLMIdentity.serial_number` where appropriate. Position references are
+intentionally workspace-wide and observation-plane scoped so different sections
+can align against the same detector-space reference.
 
 Embedding hosts normally provide only the workspace root. `slmcore` owns the standard layout below it.
 
@@ -274,16 +282,17 @@ Embedding hosts normally provide only the workspace root. `slmcore` owns the sta
 
 `setup/` defines the canonical description of an installed SLM.
 
-`SLMSetup` contains:
+`SLMDefinition` contains:
 
 - `SLMIdentity`: logical key, physical serial number, and display name.
-- `SLMGeometry`: width, height, and pixel size.
-- `SLMSectionsSetup`: section layout and layout policy.
-- optional `SLMHardwareSetup`: hardware binding for hosts that use native `slmcore` hardware definitions.
+- `SLMGeometry`: width, height, and SLM pixel size.
+- `SLMSectionsDefinition`: section layout and whether section geometry is customizable.
+
+Optional host-side hardware binding is represented separately by `SLMHardwareConfig`.
 
 Section geometries are derived by `slmcore` from the physical SLM geometry and declared section layout.
 
-`SLMStartupPreferences` stores session startup choices such as startup configuration, default calibration planes, and section display mode.
+`SLMStartupPreferences` stores session startup choices such as startup configuration, default mappings, mapping-scoped default FOV corrections, feedback-orientation fallbacks, focused-editing selections, and section display mode.
 
 Embedding hosts such as ImSwitch may store the same setup concepts inside their own setup format rather than using a standalone `slmcore` setup JSON file.
 
@@ -314,6 +323,56 @@ core runtime/model
 ```
 
 `SLMQtSession` adapts the toolkit-independent application session to Qt. Runtime/application state remains authoritative; Qt owns presentation, user interaction, dialogs, and interaction policy.
+
+## Mapping, observation and calibration model
+
+The current calibration model deliberately separates **pattern mapping** from
+**observation context**. They are independent axes.
+
+- A **mapping** is an SLM-to-sample metric calibration context, for example a
+  particular objective/relay configuration. Mapping selection affects metric
+  conversion and therefore CGH validity.
+- An **observation plane** describes where a measurement is interpreted. It may
+  suggest a detector and fallback sample-space pixel size, but changing the
+  observation plane does not change the active mapping or the CGH.
+- **Observation geometry** is the saved section × observation-plane orientation
+  relationship used when localized detector points must be assigned to logical
+  target identities.
+- An **FOV mapping correction** belongs to one section × mapping. Its calibration
+  observation plane is provenance only. Runtime selection/application is handled
+  independently from the fitting workflow.
+
+The application layer reflects those boundaries:
+
+```text
+SLMCalibrationService        active mapping + base mapping-calibration workflow
+MappingService               mapping catalog + persistent FOV corrections
+ObservationPlaneService      observation-plane catalog
+ObservationGeometryService   persisted section × observation-plane geometry
+GeometryCalibrationService   reusable geometry-calibration workflow
+FOVCalibrationService        dedicated FOV fitting workflow
+FOVMappingRuntimeService     selected/default/applied FOV correction at runtime
+SLMFeedbackService           measurement/localization/intensity/position/reference feedback
+```
+
+FOV application remains part of the CGH runtime because it changes resolved
+target positions. Ownership of the saved correction and its calibration workflow
+is outside the CGH session. The effective position path is:
+
+```text
+ideal resolved target positions
+        ↓
+optional mapping-owned FOV correction
+        ↓
+optional transient position-feedback correction
+        ↓
+final CGH target positions
+```
+
+Phase 1 intentionally keeps ordinary metric conversion effectively diagonal.
+The stored 2×2 representation remains available, but generalized off-diagonal
+parameter conversion and cross-observation-plane coordinate transforms are not
+part of the current contract.
 
 ## Configuration and frame reproducibility
 
