@@ -73,12 +73,12 @@ class FeedbackParameterUpdateResult:
 
 @dataclass(frozen=True)
 class FeedbackOrientationContext:
-    """Current transient orientation and its persistent plane/default context."""
+    """Current transient orientation and its persistent observation/default context."""
 
     orientation: FeedbackOrientation
     saved_orientation: FeedbackOrientation
-    plane_name: str | None=None
-    plane_override: bool=False
+    observation_plane_name: str | None=None
+    observation_plane_override: bool=False
     calibrated: bool=False
     change_allowed: bool=True
     change_unavailable_reason: str=""

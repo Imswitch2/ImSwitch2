@@ -238,12 +238,3 @@ class SLMSectionCalibration:
             return None
         return text
 
-    @staticmethod
-    def _coerce_optional_float(value):
-        if value is None:
-            return None
-        text = str(value).strip()
-        if text == "" or text.lower() == "none":
-            return None
-        return float(text)
-    

@@ -334,6 +334,3 @@ class ParamSection(QtCore.QObject):
             self.sigActiveChanged.emit(bool(value))
         self.sigValueChanged.emit(form_name,key,value)
 
-
-# Transitional compatibility for code that still imports ParamGroup.
-ParamGroup = ParamSection

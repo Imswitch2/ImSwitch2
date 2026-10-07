@@ -21,9 +21,6 @@ if TYPE_CHECKING:
     from .contracts import SLMFeedbackCallbacks
 
 
-# Transitional public name retained until the terminology/API cleanup pass.
-GeometryOrientationCalibrationContext = GeometryCalibrationContext
-
 
 class GeometryOrientationFeedbackService(FeedbackComponent):
     """Own feedback orientation state; delegate geometry calibration to the shared service."""
@@ -62,29 +59,29 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         return self._active_feedback_plane_provider(section_key)
 
     def _saved_feedback_orientation(
-        self,section_key: str,plane_name: str | None,
+        self,section_key: str,observation_plane_name: str | None,
     ) -> FeedbackOrientation:
         calibration = self.geometry_orientation_calibration(
-            section_key,plane_name=plane_name,
+            section_key,observation_plane_name=observation_plane_name,
         )
         if calibration is not None:
             return calibration.orientation
         preferences = self._startup_preferences_provider()
         value = (
             "identity" if preferences is None
-            else preferences.feedback_orientation(section_key,plane_name)
+            else preferences.feedback_orientation(section_key,observation_plane_name)
         )
         return FeedbackOrientation.normalize(value)
 
     def geometry_orientation_calibration(
-        self,section_key: str,*,plane_name: str | None=None,
+        self,section_key: str,*,observation_plane_name: str | None=None,
     ) -> GeometryOrientationCalibration | None:
         """Load saved geometry for this SLM/section and active or given observation plane."""
         section=str(section_key)
         plane=(
             self._active_feedback_plane(section)
-            if plane_name is None
-            else str(plane_name or "").strip() or None
+            if observation_plane_name is None
+            else str(observation_plane_name or "").strip() or None
         )
         geometry=self._observation_geometry
         if plane is None or geometry is None:
@@ -96,7 +93,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
 
     def geometry_orientation_calibration_context(
         self,section_key: str,
-    ) -> GeometryOrientationCalibrationContext:
+    ) -> GeometryCalibrationContext:
         return self._geometry_calibration.context(
             section_key,self._active_feedback_plane(section_key),
         )
@@ -135,18 +132,18 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
         orientation = self.feedback_orientation(section)
         saved = self._saved_feedback_orientation(section,plane)
         preferences = self._startup_preferences_provider()
-        plane_override = bool(
+        observation_plane_override = bool(
             plane
             and preferences is not None
-            and preferences.feedback_orientation_for_plane(section,plane) is not None
+            and preferences.feedback_orientation_for_observation_plane(section,plane) is not None
         )
         reason = self._feedback_orientation_change_reason(section)
         return FeedbackOrientationContext(
             orientation=orientation,
             saved_orientation=saved,
-            plane_name=plane,
-            plane_override=plane_override,
-            calibrated=self.geometry_orientation_calibration(section,plane_name=plane) is not None,
+            observation_plane_name=plane,
+            observation_plane_override=observation_plane_override,
+            calibrated=self.geometry_orientation_calibration(section,observation_plane_name=plane) is not None,
             change_allowed=not bool(reason),
             change_unavailable_reason=reason,
         )
@@ -242,7 +239,7 @@ class GeometryOrientationFeedbackService(FeedbackComponent):
             preferences = self._startup_preferences_provider()
             if preferences is None:
                 raise RuntimeError("Geometry orientation-calibration storage is unavailable.")
-            preferences.set_feedback_orientation_for_plane(section,plane,orientation.value)
+            preferences.set_feedback_orientation_for_observation_plane(section,plane,orientation.value)
         else:
             self._geometry_calibration.save_manual(section,plane,orientation)
             self._feedback_orientations[section] = (plane,orientation)

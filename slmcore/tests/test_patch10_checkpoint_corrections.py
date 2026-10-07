@@ -119,7 +119,7 @@ def test_geometry_dialog_close_finishes_active_calibration_frame():
 
         def context(self, _section, plane):
             return {
-                "plane_name": plane,
+                "observation_plane_name": plane,
                 "calibrated": False,
                 "calibration": None,
                 "grid_x": 5,
@@ -130,7 +130,7 @@ def test_geometry_dialog_close_finishes_active_calibration_frame():
                 "computed": self.active,
                 "frame_active": self.active,
                 "any_frame_active": self.active,
-                "active_frame_plane": plane if self.active else None,
+                "active_frame_observation_plane": plane if self.active else None,
                 "measurement": None,
                 "localization": None,
                 "localization_parameters": {},

@@ -20,7 +20,7 @@ from .configuration import (
 )
 from .control_mode import SLMControlMode
 from .runtime_factory import SLMRuntimeFactory
-from .position_reference_store import PositionReferenceStore
+from ..workspace.position_reference_store import PositionReferenceStore
 from .observation import ObservationPlaneService
 from .observation_geometry import ObservationGeometryService
 from .mapping import MappingService

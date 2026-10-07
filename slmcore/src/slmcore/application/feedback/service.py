@@ -1,10 +1,4 @@
-"""Public toolkit-independent feedback facade.
-
-The facade preserves the historical ``session.feedback.*`` API while focused
-application services own the corresponding workflow state and implementation.
-Cross-service dependencies still route through this facade in Pass 2; Pass 3
-will replace that temporary bridge with narrow explicit dependencies.
-"""
+"""Public toolkit-independent feedback facade over focused feedback services."""
 
 from __future__ import annotations
 
@@ -21,7 +15,7 @@ from ...core.cgh.feedback import (
 from ...core.cgh.localization import LocalizationResult
 from ...core.measurement import ImageMeasurement
 from ...core.engine.transition import SectionStateTransition
-from ..position_reference_store import (
+from ...workspace.position_reference_store import (
     PositionReferenceLifetime,PositionReferenceRecord,PositionReferenceStore,
 )
 from .adaptation import FeedbackAdaptationService
@@ -30,9 +24,8 @@ from .contracts import (
     AutomaticFeedbackState,FeedbackOrientationContext,FeedbackParameterUpdateResult,
     MeasurementDispatcher,SLMFeedbackCallbacks,
 )
-from .geometry_calibration import (
-    GeometryOrientationCalibrationContext,GeometryOrientationFeedbackService,
-)
+from .geometry_calibration import GeometryOrientationFeedbackService
+from ..geometry_calibration import GeometryCalibrationContext
 from .localization import LocalizationService
 from .measurement import MeasurementService
 from .references import (
@@ -57,7 +50,7 @@ class SLMFeedbackService:
         callbacks: SLMFeedbackCallbacks | None=None,
         position_reference_store: PositionReferenceStore | None=None,
         observation_geometry: "ObservationGeometryService | None"=None,
-        geometry_calibration: "GeometryCalibrationService | None"=None,
+        geometry_calibration: "GeometryCalibrationService",
     ) -> None:
         self._application_session = application_session
         self._callbacks = callbacks or SLMFeedbackCallbacks()
@@ -206,11 +199,11 @@ class SLMFeedbackService:
         self._observation_plane_by_section[section] = selected
         return selected
 
-    def select_observation_plane(self,section_key: str,plane_name: str | None) -> bool:
+    def select_observation_plane(self,section_key: str,observation_plane_name: str | None) -> bool:
         """Select feedback measurement context without touching mapping/CGH state."""
         self._require_editor_mode()
         section = str(section_key)
-        selected = str(plane_name or "").strip() or None
+        selected = str(observation_plane_name or "").strip() or None
         if selected is not None:
             self._application_session.observation_planes.get(selected)
         previous = self.active_observation_plane(section)
@@ -243,23 +236,6 @@ class SLMFeedbackService:
         # identity is the selected observation plane.
         return self.active_observation_plane(section_key)
 
-    def _active_mapping_name(self,section_key: str) -> str | None:
-        """Transitional mapping identity used only by legacy FOV ownership.
-
-        Patch 6 moves FOV persistence out of Feedback. Until then, keep it keyed
-        by the active mapping identity rather than by the
-        independently selected observation plane.
-        """
-        calibration_service = getattr(self._application_session,"calibration",None)
-        if calibration_service is not None:
-            return calibration_service.active_mapping(section_key)
-        calibration = self._application_session.runtime.get_section_calibration_copy(
-            section_key
-        )
-        if calibration is None:
-            return None
-        return str(getattr(calibration,"mapping_name","") or "").strip() or None
-
     def _require_observation_plane_for_measurement(self,section_key: str) -> None:
         if self.observation_planes() and self.active_observation_plane(section_key) is None:
             raise RuntimeError(
@@ -267,10 +243,10 @@ class SLMFeedbackService:
             )
 
     def _measurement_context(self,section_key: str) -> tuple[str | None,float | None]:
-        plane_name = self.active_observation_plane(section_key)
-        if plane_name is None:
+        observation_plane_name = self.active_observation_plane(section_key)
+        if observation_plane_name is None:
             return None,None
-        plane = self._application_session.observation_planes.get(plane_name)
+        plane = self._application_session.observation_planes.get(observation_plane_name)
         return plane.name,plane.default_pixel_size_um
 
 
@@ -288,9 +264,9 @@ class SLMFeedbackService:
         override = self._source_override_by_section.get(str(section_key))
         if override and override in available:
             return override
-        plane_name = self.active_observation_plane(section_key)
-        if plane_name is not None:
-            detector = self._application_session.observation_planes.get(plane_name).preferred_detector
+        observation_plane_name = self.active_observation_plane(section_key)
+        if observation_plane_name is not None:
+            detector = self._application_session.observation_planes.get(observation_plane_name).preferred_detector
             if detector and detector in available:
                 return detector
         return self._measurement.preferred_source(section_key,available)
@@ -334,11 +310,6 @@ class SLMFeedbackService:
     # ------------------------------------------------------------------
     # Position references
     # ------------------------------------------------------------------
-
-    def _position_reference_key(
-        self,section_key: str,
-    ) -> tuple[str,str | None]:
-        return self._references._position_reference_key(section_key)
 
     def position_reference_selection(
         self,section_key: str,
@@ -404,37 +375,19 @@ class SLMFeedbackService:
     ) -> tuple[np.ndarray | None,PositionReferenceResolutionMetadata]:
         return self._references._resolve_position_reference(section_key)
 
-    def _position_reference_create_reason(self,section_key: str) -> str:
-        return self._references._position_reference_create_reason(section_key)
-
-    def _on_position_reference_store_changed(self) -> None:
-        return self._references._on_position_reference_store_changed()
-
-    # ------------------------------------------------------------------
-    # Feedback orientation and geometry calibration
-    # ------------------------------------------------------------------
-
-    def _saved_feedback_orientation(
-        self,section_key: str,plane_name: str | None,
-    ) -> FeedbackOrientation:
-        return self._geometry._saved_feedback_orientation(section_key,plane_name)
-
     def geometry_orientation_calibration(
-        self,section_key: str,*,plane_name: str | None=None,
+        self,section_key: str,*,observation_plane_name: str | None=None,
     ) -> GeometryOrientationCalibration | None:
         return self._geometry.geometry_orientation_calibration(
             section_key,
-            plane_name=plane_name,
+            observation_plane_name=observation_plane_name,
         )
 
     def geometry_period_from_um(self,section_key: str,value_um: float,axis: str) -> float:
         return self._geometry.geometry_period_from_um(section_key,value_um,axis)
 
-    def geometry_orientation_calibration_context(self,section_key: str) -> GeometryOrientationCalibrationContext:
+    def geometry_orientation_calibration_context(self,section_key: str) -> GeometryCalibrationContext:
         return self._geometry.geometry_orientation_calibration_context(section_key)
-
-    def _feedback_orientation_change_reason(self,section_key: str) -> str:
-        return self._geometry._feedback_orientation_change_reason(section_key)
 
     def feedback_orientation(self,section_key: str) -> FeedbackOrientation:
         return self._geometry.feedback_orientation(section_key)
@@ -491,9 +444,6 @@ class SLMFeedbackService:
 
     def finish_geometry_orientation_calibration(self,section_key: str) -> None:
         return self._geometry.finish_geometry_orientation_calibration(section_key)
-
-    def _on_geometry_orientation_calibration_store_changed(self) -> None:
-        return self._geometry._on_geometry_orientation_calibration_store_changed()
 
     def set_feedback_orientation(
         self,section_key: str,orientation: FeedbackOrientation | str,
@@ -696,35 +646,6 @@ class SLMFeedbackService:
                 "Intensity analysis",
                 "Measurement metrics are unavailable: %s" % error,
             )
-
-    def _apply_resolution_operation(
-        self,
-        section_key: str,
-        operation: Callable[[Any],SectionStateTransition | None],
-        error_title: str,
-        *,
-        raise_errors: bool=False,
-    ) -> tuple[bool,SectionStateTransition | None]:
-        if not self._application_session.editor_writes_allowed:
-            if raise_errors:
-                raise RuntimeError(
-                    "Feedback changes are unavailable in Fast Config mode"
-                )
-            return False,None
-        self._application_session.cancel_cgh(section_key)
-        try:
-            transition = operation(self._application_session.runtime)
-            if transition is not None:
-                self._callbacks.on_transition_committed(section_key,transition)
-            else:
-                self._section_changed(section_key)
-            return True,transition
-        except Exception as error:
-            self._section_changed(section_key)
-            if raise_errors:
-                raise
-            self._error(error_title,error)
-            return False,None
 
     def _section_changed(self,section_key: str) -> None:
         self._callbacks.on_section_changed(section_key)

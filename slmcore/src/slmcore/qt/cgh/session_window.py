@@ -139,7 +139,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "editable_geometry":None,
             "editable_locks":{},
             "fit_geometry":None,
-            "plane_name":None,
+            "observation_plane_name":None,
             "compatible":True,
             "compatibility_error":"",
             "change_allowed":True,
@@ -161,7 +161,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._propagation_cache = {}
         self._pending_propagation_key = None
         self._compute_adapted_buttons = []
-        self._adaptation_status_labels = []
         self._automatic_feedback_available = False
         self._automatic_feedback_reason = (
             "Automatic feedback requires a measurement provider and automatic frame upload."
@@ -976,26 +975,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._compute_adapted_buttons.append(button)
         return button
 
-    def _make_adaptation_status_label(self) -> QtWidgets.QLabel:
-        label = QtWidgets.QLabel("No adaptation pending")
-        label.setWordWrap(True)
-        label.setStyleSheet("color: %s;" % _MUTED_COLOR)
-        self._adaptation_status_labels.append(label)
-        return label
-
-    @staticmethod
-    def _placeholder_view(
-        title: str,text: str,*,minimum_height: int=150,
-    ) -> QtWidgets.QGroupBox:
-        box = QtWidgets.QGroupBox(str(title))
-        layout = QtWidgets.QVBoxLayout(box)
-        label = QtWidgets.QLabel(str(text))
-        label.setAlignment(QtCore.Qt.AlignCenter)
-        label.setStyleSheet("color: %s;" % _MUTED_COLOR)
-        label.setMinimumHeight(int(minimum_height))
-        layout.addWidget(label,1)
-        return box
-
     def reject(self) -> None:
         if self._automatic_operation_active:
             return
@@ -1015,10 +994,10 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self,context: Mapping[str,Any] | None,
     ) -> None:
         values = dict(context or {})
-        plane = str(values.get("plane_name") or "").strip() or None
+        plane = str(values.get("observation_plane_name") or "").strip() or None
         self._feedback_orientation_plane = plane
         self._feedback_orientation_plane_override = bool(
-            values.get("plane_override",False)
+            values.get("observation_plane_override",False)
         )
         self._feedback_orientation_saved = FeedbackOrientation.normalize(
             values.get("saved_orientation","identity")
@@ -1144,7 +1123,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         for warning in (getattr(self,'intensity_geometry_warning',None),getattr(self,'position_geometry_warning',None)):
             if warning is not None:warning.setVisible(not calibrated)
         calibration=self._geometry_calibration_context.get('calibration')
-        plane=self._geometry_calibration_context.get('plane_name')
+        plane=self._geometry_calibration_context.get('observation_plane_name')
         if calibration is not None:
             self.geometry_calibration_status_label.setText(
                 'Status: Calibrated for %s — %s' % (plane or 'active plane',make_display_name(calibration.orientation.value))
@@ -1353,7 +1332,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         compatible = bool(context.get("compatible",True))
         compatibility_error = str(context.get("compatibility_error") or "")
-        plane = str(context.get("plane_name") or "").strip()
+        plane = str(context.get("observation_plane_name") or "").strip()
         if mode == "global_fit":
             info = "Current localization · global affine fit"
         elif mode == "editable":
@@ -1795,14 +1774,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self.sigDefineObservationPlaneRequested.emit()
             return
         self._emit(MeasurementsAction.OBSERVATION_PLANE_SET,{"plane":plane})
-
-    def show_position_feedback_tab(self) -> None:
-        self.workspace_tabs.setCurrentIndex(0)
-        self.feedback_tabs.setCurrentIndex(1)
-
-    def show_geometry_calibration_tab(self) -> None:
-        self.workspace_tabs.setCurrentIndex(0)
-        self.feedback_tabs.setCurrentIndex(2)
 
     def configure_detectors(
         self,detectors: Sequence[str],current_detector: str | None=None,
@@ -2669,19 +2640,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
     def _refresh_adaptation_status(self) -> None:
         status = self._status
         pending = bool(status.feedback_compute_pending)
-        has_effective = bool(status.intensity_count or status.position_active)
-        if pending:
-            text = "Feedback change pending computation."
-            color = _WARNING_COLOR
-        elif has_effective and self._cgh_status.result_state is CGHResultState.CURRENT:
-            text = "Latest feedback adaptation is represented in the current CGH."
-            color = _OK_COLOR
-        else:
-            text = "No feedback adaptation is waiting to be computed."
-            color = _MUTED_COLOR
-        for label in self._adaptation_status_labels:
-            label.setText(text)
-            label.setStyleSheet("color: %s;" % color)
         enabled = (
             pending
             and self._selected_is_current_context()
@@ -2844,14 +2802,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
             checkbox is not None
             and checkbox.isEnabled()
             and checkbox.isChecked()
-        )
-
-    def _toggle_position(self,*_args: Any) -> None:
-        if not self._status.position_available:
-            return
-        self._emit(
-            MeasurementsAction.POSITION_SET_ACTIVE,
-            {"active":not self._status.position_active},
         )
 
     def _emit(

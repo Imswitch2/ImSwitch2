@@ -20,11 +20,11 @@ GEOMETRY_ORIENTATION_PROTOCOL = "geometry_orientation_v1"
 
 @dataclass(frozen=True)
 class GeometryOrientationCalibration:
-    """One authoritative orientation calibration for an SLM/section/plane."""
+    """One authoritative orientation calibration for an SLM/section/observation plane."""
 
     slm_serial: str
     section_key: str
-    plane_name: str
+    observation_plane_name: str
     orientation: FeedbackOrientation | str
     detector_name: str | None = None
     grid_x: int = 5
@@ -41,10 +41,10 @@ class GeometryOrientationCalibration:
     def __post_init__(self) -> None:
         serial = str(self.slm_serial or "").strip()
         section = str(self.section_key or "").strip()
-        plane = str(self.plane_name or "").strip()
-        if not serial or not section or not plane:
+        observation_plane = str(self.observation_plane_name or "").strip()
+        if not serial or not section or not observation_plane:
             raise ValueError(
-                "Geometry orientation calibration requires SLM serial, section and plane"
+                "Geometry orientation calibration requires SLM serial, section and observation plane"
             )
         gx,gy = int(self.grid_x),int(self.grid_y)
         px,py = float(self.period_x_px),float(self.period_y_px)
@@ -61,7 +61,7 @@ class GeometryOrientationCalibration:
             raise TypeError("provenance must be a mapping")
         object.__setattr__(self,"slm_serial",serial)
         object.__setattr__(self,"section_key",section)
-        object.__setattr__(self,"plane_name",plane)
+        object.__setattr__(self,"observation_plane_name",observation_plane)
         object.__setattr__(self,"orientation",FeedbackOrientation.normalize(self.orientation))
         object.__setattr__(self,"detector_name",str(self.detector_name or "").strip() or None)
         object.__setattr__(self,"grid_x",gx)
@@ -79,7 +79,7 @@ class GeometryOrientationCalibration:
         return {
             "slm_serial":self.slm_serial,
             "section_key":self.section_key,
-            "plane_name":self.plane_name,
+            "observation_plane_name":self.observation_plane_name,
             "orientation":self.orientation.value,
             "detector_name":self.detector_name,
             "grid_x":self.grid_x,

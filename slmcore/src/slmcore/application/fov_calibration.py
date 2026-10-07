@@ -101,9 +101,9 @@ class FOVCalibrationService:
     def observation_plane_names(self) -> tuple[str,...]:
         return tuple(plane.name for plane in self.observation_planes.list())
 
-    def select_observation_plane(self,section_key: str,mapping_name: str,plane_name: str | None) -> FOVCalibrationState:
+    def select_observation_plane(self,section_key: str,mapping_name: str,observation_plane_name: str | None) -> FOVCalibrationState:
         state=self.ensure_context(section_key,mapping_name)
-        selected=str(plane_name or "").strip() or None
+        selected=str(observation_plane_name or "").strip() or None
         plane=None if selected is None else self.observation_planes.get(selected)
         if selected!=state.observation_plane_name:
             state.observation_plane_name=selected

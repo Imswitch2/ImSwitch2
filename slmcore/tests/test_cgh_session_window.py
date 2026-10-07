@@ -841,7 +841,7 @@ def test_geometry_measurement_survives_inactive_automatic_state_refresh():
             source="geometry-test",
         )
         window.set_geometry_orientation_calibration_state({
-            "plane_name":"sample",
+            "observation_plane_name":"sample",
             "calibrated":False,
             "grid_x":5,
             "grid_y":4,

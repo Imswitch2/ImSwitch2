@@ -293,7 +293,7 @@ class GeometryCalibrationDialog(QtWidgets.QDialog):
         self.analysis_preview.set_orientation(getattr(orientation,"value",orientation) or "identity")
         self.analyze_button.setEnabled(bool(context.get("analyze_enabled")))
         self.save_button.setEnabled(bool(context.get("save_enabled")))
-        self.manual_save_button.setEnabled(bool(context.get("plane_name")))
+        self.manual_save_button.setEnabled(bool(context.get("observation_plane_name")))
 
     def set_error(self,error: Any) -> None:
         message=str(error or "Geometry calibration failed.")

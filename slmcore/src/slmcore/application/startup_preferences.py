@@ -77,10 +77,10 @@ class StartupPreferencesState:
         settings = self._value.feedback_orientations.get(str(section_key))
         return "identity" if settings is None else settings.default
 
-    def feedback_orientation_for_plane(
-        self,section_key: str,plane_name: str | None,
+    def feedback_orientation_for_observation_plane(
+        self,section_key: str,observation_plane_name: str | None,
     ) -> str | None:
-        plane = str(plane_name or "").strip()
+        plane = str(observation_plane_name or "").strip()
         if not plane:
             return None
         settings = self._value.feedback_orientations.get(str(section_key))
@@ -89,9 +89,9 @@ class StartupPreferencesState:
         return settings.planes.get(plane)
 
     def feedback_orientation(
-        self,section_key: str,plane_name: str | None=None,
+        self,section_key: str,observation_plane_name: str | None=None,
     ) -> str:
-        override = self.feedback_orientation_for_plane(section_key,plane_name)
+        override = self.feedback_orientation_for_observation_plane(section_key,observation_plane_name)
         if override is not None:
             return override
         return self.feedback_orientation_default(section_key)
@@ -110,15 +110,15 @@ class StartupPreferencesState:
         )
         self._commit(replace(self._value,feedback_orientations=orientations))
 
-    def set_feedback_orientation_for_plane(
-        self,section_key: str,plane_name: str,value: Any,
+    def set_feedback_orientation_for_observation_plane(
+        self,section_key: str,observation_plane_name: str,value: Any,
     ) -> None:
         from ..core.cgh.feedback import FeedbackOrientation
         from ..setup import FeedbackOrientationPreferences
         section = str(section_key)
-        plane = str(plane_name or "").strip()
+        plane = str(observation_plane_name or "").strip()
         if not plane:
-            raise ValueError("plane_name must not be empty")
+            raise ValueError("observation_plane_name must not be empty")
         orientation = FeedbackOrientation.normalize(value).value
         orientations = dict(self._value.feedback_orientations)
         previous = orientations.get(section,FeedbackOrientationPreferences())
@@ -129,12 +129,12 @@ class StartupPreferencesState:
         )
         self._commit(replace(self._value,feedback_orientations=orientations))
 
-    def clear_feedback_orientation_for_plane(
-        self,section_key: str,plane_name: str,
+    def clear_feedback_orientation_for_observation_plane(
+        self,section_key: str,observation_plane_name: str,
     ) -> None:
         from ..setup import FeedbackOrientationPreferences
         section = str(section_key)
-        plane = str(plane_name or "").strip()
+        plane = str(observation_plane_name or "").strip()
         if not plane:
             return
         orientations = dict(self._value.feedback_orientations)
@@ -204,10 +204,6 @@ class StartupPreferencesState:
             default_mappings=default_mappings,
             fov_mapping_corrections=fov_values,
         ))
-
-    # Compatibility helper for the first pre-release section-only behavior.
-    def set_feedback_orientation(self,section_key: str,value: Any) -> None:
-        self.set_feedback_orientation_default(section_key,value)
 
     def _commit(self,new_value: SLMStartupPreferences) -> None:
         if new_value == self._value:

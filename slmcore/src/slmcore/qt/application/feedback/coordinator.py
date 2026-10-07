@@ -227,19 +227,6 @@ class FeedbackCoordinator(QtCore.QObject):
         finally:
             self.synchronize_section(section_key)
 
-    def open_fov_calibration(self,section_key: str) -> None:
-        self.open_window(section_key)
-        window=self._windows.get(section_key)
-        if window is not None:
-            window.show_position_feedback_tab()
-
-    def open_geometry_calibration(self,section_key: str,plane_name: str) -> None:
-        self._feedback_service.select_observation_plane(section_key,plane_name)
-        self.open_window(section_key)
-        window=self._windows.get(section_key)
-        if window is not None:
-            window.show_geometry_calibration_tab()
-
     def synchronize_section(self,section_key: str) -> None:
         window = self._windows.get(section_key)
         if window is None:
@@ -322,7 +309,7 @@ class FeedbackCoordinator(QtCore.QObject):
         self._actions.dispatch(section_key,action,options)
 
     # ------------------------------------------------------------------
-    # Public compatibility facade: measurement/localization
+    # Delegated measurement/localization API
     # ------------------------------------------------------------------
 
     def available_sources(self,section_key: str) -> Sequence[str]:
@@ -447,7 +434,7 @@ class FeedbackCoordinator(QtCore.QObject):
         self._localization.validate_target_hint_use(section_key,parameters)
 
     # ------------------------------------------------------------------
-    # Public compatibility facade: geometry/reference/FOV workflows
+    # Delegated geometry/reference workflows
     # ------------------------------------------------------------------
 
     def compute_geometry_orientation_calibration(
@@ -470,31 +457,6 @@ class FeedbackCoordinator(QtCore.QObject):
 
     def finish_geometry_orientation_calibration(self,section_key: str) -> None:
         self._geometry.finish(section_key)
-
-    def _feedback_orientation_ui_context(
-        self,section_key: str,
-    ) -> dict[str,Any]:
-        return self._geometry.orientation_ui_context(section_key)
-
-    def _position_reference_ui_context(
-        self,section_key: str,
-    ) -> dict[str,Any]:
-        return self._references.ui_context(section_key)
-
-    def _synchronize_position_reference(
-        self,section_key: str,window: CGHSessionWindow,
-    ) -> None:
-        self._references.synchronize(section_key,window)
-
-    def _synchronize_fov_mapping_correction(
-        self,section_key: str,window: CGHSessionWindow,
-    ) -> None:
-        self._fov_mapping.synchronize(section_key,window)
-
-    def _synchronize_geometry_orientation_calibration(
-        self,section_key: str,window: CGHSessionWindow,
-    ) -> None:
-        self._geometry.synchronize(section_key,window)
 
     def set_position_reference(
         self,
@@ -526,7 +488,7 @@ class FeedbackCoordinator(QtCore.QObject):
         self._references.delete_position_reference(section_key,name)
 
     # ------------------------------------------------------------------
-    # Public compatibility facade: feedback adaptation
+    # Delegated feedback adaptation API
     # ------------------------------------------------------------------
 
     def apply_intensity_feedback(
@@ -577,9 +539,6 @@ class FeedbackCoordinator(QtCore.QObject):
     # Application callbacks and lifecycle
     # ------------------------------------------------------------------
 
-    def _configure_automatic_availability(self,window: CGHSessionWindow) -> None:
-        self._automatic.configure_availability(window)
-
     def on_automatic_state_changed(self,state: AutomaticFeedbackState) -> None:
         self._automatic.on_state_changed(state)
 
@@ -596,17 +555,6 @@ class FeedbackCoordinator(QtCore.QObject):
 
     def on_localization_error(self,section_key: str,error: Exception) -> None:
         self._localization.on_error(section_key,error)
-
-    def _apply_automatic_state_to_window(
-        self,
-        section_key: str,
-        window: CGHSessionWindow,
-        *,
-        state: AutomaticFeedbackState | None=None,
-    ) -> None:
-        self._automatic.apply_state_to_window(
-            section_key,window,state=state,
-        )
 
     def _set_measurement_error(self,section_key: str,error: Exception) -> None:
         self._measurement.set_error(section_key,error)

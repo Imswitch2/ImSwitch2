@@ -884,20 +884,6 @@ class CalibrationManager(QtCore.QObject):
             self._error("Set default FOV correction failed",error)
 
     @QtCore.Slot(str,str,str)
-    def _management_inspect_fov(self,section_key: str,mapping_name: str,name: str) -> None:
-        try:
-            correction=self.controller.mapping_service.load_fov_correction(section_key,mapping_name,name)
-            QtWidgets.QMessageBox.information(
-                self._management_dialog,"FOV correction",
-                "%s\n\nModel: %s degree %d\nSamples: %d\nRMS residual: %.6g kxy\nMax residual: %.6g kxy\nCreated: %s"
-                % (name,correction.model,correction.degree,correction.sample_count,
-                   correction.rms_residual_kxy,correction.max_residual_kxy,
-                   correction.created_at or "—"),
-            )
-        except Exception as error:
-            self._error("Inspect FOV correction failed",error)
-
-    @QtCore.Slot(str,str,str)
     def _management_delete_fov(self,section_key: str,mapping_name: str,name: str) -> None:
         answer=QtWidgets.QMessageBox.question(
             self._management_dialog,"Delete FOV correction",

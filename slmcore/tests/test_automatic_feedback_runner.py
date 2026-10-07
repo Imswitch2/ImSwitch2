@@ -99,9 +99,31 @@ class _Service:
         return True,object()
 
 
+def _runner(service):
+    session = service.application_session
+    return AutomaticFeedbackRunner(
+        runtime_provider=lambda:session.runtime,
+        can_run=lambda:bool(service.can_run_automatic_feedback),
+        unavailable_reason=lambda:str(service.automatic_feedback_unavailable_reason),
+        is_cgh_computing=session.is_cgh_computing,
+        compute_adapted_cgh=session.compute_adapted_cgh,
+        last_upload_error=lambda:session.last_upload_error,
+        callbacks_provider=lambda:service._callbacks,
+        request_measurement=service.request_measurement,
+        cancel_measurement=service.cancel_measurement,
+        feedback_measurement_metadata=service.feedback_measurement_metadata,
+        commit_measurement=service.commit_measurement,
+        reuse_localization=service.reuse_localization,
+        localize_and_commit=service.localize_and_commit,
+        apply_intensity_feedback=service.apply_intensity_feedback,
+        report_error=service._error,
+        report_warning=service._warning,
+    )
+
+
 def test_reuse_failure_stops_without_falling_back_to_localization():
     service = _Service(reuse_fails=True)
-    runner = AutomaticFeedbackRunner(service)
+    runner = _runner(service)
 
     assert runner.start(
         "sec_0",rounds=1,source="cam",reuse_previous_localization=True,
@@ -122,7 +144,7 @@ def test_reuse_failure_stops_without_falling_back_to_localization():
 
 def test_reuse_mode_never_runs_fresh_localization_across_rounds():
     service = _Service()
-    runner = AutomaticFeedbackRunner(service)
+    runner = _runner(service)
 
     assert runner.start(
         "sec_0",rounds=3,source="cam",reuse_previous_localization=True,
@@ -142,7 +164,7 @@ def test_reuse_mode_never_runs_fresh_localization_across_rounds():
 
 def test_reuse_mode_requires_previous_localization():
     service = _Service(previous_available=False)
-    runner = AutomaticFeedbackRunner(service)
+    runner = _runner(service)
 
     assert runner.start(
         "sec_0",rounds=1,source="cam",reuse_previous_localization=True,
@@ -158,7 +180,7 @@ def test_reuse_mode_requires_previous_localization():
 
 def test_fresh_automatic_localization_uses_ten_percent_inference_limit():
     service = _Service()
-    runner = AutomaticFeedbackRunner(service)
+    runner = _runner(service)
 
     assert runner.start(
         "sec_0",rounds=1,source="cam",reuse_previous_localization=False,
@@ -178,7 +200,7 @@ def test_fresh_automatic_localization_uses_ten_percent_inference_limit():
 
 def test_stop_during_acquisition_cancels_immediately():
     service = _Service()
-    runner = AutomaticFeedbackRunner(service)
+    runner = _runner(service)
     runner.start(
         "sec_0",rounds=3,source="cam",reuse_previous_localization=False,
     )
@@ -192,7 +214,7 @@ def test_stop_during_acquisition_cancels_immediately():
 
 def test_stop_during_cgh_waits_for_that_cgh_then_stops():
     service = _Service()
-    runner = AutomaticFeedbackRunner(service)
+    runner = _runner(service)
     runner.start(
         "sec_0",rounds=3,source="cam",reuse_previous_localization=False,
     )
@@ -214,7 +236,7 @@ def test_stale_position_correction_blocks_automatic_feedback_start():
     service.application_session.runtime.feedback_status = _FeedbackStatus(
         stale=True,reason="Position correction is stale because the FOV mapping correction changed.",
     )
-    runner = AutomaticFeedbackRunner(service)
+    runner = _runner(service)
 
     assert not runner.start(
         "sec_0",rounds=1,source="cam",reuse_previous_localization=False,

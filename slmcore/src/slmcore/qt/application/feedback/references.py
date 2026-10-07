@@ -70,7 +70,7 @@ class PositionReferenceCoordinator:
                 if context.correspondence_diagnostics is None
                 else dict(context.correspondence_diagnostics)
             ),
-            "plane_name":context.plane_name,
+            "observation_plane_name":context.observation_plane_name,
             "compatible":context.compatible,
             "compatibility_error":context.compatibility_error,
             "change_allowed":context.change_allowed,

@@ -45,8 +45,8 @@ class GeometryOrientationCalibrationCoordinator:
     def orientation_ui_context(self,section_key: str) -> dict[str,Any]:
         context = self._feedback.feedback_orientation_context(section_key)
         return {
-            "plane_name":context.plane_name,
-            "plane_override":context.plane_override,
+            "observation_plane_name":context.observation_plane_name,
+            "observation_plane_override":context.observation_plane_override,
             "saved_orientation":context.saved_orientation.value,
             "calibrated":context.calibrated,
             "change_enabled":context.change_allowed,

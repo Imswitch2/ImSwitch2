@@ -1,4 +1,4 @@
-"""Application-scoped named position-reference collection with optional persistence."""
+"""Workspace-scoped named position-reference collection with optional persistence."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from ..core.cgh.feedback.reference import PositionReference
 
 
 _logger = logging.getLogger(__name__)
-_POSITION_REFERENCE_STORE_VERSION = 1
+_POSITION_REFERENCE_STORE_VERSION = 2
 
 
 class PositionReferenceLifetime(str,Enum):
@@ -48,8 +48,8 @@ class PositionReferenceRecord:
         return self.reference.name
 
     @property
-    def plane_name(self) -> str:
-        return self.reference.plane_name
+    def observation_plane_name(self) -> str:
+        return self.reference.observation_plane_name
 
 
 class PositionReferenceStore:
@@ -73,34 +73,34 @@ class PositionReferenceStore:
     def persistence_available(self) -> bool:
         return self.persistent_root is not None
 
-    def list(self,plane_name: str) -> tuple[PositionReferenceRecord,...]:
-        plane = self._normalize_name(plane_name,"Plane")
+    def list(self,observation_plane_name: str) -> tuple[PositionReferenceRecord,...]:
+        plane = self._normalize_name(observation_plane_name,"Observation plane")
         records = [
             record for (record_plane,_name),record in self._entries.items()
             if record_plane == plane
         ]
         return tuple(sorted(records,key=lambda item:item.name.casefold()))
 
-    def names(self,plane_name: str) -> tuple[str,...]:
-        return tuple(record.name for record in self.list(plane_name))
+    def names(self,observation_plane_name: str) -> tuple[str,...]:
+        return tuple(record.name for record in self.list(observation_plane_name))
 
-    def exists(self,plane_name: str,name: str) -> bool:
+    def exists(self,observation_plane_name: str,name: str) -> bool:
         try:
-            key = self._key(plane_name,name)
+            key = self._key(observation_plane_name,name)
         except ValueError:
             return False
         return key in self._entries
 
-    def get(self,plane_name: str,name: str) -> PositionReference:
-        return self.get_record(plane_name,name).reference
+    def get(self,observation_plane_name: str,name: str) -> PositionReference:
+        return self.get_record(observation_plane_name,name).reference
 
-    def get_record(self,plane_name: str,name: str) -> PositionReferenceRecord:
-        key = self._key(plane_name,name)
+    def get_record(self,observation_plane_name: str,name: str) -> PositionReferenceRecord:
+        key = self._key(observation_plane_name,name)
         try:
             return self._entries[key]
         except KeyError as error:
             raise FileNotFoundError(
-                f'Position reference "{name}" does not exist for plane "{plane_name}".'
+                f'Position reference "{name}" does not exist for observation plane "{observation_plane_name}".'
             ) from error
 
     def add(
@@ -113,12 +113,12 @@ class PositionReferenceStore:
         if not isinstance(reference,PositionReference):
             raise TypeError("reference must be a PositionReference")
         lifetime = PositionReferenceLifetime.normalize(lifetime)
-        key = self._key(reference.plane_name,reference.name)
+        key = self._key(reference.observation_plane_name,reference.name)
         existing = self._entries.get(key)
         if existing is not None and not overwrite:
             raise FileExistsError(
                 f'Position reference "{reference.name}" already exists for '
-                f'plane "{reference.plane_name}".'
+                f'plane "{reference.observation_plane_name}".'
             )
 
         # Normal replacement changes content without demoting an existing
@@ -136,9 +136,9 @@ class PositionReferenceStore:
         self._notify()
         return record
 
-    def persist(self,plane_name: str,name: str) -> PositionReferenceRecord:
-        key = self._key(plane_name,name)
-        record = self.get_record(plane_name,name)
+    def persist(self,observation_plane_name: str,name: str) -> PositionReferenceRecord:
+        key = self._key(observation_plane_name,name)
+        record = self.get_record(observation_plane_name,name)
         if record.lifetime is PositionReferenceLifetime.PERSISTENT:
             return record
         if self.persistent_root is None:
@@ -151,15 +151,15 @@ class PositionReferenceStore:
         self._notify()
         return persistent
 
-    def delete(self,plane_name: str,name: str) -> PositionReferenceRecord:
-        key = self._key(plane_name,name)
-        record = self.get_record(plane_name,name)
+    def delete(self,observation_plane_name: str,name: str) -> PositionReferenceRecord:
+        key = self._key(observation_plane_name,name)
+        record = self.get_record(observation_plane_name,name)
         if record.lifetime is PositionReferenceLifetime.PERSISTENT:
-            path = self._path(record.plane_name,record.name)
+            path = self._path(record.observation_plane_name,record.name)
             if not path.is_file():
                 raise FileNotFoundError(
                     f'Persistent position reference "{record.name}" is missing '
-                    f'for plane "{record.plane_name}".'
+                    f'for observation plane "{record.observation_plane_name}".'
                 )
             path.unlink()
             try:
@@ -186,13 +186,13 @@ class PositionReferenceStore:
         for path in sorted(self.persistent_root.rglob("*.json")):
             try:
                 reference = self._load_path(path)
-                key = self._key(reference.plane_name,reference.name)
+                key = self._key(reference.observation_plane_name,reference.name)
                 if key in self._entries:
                     raise ValueError(
                         "Duplicate persistent position-reference identity: "
-                        f'{reference.plane_name!r}/{reference.name!r}'
+                        f'{reference.observation_plane_name!r}/{reference.name!r}'
                     )
-                expected = self._path(reference.plane_name,reference.name)
+                expected = self._path(reference.observation_plane_name,reference.name)
                 if path.resolve() != expected.resolve():
                     raise ValueError(
                         "Position-reference file path does not match its embedded identity"
@@ -208,12 +208,12 @@ class PositionReferenceStore:
     ) -> Path:
         if self.persistent_root is None:
             raise RuntimeError("Persistent position-reference storage is unavailable")
-        path = self._path(reference.plane_name,reference.name)
+        path = self._path(reference.observation_plane_name,reference.name)
         if path.exists():
             existing = self._load_path(path)
             if (
                 existing.name != reference.name
-                or existing.plane_name != reference.plane_name
+                or existing.observation_plane_name != reference.observation_plane_name
             ):
                 raise ValueError(
                     "Position-reference name collides after filesystem normalization; "
@@ -222,7 +222,7 @@ class PositionReferenceStore:
             if not overwrite:
                 raise FileExistsError(
                     f'Position reference "{reference.name}" already exists for '
-                    f'plane "{reference.plane_name}".'
+                    f'plane "{reference.observation_plane_name}".'
                 )
         path.parent.mkdir(parents=True,exist_ok=True)
         _write_json(path,{
@@ -231,13 +231,13 @@ class PositionReferenceStore:
         })
         return path
 
-    def _plane_directory(self,plane_name: str) -> Path:
+    def _plane_directory(self,observation_plane_name: str) -> Path:
         if self.persistent_root is None:
             raise RuntimeError("Persistent position-reference storage is unavailable")
-        return self.persistent_root/_slug(plane_name,"Plane")
+        return self.persistent_root/_slug(observation_plane_name,"Observation plane")
 
-    def _path(self,plane_name: str,name: str) -> Path:
-        return self._plane_directory(plane_name)/(f"{_slug(name,'Reference')}.json")
+    def _path(self,observation_plane_name: str,name: str) -> Path:
+        return self._plane_directory(observation_plane_name)/(f"{_slug(name,'Reference')}.json")
 
     @staticmethod
     def _load_path(path: Path) -> PositionReference:
@@ -251,9 +251,9 @@ class PositionReferenceStore:
         return PositionReference.from_dict(payload["reference"])
 
     @classmethod
-    def _key(cls,plane_name: str,name: str) -> tuple[str,str]:
+    def _key(cls,observation_plane_name: str,name: str) -> tuple[str,str]:
         return (
-            cls._normalize_name(plane_name,"Plane"),
+            cls._normalize_name(observation_plane_name,"Observation plane"),
             cls._normalize_name(name,"Reference"),
         )
 

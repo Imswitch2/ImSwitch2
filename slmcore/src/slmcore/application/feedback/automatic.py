@@ -33,7 +33,6 @@ class AutomaticFeedbackRunner:
 
     def __init__(
         self,
-        service: Any | None=None,
         *,
         runtime_provider: Callable[[], "SLMRuntime"] | None=None,
         can_run: Callable[[],bool] | None=None,
@@ -52,34 +51,6 @@ class AutomaticFeedbackRunner:
         report_error: Callable[[str,Exception],None] | None=None,
         report_warning: Callable[[str,Any],None] | None=None,
     ) -> None:
-        # Compatibility path for callers that historically passed the facade.
-        # Only concrete capabilities are retained; the facade is not stored.
-        if service is not None:
-            session = service.application_session
-            runtime_provider = runtime_provider or (lambda:session.runtime)
-            can_run = can_run or (lambda:bool(service.can_run_automatic_feedback))
-            unavailable_reason = unavailable_reason or (
-                lambda:str(service.automatic_feedback_unavailable_reason)
-            )
-            is_cgh_computing = is_cgh_computing or session.is_cgh_computing
-            compute_adapted_cgh = compute_adapted_cgh or session.compute_adapted_cgh
-            last_upload_error = last_upload_error or (lambda:session.last_upload_error)
-            callbacks = service._callbacks
-            callbacks_provider = callbacks_provider or (lambda:callbacks)
-            request_measurement = request_measurement or service.request_measurement
-            cancel_measurement = cancel_measurement or service.cancel_measurement
-            feedback_measurement_metadata = (
-                feedback_measurement_metadata or service.feedback_measurement_metadata
-            )
-            commit_measurement = commit_measurement or service.commit_measurement
-            reuse_localization = reuse_localization or service.reuse_localization
-            localize_and_commit = localize_and_commit or service.localize_and_commit
-            apply_intensity_feedback = (
-                apply_intensity_feedback or service.apply_intensity_feedback
-            )
-            report_error = report_error or service._error
-            report_warning = report_warning or service._warning
-
         required = {
             "runtime_provider":runtime_provider,
             "can_run":can_run,

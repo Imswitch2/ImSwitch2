@@ -51,7 +51,7 @@ def _session(tmp_path):
     workspace.geometry_orientation_calibration_store.save(
         GeometryOrientationCalibration(
             slm_serial=runtime.identity.serial_number,section_key="sec_0",
-            plane_name="Main",orientation="identity",detector_name="cam",
+            observation_plane_name="Main",orientation="identity",detector_name="cam",
             grid_x=3,grid_y=3,period_x_px=20.0,period_y_px=20.0,
             score=0.99,confidence_margin=0.3,matched_count=9,
         )

@@ -68,7 +68,7 @@ def test_geometry_orientation_store_is_authoritative_per_scope(tmp_path):
     store=SLMGeometryOrientationCalibrationStore(tmp_path)
     identity=SLMIdentity("slm","SER123")
     calibration=GeometryOrientationCalibration(
-        slm_serial="SER123",section_key="sec_0",plane_name="sample",
+        slm_serial="SER123",section_key="sec_0",observation_plane_name="sample",
         orientation="rotate_90_cw",detector_name="cam",grid_x=5,grid_y=4,
         period_x_px=12.5,period_y_px=14.0,score=0.98,
         confidence_margin=0.31,matched_count=20,
@@ -229,7 +229,7 @@ def test_geometry_calibration_workflow_is_manual_and_restores_only_on_finish(mon
     switched=session.feedback.geometry_orientation_calibration_context("sec_0")
     assert switched["frame_active"] is False
     assert switched["any_frame_active"] is True
-    assert switched["active_frame_plane"] == "sample"
+    assert switched["active_frame_observation_plane"] == "sample"
 
     session.feedback.finish_geometry_orientation_calibration("sec_0")
     active_plane["value"]="sample"
@@ -298,7 +298,7 @@ def test_geometry_calibration_recompute_failure_keeps_previous_active_target(mon
 def test_geometry_orientation_store_scope_includes_slm_section_and_plane(tmp_path):
     store=SLMGeometryOrientationCalibrationStore(tmp_path)
     calibration=GeometryOrientationCalibration(
-        slm_serial="SER123",section_key="sec_0",plane_name="sample",
+        slm_serial="SER123",section_key="sec_0",observation_plane_name="sample",
         orientation="identity",detector_name="cam",grid_x=5,grid_y=4,
         period_x_px=12.0,period_y_px=12.0,score=1.0,
         confidence_margin=0.5,matched_count=20,
@@ -315,7 +315,7 @@ def _saved_geometry(
     *, section="sec_0", plane="sample", orientation="identity", serial="SER123",
 ):
     return GeometryOrientationCalibration(
-        slm_serial=serial,section_key=section,plane_name=plane,
+        slm_serial=serial,section_key=section,observation_plane_name=plane,
         orientation=orientation,detector_name="cam",grid_x=5,grid_y=4,
         period_x_px=12.0,period_y_px=14.0,score=0.98,
         confidence_margin=0.31,matched_count=20,
@@ -422,7 +422,7 @@ def test_shared_geometry_calibration_service_has_explicit_observation_context(tm
 
     context=session.geometry_calibration.context("sec_0","fourier")
 
-    assert context["plane_name"] == "fourier"
+    assert context["observation_plane_name"] == "fourier"
     assert session.feedback.active_observation_plane("sec_0") == "sample"
     assert session.geometry_calibration.observation_geometry is session.observation_geometry
 

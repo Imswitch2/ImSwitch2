@@ -95,9 +95,9 @@ def test_feedback_orientation_preferences_resolve_plane_then_default():
     state.set_feedback_orientation_default("sec_0","flip_horizontal")
     assert state.feedback_orientation("sec_0") == "flip_horizontal"
     assert state.feedback_orientation("sec_0","sample") == "flip_horizontal"
-    assert state.feedback_orientation_for_plane("sec_0","sample") is None
+    assert state.feedback_orientation_for_observation_plane("sec_0","sample") is None
 
-    state.set_feedback_orientation_for_plane("sec_0","sample","rotate_180")
+    state.set_feedback_orientation_for_observation_plane("sec_0","sample","rotate_180")
     assert state.feedback_orientation("sec_0","sample") == "rotate_180"
     assert state.feedback_orientation("sec_0","fourier") == "flip_horizontal"
 

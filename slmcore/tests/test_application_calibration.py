@@ -537,7 +537,7 @@ def _save_observation_geometry(store,runtime,plane,orientation="identity"):
     store.save(GeometryOrientationCalibration(
         slm_serial=runtime.identity.serial_number,
         section_key="sec_0",
-        plane_name=plane,
+        observation_plane_name=plane,
         orientation=orientation,
         detector_name=plane + "Cam",
         grid_x=5,grid_y=4,

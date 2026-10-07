@@ -169,7 +169,7 @@ def test_saved_reference_uses_full_detector_coordinates_and_resolves_new_crop():
 
     reference = PositionReference(
         name="alignment",
-        plane_name="sample",
+        observation_plane_name="sample",
         lattice_indices=localization.lattice_indices,
         positions_px=full,
         image_shape=(120,140),

@@ -35,12 +35,12 @@ class GeometryCalibrationCoordinator(QtCore.QObject):
         return self._dialogs.get(self._key(section_key,embedded))
 
     def open(
-        self,section_key: str,plane_name: str | None=None,parent=None,
+        self,section_key: str,observation_plane_name: str | None=None,parent=None,
         *,embedded: bool=False,
     ) -> GeometryCalibrationDialog:
         section=str(section_key); key=self._key(section,embedded)
         names=self.service.observation_plane_names()
-        plane=str(plane_name or "").strip() or None
+        plane=str(observation_plane_name or "").strip() or None
         if plane is None and len(names)==1:
             plane=names[0]
         if plane is not None:

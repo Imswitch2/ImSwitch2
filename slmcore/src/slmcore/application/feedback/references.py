@@ -19,7 +19,7 @@ from ...core.cgh.feedback import (
     resolve_reference_correspondence,
 )
 from ...core.cgh.localization import LocalizationResult,localization_site_masks
-from ..position_reference_store import (
+from ...workspace.position_reference_store import (
     PositionReferenceLifetime,PositionReferenceRecord,PositionReferenceStore,
 )
 from .component import FeedbackComponent
@@ -84,7 +84,7 @@ class PositionReferenceContext:
     """UI-facing position-reference state for one feedback section."""
 
     selection: PositionReferenceSelection
-    plane_name: str | None
+    observation_plane_name: str | None
     references: tuple[PositionReferenceRecord,...]=()
     persistence_available: bool=False
     compatible: bool=True
@@ -105,7 +105,7 @@ class PositionReferenceResolutionMetadata(TypedDict,total=False):
     label: str
     geometry: dict[str,Any]
     name: str
-    plane_name: str
+    observation_plane_name: str
     created_at: str
     lifetime: str
     correspondence: dict[str,Any]
@@ -235,7 +235,7 @@ class PositionReferenceService(FeedbackComponent):
         create_reason = self._position_reference_create_reason(section)
         return PositionReferenceContext(
             selection=selection,
-            plane_name=plane,
+            observation_plane_name=plane,
             references=tuple(references),
             persistence_available=bool(
                 self._position_reference_store is not None
@@ -380,7 +380,7 @@ class PositionReferenceService(FeedbackComponent):
         matched,inferred,_resolved = localization_site_masks(localization)
         return PositionReference(
             name=name,
-            plane_name=plane,
+            observation_plane_name=plane,
             lattice_indices=localization.lattice_indices,
             positions_px=localization_positions_full_px(localization),
             image_shape=measurement.acquisition.image.shape,
@@ -584,7 +584,7 @@ class PositionReferenceService(FeedbackComponent):
             "mode":selection.mode.value,
             "label":reference.name,
             "name":reference.name,
-            "plane_name":reference.plane_name,
+            "observation_plane_name":reference.observation_plane_name,
             "created_at":reference.created_at,
             "lifetime":record.lifetime.value,
             "correspondence":correspondence.to_dict(),

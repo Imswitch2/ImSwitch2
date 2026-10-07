@@ -41,8 +41,6 @@ class CghAction(str,Enum):
     COMPUTE = "compute"
     RESTORE_CURRENT_TARGET = "restore_current_target"
     TARGET_PREVIEW = "target_preview"
-    METRICS = "metrics"
-    PROPAGATION = "propagation"
     CLEAR_CGH_SESSION = "clear_cgh_session"
     OPEN_MEASUREMENTS_CORRECTIONS = "open_measurements_corrections"
     FOV_MAPPING_APPLY = "fov_mapping_apply"
@@ -440,10 +438,7 @@ class CghGroupView(BaseGroupView):
         self.restore_target_button: QtWidgets.QPushButton | None = None
         self.auto_recompute_checkbox: QtWidgets.QCheckBox | None = None
         self.preview_button: QtWidgets.QPushButton | None = None
-        self.metrics_button: QtWidgets.QPushButton | None = None
-        self.propagation_button: QtWidgets.QPushButton | None = None
         self.clear_button: QtWidgets.QPushButton | None = None
-        self.propagation_pad_size: QtWidgets.QSpinBox | None = None
         self._action_widget: QtWidgets.QWidget | None = None
         self._action_host_layout: QtWidgets.QGridLayout | None = None
         self._computation_boxes: dict[str, QtWidgets.QGroupBox] = {}
@@ -991,19 +986,6 @@ class CghGroupView(BaseGroupView):
         # so it must not depend on a currently selected target.
         controls.open_button.setEnabled(not self._computing)
 
-    def _selected_target_summary_text(self) -> str:
-        data = self._target_presentation
-        presentation = data.get("target_presentation")
-        if presentation is None:
-            return ""
-        return format_target_summary(
-            presentation,
-            data.get("target_params") or {},
-            data.get("target_param_specs") or {},
-            unit_mode=self._unit_mode,
-            conversion_context=self._conversion_context(),
-        )
-
     @staticmethod
     def _feedback_status_tooltip(status: FeedbackStatus | None) -> str:
         """Return compact details while leaving full provenance to Inspect."""
@@ -1056,15 +1038,6 @@ class CghGroupView(BaseGroupView):
 
     def _request_compute(self,_checked: bool=False) -> None:
         self._emit_action(CghAction.COMPUTE)
-
-    def _request_propagation(self,_checked: bool=False) -> None:
-        pad_size = (
-            self.propagation_pad_size.value()
-            if self.propagation_pad_size is not None else 1024
-        )
-        self._emit_action(
-            CghAction.PROPAGATION,{"pad_size":int(pad_size)},
-        )
 
     def set_parameter(self,path: ParamPath,value: Any) -> bool:
         changed = super().set_parameter(path,value)
@@ -1191,15 +1164,8 @@ class CghGroupView(BaseGroupView):
                 and selected is not None
                 and not self._computing
             )
-        for button in (
-            self.metrics_button,self.propagation_button,self.clear_button,
-        ):
-            if button is not None:
-                button.setEnabled(has_result and not self._computing)
-        if self.propagation_pad_size is not None:
-            self.propagation_pad_size.setEnabled(
-                has_result and not self._computing
-            )
+        if self.clear_button is not None:
+            self.clear_button.setEnabled(has_result and not self._computing)
         self._refresh_feedback_controls()
         self._refresh_auto_recompute_availability()
 

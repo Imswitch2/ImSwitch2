@@ -1722,20 +1722,6 @@ class CGHSession:
             ),
         )
 
-    def _inspection_target_preview(
-        self,
-        target_state: TargetDefinitionState | None,
-        context: SectionContext | None,
-        intensities: np.ndarray,
-        *,
-        include_position: bool=True,
-    ) -> np.ndarray | None:
-        """Build one detached effective-target preview for session inspection."""
-        preview,_target_display = self._inspection_target_payload(
-            target_state,context,intensities,include_position=include_position,
-        )
-        return preview
-
     def _inspection_target_payload(
         self,
         target_state: TargetDefinitionState | None,

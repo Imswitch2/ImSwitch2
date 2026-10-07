@@ -40,9 +40,6 @@ from .application import (
     ObservationPlaneService,
     PositionReferenceContext,
     PositionReferenceSelection,
-    PositionReferenceLifetime,
-    PositionReferenceRecord,
-    PositionReferenceStore,
     PreparedConfigLoad,
     PreparedMappingSelection,
     PreparedSectionLayoutChange,
@@ -126,6 +123,9 @@ from .workspace import (
     MappingStore,
     ObservationPlaneDefinition,
     ObservationPlaneStore,
+    PositionReferenceLifetime,
+    PositionReferenceRecord,
+    PositionReferenceStore,
     SLMWorkspace,
 )
 

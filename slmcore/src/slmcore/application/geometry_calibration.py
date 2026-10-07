@@ -40,7 +40,7 @@ class GeometryCalibrationPayload(TypedDict):
 
 
 class GeometryCalibrationContext(TypedDict):
-    plane_name: str | None
+    observation_plane_name: str | None
     calibrated: bool
     calibration: GeometryOrientationCalibration | None
     grid_x: int
@@ -53,7 +53,7 @@ class GeometryCalibrationContext(TypedDict):
     computed: bool
     frame_active: bool
     any_frame_active: bool
-    active_frame_plane: str | None
+    active_frame_observation_plane: str | None
     measurement: ImageMeasurement | None
     localization: LocalizationResult | None
     localization_parameters: dict[str,Any]
@@ -110,15 +110,15 @@ class GeometryCalibrationService:
         if not self.session.editor_writes_allowed:
             raise RuntimeError("Geometry calibration is available only in editor mode. Reopen the SLM session with calibration editing enabled, then retry.")
 
-    def _require_plane(self,plane_name: str | None) -> str:
-        plane=str(plane_name or "").strip()
+    def _require_plane(self,observation_plane_name: str | None) -> str:
+        plane=str(observation_plane_name or "").strip()
         if not plane:
             raise RuntimeError("No observation plane is selected in the Calibration workspace. Select an observation plane on the left, then retry geometry calibration.")
         self.observation_planes.get(plane)
         return plane
 
-    def _key(self,section_key: str,plane_name: str | None) -> tuple[str,str]:
-        return str(section_key),self._require_plane(plane_name)
+    def _key(self,section_key: str,observation_plane_name: str | None) -> tuple[str,str]:
+        return str(section_key),self._require_plane(observation_plane_name)
 
     def _active_frame(self,section_key: str):
         section=str(section_key)
@@ -158,9 +158,9 @@ class GeometryCalibrationService:
         kx,ky=calibration.um_to_kxy(x,y)
         return float(k_to_reference_px(kx if axis=="x" else ky))
 
-    def context(self,section_key: str,plane_name: str | None) -> GeometryCalibrationContext:
+    def context(self,section_key: str,observation_plane_name: str | None) -> GeometryCalibrationContext:
         section=str(section_key)
-        plane=str(plane_name or "").strip() or None
+        plane=str(observation_plane_name or "").strip() or None
         if plane is None:
             gx,gy=5,4
             px,py=self._period_guess_px(section,gx,gy)
@@ -168,12 +168,12 @@ class GeometryCalibrationService:
             px_um=self._period_to_um(section,px,"x")
             py_um=self._period_to_um(section,py,"y")
             return {
-                "plane_name":None,"calibrated":False,"calibration":None,
+                "observation_plane_name":None,"calibrated":False,"calibration":None,
                 "grid_x":gx,"grid_y":gy,"period_x_px":px,"period_y_px":py,
                 "period_x_um":px_um,"period_y_um":py_um,
                 "metric_periods_available":px_um is not None and py_um is not None,
                 "computed":False,"frame_active":False,"any_frame_active":active is not None,
-                "active_frame_plane":None if active is None else active[0],
+                "active_frame_observation_plane":None if active is None else active[0],
                 "measurement":None,"localization":None,"localization_parameters":{},
                 "localization_context":{},"analysis":None,"analyze_enabled":False,
                 "save_enabled":False,"detector_name":None,
@@ -192,14 +192,14 @@ class GeometryCalibrationService:
         px_um=self._period_to_um(section,px,"x")
         py_um=self._period_to_um(section,py,"y")
         return {
-            "plane_name":plane,"calibrated":calibration is not None,"calibration":calibration,
+            "observation_plane_name":plane,"calibrated":calibration is not None,"calibration":calibration,
             "grid_x":int(workflow.grid_x),"grid_y":int(workflow.grid_y),
             "period_x_px":px,"period_y_px":py,
             "period_x_um":px_um,"period_y_um":py_um,
             "metric_periods_available":px_um is not None and py_um is not None,
             "computed":workflow.payload is not None,"frame_active":bool(workflow.frame_active),
             "any_frame_active":active is not None,
-            "active_frame_plane":None if active is None else active[0],
+            "active_frame_observation_plane":None if active is None else active[0],
             "measurement":workflow.measurement,"localization":workflow.localization,
             "localization_parameters":dict(workflow.localization_parameters or {}),
             "localization_context":{} if workflow.payload is None else dict(workflow.payload.get("localization_context") or {}),
@@ -218,8 +218,8 @@ class GeometryCalibrationService:
         except Exception:
             return ()
 
-    def preferred_source(self,section_key: str,plane_name: str | None) -> str | None:
-        plane=self._require_plane(plane_name)
+    def preferred_source(self,section_key: str,observation_plane_name: str | None) -> str | None:
+        plane=self._require_plane(observation_plane_name)
         sources=self.available_sources(section_key)
         preferred=self.observation_planes.get(plane).preferred_detector
         if preferred in sources:
@@ -233,10 +233,10 @@ class GeometryCalibrationService:
         return value if value in sources else (sources[0] if sources else None)
 
     def compute_target(
-        self,section_key: str,plane_name: str,*,grid_x: int,grid_y: int,
+        self,section_key: str,observation_plane_name: str,*,grid_x: int,grid_y: int,
         period_x_px: float,period_y_px: float,source: str | None=None,on_complete=None,
     ) -> bool:
-        self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
+        self._require_editor_mode(); section,plane=self._key(section_key,observation_plane_name)
         workflow=self._workflows.setdefault((section,plane),_GeometryCalibrationWorkflow())
         pending=(int(grid_x),int(grid_y),float(period_x_px),float(period_y_px),str(source or "").strip() or None)
         def finished(success,error,payload):
@@ -259,8 +259,8 @@ class GeometryCalibrationService:
             period_y_px=float(period_y_px),on_finished=finished,
         )
 
-    def acquire(self,section_key: str,plane_name: str,source: str,*,on_complete=None) -> None:
-        self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
+    def acquire(self,section_key: str,observation_plane_name: str,source: str,*,on_complete=None) -> None:
+        self._require_editor_mode(); section,plane=self._key(section_key,observation_plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.payload is None:
             raise RuntimeError("No geometry target has been computed. Click Compute target before acquiring an image.")
@@ -293,16 +293,16 @@ class GeometryCalibrationService:
         if request.active:
             self._requests[section]=request
 
-    def set_measurement(self,section_key: str,plane_name: str,measurement: ImageMeasurement) -> None:
-        self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
+    def set_measurement(self,section_key: str,observation_plane_name: str,measurement: ImageMeasurement) -> None:
+        self._require_editor_mode(); section,plane=self._key(section_key,observation_plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.payload is None:
             raise RuntimeError("Compute the geometry target before loading its measurement image so the expected lattice is defined.")
         workflow.measurement=measurement; workflow.localization=None
         workflow.localization_parameters=None; workflow.analysis=None
 
-    def localize(self,section_key: str,plane_name: str,parameters: Mapping[str,Any] | None) -> LocalizationResult:
-        self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
+    def localize(self,section_key: str,observation_plane_name: str,parameters: Mapping[str,Any] | None) -> LocalizationResult:
+        self._require_editor_mode(); section,plane=self._key(section_key,observation_plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.payload is None or workflow.measurement is None:
             raise RuntimeError("Geometry localization needs both a computed target and an acquired/loaded image. Compute the target, acquire/load the image, then run localization.")
@@ -320,8 +320,8 @@ class GeometryCalibrationService:
         workflow.localization=candidate; workflow.localization_parameters=dict(parameters); workflow.analysis=None
         return candidate
 
-    def analyze(self,section_key: str,plane_name: str) -> GeometryOrientationAnalysis:
-        self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
+    def analyze(self,section_key: str,observation_plane_name: str) -> GeometryOrientationAnalysis:
+        self._require_editor_mode(); section,plane=self._key(section_key,observation_plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.payload is None or workflow.measurement is None or workflow.localization is None:
             raise RuntimeError("No localized geometry target is available. Acquire/load the target image and run localization before Analyze.")
@@ -332,13 +332,13 @@ class GeometryCalibrationService:
         workflow.analysis=analysis
         return analysis
 
-    def save(self,section_key: str,plane_name: str) -> GeometryOrientationCalibration:
-        self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
+    def save(self,section_key: str,observation_plane_name: str) -> GeometryOrientationCalibration:
+        self._require_editor_mode(); section,plane=self._key(section_key,observation_plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None or workflow.analysis is None or not workflow.analysis.accepted:
             raise RuntimeError("No accepted geometry analysis is ready to save. Run Analyze and resolve any ambiguous correspondence first.")
         calibration=GeometryOrientationCalibration(
-            slm_serial=self.session.runtime.identity.serial_number,section_key=section,plane_name=plane,
+            slm_serial=self.session.runtime.identity.serial_number,section_key=section,observation_plane_name=plane,
             orientation=workflow.analysis.orientation,detector_name=workflow.detector_name,
             grid_x=workflow.grid_x,grid_y=workflow.grid_y,
             period_x_px=float(workflow.period_x_px),period_y_px=float(workflow.period_y_px),
@@ -350,10 +350,10 @@ class GeometryCalibrationService:
         return calibration
 
     def save_manual(
-        self,section_key: str,plane_name: str,orientation: FeedbackOrientation | str,
+        self,section_key: str,observation_plane_name: str,orientation: FeedbackOrientation | str,
     ) -> GeometryOrientationCalibration:
         """Persist an explicit manual section × observation-plane geometry."""
-        self._require_editor_mode(); section,plane=self._key(section_key,plane_name)
+        self._require_editor_mode(); section,plane=self._key(section_key,observation_plane_name)
         workflow=self._workflows.get((section,plane))
         if workflow is None:
             gx,gy=5,4
@@ -364,7 +364,7 @@ class GeometryCalibrationService:
             self._workflows[(section,plane)]=workflow
         calibration=GeometryOrientationCalibration(
             slm_serial=self.session.runtime.identity.serial_number,
-            section_key=section,plane_name=plane,
+            section_key=section,observation_plane_name=plane,
             orientation=FeedbackOrientation.normalize(orientation),
             detector_name=workflow.detector_name,
             grid_x=int(workflow.grid_x),grid_y=int(workflow.grid_y),
@@ -392,13 +392,13 @@ class GeometryCalibrationService:
             raise RuntimeError("Could not restore the current experiment CGH.")
         workflow.frame_active=False
 
-    def discard(self,section_key: str,plane_name: str | None=None) -> None:
+    def discard(self,section_key: str,observation_plane_name: str | None=None) -> None:
         section=str(section_key)
-        if plane_name is None:
+        if observation_plane_name is None:
             for key in [key for key in self._workflows if key[0]==section]:
                 self._workflows.pop(key,None)
         else:
-            self._workflows.pop((section,self._require_plane(plane_name)),None)
+            self._workflows.pop((section,self._require_plane(observation_plane_name)),None)
 
     def cancel_all(self) -> None:
         for request in tuple(self._requests.values()):

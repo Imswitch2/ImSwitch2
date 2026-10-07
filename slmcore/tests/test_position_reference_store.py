@@ -11,7 +11,7 @@ from slmcore import (
 def _reference(name="aligned OFF",plane="sample"):
     return PositionReference(
         name=name,
-        plane_name=plane,
+        observation_plane_name=plane,
         lattice_indices=np.array([[0,1,0,1],[0,0,1,1]],dtype=np.int64),
         positions_px=np.array(
             [[10.0,20.0,10.0,20.0],[10.0,10.0,20.0,20.0]],
@@ -67,7 +67,7 @@ def test_overwrite_preserves_existing_lifetime(tmp_path):
     store.persist("sample",original.name)
     updated = PositionReference(
         name=original.name,
-        plane_name=original.plane_name,
+        observation_plane_name=original.observation_plane_name,
         lattice_indices=original.lattice_indices,
         positions_px=np.asarray(original.positions_px)+3.0,
         image_shape=original.image_shape,
@@ -112,5 +112,5 @@ def test_reference_identity_is_plane_scoped_not_section_scoped(tmp_path):
     # PositionReferenceStore has no section dimension: the same plane-scoped
     # reference is intentionally available to workflows from different sections.
     assert store.exists("sample", "shared in sample")
-    assert store.get("sample", "shared in sample").plane_name == "sample"
+    assert store.get("sample", "shared in sample").observation_plane_name == "sample"
     assert not store.exists("fourier", "shared in sample")

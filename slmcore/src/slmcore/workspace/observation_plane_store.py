@@ -90,8 +90,8 @@ class ObservationPlaneStore:
         self._commit(updated)
         return value
 
-    def update(self, plane_name: str, **changes) -> ObservationPlaneDefinition:
-        current = self.get(plane_name)
+    def update(self, observation_plane_name: str, **changes) -> ObservationPlaneDefinition:
+        current = self.get(observation_plane_name)
         if "name" in changes and str(changes["name"]).strip() != current.name:
             raise ValueError("Renaming observation planes is not supported")
         changes.pop("name", None)

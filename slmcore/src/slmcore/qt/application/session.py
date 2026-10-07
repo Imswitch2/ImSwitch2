@@ -13,7 +13,6 @@ from ...application.configuration import (
 )
 from ...application.control_mode import SLMControlMode
 from ...core.config.loading import SLMConfigLoadReport
-from ...core.cgh.propagation import simulate_propagation_fft
 from ...core.cgh.execution.status import CGHResultState
 from ...core.cgh.feedback.model import base_cgh_recompute_would_discard_feedback
 from ...core.engine.runtime import SLMRuntime
@@ -658,42 +657,6 @@ class SLMQtSession(QtCore.QObject):
         except Exception as error:
             self._emit_exception("CGH target preview failed",error)
 
-    def show_cgh_metrics(self,section_key: str) -> None:
-        try:
-            result = self.runtime.get_section_cgh_result_copy(section_key)
-            if result is None:
-                self.sigWarning.emit(
-                    "CGH performance","No CGH result is available.",
-                )
-                return
-            if not self.presenter.plot_metrics(section_key,result.metrics):
-                self.sigWarning.emit(
-                    "CGH performance",
-                    "No CGH iteration metrics are available.",
-                )
-        except Exception as error:
-            self._emit_exception("CGH performance plot failed",error)
-
-    def show_cgh_propagation(
-        self,section_key: str,*,pad_size: Any=1024,
-    ) -> None:
-        try:
-            pad_size = int(pad_size)
-            if pad_size <= 0:
-                raise ValueError("CGH propagation pad size must be > 0")
-            result = self.runtime.get_section_cgh_result_copy(section_key)
-            if result is None:
-                self.sigWarning.emit(
-                    "CGH propagation","No CGH result is available.",
-                )
-                return
-            intensity = simulate_propagation_fft(
-                result.pattern,padding=True,pad_size=pad_size,
-            )
-            self.presenter.plot_propagation(section_key,intensity)
-        except Exception as error:
-            self._emit_exception("CGH propagation failed",error)
-
     @QtCore.Slot(str,str,object)
     def _on_cgh_action_requested(
         self,section_key: str,action: str,options: Mapping[str,Any],
@@ -717,12 +680,6 @@ class SLMQtSession(QtCore.QObject):
             self.restore_current_cgh_target(section_key)
         elif cgh_action is CghAction.TARGET_PREVIEW:
             self.create_target_preview(section_key)
-        elif cgh_action is CghAction.METRICS:
-            self.show_cgh_metrics(section_key)
-        elif cgh_action is CghAction.PROPAGATION:
-            self.show_cgh_propagation(
-                section_key,pad_size=values.get("pad_size",1024),
-            )
         elif cgh_action is CghAction.CLEAR_CGH_SESSION:
             self.clear_cgh_session(section_key)
         elif cgh_action is CghAction.OPEN_MEASUREMENTS_CORRECTIONS:

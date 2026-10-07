@@ -193,7 +193,7 @@ def test_feedback_orientation_is_transient_until_explicitly_saved_and_scoped_by_
     assert saved == []
 
     context = session.feedback.feedback_orientation_context("sec_0")
-    assert context.plane_name is None
+    assert context.observation_plane_name is None
     assert context.save_needed
     session.feedback.save_feedback_orientation("sec_0")
     assert saved[-1].feedback_orientations["sec_0"].default == "flip_vertical"
@@ -203,8 +203,8 @@ def test_feedback_orientation_is_transient_until_explicitly_saved_and_scoped_by_
     session.feedback.refresh_feedback_orientation_contexts()
     assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
     context = session.feedback.feedback_orientation_context("sec_0")
-    assert context.plane_name == "sample"
-    assert context.plane_override
+    assert context.observation_plane_name == "sample"
+    assert context.observation_plane_override
     assert not context.save_needed
 
     session.feedback.set_feedback_orientation("sec_0","rotate_180")

@@ -22,8 +22,8 @@ class ObservationPlaneService:
     def add(self, definition: ObservationPlaneDefinition) -> ObservationPlaneDefinition:
         return self._require_store().add(definition)
 
-    def update(self, plane_name: str, **changes) -> ObservationPlaneDefinition:
-        return self._require_store().update(plane_name, **changes)
+    def update(self, observation_plane_name: str, **changes) -> ObservationPlaneDefinition:
+        return self._require_store().update(observation_plane_name, **changes)
 
     def delete(self, name: str) -> ObservationPlaneDefinition:
         return self._require_store().delete(name)

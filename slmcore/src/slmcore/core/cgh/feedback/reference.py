@@ -59,11 +59,11 @@ class PositionReference:
 
     ``positions_px`` always uses full detector-image coordinates.  The source
     SLM/config are provenance only; references are intentionally workspace-wide
-    and are keyed semantically by measurement plane.
+    and are keyed semantically by observation plane.
     """
 
     name: str
-    plane_name: str
+    observation_plane_name: str
     lattice_indices: np.ndarray
     positions_px: np.ndarray
     image_shape: tuple[int,int]
@@ -73,11 +73,11 @@ class PositionReference:
 
     def __post_init__(self) -> None:
         name = str(self.name or "").strip()
-        plane = str(self.plane_name or "").strip()
+        observation_plane = str(self.observation_plane_name or "").strip()
         if not name:
             raise ValueError("Position-reference name is required")
-        if not plane:
-            raise ValueError("Position-reference plane is required")
+        if not observation_plane:
+            raise ValueError("Position-reference observation plane is required")
         indices = _freeze_array(self.lattice_indices,"lattice_indices")
         positions = _freeze_array(
             self.positions_px,"positions_px",dtype=np.float64,
@@ -95,7 +95,7 @@ class PositionReference:
             else str(self.detector_name).strip()
         )
         object.__setattr__(self,"name",name)
-        object.__setattr__(self,"plane_name",plane)
+        object.__setattr__(self,"observation_plane_name",observation_plane)
         object.__setattr__(self,"lattice_indices",indices)
         object.__setattr__(self,"positions_px",positions)
         object.__setattr__(self,"image_shape",shape)
@@ -108,7 +108,7 @@ class PositionReference:
     def to_dict(self) -> dict[str,Any]:
         return {
             "name":self.name,
-            "plane_name":self.plane_name,
+            "observation_plane_name":self.observation_plane_name,
             "lattice_indices":self.lattice_indices.tolist(),
             "positions_px":self.positions_px.tolist(),
             "image_shape":list(self.image_shape),
@@ -123,7 +123,7 @@ class PositionReference:
             raise TypeError("Position-reference data must be a mapping")
         return cls(
             name=data.get("name",""),
-            plane_name=data.get("plane_name",""),
+            observation_plane_name=data.get("observation_plane_name",""),
             lattice_indices=np.asarray(data["lattice_indices"]),
             positions_px=np.asarray(data["positions_px"],dtype=np.float64),
             image_shape=tuple(data["image_shape"]),

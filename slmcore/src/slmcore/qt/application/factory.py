@@ -8,7 +8,7 @@ from qtpy import QtWidgets
 
 from ...application.configuration import SLMConfigurationService,StartupRuntime
 from ...application.runtime_factory import SLMRuntimeFactory
-from ...application.position_reference_store import PositionReferenceStore
+from ...workspace.position_reference_store import PositionReferenceStore
 from ...application.session import SLMSession
 from ...core.cgh.execution.executor import CGHExecutor
 from ...core.engine.registry import DEFAULT_REGISTRIES,SLMRegistries

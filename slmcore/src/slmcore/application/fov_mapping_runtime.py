@@ -102,10 +102,6 @@ class FOVMappingRuntimeService:
     def _active_mapping(self,section_key: str) -> str | None:
         return self._active_mapping_provider(section_key)
 
-    def _fov_mapping_key(self,section_key: str) -> tuple[str,str | None]:
-        section = str(section_key)
-        return section,self._active_mapping(section)
-
     def _saved_fov_mapping_correction_name(
         self,section_key: str,mapping_name: str | None,
     ) -> str | None:
