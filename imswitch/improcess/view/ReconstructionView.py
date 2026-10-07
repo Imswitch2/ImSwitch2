@@ -552,6 +552,17 @@ class ReconstructionView(QtWidgets.QFrame):
             self.imgLayer.name = 'Reconstruction'
             self.imgLayer.metadata.pop("source_result", None)
 
+        # A result whose layers are 3D geometry (e.g. points on the Poincaré
+        # sphere) asks for the 3D canvas; the next result that does not ask
+        # gets the 2D canvas back only if this view switched it.
+        wants3d = any((spec.metadata or {}).get("ndisplay") == 3 for spec in specs)
+        try:
+            if wants3d and self.napariViewer.dims.ndisplay != 3:
+                self.napariViewer.dims.ndisplay = 3
+                self._switchedTo3d = True
+        except Exception as exc:
+            self._logger.debug("setDisplayLayers: could not set ndisplay: %s", exc)
+
         first = specs[0]
         try:
             self.napariViewer.dims.axis_labels = tuple(first.axis_labels)
@@ -755,6 +766,13 @@ class ReconstructionView(QtWidgets.QFrame):
             except Exception:
                 pass
         self._displayLayers = []
+        # Leaving a 3D result: give the 2D canvas back if this view took it.
+        if self.__dict__.get("_switchedTo3d", False):
+            try:
+                self.napariViewer.dims.ndisplay = 2
+            except Exception as exc:
+                self._logger.debug("could not restore 2D display: %s", exc)
+            self._switchedTo3d = False
 
     def clearImage(self):
         self._clearDisplayLayers()

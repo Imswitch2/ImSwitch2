@@ -25,13 +25,18 @@ def test_non_tiling_reconstructors_keep_image_only_inline_defaults():
     a table that opens straight to a result and never reaches a reconstructor —
     and that must not weaken this contract. The time-lapse reconstructor runs
     on the worker too (it opens every file of a lapse for its header), but
-    takes lapses, never manifests.
+    takes lapses, never manifests. The polarisation map takes measurement runs
+    only — a table of instrument samples, never an image.
     """
     worker_plugins = {"tiling-mosaic", "time-lapse"}
+    image_less = {"polarisation-map"}
     for plugin_id, plugin_class in _AVAILABLE_RECONSTRUCTOR_CLASSES.items():
         if plugin_id == "tiling-mosaic":
             continue
-        assert "image" in plugin_class.accepted_source_kinds
+        if plugin_id in image_less:
+            assert "image" not in plugin_class.accepted_source_kinds
+        else:
+            assert "image" in plugin_class.accepted_source_kinds
         assert "tiling-manifest" not in plugin_class.accepted_source_kinds
         expected = "worker" if plugin_id in worker_plugins else "inline"
         assert plugin_class.execution_policy == expected

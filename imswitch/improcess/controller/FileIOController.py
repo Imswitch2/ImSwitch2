@@ -14,11 +14,13 @@ from imswitch.improcess.analysis.smlm_import import (
     read_localizations,
     sniff_localization_format,
 )
+from imswitch.imcommon.model.measurement_run import MeasurementRunFile, is_measurement_run_file
 from imswitch.improcess.model import result_io
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
     LOCALIZATIONS_SPEC,
     LOCATOR_DIRECTORY,
+    MEASUREMENT_RUN_SOURCE_KIND,
     TILING_MANIFEST_SPEC,
     file_dialog_filter,
     preferred_source_spec,
@@ -260,6 +262,11 @@ class FileIOController(ImProcessWidgetController):
         elif localizationFormat is not None:
             return self._loadLocalizationsAsResult(dataPath, localizationFormat)
 
+        # A measurement run is HDF5 by name but not an image: recognised by its
+        # schema marker and opened as a metadata source for run reconstructors.
+        if is_measurement_run_file(dataPath):
+            return self._loadMeasurementRunAsCurrent(dataPath)
+
         try:
             source = resolve_dataset_source(dataPath, allowed_specs=self._activeSourceSpecs())
             dataPath = str(source.path)
@@ -398,6 +405,24 @@ class FileIOController(ImProcessWidgetController):
             f"({localizationFormat})"
         )
         return 'current'
+
+    def _loadMeasurementRunAsCurrent(self, dataPath) -> str:
+        """Open a measurement run file as the current, non-image source."""
+        try:
+            run = MeasurementRunFile.load(dataPath)
+            data_obj = DataObj.fromMetadataSource(
+                os.path.basename(dataPath), Path(dataPath),
+                MEASUREMENT_RUN_SOURCE_KIND, run,
+            )
+            data_obj.sourceFingerprint = run.run_id
+        except Exception as exc:
+            self._logger.error(f"Could not open the measurement run {dataPath}: {exc}")
+            return 'empty'
+        self._logger.info(
+            f"Opened measurement run {run.run_id}: {run.n_points} points, "
+            f"acquisition {run.acquisition.value}"
+        )
+        return _route_as_current(self, data_obj)
 
     def _loadMetadataAsCurrent(self, source) -> str:
         """Inspect and route a non-array source without asking DataObj to open it."""

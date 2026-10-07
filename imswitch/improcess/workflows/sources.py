@@ -120,6 +120,21 @@ def open_source(spec: SourceSpec, *, source_root=None):
     except Exception as exc:
         raise SourceError(f"{path}: {exc}") from exc
 
+    from imswitch.imcommon.model.measurement_run import (
+        MeasurementRunFile,
+        is_measurement_run_file,
+    )
+    from imswitch.improcess.model.dataset_sources import MEASUREMENT_RUN_SOURCE_KIND
+
+    if is_measurement_run_file(resolved.path):
+        run = MeasurementRunFile.load(resolved.path)
+        data_obj = DataObj.fromMetadataSource(
+            resolved.path.name, resolved.path, MEASUREMENT_RUN_SOURCE_KIND, run,
+            originalPath=resolved.original_path,
+        )
+        data_obj.sourceFingerprint = run.run_id
+        return data_obj
+
     if resolved.format_id == TILING_MANIFEST_SPEC.id or spec.source_kind == "tiling-manifest":
         from imswitch.imcommon.algorithms.tile_mosaic import inspect_dataset, manifest_fingerprint
 

@@ -335,3 +335,37 @@ def test_timed_out_window_keeps_its_partial_samples(tmp_path):
     assert window['cause'] == b'timeout'
     assert 1 <= window['accepted'] < 3
     assert len(run.point_samples('pax1', 0)) == window['accepted']
+
+
+def test_end_to_end_mock_run_through_the_improcess_reconstructor(tmp_path):
+    """ImControl acquires, the run file is written, ImProcess analyses it, and
+    every target's distance agrees with the waveplate model's ground truth."""
+    from imswitch.imcommon.algorithms.polarisation import angular_distance_deg
+    from imswitch.improcess.reconstructors.polarisation_map import (
+        PolarisationMapReconstructor,
+        analyse_run,
+    )
+    from imswitch.imcontrol.model.measurement.demo import DEMO_MODEL, run_demo
+
+    report = run_demo(tmp_path, hwp_step_deg=15.0, qwp_step_deg=30.0, samples=2,
+                      noise_deg=0.0)
+    assert report.acquisition is AcquisitionOutcome.COMPLETE
+    assert report.points_committed == 36
+    run = MeasurementRunFile.load(report.run_file)
+    params = PolarisationMapReconstructor.default_params()
+    result = analyse_run(run, params)
+    assert result.metadata['summary']['committed'] == 36
+
+    hwp, _ = run.control_values('hwp')
+    qwp, _ = run.control_values('qwp')
+    truth = np.array([DEMO_MODEL.output(q, h)[1:] for q, h in zip(qwp, hwp)])
+    truth /= np.linalg.norm(truth, axis=1)[:, None]
+    for i, target in enumerate(result.coordinates):
+        expected = float(angular_distance_deg(truth, target[None, :]).min())
+        assert result.properties['distance (°)'][i] == pytest.approx(expected, abs=0.5)
+        status = result.properties['status'][i]
+        if expected <= params['threshold_deg'] - 0.5:
+            assert status == 'pass'
+        elif expected >= params['threshold_deg'] + 0.5:
+            assert status == 'failed'
+    assert result.export_document()['run_id'] == report.run_id
