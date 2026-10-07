@@ -1,3 +1,4 @@
+import pytest
 from contextlib import contextmanager
 
 from imswitch.imcontrol.model.SetupInfo import DetectorInfo
@@ -360,3 +361,77 @@ def test_hamamatsu_single_camera_reset_refuses_multiple_hamamatsu_managers(monke
         manager._resetStaleDcamSessionSingleCamera()
 
     assert manager._dcamSessionStale is True
+
+
+class _TwoCameraHost(_LifecycleHost):
+    def getAllDeviceNames(self, condition=None):
+        return ['Orca', 'Orca2']
+
+
+def test_multi_camera_stale_session_still_tries_to_open(monkeypatch):
+    """Review: with two Hamamatsu cameras the refused reset blocked every later
+    reconnect for good. It now skips the reset, tries to open, clears the flag
+    on success -- and advises a restart only when that fails."""
+    startup = _FakeCamera('startup')
+    replacement = _FakeCamera('replacement')
+    monkeypatch.setattr(HamamatsuManager, '_getCameraObj',
+                        lambda manager, _camera_id: startup)
+    manager = HamamatsuManager(_info(), 'Orca')
+    manager._bindDetectorLifecycleHost(_TwoCameraHost(), 'Orca')
+    manager._detectorsManagerForLifecycle = _TwoCameraHost()
+    manager._dcamSessionStale = True
+
+    monkeypatch.setattr(manager, '_makeRealCamera',
+                        lambda: (_ for _ in ()).throw(RuntimeError('camera busy')))
+    failed = manager.getDeviceLifecycle().reconnect()
+    assert failed.success is False
+    assert 'restart ImSwitch' in failed.summary
+
+    monkeypatch.setattr(manager, '_makeRealCamera', lambda: replacement)
+    result = manager.getDeviceLifecycle().reconnect()
+    assert result.success is True
+    assert manager._camera is replacement
+    assert manager._dcamSessionStale is False
+
+
+def test_failed_close_of_the_dead_camera_does_not_end_the_attempt(monkeypatch):
+    startup = _FakeCamera('startup')
+    replacement = _FakeCamera('replacement')
+
+    def dead_shutdown():
+        raise RuntimeError('dcam error 0x80000F07: No camera connection!')
+
+    startup.shutdown = dead_shutdown
+    monkeypatch.setattr(HamamatsuManager, '_getCameraObj',
+                        lambda manager, _camera_id: startup)
+    manager = HamamatsuManager(_info(), 'Orca')
+    host = _LifecycleHost()
+    manager._bindDetectorLifecycleHost(host, 'Orca')
+    resets = []
+    monkeypatch.setattr(manager, '_resetStaleDcamSessionSingleCamera',
+                        lambda: resets.append(True) or 1)
+    monkeypatch.setattr(manager, '_makeRealCamera', lambda: replacement)
+
+    result = manager.getDeviceLifecycle().reconnect()
+    assert result.success is True                 # one press, not three
+    assert resets == [True]                       # the NOCONNECTION on close was seen
+    assert manager._camera is replacement
+
+
+def test_settings_from_another_thread_are_refused_while_replacing(monkeypatch):
+    import threading
+    from imswitch.imcontrol.model.managers.detectors.HamamatsuManager import (
+        HamamatsuReconnectingError,
+    )
+
+    startup = _FakeCamera('startup')
+    monkeypatch.setattr(HamamatsuManager, '_getCameraObj',
+                        lambda manager, _camera_id: startup)
+    manager = HamamatsuManager(_info(), 'Orca')
+    manager._replacingThread = threading.get_ident() + 1    # someone else replaces
+    with pytest.raises(HamamatsuReconnectingError):
+        manager.setParameter('Set exposure time', 0.02)
+    with pytest.raises(HamamatsuReconnectingError):
+        manager.crop(0, 0, 100, 100)
+    manager._replacingThread = None
+    manager.setParameter('Set exposure time', 0.02)

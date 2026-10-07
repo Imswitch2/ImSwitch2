@@ -21,6 +21,16 @@ class StandManager(ABC):
             )
             self._subManager = manager(deviceInfo, **lowLevelManagers)
             self.mocker = is_mock
+            if is_mock:
+                # The supervisor reports the sub-manager, not this wrapper:
+                # mark the fallback there, or it looks like a configured mock.
+                reason = (f"Stand manager '{deviceInfo.managerName}' unavailable; "
+                          f"mock manager loaded")
+                setError = getattr(self._subManager, '_setConnectionError', None)
+                if callable(setError):
+                    setError(reason, mock_active=True)
+                else:
+                    self._subManager._mock_fallback = True
 
     @classmethod
     def _resolveStandManagerClass(cls, currentPackage, managerName, logger):

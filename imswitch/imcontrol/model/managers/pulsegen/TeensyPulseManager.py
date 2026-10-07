@@ -100,6 +100,8 @@ class TeensyPulseManager(PulseGeneratorManager):
                 f'Failed to open Teensy on {info.port}: {e}; '
                 f'falling back to MockTeensyPulseDriver'
             )
+            # Distinguishes this fallback from a configured (empty-port) mock.
+            self._mock_fallback = True
             return MockTeensyPulseDriver(
                 n_channels=info.mockNChannels,
                 min_pulse_us=info.mockMinPulseUs,

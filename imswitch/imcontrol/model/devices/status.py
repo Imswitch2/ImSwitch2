@@ -76,6 +76,22 @@ class DeviceManagerStatusMixin:
         self._deviceStatusSummary = summary
         self._deviceStatusDetails = details
         self._deviceFailureKind = failure_kind
+        # Published last, in one assignment, for readers on other threads.
+        # Read from the instance dict: Qt managers may not have run
+        # QObject.__init__ yet, and attribute lookup then raises.
+        self._deviceStatusSnapshot = (
+            self._deviceConnectionState,
+            self.__dict__.get('_deviceRuntimeMode', DeviceRuntimeMode.REAL),
+            summary, details, failure_kind,
+        )
+
+    def statusSnapshot(self):
+        """(connection, mode, summary, details, failure_kind), consistent."""
+        snapshot = self.__dict__.get("_deviceStatusSnapshot")
+        if snapshot is not None:
+            return snapshot
+        return (self.connectionState, self.runtimeMode, self.connectionStatusSummary,
+                self.connectionStatusDetails, self.connectionFailureKind)
 
     def _setConnected(self, summary: str | None = None) -> None:
         self._deviceRuntimeMode = DeviceRuntimeMode.REAL

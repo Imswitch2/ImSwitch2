@@ -220,8 +220,15 @@ def test_runtime_communication_failure_switches_to_stateful_mock(fake_pi):
     assert manager.position == {'X': 10.0, 'Y': 20.0}
     assert manager.isAvailable is True
 
-    manager.move(5.0, 'X')
-    assert manager.position['X'] == pytest.approx(15.0)
+    # Moves on the fallback are refused (as main raised on every move after a
+    # communication loss): a scan must not record positions the real stage
+    # never reached.
+    from imswitch.imcontrol.model.managers.positioners.PIStageManager import (
+        PIStageUnavailableError,
+    )
+    with pytest.raises(PIStageUnavailableError, match='reconnected in Hardware status'):
+        manager.move(5.0, 'X')
+    assert manager.position['X'] == pytest.approx(10.0)
 
 
 def test_pi_controller_error_does_not_trigger_mock_fallback(fake_pi):
@@ -337,3 +344,33 @@ def test_failed_reconnect_keeps_mock_at_last_known_position(fake_pi, monkeypatch
     assert manager.connectionState is DeviceConnectionState.ERROR
     assert manager.position == {'X': 123.0, 'Y': 456.0}
     assert manager.isAvailable is True
+
+
+def test_failed_reconnect_refuses_moves_until_a_real_backend_returns(fake_pi, monkeypatch):
+    from imswitch.imcontrol.model.managers.positioners.PIStageManager import (
+        PIStageUnavailableError,
+    )
+
+    manager = PIStageManager(_info(), 'PI')
+    monkeypatch.setattr(
+        pi_module.gcs2pitools, 'startup',
+        lambda device: (_ for _ in ()).throw(OSError('reconnect USB failure')))
+    assert manager.getDeviceLifecycle().reconnect().success is False
+    with pytest.raises(PIStageUnavailableError, match='reconnect failed'):
+        manager.setPosition(1.0, 'X')
+
+    monkeypatch.setattr(pi_module.gcs2pitools, 'startup', lambda device: None)
+    assert manager.getDeviceLifecycle().reconnect().success is True
+    manager.setPosition(1.0, 'X')                       # real backend again
+    assert manager.position['X'] == pytest.approx(1000.0)
+
+
+def test_moves_send_joystick_off_only_when_it_is_on(fake_pi):
+    manager = PIStageManager(_info(), 'PI')
+    manager.joystickStatus = False
+    fake_pi.events.clear()
+    manager.setPosition(1.0, 'X')
+    assert not [e for e in fake_pi.events if e[0] == 'jon']
+    manager.joystickStatus = True
+    manager.setPosition(2.0, 'X')
+    assert [e for e in fake_pi.events if e[0] == 'jon']

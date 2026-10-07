@@ -202,3 +202,36 @@ def test_pi_failure_while_installing_the_replacement_reports_failure(fake_pi, mo
     assert 'USB lost' in result.details
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
     assert manager.connectionState is DeviceConnectionState.ERROR
+
+
+def test_settings_refresh_reconnected_detectors_on_the_ui_thread():
+    """Review: after a reconnect that changes the sensor, the Settings panel
+    kept the old limits and the next Apply cropped the new sensor back."""
+    from imswitch.imcontrol.controller.controllers.SettingsController import SettingsController
+    from imswitch.imcontrol.model.devices.graph import DeviceId
+
+    calls = []
+    detector = SimpleNamespace(name='Orca', shape=(2304, 2304))
+    controller = SettingsController.__new__(SettingsController)
+    controller.__dict__.update(
+        allParams={'Orca': object()},
+        _master=SimpleNamespace(detectorsManager=SimpleNamespace(
+            getCurrentDetectorName=lambda: 'Orca')),
+        _commChannel=SimpleNamespace(sigAdjustFrame=SimpleNamespace(
+            emit=lambda shape: calls.append(('adjust', shape)))),
+    )
+    controller._master.detectorsManager = type('DM', (), {
+        'getCurrentDetectorName': lambda self: 'Orca',
+        '__getitem__': lambda self, name: detector})()
+    controller.updateParamsFromDetector = lambda **kw: calls.append(
+        ('params', kw['detector'].name, kw['blockSignals']))
+    controller.updateSharedAttrs = lambda: calls.append(('shared',))
+    queued = []
+    controller._invokeOnControllerThreadIfNeeded = queued.append
+
+    result = SimpleNamespace(affected_device_ids=(
+        DeviceId('laser', '488'), DeviceId('detector', 'Orca'), DeviceId('detector', 'Unknown')))
+    controller._deviceLifecycleChanged(result)
+    assert calls == [] and len(queued) == 1        # nothing on the worker thread
+    queued[0]()
+    assert calls == [('params', 'Orca', True), ('adjust', (2304, 2304)), ('shared',)]

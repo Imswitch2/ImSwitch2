@@ -74,6 +74,8 @@ class KinesisRotatorManager(RotatorManager):
             self.__logger.warning('Loading mock Kinesis motor for headless operation')
             from imswitch.imcontrol.model.interfaces.kinesisrotator import MockKinesisMotor
             motor = MockKinesisMotor(snr, units_per_dg)
+            # A fallback, not a configured mock: status shows it as an error.
+            self._mock_fallback = True
         return motor
 
     def finalize(self) -> None:

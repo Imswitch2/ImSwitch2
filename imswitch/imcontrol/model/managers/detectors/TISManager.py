@@ -354,6 +354,8 @@ class TISManager(DetectorManager):
         }
         hpos, vpos = self.frameStart
         hsize, vsize = self.shape
+        oldFullShape = tuple(self.fullShape)
+        wasFullFrame = (hpos, vpos) == (0, 0) and (hsize, vsize) == oldFullShape
 
         old_camera = self._camera
         self._running = False
@@ -367,9 +369,25 @@ class TISManager(DetectorManager):
             camera = self._getTISObj(self._cameraId)
             self._applyCameraProperties(camera, self._startupCameraProperties)
             self._applyCameraProperties(camera, runtime_properties)
+            # The replacement may be a different sensor (or mock <-> real):
+            # its size, read after the startup geometry, is the new fullShape.
+            newFullShape = (int(camera.getPropertyValue('image_width')),
+                            int(camera.getPropertyValue('image_height')))
+            if wasFullFrame:
+                hpos, vpos, hsize, vsize = 0, 0, newFullShape[0], newFullShape[1]
+            else:
+                # Keep the old ROI where it fits; clamp it onto the new sensor.
+                hpos = min(hpos, max(0, newFullShape[0] - 1))
+                vpos = min(vpos, max(0, newFullShape[1] - 1))
+                hsize = max(1, min(hsize, newFullShape[0] - hpos))
+                vsize = max(1, min(vsize, newFullShape[1] - vpos))
             camera.setROI(hpos, vpos, hsize, vsize)
+            self._setFullShape(newFullShape)
+            self._frameStart = (hpos, vpos)
+            self._shape = (hsize, vsize)
         except Exception:
             self._closeCameraBackend(camera)
+            self._setFullShape(oldFullShape)
             raise
         finally:
             self._adjustingParameters = False

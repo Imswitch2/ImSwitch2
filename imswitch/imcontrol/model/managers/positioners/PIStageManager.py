@@ -69,10 +69,19 @@ class _PIStageDeviceNotFoundError(RuntimeError):
     pass
 
 
+class PIStageUnavailableError(RuntimeError):
+    """The real PI stage is not connected; motion is refused until reconnect."""
+
+
 class _PIStageMockBackend:
     is_mock = True
 
-    def __init__(self, position_um=None, *, range_min=0.0, range_max=25.0):
+    def __init__(self, position_um=None, *, range_min=0.0, range_max=25.0,
+                 refuse_motion=None):
+        #: When set (communication lost, reconnecting, reconnect failed), moves
+        #: raise instead of moving a stage that is not there -- a scan must not
+        #: record positions the real stage never reached.
+        self.refuse_motion = refuse_motion
         position_um = position_um or {"X": 0.0, "Y": 0.0}
         self._position = {
             "X": float(position_um.get("X", 0.0)),
@@ -94,6 +103,8 @@ class _PIStageMockBackend:
         return dict(self._position)
 
     def set_position_mm(self, axis, position):
+        if self.refuse_motion:
+            raise PIStageUnavailableError(self.refuse_motion)
         self._position[axis] = float(position) * 1000
 
     def is_movement_finished(self, axis):
@@ -484,11 +495,12 @@ class PIStageManager(PositionerManager, SignalInterface):
     def getDeviceLifecycle(self):
         return self._lifecycle
 
-    def _mockFromCurrentState(self):
+    def _mockFromCurrentState(self, refuse_motion=None):
         return _PIStageMockBackend(
             self._position,
             range_min=self.rangeMin,
             range_max=self.rangeMax,
+            refuse_motion=refuse_motion,
         )
 
     def _setJoystickStatusCached(self, enabled):
@@ -578,7 +590,12 @@ class PIStageManager(PositionerManager, SignalInterface):
                 # half-replaced backend. Do not close the broken vendor object
                 # here: this code often runs on the GUI/live-poll thread, and
                 # vendor teardown must not introduce another blocking path.
-                self._backend = self._mockFromCurrentState()
+                self._backend = self._mockFromCurrentState(
+                    refuse_motion=(
+                        f"PI stage {self.name}: communication lost ({exc}); "
+                        f"moves are refused until it is reconnected in Hardware status"
+                    )
+                )
                 self._retiredBackends.append(backend)
                 self._stopButtonPolling()
                 self._setJoystickStatusCached(False)
@@ -593,7 +610,9 @@ class PIStageManager(PositionerManager, SignalInterface):
         """Expose a mock immediately and detach real backends for worker teardown."""
         with self._backendLock:
             old_backend = self._backend
-            self._backend = self._mockFromCurrentState()
+            self._backend = self._mockFromCurrentState(
+                refuse_motion=f"PI stage {self.name} is being reconnected"
+            )
             retired = list(self._retiredBackends)
             self._retiredBackends.clear()
             if not old_backend.is_mock and old_backend not in retired:
@@ -605,6 +624,11 @@ class PIStageManager(PositionerManager, SignalInterface):
 
     def _markReconnectFailure(self, exc):
         with self._backendLock:
+            if self._backend.is_mock:
+                self._backend.refuse_motion = (
+                    f"PI stage {self.name}: reconnect failed ({exc}); moves are "
+                    f"refused until it is reconnected in Hardware status"
+                )
             self._stopButtonPolling()
             self._setJoystickStatusCached(False)
             failure_kind = (
@@ -674,8 +698,11 @@ class PIStageManager(PositionerManager, SignalInterface):
         def operation(backend):
             dist = self._position[axis] / 1000 + value / 1000
             if self.rangeMax >= dist >= self.rangeMin:
-                backend.set_joystick_enabled(False)
-                self._setJoystickStatusCached(False)
+                if self.joystickStatus:
+                    # As on main: only switch the joystick off when it is on --
+                    # not two extra USB round-trips on every step.
+                    backend.set_joystick_enabled(False)
+                    self._setJoystickStatusCached(False)
                 backend.set_position_mm(axis, dist)
                 self._position[axis] = dist * 1000
             else:
@@ -687,8 +714,11 @@ class PIStageManager(PositionerManager, SignalInterface):
     def setPosition(self, position: float, axis: str):
         def operation(backend):
             if self.rangeMax >= position >= self.rangeMin:
-                backend.set_joystick_enabled(False)
-                self._setJoystickStatusCached(False)
+                if self.joystickStatus:
+                    # As on main: only switch the joystick off when it is on --
+                    # not two extra USB round-trips on every step.
+                    backend.set_joystick_enabled(False)
+                    self._setJoystickStatusCached(False)
                 backend.set_position_mm(axis, position)
                 self._position[axis] = position * 1000
             else:

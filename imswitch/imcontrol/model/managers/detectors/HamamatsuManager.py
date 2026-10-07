@@ -1,3 +1,4 @@
+import threading
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.devices import (
     DeviceId, DeviceLifecycleAction, DeviceLifecycleCapabilities,
@@ -93,14 +94,23 @@ class _HamamatsuLifecycle:
             success=False,
             summary=(
                 'Hamamatsu hardware reconnect failed; mock fallback active. '
-                'Try restarting the camera with USB plugged in.'
+                + (self._manager._reconnectAdvice
+                   or 'Try restarting the camera with USB plugged in.')
             ),
             details=(
                 f'{self._manager.connectionStatusDetails} '
-                f'{_HAMAMATSU_RECONNECT_HINT}'
+                + ('' if self._manager._reconnectAdvice else _HAMAMATSU_RECONNECT_HINT)
             ).strip(),
             affected_device_ids=(device_id,),
         )
+
+
+class DcamResetUnsafeError(RuntimeError):
+    """An automatic DCAM session reset is not safe in this configuration."""
+
+
+class HamamatsuReconnectingError(RuntimeError):
+    """The camera backend is being replaced; settings wait for it."""
 
 
 class HamamatsuManager(DetectorManager):
@@ -138,6 +148,10 @@ class HamamatsuManager(DetectorManager):
         # process-global session stale. A later explicit reconnect may rebuild
         # that session (currently only for a single Hamamatsu camera).
         self._dcamSessionStale = False
+        self._lastCloseError = None
+        self._reconnectAdvice = None
+        #: Thread replacing the backend; settings from other threads wait.
+        self._replacingThread = None
         self._detectorsManagerForLifecycle = None
         self._camera = self._getCameraObj(self._cameraId)
         self._binning = 1
@@ -284,6 +298,17 @@ class HamamatsuManager(DetectorManager):
         if detectorName == self.__name:
             self.mockTrigger(nFrames)
 
+
+    def _refuseWhileReplacing(self):
+        """Settings from the GUI while the backend is being replaced would hit
+        ``_camera = None`` or a half-configured camera: refuse them."""
+        replacing = self.__dict__.get('_replacingThread')
+        if replacing is not None and replacing != threading.get_ident():
+            raise HamamatsuReconnectingError(
+                f'Hamamatsu camera {self.__name} is being reconnected; try again '
+                f'when the reconnect has finished.'
+            )
+
     def crop(self, hpos, vpos, hsize, vsize):
         """Crop the camera readout and keep the manager in sync with DCAM.
 
@@ -293,6 +318,7 @@ class HamamatsuManager(DetectorManager):
         that mode: it must be enabled before writing a custom ROI.  Conversely,
         returning to the full chip explicitly disables subarray mode.
         """
+        self._refuseWhileReplacing()
 
         # DCAM's dcam_setgetpropertyvalue (called by CameraTIS/HamamatsuCamera's
         # setPropertyValue) sets AND reads back the value in one call, returning
@@ -429,6 +455,7 @@ class HamamatsuManager(DetectorManager):
             return None
 
     def setBinning(self, binning):
+        self._refuseWhileReplacing()
         super().setBinning(binning)
 
         binstring = f'{binning}x{binning}'
@@ -439,6 +466,7 @@ class HamamatsuManager(DetectorManager):
         )
 
     def setParameter(self, name, value):
+        self._refuseWhileReplacing()
         if name == 'Set exposure time':
             self._setExposure(value)
             self._updatePropertiesFromCamera()
@@ -543,6 +571,7 @@ class HamamatsuManager(DetectorManager):
             ... else:
             ...     print(f"Failed: {result['error']}")
         """
+        self._refuseWhileReplacing()
         try:
             # Log the change request
             self.__logger.info(f'Setting advanced property {propertyName} to {value}')
@@ -753,6 +782,7 @@ class HamamatsuManager(DetectorManager):
                 shutdown()
             return True
         except Exception as exc:
+            self._lastCloseError = exc
             self.__logger.warning(
                 f'Error while closing Hamamatsu camera '
                 f'{self._cameraModel(camera)}: {exc}'
@@ -773,12 +803,12 @@ class HamamatsuManager(DetectorManager):
         """Rebuild a stale process-global DCAM session for one camera only."""
         names = self._configuredHamamatsuManagerNames()
         if names is None:
-            raise RuntimeError(
+            raise DcamResetUnsafeError(
                 'Cannot verify single-camera DCAM reset safety: detector host '
                 'inventory is unavailable.'
             )
         if len(names) != 1 or names[0] != self.__name:
-            raise RuntimeError(
+            raise DcamResetUnsafeError(
                 'Automatic DCAM session reset is currently supported only when '
                 f'exactly one Hamamatsu camera is configured; found {names!r}.'
             )
@@ -871,6 +901,14 @@ class HamamatsuManager(DetectorManager):
             wasFullFrame=wasFullFrame,
         )
 
+        self._reconnectAdvice = None
+        self._replacingThread = threading.get_ident()
+        try:
+            return self._reconnectCameraBackendReplacing(replay)
+        finally:
+            self._replacingThread = None
+
+    def _reconnectCameraBackendReplacing(self, replay):
         oldCamera, self._camera = self._camera, None
 
         if self._configuredForMock:
@@ -882,11 +920,24 @@ class HamamatsuManager(DetectorManager):
 
         camera = None
         try:
+            self._lastCloseError = None
             if not self._closeCameraBackend(oldCamera):
-                raise RuntimeError('Could not close the previous Hamamatsu camera.')
+                # An unplugged camera often cannot be closed. That must not end
+                # this attempt; a NOCONNECTION there means the session is stale.
+                if self._isDcamNoConnectionError(self._lastCloseError):
+                    self._dcamSessionStale = True
 
             if self._dcamSessionStale:
-                self._resetStaleDcamSessionSingleCamera()
+                try:
+                    self._resetStaleDcamSessionSingleCamera()
+                except DcamResetUnsafeError as unsafe:
+                    # Still try to open: a plain dcam_open may work now.
+                    self.__logger.warning(f'{unsafe} Trying to open the camera without a reset.')
+                    self._reconnectAdvice = (
+                        'The DCAM session may be stale and cannot be reset automatically '
+                        'with several Hamamatsu cameras configured; restart ImSwitch '
+                        'if the camera does not come back.'
+                    )
 
             camera = self._makeRealCamera()
             self._configureReplacementCamera(camera, **replay)

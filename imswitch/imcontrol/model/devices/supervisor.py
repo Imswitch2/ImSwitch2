@@ -58,6 +58,8 @@ _PASSIVE_CONNECTION_KEYS = (
     "_connected",
     "_is_connected",
     "_isConnected",
+    # rs232 vendor managers (KDC101, Elliptec) record a failed open here.
+    "device_active",
 )
 
 _PASSIVE_MOCK_KEYS = (
@@ -77,11 +79,15 @@ def _manager_state(manager) -> dict:
 
 
 def _read_passive_bool(state: dict, keys: Iterable[str]) -> bool | None:
-    for key in keys:
-        value = state.get(key)
-        if isinstance(value, bool):
-            return value
-    return None
+    """True if any key is True, else False if any is a bool, else None.
+
+    The first bool found must not win: ``mockermode=False`` next to
+    ``_mock_fallback=True`` is a fallback, not a real device.
+    """
+    found = [state.get(key) for key in keys if isinstance(state.get(key), bool)]
+    if not found:
+        return None
+    return any(found)
 
 
 def _read_mangled_bool(state: dict, suffix: str) -> bool | None:
@@ -114,7 +120,7 @@ def _infer_runtime_mode(manager) -> DeviceRuntimeMode:
     # Several existing managers wrap their mock implementation rather than
     # exposing a dedicated flag (notably camera managers). Inspect only a
     # small set of already-held object references; never call into them.
-    for wrapped_key in ("_driver", "_camera", "_laser", "_device"):
+    for wrapped_key in ("_driver", "_camera", "_laser", "_device", "_motor"):
         wrapped = state.get(wrapped_key)
         if wrapped is not None and _looks_mock_from_class(wrapped):
             return DeviceRuntimeMode.MOCK
@@ -131,6 +137,10 @@ def _infer_connection(manager, mode: DeviceRuntimeMode) -> DeviceConnectionState
     if connected is True:
         return DeviceConnectionState.CONNECTED
     if connected is False:
+        # A recorded error (e.g. ThorlabsMFF._last_error) means the connect
+        # failed; plain False only means not connected.
+        if _last_error_text(state):
+            return DeviceConnectionState.ERROR
         return DeviceConnectionState.DISCONNECTED
 
     # Do not call properties or connection-check methods: the V1 contract is
@@ -148,23 +158,37 @@ def _infer_summary(manager, mode: DeviceRuntimeMode) -> tuple[str | None, str | 
             DeviceFailureKind.CONNECTION_ERROR,
         )
 
+    error = _last_error_text(state)
+    if error and _read_passive_bool(state, _PASSIVE_CONNECTION_KEYS) is False:
+        return "Hardware connection failed", error, DeviceFailureKind.CONNECTION_ERROR
+
     if mode is DeviceRuntimeMode.MOCK:
         return "Hardware-free/mock operation", None, None
 
     return None, None, None
 
 
+def _last_error_text(state: dict) -> str | None:
+    value = state.get("_last_error")
+    if isinstance(value, BaseException):
+        value = str(value)
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def resolveDeviceStatus(device_id: DeviceId, manager) -> DeviceStatus:
     """Build a passive status snapshot without performing device I/O."""
     if isinstance(manager, DeviceManagerStatusMixin):
+        # One snapshot, read in one step: a reconnect on another thread can
+        # never mix a new state with old details.
+        connection, mode, summary, details, failure_kind = manager.statusSnapshot()
         return DeviceStatus(
             device_id=device_id,
             manager_name=type(manager).__name__,
-            connection=manager.connectionState,
-            mode=manager.runtimeMode,
-            summary=manager.connectionStatusSummary,
-            details=manager.connectionStatusDetails,
-            failure_kind=manager.connectionFailureKind,
+            connection=connection,
+            mode=mode,
+            summary=summary,
+            details=details,
+            failure_kind=failure_kind,
         )
 
     provider = getattr(type(manager), "getDeviceStatus", None)

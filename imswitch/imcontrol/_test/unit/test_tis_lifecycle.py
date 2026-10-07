@@ -186,3 +186,56 @@ def test_tis_reconnect_failure_keeps_fault_clear_deferred(monkeypatch):
     assert startup.closed is True
     assert manager._camera is None
     assert manager.connectionState is DeviceConnectionState.ERROR
+
+
+def _sensor_info():
+    """No geometry in the setup: the camera's own sensor size is the full frame."""
+    info = _info()
+    info.managerProperties['tis'] = {}
+    return info
+
+
+def test_tis_reconnect_adopts_a_different_sensor_size(monkeypatch):
+    """A startup mock (or another camera) of a different size: full frame
+    follows the new sensor, and fullShape is updated."""
+    startup = _FakeCamera('mock')
+    replacement = _FakeCamera('real')
+    replacement.properties.update(image_width=1440, image_height=1080)
+    cameras = [startup, replacement]
+
+    def get_camera(manager, _camera_id):
+        camera = cameras.pop(0)
+        manager._setConnected('connected')
+        return camera
+
+    monkeypatch.setattr(TISManager, '_getTISObj', get_camera)
+    manager = TISManager(_sensor_info(), 'FocusCam')
+    manager._bindDetectorLifecycleHost(_LifecycleHost(), 'FocusCam')
+    assert manager.fullShape == (640, 480)
+
+    assert manager.getDeviceLifecycle().reconnect().success
+    assert manager.fullShape == (1440, 1080)
+    assert manager.shape == (1440, 1080) and manager.frameStart == (0, 0)
+    assert replacement.roi == (0, 0, 1440, 1080)
+
+
+def test_tis_reconnect_clamps_a_partial_roi_onto_a_smaller_sensor(monkeypatch):
+    startup = _FakeCamera('big')
+    startup.properties.update(image_width=1440, image_height=1080)
+    replacement = _FakeCamera('small')
+    cameras = [startup, replacement]
+
+    def get_camera(manager, _camera_id):
+        camera = cameras.pop(0)
+        manager._setConnected('connected')
+        return camera
+
+    monkeypatch.setattr(TISManager, '_getTISObj', get_camera)
+    manager = TISManager(_sensor_info(), 'FocusCam')
+    manager._bindDetectorLifecycleHost(_LifecycleHost(), 'FocusCam')
+    manager.crop(500, 400, 600, 300)
+
+    assert manager.getDeviceLifecycle().reconnect().success
+    assert manager.fullShape == (640, 480)
+    assert replacement.roi == (500, 400, 140, 80)
+    assert manager.frameStart == (500, 400) and manager.shape == (140, 80)
