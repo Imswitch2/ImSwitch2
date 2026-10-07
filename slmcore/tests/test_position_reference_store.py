@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -59,6 +61,32 @@ def test_persistent_reference_reloads_but_session_reference_does_not(tmp_path):
         record.reference.positions_px,_reference("persistent").positions_px,
     )
 
+
+
+def test_persistent_reference_migrates_v1_on_load(tmp_path):
+    reference=_reference("legacy")
+    payload=reference.to_dict()
+    payload["plane_name"]=payload.pop("observation_plane_name")
+    path=tmp_path/"sample"/"legacy.json"
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps({"version":1,"reference":payload}),encoding="utf-8")
+
+    store=PositionReferenceStore(tmp_path)
+
+    assert store.exists("sample","legacy")
+    rewritten=json.loads(path.read_text(encoding="utf-8"))
+    assert rewritten["version"] == 2
+    assert rewritten["reference"]["observation_plane_name"] == "sample"
+    assert "plane_name" not in rewritten["reference"]
+
+
+def test_position_reference_store_rejects_unknown_versions(tmp_path):
+    path=tmp_path/"sample"/"future.json"
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps({"version":3,"reference":{}}),encoding="utf-8")
+
+    with pytest.raises(ValueError,match="Unsupported position-reference version: 3"):
+        PositionReferenceStore._load_path(path)
 
 def test_overwrite_preserves_existing_lifetime(tmp_path):
     store = PositionReferenceStore(tmp_path)

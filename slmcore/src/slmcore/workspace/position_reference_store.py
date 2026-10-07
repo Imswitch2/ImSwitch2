@@ -246,9 +246,20 @@ class PositionReferenceStore:
         if not isinstance(payload,dict):
             raise ValueError("Position-reference file must contain an object")
         version = int(payload.get("version",0))
-        if version != _POSITION_REFERENCE_STORE_VERSION:
+        migrated=False
+        if version == 1:
+            payload=_migrate_v1_payload(payload)
+            migrated=True
+        elif version != _POSITION_REFERENCE_STORE_VERSION:
             raise ValueError(f"Unsupported position-reference version: {version}")
-        return PositionReference.from_dict(payload["reference"])
+        reference=PositionReference.from_dict(payload["reference"])
+        if migrated:
+            _write_json(path,{
+                "version":_POSITION_REFERENCE_STORE_VERSION,
+                "reference":reference.to_dict(),
+            })
+            _logger.info("Migrated position reference v1 -> v2: %s",path)
+        return reference
 
     @classmethod
     def _key(cls,observation_plane_name: str,name: str) -> tuple[str,str]:
@@ -270,6 +281,26 @@ class PositionReferenceStore:
                 callback()
             except Exception:
                 _logger.exception("Position-reference-store listener failed")
+
+
+def _migrate_v1_payload(payload: Any) -> dict[str,Any]:
+    if not isinstance(payload,dict):
+        raise ValueError("Position-reference file must contain an object")
+    reference=payload.get("reference")
+    if not isinstance(reference,dict):
+        raise ValueError("Position-reference payload is invalid")
+    migrated=dict(reference)
+    old_name=str(migrated.get("plane_name","") or "").strip()
+    new_name=str(migrated.get("observation_plane_name","") or "").strip()
+    if new_name and old_name and new_name != old_name:
+        raise ValueError("Position reference contains conflicting plane identities")
+    if not new_name:
+        migrated["observation_plane_name"]=old_name
+    migrated.pop("plane_name",None)
+    return {
+        "version":_POSITION_REFERENCE_STORE_VERSION,
+        "reference":migrated,
+    }
 
 
 def _slug(value: Any,label: str) -> str:

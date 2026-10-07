@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
+import pytest
 
 from slmcore.workspace import ObservationPlaneDefinition,ObservationPlaneStore
 
@@ -82,6 +85,42 @@ def test_geometry_orientation_store_is_authoritative_per_scope(tmp_path):
     store.delete(identity,"sec_0","sample")
     assert not store.exists(identity,"sec_0","sample")
 
+
+
+def test_geometry_orientation_store_migrates_v1_on_load(tmp_path):
+    store=SLMGeometryOrientationCalibrationStore(tmp_path)
+    identity=SLMIdentity("slm","SER123")
+    path=store._path(identity,"sec_0","sample")
+    path.parent.mkdir(parents=True,exist_ok=True)
+    calibration=GeometryOrientationCalibration(
+        slm_serial="SER123",section_key="sec_0",observation_plane_name="sample",
+        orientation="rotate_90_cw",detector_name="cam",grid_x=5,grid_y=4,
+        period_x_px=12.5,period_y_px=14.0,score=0.98,
+        confidence_margin=0.31,matched_count=20,
+    )
+    legacy=calibration.to_dict()
+    legacy["plane_name"]=legacy.pop("observation_plane_name")
+    payload={"version":1,"calibration":legacy}
+    path.write_text(json.dumps(payload),encoding="utf-8")
+
+    loaded=store.load(identity,"sec_0","sample")
+
+    assert loaded.observation_plane_name == "sample"
+    rewritten=json.loads(path.read_text(encoding="utf-8"))
+    assert rewritten["version"] == 2
+    assert rewritten["calibration"]["observation_plane_name"] == "sample"
+    assert "plane_name" not in rewritten["calibration"]
+
+
+def test_geometry_orientation_store_rejects_unknown_versions(tmp_path):
+    store=SLMGeometryOrientationCalibrationStore(tmp_path)
+    identity=SLMIdentity("slm","SER123")
+    path=store._path(identity,"sec_0","sample")
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps({"version":3,"calibration":{}}),encoding="utf-8")
+
+    with pytest.raises(ValueError,match="Unsupported geometry orientation calibration version"):
+        store.load(identity,"sec_0","sample")
 
 def test_geometry_calibration_cgh_is_detached_and_preserves_section_stack():
     geometry=SLMGeometry(width=64,height=64,pixel_size_um=1.0)
