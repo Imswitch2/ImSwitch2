@@ -1,6 +1,55 @@
+import math
+import threading
+from contextlib import contextmanager
+
 from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
-from imswitch.imcontrol.model.devices.graph import rs232BackedPrimarySpec
+from imswitch.imcontrol.model.devices.graph import HardwareDeviceId, rs232BackedPrimarySpec
+from imswitch.imcontrol.model.devices.lifecycle import (
+    DeviceLifecycleAction, DeviceLifecycleCapabilities, DeviceLifecycleResult,
+    DeviceLifecycleBusyError, DeviceLifecycleNotSupportedError,
+)
+from imswitch.imcontrol.model.devices.status import DeviceId, DeviceRuntimeMode
+
+
+class _MHXYLifecycle:
+    capabilities = DeviceLifecycleCapabilities(reconnect=True)
+
+    def __init__(self, manager):
+        self._manager = manager
+        self.hardware_id = HardwareDeviceId('positioner', f'marzhauser:{manager.name}')
+
+    def _unsupported(self):
+        raise DeviceLifecycleNotSupportedError('Marzhauser supports reconnect only.')
+
+    connect = disconnect = probe = shutdown = _unsupported
+
+    def reconnect(self):
+        manager = self._manager
+        with manager._operation(reconnect=True):
+            manager.positionSynced = False
+            try:
+                if not manager._rs232Manager.reconnectTransport():
+                    raise RuntimeError('Could not reopen the configured serial port.')
+                manager._usingMockFallback = False
+                if not manager.syncPositionFromHardware():
+                    raise RuntimeError('Stage did not return a valid XY position after reconnect.')
+            except Exception as exc:
+                manager._setConnectionError(
+                    exc, summary='Marzhauser reconnect failed; motion disabled',
+                    mock_active=getattr(manager._rs232Manager, 'runtimeMode', None)
+                    is DeviceRuntimeMode.MOCK,
+                )
+                return DeviceLifecycleResult(
+                    hardware_id=self.hardware_id, action=DeviceLifecycleAction.RECONNECT,
+                    success=False, summary='Marzhauser reconnect failed; motion disabled',
+                    details=str(exc), affected_device_ids=(DeviceId('positioner', manager.name),),
+                )
+            return DeviceLifecycleResult(
+                hardware_id=self.hardware_id, action=DeviceLifecycleAction.RECONNECT,
+                success=True, summary='Marzhauser reconnected; XY position synchronized',
+                affected_device_ids=(DeviceId('positioner', manager.name),),
+            )
 
 
 class MHXYStageManager(PositionerManager):
@@ -23,6 +72,10 @@ class MHXYStageManager(PositionerManager):
 
     def __init__(self, positionerInfo, name, *args, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
+        self._operationLock = threading.RLock()
+        #: Thread running a reconnect; other threads' operations are refused
+        #: while it runs (and it waits for one already in flight).
+        self._reconnectThread = None
 
         if (len(positionerInfo.axes) != 2
                 or 'X' not in positionerInfo.axes or 'Y' not in positionerInfo.axes):
@@ -51,6 +104,7 @@ class MHXYStageManager(PositionerManager):
         super().__init__(positionerInfo, name, initialPosition=self._readHardwarePosition(
             list(positionerInfo.axes)
         ))
+        self._lifecycle = _MHXYLifecycle(self)
 
         try:
             self.__logger.info(f"MHXYStage serial no: {self._rs232Manager.query('?readsn')}")
@@ -67,6 +121,9 @@ class MHXYStageManager(PositionerManager):
         """
         fallback = {axis: 0.0 for axis in axes}
         try:
+            if (self._usingMockFallback or getattr(self._rs232Manager, 'runtimeMode', None)
+                    is DeviceRuntimeMode.MOCK):
+                raise RuntimeError('Stage serial transport is using a mock backend.')
             reply = self._rs232Manager.query('?pos')
         except Exception as e:
             self.__logger.warning(
@@ -75,6 +132,7 @@ class MHXYStageManager(PositionerManager):
                 f'controller frame until a successful sync.'
             )
             self.positionSynced = False
+            self._setConnectionError(e, summary='Marzhauser position unavailable')
             return fallback
 
         parsed = self._parsePositionReply(reply, axes)
@@ -85,6 +143,7 @@ class MHXYStageManager(PositionerManager):
                 f'from the controller frame until a successful sync.'
             )
             self.positionSynced = False
+            self._setConnectionError('Invalid XY position reply', summary='Marzhauser position unavailable')
             return fallback
 
         self.positionSynced = True
@@ -118,6 +177,8 @@ class MHXYStageManager(PositionerManager):
         if len(values) < len(axes):
             return None
 
+        if not all(math.isfinite(value) for value in values):
+            return None
         return {axis: values[index] for index, axis in enumerate(axes)}
 
     def syncPositionFromHardware(self):
@@ -129,11 +190,48 @@ class MHXYStageManager(PositionerManager):
 
         Returns True when the tracked position now reflects hardware.
         """
-        positions = self._readHardwarePosition(list(self.axes))
-        if not self.positionSynced:
-            return False
-        self.updateTrackedPosition(positions)
-        return True
+        with self._operation():
+            positions = self._readHardwarePosition(list(self.axes))
+            if not self.positionSynced:
+                return False
+            self.updateTrackedPosition(positions)
+            return True
+
+    #: How long an ordinary operation (or a reconnect) waits for one in flight.
+    OPERATION_WAIT_S = 30.0
+
+    @contextmanager
+    def _operation(self, *, reconnect=False):
+        """Serialise stage operations; a reconnect excludes all others.
+
+        Ordinary operations (moves, position syncs) wait for each other -- two
+        callers overlapping is normal, not an error. While a reconnect runs,
+        operations from other threads are refused at once; the reconnect
+        itself first waits for an operation already in flight.
+        """
+        me = threading.get_ident()
+        reconnecting = self._reconnectThread
+        if reconnecting is not None and reconnecting != me:
+            raise DeviceLifecycleBusyError('Marzhauser stage is being reconnected.')
+        if reconnect:
+            self._reconnectThread = me
+        try:
+            if not self._operationLock.acquire(timeout=self.OPERATION_WAIT_S):
+                raise DeviceLifecycleBusyError(
+                    f'Marzhauser stage: an earlier operation did not finish within '
+                    f'{self.OPERATION_WAIT_S:g} s.')
+            try:
+                yield
+            finally:
+                self._operationLock.release()
+        finally:
+            if reconnect:
+                self._reconnectThread = None
+
+    def getDeviceLifecycle(self):
+        if callable(getattr(self._rs232Manager, 'reconnectTransport', None)):
+            return self._lifecycle
+        return None
 
 
     def getDeviceDescriptorSpec(self):
@@ -141,7 +239,20 @@ class MHXYStageManager(PositionerManager):
         return rs232BackedPrimarySpec(
             category='positioner',
             rs232_name=str(rs232_name),
+            hardware_id=self._lifecycle.hardware_id,
         )
+
+    def _commandMove(self, cmd, value, axis, *, relative):
+        with self._operation():
+            if not self.positionSynced:
+                raise RuntimeError('Marzhauser position is unknown; reconnect or synchronize first.')
+            try:
+                self._rs232Manager.query(cmd)
+            except Exception as exc:
+                self.positionSynced = False
+                self._setConnectionError(exc, summary='Marzhauser motion failed; position unknown')
+                raise
+            self._position[axis] = self._position[axis] + value if relative else value
 
     def move(self, value, axis):
         if axis == 'X':
@@ -151,8 +262,7 @@ class MHXYStageManager(PositionerManager):
         else:
             self.__logger.error('Wrong axis, has to be "X" or "Y".')
             return
-        self._rs232Manager.query(cmd)
-        self._position[axis] = self._position[axis] + value
+        self._commandMove(cmd, value, axis, relative=True)
 
     def setPosition(self, value, axis):
         if axis == 'X':
@@ -162,8 +272,7 @@ class MHXYStageManager(PositionerManager):
         else:
             self.__logger.error('Wrong axis, has to be "X" or "Y".')
             return
-        self._rs232Manager.query(cmd)
-        self._position[axis] = value
+        self._commandMove(cmd, value, axis, relative=False)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
