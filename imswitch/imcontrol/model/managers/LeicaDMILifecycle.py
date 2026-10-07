@@ -109,6 +109,8 @@ class LeicaDMILifecycle:
         for method_name in ("setILshutter", "setTLshutter"):
             method = getattr(hardware, method_name, None)
             if not callable(method):
+                # Never report "shutters closed" for a shutter nobody closed.
+                errors.append(f"{method_name}: not available on this hardware interface")
                 continue
             try:
                 method(0)

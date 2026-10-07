@@ -329,3 +329,16 @@ def test_leica_lifecycle_failed_transport_reconnect_keeps_mock_fallback_visible(
     assert z.runtimeMode is DeviceRuntimeMode.MOCK
     assert stand.connectionState is DeviceConnectionState.ERROR
     assert z.connectionState is DeviceConnectionState.ERROR
+
+
+def test_reconnect_never_claims_shutters_it_could_not_close():
+    """A hardware interface without shutter control: the reconnect must not
+    report "illumination shutters closed"."""
+    from imswitch.imcontrol.model.managers.LeicaDMILifecycle import LeicaDMILifecycle
+
+    class NoShutters:
+        pass
+
+    errors = LeicaDMILifecycle._forceSafeIlluminationOff(NoShutters())
+    assert len(errors) == 2
+    assert all('not available' in e for e in errors)
