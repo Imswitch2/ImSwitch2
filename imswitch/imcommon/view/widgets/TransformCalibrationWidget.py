@@ -37,6 +37,7 @@ from imswitch.imcommon.algorithms.transforms.correspondence import (
     CorrespondenceResult,
     CorrespondenceStrategySpec,
     ImageLocalizationResult,
+    LocalizationDiagnostics,
     builtin_correspondence_specs,
 )
 from imswitch.imcommon.view import guitools
@@ -335,6 +336,9 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         }
         self._localization_stale = {"source": False, "target": False}
         self._localization_errors: dict[str, str | None] = {"source": None, "target": None}
+        self._localization_failure_diagnostics: dict[str, LocalizationDiagnostics | None] = {
+            "source": None, "target": None
+        }
         self._correspondence_error: str | None = None
         self._transform: SpatialTransform | None = None
         self._fit_result: ModelFit | None = None
@@ -686,6 +690,11 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
     def localizationError(self, role: str) -> str | None:
         return self._localization_errors[self._normalizeRole(role)]
 
+    def localizationFailureDiagnostics(
+        self, role: str
+    ) -> LocalizationDiagnostics | None:
+        return self._localization_failure_diagnostics[self._normalizeRole(role)]
+
     def localizationParameterSpecs(self) -> dict[str, ParameterSpec]:
         return dict(self.correspondenceSpec().parameter_specs)
 
@@ -721,6 +730,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             if self._localization_results[current_role] is not None:
                 self._localization_stale[current_role] = True
             self._localization_errors[current_role] = None
+            self._localization_failure_diagnostics[current_role] = None
             changed = True
         if not changed:
             return
@@ -807,6 +817,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self._localization_results[role] = None
         self._localization_stale[role] = False
         self._localization_errors[role] = None
+        self._localization_failure_diagnostics[role] = None
         self._clearCorrespondence(emit=True)
         self._invalidateTransform(emit=True)
         self._setStatus("○ Waiting for current Moving and Reference localization")
@@ -819,6 +830,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self._localization_results = {"source": None, "target": None}
         self._localization_stale = {"source": False, "target": False}
         self._localization_errors = {"source": None, "target": None}
+        self._localization_failure_diagnostics = {"source": None, "target": None}
         self._correspondence_result = None
         self._correspondence_error = None
         self._source_points = None
@@ -925,6 +937,9 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             result = strategy.localize(image, normalized)
         except Exception as error:
             self._localization_errors[role] = str(error)
+            self._localization_failure_diagnostics[role] = getattr(
+                error, "diagnostics", None
+            )
             # Keep a previous result visible for diagnosis after a failed rerun,
             # but make it explicitly stale and unusable for correspondence.
             if self._localization_results[role] is not None:
@@ -945,12 +960,56 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self._localization_results[role] = result
         self._localization_stale[role] = False
         self._localization_errors[role] = None
+        self._localization_failure_diagnostics[role] = None
         self._clearCorrespondence(emit=True)
         self._invalidateTransform(emit=True)
         self._setStatus("○ Waiting for current Moving and Reference localization")
         self._refreshLocalizationStatusLabels()
         self._updateEnabledState()
         self._emitStateChanged()
+        return True
+
+    def recoverMissingForRole(self, role: str) -> bool:
+        """Run a strategy-specific targeted search for currently missing sites."""
+        role = self._normalizeRole(role)
+        strategy = self.correspondenceSpec()
+        image = self.image(role)
+        current = self._localization_results[role]
+        if (
+            image is None or current is None
+            or not strategy.supports_missing_recovery
+            or self._localization_stale[role]
+        ):
+            return False
+        try:
+            recovered = strategy.recover(
+                image, current, self.localizationParameters(role)
+            )
+        except Exception as error:
+            self._localization_errors[role] = str(error)
+            self._localization_failure_diagnostics[role] = getattr(
+                error, "diagnostics", None
+            )
+            self._refreshLocalizationStatusLabels()
+            self._emitStateChanged()
+            return False
+
+        self._localization_results[role] = recovered
+        self._localization_errors[role] = None
+        self._localization_failure_diagnostics[role] = None
+        self._localization_stale[role] = False
+        self._clearCorrespondence(emit=True)
+        self._invalidateTransform(emit=True)
+        self._refreshLocalizationStatusLabels()
+        self._updateEnabledState()
+        self._emitStateChanged()
+        # Rebuild immediately when the other localization is still current.
+        other = "target" if role == "source" else "source"
+        if (
+            self._localization_results[other] is not None
+            and not self._localization_stale[other]
+        ):
+            self.buildCorrespondence()
         return True
 
     def buildCorrespondence(self) -> bool:
@@ -1022,6 +1081,10 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             self._clearCorrespondence(emit=True)
             self._localization_errors["source"] = str(error)
             self._localization_errors["target"] = str(error)
+            diagnostics = getattr(error, "diagnostics", None)
+            self._localization_failure_diagnostics = {
+                "source": diagnostics, "target": diagnostics
+            }
             self._setStatus(f"Localization failed: {error}")
             self._refreshLocalizationStatusLabels()
             self._invalidateTransform(emit=True)
@@ -1039,6 +1102,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self._localization_results = {"source": source_loc, "target": target_loc}
         self._localization_stale = {"source": False, "target": False}
         self._localization_errors = {"source": None, "target": None}
+        self._localization_failure_diagnostics = {"source": None, "target": None}
         self._correspondence_result = result
         self._source_points = result.source_points
         self._target_points = result.target_points

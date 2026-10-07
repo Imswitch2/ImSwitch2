@@ -19,6 +19,7 @@ from .foci_grid import detect_spot_centers, estimate_grid_angle, order_grid_poin
 
 __all__ = [
     "LocalizationDiagnostics",
+    "LocalizationFailure",
     "ImageLocalizationResult",
     "CorrespondenceResult",
     "CorrespondenceStrategySpec",
@@ -47,11 +48,12 @@ class LocalizationDiagnostics:
     detected_points: np.ndarray | None = None
     predicted_points: np.ndarray | None = None
     refined_points: np.ndarray | None = None
+    missing_points: np.ndarray | None = None
     logical_indices: np.ndarray | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        for name in ("detected_points", "predicted_points", "refined_points"):
+        for name in ("detected_points", "predicted_points", "refined_points", "missing_points"):
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _points(value, label=name))
@@ -62,6 +64,19 @@ class LocalizationDiagnostics:
                     f"logical_indices must have shape (N, 2), got {indices.shape}"
                 )
             object.__setattr__(self, "logical_indices", indices)
+
+
+class LocalizationFailure(RuntimeError):
+    """Localization error carrying ephemeral evidence for inspection.
+
+    The diagnostics are intentionally runtime-only. They let a tuning UI show
+    the crop/detections from a failed attempt without polluting saved transform
+    provenance.
+    """
+
+    def __init__(self, message: str, diagnostics: LocalizationDiagnostics | None = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 @dataclass(frozen=True)
@@ -89,6 +104,10 @@ class ImageLocalizationResult:
         parts: list[str] = []
         if rows is not None and cols is not None:
             parts.append(f"{int(rows)}x{int(cols)}")
+            missing = int(self.metadata.get("missing_count", 0) or 0)
+            matched = self.metadata.get("matched_count")
+            if missing and matched is not None:
+                parts.append(f"{int(matched)}/{int(rows) * int(cols)} measured")
         else:
             parts.append(f"{self.point_count} points")
         if angle is not None:
@@ -145,6 +164,9 @@ LocalizationMatcher = Callable[
     [ImageLocalizationResult, ImageLocalizationResult, Mapping[str, Any], Mapping[str, Any]],
     CorrespondenceResult,
 ]
+LocalizationRecovery = Callable[
+    [np.ndarray, ImageLocalizationResult, Mapping[str, Any]], ImageLocalizationResult
+]
 ParameterNormalizer = Callable[[Mapping[str, Any]], dict[str, Any]]
 
 
@@ -161,6 +183,7 @@ class CorrespondenceStrategySpec:
     normalize_parameters: ParameterNormalizer | None = None
     localize_handler: LocalizationHandler | None = None
     match_handler: LocalizationMatcher | None = None
+    recovery_handler: LocalizationRecovery | None = None
 
     def __post_init__(self) -> None:
         if not str(self.name).strip():
@@ -179,6 +202,10 @@ class CorrespondenceStrategySpec:
     @property
     def supports_independent_localization(self) -> bool:
         return self.localize_handler is not None and self.match_handler is not None
+
+    @property
+    def supports_missing_recovery(self) -> bool:
+        return self.recovery_handler is not None
 
     def normalize(self, parameters: Mapping[str, Any] | None) -> dict[str, Any]:
         supplied = dict(self.default_parameters)
@@ -202,6 +229,22 @@ class CorrespondenceStrategySpec:
                 f"localization strategy {self.name!r} returned an invalid result"
             )
         return result
+
+
+    def recover(
+        self,
+        image: np.ndarray,
+        result: ImageLocalizationResult,
+        parameters: Mapping[str, Any],
+    ) -> ImageLocalizationResult:
+        if self.recovery_handler is None:
+            raise RuntimeError(f"{self.label} does not support missing-site recovery")
+        recovered = self.recovery_handler(image, result, self.normalize(parameters))
+        if not isinstance(recovered, ImageLocalizationResult):
+            raise TypeError(
+                f"localization strategy {self.name!r} returned an invalid recovery result"
+            )
+        return recovered
 
     def correspond(
         self,

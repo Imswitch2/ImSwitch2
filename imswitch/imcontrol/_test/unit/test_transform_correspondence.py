@@ -32,6 +32,8 @@ def _grid_result(*, n_cols=4, n_rows=5, angle_offset=0.0, stagger_axis="rows"):
         grid_points_rc=points,
         logical_indices=logical,
         detected_points_rc=points,
+        matched_mask=np.ones(points.shape[0], dtype=bool),
+        measured_points_rc=points,
         num_cols=120,
         num_rows=160,
         diagnostics={"fit_rms_px": 0.1},
@@ -153,3 +155,42 @@ def test_ulenses_strategy_exposes_independent_localization_diagnostics(monkeypat
     np.testing.assert_allclose(localized.diagnostics.detected_points, grid.detected_points_rc)
     np.testing.assert_allclose(localized.diagnostics.predicted_points, grid.grid_points_rc)
     np.testing.assert_allclose(localized.diagnostics.refined_points, grid.grid_points_rc + 0.25)
+
+
+def test_ulenses_strategy_matches_only_indices_measured_in_both_images(monkeypatch):
+    source_grid = _grid_result(n_cols=4, n_rows=5)
+    target_grid = _grid_result(n_cols=4, n_rows=5)
+    source_mask = np.ones(20, dtype=bool)
+    target_mask = np.ones(20, dtype=bool)
+    source_mask[[2, 7]] = False
+    target_mask[[7, 11]] = False
+    source_grid = GridLocalizationResult(
+        **{
+            **source_grid.__dict__,
+            "matched_mask": source_mask,
+            "measured_points_rc": source_grid.grid_points_rc[source_mask],
+        }
+    )
+    target_grid = GridLocalizationResult(
+        **{
+            **target_grid.__dict__,
+            "matched_mask": target_mask,
+            "measured_points_rc": target_grid.grid_points_rc[target_mask],
+        }
+    )
+    localizations = iter([source_grid, target_grid])
+    monkeypatch.setattr(module, "localize_grid", lambda _image, **_kwargs: next(localizations))
+    monkeypatch.setattr(
+        module,
+        "refine_grid_foci",
+        lambda _image, localized, **_kwargs: localized.measured_points_rc,
+    )
+
+    spec = module.ulenses_grid_strategy_spec()
+    result = spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
+
+    # Missing index 7 occurs on both sides; 2 and 11 occur on one side each.
+    assert result.pair_count == 17
+    assert result.metadata["measured_pair_count"] == 17
+    assert result.metadata["moving_missing_count"] == 2
+    assert result.metadata["reference_missing_count"] == 2

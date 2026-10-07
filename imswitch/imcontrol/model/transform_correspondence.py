@@ -12,11 +12,14 @@ from imswitch.imcommon.algorithms.transforms.correspondence import (
     CorrespondenceStrategySpec,
     ImageLocalizationResult,
     LocalizationDiagnostics,
+    LocalizationFailure,
 )
 from .ulenses_localizer import (
     GridLocalizationResult,
+    GridLocalizationError,
     localize_grid,
     refine_grid_foci,
+    search_missing_grid_foci,
 )
 
 __all__ = ["ulenses_grid_strategy_spec"]
@@ -35,6 +38,8 @@ def _normalize(parameters: Mapping[str, Any]) -> dict[str, Any]:
         "stagger_mode": str(parameters.get("stagger_mode", "auto")),
         "stagger_axis": str(parameters.get("stagger_axis", "auto")),
         "stagger_fraction": float(parameters.get("stagger_fraction", 0.5)),
+        "crop_threshold": float(parameters.get("crop_threshold", 0.4)),
+        "crop_margin_px": int(parameters.get("crop_margin_px", 1)),
         "grid_threshold_rel": float(
             parameters.get("grid_threshold_rel", parameters.get("threshold_rel", 0.10))
         ),
@@ -66,6 +71,10 @@ def _normalize(parameters: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("stagger_axis must be 'auto', 'rows', or 'columns'")
     if not -1.0 <= normalized["stagger_fraction"] <= 1.0:
         raise ValueError("stagger_fraction must be within [-1, 1]")
+    if not 0.0 <= normalized["crop_threshold"] <= 1.0:
+        raise ValueError("crop_threshold must be between 0 and 1")
+    if normalized["crop_margin_px"] < 0:
+        raise ValueError("crop_margin_px must be non-negative")
     if not 0.0 <= normalized["grid_threshold_rel"] <= 1.0:
         raise ValueError("grid_threshold_rel must be between 0 and 1")
     if normalized["grid_gaussian_sigma"] < 0:
@@ -135,6 +144,57 @@ def _check_same_finite_grid(
         )
 
 
+def _localization_failure(error: GridLocalizationError) -> LocalizationFailure:
+    metadata = dict(error.diagnostics)
+    if error.crop_coord is not None:
+        metadata["crop_coord"] = tuple(int(v) for v in error.crop_coord)
+    return LocalizationFailure(
+        str(error),
+        diagnostics=LocalizationDiagnostics(
+            detected_points=error.detected_points_rc,
+            metadata=metadata,
+        ),
+    )
+
+
+def _localized_result_from_grid(
+    image: np.ndarray, grid: GridLocalizationResult, params: Mapping[str, Any],
+    *, xp_guess: float, yp_guess: float,
+) -> ImageLocalizationResult:
+    matched = np.asarray(grid.matched_mask, dtype=bool)
+    refined = refine_grid_foci(
+        image,
+        grid,
+        search_radius_px=params["focus_refine_radius"],
+        gaussian_sigma=params["focus_gaussian_sigma"],
+        matched_only=True,
+    )
+    measured_indices = np.asarray(grid.logical_indices[matched], dtype=np.int64)
+    metadata = _grid_localization_dict(grid)
+    metadata.update({
+        "x_period_guess_px": float(xp_guess),
+        "y_period_guess_px": float(yp_guess),
+        "grid_size_mode": params["grid_size_mode"],
+        "focus_refine_radius": params["focus_refine_radius"],
+        "focus_gaussian_sigma": params["focus_gaussian_sigma"],
+        "matched_count": int(grid.matched_count),
+        "missing_count": int(grid.missing_count),
+    })
+    return ImageLocalizationResult(
+        points=refined,
+        metadata=metadata,
+        diagnostics=LocalizationDiagnostics(
+            detected_points=grid.detected_points_rc,
+            predicted_points=grid.grid_points_rc,
+            refined_points=refined,
+            missing_points=grid.missing_points_rc,
+            logical_indices=measured_indices,
+            metadata=dict(grid.diagnostics),
+        ),
+        payload=grid,
+    )
+
+
 def ulenses_grid_strategy_spec(
     guess_provider: Callable[[], tuple[float, float] | None] | None = None,
 ) -> CorrespondenceStrategySpec:
@@ -166,44 +226,48 @@ def ulenses_grid_strategy_spec(
             n_cols = None
             n_rows = None
 
-        grid = localize_grid(
-            image,
-            xp_guess=xp_guess,
-            yp_guess=yp_guess,
-            n_cols=n_cols,
-            n_rows=n_rows,
-            threshold_rel=params["grid_threshold_rel"],
-            gaussian_sigma=params["grid_gaussian_sigma"],
-            min_distance_fraction=params["grid_min_distance_fraction"],
-            stagger_mode=params["stagger_mode"],
-            stagger_axis=params["stagger_axis"],
-            stagger_fraction=params["stagger_fraction"],
+        try:
+            grid = localize_grid(
+                image,
+                xp_guess=xp_guess,
+                yp_guess=yp_guess,
+                n_cols=n_cols,
+                n_rows=n_rows,
+                crop_threshold=params["crop_threshold"],
+                crop_margin_px=params["crop_margin_px"],
+                threshold_rel=params["grid_threshold_rel"],
+                gaussian_sigma=params["grid_gaussian_sigma"],
+                min_distance_fraction=params["grid_min_distance_fraction"],
+                stagger_mode=params["stagger_mode"],
+                stagger_axis=params["stagger_axis"],
+                stagger_fraction=params["stagger_fraction"],
+            )
+        except GridLocalizationError as error:
+            raise _localization_failure(error) from error
+        return _localized_result_from_grid(
+            image, grid, params, xp_guess=xp_guess, yp_guess=yp_guess
         )
-        refined = refine_grid_foci(
+
+    def recover_missing(
+        image: np.ndarray,
+        current: ImageLocalizationResult,
+        parameters: Mapping[str, Any],
+    ) -> ImageLocalizationResult:
+        params = _normalize(parameters)
+        grid = current.payload
+        if not isinstance(grid, GridLocalizationResult):
+            raise TypeError("uLenses missing-site recovery requires a grid payload")
+        xp_guess = float(current.metadata.get("x_period_guess_px", params["xp_guess_px"]))
+        yp_guess = float(current.metadata.get("y_period_guess_px", params["yp_guess_px"]))
+        recovered = search_missing_grid_foci(
             image,
             grid,
             search_radius_px=params["focus_refine_radius"],
             gaussian_sigma=params["focus_gaussian_sigma"],
+            threshold_rel=max(0.01, 0.5 * params["grid_threshold_rel"]),
         )
-        metadata = _grid_localization_dict(grid)
-        metadata.update({
-            "x_period_guess_px": float(xp_guess),
-            "y_period_guess_px": float(yp_guess),
-            "grid_size_mode": params["grid_size_mode"],
-            "focus_refine_radius": params["focus_refine_radius"],
-            "focus_gaussian_sigma": params["focus_gaussian_sigma"],
-        })
-        return ImageLocalizationResult(
-            points=refined,
-            metadata=metadata,
-            diagnostics=LocalizationDiagnostics(
-                detected_points=grid.detected_points_rc,
-                predicted_points=grid.grid_points_rc,
-                refined_points=refined,
-                logical_indices=grid.logical_indices,
-                metadata=dict(grid.diagnostics),
-            ),
-            payload=grid,
+        return _localized_result_from_grid(
+            image, recovered, params, xp_guess=xp_guess, yp_guess=yp_guess
         )
 
     def match(
@@ -233,16 +297,34 @@ def ulenses_grid_strategy_spec(
                 f"past the {tilt_limit:.1f} degree correspondence limit. "
                 "The finite grid axes may be transposed."
             )
-        if source.points.shape != target.points.shape:
-            raise RuntimeError("refined finite focus sets do not have matching shapes")
+        source_indices = (
+            None if source.diagnostics is None else source.diagnostics.logical_indices
+        )
+        target_indices = (
+            None if target.diagnostics is None else target.diagnostics.logical_indices
+        )
+        if source_indices is None or target_indices is None:
+            raise RuntimeError("uLenses localization is missing logical focus indices")
+        source_lookup = {tuple(map(int, index)): pos for pos, index in enumerate(source_indices)}
+        target_lookup = {tuple(map(int, index)): pos for pos, index in enumerate(target_indices)}
+        common = sorted(set(source_lookup) & set(target_lookup), key=lambda item: (item[1], item[0]))
+        if len(common) < 3:
+            raise RuntimeError(
+                "fewer than three measured grid sites are shared by Moving and Reference"
+            )
+        source_points = np.asarray([source.points[source_lookup[index]] for index in common])
+        target_points = np.asarray([target.points[target_lookup[index]] for index in common])
 
         return CorrespondenceResult(
-            source_points=source.points,
-            target_points=target.points,
+            source_points=source_points,
+            target_points=target_points,
             metadata={
                 "n_rows": int(source_grid.n_rows),
                 "n_cols": int(source_grid.n_cols),
                 "relative_tilt_deg": float(tilt),
+                "measured_pair_count": int(len(common)),
+                "moving_missing_count": int(source_grid.missing_count),
+                "reference_missing_count": int(target_grid.missing_count),
                 "grid_localization": {
                     "moving": dict(source.metadata),
                     "reference": dict(target.metadata),
@@ -271,6 +353,7 @@ def ulenses_grid_strategy_spec(
         ),
         localize_handler=localize,
         match_handler=match,
+        recovery_handler=recover_missing,
         parameter_specs={
             "use_ulenses_widget_guesses": ParameterSpec(
                 True, bool, "Use uLenses widget period guesses",
@@ -325,6 +408,18 @@ def ulenses_grid_strategy_spec(
                 "Alternating shift as a fraction of the corresponding lattice period.",
                 minimum=-1.0, maximum=1.0, step=0.05, decimals=3,
                 group="Grid geometry", enabled_when=("stagger_mode", "manual"),
+            ),
+            "crop_threshold": ParameterSpec(
+                0.40, float, "Crop threshold",
+                "Fraction of the brightest image value used to define the localization crop. "
+                "Increase to isolate the bright grid; decrease if dim outer spots are clipped.",
+                minimum=0.0, maximum=1.0, step=0.05, decimals=2,
+                group="Grid localization",
+            ),
+            "crop_margin_px": ParameterSpec(
+                1, int, "Crop margin (px)",
+                "Extra pixels retained around the automatically detected localization crop.",
+                minimum=0, step=1, group="Grid localization",
             ),
             "grid_threshold_rel": ParameterSpec(
                 0.10, float, "Grid spot threshold",

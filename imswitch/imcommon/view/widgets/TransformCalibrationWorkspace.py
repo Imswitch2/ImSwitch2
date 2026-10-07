@@ -212,15 +212,16 @@ class _LocalizationViewer(QtWidgets.QWidget):
         self.detected = pg.ScatterPlotItem(symbol="+", size=10, pen=pg.mkPen("#7ec8e3", width=1.5))
         self.predicted = pg.ScatterPlotItem(symbol="o", size=9, pen=pg.mkPen("#b0b0b0", width=1.2), brush=None)
         self.refined = pg.ScatterPlotItem(symbol="x", size=10, pen=pg.mkPen("#55aa55", width=1.5))
-        self.plot.addItem(self.predicted)
-        self.plot.addItem(self.detected)
-        self.plot.addItem(self.refined)
+        self.missing = pg.ScatterPlotItem(symbol="o", size=10, pen=pg.mkPen("#a67c52", width=1.5), brush=None)
+        for item in (self.predicted, self.detected, self.refined, self.missing):
+            self.plot.addItem(item)
         root.addWidget(self.plot, 1)
         controls = QtWidgets.QHBoxLayout()
         self.detected_check = QtWidgets.QCheckBox("Detected")
         self.predicted_check = QtWidgets.QCheckBox("Predicted grid")
         self.refined_check = QtWidgets.QCheckBox("Refined")
-        for check in (self.detected_check, self.predicted_check, self.refined_check):
+        self.missing_check = QtWidgets.QCheckBox("Missing")
+        for check in (self.detected_check, self.predicted_check, self.refined_check, self.missing_check):
             check.setChecked(True)
             controls.addWidget(check)
         controls.addStretch(1)
@@ -228,32 +229,70 @@ class _LocalizationViewer(QtWidgets.QWidget):
         self.detected_check.toggled.connect(self.detected.setVisible)
         self.predicted_check.toggled.connect(self.predicted.setVisible)
         self.refined_check.toggled.connect(self.refined.setVisible)
+        self.missing_check.toggled.connect(self.missing.setVisible)
         self._image_key = None
 
     @staticmethod
-    def _setPoints(item: pg.ScatterPlotItem, points: np.ndarray | None) -> None:
+    def _setPoints(
+        item: pg.ScatterPlotItem,
+        points: np.ndarray | None,
+        *,
+        offset_rc: tuple[float, float] = (0.0, 0.0),
+    ) -> None:
         if points is None or len(points) == 0:
             item.setData([], [])
             return
-        array = np.asarray(points)
-        item.setData(x=array[:, 1], y=array[:, 0])
+        array = np.asarray(points, dtype=np.float64)
+        row_offset, col_offset = offset_rc
+        item.setData(x=array[:, 1] - col_offset, y=array[:, 0] - row_offset)
 
-    def setData(self, image: np.ndarray | None, result: Any, *, key: Any) -> None:
-        reset = key != self._image_key
-        self._image_key = key
+    def setData(
+        self,
+        image: np.ndarray | None,
+        result: Any,
+        *,
+        failure_diagnostics: Any = None,
+        key: Any,
+        view: str = "localization",
+    ) -> None:
+        diagnostics = failure_diagnostics
+        if diagnostics is None and result is not None:
+            diagnostics = result.diagnostics
+        metadata = {} if diagnostics is None else dict(diagnostics.metadata or {})
+        crop_coord = metadata.get("crop_coord")
+        raw_view = str(view) == "raw"
+
         if image is None:
             self.image_item.setVisible(False)
-            self._setPoints(self.detected, None)
-            self._setPoints(self.predicted, None)
-            self._setPoints(self.refined, None)
+            for item in (self.detected, self.predicted, self.refined, self.missing):
+                self._setPoints(item, None)
             return
+
+        array = np.asarray(image)
+        offset = (0.0, 0.0)
+        if not raw_view and crop_coord is not None:
+            try:
+                y0, y1, x0, x1 = (int(value) for value in crop_coord)
+                if 0 <= y0 < y1 <= array.shape[0] and 0 <= x0 < x1 <= array.shape[1]:
+                    array = array[y0:y1, x0:x1]
+                    offset = (float(y0), float(x0))
+            except Exception:
+                pass
+
         self.image_item.setVisible(True)
-        self.image_item.setImage(np.asarray(image), autoLevels=True)
-        diagnostics = None if result is None else result.diagnostics
-        self._setPoints(self.detected, None if diagnostics is None else diagnostics.detected_points)
-        self._setPoints(self.predicted, None if diagnostics is None else diagnostics.predicted_points)
-        self._setPoints(self.refined, None if diagnostics is None else diagnostics.refined_points)
-        if reset:
+        self.image_item.setImage(array, autoLevels=True)
+        if raw_view:
+            for item in (self.detected, self.predicted, self.refined, self.missing):
+                self._setPoints(item, None)
+        else:
+            self._setPoints(self.detected, None if diagnostics is None else diagnostics.detected_points, offset_rc=offset)
+            self._setPoints(self.predicted, None if diagnostics is None else diagnostics.predicted_points, offset_rc=offset)
+            self._setPoints(self.refined, None if diagnostics is None else diagnostics.refined_points, offset_rc=offset)
+            self._setPoints(self.missing, None if diagnostics is None else diagnostics.missing_points, offset_rc=offset)
+
+        display_key = (key, str(view), tuple(array.shape), tuple(offset))
+        if display_key != self._image_key:
+            self._image_key = display_key
             self.plot.autoRange()
 
 
@@ -361,6 +400,12 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         self.imageCombo.addItem("Moving", "source")
         self.imageCombo.addItem("Reference", "target")
         selector.addWidget(self.imageCombo)
+        selector.addSpacing(12)
+        selector.addWidget(QtWidgets.QLabel("View:"))
+        self.localizationViewCombo = QtWidgets.QComboBox()
+        self.localizationViewCombo.addItem("Localization", "localization")
+        self.localizationViewCombo.addItem("Raw image", "raw")
+        selector.addWidget(self.localizationViewCombo)
         selector.addStretch(1)
         root.addLayout(selector)
 
@@ -379,8 +424,12 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         self.localizationForm = ParameterFormWidget()
         scroll.setWidget(self.localizationForm)
         right_layout.addWidget(scroll, 1)
+        action_row = QtWidgets.QHBoxLayout()
         self.runSelectedButton = QtWidgets.QPushButton("Run localization")
-        right_layout.addWidget(self.runSelectedButton)
+        self.searchMissingButton = QtWidgets.QPushButton("Search missing sites")
+        action_row.addWidget(self.runSelectedButton)
+        action_row.addWidget(self.searchMissingButton)
+        right_layout.addLayout(action_row)
         self.localizationStatus = QtWidgets.QLabel()
         self.localizationStatus.setWordWrap(True)
         right_layout.addWidget(self.localizationStatus)
@@ -391,9 +440,11 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         root.addWidget(splitter, 1)
 
         self.imageCombo.currentIndexChanged.connect(self._localizationSelectionChanged)
+        self.localizationViewCombo.currentIndexChanged.connect(self._refreshLocalizationPanel)
         self.methodCombo.currentIndexChanged.connect(self._methodChanged)
         self.localizationForm.sigValuesChanged.connect(self._localizationParametersChanged)
         self.runSelectedButton.clicked.connect(self._runSelectedLocalization)
+        self.searchMissingButton.clicked.connect(self._searchMissingSites)
         return page
 
     def _buildTransformTab(self) -> QtWidgets.QWidget:
@@ -469,8 +520,17 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         role = self._selectedRole()
         result = self.owner.localizationResult(role)
         image = self.owner.image(role)
+        failure_diagnostics = self.owner.localizationFailureDiagnostics(role)
         self.localizationViewer.setData(
-            image, result, key=(role, None if image is None else id(image), None if image is None else tuple(image.shape))
+            image,
+            result,
+            failure_diagnostics=failure_diagnostics,
+            key=(
+                role,
+                None if image is None else id(image),
+                None if image is None else tuple(image.shape),
+            ),
+            view=str(self.localizationViewCombo.currentData() or "localization"),
         )
         if not self._skipLocalizationFormSync:
             self.localizationForm.setParameters(
@@ -480,8 +540,24 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
             text = "Image not acquired."
         elif self.owner.localizationError(role):
             text = f"Localization failed: {self.owner.localizationError(role)}"
+            diagnostics = failure_diagnostics
+            if diagnostics is not None:
+                detected = diagnostics.metadata.get("detected_count")
+                crop_shape = diagnostics.metadata.get("crop_shape")
+                details = []
+                if detected is not None:
+                    details.append(f"detected {int(detected)} spots")
+                if crop_shape is not None:
+                    details.append(
+                        f"crop {int(crop_shape[1])}x{int(crop_shape[0])} px"
+                    )
+                if details:
+                    text += "\n" + " · ".join(details)
             if result is not None:
-                text += "\nPrevious localization remains displayed for comparison."
+                text += (
+                    "\nPrevious successful localization is stale; "
+                    "failed-attempt detections are displayed."
+                )
         elif result is None:
             text = "Not localized."
         elif self.owner.localizationIsStale(role):
@@ -494,6 +570,15 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
                 text += f" · grid RMS {float(rms):.3f} px"
         self.localizationStatus.setText(text)
         self.runSelectedButton.setEnabled(image is not None)
+        missing = 0 if result is None else int(result.metadata.get("missing_count", 0) or 0)
+        strategy = self.owner.correspondenceSpec()
+        self.searchMissingButton.setVisible(strategy.supports_missing_recovery)
+        self.searchMissingButton.setEnabled(
+            image is not None
+            and result is not None
+            and not self.owner.localizationIsStale(role)
+            and missing > 0
+        )
 
     def _refreshTransformPanel(self) -> None:
         self.transformViewer.setData(self.owner)
@@ -543,6 +628,9 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
             # If the other image is current too, update the correspondence so
             # Transform can be refitted immediately without rerunning it.
             self.owner.buildCorrespondence()
+
+    def _searchMissingSites(self) -> None:
+        self.owner.recoverMissingForRole(self._selectedRole())
 
     def _workspaceModelChanged(self, *_args: Any) -> None:
         name = self.workspaceModelCombo.currentData()

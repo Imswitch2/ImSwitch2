@@ -169,9 +169,14 @@ class ULensesController(ImConWidgetController):
                 )
                 rms = grid.diagnostics.get('fit_rms_px')
                 rms_text = '' if rms is None else f' | RMS {float(rms):.2f} px'
+                measured_text = ''
+                if grid.missing_count:
+                    measured_text = (
+                        f' | {grid.matched_count}/{grid.n_cols * grid.n_rows} detected'
+                    )
                 self._widget.setLocalizationStatus(
                     f'Grid {grid.n_cols}x{grid.n_rows} | tilt {grid.angle_deg:.1f} deg | '
-                    f'{stagger}{rms_text}'
+                    f'{stagger}{measured_text}{rms_text}'
                 )
             else:
                 raise ValueError(f'Unknown localization method: {method}')

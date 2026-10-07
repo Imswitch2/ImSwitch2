@@ -14,6 +14,7 @@ from .foci_grid import (
 )
 from .registry import (
     LocalizationDiagnostics,
+    LocalizationFailure,
     ImageLocalizationResult,
     CorrespondenceResult,
     CorrespondenceStrategySpec,
@@ -22,6 +23,7 @@ from .registry import (
 
 __all__ = [
     "LocalizationDiagnostics",
+    "LocalizationFailure",
     "ImageLocalizationResult",
     "CorrespondenceResult",
     "CorrespondenceStrategySpec",

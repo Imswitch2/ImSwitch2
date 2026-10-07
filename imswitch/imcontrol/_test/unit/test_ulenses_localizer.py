@@ -10,6 +10,7 @@ from imswitch.imcontrol.model.ulenses_localizer import (
     localize_grid,
     localizer,
     refine_grid_foci,
+    search_missing_grid_foci,
 )
 
 ulenses_controller_module = importlib.import_module(
@@ -28,6 +29,7 @@ def _render_grid(
     stagger_axis=None,
     stagger_fraction=0.0,
     sigma=1.2,
+    missing=(),
 ):
     yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
     image = np.zeros(shape, dtype=np.float64)
@@ -35,6 +37,7 @@ def _render_grid(
     origin = np.asarray(origin, dtype=float)
     basis_x = np.asarray(basis_x, dtype=float)
     basis_y = np.asarray(basis_y, dtype=float)
+    missing = set(missing)
     for j in range(n_rows):
         for i in range(n_cols):
             point = origin + i * basis_x + j * basis_y
@@ -43,6 +46,8 @@ def _render_grid(
             elif stagger_axis == "columns":
                 point = point + (i % 2) * stagger_fraction * basis_y
             points.append(point)
+            if (i, j) in missing:
+                continue
             image += np.exp(
                 -((yy - point[0]) ** 2 + (xx - point[1]) ** 2) / (2 * sigma**2)
             )
@@ -131,6 +136,73 @@ def test_refine_grid_foci_preserves_grid_index_order():
     assert np.max(np.linalg.norm(refined - expected, axis=1)) < 0.5
 
 
+def test_localize_grid_manual_shape_tolerates_one_missing_site():
+    image, _ = _render_grid(missing={(2, 3)})
+
+    result = localize_grid(
+        image,
+        xp_guess=24.3,
+        yp_guess=22.2,
+        n_cols=6,
+        n_rows=5,
+    )
+
+    assert result.shape == (5, 6)
+    assert result.matched_count == 29
+    assert result.missing_count == 1
+    np.testing.assert_array_equal(result.logical_indices[~result.matched_mask], [[2, 3]])
+
+
+def test_localize_grid_auto_shape_tolerates_one_missing_site():
+    image, _ = _render_grid(missing={(2, 3)})
+
+    result = localize_grid(image, xp_guess=24.3, yp_guess=22.2)
+
+    assert result.shape == (5, 6)
+    assert result.matched_count == 29
+    assert result.missing_count == 1
+
+
+def test_localize_grid_auto_crop_ignores_dim_outside_distractors():
+    image, _ = _render_grid(shape=(320, 360), origin=(100.0, 105.0))
+    image[15, 20] = 0.25
+    image[290, 330] = 0.30
+
+    result = localize_grid(image, xp_guess=24.3, yp_guess=22.2)
+
+    y0, y1, x0, x1 = result.diagnostics["crop_coord"]
+    assert result.shape == (5, 6)
+    assert y0 > 15 and x0 > 20
+    assert y1 < 290 and x1 < 330
+    assert result.matched_count == 30
+
+
+def test_search_missing_grid_foci_recovers_local_image_evidence():
+    image, expected = _render_grid(missing={(2, 3)})
+    missing_point = expected[3 * 6 + 2]
+    yy, xx = np.mgrid[0:image.shape[0], 0:image.shape[1]]
+    image += 0.07 * np.exp(
+        -((yy - missing_point[0]) ** 2 + (xx - missing_point[1]) ** 2)
+        / (2 * 1.2**2)
+    )
+    grid = localize_grid(
+        image,
+        xp_guess=24.3,
+        yp_guess=22.2,
+        n_cols=6,
+        n_rows=5,
+        threshold_rel=0.10,
+    )
+    assert grid.missing_count == 1
+
+    recovered = search_missing_grid_foci(
+        image, grid, search_radius_px=5, threshold_rel=0.02
+    )
+
+    assert recovered.missing_count == 0
+    assert recovered.matched_count == 30
+
+
 def test_controller_uses_current_periodicities_as_localizer_guesses(monkeypatch):
     calls = {}
 
@@ -210,6 +282,14 @@ def test_controller_grid_method_uses_manual_shape_and_preserves_legacy_offsets(m
         ]),
         logical_indices=np.array([(i, j) for j in range(5) for i in range(6)]),
         detected_points_rc=np.zeros((30, 2)),
+        matched_mask=np.ones(30, dtype=bool),
+        measured_points_rc=np.array([
+            [10.0, 20.0], [12.0, 28.0], [14.0, 36.0], [16.0, 44.0], [18.0, 52.0], [20.0, 60.0],
+            [18.0, 23.0], [20.0, 31.0], [22.0, 39.0], [24.0, 47.0], [26.0, 55.0], [28.0, 63.0],
+            [24.0, 18.0], [26.0, 26.0], [28.0, 34.0], [30.0, 42.0], [32.0, 50.0], [34.0, 58.0],
+            [32.0, 21.0], [34.0, 29.0], [36.0, 37.0], [38.0, 45.0], [40.0, 53.0], [42.0, 61.0],
+            [38.0, 16.0], [40.0, 24.0], [42.0, 32.0], [44.0, 40.0], [46.0, 48.0], [48.0, 56.0],
+        ]),
         num_cols=6,
         num_rows=5,
         diagnostics={"fit_rms_px": 0.23, "grid_size_source": "manual"},
@@ -324,6 +404,8 @@ def test_grid_overlay_uses_col_as_x_and_row_as_y():
         grid_points_rc=points,
         logical_indices=np.array([[0, 0], [1, 0], [2, 0]]),
         detected_points_rc=points,
+        matched_mask=np.ones(3, dtype=bool),
+        measured_points_rc=points,
         num_cols=3,
         num_rows=1,
     )
