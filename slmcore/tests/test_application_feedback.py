@@ -586,42 +586,6 @@ def test_switching_default_fov_calibration_marks_position_feedback_stale(tmp_pat
     session.dispose()
 
 
-def test_fov_preview_falls_back_to_saved_samples_without_cgh_target(tmp_path):
-    from slmcore import FOVMappingCorrection,SLMWorkspace
-
-    geometry = SLMGeometry(width=64,height=64,pixel_size_um=1.0)
-    runtime = SLMRuntime(
-        identity=SLMIdentity("slm","SER123"),geometry=geometry,
-        section_geometries=split_slm_geometry(geometry,1),
-        registries=DEFAULT_REGISTRIES,
-    )
-    points = np.array([
-        [-0.2,0.0,0.2,-0.2,0.0,0.2],
-        [-0.2,-0.2,-0.2,0.2,0.2,0.2],
-    ])
-    displacement = np.repeat(np.array([[0.01],[-0.02]]),points.shape[1],axis=1)
-    calibration = FOVMappingCorrection.fit(
-        name="field A",slm_serial="SER123",section_key="sec_0",
-        mapping_name="sample",base_mapping_signature="",ideal_positions_kxy=points,
-        total_displacements_kxy=displacement,degree=1,
-    )
-    workspace = SLMWorkspace(tmp_path)
-    workspace.fov_mapping_correction_store.save(calibration)
-    session = SLMSession(
-        runtime=runtime,
-        fov_mapping_correction_store=workspace.fov_mapping_correction_store,
-    )
-    session.calibration.active_mapping = lambda _section:"sample"
-    session.fov_mapping_runtime.refresh_fov_mapping_contexts()
-    session.fov_mapping_runtime.select_fov_mapping_correction("sec_0","field A")
-
-    preview = session.fov_mapping_runtime.fov_mapping_preview("sec_0")
-    assert preview is not None
-    np.testing.assert_allclose(preview["current_positions_kxy"],points)
-    assert preview["current_positions_kxy"].shape[1] > 0
-    session.dispose()
-
-
 def test_mapping_switch_clears_previous_runtime_fov_when_new_mapping_has_no_default(tmp_path):
     from slmcore import FOVMappingCorrection,SLMStartupPreferences,SLMWorkspace
     from slmcore.application.startup_preferences import StartupPreferencesState

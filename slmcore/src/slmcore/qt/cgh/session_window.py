@@ -135,7 +135,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "create_unavailable_reason":"",
         }
         self._position_reference_preview = None
-        self._fov_mapping_preview = None
         self._normal_localization_context = dict(localization_context or {})
         self._cgh_computing = False
         self._candidate_current = False
@@ -579,7 +578,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_view_combo = QtWidgets.QComboBox()
         self.position_view_combo.addItem("Detector overlay","detector")
         self.position_view_combo.addItem("Position correction","kxy")
-        self.position_view_combo.addItem("FOV correction","fov")
         self.position_view_combo.currentIndexChanged.connect(
             self._on_position_view_changed,
         )
@@ -596,10 +594,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
             self._on_position_reference_affine_transform_dragged,
         )
         self.position_correction_view = PositionCorrectionView(viewer)
-        self.fov_mapping_view = PositionCorrectionView(viewer)
         self.position_view_stack.addWidget(self.position_reference_view)
         self.position_view_stack.addWidget(self.position_correction_view)
-        self.position_view_stack.addWidget(self.fov_mapping_view)
         viewer_layout.addWidget(self.position_view_stack,1)
         layout.addWidget(viewer,1)
 
@@ -938,17 +934,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
             if warning is not None:
                 warning.setText(text)
                 warning.setVisible(missing)
-
-    def set_fov_mapping_correction_state(
-        self,context: Mapping[str,Any] | None,preview: Mapping[str,Any] | None,
-    ) -> None:
-        """Update the read-only FOV correction visualization.
-
-        Runtime Apply state is presented by the section-level FOV checkbox; the
-        feedback workspace no longer owns FOV fitting or persistence controls.
-        """
-        self._fov_mapping_preview = None if preview is None else dict(preview)
-        self._refresh_feedback_visualizations()
 
     def set_position_reference_state(
         self,context: Mapping[str,Any] | None,preview: Any=None,
@@ -2272,14 +2257,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
             else:
                 self.position_correction_view.set_correction(correction)
 
-        fov_preview = self._fov_mapping_preview
-        if fov_preview is None:
-            self.fov_mapping_view.clear()
-        else:
-            self.fov_mapping_view.set_data(
-                ideal_positions_kxy=fov_preview.get("current_positions_kxy"),
-                displacement_kxy=fov_preview.get("current_displacements_kxy"),
-            )
 
     def _refresh_status_controls(self) -> None:
         status = self._status

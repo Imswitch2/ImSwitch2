@@ -12,7 +12,6 @@ from ...cgh.session_window import CGHSessionWindow,MeasurementsAction
 from .actions import FeedbackActionRouter
 from .adaptation import FeedbackAdaptationCoordinator
 from .automatic import AutomaticFeedbackCoordinator
-from .fov_mapping import FOVMappingRuntimeCoordinator
 from .localization import LocalizationCoordinator
 from .measurement import MeasurementCoordinator
 from .references import PositionReferenceCoordinator
@@ -76,7 +75,6 @@ class FeedbackCoordinator(QtCore.QObject):
             synchronize_section=synchronize_section,
             report_error=self._error,
         )
-        self._fov_mapping = FOVMappingRuntimeCoordinator(qt_session.fov_mapping_runtime_service)
         self._adaptation = FeedbackAdaptationCoordinator(
             self._feedback_service,
             window_for=self.window,
@@ -170,7 +168,6 @@ class FeedbackCoordinator(QtCore.QObject):
                         self._windows.pop(key,None)
                 )
                 self._references.synchronize(section_key,window)
-                self._fov_mapping.synchronize(section_key,window)
                 self._synchronize_geometry_warning(section_key,window)
             else:
                 window.configure_observation_planes(
@@ -238,7 +235,6 @@ class FeedbackCoordinator(QtCore.QObject):
             self.measurements_cgh_summary(section_key),
         )
         self._references.synchronize(section_key,window)
-        self._fov_mapping.synchronize(section_key,window)
         self._synchronize_geometry_warning(section_key,window)
         self._automatic.configure_availability(window)
         self._automatic.apply_state_to_window(section_key,window)

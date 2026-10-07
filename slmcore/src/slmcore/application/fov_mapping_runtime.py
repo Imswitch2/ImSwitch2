@@ -1,4 +1,4 @@
-"""FOV correction selection, inspection and runtime application."""
+"""FOV correction selection and runtime application."""
 
 from __future__ import annotations
 
@@ -33,21 +33,6 @@ class FOVMappingRuntimeContext(TypedDict):
     target_count: int
     max_extrapolation_kxy: float
     coverage_tolerance_kxy: float
-
-class FOVMappingRuntimePreview(TypedDict):
-    """Sample and target displacement arrays for the selected saved correction."""
-
-    source: str
-    name: str | None
-    model: str
-    degree: int
-    sample_count: int
-    rms_residual_kxy: float
-    max_residual_kxy: float
-    sample_positions_kxy: np.ndarray
-    sample_displacements_kxy: np.ndarray
-    current_positions_kxy: np.ndarray
-    current_displacements_kxy: np.ndarray
 
 @dataclass
 class _FOVMappingRuntimeSelection:
@@ -216,39 +201,6 @@ class FOVMappingRuntimeService:
             "target_count":int(np.asarray(runtime_context["ideal_positions_kxy"]).shape[1]),
             "max_extrapolation_kxy":float(runtime_context.get("max_extrapolation_kxy",0.0)),
             "coverage_tolerance_kxy":float(runtime_context.get("coverage_tolerance_kxy",0.0)),
-        }
-
-    def fov_mapping_preview(
-        self,section_key: str,
-    ) -> FOVMappingRuntimePreview | None:
-        """Preview the selected saved correction at the current target when possible."""
-        context = self.fov_mapping_context(section_key)
-        calibration = context.get("correction")
-        if calibration is None:
-            return None
-        current = self._runtime.get_section_fov_mapping_context(section_key)
-        ideal = np.asarray(current["ideal_positions_kxy"],dtype=np.float64)
-        # Inspect the field at the current target when meaningful. With no target
-        # (or an unsupported target), fall back to the correction's saved samples.
-        if bool(current.get("supported",False)) and ideal.shape[1] > 0:
-            preview_positions = ideal
-        else:
-            preview_positions = np.asarray(
-                calibration.sample_positions_kxy,dtype=np.float64,
-            )
-        predicted = calibration.evaluate(preview_positions)
-        return {
-            "source":"selected",
-            "name":calibration.name,
-            "model":calibration.model,
-            "degree":calibration.degree,
-            "sample_count":calibration.sample_count,
-            "rms_residual_kxy":calibration.rms_residual_kxy,
-            "max_residual_kxy":calibration.max_residual_kxy,
-            "sample_positions_kxy":np.asarray(calibration.sample_positions_kxy),
-            "sample_displacements_kxy":np.asarray(calibration.sample_displacements_kxy),
-            "current_positions_kxy":preview_positions,
-            "current_displacements_kxy":predicted,
         }
 
     def select_fov_mapping_correction(
