@@ -103,7 +103,7 @@ class ScanCloakController:
         self._panel.showNote('')
         if page == ADVANCED:
             self._mirrorToBackend(force=True)
-            self.__dict__['_cloakPage'] = ADVANCED
+            self._enterPage(ADVANCED)
             self._panel.showPage(ADVANCED)
             return True
 
@@ -114,17 +114,26 @@ class ScanCloakController:
             if not (discardAdvanced or self._panel.confirmDiscardAdvanced(str(reason))):
                 self._panel.showPage(ADVANCED)
                 return False
-            self.__dict__['_cloakPage'] = SIMPLE
+            self._enterPage(SIMPLE)
             self._mirrorToBackend(force=True)
             self._panel.showPage(SIMPLE)
             self._view.showMessage('Advanced changes discarded.')
             return True
-        self.__dict__['_cloakPage'] = SIMPLE
+        self._enterPage(SIMPLE)
         if not self._sameAsMirrored(plan):
             self.adoptPlan(plan)
         self._mirrorToBackend(force=True)
         self._panel.showPage(SIMPLE)
         return True
+
+    def _enterPage(self, page: str):
+        self.__dict__['_cloakPage'] = page
+        # The backend reuses its last scan design while the dicts stay the
+        # same (Advanced's _designCache), but the two pages design the same
+        # dicts differently: the simple page adds its frame geometry and
+        # refuses channel power it cannot build. A design made for one page
+        # must not run from the other.
+        self._designCache = None
 
     # ------------------------------------------------------------------
     # The backend's parameter seam
@@ -239,7 +248,7 @@ class ScanCloakController:
             plan = self._cloak.from_backend(analog, digital, self.cloakLimits())
         except PlanNotRepresentable as refusal:
             note = f'{refusal} It is shown on the Advanced page.'
-            self.__dict__['_cloakPage'] = ADVANCED
+            self._enterPage(ADVANCED)
             self.__dict__['_cloakNote'] = note
             self._panel.showPage(ADVANCED)
             self._panel.showNote(note)
@@ -369,11 +378,11 @@ class ScanCloakController:
         self.__dict__['_stateApplied'] = False
         if cloak and cloak.get('page') == ADVANCED and not getattr(self, 'isRunning', False):
             # Saved on the Advanced page: restore it there, as it is.
-            self.__dict__['_cloakPage'] = ADVANCED
+            self._enterPage(ADVANCED)
         warnings = super().applyComponentState(state, applyMode=applyMode)
         applied = bool(self.__dict__.get('_stateApplied'))
         if not applied:
-            self.__dict__['_cloakPage'] = before
+            self._enterPage(before)
         note = self.__dict__.pop('_cloakNote', None)
         if note:
             warnings.append(note)

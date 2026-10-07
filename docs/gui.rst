@@ -743,6 +743,8 @@ its header switches between the two, on the same scan.
   up to what the scanners reach); pixels and dwell follow it.
 - **Acquisition** scans a chosen region, with sliders for pixel size
   (overview to Nyquist) and dwell, and an estimate of the scan time.
+- While a scan runs, a progress bar under the scan time shows the elapsed
+  and expected time, and the frame number in Live, as in the Advanced panel.
 - **Draw in viewer** draws the region as a rectangle on the live image (on
   the ``Scan region`` layer). Moving or resizing it changes the region;
   editing the numbers moves it. Drawing needs an image the scanners made,

@@ -215,6 +215,20 @@ def test_an_acquisition_runs_one_frame(rig):
     assert rig.count('sigScanEnded') == 1
 
 
+def test_a_run_shows_its_progress_on_the_simple_page(rig, qtbot):
+    """The backend's progress bar, shown on the simple page too -- also with
+    the backend's own box for it unticked (an Advanced setting)."""
+    rig.panel.backend.setProgressEnabled(False)
+    progress = rig.widget.progressRow
+    assert not progress.isVisibleTo(rig.widget)
+    rig.widget.startButton.click()
+    qtbot.waitUntil(lambda: progress.isVisibleTo(rig.widget), timeout=5000)
+    assert rig.widget.progressLabel.text()
+    rig.widget.stopButton.click()
+    assert rig.waitForEnd()
+    qtbot.waitUntil(lambda: not progress.isVisibleTo(rig.widget), timeout=2000)
+
+
 def test_an_external_start_runs_exactly_one_iteration_even_in_live_overview(rig):
     """A recording or script owns any series (plan D3): an external start runs
     one iteration whatever the panel says -- even after a Live run left the

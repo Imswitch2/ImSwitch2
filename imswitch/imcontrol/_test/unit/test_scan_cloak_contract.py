@@ -383,6 +383,30 @@ def test_the_advanced_page_builds_what_the_backend_builds(rig):
             np.testing.assert_array_equal(signals[kind][name], ownSignals[kind][name])
 
 
+def test_a_design_made_on_one_page_is_not_run_from_the_other(rig):
+    """The backend reuses its last design while its dicts stay the same, but
+    the pages design the same dicts differently (the frame geometry here).
+    The pages hand over differently shaped dicts today; held to the same
+    dicts, a design still does not cross pages."""
+    rig.scan.getParameters()
+    dicts = copy.deepcopy((rig.scan._analogParameterDict, rig.scan._digitalParameterDict))
+
+    def sameDicts():
+        rig.scan._analogParameterDict, rig.scan._digitalParameterDict = copy.deepcopy(dicts)
+
+    rig.scan.getParameters = sameDicts
+    _, info = rig.scan._buildScanSignals()
+    assert FRAME_GEOMETRY_KEY in info
+
+    rig.scan.setScanPage('advanced')
+    _, info = rig.scan._buildScanSignals()
+    assert FRAME_GEOMETRY_KEY not in info
+
+    rig.scan.setScanPage('simple')
+    _, info = rig.scan._buildScanSignals()
+    assert FRAME_GEOMETRY_KEY in info
+
+
 def test_the_advanced_page_runs_with_its_own_repeat_box(rig):
     rig.scan.setScanPage('advanced')
     backend = rig.panel.backend

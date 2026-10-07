@@ -20,7 +20,8 @@ class ScanCloakView(QtWidgets.QWidget):
     """The base of a cloak's simple page.
 
     It has what every simple page needs -- a run row (Live, Start, Stop),
-    the time the next scan takes, and a message line -- and a ``content``
+    the time the next scan takes, the running scan's progress, and a message
+    line -- and a ``content``
     layout the cloak fills with its own controls. Mode buttons go at the
     front of ``runRow``.
     """
@@ -60,6 +61,18 @@ class ScanCloakView(QtWidgets.QWidget):
         estimateRow.addWidget(self.frameTimeLabel)
         estimateRow.addStretch(1)
 
+        # The running scan's progress, as the backend panel shows it.
+        self.progressBar = QtWidgets.QProgressBar()
+        self.progressBar.setRange(0, 1000)
+        self.progressBar.setTextVisible(False)
+        self.progressLabel = QtWidgets.QLabel()
+        self.progressRow = QtWidgets.QWidget()
+        progressLayout = QtWidgets.QHBoxLayout(self.progressRow)
+        progressLayout.setContentsMargins(0, 0, 0, 0)
+        progressLayout.addWidget(self.progressBar, 1)
+        progressLayout.addWidget(self.progressLabel)
+        self.progressRow.setVisible(False)
+
         self.content = QtWidgets.QVBoxLayout()
         self.messageLabel = QtWidgets.QLabel('')
         self.messageLabel.setWordWrap(True)
@@ -68,6 +81,7 @@ class ScanCloakView(QtWidgets.QWidget):
         layout.addLayout(self.runRow)
         layout.addLayout(estimateRow)
         layout.addWidget(self.estimateNote)
+        layout.addWidget(self.progressRow)
         layout.addLayout(self.content)
         layout.addWidget(self.messageLabel)
         layout.addStretch(1)
@@ -90,6 +104,22 @@ class ScanCloakView(QtWidgets.QWidget):
     def _runningChanged(self, running: bool):
         """For a cloak's controls that must not change during a run."""
 
+    def showProgress(self, fraction, text: str):
+        """The running scan's progress; ``fraction`` None means unknown."""
+        if fraction is None:
+            self.progressBar.setRange(0, 0)     # busy indicator
+        else:
+            self.progressBar.setRange(0, 1000)
+            self.progressBar.setValue(int(round(1000 * min(max(float(fraction), 0.0), 1.0))))
+        self.progressLabel.setText(text)
+        self.progressRow.setVisible(True)
+
+    def hideProgress(self):
+        self.progressRow.setVisible(False)
+        self.progressBar.setRange(0, 1000)
+        self.progressBar.setValue(0)
+        self.progressLabel.clear()
+
     def showMessage(self, text, error=False):
         self.messageLabel.setText(text)
         self.messageLabel.setStyleSheet('color: #d9534f;' if error else '')
@@ -101,7 +131,8 @@ class ScanCloakPanel(Widget):
 
     Subclasses name the two pages' classes. The backend widget is built as
     its own panel would build it and is not changed, except that its Start
-    button's run state is also shown on the simple page.
+    button's run state and its progress bar are also shown on the simple
+    page.
     """
 
     #: The backend panel's widget class (e.g. ``ScanWidgetAdvanced``).
@@ -131,6 +162,22 @@ class ScanCloakPanel(Widget):
             self.view.setRunning(bool(checked))
 
         self.backend.setScanButtonChecked = setScanButtonChecked
+
+        # ...and its progress bar, when the backend has one. The simple page
+        # always shows it; the backend's own box for it is an Advanced one.
+        backendShowProgress = getattr(self.backend, 'showScanProgress', None)
+        backendHideProgress = getattr(self.backend, 'hideScanProgress', None)
+        if callable(backendShowProgress) and callable(backendHideProgress):
+            def showScanProgress(fraction, text):
+                backendShowProgress(fraction, text)
+                self.view.showProgress(fraction, text)
+
+            def hideScanProgress():
+                backendHideProgress()
+                self.view.hideProgress()
+
+            self.backend.showScanProgress = showScanProgress
+            self.backend.hideScanProgress = hideScanProgress
 
         titleLabel = QtWidgets.QLabel(self.title)
         font = titleLabel.font()

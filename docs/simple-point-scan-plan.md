@@ -1210,6 +1210,13 @@ There are three pieces, each with an abstract base.
     **Discard the Advanced changes** (back to the last simple plan).
 - **While a scan runs**, the switch is refused, like the mode switch.
 - **Saved state:** the page is saved with the panel state and restored.
+- **The backend's design cache is dropped on every switch.** Advanced reuses
+  its last scan design while its dicts stay the same (`_designCache`, from the
+  scan-freeze work), but the two pages design the same dicts differently: the
+  simple page adds its frame geometry and refuses channel power it cannot
+  build. Today the pages never hand over identical dicts (the serializer and
+  `plan_to_dicts` shape them differently), so this is a guard, tested with
+  dicts held identical.
 - **The Advanced widget is a mirror, not a copy made at switch time.** The hidden
   Advanced widget always shows the acquisition plan. It is written through the
   backend's own `setParameters`, debounced like the estimate.
@@ -1230,7 +1237,7 @@ There are three pieces, each with an abstract base.
 | Two plans: the one the next run executes, and the acquisition, which is saved and shown on the Advanced page. How a cloak chooses between them is its own business | Pixel-size and dwell sliders, Nyquist |
 | Run policy while simple: continuation (D3), Stop after the current frame, Save through `recordScanSeries` (D2, P3), refusal messages | Channel lanes → line steps, per-channel power (D5) |
 | Saved state: the backend dicts plus `cloak: {type, plan, page}`. A state the cloak cannot show opens on the Advanced page instead of being refused | Region drawing (D1 geometry, `sigScanGeometryShown`), reusable by any point-detector cloak |
-| Run state shown on the simple page; blocking the whole panel | The frame-geometry key in the scan it builds |
+| Run state and the backend's progress bar shown on the simple page; blocking the whole panel | The frame-geometry key in the scan it builds |
 | The time readout (the backend's `estimateScanTimeS` when it has one) | `mockSample` in its mock setup |
 
 A concrete gain from the saved-state row: the warning from the first mock test
