@@ -49,6 +49,7 @@ class LeicaDMIZPositionerManager(PositionerManager):
         # to config-editor schema extraction at the manager boundary.
         managerProperties.get("calibCsvPath")
         rs232DeviceName = managerProperties["rs232device"]
+        self._rs232DeviceName = rs232DeviceName
         if not rs232DeviceName:
             self._connectionError = "Missing managerProperties.rs232device."
             self._setConnectionError(
@@ -78,7 +79,7 @@ class LeicaDMIZPositionerManager(PositionerManager):
 
         self._rs232Manager = rs232Manager
         self._deviceLifecycle = getLeicaDMILifecycle(rs232Manager, rs232DeviceName)
-        self._deviceLifecycle.registerManager(self, managerProperties)
+        self._deviceLifecycle.registerManager(self, managerProperties=managerProperties)
 
         transport_is_mock = (
             getattr(rs232Manager, "runtimeMode", None) is DeviceRuntimeMode.MOCK
@@ -182,7 +183,7 @@ class LeicaDMIZPositionerManager(PositionerManager):
             )
 
     def getDeviceDescriptorSpec(self):
-        rs232_name = (self._positionerInfo.managerProperties or {}).get("rs232device")
+        rs232_name = self._rs232DeviceName
         return DeviceDescriptorSpec(
             role=DeviceRole.COMPONENT,
             hardware_id=HardwareDeviceId("stand", f"leica:{rs232_name}"),

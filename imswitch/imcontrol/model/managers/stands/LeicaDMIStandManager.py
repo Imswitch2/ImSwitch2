@@ -61,7 +61,7 @@ class LeicaDMIStandManager(DeviceManagerStatusMixin):
 
         self._rs232Manager = rs232Manager
         self._deviceLifecycle = getLeicaDMILifecycle(rs232Manager, rs232DeviceName)
-        self._deviceLifecycle.registerManager(self, managerProperties)
+        self._deviceLifecycle.registerManager(self, managerProperties=managerProperties)
 
         transport_is_mock = (
             getattr(rs232Manager, "runtimeMode", None) is DeviceRuntimeMode.MOCK

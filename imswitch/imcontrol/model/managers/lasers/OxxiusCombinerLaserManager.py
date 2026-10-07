@@ -18,9 +18,8 @@ class OxxiusCombinerLaserManager(LaserManager):
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
         self._channel = int(laserInfo.managerProperties['channel'])
-        self._rs232manager = lowLevelManagers['rs232sManager'][
-            laserInfo.managerProperties['rs232device']
-        ]
+        self._rs232Name = laserInfo.managerProperties['rs232device']
+        self._rs232manager = lowLevelManagers['rs232sManager'][self._rs232Name]
 
         self.blankingOn()
         self.internalControl()
@@ -30,7 +29,7 @@ class OxxiusCombinerLaserManager(LaserManager):
 
 
     def getDeviceDescriptorSpec(self):
-        rs232_name = self.getProperty('rs232device')
+        rs232_name = self._rs232Name
         return sharedRs232ComponentSpec(
             category='laser',
             family='oxxius-combiner',

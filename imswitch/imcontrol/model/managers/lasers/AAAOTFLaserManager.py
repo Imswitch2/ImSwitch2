@@ -58,9 +58,8 @@ class AAAOTFLaserManager(LaserManager):
         self._channel = self._parse_channel(
             laserInfo.managerProperties['channel'], name
         )
-        self._rs232manager = lowLevelManagers['rs232sManager'][
-            laserInfo.managerProperties['rs232device']
-        ]
+        self._rs232Name = laserInfo.managerProperties['rs232device']
+        self._rs232manager = lowLevelManagers['rs232sManager'][self._rs232Name]
         self._use_mock_on_failure = _as_bool(
             laserInfo.managerProperties.get('useMockOnFailure', True)
         )
@@ -275,14 +274,12 @@ class AAAOTFLaserManager(LaserManager):
         else:
             self.internalControl()
 
-
     def getDeviceDescriptorSpec(self):
-        rs232_name = self.getProperty('rs232device')
         return sharedRs232ComponentSpec(
             category='laser',
             family='aa-aotf',
             display_name='AA AOTF',
-            rs232_name=str(rs232_name),
+            rs232_name=str(self._rs232Name),
         )
 
     def setEnabled(self, enabled):

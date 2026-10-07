@@ -217,11 +217,10 @@ class CoolLEDLaserManager(LaserManager):
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
         self._rs232manager = None
+        self._rs232Name = laserInfo.managerProperties['rs232device']
 
         try:
-            self._rs232manager = lowLevelManagers['rs232sManager'][
-                laserInfo.managerProperties['rs232device']
-            ]
+            self._rs232manager = lowLevelManagers['rs232sManager'][self._rs232Name]
             self.__channel_index = laserInfo.managerProperties['channel_index']
             self.__digital_mod = False
         except Exception as exc:
@@ -275,7 +274,7 @@ class CoolLEDLaserManager(LaserManager):
         )
 
     def getDeviceDescriptorSpec(self):
-        rs232_name = self.getProperty('rs232device')
+        rs232_name = self._rs232Name
         return sharedRs232ComponentSpec(
             category='laser',
             family='coolled',
@@ -290,7 +289,7 @@ class CoolLEDLaserManager(LaserManager):
         lifecycle = _COOLLED_LIFECYCLE_CACHE.get(self._rs232manager)
         if lifecycle is None:
             lifecycle = _CoolLEDLifecycle(
-                self._rs232manager, self.getProperty('rs232device')
+                self._rs232manager, self._rs232Name
             )
             _COOLLED_LIFECYCLE_CACHE[self._rs232manager] = lifecycle
         lifecycle.registerChannel(self)

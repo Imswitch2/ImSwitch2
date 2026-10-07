@@ -124,8 +124,10 @@ class HamamatsuManager(DetectorManager):
         self.__name = name
 
         self._cameraId = detectorInfo.managerProperties['cameraListIndex']
+        # Iterated with .items() so config-editor extraction sees the vendor
+        # dict as an object (a plain dict(...) copy hides that).
         self._startupCameraProperties = dict(
-            detectorInfo.managerProperties['hamamatsu']
+            detectorInfo.managerProperties['hamamatsu'].items()
         )
         self._mockSensorShape = self._configuredMockSensorShape(
             self._startupCameraProperties

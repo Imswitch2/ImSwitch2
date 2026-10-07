@@ -115,6 +115,21 @@ def test_serial_open_failure_keeps_manager_constructed_but_unavailable(monkeypat
     assert manager.isAvailable is False
     assert manager.connectionError == "port unavailable"
     assert manager.position["Z"] == 0.0
+    # A failed open is a connection error, not a finalized device.
+    from imswitch.imcontrol.model.devices.status import DeviceConnectionState
+    assert manager.connectionState is DeviceConnectionState.ERROR
+
+
+@pytest.mark.nohardware
+def test_status_follows_connect_and_finalize(monkeypatch):
+    from imswitch.imcontrol.model.devices.status import DeviceConnectionState
+
+    _install_fake_serial(monkeypatch)
+    manager = SerialDacZManager(_make_info(), "FocusPiezoDAC")
+    assert manager.connectionState is DeviceConnectionState.CONNECTED
+    manager.finalize()
+    assert manager.connectionState is not DeviceConnectionState.CONNECTED
+    assert manager.isAvailable is False
 
 
 @pytest.mark.nohardware

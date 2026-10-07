@@ -59,10 +59,9 @@ class MPBLaserManager(LaserManager):
             properties.get('useMockOnFailure', True)
         )
 
+        self._rs232Name = properties['rs232device']
         try:
-            self._rs232manager = kwargs['rs232sManager']._subManagers[
-                properties['rs232device']
-            ]
+            self._rs232manager = kwargs['rs232sManager']._subManagers[self._rs232Name]
             # Recovery comes before identity/diagnostic queries so a laser left
             # live by a crashed process spends the least possible time emitting.
             mode_reply = self._queryRequired('GETPOWERENABLE')
@@ -135,7 +134,7 @@ class MPBLaserManager(LaserManager):
     def getDeviceDescriptorSpec(self):
         return rs232BackedPrimarySpec(
             category='laser',
-            rs232_name=str(self.getProperty('rs232device')),
+            rs232_name=str(self._rs232Name),
         )
 
     @staticmethod

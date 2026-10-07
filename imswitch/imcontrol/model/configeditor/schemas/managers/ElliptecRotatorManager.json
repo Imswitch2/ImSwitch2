@@ -4,10 +4,15 @@
   "properties": {
     "address": {
       "description": "Elliptec bus address.  Each device on the same ``port`` MUST have a unique address.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
       "x-imswitch-kind": "integer",
       "x-imswitch-source": [
-        "code:required",
-        "example:integer"
+        "code:int()",
+        "code:required"
       ]
     },
     "homeOnInit": {
@@ -23,7 +28,7 @@
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:required",
-        "example:string"
+        "code:str()"
       ]
     },
     "scale": {

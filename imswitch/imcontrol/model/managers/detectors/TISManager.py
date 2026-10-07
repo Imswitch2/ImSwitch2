@@ -115,7 +115,8 @@ class TISManager(DetectorManager):
         self.__logger = initLogger(self, instanceName=name)
 
         self._cameraId = detectorInfo.managerProperties['cameraListIndex']
-        tisProperties = dict(detectorInfo.managerProperties['tis'])
+        # .items(): config-editor extraction then sees the vendor dict as an object.
+        tisProperties = dict(detectorInfo.managerProperties['tis'].items())
         self._startupCameraProperties = {
             name: value for name, value in tisProperties.items()
             if name not in self._CAMERA_PROPERTIES

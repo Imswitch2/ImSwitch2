@@ -72,10 +72,12 @@ class SerialDacZManager(PositionerManager):
                 f"Serial DAC Z manager unavailable on {self._port}: {exc}"
             )
             self._close_serial_safely()
+            self._setConnectionError(exc, summary="Serial DAC Z is unavailable")
             return
 
         self._is_available = True
         self.__logger.info("Serial DAC Z manager initialized")
+        self._setConnected("Serial DAC Z initialized")
 
     @property
     def isAvailable(self) -> bool:
@@ -108,10 +110,7 @@ class SerialDacZManager(PositionerManager):
             f"{self._axis} -> {initial_voltage} V"
         )
 
-        self._send_voltage(self._position_to_voltage(initial_position))
-
-        self.__logger.info("Serial DAC Z manager initialized")
-        self._setConnected("Serial DAC Z initialized")
+        self._send_voltage(initial_voltage)
 
     def move(self, dist, axis=None):
         self._check_axis(axis)
@@ -136,6 +135,7 @@ class SerialDacZManager(PositionerManager):
                 f"Serial DAC Z communication failed on {self._port}: {exc}"
             )
             self._close_serial_safely()
+            self._setConnectionError(exc, summary="Serial DAC Z communication failed")
             raise RuntimeError(
                 f"Serial DAC Z communication failed on {self._port}: {exc}"
             ) from exc
@@ -165,6 +165,7 @@ class SerialDacZManager(PositionerManager):
                 )
 
         self._close_serial_safely()
+        self._setFinalizedStatus()
 
     def _raise_if_unavailable(self):
         if self.isAvailable:
@@ -179,9 +180,12 @@ class SerialDacZManager(PositionerManager):
         try:
             if self._ser is not None and self._ser.is_open:
                 self._ser.close()
-        except Exception:
-            pass
-        self._setFinalizedStatus()
+        except Exception as exc:
+            self.__logger.debug(
+                f"Failed to close serial DAC Z connection on {self._port}: {exc}"
+            )
+        finally:
+            self._is_available = False
 
     def _check_axis(self, axis):
         if axis is not None and axis != self._axis:

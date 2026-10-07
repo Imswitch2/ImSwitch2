@@ -125,6 +125,8 @@ def test_hamamatsu_reconnect_replays_runtime_state_and_updates_sensor(monkeypatc
 
     monkeypatch.setattr(HamamatsuManager, '_getCameraObj', get_camera)
     manager = HamamatsuManager(_info(), 'Orca')
+    # Reconnect builds its camera through _makeRealCamera, never _getCameraObj.
+    monkeypatch.setattr(manager, '_makeRealCamera', lambda: cameras.pop(0))
     host = _LifecycleHost()
     manager._bindDetectorLifecycleHost(host, 'Orca')
 
@@ -166,6 +168,8 @@ def test_hamamatsu_full_frame_maps_to_new_real_sensor_size(monkeypatch):
 
     monkeypatch.setattr(HamamatsuManager, '_getCameraObj', get_camera)
     manager = HamamatsuManager(_info(), 'Orca')
+    # Reconnect builds its camera through _makeRealCamera, never _getCameraObj.
+    monkeypatch.setattr(manager, '_makeRealCamera', lambda: cameras.pop(0))
     host = _LifecycleHost()
     manager._bindDetectorLifecycleHost(host, 'Orca')
 
@@ -180,23 +184,18 @@ def test_hamamatsu_full_frame_maps_to_new_real_sensor_size(monkeypatch):
 def test_hamamatsu_reconnect_keeps_real_to_mock_fallback_semantics(monkeypatch):
     startup = _FakeCamera('startup')
     fallback = _FakeCamera('mock')
-    calls = 0
 
     def get_camera(manager, _camera_id):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            manager._setConnected('camera connected')
-            return startup
-        manager._setConnectionError(
-            RuntimeError('camera not found'),
-            summary='Hamamatsu camera initialization failed; mock fallback active',
-            mock_active=True,
-        )
-        return fallback
+        manager._setConnected('camera connected')
+        return startup
+
+    def no_camera():
+        raise RuntimeError('camera not found')
 
     monkeypatch.setattr(HamamatsuManager, '_getCameraObj', get_camera)
     manager = HamamatsuManager(_info(), 'Orca')
+    monkeypatch.setattr(manager, '_makeRealCamera', no_camera)
+    monkeypatch.setattr(manager, '_makeMockCamera', lambda: fallback)
     host = _LifecycleHost()
     manager._bindDetectorLifecycleHost(host, 'Orca')
 
@@ -208,7 +207,6 @@ def test_hamamatsu_reconnect_keeps_real_to_mock_fallback_semantics(monkeypatch):
     assert manager.runtimeMode is DeviceRuntimeMode.MOCK
     assert manager.connectionState is DeviceConnectionState.ERROR
     assert host.clearedFaults == ['Orca']
-
 
 def test_hamamatsu_reconnect_can_recover_real_after_mock_fallback(monkeypatch):
     startup = _FakeCamera('startup')

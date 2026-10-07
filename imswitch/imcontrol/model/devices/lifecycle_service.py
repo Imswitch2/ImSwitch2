@@ -11,6 +11,7 @@ from .lifecycle import (
     DeviceLifecycleAction,
     DeviceLifecycleBlockedError,
     DeviceLifecycleBusyError,
+    DeviceLifecycleError,
     DeviceLifecycleNotSupportedError,
     DeviceLifecycleResult,
 )

@@ -82,10 +82,16 @@ def test_the_coverage_the_plan_is_built_on(report):
     assert report.keys == 215
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
-    assert report.required == 62, "60 under the guard-aware rule, plus RS232Manager's port and recv_termination"
-    assert report.optional == 153
+    # 64 after the device-reconnection rebase: CoolLED and MPB read
+    # rs232device unguarded at construction now (their status descriptors
+    # reuse that name instead of re-reading it), so it is required, as it is
+    # for every other RS232-backed laser.
+    assert report.required == 64, "62 + CoolLED/MPB rs232device"
+    assert report.optional == 151
     assert report.refs == 14
-    assert report.none_default_only == 31
+    # 33: MHXYStage and PiezoconceptZ read rs232device with .get() (None
+    # default) for their status descriptors instead of inside try/except.
+    assert report.none_default_only == 33
     # 117/118 until Phase 5: PiezoconceptZManager2's card is read as its own
     # (range_um belongs to it), and the docs drift test made every card list
     # every property its manager reads -- 17 rows added, all agreeing.
@@ -103,7 +109,9 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # 93: AAAOTF's useMockOnFailure is read with a bool default.
     # 96 after the MoNaLISA2 manager updates: scanResumeSettleMs,
     # Leica availableCubes, and PI runtime_timeout_ms add code-derived types.
-    assert report.typed_by_code == 96
+    # 98 after the device-reconnection rebase: Elliptec's address (int()) and
+    # port (str()) are coerced in code.
+    assert report.typed_by_code == 98
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys
@@ -195,9 +203,12 @@ def test_thorcam_defaults_carry_their_sub_keys(extractions):
     assert {"exposure_us", "gain", "operation_mode"} <= set(spec.sub_properties)
 
 
-def test_pistage_usb_description_is_read_in_a_method_handed_the_dict(extractions):
+def test_pistage_usb_description_is_optional(extractions):
+    # Read directly at construction since the reconnect rework (it is kept
+    # for re-resolving the USB device on reconnect), with .get(): optional.
     spec = extractions["PIStageManager"].properties["usb_description"]
-    assert spec.reads[0].via == "method:_resolve_usb_description"
+    assert spec.required == "optional"
+    assert spec.reads[0].via == "literal"
 
 
 def test_rs232_manager_is_open_because_the_driver_takes_the_whole_dict():

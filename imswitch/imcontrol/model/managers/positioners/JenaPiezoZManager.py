@@ -31,9 +31,8 @@ class JenaPiezoZManager(PositionerManager):
             axis: 0 for axis in positionerInfo.axes
         })
         self.__logger = initLogger(self, instanceName=name)
-        self._rs232Manager = lowLevelManagers['rs232sManager'][
-            positionerInfo.managerProperties['rs232device']
-        ]
+        self._rs232Name = positionerInfo.managerProperties['rs232device']
+        self._rs232Manager = lowLevelManagers['rs232sManager'][self._rs232Name]
         self._configure_rs232_for_jena()
 
         self._posRangeUm = positionerInfo.managerProperties.get('posRangeUm', [0, 100])
@@ -61,9 +60,8 @@ class JenaPiezoZManager(PositionerManager):
             self._position[self.axes[0]] = self._posRangeUm[0]
             self._setConnectionError(e, summary="Jena piezo initialization failed")
 
-
     def getDeviceDescriptorSpec(self):
-        rs232_name = (self._positionerInfo.managerProperties or {}).get('rs232device')
+        rs232_name = self._rs232Name
         return rs232BackedPrimarySpec(
             category='positioner',
             rs232_name=str(rs232_name),
