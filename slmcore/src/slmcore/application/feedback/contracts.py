@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any,Callable,Mapping,Protocol,Sequence
 
-from ...core.cgh.feedback import FeedbackOrientation,IntensityAnalysis
+from ...core.cgh.feedback import IntensityAnalysis
 from ...core.measurement import ImageMeasurement
 from ...core.engine.transition import SectionStateTransition
 
@@ -70,22 +70,6 @@ class FeedbackParameterUpdateResult:
 
     changed: bool
     candidate_analysis: IntensityAnalysis | None=None
-
-@dataclass(frozen=True)
-class FeedbackOrientationContext:
-    """Current transient orientation and its persistent observation/default context."""
-
-    orientation: FeedbackOrientation
-    saved_orientation: FeedbackOrientation
-    observation_plane_name: str | None=None
-    observation_plane_override: bool=False
-    calibrated: bool=False
-    change_allowed: bool=True
-    change_unavailable_reason: str=""
-
-    @property
-    def save_needed(self) -> bool:
-        return self.orientation is not self.saved_orientation
 
 @dataclass(frozen=True)
 class SLMFeedbackCallbacks:

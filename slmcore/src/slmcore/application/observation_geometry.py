@@ -15,8 +15,8 @@ class ObservationGeometryService:
     """Resolve saved geometry for one SLM by section and observation plane.
 
     The service owns persistent geometry access only. Calibration acquisition,
-    localization, analysis and temporary/manual feedback orientation remain in
-    their workflow services.
+    localization and analysis remain in the dedicated geometry-calibration
+    workflow; feedback consumes the saved result read-only.
     """
 
     def __init__(

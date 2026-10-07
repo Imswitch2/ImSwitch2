@@ -167,153 +167,55 @@ def test_automatic_feedback_capability_belongs_to_application_service():
     )
 
 
-def test_feedback_orientation_is_transient_until_explicitly_saved_and_scoped_by_plane():
+def test_feedback_orientation_comes_only_from_saved_geometry(tmp_path):
     from slmcore.application.startup_preferences import StartupPreferencesState
     from slmcore.setup import SLMStartupPreferences
-
-    runtime = _runtime()
-    saved = []
-    preferences = StartupPreferencesState(
-        SLMStartupPreferences(feedback_orientations={
-            "sec_0":{
-                "default":"identity",
-                "planes":{"sample":"flip_horizontal"},
-            },
-        }),
-        saved.append,
-    )
-    session = SLMSession(runtime=runtime,startup_preferences=preferences)
-    active_plane = {"value":None}
-    _set_feedback_observation_planes(session,"sample","fourier")
-    session.feedback.select_observation_plane("sec_0",active_plane["value"])
-
-    assert session.feedback.feedback_orientation("sec_0").value == "identity"
-    session.feedback.set_feedback_orientation("sec_0","flip_vertical")
-    assert session.feedback.feedback_orientation("sec_0").value == "flip_vertical"
-    assert saved == []
-
-    context = session.feedback.feedback_orientation_context("sec_0")
-    assert context.observation_plane_name is None
-    assert context.save_needed
-    session.feedback.save_feedback_orientation("sec_0")
-    assert saved[-1].feedback_orientations["sec_0"].default == "flip_vertical"
-
-    active_plane["value"] = "sample"
-    session.feedback.select_observation_plane("sec_0","sample")
-    session.feedback.refresh_feedback_orientation_contexts()
-    assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
-    context = session.feedback.feedback_orientation_context("sec_0")
-    assert context.observation_plane_name == "sample"
-    assert context.observation_plane_override
-    assert not context.save_needed
-
-    session.feedback.set_feedback_orientation("sec_0","rotate_180")
-    assert session.feedback.feedback_orientation("sec_0").value == "rotate_180"
-    assert saved[-1].feedback_orientations["sec_0"].planes["sample"] == "flip_horizontal"
-    session.feedback.save_feedback_orientation("sec_0")
-    assert saved[-1].feedback_orientations["sec_0"].planes["sample"] == "rotate_180"
-
-
-
-def test_manual_plane_orientation_save_persists_authoritative_geometry_calibration(tmp_path):
     from slmcore.workspace import SLMGeometryOrientationCalibrationStore
 
     runtime = _runtime()
-    geometry_store = SLMGeometryOrientationCalibrationStore(tmp_path/"geometry")
-    session = SLMSession(
-        runtime=runtime,
-        geometry_orientation_calibration_store=geometry_store,
-    )
-    _set_feedback_observation_planes(session,"sample")
-    session.feedback.select_observation_plane("sec_0","sample")
-
-    assert not session.observation_geometry.is_calibrated("sec_0","sample")
-    session.feedback.set_feedback_orientation("sec_0","rotate_90_cw")
-    session.feedback.save_feedback_orientation("sec_0")
-
-    assert session.observation_geometry.is_calibrated("sec_0","sample")
-    saved = session.observation_geometry.load("sec_0","sample")
-    assert saved.orientation.value == "rotate_90_cw"
-    assert saved.protocol == "manual_orientation_v1"
-    assert saved.provenance["method"] == "manual"
-    context = session.feedback.feedback_orientation_context("sec_0")
-    assert context.calibrated
-    assert context.saved_orientation.value == "rotate_90_cw"
-
-def test_feedback_orientation_unsaved_value_is_discarded_only_when_plane_changes():
-    from slmcore.application.startup_preferences import StartupPreferencesState
-    from slmcore.setup import SLMStartupPreferences
-
-    runtime = _runtime()
     preferences = StartupPreferencesState(
         SLMStartupPreferences(feedback_orientations={
             "sec_0":{
-                "default":"identity",
-                "planes":{
-                    "sample":"flip_horizontal",
-                    "fourier":"rotate_180",
-                },
+                "default":"flip_vertical",
+                "planes":{"sample":"flip_horizontal"},
             },
         }),
         lambda _value:None,
     )
-    session = SLMSession(runtime=runtime,startup_preferences=preferences)
-    active_plane = {"value":"sample"}
+    session = SLMSession(
+        runtime=runtime,
+        startup_preferences=preferences,
+        geometry_orientation_calibration_store=(
+            SLMGeometryOrientationCalibrationStore(tmp_path/"geometry")
+        ),
+    )
     _set_feedback_observation_planes(session,"sample","fourier")
-    session.feedback.select_observation_plane("sec_0",active_plane["value"])
 
-    assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
-    session.feedback.set_feedback_orientation("sec_0","flip_vertical")
-    session.feedback.refresh_feedback_orientation_contexts()
-    assert session.feedback.feedback_orientation("sec_0").value == "flip_vertical"
-
-    active_plane["value"] = "fourier"
-    session.feedback.select_observation_plane("sec_0","fourier")
-    session.feedback.refresh_feedback_orientation_contexts()
-    assert session.feedback.feedback_orientation("sec_0").value == "rotate_180"
-
-    active_plane["value"] = "sample"
     session.feedback.select_observation_plane("sec_0","sample")
-    session.feedback.refresh_feedback_orientation_contexts()
+    # Legacy startup orientation preferences no longer act as a feedback override.
+    assert session.feedback.feedback_orientation("sec_0").value == "identity"
+
+    session.geometry_calibration.save_manual(
+        "sec_0","sample","rotate_90_cw",
+    )
+    session.geometry_calibration.save_manual(
+        "sec_0","fourier","flip_horizontal",
+    )
+    assert session.feedback.feedback_orientation("sec_0").value == "rotate_90_cw"
+
+    session.feedback.select_observation_plane("sec_0","fourier")
     assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
 
 
-def test_feedback_orientation_change_locks_only_after_feedback_cgh_is_computed():
-    from types import SimpleNamespace
-    import pytest
-
+def test_feedback_exposes_geometry_as_read_only_context():
     runtime = _runtime()
     session = SLMSession(runtime=runtime)
 
-    # Base CGH round 0 is still editable. This also covers an intensity
-    # "Adapt target" working round, because the last computed round remains 0.
-    session.feedback.set_feedback_orientation("sec_0","flip_horizontal")
-
-    original_status = runtime.get_section_cgh_status
-    runtime.get_section_cgh_status = lambda _section:SimpleNamespace(
-        current_round_index=1,
-        position_active=False,
-    )
-    try:
-        context = session.feedback.feedback_orientation_context("sec_0")
-        assert not context.change_allowed
-        with pytest.raises(RuntimeError,match="locked"):
-            session.feedback.set_feedback_orientation("sec_0","identity")
-    finally:
-        runtime.get_section_cgh_status = original_status
-
-    runtime.get_section_cgh_status = lambda _section:SimpleNamespace(
-        current_round_index=0,
-        position_active=True,
-    )
-    try:
-        context = session.feedback.feedback_orientation_context("sec_0")
-        assert not context.change_allowed
-        with pytest.raises(RuntimeError,match="locked"):
-            session.feedback.set_feedback_orientation("sec_0","identity")
-    finally:
-        runtime.get_section_cgh_status = original_status
-
+    assert hasattr(session.feedback,"geometry_orientation_calibration")
+    assert hasattr(session.feedback,"feedback_orientation")
+    assert not hasattr(session.feedback,"set_feedback_orientation")
+    assert not hasattr(session.feedback,"save_feedback_orientation")
+    assert not hasattr(session.feedback,"feedback_orientation_context")
 
 
 def _attach_reference_localization(runtime,section_key="sec_0"):
@@ -367,6 +269,7 @@ def test_position_reference_accepts_inferred_but_not_unresolved_sites(tmp_path):
     import pytest
 
     from slmcore import PositionReferenceStore
+    from slmcore.workspace import SLMGeometryOrientationCalibrationStore
     from slmcore.core.cgh.localization import infer_missing_localization
 
     store = PositionReferenceStore(tmp_path / "position_references")
@@ -509,22 +412,37 @@ def test_position_reference_workflow_remains_available_with_stored_correction(tm
 def test_named_reference_reindexes_source_orientation_for_destination_section(tmp_path):
     from slmcore import PositionReferenceStore
     from slmcore.core.cgh.feedback import orient_localization
+    from slmcore.workspace import SLMGeometryOrientationCalibrationStore
 
     store = PositionReferenceStore(tmp_path / "position_references")
 
     runtime_a = _runtime(serial="SER-A")
-    session_a = SLMSession(runtime=runtime_a,position_reference_store=store)
+    session_a = SLMSession(
+        runtime=runtime_a,position_reference_store=store,
+        geometry_orientation_calibration_store=(
+            SLMGeometryOrientationCalibrationStore(tmp_path / "geometry_a")
+        ),
+    )
     _set_feedback_observation_planes(session_a,"sample")
     localization_a = _attach_reference_localization(runtime_a)
-    session_a.feedback.set_feedback_orientation("sec_0","rotate_180")
+    session_a.geometry_calibration.save_manual(
+        "sec_0","sample","rotate_180",
+    )
     reference = session_a.feedback.add_position_reference("sec_0","488 reference")
     assert reference.metadata["feedback_orientation"] == "rotate_180"
 
     runtime_b = _runtime(serial="SER-B")
-    session_b = SLMSession(runtime=runtime_b,position_reference_store=store)
+    session_b = SLMSession(
+        runtime=runtime_b,position_reference_store=store,
+        geometry_orientation_calibration_store=(
+            SLMGeometryOrientationCalibrationStore(tmp_path / "geometry_b")
+        ),
+    )
     _set_feedback_observation_planes(session_b,"sample")
     localization_b = _attach_reference_localization(runtime_b)
-    session_b.feedback.set_feedback_orientation("sec_0","flip_vertical")
+    session_b.geometry_calibration.save_manual(
+        "sec_0","sample","flip_vertical",
+    )
     session_b.feedback.set_position_reference(
         "sec_0",mode="reference",reference_name="488 reference",
     )

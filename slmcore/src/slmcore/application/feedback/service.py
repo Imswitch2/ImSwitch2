@@ -9,8 +9,8 @@ import numpy as np
 
 from ...core.cgh.feedback import (
     EditablePositionReferenceGeometry,FeedbackOrientation,
-    GeometryOrientationAnalysis,GeometryOrientationCalibration,IntensityAnalysis,
-    PositionReference,PositionReferenceMode,
+    GeometryOrientationCalibration,IntensityAnalysis,PositionReference,
+    PositionReferenceMode,
 )
 from ...core.cgh.localization import LocalizationResult
 from ...core.measurement import ImageMeasurement
@@ -21,11 +21,10 @@ from ...workspace.position_reference_store import (
 from .adaptation import FeedbackAdaptationService
 from .automatic import AutomaticFeedbackRunner
 from .contracts import (
-    AutomaticFeedbackState,FeedbackOrientationContext,FeedbackParameterUpdateResult,
-    MeasurementDispatcher,SLMFeedbackCallbacks,
+    AutomaticFeedbackState,FeedbackParameterUpdateResult,MeasurementDispatcher,
+    SLMFeedbackCallbacks,
 )
 from .geometry_calibration import GeometryOrientationFeedbackService
-from ..geometry_calibration import GeometryCalibrationContext
 from .localization import LocalizationService
 from .measurement import MeasurementService
 from .references import (
@@ -36,7 +35,6 @@ from .references import (
 if TYPE_CHECKING:
     from ..session import SLMSession
     from ..observation_geometry import ObservationGeometryService
-    from ..geometry_calibration import GeometryCalibrationService
 
 
 _UNSET = object()
@@ -53,7 +51,6 @@ class SLMFeedbackService:
         callbacks: SLMFeedbackCallbacks | None=None,
         position_reference_store: PositionReferenceStore | None=None,
         observation_geometry: "ObservationGeometryService | None"=None,
-        geometry_calibration: "GeometryCalibrationService",
     ) -> None:
         self._application_session = application_session
         self._callbacks = callbacks or SLMFeedbackCallbacks()
@@ -64,8 +61,6 @@ class SLMFeedbackService:
         runtime_provider = lambda:self._application_session.runtime
         callbacks_provider = lambda:self._callbacks
         editor_writes_allowed = lambda:bool(self._application_session.editor_writes_allowed)
-        startup_preferences = lambda:self._application_session.startup_preferences
-
         self._measurement = MeasurementService(
             runtime_provider=runtime_provider,
             callbacks_provider=callbacks_provider,
@@ -81,10 +76,8 @@ class SLMFeedbackService:
             callbacks_provider=callbacks_provider,
             editor_writes_allowed=editor_writes_allowed,
             active_feedback_plane=self._active_feedback_plane,
-            startup_preferences=startup_preferences,
             update_committed_analysis=self._update_committed_analysis,
             observation_geometry=observation_geometry,
-            geometry_calibration=geometry_calibration,
         )
         self._references = PositionReferenceService(
             runtime_provider=runtime_provider,
@@ -391,78 +384,8 @@ class SLMFeedbackService:
             observation_plane_name=observation_plane_name,
         )
 
-    def geometry_period_from_um(self,section_key: str,value_um: float,axis: str) -> float:
-        return self._geometry.geometry_period_from_um(section_key,value_um,axis)
-
-    def geometry_orientation_calibration_context(self,section_key: str) -> GeometryCalibrationContext:
-        return self._geometry.geometry_orientation_calibration_context(section_key)
-
     def feedback_orientation(self,section_key: str) -> FeedbackOrientation:
         return self._geometry.feedback_orientation(section_key)
-
-    def feedback_orientation_context(
-        self,section_key: str,
-    ) -> FeedbackOrientationContext:
-        return self._geometry.feedback_orientation_context(section_key)
-
-    def compute_geometry_orientation_calibration_target(
-        self,section_key: str,*,grid_x: int,grid_y: int,period_x_px: float,period_y_px: float,
-        source: str,on_complete: Callable[[bool,Exception | None],None] | None=None,
-    ) -> bool:
-        return self._geometry.compute_geometry_orientation_calibration_target(
-            section_key,
-            grid_x=grid_x,
-            grid_y=grid_y,
-            period_x_px=period_x_px,
-            period_y_px=period_y_px,
-            source=source,
-            on_complete=on_complete,
-        )
-
-    def acquire_geometry_orientation_calibration(
-        self,section_key: str,source: str,*,on_complete: Callable[[bool,Exception | None],None] | None=None,
-    ) -> None:
-        return self._geometry.acquire_geometry_orientation_calibration(
-            section_key,
-            source,
-            on_complete=on_complete,
-        )
-
-    def set_geometry_orientation_calibration_measurement(
-        self,section_key: str,measurement: ImageMeasurement,
-    ) -> None:
-        return self._geometry.set_geometry_orientation_calibration_measurement(
-            section_key,
-            measurement,
-        )
-
-    def geometry_orientation_localization_candidate(
-        self,section_key: str,parameters: Mapping[str,Any],
-    ) -> LocalizationResult:
-        return self._geometry.geometry_orientation_localization_candidate(
-            section_key,
-            parameters,
-        )
-
-    def analyze_geometry_orientation_calibration(self,section_key: str) -> GeometryOrientationAnalysis:
-        return self._geometry.analyze_geometry_orientation_calibration(section_key)
-
-    def save_geometry_orientation_calibration(self,section_key: str) -> GeometryOrientationCalibration:
-        return self._geometry.save_geometry_orientation_calibration(section_key)
-
-    def finish_geometry_orientation_calibration(self,section_key: str) -> None:
-        return self._geometry.finish_geometry_orientation_calibration(section_key)
-
-    def set_feedback_orientation(
-        self,section_key: str,orientation: FeedbackOrientation | str,
-    ) -> FeedbackOrientation:
-        return self._geometry.set_feedback_orientation(section_key,orientation)
-
-    def save_feedback_orientation(self,section_key: str) -> FeedbackOrientation:
-        return self._geometry.save_feedback_orientation(section_key)
-
-    def refresh_feedback_orientation_contexts(self,*,force: bool=False) -> None:
-        return self._geometry.refresh_feedback_orientation_contexts(force=force)
 
     # ------------------------------------------------------------------
     # Localization
@@ -628,7 +551,6 @@ class SLMFeedbackService:
     def prepare_runtime_change(self) -> None:
         self._automatic.cancel_for_runtime_change()
         self._measurement.cancel_all()
-        self._geometry.prepare_runtime_change()
 
     def dispose(self) -> None:
         self.prepare_runtime_change()

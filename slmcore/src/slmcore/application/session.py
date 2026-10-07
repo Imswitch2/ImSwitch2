@@ -171,7 +171,6 @@ class SLMSession:
             callbacks=self._feedback_callbacks(),
             position_reference_store=position_reference_store,
             observation_geometry=self.observation_geometry,
-            geometry_calibration=self.geometry_calibration,
         )
         self.calibration = SLMCalibrationService(
             self,

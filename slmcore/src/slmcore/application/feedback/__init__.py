@@ -2,7 +2,7 @@
 
 from .automatic import AutomaticFeedbackRunner
 from .contracts import (
-    AutomaticFeedbackState,FeedbackOrientationContext,FeedbackParameterUpdateResult,
+    AutomaticFeedbackState,FeedbackParameterUpdateResult,
     MeasurementDispatcher,MeasurementRequest,SLMFeedbackCallbacks,
 )
 from .references import (
@@ -13,7 +13,6 @@ from .service import SLMFeedbackService
 __all__ = [
     "AutomaticFeedbackRunner",
     "AutomaticFeedbackState",
-    "FeedbackOrientationContext",
     "FeedbackParameterUpdateResult",
     "MeasurementDispatcher",
     "MeasurementRequest",

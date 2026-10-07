@@ -13,7 +13,6 @@ from .actions import FeedbackActionRouter
 from .adaptation import FeedbackAdaptationCoordinator
 from .automatic import AutomaticFeedbackCoordinator
 from .fov_mapping import FOVMappingRuntimeCoordinator
-from .geometry_calibration import GeometryOrientationCalibrationCoordinator
 from .localization import LocalizationCoordinator
 from .measurement import MeasurementCoordinator
 from .references import PositionReferenceCoordinator
@@ -78,15 +77,6 @@ class FeedbackCoordinator(QtCore.QObject):
             report_error=self._error,
         )
         self._fov_mapping = FOVMappingRuntimeCoordinator(qt_session.fov_mapping_runtime_service)
-        self._geometry = GeometryOrientationCalibrationCoordinator(
-            self._feedback_service,
-            window_for=self.window,
-            flush_section=flush_section,
-            synchronize_section=synchronize_section,
-            report_error=self._error,
-            set_measurement_error=self._measurement.set_error,
-            set_localization_error=self._localization.set_error,
-        )
         self._adaptation = FeedbackAdaptationCoordinator(
             self._feedback_service,
             window_for=self.window,
@@ -100,7 +90,6 @@ class FeedbackCoordinator(QtCore.QObject):
         self._actions = FeedbackActionRouter(
             measurement=self._measurement,
             localization=self._localization,
-            geometry=self._geometry,
             adaptation=self._adaptation,
             references=self._references,
             automatic=self._automatic,
@@ -162,12 +151,6 @@ class FeedbackCoordinator(QtCore.QObject):
                     current_detector=current,
                     observation_planes=observation_planes,
                     current_observation_plane=current_observation,
-                    feedback_orientation=(
-                        self._feedback_service.feedback_orientation(section_key)
-                    ),
-                    feedback_orientation_context=(
-                        self._geometry.orientation_ui_context(section_key)
-                    ),
                     cgh_summary=self.measurements_cgh_summary(section_key),
                     title="CGH Session - %s/%s" % (
                         self._qt_session.presenter.display_name,section_key,
@@ -188,7 +171,7 @@ class FeedbackCoordinator(QtCore.QObject):
                 )
                 self._references.synchronize(section_key,window)
                 self._fov_mapping.synchronize(section_key,window)
-                self._geometry.synchronize(section_key,window)
+                self._synchronize_geometry_warning(section_key,window)
             else:
                 window.configure_observation_planes(
                     observation_planes,current_observation,
@@ -253,14 +236,26 @@ class FeedbackCoordinator(QtCore.QObject):
             runtime.get_section_cgh_status(section_key),
             self.localization_context(section_key),
             self.measurements_cgh_summary(section_key),
-            self._feedback_service.feedback_orientation(section_key),
-            self._geometry.orientation_ui_context(section_key),
         )
         self._references.synchronize(section_key,window)
         self._fov_mapping.synchronize(section_key,window)
-        self._geometry.synchronize(section_key,window)
+        self._synchronize_geometry_warning(section_key,window)
         self._automatic.configure_availability(window)
         self._automatic.apply_state_to_window(section_key,window)
+
+    def _synchronize_geometry_warning(
+        self,section_key: str,window: CGHSessionWindow,
+    ) -> None:
+        plane=self._feedback_service.active_observation_plane(section_key)
+        calibrated=bool(
+            plane
+            and self._feedback_service.geometry_orientation_calibration(
+                section_key,observation_plane_name=plane,
+            ) is not None
+        )
+        window.set_geometry_calibration_status(
+            observation_plane_name=plane,calibrated=calibrated,
+        )
 
     def set_cgh_computing(self,section_key: str,computing: bool) -> None:
         window = self._windows.get(section_key)
@@ -439,27 +434,6 @@ class FeedbackCoordinator(QtCore.QObject):
     # ------------------------------------------------------------------
     # Delegated geometry/reference workflows
     # ------------------------------------------------------------------
-
-    def compute_geometry_orientation_calibration(
-        self,section_key: str,values: Mapping[str,Any],
-    ) -> None:
-        self._geometry.compute(section_key,values)
-
-    def acquire_geometry_orientation_calibration(
-        self,section_key: str,source: str,
-    ) -> None:
-        self._geometry.acquire(section_key,source)
-
-    def load_geometry_orientation_calibration(self,section_key: str) -> None:
-        self._geometry.load(section_key)
-
-    def run_geometry_orientation_localization(
-        self,section_key: str,parameters: Mapping[str,Any],
-    ) -> None:
-        self._geometry.run_localization(section_key,parameters)
-
-    def finish_geometry_orientation_calibration(self,section_key: str) -> None:
-        self._geometry.finish(section_key)
 
     def set_position_reference(
         self,

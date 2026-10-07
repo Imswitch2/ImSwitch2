@@ -10,7 +10,6 @@ from ...cgh.session_window import MeasurementsAction
 if TYPE_CHECKING:
     from .adaptation import FeedbackAdaptationCoordinator
     from .automatic import AutomaticFeedbackCoordinator
-    from .geometry_calibration import GeometryOrientationCalibrationCoordinator
     from .localization import LocalizationCoordinator
     from .measurement import MeasurementCoordinator
     from .references import PositionReferenceCoordinator
@@ -24,7 +23,6 @@ class FeedbackActionRouter:
         *,
         measurement: "MeasurementCoordinator",
         localization: "LocalizationCoordinator",
-        geometry: "GeometryOrientationCalibrationCoordinator",
         adaptation: "FeedbackAdaptationCoordinator",
         references: "PositionReferenceCoordinator",
         automatic: "AutomaticFeedbackCoordinator",
@@ -35,7 +33,6 @@ class FeedbackActionRouter:
     ) -> None:
         self._measurement = measurement
         self._localization = localization
-        self._geometry = geometry
         self._adaptation = adaptation
         self._references = references
         self._automatic = automatic
@@ -73,36 +70,23 @@ class FeedbackActionRouter:
         if request is MeasurementsAction.ACQUIRE:
             source = str(values.get("detector") or "")
             self._measurement.set_source_override(section_key,source or None)
-            if values.get("geometry_calibration"):
-                self._geometry.acquire(
-                    section_key,source,
-                )
-            else:
-                self._measurement.acquire(
-                    section_key,source,
-                    reuse_previous_localization=bool(
-                        values.get("reuse_previous_localization",False)
-                    ),
-                )
+            self._measurement.acquire(
+                section_key,source,
+                reuse_previous_localization=bool(
+                    values.get("reuse_previous_localization",False)
+                ),
+            )
         elif request is MeasurementsAction.LOAD:
-            if values.get("geometry_calibration"):
-                self._geometry.load(section_key)
-            else:
-                self._measurement.load(
-                    section_key,
-                    reuse_previous_localization=bool(
-                        values.get("reuse_previous_localization",False)
-                    ),
-                )
+            self._measurement.load(
+                section_key,
+                reuse_previous_localization=bool(
+                    values.get("reuse_previous_localization",False)
+                ),
+            )
         elif request is MeasurementsAction.LOCALIZATION_RUN:
-            if values.get("geometry_calibration"):
-                self._geometry.run_localization(
-                    section_key,values.get("parameters",{}),
-                )
-            else:
-                self._localization.run_localization_candidate(
-                    section_key,values.get("parameters",{}),
-                )
+            self._localization.run_localization_candidate(
+                section_key,values.get("parameters",{}),
+            )
         elif request is MeasurementsAction.LOCALIZATION_INFER_MISSING:
             self._localization.infer_missing_localization_candidate(
                 section_key,values.get("localization"),
@@ -124,20 +108,6 @@ class FeedbackActionRouter:
                     "localization_parameters",{}
                 ),
             )
-        elif request is MeasurementsAction.GEOMETRY_CALIBRATION_COMPUTE:
-            self._geometry.compute(section_key,values)
-        elif request is MeasurementsAction.GEOMETRY_CALIBRATION_ANALYZE:
-            self._geometry.analyze(section_key)
-        elif request is MeasurementsAction.GEOMETRY_CALIBRATION_SAVE:
-            self._geometry.save(section_key)
-        elif request is MeasurementsAction.GEOMETRY_CALIBRATION_FINISH:
-            self._geometry.finish(section_key)
-        elif request is MeasurementsAction.FEEDBACK_ORIENTATION:
-            self._geometry.set_feedback_orientation(
-                section_key,values.get("orientation","identity"),
-            )
-        elif request is MeasurementsAction.FEEDBACK_ORIENTATION_SAVE:
-            self._geometry.save_feedback_orientation(section_key)
         elif request is MeasurementsAction.INTENSITY_APPLY:
             self._adaptation.apply_intensity_feedback(section_key)
         elif request is MeasurementsAction.INTENSITY_RESET:

@@ -235,8 +235,8 @@ def test_geometry_calibration_workflow_is_manual_and_restores_only_on_finish(mon
 
     monkeypatch.setattr(session,"compute_geometry_orientation_cgh",fake_compute)
     completed=[]
-    session.feedback.compute_geometry_orientation_calibration_target(
-        "sec_0",grid_x=5,grid_y=4,period_x_px=12.0,period_y_px=15.0,
+    session.geometry_calibration.compute_target(
+        "sec_0","sample",grid_x=5,grid_y=4,period_x_px=12.0,period_y_px=15.0,
         source="cam",on_complete=lambda success,error:completed.append((success,error)),
     )
 
@@ -244,12 +244,12 @@ def test_geometry_calibration_workflow_is_manual_and_restores_only_on_finish(mon
     assert len(uploads) == 1
     np.testing.assert_array_equal(uploads[-1],calibration_frame)
     assert dispatcher.pending == []
-    context=session.feedback.geometry_orientation_calibration_context("sec_0")
+    context=session.geometry_calibration.context("sec_0","sample")
     assert context["frame_active"] is True
     assert context["measurement"] is None
     assert context["localization"] is None
 
-    session.feedback.acquire_geometry_orientation_calibration("sec_0","cam")
+    session.geometry_calibration.acquire("sec_0","sample","cam")
     assert len(dispatcher.pending) == 1
     assert len(uploads) == 1
     measurement=create_image_measurement(
@@ -257,7 +257,7 @@ def test_geometry_calibration_workflow_is_manual_and_restores_only_on_finish(mon
     )
     dispatcher.complete(measurement)
 
-    context=session.feedback.geometry_orientation_calibration_context("sec_0")
+    context=session.geometry_calibration.context("sec_0","sample")
     assert context["measurement"] is measurement
     assert context["localization"] is None
     assert context["frame_active"] is True
@@ -265,15 +265,15 @@ def test_geometry_calibration_workflow_is_manual_and_restores_only_on_finish(mon
 
     active_plane["value"]="fourier"
     session.feedback.select_observation_plane("sec_0","fourier")
-    switched=session.feedback.geometry_orientation_calibration_context("sec_0")
+    switched=session.geometry_calibration.context("sec_0","fourier")
     assert switched["frame_active"] is False
     assert switched["any_frame_active"] is True
     assert switched["active_frame_observation_plane"] == "sample"
 
-    session.feedback.finish_geometry_orientation_calibration("sec_0")
+    session.geometry_calibration.finish("sec_0")
     active_plane["value"]="sample"
     session.feedback.select_observation_plane("sec_0","sample")
-    context=session.feedback.geometry_orientation_calibration_context("sec_0")
+    context=session.geometry_calibration.context("sec_0","sample")
     assert context["frame_active"] is False
     assert context["measurement"] is measurement
     assert len(uploads) == 2
@@ -316,16 +316,16 @@ def test_geometry_calibration_recompute_failure_keeps_previous_active_target(mon
         return True
 
     monkeypatch.setattr(session,"compute_geometry_orientation_cgh",fake_compute)
-    session.feedback.compute_geometry_orientation_calibration_target(
-        "sec_0",grid_x=5,grid_y=4,period_x_px=12.0,period_y_px=15.0,
+    session.geometry_calibration.compute_target(
+        "sec_0","sample",grid_x=5,grid_y=4,period_x_px=12.0,period_y_px=15.0,
         source="cam",
     )
-    before=session.feedback.geometry_orientation_calibration_context("sec_0")
-    session.feedback.compute_geometry_orientation_calibration_target(
-        "sec_0",grid_x=7,grid_y=6,period_x_px=20.0,period_y_px=21.0,
+    before=session.geometry_calibration.context("sec_0","sample")
+    session.geometry_calibration.compute_target(
+        "sec_0","sample",grid_x=7,grid_y=6,period_x_px=20.0,period_y_px=21.0,
         source="cam",
     )
-    after=session.feedback.geometry_orientation_calibration_context("sec_0")
+    after=session.geometry_calibration.context("sec_0","sample")
 
     assert before["frame_active"] is True
     assert after["frame_active"] is True
@@ -412,7 +412,7 @@ def test_feedback_reads_geometry_saved_through_shared_observation_service(tmp_pa
     session.observation_geometry.save(saved)
 
     assert session.feedback.geometry_orientation_calibration("sec_0") == saved
-    context=session.feedback.geometry_orientation_calibration_context("sec_0")
+    context=session.geometry_calibration.context("sec_0","sample")
     assert context["calibrated"] is True
     assert session.feedback.feedback_orientation("sec_0") is FeedbackOrientation.ROTATE_90_CCW
 
@@ -466,7 +466,7 @@ def test_shared_geometry_calibration_service_has_explicit_observation_context(tm
     assert session.geometry_calibration.observation_geometry is session.observation_geometry
 
 
-def test_feedback_geometry_workflow_delegates_to_shared_service(monkeypatch):
+def test_feedback_consumes_geometry_but_does_not_expose_calibration_workflow():
     from slmcore import SLMSession
 
     geometry=SLMGeometry(width=64,height=64,pixel_size_um=1.0)
@@ -476,19 +476,10 @@ def test_feedback_geometry_workflow_delegates_to_shared_service(monkeypatch):
         registries=DEFAULT_REGISTRIES,
     )
     session=SLMSession(runtime=runtime)
-    _set_feedback_observation_planes(session,"sample")
-    calls=[]
 
-    def fake_compute(section_key,plane_name,**kwargs):
-        calls.append((section_key,plane_name,kwargs))
-        return True
-
-    monkeypatch.setattr(session.geometry_calibration,"compute_target",fake_compute)
-    assert session.feedback.compute_geometry_orientation_calibration_target(
-        "sec_0",grid_x=5,grid_y=4,period_x_px=12.0,period_y_px=14.0,
-        source="cam",
-    )
-    assert calls[0][0:2] == ("sec_0","sample")
+    assert hasattr(session,"geometry_calibration")
+    assert not hasattr(session.feedback,"compute_geometry_orientation_calibration_target")
+    assert not hasattr(session.feedback,"save_geometry_orientation_calibration")
 
 
 def test_shared_geometry_calibration_service_saves_manual_geometry(tmp_path):
