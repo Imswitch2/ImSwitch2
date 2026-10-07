@@ -48,10 +48,11 @@ CONVENTION_RCP_NEGATIVE = 'rcp = -s3'
 #: illumination differ by more than this.
 WAVELENGTH_TOLERANCE_NM = 2.0
 
+#: Target rings: white / red / orange stay readable over the rainbow scan lines.
 _STATUS_COLOURS = {
-    'pass': [0.15, 0.75, 0.3, 1.0],
-    'failed': [0.9, 0.2, 0.2, 1.0],
-    'unqualified': [1.0, 0.65, 0.0, 1.0],
+    'pass': [1.0, 1.0, 1.0, 1.0],
+    'failed': [1.0, 0.15, 0.15, 1.0],
+    'unqualified': [1.0, 0.6, 0.0, 1.0],
 }
 
 
@@ -349,7 +350,7 @@ class PolarisationMapResult(PointsTableResult):
         layers.append(DisplayLayerSpec(
             'Targets', np.asarray(self.coordinates), labels, kind='points', role='overlay',
             component='targets', metadata=dict(meta3d),
-            layer_kwargs={'size': 0.07, 'symbol': 'ring',
+            layer_kwargs={'size': 0.1, 'symbol': 'ring',
                           'face_color': [_STATUS_COLOURS.get(s, [1, 1, 1, 1]) for s in status]}))
         return layers
 
