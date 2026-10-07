@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "This manager hands its whole managerProperties dict to a driver; the driver's own keys are not listed here.",
+  "properties": {},
+  "title": "MockPowerMeterManager managerProperties",
+  "type": "object",
+  "x-imswitch-classes": [
+    "MockPowerMeterManager",
+    "InstrumentManager"
+  ],
+  "x-imswitch-open-passthrough": true
+}

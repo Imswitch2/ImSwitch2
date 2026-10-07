@@ -629,6 +629,20 @@ class FlipMirrorInfo:
     """ Optional manager-specific properties. """
 
 
+@dataclass(frozen=True, kw_only=True)
+class InstrumentInfo(DeviceInfo):
+    """ A measurement instrument: one physical device sampled as a whole
+    (``docs/design/plans/transient-instruments-step-scans.md``). """
+
+    transient: bool = False
+    """ Declared but not required: absent at startup without error or mock,
+    connected and disconnected at runtime from the Hardware status window. """
+
+    connectOnStartup: bool = False
+    """ For a transient instrument: still try to connect at startup (a
+    failure leaves it disconnected, never in mock). """
+
+
 @dataclass_json(undefined=Undefined.INCLUDE)
 @dataclass
 class SetupInfo:
@@ -678,6 +692,10 @@ class SetupInfo:
 
     flipMirrors: Optional[Dict[str, FlipMirrorInfo]] = field(default_factory=lambda: None)
     """ Motorized flip mirror settings. """
+
+    instruments: Optional[Dict[str, InstrumentInfo]] = field(default_factory=lambda: None)
+    """ Measurement instruments (power meters, polarimeters, ...). Usually
+    ``transient``: declared here, connected only when needed. """
 
     microscopeStand: Optional[MicroscopeStandInfo] = field(default_factory=lambda: None)
     """ Microscope stand settings. Required to be defined to use MotCorr widget. """

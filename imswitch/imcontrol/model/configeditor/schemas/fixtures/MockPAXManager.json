@@ -1,0 +1,7 @@
+{
+  "category": "instruments",
+  "device": {
+    "managerName": "MockPAXManager",
+    "managerProperties": {}
+  }
+}

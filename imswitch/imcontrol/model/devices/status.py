@@ -20,6 +20,9 @@ class DeviceRuntimeMode(str, Enum):
 
     REAL = "real"
     MOCK = "mock"
+    #: Declared but intentionally not connected (a transient device): no
+    #: backend, no mock, no error.
+    ABSENT = "absent"
 
 
 class DeviceFailureKind(str, Enum):
@@ -109,6 +112,14 @@ class DeviceManagerStatusMixin:
         self._setConnectionState(
             DeviceConnectionState.NOT_APPLICABLE,
             summary=summary or "Mock backend configured",
+        )
+
+    def _setAbsent(self, summary: str | None = None) -> None:
+        """A transient device that is not connected -- not an error."""
+        self._deviceRuntimeMode = DeviceRuntimeMode.ABSENT
+        self._setConnectionState(
+            DeviceConnectionState.DISCONNECTED,
+            summary=summary or "Not connected",
         )
 
     def _setFinalizedStatus(self) -> None:

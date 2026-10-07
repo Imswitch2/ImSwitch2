@@ -22,6 +22,7 @@ MULTIMANAGER_BACKED_KINDS = {
     "rotator",
     "rs232",
     "flip_mirror",
+    "instrument",
     "slm",
 }
 
@@ -51,6 +52,7 @@ DeviceKind = Literal[
     "rotator",
     "rs232",
     "flip_mirror",
+    "instrument",
     "slm",
     "stand",
     "pulse_generator",

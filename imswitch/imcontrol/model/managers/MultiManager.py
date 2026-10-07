@@ -21,6 +21,7 @@ SUBMANAGERS_PACKAGE_TO_KIND = {
     'rotators': 'rotator',
     'rs232': 'rs232',
     'flipMirrors': 'flip_mirror',
+    'instruments': 'instrument',
     'slms': 'slm',
 }
 

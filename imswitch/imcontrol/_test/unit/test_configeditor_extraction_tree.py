@@ -62,14 +62,15 @@ def report(extractions):
 # ── the numbers the plan quotes ───────────────────────────────────────────
 def test_the_coverage_the_plan_is_built_on(report):
     # 65 until the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
-    assert report.managers == 62, "61 plus RS232Manager, which the legacy scan no longer skips"
+    assert report.managers == 64, "61 plus RS232Manager, plus the two mock instruments"
     # 58 after the first review: helper call sites (LaserManager.getProperty,
     # ThorlabsMFF._read_info), module and method functions handed the dict
     # (DetectorManager.configuredCameraPixelSize), and Info parameters of
     # methods other than __init__ are all followed now.
     # ... plus RS232Manager itself, once the catalog stopped skipping it.
     # Four fewer since the removed camera managers (see above): 59 -> 55.
-    assert report.reads_any == 56
+    # 58: the mock instruments read their simulated properties.
+    assert report.reads_any == 58
     assert report.with_keys == 56
     # Nine of the spellings are APD/PMT snake_case aliases of camelCase
     # properties and fold into one property each.
@@ -286,5 +287,5 @@ def test_the_tool_runs_with_manager_and_qt_imports_forbidden(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     assert "imswitch.imcontrol.model.managers" not in result.stderr
     totals = json.loads(result.stdout)["totals"]
-    assert totals["managers"] == 62
+    assert totals["managers"] == 64
 

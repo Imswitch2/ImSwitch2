@@ -1,6 +1,6 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
-    DetectorsManager, FlipMirrorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
+    DetectorsManager, FlipMirrorsManager, InstrumentsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
     RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
@@ -75,6 +75,11 @@ class MasterController:
                                                **lowLevelManagers)
         self.flipMirrorsManager = FlipMirrorsManager(
             self.__setupInfo.flipMirrors,
+            **lowLevelManagers
+        )
+        # Measurement instruments; transient ones stay absent until connected.
+        self.instrumentsManager = InstrumentsManager(
+            getattr(self.__setupInfo, 'instruments', None),
             **lowLevelManagers
         )
 
@@ -161,7 +166,8 @@ class MasterController:
         # finalizers remain pending on the next close attempt.
         manager_attrs = [
             'detectorsManager', 'lasersManager', 'positionersManager',
-            'rotatorsManager', 'flipMirrorsManager', 'recordingManager',
+            'rotatorsManager', 'flipMirrorsManager', 'instrumentsManager',
+            'recordingManager',
             'slmsManager', 'nidaqManager', 'rs232sManager',
             'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
             'scanManager',

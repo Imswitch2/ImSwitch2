@@ -5,11 +5,11 @@
     "docs_agree": 137,
     "docs_documented": 137,
     "keys": 217,
-    "managers": 62,
+    "managers": 64,
     "none_default_only": 34,
     "none_only": 16,
     "optional": 153,
-    "reads_any": 57,
+    "reads_any": 59,
     "refs": 15,
     "required": 64,
     "typed_by_code": 98,
@@ -30,6 +30,11 @@
     },
     "flip_mirror": {
       "class": "FlipMirrorInfo",
+      "fields": 6,
+      "required": 1
+    },
+    "instrument": {
+      "class": "InstrumentInfo",
       "fields": 6,
       "required": 1
     },
@@ -389,11 +394,31 @@
       "properties": 7,
       "required": 1
     },
+    "MockPAXManager": {
+      "category": "instruments",
+      "classes": [
+        "MockPAXManager",
+        "InstrumentManager"
+      ],
+      "overridden": false,
+      "properties": 0,
+      "required": 0
+    },
     "MockPositionerManager": {
       "category": "positioners",
       "classes": [
         "MockPositionerManager",
         "PositionerManager"
+      ],
+      "overridden": false,
+      "properties": 0,
+      "required": 0
+    },
+    "MockPowerMeterManager": {
+      "category": "instruments",
+      "classes": [
+        "MockPowerMeterManager",
+        "InstrumentManager"
       ],
       "overridden": false,
       "properties": 0,

@@ -488,7 +488,8 @@ def test_the_corpus_is_what_the_plan_says():
     # single-axis scan work; 17: mock_scan_monalisa_live.json with the live
     # reconstruction work. 62 fixtures: the four camera managers whose drivers were never in the tree (Basler, ESP32Cam, GXPIPY, JetsonCam) were removed by the magic-number audit.
     assert len(shipped_setups()) == 17
-    assert len(generated_fixtures()) == 62
+    # 64: plus the mock power meter and mock PAX instruments.
+    assert len(generated_fixtures()) == 64
     assert len(value_shape_fixtures()) == 13
     assert sum(1 for item in _CORPUS if item[0].startswith("shipped")) >= 78
 

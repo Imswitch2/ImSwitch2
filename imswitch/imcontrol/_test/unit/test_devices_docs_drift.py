@@ -31,6 +31,7 @@ UNDOCUMENTED = {
     "ESP32LEDMatrixManager", "ESP32LightSheetManager", "ESP32Manager", "ESP32StageManager",
     "ElliptecManager", "GRBLLaserManager", "GRBLManager", "GRBLStageManager",
     "HamamatsuSLMdviManager", "HamamatsuSLMusbManager", "KDC101Manager", "LeicaDMIStandMockManager",
+    "MockPAXManager", "MockPowerMeterManager",
     "OxxiusCombinerLaserManager", "OxxiusLaserManager", "PulseStreamerManager", "RS232Manager",
     "SQUIDManager", "SerialDacZManager", "TeensyPulseManager", "ThorlabsMFFManager",
     "ThorlabsMFFMockManager", "TriggerScopeLaserManager", "TriggerScopePositionerManager",

@@ -21,6 +21,7 @@ class TestMasterControllerShutdown:
         setup.positioners = {}
         setup.rotators = {}
         setup.flipMirrors = {}
+        setup.instruments = {}
         setup.slms = {}
         setup.triggerScope = None
         setup.microscopeStand = None
@@ -75,6 +76,7 @@ class TestMasterControllerShutdown:
             'positionersManager': Mock(finalize=Mock()),
             'rotatorsManager': Mock(finalize=Mock()),
             'flipMirrorsManager': Mock(finalize=Mock()),
+            'instrumentsManager': Mock(finalize=Mock()),
             'recordingManager': Mock(finalize=Mock(), endRecording=Mock()),
             'slmsManager': Mock(finalize=Mock()),
             'nidaqManager': Mock(finalize=Mock()),
