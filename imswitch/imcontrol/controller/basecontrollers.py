@@ -1263,7 +1263,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 continue
             try:
                 position = self._analogParameterDict['axis_centerpos'][index]
-                self._master.positionersManager[positionerName].setPosition(position, 0)
+                manager = self._master.positionersManager[positionerName]
+                # Managers address axes by name ('Z'), not by index.
+                manager.setPosition(position, manager.axes[0])
             except Exception:
                 self._logger.warning(
                     'Failed to set %s to center before scan:\n%s',

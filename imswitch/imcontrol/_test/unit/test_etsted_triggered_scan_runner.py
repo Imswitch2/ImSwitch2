@@ -62,10 +62,16 @@ class _ScanCoordinator:
 
 
 class _Positioner:
+    """Addresses axes by name and refuses anything else, like the managers."""
+
+    axes = ['Z']
+
     def __init__(self) -> None:
         self.calls = []
 
     def setPosition(self, position, axis) -> None:
+        if axis not in self.axes:
+            raise ValueError(f'Axis {axis} not available. Available axes: {self.axes}')
         self.calls.append((position, axis))
 
 
@@ -99,7 +105,7 @@ def test_prepare_scan_widget_maps_event_coords_by_loaded_scan_axis_order():
     assert scan_manager.calls[0][2] is False
     np.testing.assert_array_equal(result.signal_dict['analog'], np.array([1]))
     assert result.scan_info_dict == {'scan_samples_total': 10}
-    assert positioners['PiezoZ'].calls == [(1.0, 0)]
+    assert positioners['PiezoZ'].calls == [(1.0, 'Z')]
 
 
 def test_prepare_recording_widget_requests_frequency_and_updates_centers():

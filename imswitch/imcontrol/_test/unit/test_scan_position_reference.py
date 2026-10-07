@@ -320,6 +320,7 @@ def test_beta_does_not_preposition_non_scanned_axes_to_raw_center():
 def test_non_beta_scan_keeps_legacy_non_scanned_center_positioning():
     ctrl = _bare_controller()
     stage = MagicMock()
+    stage.axes = ['Z']
     ctrl._master = SimpleNamespace(positionersManager={'Stage': stage})
     ctrl._setupInfo = SimpleNamespace(
         scan=SimpleNamespace(scanDesigner='GalvoScanDesigner')
@@ -331,7 +332,9 @@ def test_non_beta_scan_keeps_legacy_non_scanned_center_positioning():
 
     ctrl._setNonScanPositionersToCenter()
 
-    stage.setPosition.assert_called_once_with(5.0, 0)
+    # By axis name: positioner managers reject an index ("Axis 0 not
+    # available. Available axes: ['Z']"), so the axis was never parked.
+    stage.setPosition.assert_called_once_with(5.0, 'Z')
 
 
 def test_external_preflight_refuses_unreferenced_axes_without_dialog():
