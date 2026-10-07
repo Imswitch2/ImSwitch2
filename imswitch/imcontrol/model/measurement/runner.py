@@ -39,14 +39,18 @@ from imswitch.imcommon.model.measurement_run import (
     finalize_journal,
 )
 
-from ..resources import ResourceRegistry, ResourceReservedError
-from .controls import READBACK_FRESH, ControlExecutor, RunControl
+from ..resources import (
+    WAVEFORM_OUTPUT,
+    ResourceRegistry,
+    ResourceReservedError,
+    get_resource_registry,
+    instrument_key,
+)
+from .controls import READBACK_FRESH, ControlExecutor, RunControl, get_control_executor
 from .generators import PointSequence
 from .instrument import InstrumentSession, WindowFault, WindowRefused
 
 _logger = logging.getLogger(__name__)
-
-WAVEFORM_OUTPUT = 'waveform-output'
 
 #: Window causes that end a run (the instrument or the user ended it);
 #: others (timeout, invalid samples) fail only the point.
@@ -63,6 +67,8 @@ class RunSettings:
     #: Extra settle time on top of the controls' own settle time.
     settle_s: float = 0.0
     move_deadline_s: float = 30.0
+    #: How long to wait for commands already running on the run's devices.
+    reserve_deadline_s: float = 5.0
     position_deadline_s: float = 5.0
     window_deadline_s: float = 10.0
     #: Consecutive point-level failures (timeouts, invalid samples) that fail the run.
@@ -114,7 +120,6 @@ class MeasurementRunner:
         settings: Optional[RunSettings] = None,
         run_id: Optional[str] = None,
         owner: str = 'measurement run',
-        registry: Optional[ResourceRegistry] = None,
         executor: Optional[ControlExecutor] = None,
         progress: Optional[Callable[[ProgressEvent], None]] = None,
         metadata: Optional[Mapping[str, Any]] = None,
@@ -128,8 +133,9 @@ class MeasurementRunner:
         self.settings = settings or RunSettings()
         self.run_id = run_id or _new_run_id()
         self.owner = owner
-        self.registry = registry or ResourceRegistry()
-        self.executor = executor or ControlExecutor()
+        # One registry per process: managers and instruments admit through it too.
+        self.registry = get_resource_registry()
+        self.executor = executor if executor is not None else get_control_executor()
         self._progress = progress
         self._extra_metadata = dict(metadata or {})
         self._clock = clock
@@ -153,6 +159,10 @@ class MeasurementRunner:
         return self._finished.wait(timeout_s)
 
     @property
+    def _token(self) -> Optional[str]:
+        return self._reservation.token if self._reservation is not None else None
+
+    @property
     def journal_dir(self) -> Path:
         return self.folder / f'{self.run_id}.journal'
 
@@ -161,7 +171,8 @@ class MeasurementRunner:
         self._preflight()
         resources = self._resources()
         try:
-            self._reservation = self.registry.reserve(resources, self.owner)
+            self._reservation = self.registry.reserve(
+                resources, self.owner, deadline_s=self.settings.reserve_deadline_s)
         except ResourceReservedError as exc:
             raise RunRefused(str(exc)) from None
 
@@ -282,7 +293,7 @@ class MeasurementRunner:
 
     def _resources(self) -> List[str]:
         keys = {c.resource for c in self.controls.values()}
-        keys |= {f'instrument:{name}' for name in self.instruments}
+        keys |= {instrument_key(name) for name in self.instruments}
         keys.add(WAVEFORM_OUTPUT)
         return sorted(keys)
 
@@ -362,7 +373,7 @@ class MeasurementRunner:
 
         for name, value in setpoints.items():
             result = self.executor.apply(self.controls[name], value,
-                                         self.settings.move_deadline_s)
+                                         self.settings.move_deadline_s, self._token)
             results[name] = result
             if not result.ok:
                 controls_ok = False
@@ -439,7 +450,7 @@ class MeasurementRunner:
     def _window(self, session: InstrumentSession) -> WindowResult:
         try:
             boundary = session.open_window(
-                allow_unverified=self.settings.allow_unverified_timing)
+                allow_unverified=self.settings.allow_unverified_timing, owner=self._token)
         except WindowRefused as exc:
             return WindowResult(
                 samples=(), invalid=(), discarded=0, complete=False,
@@ -449,7 +460,8 @@ class MeasurementRunner:
                 boundary_t=self._clock(), requested=self.settings.samples_per_point,
                 detail=str(exc))
         return session.sample_window(boundary, self.settings.samples_per_point,
-                                     self.settings.window_deadline_s, self._cancel)
+                                     self.settings.window_deadline_s, self._cancel,
+                                     owner=self._token)
 
     def _point_status(self, setpoints, results, windows) -> PointStatus:
         all_controls = all(n in results and results[n].ok for n in setpoints)
@@ -503,7 +515,8 @@ class MeasurementRunner:
             if start is None:
                 notes.append(f'{name}: no start position (no fresh readback); left in place')
                 continue
-            result = self.executor.apply(control, start, self.settings.cleanup_deadline_s)
+            result = self.executor.apply(control, start, self.settings.cleanup_deadline_s,
+                                         self._token)
             if not result.ok:
                 if self.executor.is_quarantined(resource):
                     quarantined.append(resource)

@@ -175,6 +175,15 @@ class ElliptecRotatorManager(DeviceManagerStatusMixin, RotatorManager):
         # subsequent commands use the mock resource normally.
         raise last_error
 
+    def readPosition(self):
+        self._update_position()
+        return self._position
+
+    @property
+    def isSimulated(self) -> bool:
+        stage = getattr(getattr(self, '_bus', None), 'stage', None)
+        return type(stage).__name__.startswith('Mock')
+
     def _update_position(self) -> None:
         try:
             self._position = self._bus.get_position(self._addr)

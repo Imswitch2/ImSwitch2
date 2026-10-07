@@ -51,11 +51,13 @@ class RunControl(ABC):
     capabilities: ControlCapabilities
 
     @abstractmethod
-    def apply(self, value: float) -> ControlResult:
+    def apply(self, value: float, token: Optional[str] = None) -> ControlResult:
         """Set the control; blocks until the device reports completion.
 
-        Must return ``ok=False`` with a cause, or raise, on any failure —
-        never a silent success.
+        ``token`` is the run's reservation token, passed to the manager
+        (``owner=token``) so the resource registry admits the command. Must
+        return ``ok=False`` with a cause, or raise, on any failure — never a
+        silent success.
         """
 
     def stop(self) -> None:
@@ -94,8 +96,9 @@ class ControlExecutor:
             return True
         return event.wait(timeout_s)
 
-    def apply(self, control: RunControl, value: float, deadline_s: float) -> ControlResult:
-        return self._run(control, f'apply {value!r}', lambda: control.apply(value),
+    def apply(self, control: RunControl, value: float, deadline_s: float,
+              token: Optional[str] = None) -> ControlResult:
+        return self._run(control, f'apply {value!r}', lambda: control.apply(value, token),
                          deadline_s, requested=value)
 
     def read_position(self, control: RunControl, deadline_s: float) -> Optional[float]:
@@ -184,3 +187,11 @@ def _position_result(control: RunControl) -> ControlResult:
     return ControlResult(control.name, requested=float('nan'), measured=position,
                          ok=position is not None,
                          cause='' if position is not None else 'no readback')
+
+
+_executor = ControlExecutor()
+
+
+def get_control_executor() -> ControlExecutor:
+    """The process-wide executor: one quarantine view for runs and scripts."""
+    return _executor

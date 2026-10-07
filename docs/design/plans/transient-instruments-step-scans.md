@@ -1,6 +1,6 @@
 # Transient instruments and measurement runs
 
-Status: **plan r4 — review round 3 answered** (2026-10-07). Branch
+Status: **plan r4 — accepted; P-1 and P-3 done** (2026-10-07). Implementation notes: §17. Branch
 `feat/calibration-tools`, worktree `../Imswitch2-calibration-tools`. Nothing
 implemented. Dispositions: §14 (rounds 3 and 2), §15 (round 1).
 
@@ -784,9 +784,9 @@ grid images carry angle coordinates). Unexpected disconnects (#12) → §5.
 
 - **Q-1 Reconnection branch:** does its author agree to P-0 (review, fixes,
   tests on their branch), and to merging it before P-4?
-- **Q-2 Detector adapters:** after P-1 — any consumer that genuinely needs
-  instrument quantities as detectors (e.g. showing power in an existing
-  recording)? Default: none.
+- **Q-2 Detector adapters:** **decided 2026-10-07 (Lenny): none for now.**
+  Revisit only if a consumer genuinely needs instrument quantities as
+  detectors.
 - **Q-3 `connectOnStartup`** for transient instruments?
 - **Q-4 Readings dock** placement.
 - **Q-6 Grid traversal default:** snake or raster?
@@ -798,3 +798,50 @@ grid images carry angle coordinates). Unexpected disconnects (#12) → §5.
   only at first?
 - **Q-12 Durability:** fsync every point, or every N points / seconds?
 - **Q-13 First storage backend:** journal → HDF5 (proposed), or Zarr first?
+
+## 17. Implementation notes
+
+**P-1 (done).** Shared types, journal and run file in
+`imcommon/model/measurement_run/`; polarisation maths in
+`imcommon/algorithms/polarisation.py`; engine, instruments, controls, mocks in
+`imcontrol/model/measurement/`; reconstructor `polarisation-map` in
+`improcess/reconstructors/polarisation_map/`. Demo:
+`python -m imswitch.imcontrol.model.measurement.demo DIR`. Defaults taken for
+open questions: Q-13 journal → HDF5, Q-12 fsync every point, Q-6 raster,
+Q-9 5° / DOP ≥ 0.95.
+
+**P-2.** Q-2 decided: no detector adapters. The run-file schema stays at
+`schema_version` 1 and versioned; it is formally frozen when the first real
+instrument has been through it (P-4).
+
+**P-3 (done).**
+- `imcontrol/model/resources.py`: one process-wide `ResourceRegistry`
+  (admission with in-flight tickets, pending reservations, bounded waits,
+  expiring tokens, re-entrant nested calls, non-re-entrant long holds).
+- Manager boundary: `RotatorManager`, `PositionerManager` and `LaserManager`
+  wrap their subclasses' mutating methods (`move_abs/move_rel`,
+  `move/setPosition`, `setValue/setEnabled/applyRawDrive`) in
+  `__init_subclass__`, so every manager — built-in or plugin — admits its
+  commands; `owner=<token>` passes a reservation. A positioner manager is one
+  resource (sibling axes are refused).
+- Raw drive: `LaserManager.applyRawDrive` (raises `RawDriveError`, bypasses
+  the LUT), implemented for `NidaqLaserManager` (`setAnalog(...,
+  raise_on_error=True)`) and `AAAOTFLaserManager` (refused in mock mode).
+- Rotators gained `readPosition()` (fresh) and `isSimulated` (fell back to a
+  mock: refused by run controls). Kinesis and Elliptec interfaces cannot stop
+  a move: deadlines + quarantine only.
+- Audited adapters `imcontrol/model/measurement/adapters.py`.
+- Waveform outputs: the scan coordinator holds `waveform-output` for every
+  scan run and every bare iteration; a measurement run / script reservation
+  of it refuses scans and vice versa.
+- Scripts: `api.imcontrol.reserve(rotators=…, lasers=…, positioners=…)` →
+  owner-bound handle (`ReservationController`, API-only).
+- Shutdown: reservations end after the scripting drain (so lasers-off is
+  admitted); call-scoped commands still in flight after the controllers
+  closed make hardware finalization fail closed
+  (`ShutdownState.recordBusyBackends`).
+
+Not yet: widgets greying out from registry state (a refused GUI command is
+refused and logged by the exception handler, nothing reaches hardware);
+instruments in the setup (P-4).
+

@@ -11,6 +11,7 @@ from .controls import (
     ControlCapabilities,
     ControlExecutor,
     RunControl,
+    get_control_executor,
 )
 from .generators import RASTER, SNAKE, PointSequence, grid, points, sweep
 from .instrument import (
@@ -25,8 +26,8 @@ from .instrument import (
     TransportError,
     WindowRefused,
 )
+from ..resources import WAVEFORM_OUTPUT
 from .runner import (
-    WAVEFORM_OUTPUT,
     MeasurementRunner,
     ProgressEvent,
     RunRefused,
@@ -41,5 +42,5 @@ __all__ = [
     'READBACK_CACHED', 'READBACK_FRESH', 'READBACK_NONE', 'RawReading',
     'RunControl', 'RunRefused', 'RunReport', 'RunSettings', 'SNAKE',
     'SettingSpec', 'TimingProfile', 'TransportError', 'WAVEFORM_OUTPUT',
-    'WindowRefused', 'grid', 'points', 'sweep',
+    'WindowRefused', 'get_control_executor', 'grid', 'points', 'sweep',
 ]

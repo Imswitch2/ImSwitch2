@@ -56,6 +56,14 @@ class KinesisRotatorManager(RotatorManager):
         self._motor.wait_move()
         self._update_position()
 
+    def readPosition(self):
+        self._update_position()
+        return self._position
+
+    @property
+    def isSimulated(self) -> bool:
+        return type(getattr(self, '_motor', None)).__name__.startswith('Mock')
+
     def _update_position(self) -> None:
         """Read current encoder position and convert to degrees."""
         raw_pos = self._motor.get_position()

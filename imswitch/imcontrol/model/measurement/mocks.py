@@ -81,7 +81,7 @@ class MockRotatorControl(RunControl):
         return self.angle_at(self._clock())
 
     # --------------------------------------------------------------- control
-    def apply(self, value: float) -> ControlResult:
+    def apply(self, value: float, token: Optional[str] = None) -> ControlResult:
         target = float(value)
         if self.fail_next is not None:
             cause, self.fail_next = self.fail_next, None

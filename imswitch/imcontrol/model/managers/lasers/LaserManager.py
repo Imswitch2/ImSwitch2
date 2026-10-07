@@ -41,9 +41,23 @@ def normalise_ports(value) -> list:
     return [p.strip() for p in s.split(',') if p.strip()]
 
 
+class RawDriveError(RuntimeError):
+    """A raw-drive command did not reach the hardware."""
+
+
 class LaserManager(DeviceManagerStatusMixin, ABC):
     """ Abstract base class for managers that control lasers. Each type of
     laser corresponds to a manager derived from this class. """
+
+    #: Mutating commands admitted through the resource registry
+    #: (``imcontrol/model/resources.py``): refused while another owner
+    #: reserves this device; ``owner=<token>`` passes a reservation.
+    _GUARDED_METHODS = ('setValue', 'setEnabled', 'applyRawDrive')
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        from imswitch.imcontrol.model.resources import guard_methods, laser_key
+        guard_methods(cls, _resource_key_for(laser_key), cls._GUARDED_METHODS)
 
     @abstractmethod
     def __init__(self, laserInfo, name: str, isBinary: bool, valueUnits: str,
@@ -157,6 +171,18 @@ class LaserManager(DeviceManagerStatusMixin, ABC):
         setpoint rather than the raw value range. """
         return self.hasProperty("calibCsvPath")
 
+    #: True when :meth:`applyRawDrive` is implemented (audited for runs).
+    supportsRawDrive: bool = False
+
+    def applyRawDrive(self, value: float) -> float:
+        """ Set the raw drive (volts, AOTF amplitude, ...) directly, bypassing
+        any calibration lookup table, and return the raw value applied.
+
+        Meant for calibration runs (``docs/design/plans/
+        transient-instruments-step-scans.md`` §7.4): unlike :meth:`setValue`,
+        a failure is never only logged — it raises :class:`RawDriveError`. """
+        raise NotImplementedError(f'{type(self).__name__} has no raw-drive command')
+
     @abstractmethod
     def setEnabled(self, enabled: bool) -> None:
         """ Sets whether the laser is enabled. """
@@ -187,6 +213,16 @@ class LaserManager(DeviceManagerStatusMixin, ABC):
     def finalize(self) -> None:
         """ Close/cleanup laser. """
         pass
+
+
+def _resource_key_for(key_of_name):
+    def key(manager):
+        try:
+            name = manager.name
+        except Exception:
+            name = f'{type(manager).__name__}@{id(manager):x}'
+        return key_of_name(name)
+    return key
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

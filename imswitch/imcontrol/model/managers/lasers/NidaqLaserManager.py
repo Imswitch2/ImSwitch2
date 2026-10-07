@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.interpolate import interp1d
 
-from .LaserManager import LaserManager
+from .LaserManager import LaserManager, RawDriveError
 from imswitch.imcommon.model import initLogger
 
 class NidaqLaserManager(LaserManager):
@@ -57,6 +57,30 @@ class NidaqLaserManager(LaserManager):
             )
         except Exception as e:
             self.__logger.error(f"Error trying to set value to laser: {e}")
+
+    supportsRawDrive = True
+
+    def applyRawDrive(self, value):
+        """ Analog output voltage, bypassing the calibration LUT; raises on
+        any DAQ failure instead of logging it. """
+        if self.isBinary:
+            raise RawDriveError(f'{self.name} is binary: it has no analog drive')
+        voltage = float(value)
+        if not (self.valueRangeMin <= voltage <= self.valueRangeMax):
+            raise RawDriveError(
+                f'{self.name}: {voltage:g} V outside '
+                f'[{self.valueRangeMin:g}, {self.valueRangeMax:g}] V')
+        try:
+            ok = self._nidaqManager.setAnalog(
+                target=self.name, voltage=voltage,
+                min_val=self.valueRangeMin, max_val=self.valueRangeMax,
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            raise RawDriveError(f'{self.name}: analog write failed: {exc}') from exc
+        if ok is False:
+            raise RawDriveError(f'{self.name}: analog write failed')
+        return voltage
 
     def setScanModeActive(self, active):
         if active:

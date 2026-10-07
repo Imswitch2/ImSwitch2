@@ -7,6 +7,16 @@ class RotatorManager(ABC):
     """ Abstract base class for managers that control rotators. Each type of
     rotator corresponds to a manager derived from this class. """
 
+    #: Mutating commands admitted through the resource registry
+    #: (``imcontrol/model/resources.py``): refused while another owner
+    #: reserves this device; ``owner=<token>`` passes a reservation.
+    _GUARDED_METHODS = ('move_abs', 'move_rel')
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        from imswitch.imcontrol.model.resources import guard_methods, rotator_key
+        guard_methods(cls, _resource_key_for(rotator_key), cls._GUARDED_METHODS)
+
     @abstractmethod
     def __init__(self, rotatorInfo, name: str, *args, **kwargs):
         """
@@ -43,9 +53,30 @@ class RotatorManager(ABC):
         """
         pass
 
+    def readPosition(self):
+        """ Fresh position read from the hardware (degrees), or ``None`` when
+        this rotator cannot read back. Unlike :attr:`position`, never cached. """
+        return None
+
+    @property
+    def isSimulated(self) -> bool:
+        """ True when the manager fell back to a simulated device (hardware
+        absent). Calibration runs refuse simulated rotators. """
+        return False
+
     def finalize(self) -> None:
         """ Close/cleanup rotator. """
         pass
+
+
+def _resource_key_for(key_of_name):
+    def key(manager):
+        try:
+            name = manager.name
+        except Exception:
+            name = f'{type(manager).__name__}@{id(manager):x}'
+        return key_of_name(name)
+    return key
 
 
 # Copyright (C) 2020-2022 ImSwitch developers

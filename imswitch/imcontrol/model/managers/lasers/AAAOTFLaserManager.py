@@ -2,7 +2,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 
 from imswitch.imcommon.model import initLogger
-from .LaserManager import LaserManager
+from .LaserManager import LaserManager, RawDriveError
 from imswitch.imcontrol.model.devices.graph import sharedRs232ComponentSpec
 from .aa_aotf_protocols import DEFAULT_PROFILE_ID, build_profiles
 from .aa_aotf_protocols.frequency_startup import validate_frequency_mhz
@@ -298,6 +298,32 @@ class AAAOTFLaserManager(LaserManager):
         self._apply_ttl_control_mode(before_command=True)
         self._run('set_channel_amplitude', amplitude)
         self._apply_ttl_control_mode(before_command=False)
+
+    supportsRawDrive = True
+
+    def applyRawDrive(self, value):
+        """ Raw channel amplitude, bypassing the calibration LUT; raises when
+        the controller is absent (mock mode) or the command fails. """
+        amplitude = int(round(float(value)))
+        if not (self.valueRangeMin <= amplitude <= self.valueRangeMax):
+            raise RawDriveError(
+                f'AA channel {self._channel}: amplitude {amplitude} outside '
+                f'[{self.valueRangeMin:g}, {self.valueRangeMax:g}]')
+        if self._isMock:
+            raise RawDriveError(
+                f'AA channel {self._channel}: the controller did not answer at '
+                f'startup (mock mode); nothing can be sent')
+        self._apply_ttl_control_mode(before_command=True)
+        try:
+            ok = self._run('set_channel_amplitude', amplitude)
+        except Exception as exc:
+            raise RawDriveError(f'AA channel {self._channel}: {exc}') from exc
+        finally:
+            self._apply_ttl_control_mode(before_command=False)
+        if not ok:
+            raise RawDriveError(
+                f'AA channel {self._channel}: set_channel_amplitude {amplitude} failed')
+        return float(amplitude)
 
     def _amplitude_for(self, power):
         """Convert an ImSwitch value to a raw AOTF amplitude.

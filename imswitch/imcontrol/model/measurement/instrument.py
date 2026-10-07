@@ -25,6 +25,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from ..resources import get_resource_registry, instrument_key
 from imswitch.imcommon.model.measurement_run import (
     Boundary,
     QuantitySpec,
@@ -191,8 +192,10 @@ class InstrumentSession:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         ring_size: int = 2000,
+        registry=None,
     ) -> None:
         self.name = name
+        self._registry = registry
         self.driver = driver
         self._clock = clock
         self._sleep = sleep
@@ -296,15 +299,24 @@ class InstrumentSession:
         with self._lock:
             return dict(self.driver.settings())
 
-    def set_setting(self, name: str, value: Any) -> Any:
+    @property
+    def resource(self) -> str:
+        return instrument_key(self.name)
+
+    def _command(self, owner: Optional[str], label: str):
+        registry = self._registry if self._registry is not None else get_resource_registry()
+        return registry.command(self.resource, owner, label=f'{self.name}: {label}')
+
+    def set_setting(self, name: str, value: Any, *, owner: Optional[str] = None) -> Any:
         """Apply a setting; the readback is what applies. Re-matches profiles."""
-        with self._lock:
+        with self._command(owner, f'set {name}'), self._lock:
             self._require_ready()
             applied = self.driver.set_setting(name, value)
             self._evaluate_profile()
             return applied
 
-    def run_action(self, name: str, *, confirm_dark: bool = False, **kwargs: Any) -> None:
+    def run_action(self, name: str, *, confirm_dark: bool = False,
+                   owner: Optional[str] = None, **kwargs: Any) -> None:
         spec = next((a for a in self.driver.actions_spec if a.name == name), None)
         if spec is None:
             raise KeyError(f'{self.name} has no action {name!r}')
@@ -313,7 +325,7 @@ class InstrumentSession:
                 f'{self.name}.{name} requires the beam to be blocked; '
                 f'pass confirm_dark=True once that is confirmed'
             )
-        with self._lock:
+        with self._command(owner, name), self._lock:
             self._require_ready()
             self.driver.run_action(name, **kwargs)
 
@@ -332,8 +344,13 @@ class InstrumentSession:
             raise WindowRefused(f'instrument {self.name} is faulted: {self._faulted}')
 
     # --------------------------------------------------------------- windows
-    def open_window(self, *, allow_unverified: bool = False) -> Boundary:
+    def open_window(self, *, allow_unverified: bool = False,
+                    owner: Optional[str] = None) -> Boundary:
         """Record the boundary samples of the next window must follow."""
+        with self._command(owner, 'open window'):
+            return self._open_window(allow_unverified)
+
+    def _open_window(self, allow_unverified: bool) -> Boundary:
         with self._lock:
             self._require_ready()
             profile = self._profile
@@ -389,8 +406,14 @@ class InstrumentSession:
         n: int,
         deadline_s: float,
         cancel: Optional[threading.Event] = None,
+        *,
+        owner: Optional[str] = None,
     ) -> WindowResult:
         """``n`` distinct samples acquired after ``boundary`` — or fewer, with a cause."""
+        with self._command(owner, 'sample window'):
+            return self._sample_window(boundary, n, deadline_s, cancel)
+
+    def _sample_window(self, boundary, n, deadline_s, cancel) -> WindowResult:
         profile = next(
             (p for p in self.driver.timing_profiles if p.id == boundary.profile_id), None)
         deadline = self._clock() + float(deadline_s)

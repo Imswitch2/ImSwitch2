@@ -31,7 +31,17 @@ from imswitch.imcontrol.model.measurement.mocks import MockPAXDriver, MockRotato
 from imswitch.imcontrol.model.resources import (
     ReservationExpiredError,
     ResourceRegistry,
+    set_resource_registry,
 )
+
+
+@pytest.fixture(autouse=True)
+def registry():
+    """A fresh process-wide resource registry per test."""
+    fresh = ResourceRegistry()
+    previous = set_resource_registry(fresh)
+    yield fresh
+    set_resource_registry(previous)
 
 MODEL = TwoPlateModel(offset1_deg=3.0, offset2_deg=-2.0)
 
@@ -160,9 +170,8 @@ def test_failed_control_never_commits_and_skips_return(tmp_path):
     assert qwp.read_position() == pytest.approx(45.0)  # left in place, not returned
 
 
-def test_stuck_move_quarantines_its_backend_until_it_returns(tmp_path):
+def test_stuck_move_quarantines_its_backend_until_it_returns(tmp_path, registry):
     hwp, qwp, driver, session = _rig()
-    registry = ResourceRegistry()
     executor = ControlExecutor()
     seq = grid([('hwp', [0, 30]), ('qwp', [0])])
 
@@ -172,7 +181,7 @@ def test_stuck_move_quarantines_its_backend_until_it_returns(tmp_path):
 
     runner = MeasurementRunner(
         sequence=seq, controls=[hwp, qwp], instruments={'pax1': session},
-        folder=tmp_path, registry=registry, executor=executor,
+        folder=tmp_path, executor=executor,
         settings=_settings(move_deadline_s=0.2, cleanup_deadline_s=0.2),
         progress=progress,
     )
@@ -268,19 +277,18 @@ def test_settings_outside_every_profile_refuse_the_run(tmp_path):
                           folder=tmp_path, settings=_settings()).run()
 
 
-def test_reserved_resources_refuse_the_run_and_are_released_after(tmp_path):
+def test_reserved_resources_refuse_the_run_and_are_released_after(tmp_path, registry):
     hwp, qwp, driver, session = _rig()
-    registry = ResourceRegistry()
     other = registry.reserve([hwp.resource], 'someone else')
     seq = points(['hwp', 'qwp'], [[0, 0]])
     with pytest.raises(RunRefused, match='someone else'):
         MeasurementRunner(sequence=seq, controls=[hwp, qwp],
                           instruments={'pax1': session}, folder=tmp_path,
-                          registry=registry, settings=_settings()).run()
+                          settings=_settings(reserve_deadline_s=0.1)).run()
     registry.release(other.token)
     runner = MeasurementRunner(sequence=seq, controls=[hwp, qwp],
                                instruments={'pax1': session}, folder=tmp_path,
-                               registry=registry, settings=_settings())
+                               settings=_settings())
     runner.run()
     for resource in (hwp.resource, qwp.resource, 'instrument:pax1', 'waveform-output'):
         assert registry.holder(resource) is None

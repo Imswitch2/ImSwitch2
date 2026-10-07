@@ -20,6 +20,8 @@ class ShutdownState:
             self.begun = False
             #: None = no scripting module took part; True/False = drain outcome.
             self.scriptingDrained = None
+            #: Hardware commands still running at shutdown (resource keys).
+            self.busyBackends = []
             self.reasons = []
 
     def begin(self):
@@ -32,11 +34,19 @@ class ShutdownState:
             if reason:
                 self.reasons.append(reason)
 
+    def recordBusyBackends(self, backends, reason=''):
+        """A hardware command was still running when finalization was due."""
+        with self._lock:
+            self.busyBackends = list(backends)
+            if reason:
+                self.reasons.append(reason)
+
     def hardwareFinalizationAllowed(self):
         """False only when a participating module reported an undrained
-        worker; no participation means no objection."""
+        worker (or a still-running hardware command); no participation means
+        no objection."""
         with self._lock:
-            return self.scriptingDrained is not False
+            return self.scriptingDrained is not False and not self.busyBackends
 
 
 shutdownState = ShutdownState()
