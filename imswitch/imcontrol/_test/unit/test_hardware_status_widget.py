@@ -230,3 +230,56 @@ def test_reconnect_button_is_opt_in_per_physical_device(qtbot):
     widget.setReconnectBusy(True, "Reconnecting device…")
     assert widget.reconnectButton.isEnabled() is False
     assert "Reconnecting" in widget.operationLabel.text()
+
+
+def test_absent_instrument_is_not_connected_not_an_issue(qtbot):
+    widget = HardwareStatusWidget(None)
+    qtbot.addWidget(widget)
+    pm1 = _status("instrument", "pm1", DeviceConnectionState.DISCONNECTED,
+                  DeviceRuntimeMode.ABSENT)
+    failed = _status("instrument", "pax1", DeviceConnectionState.ERROR,
+                     DeviceRuntimeMode.ABSENT)
+    assert _health(pm1) == "neutral"
+    assert _health(failed) == "issue"           # a failed connect is an issue
+    widget.setStatuses([pm1, failed])
+    header = _find_category(widget, "Instruments")
+    assert "1 not connected" in header.text(0) and "1 issue" in header.text(0)
+    assert "Not connected" in _find_child(widget, "pm1").text(0)
+
+
+def test_connect_and_disconnect_buttons_follow_the_selected_device(qtbot):
+    widget = HardwareStatusWidget(None)
+    qtbot.addWidget(widget)
+    widget.show()
+    absent = _status("instrument", "pm1", DeviceConnectionState.DISCONNECTED,
+                     DeviceRuntimeMode.ABSENT)
+    camera = _status("detector", "Camera", DeviceConnectionState.CONNECTED,
+                     DeviceRuntimeMode.REAL)
+    ids = (absent.hardware_id,)
+    connects, disconnects = [], []
+    widget.sigConnectRequested.connect(connects.append)
+    widget.sigDisconnectRequested.connect(disconnects.append)
+
+    widget.setStatuses([absent, camera], reconnectableHardwareIds=ids,
+                       connectableHardwareIds=ids, disconnectableHardwareIds=ids)
+    widget.tree.setCurrentItem(_find_child(widget, "pm1"))
+    assert widget.connectButton.isEnabled()
+    assert not widget.disconnectButton.isEnabled()
+    assert not widget.reconnectButton.isEnabled()     # nothing to reconnect
+    qtbot.mouseClick(widget.connectButton, QtCore.Qt.LeftButton)
+    assert connects == [absent.hardware_id]
+
+    connected = _status("instrument", "pm1", DeviceConnectionState.CONNECTED,
+                        DeviceRuntimeMode.REAL)
+    widget.setStatuses([connected, camera], reconnectableHardwareIds=ids,
+                       connectableHardwareIds=ids, disconnectableHardwareIds=ids)
+    assert not widget.connectButton.isEnabled()
+    assert widget.disconnectButton.isEnabled() and widget.reconnectButton.isEnabled()
+    qtbot.mouseClick(widget.disconnectButton, QtCore.Qt.LeftButton)
+    assert disconnects == [connected.hardware_id]
+
+    widget.setReconnectBusy(True, "Disconnecting device…")
+    assert not widget.disconnectButton.isEnabled()
+
+    widget.tree.setCurrentItem(_find_child(widget, "Camera"))
+    assert not widget.connectButton.isVisible()       # cameras do not offer it

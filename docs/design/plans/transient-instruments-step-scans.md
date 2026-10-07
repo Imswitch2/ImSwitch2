@@ -852,6 +852,28 @@ reads with retained ownership, asynchronous stop after quarantine, `corrupt`
 recovery outcome, configuration revision on boundaries, unit conversion in
 the polarisation map, verified-first matching.
 
+**P-4 steps 1-2 (done on mocks).**
+- Setup: `instruments` section (`InstrumentInfo`: `transient`,
+  `connectOnStartup`), kind `instrument`, `InstrumentsManager`; base
+  `managers/instruments/InstrumentManager.py` owns one `InstrumentSession`;
+  `MockPowerMeterManager`, `MockPAXManager`.
+- New runtime mode `ABSENT` (intentionally not connected). A failed connect
+  is `ERROR` + `ABSENT`, never a mock; a transport fault while connected is
+  `ERROR` and notifies status listeners.
+- `DeviceLifecycleService.connect / disconnect` beside `reconnect`, one
+  transition path (capability, shared-transport veto, shutdown refusal,
+  per-device lock). A lifecycle with `affectsAcquisition = False`
+  (instruments) skips the scan / recording guard and the acquisition gate:
+  instruments are guarded by their reservation, which every transition is
+  admitted through.
+- `DeviceLifecycleService.addStatusListener(hardware_id)` forwards self-reported
+  status changes (instrument faults); the Hardware status controller marshals
+  them to the UI thread and refreshes. The window has Connect / Disconnect
+  (shown only for devices that offer them) and an "Instruments" group; a
+  not-connected instrument is neutral, not a connection issue.
+- Not yet: `FAULTED` is shown as `ERROR` (no separate state); the Readings
+  dock (§6.4); real drivers (step 3); scripting access (step 4).
+
 **P-5 (done on mocks).** `imcontrol/model/measurement/laser_lut.py`
 (`run_laser_lut`): prepare steps inside the reservation (record laser state,
 set + verify the meter wavelength, emission off, caller confirms the beam is

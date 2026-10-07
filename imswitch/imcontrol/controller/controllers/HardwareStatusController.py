@@ -1,20 +1,30 @@
 from qtpy import QtCore
 
+from imswitch.imcontrol.model.devices import DeviceLifecycleAction
+
 from ..basecontrollers import ImConWidgetController
 
 
-class _ReconnectWorker(QtCore.QThread):
+_BUSY_TEXT = {
+    DeviceLifecycleAction.RECONNECT: "Reconnecting device…",
+    DeviceLifecycleAction.CONNECT: "Connecting device…",
+    DeviceLifecycleAction.DISCONNECT: "Disconnecting device…",
+}
+
+
+class _LifecycleWorker(QtCore.QThread):
     sigCompleted = QtCore.Signal(object)
     sigFailed = QtCore.Signal(str)
 
-    def __init__(self, lifecycleService, hardware_id):
+    def __init__(self, lifecycleService, hardware_id, action=DeviceLifecycleAction.RECONNECT):
         super().__init__()
         self._lifecycleService = lifecycleService
         self._hardwareId = hardware_id
+        self._action = DeviceLifecycleAction(action)
 
     def run(self):
         try:
-            result = self._lifecycleService.reconnect(self._hardwareId)
+            result = getattr(self._lifecycleService, self._action.value)(self._hardwareId)
         except Exception as exc:
             self.sigFailed.emit(str(exc))
         else:
@@ -22,48 +32,75 @@ class _ReconnectWorker(QtCore.QThread):
 
 
 class HardwareStatusController(ImConWidgetController):
-    """Feeds the hardware-status window and dispatches opt-in reconnects."""
+    """Feeds the hardware-status window and dispatches opt-in lifecycle
+    actions (reconnect; connect / disconnect for transient instruments)."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._reconnectWorker = None
         self._reconnectMessage = ""
         self._closing = False
+        self._statusListener = None
         self._widget.sigRefreshRequested.connect(self.refresh)
         self._widget.sigReconnectRequested.connect(self.reconnect)
+        self._widget.sigConnectRequested.connect(self.connect)
+        self._widget.sigDisconnectRequested.connect(self.disconnect)
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        if lifecycleService is not None and hasattr(lifecycleService, 'addStatusListener'):
+            # Instrument faults arrive on run / poller threads.
+            self._statusListener = lambda _hardware_id: (
+                self._invokeOnControllerThreadIfNeeded(self.refresh)
+            )
+            lifecycleService.addStatusListener(self._statusListener)
         self.refresh()
         QtCore.QTimer.singleShot(0, self.refresh)
 
     def refresh(self):
+        if self.__dict__.get('_closing'):
+            return
         lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
-        reconnectable = (
-            lifecycleService.getReconnectableHardwareIds()
-            if lifecycleService is not None
-            else ()
-        )
+        getIds = getattr(lifecycleService, 'getActionableHardwareIds', None)
+        actionable = {
+            action: getIds(action) if callable(getIds) else ()
+            for action in DeviceLifecycleAction
+        }
         self._widget.setStatuses(
             self._master.deviceSupervisor.getHardwareStatuses(),
-            reconnectableHardwareIds=reconnectable,
+            reconnectableHardwareIds=actionable[DeviceLifecycleAction.RECONNECT],
+            connectableHardwareIds=actionable[DeviceLifecycleAction.CONNECT],
+            disconnectableHardwareIds=actionable[DeviceLifecycleAction.DISCONNECT],
         )
 
     def reconnect(self, hardware_id):
+        self._start(hardware_id, DeviceLifecycleAction.RECONNECT)
+
+    def connect(self, hardware_id):
+        self._start(hardware_id, DeviceLifecycleAction.CONNECT)
+
+    def disconnect(self, hardware_id):
+        self._start(hardware_id, DeviceLifecycleAction.DISCONNECT)
+
+    def _start(self, hardware_id, action):
+        verb = action.value.capitalize()
         if self._closing:
-            self._widget.setReconnectBusy(False, "Reconnect refused: shutting down")
+            self._widget.setReconnectBusy(False, f"{verb} refused: shutting down")
             return
         lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
         if lifecycleService is None:
-            self._widget.setReconnectBusy(False, "Reconnect service unavailable")
+            self._widget.setReconnectBusy(False, "Device lifecycle service unavailable")
             return
         worker = self._reconnectWorker
         if worker is not None and worker.isRunning():
             return
 
         self._reconnectMessage = ""
-        self._widget.setReconnectBusy(True, "Reconnecting device…")
-        worker = _ReconnectWorker(lifecycleService, hardware_id)
+        self._widget.setReconnectBusy(True, _BUSY_TEXT[action])
+        worker = _LifecycleWorker(lifecycleService, hardware_id, action)
         self._reconnectWorker = worker
         worker.sigCompleted.connect(self._reconnectCompleted)
-        worker.sigFailed.connect(self._reconnectFailed)
+        worker.sigFailed.connect(
+            lambda message, verb=verb: self._reconnectFailed(message, verb)
+        )
         worker.finished.connect(
             lambda worker=worker: self._reconnectThreadFinished(worker)
         )
@@ -76,9 +113,9 @@ class HardwareStatusController(ImConWidgetController):
             message = f"{message}: {result.details}"
         self._reconnectMessage = message
 
-    def _reconnectFailed(self, message):
+    def _reconnectFailed(self, message, verb="Reconnect"):
         self.refresh()
-        self._reconnectMessage = f"Reconnect blocked/failed: {message}"
+        self._reconnectMessage = f"{verb} blocked/failed: {message}"
 
     def _reconnectThreadFinished(self, worker):
         worker.deleteLater()
@@ -86,19 +123,23 @@ class HardwareStatusController(ImConWidgetController):
             self._reconnectWorker = None
             self._widget.setReconnectBusy(False, self._reconnectMessage)
 
-    # Shutdown barrier: a reconnect still running may install a new backend,
-    # so hardware managers must not be finalized until it has returned.
+    # Shutdown barrier: a lifecycle operation still running may install a new
+    # backend, so hardware managers must not be finalized until it returned.
     def closeEvent(self) -> bool:
         self._closing = True
         lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
         beginShutdown = getattr(lifecycleService, 'beginShutdown', None)
         if callable(beginShutdown):
             beginShutdown()
+        listener = self.__dict__.get('_statusListener')
+        if listener is not None and lifecycleService is not None:
+            lifecycleService.removeStatusListener(listener)
+            self._statusListener = None
         super().closeEvent()
         return self.shutdownComplete()
 
     def shutdownComplete(self) -> bool:
-        """Whether no reconnect worker (and no service operation) is running."""
+        """Whether no lifecycle worker (and no service operation) is running."""
         worker = self.__dict__.get('_reconnectWorker')
         if worker is not None and worker.isRunning():
             return False

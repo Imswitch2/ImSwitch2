@@ -21,6 +21,7 @@ _CATEGORY_LABELS = {
     "flip_mirror": "Flip mirrors",
     "slm": "SLMs",
     "stand": "Microscope stands",
+    "instrument": "Instruments",
     "infrastructure": "Infrastructure",
 }
 
@@ -32,6 +33,7 @@ _CATEGORY_ORDER = {
     "flip_mirror": 4,
     "slm": 5,
     "stand": 6,
+    "instrument": 7,
     "infrastructure": 100,
 }
 
@@ -49,7 +51,17 @@ _HEALTH_LABELS = {
 }
 
 
+def _isNotConnected(status) -> bool:
+    """Intentionally not connected (a transient instrument): not an issue."""
+    return (
+        status.mode is DeviceRuntimeMode.ABSENT
+        and status.connection is DeviceConnectionState.DISCONNECTED
+    )
+
+
 def _health(status) -> str:
+    if _isNotConnected(status):
+        return "neutral"
     if status.connection in {
         DeviceConnectionState.ERROR,
         DeviceConnectionState.DISCONNECTED,
@@ -103,6 +115,8 @@ def _category_summary(category, statuses) -> str:
         if health == "neutral":
             if status.mode is DeviceRuntimeMode.MOCK:
                 counts["mock"] += 1
+            elif _isNotConnected(status):
+                counts["absent"] += 1
             else:
                 counts["unavailable"] += 1
         else:
@@ -113,6 +127,7 @@ def _category_summary(category, statuses) -> str:
     labels = (
         ("ok", "connected"),
         ("mock", "mock"),
+        ("absent", "not connected"),
         ("issue", "issue"),
         ("unavailable", "status unavailable"),
     )
@@ -180,6 +195,8 @@ class HardwareStatusWidget(Widget):
 
     sigRefreshRequested = QtCore.Signal()
     sigReconnectRequested = QtCore.Signal(object)
+    sigConnectRequested = QtCore.Signal(object)
+    sigDisconnectRequested = QtCore.Signal(object)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -189,6 +206,8 @@ class HardwareStatusWidget(Widget):
         self._statuses = []
         self._statusByKey = {}
         self._reconnectableHardwareIds = set()
+        self._connectableHardwareIds = set()
+        self._disconnectableHardwareIds = set()
         self._reconnectBusy = False
 
         self.operationLabel = QtWidgets.QLabel("")
@@ -196,6 +215,12 @@ class HardwareStatusWidget(Widget):
         self.reconnectButton = QtWidgets.QPushButton("Reconnect")
         self.reconnectButton.setEnabled(False)
         self.reconnectButton.clicked.connect(self._requestReconnect)
+        self.connectButton = QtWidgets.QPushButton("Connect")
+        self.connectButton.setEnabled(False)
+        self.connectButton.clicked.connect(self._requestConnect)
+        self.disconnectButton = QtWidgets.QPushButton("Disconnect")
+        self.disconnectButton.setEnabled(False)
+        self.disconnectButton.clicked.connect(self._requestDisconnect)
         self.refreshButton = QtWidgets.QPushButton("Refresh")
         self.refreshButton.clicked.connect(self.sigRefreshRequested)
 
@@ -234,6 +259,8 @@ class HardwareStatusWidget(Widget):
 
         top = QtWidgets.QHBoxLayout()
         top.addWidget(self.operationLabel, 1)
+        top.addWidget(self.connectButton)
+        top.addWidget(self.disconnectButton)
         top.addWidget(self.reconnectButton)
         top.addWidget(self.refreshButton)
 
@@ -242,9 +269,12 @@ class HardwareStatusWidget(Widget):
         layout.addWidget(self.tree, 1)
         layout.addWidget(detailsGroup)
 
-    def setStatuses(self, statuses, reconnectableHardwareIds=()) -> None:
+    def setStatuses(self, statuses, reconnectableHardwareIds=(),
+                    connectableHardwareIds=(), disconnectableHardwareIds=()) -> None:
         selected_key = self._selectedStatusKey()
         self._reconnectableHardwareIds = set(reconnectableHardwareIds)
+        self._connectableHardwareIds = set(connectableHardwareIds)
+        self._disconnectableHardwareIds = set(disconnectableHardwareIds)
         expanded = self._expandedCategories()
 
         self._statuses = list(statuses)
@@ -308,8 +338,9 @@ class HardwareStatusWidget(Widget):
         self._updateReconnectButton()
 
     def setReconnectBusy(self, busy: bool, message: str | None = None) -> None:
+        """One lifecycle operation at a time: all action buttons are
+        disabled while one runs; ``message`` is shown beside them."""
         self._reconnectBusy = bool(busy)
-        self.reconnectButton.setText("Reconnecting…" if busy else "Reconnect")
         self.operationLabel.setText(message or "")
         self._updateReconnectButton()
 
@@ -321,11 +352,51 @@ class HardwareStatusWidget(Widget):
             return
         self.sigReconnectRequested.emit(status.hardware_id)
 
+    def _requestConnect(self) -> None:
+        status = self._statusByKey.get(self._selectedStatusKey())
+        if status is None or self._reconnectBusy:
+            return
+        if status.hardware_id not in self._connectableHardwareIds:
+            return
+        self.sigConnectRequested.emit(status.hardware_id)
+
+    def _requestDisconnect(self) -> None:
+        status = self._statusByKey.get(self._selectedStatusKey())
+        if status is None or self._reconnectBusy:
+            return
+        if status.hardware_id not in self._disconnectableHardwareIds:
+            return
+        self.sigDisconnectRequested.emit(status.hardware_id)
+
     def _updateReconnectButton(self) -> None:
         status = self._statusByKey.get(self._selectedStatusKey())
+        absent = status is not None and status.mode is DeviceRuntimeMode.ABSENT
+        canConnect = (
+            status is not None
+            and status.hardware_id in self._connectableHardwareIds
+            and status.connection is not DeviceConnectionState.CONNECTED
+        )
+        canDisconnect = (
+            status is not None
+            and status.hardware_id in self._disconnectableHardwareIds
+            and not absent
+        )
+        # Connect / Disconnect appear only for devices that offer them.
+        offersConnect = status is not None and (
+            status.hardware_id in self._connectableHardwareIds
+            or status.hardware_id in self._disconnectableHardwareIds
+        )
+        self.connectButton.setVisible(offersConnect)
+        self.disconnectButton.setVisible(offersConnect)
+        self.connectButton.setEnabled(bool(canConnect and not self._reconnectBusy))
+        self.disconnectButton.setEnabled(bool(canDisconnect and not self._reconnectBusy))
+        self._updateReconnectOnlyButton(status, absent)
+
+    def _updateReconnectOnlyButton(self, status, absent) -> None:
         supported = (
             status is not None
             and status.hardware_id in self._reconnectableHardwareIds
+            and not absent  # nothing to reconnect: use Connect
         )
         self.reconnectButton.setEnabled(bool(supported and not self._reconnectBusy))
         if supported:
@@ -359,6 +430,8 @@ class HardwareStatusWidget(Widget):
         health = _health(status)
         if health == "neutral" and status.mode is DeviceRuntimeMode.MOCK:
             label = "Mock"
+        elif _isNotConnected(status):
+            label = "Not connected"
         elif status.connection is DeviceConnectionState.UNKNOWN:
             label = "Status unavailable"
         elif health == "issue":
@@ -375,7 +448,7 @@ class HardwareStatusWidget(Widget):
         return f"    {label}" if label else ""
 
     def _tooltipFor(self, status) -> str:
-        parts = [_HEALTH_LABELS[_health(status)]]
+        parts = ["Not connected" if _isNotConnected(status) else _HEALTH_LABELS[_health(status)]]
         if status.via:
             parts.append(f"Via {status.via}")
         if status.summary:
@@ -409,7 +482,9 @@ class HardwareStatusWidget(Widget):
 
         health = _health(status)
         self.detailDevice.setText(status.name)
-        self.detailHealth.setText(_HEALTH_LABELS[health])
+        self.detailHealth.setText(
+            "Not connected" if _isNotConnected(status) else _HEALTH_LABELS[health]
+        )
         self.detailHealth.setStyleSheet(f"color: {_HEALTH_COLORS[health]}; font-weight: 600;")
         self.detailConnection.setText(_connection_text(status))
         self.detailMode.setText(status.mode.value.upper())

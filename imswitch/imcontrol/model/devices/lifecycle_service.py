@@ -18,6 +18,14 @@ from .lifecycle import (
 )
 
 
+#: Runtime transitions the service runs (probe and shutdown are not offered).
+_TRANSITIONS = (
+    DeviceLifecycleAction.CONNECT,
+    DeviceLifecycleAction.DISCONNECT,
+    DeviceLifecycleAction.RECONNECT,
+)
+
+
 class DeviceLifecycleService:
     """Opt-in runtime lifecycle coordinator for physical devices.
 
@@ -41,7 +49,9 @@ class DeviceLifecycleService:
             hardware_id: threading.Lock() for hardware_id in self._handles
         }
         self._listeners = []
+        self._statusListeners = []
         self._listenersLock = threading.RLock()
+        self._subscribeStatusSources()
         self._shutdownLock = threading.Lock()
         self._shuttingDown = False
         self._inFlight = 0
@@ -141,7 +151,7 @@ class DeviceLifecycleService:
 
 
     def _findReconnectBlockReasons(self, graph) -> dict:
-        """Reject V1 reconnect when its transport is shared across devices.
+        """Reject V1 transitions when the transport is shared across devices.
 
         In-place RS232 replacement is safe for all logical components of the
         *same* physical device, but not yet for an unrelated device that also
@@ -160,7 +170,7 @@ class DeviceLifecycleService:
 
         reasons = {}
         for hardware_id, handle in self._handles.items():
-            if not handle.capabilities.reconnect:
+            if not any(handle.capabilities.supports(action) for action in _TRANSITIONS):
                 continue
             for relation in graph.relationsFrom(hardware_id):
                 if relation.kind is not DeviceRelationKind.USES_TRANSPORT:
@@ -170,7 +180,7 @@ class DeviceLifecycleService:
                 if other_users:
                     label = relation.label or str(relation.target)
                     reasons[hardware_id] = (
-                        f"Reconnect is disabled because transport {label!r} is "
+                        f"Reconnect, connect and disconnect are disabled because transport {label!r} is "
                         "shared with another physical device."
                     )
                     break
@@ -188,27 +198,32 @@ class DeviceLifecycleService:
             for hardware_id in sorted(self._handles)
         )
 
-    def canReconnect(self, hardware_id) -> bool:
+    def canPerform(self, hardware_id, action) -> bool:
+        """Whether the Hardware status window may offer ``action``."""
+        action = DeviceLifecycleAction(action)
         try:
             handle = self.getHandle(hardware_id)
         except KeyError:
             return False
         return bool(
-            handle.capabilities.reconnect
+            action in _TRANSITIONS
+            and handle.capabilities.supports(action)
             and hardware_id not in self._reconnectBlockReasons
         )
 
-    def getReconnectableHardwareIds(self) -> tuple:
+    def getActionableHardwareIds(self, action) -> tuple:
         return tuple(
             sorted(
-                handle.hardware_id
-                for handle in self._handles.values()
-                if (
-                    handle.capabilities.reconnect
-                    and handle.hardware_id not in self._reconnectBlockReasons
-                )
+                hardware_id for hardware_id in self._handles
+                if self.canPerform(hardware_id, action)
             )
         )
+
+    def canReconnect(self, hardware_id) -> bool:
+        return self.canPerform(hardware_id, DeviceLifecycleAction.RECONNECT)
+
+    def getReconnectableHardwareIds(self) -> tuple:
+        return self.getActionableHardwareIds(DeviceLifecycleAction.RECONNECT)
 
     def addListener(self, callback) -> None:
         """Register a lifecycle-result listener.
@@ -226,6 +241,50 @@ class DeviceLifecycleService:
                 candidate for candidate in self._listeners if candidate is not callback
             ]
 
+    def addStatusListener(self, callback) -> None:
+        """Register ``callback(hardware_id)`` for status changes a device
+        reports by itself -- an instrument fault (read error, USB removed),
+        or a connect / disconnect done outside this service.
+
+        Runs on the thread where the change happened (often a run or poller
+        thread). UI consumers must marshal work onto their controller thread.
+        """
+        with self._listenersLock:
+            if not any(candidate is callback for candidate in self._statusListeners):
+                self._statusListeners.append(callback)
+
+    def removeStatusListener(self, callback) -> None:
+        with self._listenersLock:
+            self._statusListeners = [
+                candidate for candidate in self._statusListeners
+                if candidate is not callback
+            ]
+
+    def _subscribeStatusSources(self) -> None:
+        # Managers that report their own status changes (instrument managers)
+        # expose addStatusListener(callback(name)); forward as hardware ids.
+        for hardware_id, handle in self._handles.items():
+            for source_id in handle.source_device_ids:
+                try:
+                    manager = self._supervisor.getManager(source_id)
+                except KeyError:
+                    continue
+                subscribe = getattr(manager, "addStatusListener", None)
+                if callable(subscribe):
+                    subscribe(lambda _name, hardware_id=hardware_id:
+                              self._publishStatus(hardware_id))
+
+    def _publishStatus(self, hardware_id) -> None:
+        with self._listenersLock:
+            listeners = tuple(self._statusListeners)
+        for callback in listeners:
+            try:
+                callback(hardware_id)
+            except Exception:
+                self.__logger.warning(
+                    "Device status listener failed", exc_info=True
+                )
+
     def _publish(self, result: DeviceLifecycleResult) -> None:
         with self._listenersLock:
             listeners = tuple(self._listeners)
@@ -237,7 +296,7 @@ class DeviceLifecycleService:
                     "Device lifecycle listener failed", exc_info=True
                 )
 
-    def _assertRuntimeTransitionSafe(self) -> None:
+    def _assertRuntimeTransitionSafe(self, verb: str = "reconnect") -> None:
         coordinator = getattr(self._master, "scanExecutionCoordinator", None)
         if coordinator is not None:
             if (
@@ -245,51 +304,76 @@ class DeviceLifecycleService:
                 or getattr(coordinator, "activeToken", None) is not None
             ):
                 raise DeviceLifecycleBlockedError(
-                    "Device reconnect is blocked while a scan is active."
+                    f"Device {verb} is blocked while a scan is active."
                 )
 
         recording = getattr(self._master, "recordingManager", None)
         if recording is not None and bool(getattr(recording, "record", False)):
             raise DeviceLifecycleBlockedError(
-                "Device reconnect is blocked while a recording is active."
+                f"Device {verb} is blocked while a recording is active."
             )
 
     def reconnect(self, hardware_id) -> DeviceLifecycleResult:
+        return self._transition(hardware_id, DeviceLifecycleAction.RECONNECT)
+
+    def connect(self, hardware_id) -> DeviceLifecycleResult:
+        """Connect a device that is not connected (a transient instrument)."""
+        return self._transition(hardware_id, DeviceLifecycleAction.CONNECT)
+
+    def disconnect(self, hardware_id) -> DeviceLifecycleResult:
+        """Disconnect a device so it can be unplugged (a transient instrument)."""
+        return self._transition(hardware_id, DeviceLifecycleAction.DISCONNECT)
+
+    def _transition(self, hardware_id, action) -> DeviceLifecycleResult:
+        """One runtime transition, with the same rules for every action:
+        declared capability, shared-transport veto, shutdown refusal,
+        per-device lock, and -- for devices that take part in acquisitions --
+        the scan / recording guard and acquisition-gate maintenance."""
+        action = DeviceLifecycleAction(action)
+        verb = action.value
         handle = self.getHandle(hardware_id)
         lifecycle = handle.lifecycle
         blocked_reason = self._reconnectBlockReasons.get(hardware_id)
         if blocked_reason is not None:
             raise DeviceLifecycleBlockedError(blocked_reason)
-        if lifecycle is None or not handle.capabilities.reconnect:
+        if lifecycle is None or not handle.capabilities.supports(action):
             raise DeviceLifecycleNotSupportedError(
-                f"Reconnect is not supported for {hardware_id!r}."
+                f"{verb.capitalize()} is not supported for {hardware_id!r}."
             )
 
         with self._shutdownLock:
             if self._shuttingDown:
                 raise DeviceLifecycleBlockedError(
-                    "Device reconnect is refused: the application is shutting down."
+                    f"Device {verb} is refused: the application is shutting down."
                 )
             self._inFlight += 1
         try:
-            return self._reconnectAdmitted(hardware_id, handle, lifecycle)
+            return self._transitionAdmitted(hardware_id, handle, lifecycle, action)
         finally:
             with self._shutdownLock:
                 self._inFlight -= 1
 
-    def _reconnectAdmitted(self, hardware_id, handle, lifecycle) -> DeviceLifecycleResult:
+    def _transitionAdmitted(self, hardware_id, handle, lifecycle, action) -> DeviceLifecycleResult:
+        verb = action.value
         lock = self._operationLocks[hardware_id]
         if not lock.acquire(blocking=False):
             raise DeviceLifecycleBusyError(
                 f"A lifecycle operation is already running for {hardware_id!r}."
             )
         try:
-            self._assertRuntimeTransitionSafe()
+            # Instruments never take part in scans or recordings (they are
+            # guarded by their reservation instead), so a lifecycle may
+            # declare affectsAcquisition = False and skip the gate.
+            affectsAcquisition = bool(getattr(lifecycle, "affectsAcquisition", True))
             try:
-                # Held for the whole adapter call: no scan or recording can
-                # start until the backend replacement has finished.
-                with get_acquisition_gate().maintenance(f"reconnect of {hardware_id}"):
-                    result = lifecycle.reconnect()
+                if affectsAcquisition:
+                    self._assertRuntimeTransitionSafe(verb)
+                    # Held for the whole adapter call: no scan or recording
+                    # can start until the backend replacement has finished.
+                    with get_acquisition_gate().maintenance(f"{verb} of {hardware_id}"):
+                        result = getattr(lifecycle, verb)()
+                else:
+                    result = getattr(lifecycle, verb)()
             except MaintenanceBlockedError as exc:
                 raise DeviceLifecycleBlockedError(str(exc)) from None
             except DeviceLifecycleError:
@@ -300,16 +384,17 @@ class DeviceLifecycleService:
                 raise
             except Exception as exc:
                 self.__logger.error(
-                    "Unexpected reconnect failure for %r: %s",
+                    "Unexpected %s failure for %r: %s",
+                    verb,
                     hardware_id,
                     exc,
                     exc_info=True,
                 )
                 result = DeviceLifecycleResult(
                     hardware_id=hardware_id,
-                    action=DeviceLifecycleAction.RECONNECT,
+                    action=action,
                     success=False,
-                    summary="Device reconnect failed unexpectedly",
+                    summary=f"Device {verb} failed unexpectedly",
                     details=str(exc),
                     affected_device_ids=handle.source_device_ids,
                 )

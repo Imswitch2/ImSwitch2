@@ -152,6 +152,9 @@ class InstrumentManager(DeviceManagerStatusMixin, ABC):
 
 class _InstrumentLifecycle:
     capabilities = DeviceLifecycleCapabilities(connect=True, disconnect=True, reconnect=True)
+    #: Instruments never take part in scans or recordings -- their
+    #: reservation guards them -- so a scan does not block connecting one.
+    affectsAcquisition = False
 
     def __init__(self, manager: InstrumentManager) -> None:
         self._manager = manager
