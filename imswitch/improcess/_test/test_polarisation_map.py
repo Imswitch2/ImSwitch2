@@ -46,7 +46,7 @@ def _sample(seq, direction, dop=0.99, verified=True):
 
 def write_run(tmp_path, points, *, name='run', instruments=('pax1',), quantities=PAX,
               verified=True, dop=None, grid_axes=None, illumination=633.0,
-              wavelength_setting=633.0, finish=True, status_for=None):
+              wavelength_setting=633.0, finish=True, status_for=None, to_units=False):
     """``points``: list of (angle1, angle2); samples from MODEL (2 per point)."""
     meta = {
         'run_id': name,
@@ -75,7 +75,14 @@ def write_run(tmp_path, points, *, name='run', instruments=('pax1',), quantities
             for _ in range(2):
                 seq += 1
                 samples.append(_sample(seq, direction, point_dop, verified))
-            if quantities is not PAX:
+            if to_units:
+                factor = {'azimuth': 180 / math.pi, 'ellipticity': 180 / math.pi,
+                          'dop': 100.0, 'power': 1.0}
+                samples = [Sample(values={k: v * factor[k] for k, v in s.values.items()},
+                                  t_host=s.t_host, generation=1, sequence=s.sequence,
+                                  verification=s.verification, profile_id='mock')
+                           for s in samples]
+            elif quantities is not PAX:
                 samples = [Sample(values={k: v for k, v in s.values.items()
                                           if k in {q.name for q in quantities}},
                                   t_host=s.t_host, generation=1, sequence=s.sequence,
@@ -265,3 +272,29 @@ def test_json_save_writes_the_export(tmp_path):
     result.write_files(plan, {})
     data = json.loads((tmp_path / 'states.json').read_text())
     assert data['run_id'] == 'run' and len(data['targets']) == 20
+
+
+def test_angles_in_degrees_are_converted_and_unknown_units_refused(tmp_path):
+    """Review: units were ignored; degrees would have been read as radians."""
+    pts, axes = _grid(30.0)
+    reference = analyse_run(MeasurementRunFile.load(
+        write_run(tmp_path, pts, grid_axes=axes, name='rad')), _params())
+
+    degrees = (
+        QuantitySpec('azimuth', 'deg', 'polarisation.azimuth', -90, 90),
+        QuantitySpec('ellipticity', 'deg', 'polarisation.ellipticity', -45, 45),
+        QuantitySpec('dop', '%', 'polarisation.dop', 0, 105),
+        QuantitySpec('power', 'W', 'optical.power', 0),
+    )
+    path = write_run(tmp_path, pts, grid_axes=axes, name='deg', quantities=degrees,
+                     to_units=True)
+    converted = analyse_run(MeasurementRunFile.load(path), _params())
+    np.testing.assert_allclose(converted.properties['distance (°)'],
+                               reference.properties['distance (°)'], atol=1e-9)
+    assert list(converted.properties['status']) == list(reference.properties['status'])
+
+    grads = tuple(QuantitySpec(q.name, 'grad', q.quantity) if q.name == 'azimuth' else q
+                  for q in degrees)
+    bad = MeasurementRunFile.load(write_run(tmp_path, pts, name='grad', quantities=grads))
+    with pytest.raises(PolarisationMapError, match="'grad'"):
+        analyse_run(bad, _params())

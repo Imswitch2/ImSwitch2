@@ -57,6 +57,10 @@ class WindowRefused(RuntimeError):
     """An acquisition window cannot be opened (e.g. timing not verified)."""
 
 
+class InstrumentBusy(WindowRefused):
+    """An earlier read has not returned yet; the instrument cannot be used."""
+
+
 class WindowFault(WindowRefused):
     """Opening the window hit a transport error; the session is now faulted."""
 
@@ -208,6 +212,10 @@ class InstrumentSession:
         self._profile: Optional[TimingProfile] = None
         self._ring: collections.deque = collections.deque(maxlen=ring_size)
         self._fault_listeners: List[Callable[[str, str], None]] = []
+        #: Bumped by every setting / action / (re)connect; windows check it.
+        self._config_rev = 0
+        #: A driver read that has not returned (its window gave up waiting).
+        self._read_worker: Optional[threading.Thread] = None
         self._sample_listeners: List[Callable[[str, Sample], None]] = []
 
     # ------------------------------------------------------------ properties
@@ -259,12 +267,14 @@ class InstrumentSession:
 
     # ------------------------------------------------------------ lifecycle
     def connect(self) -> InstrumentIdentity:
+        self._require_not_reading()
         with self._lock:
             identity = self.driver.connect()
             self._identity = identity
             self._connected = True
             self._faulted = None
             self._generation += 1
+            self._config_rev += 1
             self._ring.clear()
             self._evaluate_profile()
             return identity
@@ -309,11 +319,14 @@ class InstrumentSession:
 
     def set_setting(self, name: str, value: Any, *, owner: Optional[str] = None) -> Any:
         """Apply a setting; the readback is what applies. Re-matches profiles."""
-        with self._command(owner, f'set {name}'), self._lock:
-            self._require_ready()
-            applied = self.driver.set_setting(name, value)
-            self._evaluate_profile()
-            return applied
+        with self._command(owner, f'set {name}'):
+            self._require_not_reading()
+            with self._lock:
+                self._require_ready()
+                self._config_rev += 1
+                applied = self.driver.set_setting(name, value)
+                self._evaluate_profile()
+                return applied
 
     def run_action(self, name: str, *, confirm_dark: bool = False,
                    owner: Optional[str] = None, **kwargs: Any) -> None:
@@ -325,9 +338,12 @@ class InstrumentSession:
                 f'{self.name}.{name} requires the beam to be blocked; '
                 f'pass confirm_dark=True once that is confirmed'
             )
-        with self._command(owner, name), self._lock:
-            self._require_ready()
-            self.driver.run_action(name, **kwargs)
+        with self._command(owner, name):
+            self._require_not_reading()
+            with self._lock:
+                self._require_ready()
+                self._config_rev += 1
+                self.driver.run_action(name, **kwargs)
 
     def _evaluate_profile(self) -> None:
         settings = self.driver.settings()
@@ -336,6 +352,16 @@ class InstrumentSession:
             (p for p in self.driver.timing_profiles if p.matches(settings, firmware)),
             None,
         )
+
+    def reading(self) -> bool:
+        """True while a driver read that a window gave up on is still running."""
+        worker = self._read_worker
+        return worker is not None and worker.is_alive()
+
+    def _require_not_reading(self) -> None:
+        if self.reading():
+            raise InstrumentBusy(
+                f'instrument {self.name}: an earlier read has not returned yet')
 
     def _require_ready(self) -> None:
         if not self._connected:
@@ -351,6 +377,7 @@ class InstrumentSession:
             return self._open_window(allow_unverified)
 
     def _open_window(self, allow_unverified: bool) -> Boundary:
+        self._require_not_reading()
         with self._lock:
             self._require_ready()
             profile = self._profile
@@ -395,7 +422,7 @@ class InstrumentSession:
                     t_host=self._clock(), generation=self._generation,
                     verification=verification, profile_id=profile.id, rule=profile.rule,
                     device_t=device_t, clock_uncertainty_s=uncertainty,
-                    device_counter=counter,
+                    device_counter=counter, config_revision=self._config_rev,
                 )
         self.report_fault(fault)
         raise WindowFault(f'instrument {self.name}: {fault}')
@@ -409,9 +436,28 @@ class InstrumentSession:
         *,
         owner: Optional[str] = None,
     ) -> WindowResult:
-        """``n`` distinct samples acquired after ``boundary`` — or fewer, with a cause."""
-        with self._command(owner, 'sample window'):
+        """``n`` distinct samples acquired after ``boundary`` — or fewer, with a cause.
+
+        Every driver read is bounded by the window's deadline and its
+        cancellation. A read that has not returned when the window gives up
+        keeps the instrument (its admission ticket and the busy state) until
+        it does return; its late result is discarded.
+        """
+        registry = self._registry if self._registry is not None else get_resource_registry()
+        ticket = registry.admit(self.resource, owner, label=f'{self.name}: sample window',
+                                reentrant=False)
+        try:
             return self._sample_window(boundary, n, deadline_s, cancel)
+        finally:
+            worker = self._read_worker
+            if worker is not None and worker.is_alive():
+                def release_when_returned():
+                    worker.join()
+                    registry.release_ticket(ticket)
+                threading.Thread(target=release_when_returned,
+                                 name=f'instrument-read-{self.name}', daemon=True).start()
+            else:
+                registry.release_ticket(ticket)
 
     def _sample_window(self, boundary, n, deadline_s, cancel) -> WindowResult:
         profile = next(
@@ -434,24 +480,31 @@ class InstrumentSession:
                 cause = WindowCause.TIMEOUT
                 detail = f'{len(accepted)} of {n} samples within {deadline_s:g} s'
                 break
+            if self._generation != boundary.generation or self._faulted:
+                cause = WindowCause.TRANSPORT_FAULT
+                detail = self._faulted or 'instrument reconnected during the window'
+                break
+            if self._config_rev != boundary.config_revision:
+                cause = WindowCause.CANCELLED
+                detail = 'instrument configuration changed during the window'
+                break
+            if profile is None or profile.id != (self._profile.id if self._profile else None):
+                cause = WindowCause.CANCELLED
+                detail = 'timing profile changed during the window'
+                break
+            outcome, box = self._bounded_read(deadline, cancel)
+            if outcome != 'done':
+                # Never accept a read that returned after the window ended.
+                if outcome == 'cancelled':
+                    cause, detail = WindowCause.CANCELLED, 'cancelled'
+                else:
+                    cause = WindowCause.TIMEOUT
+                    detail = (f'{len(accepted)} of {n} samples within {deadline_s:g} s'
+                              + ('; a read is still running' if self.reading() else ''))
+                break
+            raw, malformed, fault = box.get('raw'), box.get('malformed'), box.get('fault')
+            t_host = box['t']
             with self._lock:
-                if self._generation != boundary.generation or self._faulted:
-                    cause = WindowCause.TRANSPORT_FAULT
-                    detail = self._faulted or 'instrument reconnected during the window'
-                    break
-                if profile is None or profile.id != (self._profile.id if self._profile else None):
-                    cause = WindowCause.CANCELLED
-                    detail = 'timing profile changed during the window'
-                    break
-                fault = None
-                raw = malformed = None
-                try:
-                    raw = self.driver.read()
-                except MalformedReading as exc:
-                    malformed = str(exc) or 'malformed reading'
-                except TransportError as exc:
-                    fault = str(exc) or 'transport error'
-                t_host = self._clock()
                 self._sequence += 1
                 sequence = self._sequence
                 generation = self._generation
@@ -494,6 +547,50 @@ class InstrumentSession:
         )
 
     # --------------------------------------------------------------- helpers
+    def _bounded_read(self, deadline: float, cancel: Optional[threading.Event]):
+        """One driver read on a worker, waited for until deadline/cancel.
+
+        Returns ``('done', box)``, ``('timeout', None)`` or
+        ``('cancelled', None)``. A read still running keeps
+        :meth:`reading` true until it returns.
+        """
+        if self.reading():
+            return 'timeout', None
+        box: Dict[str, Any] = {}
+        done = threading.Event()
+
+        def work():
+            try:
+                with self._lock:
+                    try:
+                        box['raw'] = self.driver.read()
+                    except MalformedReading as exc:
+                        box['malformed'] = str(exc) or 'malformed reading'
+                    except TransportError as exc:
+                        box['fault'] = str(exc) or 'transport error'
+                    except Exception as exc:  # an unexpected driver failure
+                        box['fault'] = f'{type(exc).__name__}: {exc}'
+                    box['t'] = self._clock()
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=work, name=f'instrument-read-{self.name}',
+                                  daemon=True)
+        self._read_worker = worker
+        worker.start()
+        while not done.wait(min(0.01, max(0.0, deadline - self._clock()))):
+            if cancel is not None and cancel.is_set():
+                return 'cancelled', None
+            if self._clock() > deadline:
+                return 'timeout', None
+        self._read_worker = None
+        # Checked again: a result that arrives after the window ended is late.
+        if cancel is not None and cancel.is_set():
+            return 'cancelled', None
+        if box['t'] > deadline:
+            return 'timeout', None
+        return 'done', box
+
     def _make_sample(self, raw, malformed, t_host, generation, sequence, boundary) -> Sample:
         if raw is None:
             return Sample(values={}, t_host=t_host, generation=generation,

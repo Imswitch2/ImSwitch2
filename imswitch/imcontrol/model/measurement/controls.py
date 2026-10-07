@@ -130,17 +130,18 @@ class ControlExecutor:
         worker.start()
         worker.join(max(0.0, float(deadline_s)))
         if worker.is_alive():
-            if control.capabilities.can_stop:
-                try:
-                    control.stop()
-                except Exception:
-                    _logger.exception('stop of %s failed', control.name)
-            # Stop issued or not: the backend is held until the worker returns.
+            # Quarantine first: the backend is held until the worker returns,
+            # whatever happens to the stop request.
             self._quarantine(resource, worker)
+            if control.capabilities.can_stop:
+                # A stop can block too; it must not stretch this deadline.
+                threading.Thread(target=_request_stop, args=(control,),
+                                 name=f'run-control-stop-{control.name}',
+                                 daemon=True).start()
             return ControlResult(
                 control.name, requested=requested, ok=False,
                 cause=f'{what} did not finish within {deadline_s:g} s'
-                      + (' (stop issued)' if control.capabilities.can_stop else ''))
+                      + (' (stop requested)' if control.capabilities.can_stop else ''))
         if 'error' in box:
             exc = box['error']
             return ControlResult(control.name, requested=requested, ok=False,
@@ -180,6 +181,13 @@ class ControlExecutor:
                 callback(resource, quarantined)
             except Exception:
                 _logger.exception('quarantine listener failed')
+
+
+def _request_stop(control: RunControl) -> None:
+    try:
+        control.stop()
+    except Exception:
+        _logger.exception('stop of %s failed', control.name)
 
 
 def _position_result(control: RunControl) -> ControlResult:

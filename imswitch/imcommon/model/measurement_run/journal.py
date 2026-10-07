@@ -60,6 +60,11 @@ _REASON_LEN = 64
 _CAUSE_LEN = 64
 
 
+#: The one journal problem a crash leaves behind by itself: the record being
+#: appended when the process died. That point was never committed.
+TORN_TAIL = 'last commit record is incomplete (torn write); ignored'
+
+
 class JournalError(RuntimeError):
     """The journal cannot be written or read as requested."""
 
@@ -429,7 +434,27 @@ class JournalContents:
     problems: List[str] = field(default_factory=list)
 
     @property
+    def damaged(self) -> bool:
+        """Committed points were lost, not just an uncommitted tail.
+
+        A finished run (``end.json`` present) never has a torn tail, so any
+        problem there is damage; so is any problem other than the torn tail,
+        and fewer valid points than the writer recorded committing.
+        """
+        if any(problem != TORN_TAIL for problem in self.problems):
+            return True
+        if self.end is not None:
+            if self.problems:
+                return True
+            expected = self.end.get('points_committed')
+            if expected is not None and int(expected) != len(self.commits):
+                return True
+        return False
+
+    @property
     def acquisition(self) -> AcquisitionOutcome:
+        if self.damaged:
+            return AcquisitionOutcome.CORRUPT
         if self.end is None:
             return AcquisitionOutcome.INTERRUPTED
         return AcquisitionOutcome(self.end.get('acquisition', 'interrupted'))
@@ -467,7 +492,7 @@ def read_journal(run_dir: Path) -> JournalContents:
     log = _read_bytes(run_dir / 'commits.log')
     lines = log.split(b'\n')
     if lines and lines[-1] != b'':
-        problems.append('last commit record is incomplete (torn write); ignored')
+        problems.append(TORN_TAIL)
     for number, raw_line in enumerate(lines[:-1], start=1):
         record, reason = _parse_commit(raw_line)
         if record is None:

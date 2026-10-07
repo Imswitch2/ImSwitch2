@@ -125,6 +125,12 @@ def _write(fh, contents: JournalContents) -> None:
     cleanup = end.get('cleanup', CleanupOutcome.PENDING.value)
     metadata['end'] = end
     metadata['journal_problems'] = list(contents.problems)
+    metadata['recovery'] = {
+        'damaged': contents.damaged,
+        'recorded_outcome': end.get('acquisition'),
+        'points_expected': end.get('points_committed'),
+        'points_recovered': len(contents.commits),
+    }
 
     fh.attrs[SCHEMA_MARKER] = 1
     fh.attrs['schema_version'] = SCHEMA_VERSION

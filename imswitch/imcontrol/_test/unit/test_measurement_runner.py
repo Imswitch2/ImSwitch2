@@ -377,3 +377,120 @@ def test_end_to_end_mock_run_through_the_improcess_reconstructor(tmp_path):
         elif expected >= params['threshold_deg'] + 0.5:
             assert status == 'failed'
     assert result.export_document()['run_id'] == report.run_id
+
+
+# --------------------------------------------- review of P-1 (2026-10-07)
+def test_script_cancellation_still_cleans_up_and_releases(tmp_path, registry):
+    """OperationCancelled is a BaseException: cleanup, run file, release and
+    the finished state must still happen, then the interrupt propagates."""
+    from imswitch.imcommon.model.cancellation import OperationCancelled
+
+    hwp, qwp, driver, session = _rig()
+    seq = grid([('hwp', [0, 20, 40]), ('qwp', [0, 30])])
+
+    def progress(event):
+        if event.point == 1:
+            raise OperationCancelled()
+
+    runner = MeasurementRunner(sequence=seq, controls=[hwp, qwp],
+                               instruments={'pax1': session}, folder=tmp_path,
+                               settings=_settings(), progress=progress)
+    with pytest.raises(OperationCancelled):
+        runner.run()
+    assert runner.wait_finished(0)
+    assert runner.acquisition is AcquisitionOutcome.STOPPED
+    for key in ('waveform-output', 'instrument:pax1', hwp.resource, qwp.resource):
+        assert registry.holder(key) is None
+    run_files = list(tmp_path.glob('*.run.h5'))
+    assert len(run_files) == 1
+    assert MeasurementRunFile.load(run_files[0]).acquisition is AcquisitionOutcome.STOPPED
+    assert hwp.read_position() == pytest.approx(0.0)
+
+
+class _SlowPAX(MockPAXDriver):
+    def __init__(self, *args, delay=0.0, gate=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.delay, self.gate = delay, gate
+
+    def read(self):
+        if self.gate is not None:
+            self.gate.wait()
+        time.sleep(self.delay)
+        return super().read()
+
+
+def test_a_late_read_is_never_accepted(registry):
+    """Review: a 125 ms read with a 10 ms deadline returned complete=True."""
+    a, b = MockRotatorControl('a'), MockRotatorControl('b')
+    session = InstrumentSession('pax1', _SlowPAX(a, b, delay=0.125, has_counter=False,
+                                                 has_clock=False, revolution_s=0.001))
+    session.connect()
+    started = time.monotonic()
+    window = session.sample_window(session.open_window(), 1, 0.01)
+    assert time.monotonic() - started < 0.1
+    assert not window.complete and window.cause.value == 'timeout'
+    assert window.samples == ()
+
+
+def test_a_stuck_read_keeps_the_instrument_until_it_returns(registry):
+    from imswitch.imcontrol.model.measurement.instrument import InstrumentBusy
+
+    a, b = MockRotatorControl('a'), MockRotatorControl('b')
+    gate = threading.Event()
+    session = InstrumentSession('pax1', _SlowPAX(a, b, gate=gate))
+    session.connect()
+    window = session.sample_window(session.open_window(), 2, 0.05)
+    assert window.cause.value == 'timeout' and 'still running' in window.detail
+    assert session.reading()
+    assert registry.in_flight('instrument:pax1')        # still owned
+    with pytest.raises(InstrumentBusy):
+        session.open_window()
+    with pytest.raises(InstrumentBusy):
+        session.set_setting('wavelength_nm', 532)
+    gate.set()
+    deadline = time.monotonic() + 2
+    while (session.reading() or registry.in_flight('instrument:pax1')) \
+            and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not session.reading() and not registry.in_flight('instrument:pax1')
+    assert session.sample_window(session.open_window(), 1, 2.0).complete
+
+
+def test_a_blocking_stop_does_not_stretch_the_deadline():
+    """Review: a 10 ms deadline took 168 ms because stop() blocked."""
+    from imswitch.imcommon.model.measurement_run import ControlResult
+    from imswitch.imcontrol.model.measurement import ControlCapabilities, RunControl
+
+    release = threading.Event()
+
+    class SlowStop(RunControl):
+        name, resource = 'slow', 'slow-ctrl'
+        capabilities = ControlCapabilities(unit='deg', can_stop=True,
+                                           readback='none', acknowledges=False)
+
+        def apply(self, value, token=None):
+            release.wait(5)
+            return ControlResult(self.name, value)
+
+        def stop(self):
+            time.sleep(0.3)
+            release.set()
+
+    executor = ControlExecutor()
+    started = time.monotonic()
+    result = executor.apply(SlowStop(), 1.0, deadline_s=0.01)
+    assert time.monotonic() - started < 0.1
+    assert not result.ok and 'stop requested' in result.cause
+    assert executor.is_quarantined('slow-ctrl')
+    assert executor.wait_released('slow-ctrl', 2.0)
+
+
+def test_settings_changed_inside_a_window_end_it(registry):
+    """Review: same profile id, different configuration, old boundary used."""
+    hwp, qwp, driver, session = _rig()
+    boundary = session.open_window()
+    session.set_setting('wavelength_nm', 532)          # still profile mock-mode9
+    window = session.sample_window(boundary, 1, 1.0)
+    assert not window.complete
+    assert window.cause.value == 'cancelled'
+    assert 'configuration changed' in window.detail

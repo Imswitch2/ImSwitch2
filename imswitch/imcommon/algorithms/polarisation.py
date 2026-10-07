@@ -199,29 +199,47 @@ def match_targets(
     verified: np.ndarray,
     threshold_deg: float,
 ) -> List[Match]:
-    """Nearest ELIGIBLE point per target; eligibility is decided first.
+    """Per target, a qualifying VERIFIED point first; eligibility is decided first.
 
     ``eligible`` must already combine committed status, a defined direction
     and the DOP criteria — a closer ineligible point never hides an eligible
-    one. A match whose point was acquired with unverified timing is
-    ``unqualified``, never ``pass`` or ``failed``.
+    one. Among eligible points:
+
+    1. the nearest verified point within the threshold → ``pass``;
+    2. else the nearest unverified point within the threshold →
+       ``unqualified`` (exploratory: it may reach the target, timing not
+       verified);
+    3. else the nearest verified point → ``failed``;
+    4. only unverified points, none within the threshold → ``unqualified``
+       (unverified data can establish neither a pass nor a failure).
+
+    An unverified point never hides a qualifying verified one.
     """
     directions = np.asarray(directions, dtype=float)
     eligible = np.asarray(eligible, dtype=bool)
     verified = np.asarray(verified, dtype=bool)
-    candidates = np.flatnonzero(eligible)
+    sure = np.flatnonzero(eligible & verified)
+    unsure = np.flatnonzero(eligible & ~verified)
     matches = []
     for target in targets:
-        if candidates.size == 0:
-            matches.append(Match(target.name, None, math.nan, FAILED))
-            continue
-        distance = angular_distance_deg(directions[candidates], target.direction[None, :])
-        best = int(np.argmin(distance))
-        index = int(candidates[best])
-        d = float(distance[best])
-        if not verified[index]:
-            status = UNQUALIFIED
+        best_sure = _nearest(directions, sure, target.direction)
+        best_unsure = _nearest(directions, unsure, target.direction)
+        if best_sure is not None and best_sure[1] <= threshold_deg:
+            matches.append(Match(target.name, best_sure[0], best_sure[1], PASS))
+        elif best_unsure is not None and best_unsure[1] <= threshold_deg:
+            matches.append(Match(target.name, best_unsure[0], best_unsure[1], UNQUALIFIED))
+        elif best_sure is not None:
+            matches.append(Match(target.name, best_sure[0], best_sure[1], FAILED))
+        elif best_unsure is not None:
+            matches.append(Match(target.name, best_unsure[0], best_unsure[1], UNQUALIFIED))
         else:
-            status = PASS if d <= threshold_deg else FAILED
-        matches.append(Match(target.name, index, d, status))
+            matches.append(Match(target.name, None, math.nan, FAILED))
     return matches
+
+
+def _nearest(directions, candidates, direction):
+    if candidates.size == 0:
+        return None
+    distance = angular_distance_deg(directions[candidates], direction[None, :])
+    best = int(np.argmin(distance))
+    return int(candidates[best]), float(distance[best])

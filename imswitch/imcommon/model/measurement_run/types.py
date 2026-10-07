@@ -61,6 +61,9 @@ class AcquisitionOutcome(str, Enum):
     FAILED = 'failed'
     #: Found on disk without a final outcome: the writer did not finish.
     INTERRUPTED = 'interrupted'
+    #: Recovered from a damaged journal: committed points were lost (checksum
+    #: or extent failures, or fewer points than the run recorded committing).
+    CORRUPT = 'corrupt'
 
 
 class CleanupOutcome(str, Enum):
@@ -138,6 +141,9 @@ class Boundary:
     clock_uncertainty_s: float = 0.0
     #: Device sample counter read after settle; ``None`` if none.
     device_counter: Optional[int] = None
+    #: The instrument's configuration revision at the boundary. Any setting
+    #: or action changes it, and a window whose revision is stale ends.
+    config_revision: int = 0
 
 
 @dataclass(frozen=True)

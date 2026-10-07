@@ -60,6 +60,28 @@ class PolarisationMapError(ValueError):
     """The source cannot be analysed as a polarisation map."""
 
 
+#: Units each quantity may be declared in, and the factor to the unit the
+#: analysis uses (radians for angles, a fraction for DOP). Anything else is
+#: refused rather than guessed: a sensor reporting degrees read as radians
+#: would yield wrong states — and possibly wrong passing settings.
+_UNIT_FACTORS = {
+    'polarisation.azimuth': {'rad': 1.0, 'deg': math.pi / 180.0, '°': math.pi / 180.0},
+    'polarisation.ellipticity': {'rad': 1.0, 'deg': math.pi / 180.0, '°': math.pi / 180.0},
+    'polarisation.dop': {'': 1.0, '1': 1.0, 'fraction': 1.0, '%': 0.01},
+}
+
+
+def _unit_factor(inst, quantity: str) -> float:
+    spec = inst.quantity(quantity)
+    unit = (spec.unit or '').strip()
+    factors = _UNIT_FACTORS[quantity]
+    if unit not in factors:
+        raise PolarisationMapError(
+            f'{inst.name}: {quantity} is in {spec.unit!r}; supported units are '
+            f'{", ".join(repr(u) for u in factors)}.')
+    return factors[unit]
+
+
 class _PolarisationParamsWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -191,6 +213,7 @@ def analyse_run(run: MeasurementRunFile, params: Dict[str, Any]) -> 'Polarisatio
             raise PolarisationMapError(
                 f'Instrument {instrument!r} reports no {quantity}; a polarisation map '
                 f'needs azimuth, ellipticity and DOP (DOP decides eligibility).')
+    factors = {q: _unit_factor(inst, q) for q in _UNIT_FACTORS}
     controls = run.control_names()
     if not controls:
         raise PolarisationMapError('The run set no controls; nothing to map.')
@@ -213,9 +236,10 @@ def analyse_run(run: MeasurementRunFile, params: Dict[str, Any]) -> 'Polarisatio
             continue
         power_col = inst.column(block, 'optical.power')
         agg = aggregate_polarisation(
-            inst.column(block, 'polarisation.azimuth'),
-            inst.column(block, 'polarisation.ellipticity'),
-            inst.column(block, 'polarisation.dop'),
+            inst.column(block, 'polarisation.azimuth') * factors['polarisation.azimuth'],
+            inst.column(block, 'polarisation.ellipticity')
+            * factors['polarisation.ellipticity'],
+            inst.column(block, 'polarisation.dop') * factors['polarisation.dop'],
             power_col,
         )
         n_samples[row] = agg.n
@@ -269,6 +293,7 @@ def analyse_run(run: MeasurementRunFile, params: Dict[str, Any]) -> 'Polarisatio
         'eligible': int(eligible.sum()),
         'unverified_points': int((committed & ~verified).sum()),
         'pass': sum(m.status == PASS for m in matches),
+        'acquisition': run.acquisition.value,
         'targets': len(matches),
     }
     result = PolarisationMapResult(

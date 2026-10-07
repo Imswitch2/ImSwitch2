@@ -36,6 +36,7 @@ from imswitch.imcommon.model.measurement_run import (
     Verification,
     WindowCause,
     WindowResult,
+    MeasurementRunFile,
     finalize_journal,
 )
 
@@ -168,92 +169,126 @@ class MeasurementRunner:
 
     # ------------------------------------------------------------------ run
     def run(self) -> RunReport:
+        """Acquire, clean up, write the run file, release — on every path.
+
+        A script cancellation (``OperationCancelled``, a ``BaseException``) or
+        any other interrupt stops acquisition like Stop does; cleanup, the
+        run file and the release of every resource still happen, and the
+        interrupt is re-raised afterwards.
+        """
         self._preflight()
-        resources = self._resources()
         try:
             self._reservation = self.registry.reserve(
-                resources, self.owner, deadline_s=self.settings.reserve_deadline_s)
+                self._resources(), self.owner, deadline_s=self.settings.reserve_deadline_s)
         except ResourceReservedError as exc:
             raise RunRefused(str(exc)) from None
 
-        for session in self.instruments.values():
-            session.add_fault_listener(self._on_fault)
-        starts = self._start_positions()
+        interrupt: Optional[BaseException] = None
         writer = None
+        starts: Dict[str, Optional[float]] = {}
         committed = failed = 0
         detail = ''
         movement_failed = False
-        try:
-            self.folder.mkdir(parents=True, exist_ok=True)
-            writer = RunJournalWriter(
-                self.journal_dir,
-                metadata=self._metadata(starts),
-                instruments={name: s.quantities for name, s in self.instruments.items()},
-                controls=list(self.controls),
-                fsync=self.settings.fsync,
-            )
-            consecutive_failed = 0
-            for index in range(len(self.sequence)):
-                if self._cancel.is_set():
-                    break
-                status, controls_ok, run_ending = self._measure_point(writer, index)
-                if status is PointStatus.COMMITTED:
-                    committed += 1
-                    consecutive_failed = 0
-                else:
-                    failed += 1
-                    consecutive_failed += 1
-                if not controls_ok:
-                    movement_failed = True
-                    detail = detail or f'point {index}: a control did not apply'
-                    break
-                if run_ending:
-                    break
-                if consecutive_failed >= self.settings.max_consecutive_failed_points:
-                    detail = f'{consecutive_failed} consecutive points failed'
-                    break
-            self.acquisition = self._acquisition_outcome(index_done=committed + failed,
-                                                         movement_failed=movement_failed,
-                                                         detail=detail)
-            if self._fault:
-                detail = f'instrument fault: {self._fault}'
-            elif self._cancel.is_set() and not detail:
-                detail = self._cancel_reason
-            writer.finish(self.acquisition, cleanup=CleanupOutcome.RUNNING, detail=detail)
-        except Exception as exc:
-            _logger.exception('measurement run %s failed', self.run_id)
-            self.acquisition = AcquisitionOutcome.FAILED
-            detail = f'{type(exc).__name__}: {exc}'
-            if writer is not None:
-                try:
-                    writer.finish(self.acquisition, cleanup=CleanupOutcome.RUNNING, detail=detail)
-                except Exception:
-                    _logger.exception('could not finish the journal')
-        finally:
-            for session in self.instruments.values():
-                session.remove_fault_listener(self._on_fault)
-
-        # ------------------------------------------------------------ cleanup
-        self.lifecycle = RunLifecycle.CLEANING_UP
-        self.cleanup = CleanupOutcome.RUNNING
-        cleanup_outcome, cleanup_detail, quarantined = self._cleanup(starts, movement_failed)
-        self.cleanup = cleanup_outcome
-
+        cleanup_detail = ''
+        quarantined: List[str] = []
         run_file = None
         finalize_error = ''
-        if writer is not None:
+        try:
+            for session in self.instruments.values():
+                session.add_fault_listener(self._on_fault)
             try:
-                writer.update_end(cleanup=cleanup_outcome.value, cleanup_detail=cleanup_detail,
-                                  quarantined=quarantined)
-                run_file = finalize_journal(self.journal_dir, fsync=self.settings.fsync)
-                if not self.settings.keep_journal:
-                    shutil.rmtree(self.journal_dir, ignore_errors=True)
+                starts = self._start_positions()
+                self.folder.mkdir(parents=True, exist_ok=True)
+                writer = RunJournalWriter(
+                    self.journal_dir,
+                    metadata=self._metadata(starts),
+                    instruments={name: s.quantities for name, s in self.instruments.items()},
+                    controls=list(self.controls),
+                    fsync=self.settings.fsync,
+                )
+                consecutive_failed = 0
+                for index in range(len(self.sequence)):
+                    if self._cancel.is_set():
+                        break
+                    status, controls_ok, run_ending = self._measure_point(writer, index)
+                    if status is PointStatus.COMMITTED:
+                        committed += 1
+                        consecutive_failed = 0
+                    else:
+                        failed += 1
+                        consecutive_failed += 1
+                    if not controls_ok:
+                        movement_failed = True
+                        detail = detail or f'point {index}: a control did not apply'
+                        break
+                    if run_ending:
+                        break
+                    if consecutive_failed >= self.settings.max_consecutive_failed_points:
+                        detail = f'{consecutive_failed} consecutive points failed'
+                        break
+                self.acquisition = self._acquisition_outcome(
+                    index_done=committed + failed, movement_failed=movement_failed,
+                    detail=detail)
+                if self._fault:
+                    detail = f'instrument fault: {self._fault}'
+                elif self._cancel.is_set() and not detail:
+                    detail = self._cancel_reason
             except Exception as exc:
-                finalize_error = f'{type(exc).__name__}: {exc}'
-                _logger.exception('could not write the run file; journal kept at %s',
-                                  self.journal_dir)
+                _logger.exception('measurement run %s failed', self.run_id)
+                self.acquisition = AcquisitionOutcome.FAILED
+                detail = f'{type(exc).__name__}: {exc}'
+            except BaseException as exc:  # script cancellation, KeyboardInterrupt
+                interrupt = exc
+                self.stop(f'interrupted ({type(exc).__name__})')
+                self.acquisition = AcquisitionOutcome.STOPPED
+                detail = self._cancel_reason
+            finally:
+                for session in self.instruments.values():
+                    session.remove_fault_listener(self._on_fault)
+            if writer is not None:
+                try:
+                    writer.finish(self.acquisition, cleanup=CleanupOutcome.RUNNING,
+                                  detail=detail)
+                except Exception:
+                    _logger.exception('could not finish the journal')
 
-        self._release(quarantined)
+            # -------------------------------------------------------- cleanup
+            self.lifecycle = RunLifecycle.CLEANING_UP
+            self.cleanup = CleanupOutcome.RUNNING
+            try:
+                cleanup_outcome, cleanup_detail, quarantined = self._cleanup(
+                    starts, movement_failed)
+            except BaseException as exc:
+                _logger.exception('cleanup of measurement run %s failed', self.run_id)
+                cleanup_outcome = CleanupOutcome.FAILED
+                cleanup_detail = f'cleanup interrupted: {type(exc).__name__}: {exc}'
+                quarantined = self.executor.quarantined()
+                if interrupt is None and not isinstance(exc, Exception):
+                    interrupt = exc
+            self.cleanup = cleanup_outcome
+
+            if writer is not None:
+                try:
+                    writer.update_end(cleanup=cleanup_outcome.value,
+                                      cleanup_detail=cleanup_detail, quarantined=quarantined)
+                    run_file = finalize_journal(self.journal_dir, fsync=self.settings.fsync)
+                    recovered = MeasurementRunFile.load(run_file)
+                    if recovered.acquisition is AcquisitionOutcome.CORRUPT:
+                        # Points were lost between journal and file: keep the
+                        # journal for inspection and say so.
+                        finalize_error = ('the journal was damaged; the run file holds '
+                                          'only the points that validated, journal kept')
+                    elif not self.settings.keep_journal:
+                        shutil.rmtree(self.journal_dir, ignore_errors=True)
+                except Exception as exc:
+                    finalize_error = f'{type(exc).__name__}: {exc}'
+                    _logger.exception('could not write the run file; journal kept at %s',
+                                      self.journal_dir)
+        finally:
+            self._release(quarantined)
+
+        if interrupt is not None:
+            raise interrupt
         return RunReport(
             run_id=self.run_id, run_file=run_file, journal_dir=self.journal_dir,
             acquisition=self.acquisition, cleanup=self.cleanup, lifecycle=self.lifecycle,

@@ -237,3 +237,36 @@ def test_run_json_records_quantities(tmp_path):
     names = [q['name'] for q in meta['instruments']['pax1']['quantities']]
     assert names == ['azimuth', 'power']
     assert meta['controls'] == [{'name': 'hwp'}, {'name': 'qwp'}]
+
+
+def test_damaged_finished_journal_is_recovered_as_corrupt(tmp_path):
+    """Review: corrupting the second commit of a completed two-point run gave a
+    one-point file still marked COMPLETE."""
+    writer = _writer(tmp_path)
+    _commit(writer, 0)
+    _commit(writer, 1)
+    writer.finish(AcquisitionOutcome.COMPLETE)
+    path = tmp_path / 'run.journal' / 'samples' / 'pax1.bin'
+    raw = bytearray(path.read_bytes())
+    raw[-3] ^= 0xFF                      # inside point 1's extent
+    path.write_bytes(bytes(raw))
+    contents = read_journal(tmp_path / 'run.journal')
+    assert contents.damaged
+    run = MeasurementRunFile.load(finalize_journal(tmp_path / 'run.journal'))
+    assert run.acquisition is AcquisitionOutcome.CORRUPT
+    assert run.n_points == 1
+    assert run.metadata['recovery'] == {
+        'damaged': True, 'recorded_outcome': 'complete',
+        'points_expected': 2, 'points_recovered': 1}
+
+
+def test_torn_tail_of_an_interrupted_journal_is_not_damage(tmp_path):
+    writer = _writer(tmp_path)
+    _commit(writer, 0)
+    _commit(writer, 1)
+    writer.close()
+    log = tmp_path / 'run.journal' / 'commits.log'
+    log.write_bytes(log.read_bytes()[:-17])
+    contents = read_journal(tmp_path / 'run.journal')
+    assert not contents.damaged
+    assert contents.acquisition is AcquisitionOutcome.INTERRUPTED

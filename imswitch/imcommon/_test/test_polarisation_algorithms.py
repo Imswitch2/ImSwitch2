@@ -111,3 +111,22 @@ def test_beyond_threshold_fails():
     (match,) = match_targets([target], np.array([[1.0, 0, 0]]), [True], [True], 5.0)
     assert match.status == FAILED
     assert match.distance_deg == pytest.approx(180.0)
+
+
+def test_unverified_point_never_hides_a_qualifying_verified_one():
+    """Review: an unverified exact match beat a verified point 2° away."""
+    target = Target('H', np.array([1.0, 0.0, 0.0]))
+    exact = direction_from_angles(0.0, 0.0)
+    two_deg = direction_from_angles(math.radians(1.0), 0.0)
+    (match,) = match_targets([target], np.stack([exact, two_deg]),
+                             [True, True], [False, True], 5.0)
+    assert match.status == PASS and match.index == 1
+
+
+def test_unverified_match_is_reported_when_no_verified_point_qualifies():
+    target = Target('H', np.array([1.0, 0.0, 0.0]))
+    near = direction_from_angles(0.0, 0.0)
+    far = direction_from_angles(math.radians(20.0), 0.0)
+    (match,) = match_targets([target], np.stack([near, far]),
+                             [True, True], [False, True], 5.0)
+    assert match.status == UNQUALIFIED and match.index == 0
