@@ -158,14 +158,21 @@ def test_controller_uses_current_periodicities_as_localizer_guesses(monkeypatch)
         def getParameters(self):
             return 0.0, 0.0, 157.5, 1182.0, 1200.0
 
+        def getLocalizationMethod(self):
+            return 'legacy'
+
         def setParameters(self, **kwargs):
             set_parameters.update(kwargs)
+
+        def setLocalizationStatus(self, *_args, **_kwargs):
+            pass
 
     fake_controller = SimpleNamespace(
         _widget=Widget(),
         _commChannel=SimpleNamespace(get_image=lambda: image),
         _logger=SimpleNamespace(warning=lambda _msg: None),
     )
+    fake_controller._syncPixelSizeFromDetector = lambda: 157.5
     fake_controller.updateGrid = lambda: calls.__setitem__('updated', True)
 
     ulenses_controller_module.ULensesController.localize(fake_controller)
@@ -181,3 +188,240 @@ def test_controller_uses_current_periodicities_as_localizer_guesses(monkeypatch)
         'upy': round(7.4 * 157.5, 2),
     }
     assert calls['updated'] is True
+
+
+
+def test_controller_grid_method_uses_manual_shape_and_preserves_legacy_offsets(monkeypatch):
+    calls = {}
+    grid = GridLocalizationResult(
+        origin_rc=np.array([10.0, 20.0]),
+        basis_x_rc=np.array([2.0, 8.0]),
+        basis_y_rc=np.array([7.0, -1.0]),
+        n_cols=6,
+        n_rows=5,
+        stagger_axis="rows",
+        stagger_fraction=0.5,
+        grid_points_rc=np.array([
+            [10.0, 20.0], [12.0, 28.0], [14.0, 36.0], [16.0, 44.0], [18.0, 52.0], [20.0, 60.0],
+            [18.0, 23.0], [20.0, 31.0], [22.0, 39.0], [24.0, 47.0], [26.0, 55.0], [28.0, 63.0],
+            [24.0, 18.0], [26.0, 26.0], [28.0, 34.0], [30.0, 42.0], [32.0, 50.0], [34.0, 58.0],
+            [32.0, 21.0], [34.0, 29.0], [36.0, 37.0], [38.0, 45.0], [40.0, 53.0], [42.0, 61.0],
+            [38.0, 16.0], [40.0, 24.0], [42.0, 32.0], [44.0, 40.0], [46.0, 48.0], [48.0, 56.0],
+        ]),
+        logical_indices=np.array([(i, j) for j in range(5) for i in range(6)]),
+        detected_points_rc=np.zeros((30, 2)),
+        num_cols=6,
+        num_rows=5,
+        diagnostics={"fit_rms_px": 0.23, "grid_size_source": "manual"},
+    )
+
+    def fake_localize_grid(image, **kwargs):
+        calls['image'] = image
+        calls['kwargs'] = kwargs
+        return grid
+
+    monkeypatch.setattr(ulenses_controller_module, 'localize_grid', fake_localize_grid)
+    image = np.ones((80, 90))
+    updates = []
+    statuses = []
+
+    class Widget:
+        def getParameters(self):
+            return 3.0, 4.0, 150.0, 1200.0, 1050.0
+
+        def getLocalizationMethod(self):
+            return 'grid'
+
+        def getGridSize(self):
+            return 6, 5
+
+        def setParameters(self, **kwargs):
+            updates.append(kwargs)
+
+        def setLocalizationStatus(self, text, **kwargs):
+            statuses.append((text, kwargs))
+
+    fake_controller = SimpleNamespace(
+        _widget=Widget(),
+        _commChannel=SimpleNamespace(get_image=lambda: image),
+        _logger=SimpleNamespace(warning=lambda _msg: None),
+        _gridLocalizationResult=None,
+    )
+    fake_controller._syncPixelSizeFromDetector = lambda: 150.0
+    fake_controller.updateGrid = lambda: calls.__setitem__('updated', True)
+
+    ulenses_controller_module.ULensesController.localize(fake_controller)
+
+    assert calls['image'] is image
+    assert calls['kwargs']['xp_guess'] == pytest.approx(8.0)
+    assert calls['kwargs']['yp_guess'] == pytest.approx(7.0)
+    assert calls['kwargs']['n_cols'] == 6
+    assert calls['kwargs']['n_rows'] == 5
+    assert fake_controller._gridLocalizationResult is grid
+    # New localization updates physical periods only; legacy offsets survive.
+    assert updates == [{
+        'px': 150.0,
+        'upx': round(grid.x_period_px * 150.0, 2),
+        'upy': round(grid.y_period_px * 150.0, 2),
+    }]
+    assert 'Grid 6x5' in statuses[-1][0]
+    assert 'rows stagger 0.50' in statuses[-1][0]
+    assert calls['updated'] is True
+
+
+def test_controller_grid_method_auto_passes_no_shape(monkeypatch):
+    calls = {}
+    image, _ = _render_grid()
+    real_grid = localize_grid(image, xp_guess=24.3, yp_guess=22.2)
+
+    def fake_localize_grid(_image, **kwargs):
+        calls.update(kwargs)
+        return real_grid
+
+    monkeypatch.setattr(ulenses_controller_module, 'localize_grid', fake_localize_grid)
+
+    class Widget:
+        def getParameters(self):
+            return 0.0, 0.0, 150.0, 3645.0, 3330.0
+
+        def getLocalizationMethod(self):
+            return 'grid'
+
+        def getGridSize(self):
+            return None, None
+
+        def setParameters(self, **_kwargs):
+            pass
+
+        def setLocalizationStatus(self, *_args, **_kwargs):
+            pass
+
+    fake_controller = SimpleNamespace(
+        _widget=Widget(),
+        _commChannel=SimpleNamespace(get_image=lambda: image),
+        _logger=SimpleNamespace(warning=lambda _msg: None),
+        _gridLocalizationResult=None,
+    )
+    fake_controller._syncPixelSizeFromDetector = lambda: 150.0
+    fake_controller.updateGrid = lambda: None
+
+    ulenses_controller_module.ULensesController.localize(fake_controller)
+
+    assert calls['n_cols'] is None
+    assert calls['n_rows'] is None
+
+
+def test_grid_overlay_uses_col_as_x_and_row_as_y():
+    points = np.array([[11.0, 21.0], [31.0, 41.0], [51.0, 61.0]])
+    grid = GridLocalizationResult(
+        origin_rc=points[0],
+        basis_x_rc=np.array([20.0, 20.0]),
+        basis_y_rc=np.array([40.0, 40.0]),
+        n_cols=3,
+        n_rows=1,
+        stagger_axis=None,
+        stagger_fraction=0.0,
+        grid_points_rc=points,
+        logical_indices=np.array([[0, 0], [1, 0], [2, 0]]),
+        detected_points_rc=points,
+        num_cols=3,
+        num_rows=1,
+    )
+    shown = {}
+
+    class Widget:
+        def getLocalizationMethod(self):
+            return 'grid'
+
+        def setData(self, *, x, y):
+            shown['x'] = np.asarray(x)
+            shown['y'] = np.asarray(y)
+
+    fake_controller = SimpleNamespace(
+        _widget=Widget(),
+        _gridLocalizationResult=grid,
+    )
+    fake_controller._syncPixelSizeFromDetector = lambda: None
+
+    ulenses_controller_module.ULensesController.updateGrid(fake_controller)
+
+    np.testing.assert_array_equal(shown['x'], points[:, 1])
+    np.testing.assert_array_equal(shown['y'], points[:, 0])
+
+
+def test_detector_pixel_size_uses_current_detector_and_camera_binning():
+    source = SimpleNamespace(value='setup file')
+    detector = SimpleNamespace(
+        pixelSizeUm=[1.0, 0.1575, 0.1575],
+        binning=2,
+        isScanDriven=False,
+        parameters={'Camera pixel size source': source},
+    )
+
+    class Manager:
+        def getCurrentDetectorName(self):
+            return 'CAM'
+
+        def execOnCurrent(self, fn):
+            return fn(detector)
+
+    fake_controller = SimpleNamespace(
+        _master=SimpleNamespace(detectorsManager=Manager()),
+    )
+
+    pixel_nm, detector_name, pixel_source = (
+        ulenses_controller_module.ULensesController._detectorPixelSizeNm(fake_controller)
+    )
+
+    assert pixel_nm == pytest.approx(315.0)
+    assert detector_name == 'CAM'
+    assert pixel_source == 'setup file'
+
+
+def test_detector_pixel_size_rejects_anisotropic_pixels():
+    detector = SimpleNamespace(
+        pixelSizeUm=[1.0, 0.15, 0.20],
+        binning=1,
+        isScanDriven=False,
+        parameters={},
+    )
+
+    class Manager:
+        def getCurrentDetectorName(self):
+            return 'CAM'
+
+        def execOnCurrent(self, fn):
+            return fn(detector)
+
+    fake_controller = SimpleNamespace(
+        _master=SimpleNamespace(detectorsManager=Manager()),
+    )
+
+    with pytest.raises(ValueError, match='anisotropic'):
+        ulenses_controller_module.ULensesController._detectorPixelSizeNm(fake_controller)
+
+
+
+def test_detector_assumed_default_pixel_size_keeps_manual_fallback():
+    detector = SimpleNamespace(
+        pixelSizeUm=[1.0, 0.15, 0.15],
+        binning=1,
+        isScanDriven=False,
+        parameters={
+            'Camera pixel size source': SimpleNamespace(value='assumed default')
+        },
+    )
+
+    class Manager:
+        def getCurrentDetectorName(self):
+            return 'CAM'
+
+        def execOnCurrent(self, fn):
+            return fn(detector)
+
+    fake_controller = SimpleNamespace(
+        _master=SimpleNamespace(detectorsManager=Manager()),
+    )
+
+    with pytest.raises(ValueError, match='assumed default'):
+        ulenses_controller_module.ULensesController._detectorPixelSizeNm(fake_controller)

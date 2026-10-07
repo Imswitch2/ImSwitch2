@@ -1428,8 +1428,14 @@ Similar to the axial tool but along a single axis (x or y).
 uLenses tool
 ------------
 
-Displays an array of points with a user-defined periodicity on top of
-the image.
+Displays an array of points on top of the image. During validation the
+**Localization method** selector can switch between the historical axis-aligned
+localizer and the experimental tilted/staggered finite-grid localizer. The grid
+mode first tries to infer the finite grid size automatically; switch **Grid
+size** to **Manual** and supply ``Nx``/``Ny`` when the automatic topology
+inference is ambiguous. The image pixel size is read from the current detector
+calibration (including camera binning) when available, with manual entry kept as
+a fallback.
 
 .. image:: ./images/auto/ULensesWidget.png
    :align: center
