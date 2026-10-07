@@ -1,0 +1,553 @@
+"""The measurement-run engine: set controls → settle → window → sample → commit.
+
+Design: ``docs/design/plans/transient-instruments-step-scans.md`` §8. The
+runner reserves its controls, instruments and ``waveform-output`` for the
+whole run. It writes every point through one journal writer
+(``commit_point``) and reports three separate outcomes:
+
+- **acquisition**: complete / stopped / failed;
+- **cleanup**: return to start; never dispatched to a quarantined backend;
+- **lifecycle**: active → cleaning up → finished. A run is finished only once
+  every resource is released or explicitly left quarantined.
+
+Data never depends on cleanup. The journal is finished when acquisition
+ends; cleanup only amends its end record before the run file is written.
+"""
+from __future__ import annotations
+
+import dataclasses
+import datetime as _dt
+import logging
+import shutil
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+
+from imswitch.imcommon.model.measurement_run import (
+    AcquisitionOutcome,
+    CleanupOutcome,
+    ControlResult,
+    PointStatus,
+    RunJournalWriter,
+    RunLifecycle,
+    Verification,
+    WindowCause,
+    WindowResult,
+    finalize_journal,
+)
+
+from ..resources import ResourceRegistry, ResourceReservedError
+from .controls import READBACK_FRESH, ControlExecutor, RunControl
+from .generators import PointSequence
+from .instrument import InstrumentSession, WindowFault, WindowRefused
+
+_logger = logging.getLogger(__name__)
+
+WAVEFORM_OUTPUT = 'waveform-output'
+
+#: Window causes that end a run (the instrument or the user ended it);
+#: others (timeout, invalid samples) fail only the point.
+_RUN_ENDING_CAUSES = {WindowCause.TRANSPORT_FAULT, WindowCause.CANCELLED}
+
+
+class RunRefused(RuntimeError):
+    """The run cannot start; nothing was moved or written."""
+
+
+@dataclass
+class RunSettings:
+    samples_per_point: int = 3
+    #: Extra settle time on top of the controls' own settle time.
+    settle_s: float = 0.0
+    move_deadline_s: float = 30.0
+    position_deadline_s: float = 5.0
+    window_deadline_s: float = 10.0
+    #: Consecutive point-level failures (timeouts, invalid samples) that fail the run.
+    max_consecutive_failed_points: int = 3
+    return_to_start: bool = True
+    cleanup_deadline_s: float = 30.0
+    allow_unverified_timing: bool = False
+    plane_label: str = ''
+    #: Declared illumination: ``{'source': <laser entry>, 'wavelength_nm': float}``.
+    illumination: Optional[Mapping[str, Any]] = None
+    notes: str = ''
+    fsync: bool = True
+    keep_journal: bool = False
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    point: int
+    total: int
+    status: PointStatus
+    setpoints: Mapping[str, float]
+
+
+@dataclass
+class RunReport:
+    run_id: str
+    run_file: Optional[Path]
+    journal_dir: Path
+    acquisition: AcquisitionOutcome
+    cleanup: CleanupOutcome
+    lifecycle: RunLifecycle
+    points_total: int
+    points_committed: int
+    points_failed: int
+    detail: str = ''
+    cleanup_detail: str = ''
+    quarantined: List[str] = field(default_factory=list)
+    finalize_error: str = ''
+
+
+class MeasurementRunner:
+    def __init__(
+        self,
+        *,
+        sequence: PointSequence,
+        controls: Sequence[RunControl],
+        instruments: Mapping[str, InstrumentSession],
+        folder: Path,
+        settings: Optional[RunSettings] = None,
+        run_id: Optional[str] = None,
+        owner: str = 'measurement run',
+        registry: Optional[ResourceRegistry] = None,
+        executor: Optional[ControlExecutor] = None,
+        progress: Optional[Callable[[ProgressEvent], None]] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.sequence = sequence
+        self.controls = {c.name: c for c in controls}
+        self.instruments = dict(instruments)
+        self.folder = Path(folder)
+        self.settings = settings or RunSettings()
+        self.run_id = run_id or _new_run_id()
+        self.owner = owner
+        self.registry = registry or ResourceRegistry()
+        self.executor = executor or ControlExecutor()
+        self._progress = progress
+        self._extra_metadata = dict(metadata or {})
+        self._clock = clock
+        self._wall = wall_clock
+        self._cancel = threading.Event()
+        self._cancel_reason = ''
+        self._fault: Optional[str] = None
+        self.acquisition = AcquisitionOutcome.RUNNING
+        self.cleanup = CleanupOutcome.PENDING
+        self.lifecycle = RunLifecycle.ACTIVE
+        self._reservation = None
+        self._finished = threading.Event()
+
+    # --------------------------------------------------------------- control
+    def stop(self, reason: str = 'stopped by user') -> None:
+        if not self._cancel.is_set():
+            self._cancel_reason = reason
+            self._cancel.set()
+
+    def wait_finished(self, timeout_s: Optional[float] = None) -> bool:
+        return self._finished.wait(timeout_s)
+
+    @property
+    def journal_dir(self) -> Path:
+        return self.folder / f'{self.run_id}.journal'
+
+    # ------------------------------------------------------------------ run
+    def run(self) -> RunReport:
+        self._preflight()
+        resources = self._resources()
+        try:
+            self._reservation = self.registry.reserve(resources, self.owner)
+        except ResourceReservedError as exc:
+            raise RunRefused(str(exc)) from None
+
+        for session in self.instruments.values():
+            session.add_fault_listener(self._on_fault)
+        starts = self._start_positions()
+        writer = None
+        committed = failed = 0
+        detail = ''
+        movement_failed = False
+        try:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            writer = RunJournalWriter(
+                self.journal_dir,
+                metadata=self._metadata(starts),
+                instruments={name: s.quantities for name, s in self.instruments.items()},
+                controls=list(self.controls),
+                fsync=self.settings.fsync,
+            )
+            consecutive_failed = 0
+            for index in range(len(self.sequence)):
+                if self._cancel.is_set():
+                    break
+                status, controls_ok, run_ending = self._measure_point(writer, index)
+                if status is PointStatus.COMMITTED:
+                    committed += 1
+                    consecutive_failed = 0
+                else:
+                    failed += 1
+                    consecutive_failed += 1
+                if not controls_ok:
+                    movement_failed = True
+                    detail = detail or f'point {index}: a control did not apply'
+                    break
+                if run_ending:
+                    break
+                if consecutive_failed >= self.settings.max_consecutive_failed_points:
+                    detail = f'{consecutive_failed} consecutive points failed'
+                    break
+            self.acquisition = self._acquisition_outcome(index_done=committed + failed,
+                                                         movement_failed=movement_failed,
+                                                         detail=detail)
+            if self._fault:
+                detail = f'instrument fault: {self._fault}'
+            elif self._cancel.is_set() and not detail:
+                detail = self._cancel_reason
+            writer.finish(self.acquisition, cleanup=CleanupOutcome.RUNNING, detail=detail)
+        except Exception as exc:
+            _logger.exception('measurement run %s failed', self.run_id)
+            self.acquisition = AcquisitionOutcome.FAILED
+            detail = f'{type(exc).__name__}: {exc}'
+            if writer is not None:
+                try:
+                    writer.finish(self.acquisition, cleanup=CleanupOutcome.RUNNING, detail=detail)
+                except Exception:
+                    _logger.exception('could not finish the journal')
+        finally:
+            for session in self.instruments.values():
+                session.remove_fault_listener(self._on_fault)
+
+        # ------------------------------------------------------------ cleanup
+        self.lifecycle = RunLifecycle.CLEANING_UP
+        self.cleanup = CleanupOutcome.RUNNING
+        cleanup_outcome, cleanup_detail, quarantined = self._cleanup(starts, movement_failed)
+        self.cleanup = cleanup_outcome
+
+        run_file = None
+        finalize_error = ''
+        if writer is not None:
+            try:
+                writer.update_end(cleanup=cleanup_outcome.value, cleanup_detail=cleanup_detail,
+                                  quarantined=quarantined)
+                run_file = finalize_journal(self.journal_dir, fsync=self.settings.fsync)
+                if not self.settings.keep_journal:
+                    shutil.rmtree(self.journal_dir, ignore_errors=True)
+            except Exception as exc:
+                finalize_error = f'{type(exc).__name__}: {exc}'
+                _logger.exception('could not write the run file; journal kept at %s',
+                                  self.journal_dir)
+
+        self._release(quarantined)
+        return RunReport(
+            run_id=self.run_id, run_file=run_file, journal_dir=self.journal_dir,
+            acquisition=self.acquisition, cleanup=self.cleanup, lifecycle=self.lifecycle,
+            points_total=len(self.sequence), points_committed=committed,
+            points_failed=failed, detail=detail, cleanup_detail=cleanup_detail,
+            quarantined=quarantined, finalize_error=finalize_error,
+        )
+
+    # ------------------------------------------------------------- preflight
+    def _preflight(self) -> None:
+        missing = [c for c in self.sequence.controls if c not in self.controls]
+        if missing:
+            raise RunRefused(f'the point sequence uses unknown controls: {missing}')
+        unused = [c for c in self.controls if c not in self.sequence.controls]
+        if unused:
+            raise RunRefused(f'controls not in the point sequence: {unused}')
+        if not self.instruments:
+            raise RunRefused('a measurement run needs at least one instrument')
+        if self.settings.samples_per_point < 1:
+            raise RunRefused('samples_per_point must be at least 1')
+        for name, session in self.instruments.items():
+            if not session.connected:
+                raise RunRefused(f'instrument {name} is not connected')
+            if session.faulted:
+                raise RunRefused(f'instrument {name} is faulted: {session.faulted}')
+            if session.profile is None:
+                raise RunRefused(f'instrument {name}: no timing profile matches its settings')
+            if (session.verification is Verification.UNVERIFIED
+                    and not self.settings.allow_unverified_timing):
+                raise RunRefused(
+                    f'instrument {name}: timing profile {session.profile.id!r} is not '
+                    f'verified; quantitative runs need verified timing '
+                    f'(allow_unverified_timing is for characterisation only)')
+        for control in self.controls.values():
+            if self.executor.is_quarantined(control.resource):
+                raise RunRefused(f'{control.resource} is busy (quarantined)')
+
+    def _resources(self) -> List[str]:
+        keys = {c.resource for c in self.controls.values()}
+        keys |= {f'instrument:{name}' for name in self.instruments}
+        keys.add(WAVEFORM_OUTPUT)
+        return sorted(keys)
+
+    def _start_positions(self) -> Dict[str, Optional[float]]:
+        starts = {}
+        for name, control in self.controls.items():
+            if control.capabilities.readback == READBACK_FRESH:
+                starts[name] = self.executor.read_position(control, self.settings.position_deadline_s)
+            else:
+                starts[name] = None
+        return starts
+
+    def _metadata(self, starts) -> Dict[str, Any]:
+        seq = self.sequence
+        grid = None
+        if seq.grid is not None:
+            grid = {
+                'axes': [{'name': n, 'values': list(v)} for n, v in seq.grid.axes],
+                'traversal': seq.grid.traversal,
+                'shape': list(seq.grid.shape),
+                'index': [list(i) for i in seq.grid.index],
+            }
+        controls = []
+        for name in self.controls:
+            control = self.controls[name]
+            caps = control.capabilities
+            controls.append({
+                'name': name, 'resource': control.resource, 'unit': caps.unit,
+                'readback': caps.readback, 'acknowledges': caps.acknowledges,
+                'can_stop': caps.can_stop, 'settle_s': caps.settle_s,
+                'tolerance': caps.tolerance, 'start_position': starts.get(name),
+                'zero_reference': getattr(control, 'zero_reference', {'state': 'unknown'}),
+            })
+        instruments = {}
+        for name, session in self.instruments.items():
+            profile = session.profile
+            instruments[name] = {
+                'identity': session.identity.as_dict() if session.identity else {},
+                'settings': session.settings(),
+                'timing_profile': None if profile is None else profile.id,
+                'timing_rule': None if profile is None else profile.rule.value,
+                'verification': session.verification.value,
+            }
+        meta = {
+            'schema': 'imswitch-measurement-run',
+            'run_id': self.run_id,
+            'owner': self.owner,
+            'created': _dt.datetime.fromtimestamp(self._wall(), _dt.timezone.utc).isoformat(),
+            'imswitch_version': _imswitch_version(),
+            'generator': seq.describe(),
+            'grid': grid,
+            'points': [list(v) for v in seq.values],
+            'controls': controls,
+            'instruments': instruments,
+            'settings': {
+                'samples_per_point': self.settings.samples_per_point,
+                'settle_s': self.settings.settle_s,
+                'move_deadline_s': self.settings.move_deadline_s,
+                'window_deadline_s': self.settings.window_deadline_s,
+                'allow_unverified_timing': self.settings.allow_unverified_timing,
+                'return_to_start': self.settings.return_to_start,
+            },
+            'plane_label': self.settings.plane_label,
+            'illumination': dict(self.settings.illumination) if self.settings.illumination else None,
+            'notes': self.settings.notes,
+        }
+        meta.update(self._extra_metadata)
+        return meta
+
+    # ------------------------------------------------------------- one point
+    def _measure_point(self, writer: RunJournalWriter, index: int):
+        setpoints = self.sequence.setpoints(index)
+        t_start = self._wall()
+        results: Dict[str, ControlResult] = {}
+        causes: List[str] = []
+        controls_ok = True
+
+        for name, value in setpoints.items():
+            result = self.executor.apply(self.controls[name], value,
+                                         self.settings.move_deadline_s)
+            results[name] = result
+            if not result.ok:
+                controls_ok = False
+                causes.append(f'{name}: {result.cause}')
+                break
+            if self._cancel.is_set():
+                break
+
+        windows: Dict[str, WindowResult] = {}
+        if controls_ok and not self._cancel.is_set():
+            settle = max([c.capabilities.settle_s for c in self.controls.values()] + [0.0])
+            self._wait(settle + self.settings.settle_s)
+            controls_ok = self._settle_within_tolerance(results, causes)
+
+        if controls_ok and not self._cancel.is_set():
+            for name, session in self.instruments.items():
+                windows[name] = self._window(session)
+                if windows[name].cause is not None:
+                    causes.append(f'{name}: {windows[name].cause.value}'
+                                  + (f' ({windows[name].detail})' if windows[name].detail else ''))
+                if self._cancel.is_set():
+                    break
+            # Fresh positions after sampling: the recorded ``measured`` value.
+            for name, control in self.controls.items():
+                if name in results and control.capabilities.readback == READBACK_FRESH:
+                    position = self.executor.read_position(
+                        control, self.settings.position_deadline_s)
+                    if position is not None:
+                        results[name] = dataclasses.replace(results[name], measured=position)
+
+        status = self._point_status(setpoints, results, windows)
+        if self._cancel.is_set() and not causes:
+            causes.append(self._cancel_reason or 'cancelled')
+        writer.commit_point(
+            point=index, status=status, t_start=t_start, t_end=self._wall(),
+            controls=[results[n] for n in setpoints if n in results],
+            windows=windows, grid_index=self.sequence.grid_index(index), causes=causes,
+        )
+        if self._progress is not None:
+            try:
+                self._progress(ProgressEvent(index, len(self.sequence), status, setpoints))
+            except Exception:
+                _logger.exception('progress callback failed')
+        run_ending = self._cancel.is_set() or any(
+            w.cause in _RUN_ENDING_CAUSES for w in windows.values())
+        return status, controls_ok, run_ending
+
+    def _settle_within_tolerance(self, results, causes) -> bool:
+        ok = True
+        for name, control in self.controls.items():
+            caps = control.capabilities
+            if caps.readback != READBACK_FRESH or caps.tolerance is None:
+                continue
+            target = results[name].requested
+            deadline = self._clock() + self.settings.position_deadline_s
+            position = None
+            while True:
+                position = self.executor.read_position(control, self.settings.position_deadline_s)
+                if position is not None and abs(position - target) <= caps.tolerance:
+                    break
+                if self._clock() > deadline or self._cancel.is_set():
+                    results[name] = dataclasses.replace(
+                        results[name], measured=position, ok=False,
+                        cause=f'not within ±{caps.tolerance:g} {caps.unit} of {target:g}'
+                              f' (at {position!r})')
+                    causes.append(f'{name}: {results[name].cause}')
+                    ok = False
+                    break
+                self._wait(0.002)
+            if not ok:
+                break
+        return ok
+
+    def _window(self, session: InstrumentSession) -> WindowResult:
+        try:
+            boundary = session.open_window(
+                allow_unverified=self.settings.allow_unverified_timing)
+        except WindowRefused as exc:
+            return WindowResult(
+                samples=(), invalid=(), discarded=0, complete=False,
+                cause=(WindowCause.TRANSPORT_FAULT if isinstance(exc, WindowFault)
+                       else WindowCause.REFUSED), verification=session.verification,
+                profile_id=session.profile.id if session.profile else None,
+                boundary_t=self._clock(), requested=self.settings.samples_per_point,
+                detail=str(exc))
+        return session.sample_window(boundary, self.settings.samples_per_point,
+                                     self.settings.window_deadline_s, self._cancel)
+
+    def _point_status(self, setpoints, results, windows) -> PointStatus:
+        all_controls = all(n in results and results[n].ok for n in setpoints)
+        all_windows = (set(windows) == set(self.instruments)
+                       and all(w.complete for w in windows.values()))
+        if all_controls and all_windows:
+            return PointStatus.COMMITTED
+        if any(w.samples for w in windows.values()):
+            return PointStatus.FAILED_PARTIAL
+        return PointStatus.FAILED
+
+    def _acquisition_outcome(self, *, index_done: int, movement_failed: bool,
+                             detail: str) -> AcquisitionOutcome:
+        if self._fault or movement_failed or detail:
+            return AcquisitionOutcome.FAILED
+        if self._cancel.is_set():
+            return AcquisitionOutcome.STOPPED
+        if index_done == len(self.sequence):
+            return AcquisitionOutcome.COMPLETE
+        return AcquisitionOutcome.FAILED
+
+    def _on_fault(self, instrument: str, cause: str) -> None:
+        self._fault = f'{instrument}: {cause}'
+        self.stop(f'instrument fault: {self._fault}')
+
+    def _wait(self, seconds: float) -> None:
+        if seconds > 0:
+            self._cancel.wait(seconds)
+
+    # --------------------------------------------------------------- cleanup
+    def _cleanup(self, starts, movement_failed):
+        quarantined: List[str] = []
+        failures: List[str] = []
+        notes: List[str] = []
+        wants_return = (
+            self.settings.return_to_start
+            and not movement_failed
+            and self.acquisition in (AcquisitionOutcome.COMPLETE, AcquisitionOutcome.STOPPED)
+        )
+        for name, control in self.controls.items():
+            resource = control.resource
+            if self.executor.is_quarantined(resource):
+                # Never dispatch to a backend whose earlier command still runs.
+                if not self.executor.wait_released(resource, self.settings.cleanup_deadline_s):
+                    quarantined.append(resource)
+                    notes.append(f'{name}: backend {resource} still busy; not restored')
+                    continue
+            if not wants_return:
+                continue
+            start = starts.get(name)
+            if start is None:
+                notes.append(f'{name}: no start position (no fresh readback); left in place')
+                continue
+            result = self.executor.apply(control, start, self.settings.cleanup_deadline_s)
+            if not result.ok:
+                if self.executor.is_quarantined(resource):
+                    quarantined.append(resource)
+                failures.append(f'{name}: return to {start:g} failed: {result.cause}')
+        if movement_failed and self.settings.return_to_start:
+            notes.append('no return to start after a movement failure')
+        if quarantined:
+            outcome = CleanupOutcome.QUARANTINED
+        elif failures:
+            outcome = CleanupOutcome.FAILED
+        else:
+            outcome = CleanupOutcome.DONE
+        return outcome, '; '.join(failures + notes), sorted(set(quarantined))
+
+    def _release(self, quarantined: List[str]) -> None:
+        if self._reservation is None:
+            self.lifecycle = RunLifecycle.FINISHED
+            self._finished.set()
+            return
+        token = self._reservation.token
+        held = set(quarantined)
+        self.registry.release(token, [r for r in self._reservation.resources if r not in held])
+        if held:
+            # Quarantined resources stay reserved until their worker returns;
+            # that is an explicit state, so the run is finished.
+            def on_release(resource: str, is_quarantined: bool) -> None:
+                if not is_quarantined and resource in held:
+                    self.registry.release(token, [resource])
+            self.executor.add_listener(on_release)
+            for resource in list(held):
+                if not self.executor.is_quarantined(resource):
+                    self.registry.release(token, [resource])
+        self.lifecycle = RunLifecycle.FINISHED
+        self._finished.set()
+
+
+def _new_run_id() -> str:
+    stamp = _dt.datetime.now().strftime('%Y%m%d-%H%M%S')
+    return f'run-{stamp}-{uuid.uuid4().hex[:6]}'
+
+
+def _imswitch_version() -> str:
+    try:
+        from imswitch import __version__
+        return str(__version__)
+    except Exception:
+        return 'unknown'
