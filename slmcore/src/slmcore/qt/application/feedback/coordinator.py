@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from ..session import SLMQtSession
 
 
+_UNSET = object()
+
+
 class FeedbackCoordinator(QtCore.QObject):
     """Compose focused feedback UI coordinators for one Qt SLM session.
 
@@ -466,14 +469,21 @@ class FeedbackCoordinator(QtCore.QObject):
         reference_name: str | None,
         editable_geometry: Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | None=None,
+        correspondence: str | None=None,
+        correction_mode: str | None=None,
+        affine_transform: Any=_UNSET,
     ) -> None:
-        self._references.set_position_reference(
-            section_key,
-            mode=mode,
-            reference_name=reference_name,
-            editable_geometry=editable_geometry,
-            editable_locks=editable_locks,
-        )
+        kwargs = {
+            "mode":mode,
+            "reference_name":reference_name,
+            "editable_geometry":editable_geometry,
+            "editable_locks":editable_locks,
+            "correspondence":correspondence,
+            "correction_mode":correction_mode,
+        }
+        if affine_transform is not _UNSET:
+            kwargs["affine_transform"] = affine_transform
+        self._references.set_position_reference(section_key,**kwargs)
 
     def fit_position_reference_center(self,section_key: str) -> None:
         self._references.fit_position_reference_center(section_key)

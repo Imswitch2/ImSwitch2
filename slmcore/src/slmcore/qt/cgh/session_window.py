@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any,Mapping,Sequence
 
+import numpy as np
 from qtpy import QtCore,QtWidgets
 
 from ...core.cgh.execution.session_model import (
@@ -138,6 +139,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "persistence_available":False,
             "editable_geometry":None,
             "editable_locks":{},
+            "correction_mode":"per_spot",
+            "affine_transform":None,
             "fit_geometry":None,
             "observation_plane_name":None,
             "compatible":True,
@@ -704,6 +707,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_reference_view.sigCenterOffsetRequested.connect(
             self._on_position_reference_center_dragged,
         )
+        self.position_reference_view.sigAffineTransformRequested.connect(
+            self._on_position_reference_affine_transform_dragged,
+        )
         self.position_correction_view = PositionCorrectionView(viewer)
         self.fov_mapping_view = PositionCorrectionView(viewer)
         self.position_view_stack.addWidget(self.position_reference_view)
@@ -880,6 +886,43 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self.position_reference_manage_button.setMenu(manage_menu)
         saved_row.addWidget(self.position_reference_manage_button)
         saved_layout.addLayout(saved_row)
+
+        correction_model_label = QtWidgets.QLabel("Correction model")
+        saved_layout.addWidget(correction_model_label)
+        self.position_reference_correction_model_combo = QtWidgets.QComboBox()
+        self.position_reference_correction_model_combo.addItem("Per-spot","per_spot")
+        self.position_reference_correction_model_combo.addItem("Affine","affine")
+        self.position_reference_correction_model_combo.setToolTip(
+            "Per-spot applies each measured reference error independently. "
+            "Affine fits one continuous detector-space displacement field to "
+            "the matched spots and applies that field across the full lattice."
+        )
+        self.position_reference_correction_model_combo.currentIndexChanged.connect(
+            self._on_position_reference_correction_mode_changed
+        )
+        saved_layout.addWidget(self.position_reference_correction_model_combo)
+
+        self.position_reference_affine_reset_button = QtWidgets.QPushButton(
+            "Reset affine fit"
+        )
+        self.position_reference_affine_reset_button.setToolTip(
+            "Discard manual affine-handle edits and refit from the current "
+            "localization to the saved reference."
+        )
+        self.position_reference_affine_reset_button.clicked.connect(
+            self._reset_position_reference_affine_fit,
+        )
+        saved_layout.addWidget(self.position_reference_affine_reset_button)
+
+        self.position_reference_affine_hint = QtWidgets.QLabel(
+            "Detector view: drag Move to translate, X to change the horizontal "
+            "affine axis, or Y to change the vertical axis."
+        )
+        self.position_reference_affine_hint.setWordWrap(True)
+        self.position_reference_affine_hint.setStyleSheet(
+            "color: %s;" % _MUTED_COLOR
+        )
+        saved_layout.addWidget(self.position_reference_affine_hint)
 
         correspondence_label = QtWidgets.QLabel("Correspondence")
         saved_layout.addWidget(correspondence_label)
@@ -1288,6 +1331,20 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if saved_widget is not None:
             saved_widget.setVisible(mode == "reference")
 
+        correction_mode = str(context.get("correction_mode") or "per_spot")
+        correction_model_combo = getattr(
+            self,"position_reference_correction_model_combo",None,
+        )
+        if correction_model_combo is not None:
+            correction_blocker = QtCore.QSignalBlocker(correction_model_combo)
+            try:
+                correction_index = correction_model_combo.findData(correction_mode)
+                correction_model_combo.setCurrentIndex(
+                    correction_index if correction_index >= 0 else 0
+                )
+            finally:
+                del correction_blocker
+
         change_allowed = bool(
             context.get("change_allowed",True)
             and not self._cgh_computing
@@ -1299,6 +1356,23 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if saved_combo is not None:
             saved_combo.setEnabled(change_allowed and bool(references))
             saved_combo.setToolTip(reason)
+        if correction_model_combo is not None:
+            correction_model_combo.setEnabled(
+                change_allowed and mode == "reference" and bool(reference_name)
+            )
+            correction_model_combo.setToolTip(
+                reason or (
+                    "Per-spot applies each saved-reference error independently; "
+                    "Affine fits one continuous displacement field to matched spots."
+                )
+            )
+        affine_reset = getattr(self,"position_reference_affine_reset_button",None)
+        if affine_reset is not None:
+            affine_reset.setVisible(mode == "reference" and correction_mode == "affine")
+            affine_reset.setEnabled(change_allowed and bool(reference_name))
+        affine_hint = getattr(self,"position_reference_affine_hint",None)
+        if affine_hint is not None:
+            affine_hint.setVisible(mode == "reference" and correction_mode == "affine")
         for editor in self._position_geometry_editors():
             editor.setEnabled(change_allowed)
             editor.setToolTip(reason)
@@ -1355,6 +1429,11 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if detector_view is not None:
             detector_view.set_center_editable(
                 mode == "editable" and change_allowed
+            )
+            detector_view.set_affine_editable(
+                mode == "reference"
+                and correction_mode == "affine"
+                and change_allowed
             )
 
         add_button = getattr(self,"position_reference_add_button",None)
@@ -1614,6 +1693,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             payload.update({
                 "reference_name":name,
                 "correspondence":"auto",
+                "correction_mode":self._selected_position_reference_correction_mode(),
             })
         self._emit(MeasurementsAction.POSITION_REFERENCE_SET,payload)
 
@@ -1632,6 +1712,55 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 "mode":"reference",
                 "reference_name":name,
                 "correspondence":"auto",
+                "correction_mode":self._selected_position_reference_correction_mode(),
+            },
+        )
+
+    def _selected_position_reference_correction_mode(self) -> str:
+        combo = getattr(self,"position_reference_correction_model_combo",None)
+        if combo is None:
+            return "per_spot"
+        return str(combo.currentData() or "per_spot")
+
+    def _on_position_reference_correction_mode_changed(self,_index: int) -> None:
+        if str(self.position_reference_combo.currentData()) != "reference":
+            return
+        name = self._selected_managed_position_reference_name()
+        if not name:
+            return
+        correction_mode = self._selected_position_reference_correction_mode()
+        current = str(
+            self._position_reference_context.get("correction_mode") or "per_spot"
+        )
+        if correction_mode == current:
+            return
+        self._emit(
+            MeasurementsAction.POSITION_REFERENCE_SET,
+            {
+                "mode":"reference",
+                "reference_name":name,
+                "correction_mode":correction_mode,
+                # Entering a model always starts from its automatic fit rather
+                # than reviving manual handles from another model state.
+                "affine_transform":None,
+            },
+        )
+
+    def _reset_position_reference_affine_fit(self,*_args: Any) -> None:
+        if str(self.position_reference_combo.currentData()) != "reference":
+            return
+        if self._selected_position_reference_correction_mode() != "affine":
+            return
+        name = self._selected_managed_position_reference_name()
+        if not name:
+            return
+        self._emit(
+            MeasurementsAction.POSITION_REFERENCE_SET,
+            {
+                "mode":"reference",
+                "reference_name":name,
+                "correction_mode":"affine",
+                "affine_transform":None,
             },
         )
 
@@ -1652,6 +1781,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
                 "mode":"reference",
                 "reference_name":name,
                 "correspondence":correspondence,
+                "correction_mode":self._selected_position_reference_correction_mode(),
+                "affine_transform":None,
             },
         )
 
@@ -1717,6 +1848,29 @@ class CGHSessionWindow(QtWidgets.QDialog):
             finally:
                 del blocker
         self._emit_editable_geometry()
+
+    def _on_position_reference_affine_transform_dragged(
+        self,transform: Any,
+    ) -> None:
+        if str(self.position_reference_combo.currentData()) != "reference":
+            return
+        if self._selected_position_reference_correction_mode() != "affine":
+            return
+        name = self._selected_managed_position_reference_name()
+        if not name:
+            return
+        matrix = np.asarray(transform,dtype=np.float64)
+        if matrix.shape != (2,3) or not np.all(np.isfinite(matrix)):
+            return
+        self._emit(
+            MeasurementsAction.POSITION_REFERENCE_SET,
+            {
+                "mode":"reference",
+                "reference_name":name,
+                "correction_mode":"affine",
+                "affine_transform":matrix.tolist(),
+            },
+        )
 
     def _on_position_view_changed(self,index: int) -> None:
         stack = getattr(self,"position_view_stack",None)

@@ -32,6 +32,13 @@ if TYPE_CHECKING:
 _EDITABLE_POSITION_REFERENCE_LOCK_FIELDS = frozenset({
     "period_x_px","period_y_px","rotation_deg","lattice_angle_deg",
 })
+_POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT = "per_spot"
+_POSITION_REFERENCE_CORRECTION_MODE_AFFINE = "affine"
+_POSITION_REFERENCE_CORRECTION_MODES = frozenset({
+    _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT,
+    _POSITION_REFERENCE_CORRECTION_MODE_AFFINE,
+})
+_UNSET = object()
 
 
 def _normalize_editable_locks(value: Any) -> frozenset[str]:
@@ -49,6 +56,27 @@ def _normalize_editable_locks(value: Any) -> frozenset[str]:
         )
     return frozenset(names)
 
+
+def _normalize_position_reference_correction_mode(value: Any) -> str:
+    mode = str(value or _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT).strip().lower()
+    if mode not in _POSITION_REFERENCE_CORRECTION_MODES:
+        raise ValueError("Unknown position-reference correction mode %r" % value)
+    return mode
+
+
+def _normalize_affine_transform(value: Any) -> tuple[tuple[float,...],...] | None:
+    if value is None:
+        return None
+    array = np.asarray(value,dtype=np.float64)
+    if array.shape != (2,3):
+        raise ValueError("Affine position-reference transform must have shape (2, 3)")
+    if not np.all(np.isfinite(array)):
+        raise ValueError("Affine position-reference transform must be finite")
+    linear = array[:,:2]
+    if abs(float(np.linalg.det(linear))) < 1e-12:
+        raise ValueError("Affine position-reference transform is singular")
+    return tuple(tuple(float(item) for item in row) for row in array)
+
 @dataclass(frozen=True)
 class PositionReferenceSelection:
     """Transient per-section/plane position-reference choice."""
@@ -58,6 +86,8 @@ class PositionReferenceSelection:
     editable_geometry: EditablePositionReferenceGeometry | None=None
     editable_locks: frozenset[str]=frozenset()
     correspondence: ReferenceCorrespondence=ReferenceCorrespondence.AUTO
+    correction_mode: str=_POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT
+    affine_transform: tuple[tuple[float,...],...] | None=None
 
     def __post_init__(self) -> None:
         mode = PositionReferenceMode.normalize(self.mode)
@@ -71,6 +101,10 @@ class PositionReferenceSelection:
             geometry = EditablePositionReferenceGeometry.from_mapping(geometry)
         locks = _normalize_editable_locks(self.editable_locks)
         correspondence = ReferenceCorrespondence.normalize(self.correspondence)
+        correction_mode = _normalize_position_reference_correction_mode(
+            self.correction_mode
+        )
+        affine_transform = _normalize_affine_transform(self.affine_transform)
         if mode is PositionReferenceMode.REFERENCE and reference_name is None:
             raise ValueError("Named position-reference mode requires a name")
         object.__setattr__(self,"mode",mode)
@@ -78,6 +112,8 @@ class PositionReferenceSelection:
         object.__setattr__(self,"editable_geometry",geometry)
         object.__setattr__(self,"editable_locks",locks)
         object.__setattr__(self,"correspondence",correspondence)
+        object.__setattr__(self,"correction_mode",correction_mode)
+        object.__setattr__(self,"affine_transform",affine_transform)
 
 @dataclass(frozen=True)
 class PositionReferenceContext:
@@ -118,6 +154,7 @@ class PositionReferencePreview(TypedDict):
     measured_positions_px: np.ndarray
     global_positions_px: np.ndarray
     reference_positions_px: np.ndarray
+    raw_reference_positions_px: np.ndarray
     reference_center_px: np.ndarray
     fit_center_px: np.ndarray
     fit_geometry: dict[str,Any]
@@ -125,6 +162,8 @@ class PositionReferencePreview(TypedDict):
     ideal_positions_kxy: np.ndarray
     baseline_positions_kxy: np.ndarray
     displacement_kxy: np.ndarray
+    correction_mode: str
+    affine_transform: np.ndarray | None
     reference: PositionReferenceResolutionMetadata
 
 class PositionReferenceService(FeedbackComponent):
@@ -190,6 +229,8 @@ class PositionReferenceService(FeedbackComponent):
                 editable_geometry=selection.editable_geometry,
                 editable_locks=selection.editable_locks,
                 correspondence=selection.correspondence,
+                correction_mode=selection.correction_mode,
+                affine_transform=selection.affine_transform,
             )
             self._position_reference_selections[key] = selection
         return selection
@@ -275,12 +316,19 @@ class PositionReferenceService(FeedbackComponent):
         editable_geometry: EditablePositionReferenceGeometry | Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
         correspondence: ReferenceCorrespondence | str | None=None,
+        correction_mode: str | None=None,
+        affine_transform: Any=_UNSET,
     ) -> PositionReferenceSelection:
         """Select a reference for this plane without persisting or applying a correction."""
         self._require_editor_mode()
         section = str(section_key)
         normalized_mode = PositionReferenceMode.normalize(mode)
         previous = self.position_reference_selection(section)
+        same_named_reference = bool(
+            normalized_mode is PositionReferenceMode.REFERENCE
+            and previous.mode is PositionReferenceMode.REFERENCE
+            and str(previous.reference_name or "") == str(reference_name or "")
+        )
         if editable_geometry is None and previous.editable_geometry is not None:
             editable_geometry = previous.editable_geometry
         if editable_locks is None:
@@ -288,11 +336,27 @@ class PositionReferenceService(FeedbackComponent):
         if correspondence is None:
             correspondence = (
                 previous.correspondence
-                if normalized_mode is PositionReferenceMode.REFERENCE
-                and previous.mode is PositionReferenceMode.REFERENCE
-                and str(previous.reference_name or "") == str(reference_name or "")
+                if same_named_reference
                 else ReferenceCorrespondence.AUTO
             )
+        if correction_mode is None:
+            correction_mode = (
+                previous.correction_mode
+                if same_named_reference
+                else _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT
+            )
+        correction_mode = _normalize_position_reference_correction_mode(
+            correction_mode
+        )
+        if affine_transform is _UNSET:
+            affine_transform = (
+                previous.affine_transform
+                if same_named_reference
+                and correction_mode == previous.correction_mode
+                else None
+            )
+        elif affine_transform is not None:
+            affine_transform = _normalize_affine_transform(affine_transform)
         if normalized_mode is PositionReferenceMode.EDITABLE and editable_geometry is None:
             inspection = self._runtime.get_section_feedback_inspection(section)
             measurement = inspection.measurement
@@ -310,6 +374,8 @@ class PositionReferenceService(FeedbackComponent):
             editable_geometry=editable_geometry,
             editable_locks=_normalize_editable_locks(editable_locks),
             correspondence=correspondence,
+            correction_mode=correction_mode,
+            affine_transform=affine_transform,
         )
         plane = self._active_feedback_plane(section)
         if selection.mode is PositionReferenceMode.REFERENCE:
@@ -468,11 +534,18 @@ class PositionReferenceService(FeedbackComponent):
             localization = orient_localization(
                 measurement.localization,self._feedback_orientation(section_key),
             )
-            reference_positions,metadata = self._resolve_position_reference(section_key)
+            (
+                reference_positions,raw_reference_positions,metadata,affine_transform,
+            ) = self._resolve_position_reference_details(section_key)
             reference = (
                 np.asarray(localization.expected_positions_px,dtype=np.float64)
                 if reference_positions is None
                 else np.asarray(reference_positions,dtype=np.float64)
+            )
+            raw_reference = (
+                np.asarray(reference,dtype=np.float64)
+                if raw_reference_positions is None
+                else np.asarray(raw_reference_positions,dtype=np.float64)
             )
             analysis = self._runtime.compute_section_feedback_position_analysis(
                 section_key,
@@ -493,6 +566,7 @@ class PositionReferenceService(FeedbackComponent):
                 "measured_positions_px":np.asarray(localization.measured_positions_px,dtype=np.float64),
                 "global_positions_px":np.asarray(localization.expected_positions_px,dtype=np.float64),
                 "reference_positions_px":reference,
+                "raw_reference_positions_px":raw_reference,
                 "reference_center_px":np.asarray(center,dtype=np.float64),
                 "fit_center_px":editable_reference_center_px(
                     localization,fit_geometry,
@@ -511,6 +585,12 @@ class PositionReferenceService(FeedbackComponent):
                     - np.asarray(analysis.correction_kxy)
                 ),
                 "displacement_kxy":np.asarray(analysis.correction_kxy),
+                "correction_mode":selection.correction_mode,
+                "affine_transform":(
+                    None
+                    if affine_transform is None
+                    else np.asarray(affine_transform,dtype=np.float64)
+                ),
                 "reference":metadata,
             }
         except Exception:
@@ -520,6 +600,17 @@ class PositionReferenceService(FeedbackComponent):
         self,section_key: str,
     ) -> tuple[np.ndarray | None,dict[str,Any]]:
         """Resolve oriented detector coordinates and provenance; None selects global fit."""
+        positions,_raw,metadata,_affine = self._resolve_position_reference_details(
+            section_key
+        )
+        return positions,metadata
+
+    def _resolve_position_reference_details(
+        self,section_key: str,
+    ) -> tuple[
+        np.ndarray | None,np.ndarray | None,dict[str,Any],np.ndarray | None,
+    ]:
+        """Resolve effective/raw detector references plus the optional affine field."""
         section = str(section_key)
         inspection = self._runtime.get_section_feedback_inspection(section)
         measurement = inspection.measurement
@@ -530,16 +621,17 @@ class PositionReferenceService(FeedbackComponent):
         )
         selection = self.position_reference_selection(section)
         if selection.mode is PositionReferenceMode.GLOBAL_FIT:
-            return None,{"mode":selection.mode.value,"label":"Global fit"}
+            return None,None,{"mode":selection.mode.value,"label":"Global fit"},None
         if selection.mode is PositionReferenceMode.EDITABLE:
             geometry = selection.editable_geometry
             if geometry is None:
                 geometry = editable_position_reference_geometry(localization)
-            return editable_reference_positions(localization,geometry),{
+            positions = editable_reference_positions(localization,geometry)
+            return positions,positions,{
                 "mode":selection.mode.value,
                 "label":"Editable lattice",
                 "geometry":geometry.to_dict(),
-            }
+            },None
 
         plane = self._active_feedback_plane(section)
         if plane is None:
@@ -567,20 +659,23 @@ class PositionReferenceService(FeedbackComponent):
                 'Reference detector "%s" does not match current detector "%s"'
                 % (reference.detector_name,current_detector)
             )
-        positions = reference_positions_for_localization(reference,localization)
+        raw_positions = reference_positions_for_localization(reference,localization)
         source_orientation = dict(reference.metadata or {}).get(
             "feedback_orientation"
         )
         if source_orientation not in (None,""):
-            positions = positions[:,orientation_reindex_permutation(
+            raw_positions = raw_positions[:,orientation_reindex_permutation(
                 localization.lattice_indices,
                 source_orientation,
                 self._feedback_orientation(section),
             )]
-        positions,correspondence = resolve_reference_correspondence(
-            localization,positions,selection.correspondence,
+        raw_positions,correspondence = resolve_reference_correspondence(
+            localization,raw_positions,selection.correspondence,
         )
-        return positions,{
+        effective_positions,affine_transform = self._apply_reference_correction_model(
+            localization,raw_positions,selection,
+        )
+        metadata = {
             "mode":selection.mode.value,
             "label":reference.name,
             "name":reference.name,
@@ -591,7 +686,66 @@ class PositionReferenceService(FeedbackComponent):
             "correspondence_options":tuple(
                 item.value for item in reference_correspondence_options(localization)
             ),
+            "correction_model":{
+                "mode":selection.correction_mode,
+                "affine_transform":(
+                    None
+                    if affine_transform is None
+                    else tuple(
+                        tuple(float(value) for value in row)
+                        for row in np.asarray(affine_transform,dtype=np.float64)
+                    )
+                ),
+            },
         }
+        return effective_positions,raw_positions,metadata,affine_transform
+
+    def _apply_reference_correction_model(
+        self,
+        localization: LocalizationResult,
+        raw_reference_positions: np.ndarray,
+        selection: PositionReferenceSelection,
+    ) -> tuple[np.ndarray,np.ndarray | None]:
+        """Convert raw saved-reference errors into the selected correction field.
+
+        ``per_spot`` preserves the historical behavior. ``affine`` fits one
+        detector-space affine displacement field to matched spots and samples
+        that same field at every registered lattice site. This deliberately
+        prevents one bad/missing site from receiving an independent correction.
+        """
+        raw_reference = np.asarray(raw_reference_positions,dtype=np.float64)
+        if selection.correction_mode == _POSITION_REFERENCE_CORRECTION_MODE_PER_SPOT:
+            return raw_reference,None
+
+        registered = np.asarray(
+            localization.expected_positions_px,dtype=np.float64,
+        )
+        measured = np.asarray(
+            localization.measured_positions_px,dtype=np.float64,
+        )
+        transform = (
+            None
+            if selection.affine_transform is None
+            else np.asarray(selection.affine_transform,dtype=np.float64)
+        )
+        if transform is None:
+            matched,_inferred,_resolved = localization_site_masks(localization)
+            if int(np.count_nonzero(matched)) < 3:
+                raise RuntimeError(
+                    "Affine reference correction requires at least three matched spots."
+                )
+            desired_registered = registered + (raw_reference-measured)
+            transform = _fit_affine_matrix(
+                registered[:,matched],desired_registered[:,matched],
+            )
+
+        mapped_registered = _apply_affine_matrix(transform,registered)
+        affine_error = mapped_registered-registered
+        # analyze_position() expects an effective detector-space reference and
+        # converts (reference - measured) to the SLM correction. Adding the
+        # shared affine error to each measured point makes that error field
+        # exactly affine while retaining the existing runtime API.
+        return measured+affine_error,transform
 
     def _position_reference_create_reason(self,section_key: str) -> str:
         status = self._runtime.get_section_feedback_status(section_key)
@@ -629,10 +783,28 @@ class PositionReferenceService(FeedbackComponent):
     def refresh_editable_geometry_after_localization(
         self,section_key: str,localization: LocalizationResult,
     ) -> None:
-        """Reset an active editable reference to the newly accepted fit geometry."""
+        """Refresh transient reference edits after accepting a new localization."""
         key = self._position_reference_key(section_key)
         selection = self._position_reference_selections.get(key)
-        if selection is None or selection.mode is not PositionReferenceMode.EDITABLE:
+        if selection is None:
+            return
+        if selection.mode is PositionReferenceMode.REFERENCE:
+            if selection.affine_transform is None:
+                return
+            # Manual affine handles describe the previous localization. Keep the
+            # selected model/reference but refit its base transform to the new
+            # measurement before the user makes any further manual adjustment.
+            self._position_reference_selections[key] = PositionReferenceSelection(
+                mode=selection.mode,
+                reference_name=selection.reference_name,
+                editable_geometry=selection.editable_geometry,
+                editable_locks=selection.editable_locks,
+                correspondence=selection.correspondence,
+                correction_mode=selection.correction_mode,
+                affine_transform=None,
+            )
+            return
+        if selection.mode is not PositionReferenceMode.EDITABLE:
             return
         oriented = orient_localization(
             localization,self._feedback_orientation(section_key),
@@ -641,6 +813,7 @@ class PositionReferenceService(FeedbackComponent):
             mode=PositionReferenceMode.EDITABLE,
             editable_geometry=editable_position_reference_geometry(oriented),
             correspondence=selection.correspondence,
+            correction_mode=selection.correction_mode,
         )
 
     def dispose(self) -> None:
@@ -654,3 +827,32 @@ class PositionReferenceService(FeedbackComponent):
 def _localization_is_resolved(localization: LocalizationResult) -> bool:
     _matched,_inferred,resolved = localization_site_masks(localization)
     return bool(np.all(resolved))
+
+
+def _fit_affine_matrix(source: np.ndarray,target: np.ndarray) -> np.ndarray:
+    source = np.asarray(source,dtype=np.float64)
+    target = np.asarray(target,dtype=np.float64)
+    if source.shape != target.shape or source.ndim != 2 or source.shape[0] != 2:
+        raise ValueError("Affine point arrays must share shape (2, N)")
+    if source.shape[1] < 3:
+        raise ValueError("At least three points are required for an affine fit")
+    design = np.column_stack([
+        source.T,np.ones(source.shape[1],dtype=np.float64),
+    ])
+    coefficients,_,rank,_ = np.linalg.lstsq(design,target.T,rcond=None)
+    if int(rank) < 3:
+        raise ValueError("Affine reference fit is rank-deficient")
+    transform = coefficients.T
+    if abs(float(np.linalg.det(transform[:,:2]))) < 1e-12:
+        raise ValueError("Affine reference fit is singular")
+    return transform
+
+
+def _apply_affine_matrix(transform: np.ndarray,positions: np.ndarray) -> np.ndarray:
+    matrix = np.asarray(transform,dtype=np.float64)
+    points = np.asarray(positions,dtype=np.float64)
+    if matrix.shape != (2,3):
+        raise ValueError("Affine transform must have shape (2, 3)")
+    if points.ndim != 2 or points.shape[0] != 2:
+        raise ValueError("Affine positions must have shape (2, N)")
+    return matrix[:,:2]@points + matrix[:,2,None]

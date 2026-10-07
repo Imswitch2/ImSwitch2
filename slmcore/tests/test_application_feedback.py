@@ -1144,3 +1144,109 @@ def test_config_restores_exact_named_fov_and_does_not_fallback_when_missing(tmp_
     assert session.runtime.get_section_fov_mapping_context("sec_0")["correction"] is None
     assert session.runtime.get_section_cgh_status("sec_0").result_state.value == "stale"
     session.dispose()
+
+
+def test_named_reference_affine_correction_uses_one_continuous_field(tmp_path):
+    from dataclasses import replace
+
+    from slmcore import PositionReferenceStore
+
+    store = PositionReferenceStore(tmp_path / "position_references")
+
+    reference_runtime = _runtime(serial="SER-488")
+    reference_session = SLMSession(
+        runtime=reference_runtime,position_reference_store=store,
+    )
+    _set_feedback_observation_planes(reference_session,"sample")
+    reference_localization = _attach_reference_localization(reference_runtime)
+    reference_session.feedback.add_position_reference("sec_0","488 reference")
+
+    current_runtime = _runtime(serial="SER-405")
+    current_session = SLMSession(
+        runtime=current_runtime,position_reference_store=store,
+    )
+    _set_feedback_observation_planes(current_session,"sample")
+    current_localization = _attach_reference_localization(current_runtime)
+
+    # One deliberately bad current spot makes the desired per-spot correction
+    # non-affine. Affine mode must not preserve that one independent jump.
+    measured = np.array(current_localization.measured_positions_px,copy=True)
+    measured[0,-1] += 20.0
+    diagnostics = dict(current_localization.diagnostics)
+    diagnostics.update({
+        "affine_linear":((32.0,0.0),(0.0,32.0)),
+        "affine_translation":(12.0,12.0),
+    })
+    modified = replace(
+        current_localization,
+        measured_positions_px=measured,
+        diagnostics=diagnostics,
+    )
+    parameters = dict(
+        current_runtime.get_section_feedback_status("sec_0").localization_params
+    )
+    current_runtime.commit_section_feedback_localization(
+        "sec_0",modified,parameters,
+    )
+
+    current_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="488 reference",
+        correction_mode="per_spot",
+    )
+    per_spot,metadata = current_session.feedback._resolve_position_reference("sec_0")
+    assert metadata["correction_model"]["mode"] == "per_spot"
+
+    current_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="488 reference",
+        correction_mode="affine",affine_transform=None,
+    )
+    affine,metadata = current_session.feedback._resolve_position_reference("sec_0")
+    assert metadata["correction_model"]["mode"] == "affine"
+
+    registered = np.asarray(modified.expected_positions_px,dtype=np.float64)
+    affine_error = np.asarray(affine)-measured
+    design = np.column_stack([
+        registered.T,np.ones(registered.shape[1],dtype=np.float64),
+    ])
+    coefficients,_,_,_ = np.linalg.lstsq(design,affine_error.T,rcond=None)
+    fitted_error = (design@coefficients).T
+    np.testing.assert_allclose(affine_error,fitted_error,atol=1e-10)
+
+    # The bad site's correction is no longer its raw reference jump.
+    per_spot_error = np.asarray(per_spot)-measured
+    assert not np.allclose(affine_error[:,-1],per_spot_error[:,-1])
+
+    preview = current_session.feedback.position_reference_preview("sec_0")
+    assert preview is not None
+    assert preview["correction_mode"] == "affine"
+    assert preview["affine_transform"].shape == (2,3)
+    np.testing.assert_allclose(
+        preview["raw_reference_positions_px"],per_spot,atol=1e-12,
+    )
+
+    # Manual affine editing is stored as a transient transform. Translation of
+    # that mapping translates every correction vector by the same amount.
+    edited_transform = np.asarray(preview["affine_transform"],dtype=np.float64).copy()
+    edited_transform[:,2] += np.array([1.5,-2.0])
+    current_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="488 reference",
+        correction_mode="affine",affine_transform=edited_transform,
+    )
+    edited,_metadata = current_session.feedback._resolve_position_reference("sec_0")
+    edited_error = np.asarray(edited)-measured
+    np.testing.assert_allclose(
+        edited_error-affine_error,
+        np.repeat(np.array([[1.5],[-2.0]]),affine_error.shape[1],axis=1),
+        atol=1e-10,
+    )
+
+    current_session.feedback.set_position_reference(
+        "sec_0",mode="reference",reference_name="488 reference",
+        correction_mode="affine",affine_transform=None,
+    )
+    assert current_session.feedback.position_reference_selection(
+        "sec_0"
+    ).affine_transform is None
+
+    reference_session.dispose()
+    current_session.dispose()

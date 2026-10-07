@@ -580,15 +580,23 @@ class PositionReferenceView(QtWidgets.QWidget):
     """Detector-image overlay for measured, fitted and selected reference lattices."""
 
     sigCenterOffsetRequested = QtCore.Signal(float,float)
+    sigAffineTransformRequested = QtCore.Signal(object)
 
     def __init__(self,parent: QtWidgets.QWidget | None=None) -> None:
         super().__init__(parent)
         self._preview = None
         self._reference_positions = None
+        self._raw_reference_positions = None
         self._measured_positions = None
+        self._global_positions = None
         self._fit_center = None
         self._reference_center = None
         self._updating_center = False
+        self._affine_active = False
+        self._affine_editable = False
+        self._affine_updating = False
+        self._affine_source_anchors = None
+        self._affine_last_origin = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0,0,0,0)
@@ -611,6 +619,9 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.reference_item = pg.ScatterPlotItem(
             symbol="+",size=12,pen=pg.mkPen("#e06cdb",width=1.8),
         )
+        self.raw_reference_item = pg.ScatterPlotItem(
+            symbol="o",size=10,pen=pg.mkPen("#e06cdb",width=1.2),brush=None,
+        )
         self.vector_item = pg.PlotCurveItem(
             pen=pg.mkPen("#ff9966",width=1.1),
         )
@@ -618,24 +629,57 @@ class PositionReferenceView(QtWidgets.QWidget):
             movable=True,size=16,
             pen=pg.mkPen("#e06cdb",width=1.4),
         )
+        self.affine_frame_item = pg.PlotCurveItem(
+            pen=pg.mkPen("#ffcc66",width=1.5),
+        )
+        self.affine_origin_item = pg.TargetItem(
+            movable=True,size=15,pen=pg.mkPen("#ffcc66",width=1.5),
+        )
+        self.affine_x_item = pg.TargetItem(
+            movable=True,size=15,pen=pg.mkPen("#ffcc66",width=1.5),
+        )
+        self.affine_y_item = pg.TargetItem(
+            movable=True,size=15,pen=pg.mkPen("#ffcc66",width=1.5),
+        )
+        self.affine_origin_label = pg.TextItem("Move",anchor=(0.0,1.0))
+        self.affine_x_label = pg.TextItem("X",anchor=(0.0,1.0))
+        self.affine_y_label = pg.TextItem("Y",anchor=(0.0,1.0))
         for item in (
-            self.image_item,self.global_item,self.vector_item,
-            self.measured_item,self.reference_item,self.center_item,
+            self.image_item,self.global_item,self.vector_item,self.measured_item,
+            self.raw_reference_item,self.reference_item,self.affine_frame_item,
+            self.center_item,self.affine_origin_item,self.affine_x_item,
+            self.affine_y_item,self.affine_origin_label,self.affine_x_label,
+            self.affine_y_label,
         ):
             self.view_box.addItem(item)
         self.center_item.setVisible(False)
+        for item in (
+            self.affine_frame_item,self.affine_origin_item,self.affine_x_item,
+            self.affine_y_item,self.affine_origin_label,self.affine_x_label,
+            self.affine_y_label,
+        ):
+            item.setVisible(False)
         self.center_item.sigPositionChanged.connect(self._on_center_position_changed)
         self.center_item.sigPositionChangeFinished.connect(self._on_center_position_finished)
+        self.affine_origin_item.sigPositionChanged.connect(
+            self._on_affine_origin_changed
+        )
+        self.affine_x_item.sigPositionChanged.connect(self._on_affine_axis_changed)
+        self.affine_y_item.sigPositionChanged.connect(self._on_affine_axis_changed)
+        for item in (
+            self.affine_origin_item,self.affine_x_item,self.affine_y_item,
+        ):
+            item.sigPositionChangeFinished.connect(self._on_affine_edit_finished)
         layout.addWidget(self.graphics,1)
 
         footer = QtWidgets.QHBoxLayout()
         footer.setContentsMargins(0,2,0,0)
         footer.setSpacing(8)
-        legend = QtWidgets.QLabel(
+        self.legend_label = QtWidgets.QLabel(
             "Measured ×   Global fit +   Reference +   Vector: measured → reference"
         )
-        legend.setStyleSheet("color: %s;" % _MUTED_COLOR)
-        footer.addWidget(legend)
+        self.legend_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
+        footer.addWidget(self.legend_label)
         footer.addStretch(1)
         self.summary_label = QtWidgets.QLabel("")
         self.summary_label.setStyleSheet("color: %s;" % _MUTED_COLOR)
@@ -661,12 +705,22 @@ class PositionReferenceView(QtWidgets.QWidget):
         reference = np.asarray(
             preview.get("reference_positions_px"),dtype=np.float64,
         )
+        raw_reference = np.asarray(
+            preview.get("raw_reference_positions_px",reference),dtype=np.float64,
+        )
         if image.ndim != 2:
             raise ValueError("Position-reference preview image must be two-dimensional")
-        for name,array in (("measured",measured),("global",global_positions),("reference",reference)):
+        for name,array in (
+            ("measured",measured),("global",global_positions),
+            ("reference",reference),("raw reference",raw_reference),
+        ):
             if array.ndim != 2 or array.shape[0] != 2:
                 raise ValueError("%s positions must have shape (2, N)" % name)
-        if measured.shape != reference.shape or global_positions.shape != reference.shape:
+        if (
+            measured.shape != reference.shape
+            or global_positions.shape != reference.shape
+            or raw_reference.shape != reference.shape
+        ):
             raise ValueError("Position-reference preview point arrays must share shape")
 
         # Reference-parameter edits (editable geometry or saved-reference
@@ -682,7 +736,9 @@ class PositionReferenceView(QtWidgets.QWidget):
 
         self._preview = dict(preview)
         self._measured_positions = np.array(measured,copy=True)
+        self._global_positions = np.array(global_positions,copy=True)
         self._reference_positions = np.array(reference,copy=True)
+        self._raw_reference_positions = np.array(raw_reference,copy=True)
         self._fit_center = np.asarray(preview.get("fit_center_px"),dtype=np.float64).reshape(2)
         self._reference_center = np.asarray(
             preview.get("reference_center_px"),dtype=np.float64,
@@ -692,6 +748,28 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.global_item.setData(x=global_positions[0],y=global_positions[1])
         self.measured_item.setData(x=measured[0],y=measured[1])
         self._set_reference_overlay(reference)
+        correction_mode = str(preview.get("correction_mode") or "per_spot")
+        affine_transform = preview.get("affine_transform")
+        self._affine_active = bool(
+            correction_mode == "affine" and affine_transform is not None
+        )
+        if self._affine_active:
+            self.raw_reference_item.setData(
+                x=raw_reference[0],y=raw_reference[1],
+            )
+            self.legend_label.setText(
+                "Measured ×   Global fit +   Saved reference ○   "
+                "Affine target +   Vector: affine correction"
+            )
+            self._set_affine_transform(
+                global_positions,np.asarray(affine_transform,dtype=np.float64),
+            )
+        else:
+            self.raw_reference_item.setData(x=[],y=[])
+            self.legend_label.setText(
+                "Measured ×   Global fit +   Reference +   Vector: measured → reference"
+            )
+            self._hide_affine_overlay()
         self._updating_center = True
         try:
             self.center_item.setPos(
@@ -701,6 +779,7 @@ class PositionReferenceView(QtWidgets.QWidget):
             self._updating_center = False
         self.center_item.setVisible(bool(center_editable))
         self.center_item.movable = bool(center_editable)
+        self.set_affine_editable(self._affine_editable)
         displacement = reference-measured
         magnitudes = np.linalg.norm(displacement,axis=0)
         self.summary_label.setText(
@@ -719,18 +798,37 @@ class PositionReferenceView(QtWidgets.QWidget):
         self.center_item.setVisible(visible)
         self.center_item.movable = visible
 
+    def set_affine_editable(self,enabled: bool) -> None:
+        self._affine_editable = bool(enabled)
+        visible = bool(self._affine_active and self._preview is not None)
+        self.affine_frame_item.setVisible(visible)
+        for item in (
+            self.affine_origin_item,self.affine_x_item,self.affine_y_item,
+        ):
+            item.setVisible(visible)
+            item.movable = bool(visible and self._affine_editable)
+        for item in (
+            self.affine_origin_label,self.affine_x_label,self.affine_y_label,
+        ):
+            item.setVisible(visible)
+
     def clear(self) -> None:
         self._preview = None
         self._reference_positions = None
+        self._raw_reference_positions = None
         self._measured_positions = None
+        self._global_positions = None
         self._fit_center = None
         self._reference_center = None
         self.image_item.clear()
         self.global_item.setData(x=[],y=[])
         self.measured_item.setData(x=[],y=[])
         self.reference_item.setData(x=[],y=[])
+        self.raw_reference_item.setData(x=[],y=[])
         self.vector_item.setData([],[])
         self.center_item.setVisible(False)
+        self._affine_active = False
+        self._hide_affine_overlay()
         self.summary_label.setText("Reference preview unavailable")
         self.reset_button.setEnabled(False)
 
@@ -745,6 +843,129 @@ class PositionReferenceView(QtWidgets.QWidget):
         x[0::2],x[1::2] = measured[0],reference[0]
         y[0::2],y[1::2] = measured[1],reference[1]
         self.vector_item.setData(x=x,y=y,connect="pairs")
+
+    def _set_affine_transform(
+        self,global_positions: np.ndarray,transform: np.ndarray,
+    ) -> None:
+        global_positions = np.asarray(global_positions,dtype=np.float64)
+        transform = np.asarray(transform,dtype=np.float64)
+        if transform.shape != (2,3) or global_positions.shape[0] != 2:
+            self._hide_affine_overlay()
+            return
+        xmin,xmax = np.min(global_positions[0]),np.max(global_positions[0])
+        ymin,ymax = np.min(global_positions[1]),np.max(global_positions[1])
+        if abs(float(xmax-xmin)) < 1e-9 or abs(float(ymax-ymin)) < 1e-9:
+            self._hide_affine_overlay()
+            return
+        source_anchors = np.asarray([
+            [xmin,xmax,xmin],
+            [ymin,ymin,ymax],
+        ],dtype=np.float64)
+        target_anchors = self._apply_affine(transform,source_anchors)
+        self._affine_source_anchors = source_anchors
+        self._affine_updating = True
+        try:
+            self.affine_origin_item.setPos(*target_anchors[:,0])
+            self.affine_x_item.setPos(*target_anchors[:,1])
+            self.affine_y_item.setPos(*target_anchors[:,2])
+            self._affine_last_origin = np.array(target_anchors[:,0],copy=True)
+        finally:
+            self._affine_updating = False
+        self._update_affine_frame()
+
+    def _hide_affine_overlay(self) -> None:
+        self._affine_active = False
+        self._affine_source_anchors = None
+        self._affine_last_origin = None
+        self.affine_frame_item.setData([],[])
+        for item in (
+            self.affine_frame_item,self.affine_origin_item,self.affine_x_item,
+            self.affine_y_item,self.affine_origin_label,self.affine_x_label,
+            self.affine_y_label,
+        ):
+            item.setVisible(False)
+
+    @staticmethod
+    def _target_position(item: pg.TargetItem) -> np.ndarray:
+        pos = item.pos()
+        return np.asarray([float(pos.x()),float(pos.y())],dtype=np.float64)
+
+    @staticmethod
+    def _apply_affine(transform: np.ndarray,positions: np.ndarray) -> np.ndarray:
+        return transform[:,:2]@positions + transform[:,2,None]
+
+    def _current_affine_transform(self) -> np.ndarray | None:
+        source = self._affine_source_anchors
+        if source is None:
+            return None
+        target = np.column_stack([
+            self._target_position(self.affine_origin_item),
+            self._target_position(self.affine_x_item),
+            self._target_position(self.affine_y_item),
+        ])
+        design = np.column_stack([source.T,np.ones(3,dtype=np.float64)])
+        try:
+            coefficients = np.linalg.solve(design,target.T)
+        except np.linalg.LinAlgError:
+            return None
+        transform = coefficients.T
+        if abs(float(np.linalg.det(transform[:,:2]))) < 1e-12:
+            return None
+        return transform
+
+    def _update_affine_frame(self) -> None:
+        q0 = self._target_position(self.affine_origin_item)
+        qx = self._target_position(self.affine_x_item)
+        qy = self._target_position(self.affine_y_item)
+        qxy = qx+qy-q0
+        frame = np.column_stack([q0,qx,qxy,qy,q0])
+        self.affine_frame_item.setData(x=frame[0],y=frame[1])
+        for label,point in (
+            (self.affine_origin_label,q0),(self.affine_x_label,qx),
+            (self.affine_y_label,qy),
+        ):
+            label.setPos(float(point[0]),float(point[1]))
+
+    def _update_affine_live_preview(self) -> None:
+        self._update_affine_frame()
+        transform = self._current_affine_transform()
+        global_positions = self._global_positions
+        measured = self._measured_positions
+        if transform is None or global_positions is None or measured is None:
+            return
+        mapped_global = self._apply_affine(transform,global_positions)
+        effective_reference = measured + (mapped_global-global_positions)
+        self._set_reference_overlay(effective_reference)
+
+    def _on_affine_origin_changed(self,*_args: Any) -> None:
+        if self._affine_updating:
+            return
+        origin = self._target_position(self.affine_origin_item)
+        previous = self._affine_last_origin
+        self._affine_last_origin = np.array(origin,copy=True)
+        if previous is not None:
+            delta = origin-previous
+            self._affine_updating = True
+            try:
+                for item in (self.affine_x_item,self.affine_y_item):
+                    current = self._target_position(item)+delta
+                    item.setPos(float(current[0]),float(current[1]))
+            finally:
+                self._affine_updating = False
+        self._update_affine_live_preview()
+
+    def _on_affine_axis_changed(self,*_args: Any) -> None:
+        if self._affine_updating:
+            return
+        self._update_affine_live_preview()
+
+    def _on_affine_edit_finished(self,*_args: Any) -> None:
+        if self._affine_updating or not self._affine_editable:
+            return
+        transform = self._current_affine_transform()
+        if transform is None:
+            return
+        self.sigAffineTransformRequested.emit(np.array(transform,copy=True))
 
     def _on_center_position_changed(self,*_args: Any) -> None:
         if self._updating_center or self._reference_positions is None:

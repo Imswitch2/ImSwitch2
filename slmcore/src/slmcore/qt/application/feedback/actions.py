@@ -145,14 +145,17 @@ class FeedbackActionRouter:
         elif request is MeasurementsAction.POSITION_APPLY:
             self._adaptation.apply_position_correction(section_key)
         elif request is MeasurementsAction.POSITION_REFERENCE_SET:
-            self._references.set_position_reference(
-                section_key,
-                mode=str(values.get("mode") or "global_fit"),
-                reference_name=values.get("reference_name"),
-                editable_geometry=values.get("editable_geometry"),
-                editable_locks=values.get("editable_locks"),
-                correspondence=values.get("correspondence"),
-            )
+            kwargs = {
+                "mode":str(values.get("mode") or "global_fit"),
+                "reference_name":values.get("reference_name"),
+                "editable_geometry":values.get("editable_geometry"),
+                "editable_locks":values.get("editable_locks"),
+                "correspondence":values.get("correspondence"),
+                "correction_mode":values.get("correction_mode"),
+            }
+            if "affine_transform" in values:
+                kwargs["affine_transform"] = values.get("affine_transform")
+            self._references.set_position_reference(section_key,**kwargs)
         elif request is MeasurementsAction.POSITION_REFERENCE_FIT_CENTER:
             self._references.fit_position_reference_center(section_key)
         elif request is MeasurementsAction.POSITION_REFERENCE_ADD:

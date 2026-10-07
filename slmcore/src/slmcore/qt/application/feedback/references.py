@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from ...cgh.session_window import CGHSessionWindow
 
 
+_UNSET = object()
+
+
 class PositionReferenceCoordinator:
     """Synchronize and edit position references for feedback UI windows."""
 
@@ -63,6 +66,12 @@ class PositionReferenceCoordinator:
                 else context.fit_geometry.to_dict()
             ),
             "correspondence":selection.correspondence.value,
+            "correction_mode":selection.correction_mode,
+            "affine_transform":(
+                None
+                if selection.affine_transform is None
+                else tuple(tuple(row) for row in selection.affine_transform)
+            ),
             "correspondence_options":context.correspondence_options,
             "correspondence_resolved":context.correspondence_resolved,
             "correspondence_diagnostics":(
@@ -96,18 +105,23 @@ class PositionReferenceCoordinator:
         editable_geometry: Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | None=None,
         correspondence: str | None=None,
+        correction_mode: str | None=None,
+        affine_transform: Any=_UNSET,
     ) -> None:
         """Flush editor changes before applying a reference selection mapping."""
         try:
             self._flush_section(section_key)
-            self._feedback.set_position_reference(
-                section_key,
-                mode=mode,
-                reference_name=reference_name,
-                editable_geometry=editable_geometry,
-                editable_locks=editable_locks,
-                correspondence=correspondence,
-            )
+            kwargs = {
+                "mode":mode,
+                "reference_name":reference_name,
+                "editable_geometry":editable_geometry,
+                "editable_locks":editable_locks,
+                "correspondence":correspondence,
+                "correction_mode":correction_mode,
+            }
+            if affine_transform is not _UNSET:
+                kwargs["affine_transform"] = affine_transform
+            self._feedback.set_position_reference(section_key,**kwargs)
         except Exception as error:
             self._report_error("Changing position reference failed",error)
             self._synchronize_section(section_key)

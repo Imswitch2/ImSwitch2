@@ -39,6 +39,9 @@ if TYPE_CHECKING:
     from ..geometry_calibration import GeometryCalibrationService
 
 
+_UNSET = object()
+
+
 class SLMFeedbackService:
     """Compose focused feedback workflows for one toolkit-neutral SLM session."""
 
@@ -330,15 +333,20 @@ class SLMFeedbackService:
         editable_geometry: EditablePositionReferenceGeometry | Mapping[str,Any] | None=None,
         editable_locks: Mapping[str,Any] | Sequence[str] | None=None,
         correspondence: Any | None=None,
+        correction_mode: str | None=None,
+        affine_transform: Any=_UNSET,
     ) -> PositionReferenceSelection:
-        return self._references.set_position_reference(
-            section_key,
-            mode=mode,
-            reference_name=reference_name,
-            editable_geometry=editable_geometry,
-            editable_locks=editable_locks,
-            correspondence=correspondence,
-        )
+        kwargs = {
+            "mode":mode,
+            "reference_name":reference_name,
+            "editable_geometry":editable_geometry,
+            "editable_locks":editable_locks,
+            "correspondence":correspondence,
+            "correction_mode":correction_mode,
+        }
+        if affine_transform is not _UNSET:
+            kwargs["affine_transform"] = affine_transform
+        return self._references.set_position_reference(section_key,**kwargs)
 
     def fit_position_reference_center(
         self,section_key: str,
