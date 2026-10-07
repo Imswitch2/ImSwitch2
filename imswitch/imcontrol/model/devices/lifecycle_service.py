@@ -14,10 +14,31 @@ from .lifecycle import (
     DeviceLifecycleAction,
     DeviceLifecycleBlockedError,
     DeviceLifecycleBusyError,
+    DeviceLifecycleCapabilities,
     DeviceLifecycleError,
     DeviceLifecycleNotSupportedError,
     DeviceLifecycleResult,
 )
+
+
+class _TransportBackedLifecycle:
+    """The lifecycle of a device that has no adapter of its own but uses a
+    transport that can be reopened in place. ``reconnect`` is never called
+    on it: the service runs the transport reconnect instead."""
+
+    capabilities = DeviceLifecycleCapabilities(reconnect=True)
+
+    def __init__(self, hardware_id) -> None:
+        self.hardware_id = hardware_id
+
+    def reconnect(self):
+        raise DeviceLifecycleNotSupportedError(
+            "A transport-backed reconnect runs through the lifecycle service.")
+
+    def connect(self):
+        raise DeviceLifecycleNotSupportedError("Not supported.")
+
+    disconnect = probe = shutdown = connect
 
 
 #: Runtime transitions the service runs (probe and shutdown are not offered).
@@ -29,15 +50,27 @@ _TRANSITIONS = (
 
 
 class DeviceLifecycleService:
-    """Opt-in runtime lifecycle coordinator for physical devices.
+    """Runtime lifecycle coordinator for physical devices.
 
     ``DeviceSupervisor`` remains the read-only source of inventory/status.
-    This service consumes that graph, discovers explicit manager lifecycle
-    providers, applies coarse application-ownership guards, and serializes
-    transitions per physical device.
+    This service consumes that graph, discovers manager lifecycle providers,
+    applies the application-ownership guards, and serializes transitions per
+    physical device.
 
-    V1 is deliberately default-deny: a device is reconnectable only when one
-    of its logical managers explicitly contributes a lifecycle adapter.
+    A device is reconnectable when one of its managers contributes a
+    lifecycle adapter, **or** when it uses a transport that can be reopened
+    in place (an ``rs232devices`` manager with ``reconnectTransport``). In the
+    second case the service reconnects the transport once and re-initialises
+    every device on it (``docs/design/plans/device-reconnect-2.0.md`` §4.3):
+
+    - before: each dependent's ``_lifecycleSafeState(verified=False)`` (best
+      effort, errors ignored);
+    - ``transport.reconnectTransport()`` once;
+    - after, per dependent: its lifecycle's ``onTransportReconnected(real)``
+      (one call per physical device), else each manager's
+      ``_onTransportReconnected(real)``, else the default (status taken from
+      the transport). A hook returns the errors it found; any error fails the
+      reconnect, and the device shows it.
     """
 
     def __init__(self, master, supervisor):
@@ -45,8 +78,8 @@ class DeviceLifecycleService:
         self._master = master
         self._supervisor = supervisor
         self._graph = self._supervisor.getDeviceGraph()
+        self._transportOf, self._usersOfTransport = self._findReconnectableTransports(self._graph)
         self._handles = self._buildHandles(self._graph)
-        self._reconnectBlockReasons = self._findReconnectBlockReasons(self._graph)
         self._operationLocks = {
             hardware_id: threading.Lock() for hardware_id in self._handles
         }
@@ -143,6 +176,11 @@ class DeviceLifecycleService:
                     "device %r; lifecycle actions disabled",
                     hardware_id,
                 )
+            elif hardware_id in self._transportOf:
+                # No adapter of its own, but a transport that can be reopened
+                # in place: reconnect is the transport's, with the managers'
+                # re-initialisation hooks.
+                lifecycle = _TransportBackedLifecycle(hardware_id)
 
             handles[hardware_id] = DeviceHandle(
                 hardware_id=hardware_id,
@@ -152,41 +190,35 @@ class DeviceLifecycleService:
         return handles
 
 
-    def _findReconnectBlockReasons(self, graph) -> dict:
-        """Reject V1 transitions when the transport is shared across devices.
-
-        In-place RS232 replacement is safe for all logical components of the
-        *same* physical device, but not yet for an unrelated device that also
-        retains the same transport manager. Later lifecycle adapters may
-        coordinate such groups explicitly; V1 fails closed.
-        """
-        users_by_transport = {}
+    def _findReconnectableTransports(self, graph):
+        """``hardware_id -> transport DeviceId`` for every device whose
+        transport manager can be reopened in place, and the reverse map."""
+        transport_of = {}
+        users = {}
         for relation in graph.relations:
             if relation.kind is not DeviceRelationKind.USES_TRANSPORT:
                 continue
             if not isinstance(relation.source, HardwareDeviceId):
                 continue
-            users_by_transport.setdefault(relation.target, set()).add(
-                relation.source
-            )
-
-        reasons = {}
-        for hardware_id, handle in self._handles.items():
-            if not any(handle.capabilities.supports(action) for action in _TRANSITIONS):
+            if not isinstance(relation.target, DeviceId):
                 continue
-            for relation in graph.relationsFrom(hardware_id):
-                if relation.kind is not DeviceRelationKind.USES_TRANSPORT:
-                    continue
-                users = users_by_transport.get(relation.target, set())
-                other_users = users - {hardware_id}
-                if other_users:
-                    label = relation.label or str(relation.target)
-                    reasons[hardware_id] = (
-                        f"Reconnect, connect and disconnect are disabled because transport {label!r} is "
-                        "shared with another physical device."
-                    )
-                    break
-        return reasons
+            try:
+                transport = self._supervisor.getManager(relation.target)
+            except KeyError:
+                continue
+            if not callable(getattr(transport, "reconnectTransport", None)):
+                continue
+            transport_of[relation.source] = relation.target
+            users.setdefault(relation.target, set()).add(relation.source)
+        return transport_of, {t: tuple(sorted(u)) for t, u in users.items()}
+
+    def transportOf(self, hardware_id):
+        """The reconnectable transport ``hardware_id`` uses, or ``None``."""
+        return self._transportOf.get(hardware_id)
+
+    def devicesOnTransport(self, transport_id) -> tuple:
+        """Every physical device that uses ``transport_id``."""
+        return self._usersOfTransport.get(transport_id, ())
 
     def getHandle(self, hardware_id) -> DeviceHandle:
         try:
@@ -210,7 +242,6 @@ class DeviceLifecycleService:
         return bool(
             action in _TRANSITIONS
             and handle.capabilities.supports(action)
-            and hardware_id not in self._reconnectBlockReasons
         )
 
     def getActionableHardwareIds(self, action) -> tuple:
@@ -328,16 +359,13 @@ class DeviceLifecycleService:
 
     def _transition(self, hardware_id, action) -> DeviceLifecycleResult:
         """One runtime transition, with the same rules for every action:
-        declared capability, shared-transport veto, shutdown refusal,
-        per-device lock, and -- for devices that take part in acquisitions --
-        the scan / recording guard and acquisition-gate maintenance."""
+        declared capability, shutdown refusal, per-device lock, and -- for
+        devices that take part in acquisitions -- the scan / recording guard
+        and acquisition-gate maintenance."""
         action = DeviceLifecycleAction(action)
         verb = action.value
         handle = self.getHandle(hardware_id)
         lifecycle = handle.lifecycle
-        blocked_reason = self._reconnectBlockReasons.get(hardware_id)
-        if blocked_reason is not None:
-            raise DeviceLifecycleBlockedError(blocked_reason)
         if lifecycle is None or not handle.capabilities.supports(action):
             raise DeviceLifecycleNotSupportedError(
                 f"{verb.capitalize()} is not supported for {hardware_id!r}."
@@ -407,19 +435,142 @@ class DeviceLifecycleService:
             lock.release()
 
     def _runLifecycle(self, lifecycle, verb, hardware_id, affectsAcquisition):
+        transport_id = self._transportOf.get(hardware_id)
+        if verb == DeviceLifecycleAction.RECONNECT.value and transport_id is not None:
+            run = lambda: self._reconnectThroughTransport(hardware_id, transport_id)
+        else:
+            run = getattr(lifecycle, verb)
         if affectsAcquisition:
             self._assertRuntimeTransitionSafe(verb)
             # Held for the whole adapter call: no scan or recording can start
             # until the backend replacement has finished.
             with get_acquisition_gate().maintenance(f"{verb} of {hardware_id}"):
-                return getattr(lifecycle, verb)()
-        return getattr(lifecycle, verb)()
+                return run()
+        return run()
+
+    # ------------------------------------------------- transport reconnect
+    def _reconnectThroughTransport(self, hardware_id, transport_id) -> DeviceLifecycleResult:
+        """Reopen the transport once; re-initialise every device on it."""
+        transport = self._supervisor.getManager(transport_id)
+        dependents = self.devicesOnTransport(transport_id) or (hardware_id,)
+        affected = []
+        for dependent in dependents:
+            handle = self._handles.get(dependent)
+            if handle is not None:
+                affected.extend(handle.source_device_ids)
+        label = transport_id.name
+
+        # Best effort before the transport is touched: a broken connection
+        # may make this fail; the verified safe state comes after.
+        for dependent in dependents:
+            for hook in self._transportHooks(dependent, "_lifecycleSafeState", "transportSafeState"):
+                try:
+                    hook(verified=False)
+                except Exception:
+                    pass
+
+        try:
+            real = bool(transport.reconnectTransport())
+        except Exception as exc:
+            real = False
+            self.__logger.error("Transport %s reconnect raised: %s", label, exc, exc_info=True)
+
+        errors = []
+        for dependent in dependents:
+            hooks = self._transportHooks(dependent, "_onTransportReconnected", "onTransportReconnected")
+            if not hooks:
+                hooks = [self._defaultTransportHook(dependent, transport, label)]
+            for hook in hooks:
+                try:
+                    found = hook(real)
+                except Exception as exc:
+                    found = [f"{type(exc).__name__}: {exc}"]
+                errors.extend(f"{dependent.key}: {e}" for e in (found or ()))
+
+        if not real:
+            details = getattr(transport, "connectionStatusDetails", None)
+            summary = f"Transport {label!r} did not reconnect"
+            if errors or details:
+                summary += "; " + "; ".join(errors or [str(details)])
+            success = False
+        elif errors:
+            summary = f"Transport {label!r} reconnected, but: " + "; ".join(errors)
+            success = False
+        else:
+            names = ", ".join(sorted(d.key for d in dependents))
+            summary = f"Transport {label!r} reconnected; re-initialised {names}"
+            success = True
+        return DeviceLifecycleResult(
+            hardware_id=hardware_id,
+            action=DeviceLifecycleAction.RECONNECT,
+            success=success,
+            summary=summary,
+            details="; ".join(errors) or None,
+            affected_device_ids=tuple(affected),
+            # Lasers always come back dark: the Laser panel shows OFF.
+            deactivated_device_ids=tuple(d for d in affected if d.kind == "laser"),
+        )
+
+    def _transportHooks(self, hardware_id, manager_hook, lifecycle_hook):
+        """The re-initialisation hooks of one physical device: its lifecycle's
+        (once for the whole device) or, failing that, each manager's."""
+        handle = self._handles.get(hardware_id)
+        if handle is None:
+            return []
+        lifecycle = handle.lifecycle
+        hook = getattr(lifecycle, lifecycle_hook, None)
+        if callable(hook):
+            return [hook]
+        hooks = []
+        for source_id in handle.source_device_ids:
+            try:
+                manager = self._supervisor.getManager(source_id)
+            except KeyError:
+                continue
+            hook = getattr(manager, manager_hook, None)
+            if callable(hook):
+                hooks.append(hook)
+        return hooks
+
+    def _defaultTransportHook(self, hardware_id, transport, label):
+        """A manager with no hook of its own talks to the transport directly
+        and keeps no device state: its status follows the transport's."""
+        handle = self._handles.get(hardware_id)
+        managers = []
+        for source_id in handle.source_device_ids if handle else ():
+            try:
+                managers.append(self._supervisor.getManager(source_id))
+            except KeyError:
+                continue
+
+        def hook(real):
+            details = getattr(transport, "connectionStatusDetails", None)
+            for manager in managers:
+                if real:
+                    setter = getattr(manager, "_setConnected", None)
+                    if callable(setter):
+                        setter(f"{label} reconnected")
+                else:
+                    setter = getattr(manager, "_setConnectionError", None)
+                    if callable(setter):
+                        setter(details or f"transport {label} unavailable",
+                               summary=f"Transport {label} did not reconnect",
+                               mock_active=getattr(transport, "runtimeMode", None) is not None
+                               and transport.runtimeMode.value == "mock")
+            return [] if real else [details or f"transport {label} unavailable"]
+        return hook
 
     def _affectedDeviceIds(self, hardware_id, handle) -> set:
         """The logical devices a transition of ``hardware_id`` touches: its
         own managers, plus every device that depends on it (a component of
         it, or one that uses it as transport or control backend)."""
         affected = set(handle.source_device_ids)
+        transport_id = self._transportOf.get(hardware_id)
+        if transport_id is not None:
+            for dependent in self.devicesOnTransport(transport_id):
+                other = self._handles.get(dependent)
+                if other is not None:
+                    affected.update(other.source_device_ids)
         for relation in self._graph.relations:
             if relation.target != hardware_id:
                 continue

@@ -273,7 +273,7 @@ def test_aa_aotf_raw_drive_refuses_mock_mode():
 
     manager, rs232 = _build()
     assert manager.applyRawDrive(512) == 512.0
-    manager._isMock = True
+    manager._controllerAnswered = False        # as after a failed startup exchange
     with pytest.raises(RawDriveError, match='mock mode'):
         manager.applyRawDrive(100)
 

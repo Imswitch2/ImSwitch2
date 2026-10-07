@@ -44,6 +44,15 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
 
         self.__logger = initLogger(self, tryInheritParent=True)
 
+        # Lifecycle results arrive on the Hardware status reconnect worker;
+        # a reconnected stage reports a fresh position, so refresh its rows
+        # on this controller's thread (the Rotator panel does the same).
+        self._deviceLifecycleListener = None
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        if lifecycleService is not None:
+            self._deviceLifecycleListener = self._deviceLifecycleChanged
+            lifecycleService.addListener(self._deviceLifecycleListener)
+
         # Set up positioners
         for pName, pManager in self._master.positionersManager:
             if not self._isPositionerShownInWidget(pManager):
@@ -708,6 +717,11 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
             self._widget.joystickCheck.setChecked(True)
 
     def closeEvent(self):
+        lifecycleService = getattr(self._master, 'deviceLifecycleService', None)
+        listener = self.__dict__.get('_deviceLifecycleListener')
+        if lifecycleService is not None and listener is not None:
+            lifecycleService.removeListener(listener)
+            self._deviceLifecycleListener = None
         self._cancelAllJoystickAutoReenable()
         if hasattr(self, '_liveUpdateTimer') and self._liveUpdateTimer.isActive():
             self._liveUpdateTimer.stop()
@@ -715,6 +729,31 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
             lambda p: [p.setPosition(0, axis) for axis in p.axes],
             condition = lambda p: p.resetOnClose
         )
+
+    def _deviceLifecycleChanged(self, result):
+        affected = tuple(
+            device_id
+            for device_id in getattr(result, 'affected_device_ids', ())
+            if getattr(device_id, 'kind', None) == 'positioner'
+        )
+        if not affected:
+            return
+        self._invokeOnControllerThreadIfNeeded(
+            lambda: self._refreshLifecycleAffectedPositioners(affected)
+        )
+
+    def _refreshLifecycleAffectedPositioners(self, device_ids):
+        known = {name for name, _ in self._master.positionersManager}
+        for device_id in device_ids:
+            if device_id.name not in known:
+                continue
+            try:
+                self.updatePosition(device_id.name, 'all')
+            except Exception:
+                self._logger.warning(
+                    f'Could not refresh {device_id.name} after a lifecycle change',
+                    exc_info=True,
+                )
 
     def getPos(self):
         return self._master.positionersManager.execOnAll(lambda p: p.position)

@@ -559,3 +559,45 @@ def test_manager_builds_no_vendor_command_strings():
 #
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+
+# Transport reconnect (reconnect 2.0, R-1)
+# ---------------------------------------------------------------------------
+
+
+def test_mock_state_is_derived_so_the_channel_comes_back_after_a_port_reconnect():
+    """`_isMock = True` was a latch set once at startup; after the port came
+    back the channel still sent nothing."""
+    rs232 = FakeRS232(raise_cmds=_timeout('L1I1O0'))
+    m, _ = _build(rs232=rs232)
+    assert m._isMock is True
+
+    rs232.raise_cmds.clear()                       # the controller answers again
+    rs232.cmds.clear()
+    assert m._onTransportReconnected(True) == []
+    assert m._isMock is False
+    assert m.connectionState.value == 'connected'
+    assert rs232.cmds[0] == 'L1I1O0'               # the startup exchange ran again
+    assert rs232.cmds[-1] == 'L1O0'                # ... and ended with channel OFF, verified
+
+
+def test_reconnect_without_an_answer_keeps_the_channel_mock_with_the_error():
+    m, rs232 = _build()
+    assert m._isMock is False
+    rs232.raise_cmds.update(_timeout('L1I1O0'))
+    errors = m._onTransportReconnected(True)
+    assert errors and 'Timeout' in errors[0]
+    assert m._isMock is True
+    assert m.connectionState.value == 'error'
+    assert m._onTransportReconnected(False) == ['transport unavailable']
+
+
+def test_safe_state_before_is_best_effort_and_after_is_verified():
+    m, rs232 = _build()
+    rs232.cmds.clear()
+    assert m._lifecycleSafeState(verified=False) == []
+    assert rs232.cmds == ['L1O0']
+    rs232.raise_cmds.update(_timeout('L1O0'))
+    assert m._lifecycleSafeState(verified=False) == []        # errors ignored before
+    errors = m._lifecycleSafeState(verified=True)
+    assert errors and 'channel OFF failed' in errors[0]

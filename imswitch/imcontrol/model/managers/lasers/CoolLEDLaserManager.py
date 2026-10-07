@@ -135,47 +135,33 @@ class _CoolLEDLifecycle:
                 affected_device_ids=self._channelIds(),
             )
 
-    def reconnect(self):
+    # Transport hooks (DeviceLifecycleService §4.3): the service reopens the
+    # RS232 port once for every device on it and calls these.
+    def transportSafeState(self, *, verified: bool):
+        """All channels OFF. Before a reconnect: best effort, errors ignored.
+        After: errors returned (never report OFF for a channel nobody
+        switched off)."""
+        errors = []
+        for manager in self._channelManagers():
+            if not verified and manager._isMock:
+                continue
+            try:
+                manager.setEnabled(False)
+            except Exception as exc:
+                errors.append(f"{manager.name}: {exc}")
+        return errors if verified else []
+
+    def onTransportReconnected(self, real: bool):
+        """Re-probe the controller and force every channel OFF; the errors
+        found, if any."""
         with self._lock:
             channels = self._channelManagers()
-            channel_ids = self._channelIds()
-
-            # Best effort before touching the transport. A broken connection
-            # may make this fail, but reconnect must still proceed. The same
-            # channels are forced OFF again after a verified reconnect.
-            for manager in channels:
-                if manager._isMock:
-                    continue
-                try:
-                    manager.setEnabled(False)
-                except Exception:
-                    pass
-
-            real_transport = self._rs232manager.reconnectTransport()
-            probe_result = _probe_coolled_controller(
-                self._rs232manager, force=True
-            )
+            probe_result = _probe_coolled_controller(self._rs232manager, force=True)
             self._applyProbeToChannels(probe_result)
             state, _, summary, details, _ = probe_result
-
-            if not real_transport or state is not DeviceConnectionState.CONNECTED:
-                return DeviceLifecycleResult(
-                    hardware_id=self.hardware_id,
-                    action=DeviceLifecycleAction.RECONNECT,
-                    success=False,
-                    summary=summary,
-                    details=details,
-                    affected_device_ids=channel_ids,
-                    deactivated_device_ids=channel_ids,
-                )
-
-            safe_off_errors = []
-            for manager in channels:
-                try:
-                    manager.setEnabled(False)
-                except Exception as exc:
-                    safe_off_errors.append(f"{manager.name}: {exc}")
-
+            if not real or state is not DeviceConnectionState.CONNECTED:
+                return [summary + (f" ({details})" if details else "")]
+            safe_off_errors = self.transportSafeState(verified=True)
             if safe_off_errors:
                 error_details = "; ".join(safe_off_errors)
                 for manager in channels:
@@ -183,18 +169,29 @@ class _CoolLEDLifecycle:
                         error_details,
                         summary="CoolLED reconnected but safe OFF initialization failed",
                     )
+                return [f"safe OFF failed: {error_details}"]
+            for manager in channels:
+                manager._setConnected("CoolLED reconnected; all channels forced OFF")
+            return []
+
+    def reconnect(self):
+        """Direct use (tests, scripts); the service path is the same steps
+        with every other device on the port re-initialised too."""
+        with self._lock:
+            channel_ids = self._channelIds()
+            self.transportSafeState(verified=False)
+            real_transport = self._rs232manager.reconnectTransport()
+            errors = self.onTransportReconnected(real_transport)
+            if errors:
                 return DeviceLifecycleResult(
                     hardware_id=self.hardware_id,
                     action=DeviceLifecycleAction.RECONNECT,
                     success=False,
-                    summary="CoolLED reconnected but safe OFF initialization failed",
-                    details=error_details,
+                    summary=errors[0],
+                    details="; ".join(errors[1:]) or None,
                     affected_device_ids=channel_ids,
                     deactivated_device_ids=channel_ids,
                 )
-
-            for manager in channels:
-                manager._setConnected("CoolLED reconnected; all channels forced OFF")
             return DeviceLifecycleResult(
                 hardware_id=self.hardware_id,
                 action=DeviceLifecycleAction.RECONNECT,

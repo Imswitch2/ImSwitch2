@@ -54,7 +54,9 @@ class AAAOTFLaserManager(LaserManager):
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
-        self._isMock = False
+        #: True once the controller completed the startup exchange on the
+        #: current port; the transport reconnect hook runs it again.
+        self._controllerAnswered = False
         self._channel = self._parse_channel(
             laserInfo.managerProperties['channel'], name
         )
@@ -123,24 +125,7 @@ class AAAOTFLaserManager(LaserManager):
         # From here on the controller is talked to, and a controller that does
         # not answer must not take ImSwitch down with it.
         try:
-            if self._frequency_mhz is not None:
-                self._run('prepare_frequency_programming')
-                self._run('set_channel_frequency', self._frequency_mhz)
-
-            if self._toggleTrueExternal:
-                if self._ttlToggling:
-                    #self.blankingOnInternal()
-                    self.internalControl()
-                else:
-                    #self.blankingOnInternal()
-                    self.externalControl()
-            else:
-                if self._ttlToggling:
-                    #self.blankingOnExternal()
-                    self.externalControl()
-                else:
-                    #self.blankingOnInternal()
-                    self.internalControl()
+            self._startupExchange()
         except ProtocolError as exc:
             self._startWithoutController(name, exc)
 
@@ -159,6 +144,78 @@ class AAAOTFLaserManager(LaserManager):
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits=self._value_units, valueDecimals=0)
         self._setConnected("AA AOTF initialized")
+
+    def _startupExchange(self):
+        """Program the frequency (if configured) and set the control mode.
+        Raises ``ProtocolError`` when the controller does not answer. Run at
+        startup and again after the port was reconnected."""
+        self._controllerAnswered = True     # _run sends only while this holds
+        try:
+            if self._frequency_mhz is not None:
+                self._run('prepare_frequency_programming')
+                self._run('set_channel_frequency', self._frequency_mhz)
+
+            if self._toggleTrueExternal:
+                if self._ttlToggling:
+                    self.internalControl()
+                else:
+                    self.externalControl()
+            else:
+                if self._ttlToggling:
+                    self.externalControl()
+                else:
+                    self.internalControl()
+        except ProtocolError:
+            self._controllerAnswered = False
+            raise
+
+    @property
+    def _isMock(self):
+        """Derived, never stored: commands are sent only when the port is
+        real and the controller completed the startup exchange on it."""
+        if not self._controllerAnswered:
+            return True
+        mode = getattr(self._rs232manager, 'runtimeMode', None)
+        return getattr(mode, 'value', None) == 'mock'
+
+    # Transport hooks (DeviceLifecycleService): the port was, or is about to
+    # be, reopened in place.
+    def _lifecycleSafeState(self, *, verified: bool):
+        if not verified:
+            self._bestEffortChannelOff()
+            return []
+        try:
+            self.applyEnabled(False)
+        except Exception as exc:
+            return [f'channel OFF failed: {exc}']
+        return []
+
+    def _onTransportReconnected(self, real: bool):
+        """Repeat the startup exchange on the reopened port, then channel
+        OFF, verified; the errors found, if any."""
+        if not real:
+            self._controllerAnswered = False
+            details = getattr(self._rs232manager, 'connectionStatusDetails', None)
+            self._setConnectionError(
+                details or 'transport unavailable',
+                summary='AA AOTF transport did not reconnect; mock fallback active',
+                mock_active=True,
+            )
+            return [details or 'transport unavailable']
+        try:
+            self._startupExchange()
+        except ProtocolError as exc:
+            off_acknowledged = self._bestEffortChannelOff()
+            self._setConnectionError(
+                exc.message, summary='AA AOTF did not answer after reconnect')
+            return [f'{exc.message} (best-effort channel OFF '
+                    f'{"acknowledged" if off_acknowledged else "NOT acknowledged"})']
+        errors = self._lifecycleSafeState(verified=True)
+        if errors:
+            self._setConnectionError(errors[0], summary='AA AOTF reconnected but channel OFF failed')
+            return errors
+        self._setConnected('AA AOTF reconnected; channel OFF')
+        return []
 
     @staticmethod
     def _parse_channel(value, name):
@@ -246,7 +303,7 @@ class AAAOTFLaserManager(LaserManager):
             f'channel {self._channel}. Set managerProperties.useMockOnFailure '
             f'to false to make this a startup error.'
         )
-        self._isMock = True
+        self._controllerAnswered = False
 
     def _bestEffortChannelOff(self) -> bool:
         """Send channel OFF directly, bypassing ``_run`` and its logging."""

@@ -118,40 +118,39 @@ class LeicaDMILifecycle:
                 errors.append(f"{method_name}: {exc}")
         return errors
 
-    def reconnect(self):
+    # Transport hooks (DeviceLifecycleService §4.3): the service reopens the
+    # RS232 port once for every device on it and calls these.
+    def _currentHardware(self):
+        return next(
+            (
+                getattr(manager, "_hardware", None)
+                for manager in self._managers()
+                if getattr(manager, "_hardware", None) is not None
+            ),
+            None,
+        )
+
+    def transportSafeState(self, *, verified: bool):
+        """Illumination shutters closed. Before a reconnect: best effort.
+        After: errors returned (a shutter nobody closed is never reported
+        closed)."""
+        hardware = self._currentHardware()
+        if hardware is None:
+            return ["no Leica hardware interface"] if verified else []
+        errors = self._forceSafeIlluminationOff(hardware)
+        return errors if verified else []
+
+    def onTransportReconnected(self, real: bool):
+        """Rebuild the shared Leica interface on the reopened port, hand it to
+        every component and close the shutters; the errors found, if any."""
         with self._lock:
-            device_ids = self._deviceIds()
-
-            # Best effort before transport replacement. A broken connection may
-            # make this fail; the verified post-reconnect OFF is authoritative.
-            current_hardware = next(
-                (
-                    getattr(manager, "_hardware", None)
-                    for manager in self._managers()
-                    if getattr(manager, "_hardware", None) is not None
-                ),
-                None,
-            )
-            if current_hardware is not None:
-                self._forceSafeIlluminationOff(current_hardware)
-
-            real_transport = self._rs232manager.reconnectTransport()
-            if not real_transport:
+            if not real:
                 details = getattr(
-                    self._rs232manager,
-                    "connectionStatusDetails",
+                    self._rs232manager, "connectionStatusDetails",
                     "Leica RS232 reconnect failed",
                 )
                 self._adoptHardware(None, error=details, mock_active=True)
-                return DeviceLifecycleResult(
-                    hardware_id=self.hardware_id,
-                    action=DeviceLifecycleAction.RECONNECT,
-                    success=False,
-                    summary="Leica stand reconnect failed; mock fallback active",
-                    details=details,
-                    affected_device_ids=device_ids,
-                )
-
+                return [f"Leica stand reconnect failed; mock fallback active ({details})"]
             try:
                 hardware = self._rebuildHardware()
             except Exception as exc:
@@ -159,42 +158,40 @@ class LeicaDMILifecycle:
                 rebuild_error = str(exc)
             else:
                 rebuild_error = None
-
             if hardware is None:
                 details = rebuild_error or "Leica DMI protocol probe failed after RS232 reconnect"
                 self._adoptHardware(None, error=details, mock_active=False)
-                return DeviceLifecycleResult(
-                    hardware_id=self.hardware_id,
-                    action=DeviceLifecycleAction.RECONNECT,
-                    success=False,
-                    summary="Leica RS232 reconnected but stand initialization failed",
-                    details=details,
-                    affected_device_ids=device_ids,
-                )
-
+                return [f"Leica RS232 reconnected but stand initialization failed ({details})"]
             safe_off_errors = self._forceSafeIlluminationOff(hardware)
             self._adoptHardware(hardware)
-
             if safe_off_errors:
                 details = "; ".join(safe_off_errors)
                 for manager in self._managers():
                     setter = getattr(manager, "_setConnectionError", None)
                     if callable(setter):
-                        setter(
-                            details,
-                            summary=(
-                                "Leica reconnected but safe shutter initialization failed"
-                            ),
-                        )
+                        setter(details, summary=(
+                            "Leica reconnected but safe shutter initialization failed"))
+                return [f"Leica reconnected but safe shutter initialization failed ({details})"]
+            return []
+
+    def reconnect(self):
+        """Direct use; the service path is the same steps with every other
+        device on the port re-initialised too."""
+        with self._lock:
+            device_ids = self._deviceIds()
+            self.transportSafeState(verified=False)
+            real_transport = self._rs232manager.reconnectTransport()
+            errors = self.onTransportReconnected(real_transport)
+            if errors:
+                summary, _, details = errors[0].partition(" (")
                 return DeviceLifecycleResult(
                     hardware_id=self.hardware_id,
                     action=DeviceLifecycleAction.RECONNECT,
                     success=False,
-                    summary="Leica reconnected but safe shutter initialization failed",
-                    details=details,
+                    summary=summary,
+                    details=details.rstrip(")") or None,
                     affected_device_ids=device_ids,
                 )
-
             return DeviceLifecycleResult(
                 hardware_id=self.hardware_id,
                 action=DeviceLifecycleAction.RECONNECT,

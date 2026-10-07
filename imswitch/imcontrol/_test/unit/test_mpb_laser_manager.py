@@ -362,3 +362,65 @@ def test_fractional_limits_keep_every_ramp_step_inside_the_reported_range():
     assert all(199.9 <= value <= 3050.0 for value in setpoints)
     assert all(value == int(value) for value in setpoints)
     assert fake.enabled is False
+
+
+# --------------------------------------------------- transport reconnect
+class _FailedMPB(FakeMPB):
+    """A unit that does not answer at startup, then does."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.unplugged = True
+
+    def query(self, command):
+        if self.unplugged:
+            raise RuntimeError('no reply')
+        return super().query(command)
+
+
+@pytest.mark.nohardware
+def test_mock_state_is_derived_so_the_laser_comes_back_after_a_port_reconnect():
+    """Review of reconnect 2.0: `_isMock = True` was a latch set once at
+    startup; after the port came back the laser still sent nothing."""
+    fake = _FailedMPB(mode=1, output=500)
+    manager = _manager(fake)                       # startup exchange fails
+    assert manager._isMock is True
+    assert manager.runtimeMode.value == 'mock'
+
+    fake.unplugged = False
+    assert manager._onTransportReconnected(True) == []
+    assert manager._isMock is False
+    assert manager.connectionState.value == 'connected'
+    # The startup exchange ran again: the unit was darkened (ramp, then off)
+    # and its limits read, before anything else.
+    assert fake.commands[0] == 'GETPOWERENABLE'
+    assert 'SETLDENABLE 0' in fake.commands and 'GETPOWERSETPTLIM 0' in fake.commands
+    assert fake.enabled is False
+
+
+@pytest.mark.nohardware
+def test_reconnect_that_does_not_answer_leaves_the_laser_mock_with_the_error():
+    fake = FakeMPB(mode=1, output=0)
+    manager = _manager(fake)
+    assert manager._isMock is False
+    fake.fail_commands.add('GETPOWERENABLE')
+    errors = manager._onTransportReconnected(True)
+    assert errors and 'simulated failure' in errors[0]
+    assert manager._isMock is True                  # nothing is sent to an unknown unit
+    assert manager.connectionState.value == 'error'
+    assert manager._onTransportReconnected(False) == ['transport unavailable']
+
+
+@pytest.mark.nohardware
+def test_safe_state_before_is_best_effort_and_after_is_verified():
+    fake = FakeMPB(mode=1, output=800)
+    manager = _manager(fake)
+    fake.commands.clear()
+    assert manager._lifecycleSafeState(verified=False) == []
+    assert fake.commands == ['SETLDENABLE 0']
+    fake.commands.clear()
+    assert manager._lifecycleSafeState(verified=True) == []
+    fake.fail_commands.add('SETLDENABLE 0')
+    fake.enabled = True
+    errors = manager._lifecycleSafeState(verified=True)
+    assert errors and 'safe OFF failed' in errors[0]

@@ -35,7 +35,10 @@ class MPBLaserManager(LaserManager):
 
     def __init__(self, laserInfo, name, **kwargs):
         self.__logger = initLogger(self, instanceName=name)
-        self._isMock = False
+        #: True once the startup exchange succeeded on the current port; the
+        #: transport reconnect hook runs it again.
+        self._initialised = False
+        self._mpbName = name          # self.name exists only after LaserManager.__init__
         self._rs232manager = None
         self._enabled = None
         self._desired_power = None
@@ -62,10 +65,48 @@ class MPBLaserManager(LaserManager):
         self._rs232Name = properties['rs232device']
         try:
             self._rs232manager = kwargs['rs232sManager']._subManagers[self._rs232Name]
-            # Recovery comes before identity/diagnostic queries so a laser left
-            # live by a crashed process spends the least possible time emitting.
-            mode_reply = self._queryRequired('GETPOWERENABLE')
+            self._initialiseHardware()
+        except Exception as exc:
+            # Initialization is the recovery path after a crashed ImSwitch
+            # process. Never enter mock fallback without first making an
+            # independent best-effort attempt to darken a real connected unit.
+            off_acknowledged = self._bestEffortImmediateOff()
+            message = (
+                f'MPB laser {name!r} initialization failed: {exc}. '
+                f'Best-effort immediate OFF '
+                f'{"was acknowledged" if off_acknowledged else "was not acknowledged"}.'
+            )
+            if not off_acknowledged:
+                self.__logger.critical(message)
+            elif self._use_mock_on_failure:
+                self.__logger.warning(f'{message} Entering mock mode.')
 
+            if not self._use_mock_on_failure:
+                raise RuntimeError(message) from exc
+            self._setConnectionError(
+                exc,
+                summary="MPB laser initialization failed; mock fallback active",
+                mock_active=True,
+            )
+
+        super().__init__(
+            laserInfo,
+            name,
+            isBinary=False,
+            valueUnits='mW',
+            valueDecimals=0,
+        )
+
+    def _initialiseHardware(self):
+        """The startup exchange: darken a unit left live, make sure it is in
+        APC mode, read its power limits. Raises on any failure. Run at
+        startup and again after the port was reconnected."""
+        self._initialised = False
+        # Recovery comes before identity/diagnostic queries so a laser left
+        # live by a crashed process spends the least possible time emitting.
+        mode_reply = self._queryRequired('GETPOWERENABLE')
+        self._initialised = True       # commands reach the unit from here on
+        try:
             if self._isApcModeReply(mode_reply):
                 # Response format: 'F >99 3050'. APC power limits are required
                 # to build a valid equipment-friendly recovery ramp.
@@ -94,42 +135,57 @@ class MPBLaserManager(LaserManager):
                 f'{self.__min_max_powers[1]} mW'
             )
             serial_number = self._queryRequired('GETSN')
-            self.__logger.debug(f'MPB laser {name}, SN: {serial_number}')
+            self.__logger.debug(f'MPB laser {self._mpbName}, SN: {serial_number}')
 
             self.setTriggerSource(0)  # internal; not implemented by this driver
-            self._setConnected("MPB laser initialized")
+        except Exception:
+            self._initialised = False
+            raise
+        self._setConnected("MPB laser initialized")
 
+    @property
+    def _isMock(self):
+        """Derived, never stored: commands are sent only when the port is
+        real and the startup exchange succeeded on it."""
+        rs232 = self._rs232manager
+        if rs232 is None or not self._initialised:
+            return True
+        mode = getattr(rs232, 'runtimeMode', None)
+        return getattr(mode, 'value', None) == 'mock'
+
+    # Transport hooks (DeviceLifecycleService): the port was, or is about to
+    # be, reopened in place.
+    def _lifecycleSafeState(self, *, verified: bool):
+        if not verified:
+            self._bestEffortImmediateOff()
+            return []
+        try:
+            self.safeDisable(reason='reconnect')
         except Exception as exc:
-            # Initialization is the recovery path after a crashed ImSwitch
-            # process. Never enter mock fallback without first making an
-            # independent best-effort attempt to darken a real connected unit.
-            off_acknowledged = self._bestEffortImmediateOff()
-            message = (
-                f'MPB laser {name!r} initialization failed: {exc}. '
-                f'Best-effort immediate OFF '
-                f'{"was acknowledged" if off_acknowledged else "was not acknowledged"}.'
-            )
-            if not off_acknowledged:
-                self.__logger.critical(message)
-            elif self._use_mock_on_failure:
-                self.__logger.warning(f'{message} Entering mock mode.')
+            return [f'safe OFF failed: {exc}']
+        return []
 
-            if not self._use_mock_on_failure:
-                raise RuntimeError(message) from exc
-            self._isMock = True
+    def _onTransportReconnected(self, real: bool):
+        """Run the startup exchange again on the reopened port (it darkens
+        the unit and verifies APC mode); the errors found, if any."""
+        if not real:
+            self._initialised = False
+            details = getattr(self._rs232manager, 'connectionStatusDetails', None)
             self._setConnectionError(
-                exc,
-                summary="MPB laser initialization failed; mock fallback active",
+                details or 'transport unavailable',
+                summary='MPB laser transport did not reconnect; mock fallback active',
                 mock_active=True,
             )
-
-        super().__init__(
-            laserInfo,
-            name,
-            isBinary=False,
-            valueUnits='mW',
-            valueDecimals=0,
-        )
+            return [details or 'transport unavailable']
+        try:
+            self._initialiseHardware()
+        except Exception as exc:
+            off_acknowledged = self._bestEffortImmediateOff()
+            self._setConnectionError(
+                exc, summary='MPB laser did not re-initialize after reconnect')
+            return [f'{exc} (best-effort OFF '
+                    f'{"acknowledged" if off_acknowledged else "NOT acknowledged"})']
+        return []
 
     def getDeviceDescriptorSpec(self):
         return rs232BackedPrimarySpec(

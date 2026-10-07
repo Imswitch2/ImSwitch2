@@ -329,3 +329,35 @@ porting the ten lifecycles (R-4) is cheaper once the holder exists.
   where one of two addresses answers, a Hamamatsu with one of two cameras?
   Proposal: per address / per camera, as the Elliptec bus already does
   (`is_real(address)`): the missing one is `ABSENT`, the rest `CONNECTED`.
+
+## 8. Implementation notes
+
+**R-1 (done 2026-10-08).**
+- `DeviceLifecycleService`: the shared-transport veto is gone. At
+  construction the service maps every device to the transport it uses when
+  that transport's manager has `reconnectTransport` (`transportOf`,
+  `devicesOnTransport`); a device without an adapter of its own on such a
+  transport gets a `_TransportBackedLifecycle` (capability reconnect). A
+  reconnect of any device on a reconnectable transport runs
+  `_reconnectThroughTransport`: safe state (best effort) on every device on
+  the port → `reconnectTransport()` once → per device, in order, its
+  lifecycle's `onTransportReconnected(real)` (once per physical device) or
+  each manager's `_onTransportReconnected(real)` or the default (status
+  follows the transport); any error fails the reconnect with the device
+  named. `affected_device_ids` = every manager on the port; lasers among
+  them are `deactivated_device_ids`. Ownership tickets already covered all
+  of them.
+- CoolLED and Leica lifecycles: `transportSafeState` / `onTransportReconnected`
+  split out of `reconnect()`, which now calls them (direct use unchanged).
+- MPB and AA AOTF: `_isMock` is a property (port real *and* the startup
+  exchange succeeded on it); the startup exchange is `_initialiseHardware()` /
+  `_startupExchange()`, run again by `_onTransportReconnected`;
+  `_lifecycleSafeState` = immediate OFF before, verified OFF after.
+- Positioner panel subscribes to lifecycle results and refreshes the
+  affected stages on its thread.
+- Not in R-1: the vendor `rs232devices` managers (ESP32, GRBL, SQUID,
+  KDC101) have no `reconnectTransport` yet, so ESP32 LED / stages stay as
+  they were (Q-3: with the holder in R-3). Piezoconcept, Jena, Oxxius,
+  SQUID stage and TriggerScope get the default hook (they keep no device
+  state; `RS232Manager` heals their status on the next I/O).
+
