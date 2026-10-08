@@ -61,7 +61,7 @@ hard-coded for a particular rig.
 
 | Question | Decision | Consequence |
 |---|---|---|
-| Coexist with Advanced? | **Replace.** Selected per rig with `scanWidgetType: "SimplePointScan"` | Still one scan panel per setup. Moving a rig between Simple and Advanced is a config change. Scan files load across only within an explicit representable subset; anything outside it is refused with the reason (D4). |
+| Coexist with Advanced? | **Replace.** Selected per rig with `scanWidgetType: "Advanced", cloak: "SimplePointScan"` | Still one scan panel per setup. Moving a rig between Simple and Advanced is a config change. Scan files load across only within an explicit representable subset; anything outside it is refused with the reason (D4). |
 | What does T mean in an acquisition? | **N frames, back to back, one run, no interval** | Intervals stay a Recording feature (ScanLapse). Executed as N bounded NI-DAQ iterations in one run; with Save, as a ScanLapse with interval 0 (D3; confirmed 2026-09-25). |
 | Which lasers does the overview use? | **Channel 1 only.** A dropdown picks another channel | The overview always needs just one line pass. |
 | Does Acquire save? | **Optional "Save" toggle** | Runs the Recording controller's own Scan-once transaction, bound to this panel. There is no second writer (D2). |
@@ -1246,13 +1246,21 @@ become an Advanced scan restored on the Advanced page, with a note.
 
 ### 10.5 Registration
 
-- `scanWidgetType` keeps selecting the panel, and a cloak names its backend.
-  `SimplePointScan` means the mixin with `ScanControllerAdvanced`,
-  `ScanWidgetAdvanced` and `ScanManagerAdvanced`.
-- **One table (`SCAN_CLOAKS`)** feeds all four registration points: the
-  controller map, the widget map, MasterController's scan-manager branch and
-  the config editor's options. A new cloak is then one entry plus its classes,
-  not the four edits of §7.
+- `scanWidgetType` names the real scan backend. `cloak` optionally names a
+  simplified frontend compatible with that backend. Thus point scan is
+  `scanWidgetType: "Advanced", cloak: "SimplePointScan"`; without `cloak`,
+  Advanced loads normally. The old `scanWidgetType: "SimplePointScan"` form
+  remains a compatibility alias while setups migrate.
+- **One table (`SCAN_CLOAKS`)** owns cloak/backend compatibility and cloak
+  capabilities such as whether the cloak provides an overview. The main view
+  and controller resolve their frontend from it, while `MasterController`
+  resolves only the real backend. The config editor obtains its cloak names
+  from the same registry.
+- The concrete cloak classes still state their backend through normal Python
+  inheritance (`ScanControllerSimplePointScan` + `ScanControllerAdvanced`) and
+  `backendWidgetClass`; the contract suite checks those agree with the registry.
+  This deliberately avoids inventing a universal backend-controller protocol
+  before a second backend actually needs one.
 
 ### 10.6 A MoNaLISA cloak (sketch, for later)
 
@@ -1275,26 +1283,25 @@ with PointScan into Advanced and stays as it is).
   designer) is one.
 
 So a MoNaLISA cloak is a second cloak **over the same backend**:
-`SCAN_CLOAKS['SimpleMoNaLISA'] = 'Advanced'`, with its own `ScanCloak`, whose
+a `SimpleMoNaLISA` registry entry compatible with `Advanced`, with its own `ScanCloak`, whose
 representable subset is different. It needs the timing windows the point-scan
 cloak refuses, and it has no swept fast axis.
 
-**What it could show:**
+**First implementation:** only the simplified acquisition view. It can expose
+parameters such as pixel/scan step, OFF power and ON switching/power and map
+those to the Advanced scan. It deliberately has **no overview mode** at first.
+The cloak registry records that capability (`has_overview=False`), while the
+base `runPlan()` simply runs the acquisition unless a cloak overrides it.
 
-- the pattern period and the steps per period, for each axis (→ Advanced's size
-  and step);
-- the exposure per step;
-- the on-switch, off-switch and read-out phases on a timeline, with lasers and
-  the camera placed on it (→ Advanced's pulse windows);
-- frames per scan and the total time;
-- *widefield live* (the camera live, no scan) next to *Acquire*.
+A later widefield overview is a separate design question because it is camera
+live + illumination + stage navigation rather than a scan. It may compose with
+the MoNaLISA scan cloak instead of becoming part of the scan cloak itself.
 
 **Reuse and gaps:**
 
 - **Reuses from the base:** the switch, the mirror, saved state, run policy,
   and Save/T.
-- **Does not reuse:** region drawing (the field is the camera's, not the scan
-  range), the overview planner, the Nyquist slider.
+- **Does not need initially:** region drawing or an overview planner.
 - **Needs an estimate:** `BetaScanDesigner` has no `estimateScanTime`. The cloak
   computes positions × dwell plus return time, or Beta gets an estimator.
 - **To settle with Guillaume:** the standard sequences and their defaults.

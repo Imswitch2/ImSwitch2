@@ -732,9 +732,10 @@ derive from the abstract ``SignalDesigner``).
    :align: center
    :width: 432px
 
-Five widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA``,
-``Advanced`` and ``SimplePointScan`` — selected by ``scan.scanWidgetType`` in
-the setup JSON; see :doc:`setupinfo-reference`. ``SimplePointScan`` is a
+Four scan widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
+``Advanced`` — selected by ``scan.scanWidgetType``. An optional ``scan.cloak``
+selects a compatible simplified frontend; see :doc:`setupinfo-reference`.
+``SimplePointScan`` is a
 beginner's point-scan panel over the Advanced one: **Simple / Advanced** in
 its header switches between the two, on the same scan.
 

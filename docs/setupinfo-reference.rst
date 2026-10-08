@@ -329,11 +329,14 @@ Required if you want to use the ``Scan`` widget.
 
 Key fields:
 
-* ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``,
-  ``"MoNaLISA"``, ``"Advanced"``, ``"SimplePointScan"`` or ``"TriggerScope"``.
+* ``scanWidgetType``: Real scan backend/widget — one of ``"Base"``,
+  ``"PointScan"``, ``"MoNaLISA"``, ``"Advanced"`` or ``"TriggerScope"``.
   ``"TriggerScope"`` runs scans on the TriggerScope board (see `triggerScope`_)
   from the ``TriggerScope*`` panels; there is no ``Scan`` panel for it.
-  ``SimplePointScan`` is a beginner's point-scan panel (overview and acquisition modes) that runs on the Advanced scan path; pair it with ``GalvoScanDesigner`` and ``AdvancedScanTTLCycleDesigner``.
+* ``cloak``: Optional simplified frontend over that backend. ``"SimplePointScan"``
+  is currently registered for ``"Advanced"`` and provides the beginner's
+  point-scan panel (overview and acquisition modes). Old setups that used
+  ``scanWidgetType: "SimplePointScan"`` are still accepted while they migrate.
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
 * ``scanDesignerParams``: Parameters for the scan designer.
   ``BetaScanDesigner`` reads ``return_time`` (seconds between lines) and

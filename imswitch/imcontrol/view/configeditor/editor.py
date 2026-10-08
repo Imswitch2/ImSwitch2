@@ -323,9 +323,12 @@ def _resolve_section_dynamic_options(schema: dict) -> None:
     """Replace supported option placeholders with runtime-discovered values."""
     global PLUGIN_DISCOVERY_ERROR
 
+    from imswitch.imcontrol.model.scan_cloak import SCAN_CLOAKS
+
     resolved = {
         "__improcess_reconstructors__": list(IMPROCESS_RECONSTRUCTOR_FALLBACK),
         "__improcess_processors__": list(IMPROCESS_PROCESSOR_FALLBACK),
+        "__scan_cloaks__": [None, *sorted(SCAN_CLOAKS)],
     }
     try:
         from imswitch.improcess.reconstructors import available_reconstructor_ids

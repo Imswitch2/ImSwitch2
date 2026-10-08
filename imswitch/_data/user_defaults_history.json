@@ -79,6 +79,7 @@
    "6d986cc5ad0da3a80be3ce1156f7b592679e26094dba0e93a169e2c428926b52"
   ],
   "imcontrol_setups/galvo_apd_simple_mock_scan_setup.json": [
+   "0dac8316cc82676f091b3f11296d700c3bd97c8dc377aa22dcac81730b3e0ce3",
    "1e8e441a159b4ac53a6411642a09af7d27dd348f98e1be0949cf2edd367c886d",
    "9de0e83fb4c20683de4a9ccc054d64657d63a7c7c79425956eccee04a8a3e900",
    "b0c94e51153a30cf98c6fe36334e4d80fd49e5b727c345129e2f5567da0e15be",
@@ -114,7 +115,8 @@
    "ee7668f38f2f097ee9f5f14d65e193d210e63e6754e6b59df7a0d0cc6fe4b151"
   ],
   "imcontrol_setups/simple_mock_setup.json": [
-   "5635e6f4f60c9a91ffbb07ed635d6477778c9c2371a8bf3bb5bf907d62b4bf5b"
+   "5635e6f4f60c9a91ffbb07ed635d6477778c9c2371a8bf3bb5bf907d62b4bf5b",
+   "648d0141c316e3421faed896ef3861717571573368a395d83514402270febece"
   ],
   "imcontrol_setups/snouty_processor.json": [
    "68e0d990ec02e0952810ef6b2beb42fb2c4aef4f1d48af8999ff50eb0680b393",

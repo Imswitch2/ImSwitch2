@@ -30,7 +30,7 @@ import time
 
 from qtpy import QtCore
 
-from imswitch.imcontrol.model.scan_cloak import PlanNotRepresentable
+from imswitch.imcontrol.model.scan_cloak import PlanNotRepresentable, resolve_scan_info
 from imswitch.imcontrol.view.widgets.ScanCloakPanel import ADVANCED, SIMPLE
 
 
@@ -364,7 +364,7 @@ class ScanCloakController:
         finally:
             self.__dict__['_servingAcquisition'] = False
         state['cloak'] = {
-            'type': getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None),
+            'type': resolve_scan_info(self._setupInfo.scan).cloak_type,
             'page': self.scanPage(),
             **self.cloakStateExtras(),
         }
@@ -412,8 +412,13 @@ class ScanCloakController:
         raise NotImplementedError
 
     def runPlan(self):
-        """The plan the next run from the simple page executes."""
-        raise NotImplementedError
+        """The plan the next run from the simple page executes.
+
+        Most cloaks simply run their acquisition.  A cloak with an overview
+        can override this to supply a different temporary run plan, as
+        SimplePointScan does.
+        """
+        return self.acquisitionPlan()
 
     def adoptPlan(self, plan):
         """Make ``plan``, read from the backend, the cloak's acquisition."""
@@ -435,9 +440,21 @@ class ScanCloakController:
         return {}
 
     def cloakExtrasFromState(self, state):
-        """The cloak's settings in a saved state, or None."""
+        """This cloak's settings in a saved state, or ``None``.
+
+        Backend scan dictionaries are intentionally portable between cloaks;
+        private extras are not.  A state written by another cloak is therefore
+        allowed through the backend path but its cloak-specific fields are
+        ignored here.
+        """
         cloak = state.get('cloak') if isinstance(state, dict) else None
-        return cloak if isinstance(cloak, dict) else None
+        if not isinstance(cloak, dict):
+            return None
+        savedType = cloak.get('type')
+        currentType = resolve_scan_info(self._setupInfo.scan).cloak_type
+        if savedType and currentType and savedType != currentType:
+            return None
+        return cloak
 
     def applyCloakStateExtras(self, extras):
         """Restore what :meth:`cloakStateExtras` saved."""

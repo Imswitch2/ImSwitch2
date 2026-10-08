@@ -121,7 +121,8 @@
     }
   },
   "scan": {
-    "scanWidgetType": "SimplePointScan",
+    "scanWidgetType": "Advanced",
+    "cloak": "SimplePointScan",
     "scanDesigner": "GalvoScanDesigner",
     "scanDesignerParams": {},
     "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",

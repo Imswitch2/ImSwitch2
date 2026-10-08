@@ -477,6 +477,10 @@ class ScanInfo:
     sampleRate: int
     """ Scan sample rate. """
 
+    cloak: Optional[str] = None
+    """ Optional simplified frontend over ``scanWidgetType``. The cloak must
+    declare that it supports the selected scan widget type. """
+
     maxScanTimeMin: Optional[int] = None
     """ Max scan time allowed, in min. ``null``/omitted = no limit. """
 

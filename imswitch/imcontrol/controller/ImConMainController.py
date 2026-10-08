@@ -17,6 +17,7 @@ from imswitch.imcommon.model import (
 from imswitch.imcommon.framework import Thread
 from .server.ImSwitchServer import ImSwitchServer
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
+from imswitch.imcontrol.model.scan_cloak import resolve_scan_info
 from imswitch.imcontrol.view import guitools
 from . import controllers
 from .CommunicationChannel import CommunicationChannel
@@ -119,7 +120,7 @@ class ImConMainController(MainController):
             self.controllers[widgetKey] = self.__factory.createController(
                 (getattr(controllers, f'{widgetKey}Controller')
                 if widgetKey != 'Scan' else
-                getattr(controllers, f'{widgetKey}Controller{self.__setupInfo.scan.scanWidgetType}')),
+                getattr(controllers, f'{widgetKey}Controller{resolve_scan_info(self.__setupInfo.scan).frontend_type}')),
                 widget,
                 **_extraKwargs.get(widgetKey, {})
             )

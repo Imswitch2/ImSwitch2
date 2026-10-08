@@ -36,7 +36,8 @@ def test_it_is_one_camera_and_one_apd_on_the_point_scan_panel(setup):
     assert sorted(detectors.values()) == ['APDManager', 'AVManager']
     camera = next(info for info in setup['detectors'].values() if info['managerName'] == 'AVManager')
     assert camera['managerProperties']['cameraListIndex'] == 'mock'
-    assert setup['scan']['scanWidgetType'] == 'SimplePointScan'
+    assert setup['scan']['scanWidgetType'] == 'Advanced'
+    assert setup['scan']['cloak'] == 'SimplePointScan'
     assert setup['nidaq']['simulation'] is True
 
 

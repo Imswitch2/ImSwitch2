@@ -6,7 +6,7 @@ and the backend's own widget, all real (no napari window). A new cloak adds
 its mock setup and its two edits to the tables below and passes the same
 tests:
 
-* registration follows ``SCAN_CLOAKS`` (scan manager, classes, config editor);
+* registration follows ``SCAN_CLOAKS`` (backend manager, frontend classes, config editor);
 * the Advanced page holds the acquisition, before and after edits;
 * switching there and back changes nothing; an edit there comes back; an
   edit the cloak cannot show is refused, or discarded on request;
@@ -36,7 +36,7 @@ from imswitch.imcontrol.controller.basecontrollers import (
     ImConWidgetControllerFactory,
 )
 from imswitch.imcontrol.controller.controllers._scan_cloak import ScanCloakController
-from imswitch.imcontrol.model.scan_cloak import SCAN_CLOAKS
+from imswitch.imcontrol.model.scan_cloak import SCAN_CLOAKS, resolve_scan_frontend
 from imswitch.imcontrol.model.scan_frame import FRAME_GEOMETRY_KEY
 from imswitch.imcontrol.view import ViewSetupInfo, widgets
 from imswitch.imcontrol.view.widgets.ScanCloakPanel import ScanCloakPanel
@@ -96,20 +96,25 @@ class _Main:
 
 
 class CloakRig:
-    def __init__(self, scanWidgetType, setupText=None):
-        self.type = scanWidgetType
-        self.backendType = SCAN_CLOAKS[scanWidgetType]
-        self.setup = ViewSetupInfo.from_json(setupText or open(MOCK_SETUPS[scanWidgetType]).read())
+    def __init__(self, cloakType, setupText=None):
+        self.type = cloakType
+        spec = SCAN_CLOAKS[cloakType]
+        assert len(spec.compatible_scan_widget_types) == 1
+        self.backendType = spec.compatible_scan_widget_types[0]
+        self.setup = ViewSetupInfo.from_json(setupText or open(MOCK_SETUPS[cloakType]).read())
+        resolved = resolve_scan_frontend(self.setup.scan.scanWidgetType, self.setup.scan.cloak)
+        assert resolved.frontend_type == cloakType
+        assert resolved.backend_type == self.backendType
         self.main = _Main()
         self.channel = CommunicationChannel(self.main, self.setup)
         self.master = MasterController(self.setup, self.channel, self.main._moduleCommChannel)
         self.factory = ImConWidgetControllerFactory(
             self.setup, self.master, self.channel, self.main._moduleCommChannel
         )
-        self.panel = getattr(widgets, f'ScanWidget{scanWidgetType}')(optionsBasic)
+        self.panel = getattr(widgets, f'ScanWidget{cloakType}')(optionsBasic)
         self.view = self.panel.view
         self.scan = self.factory.createController(
-            _controllerClass(f'ScanController{scanWidgetType}'), self.panel)
+            _controllerClass(f'ScanController{cloakType}'), self.panel)
         self.main.controllers['Scan'] = self.scan
         self.events = []
         self.channel.sigScanEnded.connect(lambda *a: self.events.append('ended'))
@@ -162,18 +167,45 @@ def test_every_cloak_has_a_mock_setup_and_edits():
     assert set(EDITS) == set(SCAN_CLOAKS)
 
 
+def test_scan_widget_type_is_the_backend_and_cloak_is_the_frontend():
+    resolved = resolve_scan_frontend('Advanced', 'SimplePointScan')
+    assert resolved.backend_type == 'Advanced'
+    assert resolved.frontend_type == 'SimplePointScan'
+    assert resolved.cloak_type == 'SimplePointScan'
+    assert resolved.cloak_spec.has_overview is True
+    assert not resolved.legacy_cloak_config
+
+
+def test_the_old_cloak_as_scan_widget_type_remains_readable():
+    resolved = resolve_scan_frontend('SimplePointScan')
+    assert resolved.backend_type == 'Advanced'
+    assert resolved.frontend_type == 'SimplePointScan'
+    assert resolved.legacy_cloak_config
+
+
+def test_a_cloak_refuses_an_incompatible_backend():
+    with pytest.raises(ValueError, match='cannot cloak'):
+        resolve_scan_frontend('PointScan', 'SimplePointScan')
+
+
 @pytest.mark.parametrize('cloak', CLOAKS)
 def test_the_classes_and_the_config_editor_follow_the_table(cloak):
-    backend = SCAN_CLOAKS[cloak]
+    spec = SCAN_CLOAKS[cloak]
+    assert len(spec.compatible_scan_widget_types) == 1
+    backend = spec.compatible_scan_widget_types[0]
     controller = _controllerClass(f'ScanController{cloak}')
     widget = getattr(widgets, f'ScanWidget{cloak}')
     assert issubclass(controller, ScanCloakController)
     assert issubclass(controller, _controllerClass(f'ScanController{backend}'))
     assert issubclass(widget, ScanCloakPanel)
     assert widget.backendWidgetClass is getattr(widgets, f'ScanWidget{backend}')
-    options = next(field['opts'] for field in json.load(open(SCAN_TEMPLATE))['fields']
-                   if field['key'] == 'scanWidgetType')
-    assert cloak in options
+
+    fields = json.load(open(SCAN_TEMPLATE))['fields']
+    backendOptions = next(field['opts'] for field in fields if field['key'] == 'scanWidgetType')
+    cloakOptions = next(field['opts'] for field in fields if field['key'] == 'cloak')
+    assert backend in backendOptions
+    assert cloak not in backendOptions
+    assert cloakOptions == ['__scan_cloaks__']
 
 
 def test_the_scan_manager_is_the_backends(rig):
@@ -272,12 +304,20 @@ def test_the_switch_waits_for_a_running_scan(rig):
         assert rig.waitForEnd()
 
 
+def test_private_extras_from_another_cloak_are_not_applied(rig):
+    state = rig.scan.getComponentState()
+    state['cloak']['type'] = 'SomeOtherCloak'
+    state['cloak']['mode'] = 'not-a-point-scan-mode'
+    assert rig.scan.cloakExtrasFromState(state) is None
+
+
 def test_the_page_is_saved_and_restored(rig, qtbot):
     rig.scan.setScanPage('advanced')
     EDITS[rig.type][1](rig)                             # something only Advanced shows
     held = rig.scan._readBackendWidget()
     state = rig.scan.getComponentState()
     assert state['cloak']['page'] == 'advanced'
+    assert state['cloak']['type'] == rig.type
 
     other = CloakRig(rig.type)
     try:
