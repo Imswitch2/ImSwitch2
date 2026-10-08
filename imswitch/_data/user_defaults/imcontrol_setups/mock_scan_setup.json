@@ -1,5 +1,5 @@
 {
-    "__comment__": "Hardware-free MoNaLISA advanced-scan setup for testing the live-reconstruction pipeline. Uses ONLY a mock AVManager camera and MockPositionerManager stages with a simulated NIDAQ (no physical analog/digital channels, no nidaqmx required), so it boots with no hardware. Select the 'MoNaLISA' (advanced) scan, set the scan geometry, then run a Scan-once / Scan-lapse recording: it writes .zarr/.hdf5 with ScanStage metadata that the live reconstruction (ImProcess) reads. The recorded frames are mock content, so reconstructions are structurally valid but not meaningful images - the goal is to exercise the record -> watch-folder -> live-reconstruction loop end to end. See docs/improcess.rst and docs/design/plans/live-reconstruction-port.md.",
+    "__comment__": "Hardware-free MoNaLISA setup for testing the live-reconstruction pipeline, on the legacy MoNaLISA scan panel (kept for the tests that use it; a MoNaLISA setup today runs on the Advanced panel, see example_monalisa.json). Uses ONLY a mock AVManager camera and MockPositionerManager stages with a simulated NIDAQ (no physical analog/digital channels, no nidaqmx required), so it boots with no hardware. Set the scan geometry on the MoNaLISA scan panel, then run a Scan-once / Scan-lapse recording: it writes .zarr/.hdf5 with ScanStage metadata that the live reconstruction (ImProcess) reads. The recorded frames are mock content, so reconstructions are structurally valid but not meaningful images - the goal is to exercise the record -> watch-folder -> live-reconstruction loop end to end. See docs/improcess.rst and docs/design/plans/live-reconstruction-port.md.",
     "detectors": {
         "Camera": {
             "analogChannel": null,
@@ -7,6 +7,7 @@
             "managerName": "AVManager",
             "managerProperties": {
                 "cameraListIndex": "mock",
+                "cameraPixelSizeUm": 0.15,
                 "avcam": {
                     "exposure": 100,
                     "gain": 1

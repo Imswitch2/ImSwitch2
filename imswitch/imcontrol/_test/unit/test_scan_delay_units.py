@@ -43,6 +43,14 @@ def test_the_setup_file_seeds_both_delays():
     assert widget.set == [('phase', 85), ('d3', 500)]
 
 
+def test_a_setup_can_give_the_first_dwell():
+    """A stepped stage cannot scan at the panel's 0.02 ms (example_monalisa)."""
+    widget = _Widget()
+    setup = SimpleNamespace(scan=SimpleNamespace(scanDesignerParams={'dwell_ms': 10}))
+    seed_scan_delays_from_setup(widget, setup)
+    assert widget.set == [('seq', pytest.approx(0.01))]
+
+
 def test_a_setup_without_the_delays_leaves_the_fields_alone():
     widget = _Widget()
     seed_scan_delays_from_setup(widget, SimpleNamespace(scan=SimpleNamespace(scanDesignerParams={})))

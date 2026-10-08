@@ -515,6 +515,13 @@ class HamamatsuManager(DetectorManager):
         return actual
 
     def _getCameraObj(self, cameraId):
+        if str(cameraId).lower() == 'mock':
+            # Asked for by name (cameraListIndex "mock"): no real camera to try,
+            # and nothing to warn about.
+            from imswitch.imcontrol.model.interfaces.hamamatsu_mock import MockHamamatsu
+            camera = MockHamamatsu()
+            self.__logger.info(f'Initialized mock camera, model: {camera.camera_model}')
+            return camera
         try:
             from imswitch.imcontrol.model.interfaces.hamamatsu import HamamatsuCameraMR
             self.__logger.debug(f'Trying to initialize Hamamatsu camera {cameraId}')
