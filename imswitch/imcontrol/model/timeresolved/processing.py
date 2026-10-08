@@ -183,16 +183,24 @@ def background_per_bin(
     rate_hz: float,
     dwell_s: float,
     binwidth_ps: float,
+    period_ps: float,
 ) -> float:
     """Expected dark + afterpulsing counts per histogram bin per pixel.
 
-    A flat rate spreads uniformly over the laser period, so each bin of
-    ``binwidth_ps`` collects ``rate * dwell * binwidth`` of it, independent
-    of the number of bins.
+    A flat rate contributes ``rate * dwell`` counts per pixel, spread
+    uniformly over the laser period ``period_ps``, so each bin of
+    ``binwidth_ps`` collects the fraction ``binwidth / period`` of them,
+    independent of the number of bins. (Without the division by the period
+    the number is wrong by a factor of the repetition rate: 80 million at
+    80 MHz.)
     """
 
     rate = max(0.0, float(rate_hz))
-    return rate * max(0.0, float(dwell_s)) * max(0.0, float(binwidth_ps)) * 1e-12
+    period = float(period_ps)
+    if period <= 0:
+        return 0.0
+    counts = rate * max(0.0, float(dwell_s))
+    return counts * max(0.0, float(binwidth_ps)) / period
 
 
 def subtract_background(

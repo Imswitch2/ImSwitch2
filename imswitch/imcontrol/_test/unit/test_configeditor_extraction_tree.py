@@ -81,8 +81,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # defaults added defaultReferenceVoltage to NI-DAQ and TriggerScope.
     # 218: SwabianTimeTaggerManager's click_role / start_role / line_role,
     # the roles it reads on the setup's shared timeTagger block.
-    # 219: its background_rate_hz.
-    assert report.keys == 219
+    # 219: its background_rate_hz. 221: its frame_role and live_fit_period_s
+    # (Lifetime 2.0 P3).
+    assert report.keys == 221
     assert report.alias_spellings == 9
     # 70 before the removed camera managers took their 8 required keys.
     # 59: SwabianTimeTagger's three channels are read only without a
@@ -91,7 +92,8 @@ def test_the_coverage_the_plan_is_built_on(report):
     # 156: the three Swabian role properties, each with a default.
     # 157: Swabian background_rate_hz. 160: its click/start/line_channel are
     # optional now (a setup with a timeTagger block has none of them).
-    assert report.optional == 160
+    # 162: Swabian frame_role and live_fit_period_s, both with defaults.
+    assert report.optional == 162
     assert report.refs == 14
     # 34: the three Swabian legacy channels are now read with a None default.
     assert report.none_default_only == 34
@@ -105,8 +107,9 @@ def test_the_coverage_the_plan_is_built_on(report):
     # availableCubes are now documented by their cards.
     # NidaqPositionerManager.defaultReferenceVoltage is now documented too.
     # 138: the three Swabian role properties have their own rows.
-    # 139: Swabian background_rate_hz.
-    assert (report.docs_agree, report.docs_documented) == (139, 139)
+    # 139: Swabian background_rate_hz. 141: its frame_role and
+    # live_fit_period_s rows.
+    assert (report.docs_agree, report.docs_documented) == (141, 141)
 
 
 def test_kinds_come_from_code_then_examples_then_docs(report):
@@ -117,7 +120,8 @@ def test_kinds_come_from_code_then_examples_then_docs(report):
     # 99: the three Swabian role properties default to strings.
     # 100: Swabian background_rate_hz defaults to a float. 97: the three
     # legacy Swabian channels lost their code-typed (int) required reads.
-    assert report.typed_by_code == 97
+    # 99: Swabian frame_role (string) and live_fit_period_s (float).
+    assert report.typed_by_code == 99
     assert report.typed_with_examples > report.typed_by_code
     assert report.typed_with_docs > report.typed_with_examples
     assert report.typed_with_docs <= report.keys

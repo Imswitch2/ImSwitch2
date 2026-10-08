@@ -98,8 +98,14 @@ Detectors
        polarity, dead time, the card's USB tag budget (overflows) and the
        conditional filter (which reverses the TCSPC direction) are
        modelled; ``timeTagger.mockFaults`` breaks the line clock, delays
-       it, flips the sync polarity, kills the photons or changes the rep
-       rate or the card model on purpose. Analytic or seeded: no thread,
+       it (``line_delay_ps``: how late the clock reaches the card, negative
+       = early), flips the sync polarity, kills the photons or changes the
+       rep rate or the card model on purpose. While a scan runs the scan
+       inputs count, period and skew from the loaded edges as the card
+       would (``Counter``, ``TimeDifferences``, ``Histogram`` between two
+       clocks, ``Scope``), timed from ``sigScanStarted`` so a measurement
+       sees the edges that fall into its window; ``sample_truth`` and
+       ``set_fault`` are the hooks tutorial 09 uses. Analytic or seeded: no thread,
        no wall clock.
    * - ``APDManager`` / ``PMTManager``
      - No separate mock *class* — the real manager generates synthetic

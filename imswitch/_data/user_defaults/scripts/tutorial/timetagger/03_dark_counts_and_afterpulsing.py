@@ -17,9 +17,10 @@ Setup
                 its light through set_mock_laser(); on a real card that
                 call does nothing.
   Your own microscope: a real card sees the real lasers: the script turns
-                every laser off through the Laser widget's API and back on
-                afterwards. Block the excitation by hand instead if a laser
-                is not under ImSwitch's control.
+                every laser that is on off through the Laser widget's API
+                and puts back exactly the states it found afterwards (a
+                laser that was off stays off). Block the excitation by hand
+                instead if a laser is not under ImSwitch's control.
 
 Next: 04_laser_sync.py
 """
@@ -33,11 +34,14 @@ APPLY = False
 lit = tt.count_rates(['photons'], duration_s=1.0).rates_hz['photons']
 print(f'photons with excitation: {lit:,.0f} Hz')
 
-# Block the excitation: every laser off, and the mock's light off.
+# Block the excitation: every laser that is on goes off, and the mock's
+# light off. Read the states first, so that only those are put back: a
+# laser that was off must not come on because this script ran.
 lasers = api.imcontrol.getLaserNames()
-wasOn = {name: True for name in lasers}      # the Laser API has no getter; assume on
+wasOn = {name: bool(api.imcontrol.getLaserActive(name)) for name in lasers}
 for name in lasers:
-    api.imcontrol.setLaserActive(name, False)
+    if wasOn[name]:
+        api.imcontrol.setLaserActive(name, False)
 tt.set_mock_laser(False)
 try:
     sleep(0.5)                               # let a real laser actually go dark
@@ -45,7 +49,8 @@ try:
 finally:
     tt.set_mock_laser(True)
     for name in lasers:
-        api.imcontrol.setLaserActive(name, wasOn[name])
+        if wasOn[name]:
+            api.imcontrol.setLaserActive(name, True)
 
 rate = dark.rates_hz['photons']
 print(f'photons with excitation blocked: {rate:,.0f} Hz  (dark counts)')

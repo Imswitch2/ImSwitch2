@@ -663,6 +663,14 @@ class TimeTaggerInfo:
     stedPulseTriggerV: float = 0.5
     """ Trigger threshold in volts for the STED photodiode input. """
 
+    pixelPatternOffsetPs: int = 10000
+    """ Where the first pixel marker sits after each line-clock edge, in
+    picoseconds. The scan designer raises the frame clock on the same DAQ
+    sample as the first line edge, and two DAQ lines through two cables and
+    two comparators arrive nanoseconds apart; the offset keeps the frame
+    marker ahead of the first pixel marker whatever the skew. Far below
+    any pixel dwell. A positive ``lineClockDelayPs`` is added to it. """
+
     filterSyncByPhotons: bool = False
     """ Enable the card's conditional filter so only the first laser sync
     after each photon is transmitted. Needed on a Time Tagger 20 or Ultra

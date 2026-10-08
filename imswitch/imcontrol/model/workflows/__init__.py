@@ -34,6 +34,8 @@ from imswitch.imcontrol.model.timeresolved import (
 from .mock_facade import MockMicroscopeFacade, build_mock_facade
 from .time_tagger_facade import (
     HistogramResult,
+    PeriodResult,
+    SkewResult,
     RatesResult,
     RepRateResult,
     SweepResult,

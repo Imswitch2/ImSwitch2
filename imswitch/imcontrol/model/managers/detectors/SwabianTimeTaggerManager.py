@@ -106,6 +106,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._click_role = str(props.get('click_role', 'photons'))
         self._start_role = str(props.get('start_role', 'laser_sync'))
         self._line_role = str(props.get('line_role', 'line_clock'))
+        # The frame role, when the card has one, lets Flim re-sync its pixel
+        # index on every frame edge; 'none' keeps the line-clock-only path.
+        self._frame_role = str(props.get('frame_role', 'auto'))
+        # Per-pixel fits during the scan every this many seconds; 0 fits the
+        # final frame only and previews the intensity (cheap on big frames).
+        self._live_fit_period_s = float(props.get('live_fit_period_s', 1.0))
         if timeTaggerManager is not None:
             self._timeTagger = timeTaggerManager
             self._ownsTimeTagger = False
@@ -164,6 +170,21 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             'line_role': DetectorListParameter(
                 group='Channels', value=self._line_role,
                 options=roleOptions, editable=True),
+            'frame_role': DetectorListParameter(
+                group='Channels', value=self._frame_role,
+                options=['none'] + roleOptions, editable=True),
+            'frame_channel': DetectorNumberParameter(
+                group='Channels', value=self._frame_ch if self._frame_ch is not None else 0,
+                valueUnits='ch', editable=False),
+            'live_fit_period_s': DetectorNumberParameter(
+                group='TCSPC', value=self._live_fit_period_s,
+                valueUnits='s', editable=True),
+            # Whether the detector takes part in scans at all. 'False' lets
+            # another detector (the APD) image while the card stays free
+            # for a calibration during the scan (tutorials 07 to 09).
+            'enabled': DetectorListParameter(
+                group='Scan', value='True' if self._enabled else 'False',
+                options=['True', 'False'], editable=True),
             'click_channel': DetectorNumberParameter(
                 group='Channels', value=self._click_ch,
                 valueUnits='ch', editable=False),
@@ -224,6 +245,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._completedFinalFrameGenerations = set()
         self._finishedScanGenerations = set()
         self._scanGeneration = 0
+        # Which scan generation holds the card, so a stale worker's
+        # completion cannot release a newer scan's hold (_releaseCard).
+        self._cardHeldGeneration = None
+        self._scanAppliedClickDelay = False
         self._preparedScanGeneration = None
         self._activeScanGeneration = None
         self._scanParticipating = False
@@ -291,15 +316,21 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
     def setParameter(self, name, value):
         """Update a parameter and mirror it into the corresponding internal attr."""
-        if name in ('click_channel', 'start_channel', 'line_channel'):
+        if name in ('click_channel', 'start_channel', 'line_channel', 'frame_channel'):
             # Read-only: the channel is whatever the card's block maps the
             # role to. Re-publish the resolved value instead of taking one.
-            self.parameters[name].value = getattr(self, f'_{name[:-8]}_ch')
+            resolved = getattr(self, f'_{name[:-8]}_ch')
+            self.parameters[name].value = resolved if resolved is not None else 0
             return self.parameters
         super().setParameter(name, value)
-        if name in ('click_role', 'start_role', 'line_role'):
+        if name in ('click_role', 'start_role', 'line_role', 'frame_role'):
             setattr(self, f'_{name}', str(value))
             self._resolveRoles()
+        elif name == 'live_fit_period_s':
+            self._live_fit_period_s = max(0.0, float(value))
+        elif name == 'enabled':
+            self._enabled = str(value).strip().lower() in ('true', '1', 'yes', 'on')
+            self.parameters['enabled'].value = 'True' if self._enabled else 'False'
         elif name in ('click_trigger', 'start_trigger', 'line_trigger'):
             self._writeTriggerLevel(name[:-8], float(value))
         elif name == 'n_bins':
@@ -403,6 +434,20 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._click_trigger = resolved['click'].trigger_v
         self._start_trigger = resolved['start'].trigger_v
         self._line_trigger = resolved['line'].trigger_v
+        # 'auto': the frame clock when the card has one, else none.
+        frame_role = self._frame_role
+        if frame_role == 'auto':
+            frame_role = 'frame_clock' if tt.hasRole('frame_clock') else 'none'
+        if frame_role == 'none':
+            self._frame_ch = None
+        elif tt.hasRole(frame_role):
+            self._frame_ch = tt.channel(frame_role)
+        else:
+            raise ValueError(
+                f'{self._instanceName}: frame_role {frame_role!r} is not a '
+                f'configured Time Tagger role'
+            )
+        self._frame_role_resolved = frame_role
         if publish:
             params = self.parameters
             for which in ('click', 'start', 'line'):
@@ -410,6 +455,8 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                     params[f'{which}_channel'].value = resolved[which].channel
                 if f'{which}_trigger' in params:
                     params[f'{which}_trigger'].value = resolved[which].trigger_v
+            if 'frame_channel' in params:
+                params['frame_channel'].value = self._frame_ch if self._frame_ch is not None else 0
 
     def _writeTriggerLevel(self, which, voltage):
         """A trigger-level parameter writes through to the card; refused
@@ -426,16 +473,67 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             )
         self._resolveRoles()
 
-    def _releaseCard(self):
+    def _releaseCard(self, generation=None):
+        """End this detector's scan hold on the card.
+
+        A worker's completion passes its ``generation``: it releases only
+        while that generation is the one holding the card. A newer scan
+        may have been prepared (and taken the hold) while the old worker's
+        final frame was still in flight; the old worker must not release
+        the new scan's hold. Teardown paths pass nothing and release
+        unconditionally.
+        """
         try:
+            held = self._cardHeldGeneration
+        except Exception:  # built without __init__ (the stop-contract tests)
+            held = None
+        if generation is not None and generation != held:
+            return
+        try:
+            self._cardHeldGeneration = None
+            self._restoreClickDelay()
             self._timeTagger.endScanHold(self.name)
         except Exception:
             pass
+
+    def _restoreClickDelay(self):
+        """Put the photon input back to the card's configured delay.
+
+        A forward-mode scan adds ``-t0_ps`` to it so the IRF peak lands at
+        bin 0; the diagnostics (``histogram()``, tutorial 06) measure
+        against the configured delay, so a t0 found between scans is
+        absolute and never double-counts a delay a scan left behind.
+        """
+        if not self._scanAppliedClickDelay:
+            return
+        self._scanAppliedClickDelay = False
+        try:
+            tt = self._timeTagger
+            if tt.connected:
+                tt.tagger.setInputDelay(
+                    self._click_ch, tt.hardwareDelayPs(self._click_role)
+                )
+        except Exception as error:
+            self._logger.warning(
+                f'Could not restore the photon input delay after the scan: {error}'
+            )
 
     @property
     def timeTagger(self):
         """The shared card manager this detector acquires through."""
         return self._timeTagger
+
+    def pixel_marker_channels(self):
+        """The virtual channels of the prepared scan's pixel markers,
+        ``{'pixel_begin': ch, 'pixel_end': ch}`` (empty before a scan is
+        prepared), for ``facade.time_tagger.scope(extra_channels=...)``."""
+        out = {}
+        begin, end = self._ev_pix_begin, self._ev_pix_end
+        if begin is not None:
+            out['pixel_begin'] = int(begin.getChannel())
+        if end is not None:
+            out['pixel_end'] = int(end.getChannel())
+        return out
 
     @property
     def _isMock(self):
@@ -562,6 +660,17 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
         Nx, Ny, S, outer_axes, outer_dims = self._infer_dims_from_scanInfo(scanInfoDict)
         self._validate_time_resolved_scan_shape(outer_axes, outer_dims)
+        if S > 1:
+            # The TTL designer emits only Ny line-clock edges for a scan of
+            # Ny*S line periods (ROADMAP M9, "linestep line_clock count"),
+            # so there is no marker pattern that can be driven for S > 1:
+            # the image would be the first Ny periods and then nothing.
+            # Refused until the designer's clock count is fixed.
+            raise RuntimeError(
+                f'{self.name}: the Time Tagger cannot image a scan with '
+                f'{S} linesteps: the line clock carries one edge per line, '
+                f'not per linestep (ROADMAP M9). Set n_linesteps to 1 for FLIM.'
+            )
 
         self._newFrameReady = False
         self._rawReady = False
@@ -635,30 +744,44 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         # the card manager's and was applied at connect; from here until the
         # final frame has landed the card is held so nothing changes it.
         try:
+            # Refused while a calibration owns the card (Busy) and on a
+            # card whose conditioning failed (the filter not set, say).
             tt.beginScanHold(self.name)
-        except TimeTaggerBusyError as error:
+        except TimeTaggerError as error:
             with self._flim_lock:
                 self._flim = None
             raise RuntimeError(str(error)) from error
+        self._cardHeldGeneration = generation
         # Overflows are counted against this baseline: any frame of this scan
         # read after the total has moved is missing tags.
         self._scan['overflow_baseline'] = tt.overflows()
         try:
+            # t0_ps is absolute: the IRF peak's position measured with the
+            # card's configured conditioning (tutorial 06), so it is added
+            # to the configured photon delay, never to whatever a previous
+            # scan left on the input; _releaseCard puts it back.
+            base_delay = tt.hardwareDelayPs(self._click_role)
             if direction == 'forward':
                 # Shift click-channel timestamps so the IRF peak lands at
                 # t=0. A negative delay moves photon timestamps earlier by
                 # t0_ps, placing the IRF peak at histogram bin 0.
-                tt.tagger.setInputDelay(self._click_ch, -self._t0_ps)
+                tt.tagger.setInputDelay(self._click_ch, base_delay - self._t0_ps)
+                self._scanAppliedClickDelay = self._t0_ps != 0
                 flim_start, flim_click = self._start_ch, self._click_ch
             else:
                 # Reverse: the photon starts the histogram and the sync stops
                 # it. A delay on the photon channel would drop the earliest
                 # photons here (they would land after their chosen sync), so
                 # t0 is applied as a circular roll in the worker instead.
-                tt.tagger.setInputDelay(self._click_ch, 0)
+                tt.tagger.setInputDelay(self._click_ch, base_delay)
                 flim_start, flim_click = self._click_ch, self._start_ch
 
             self._create_virtual_pixel_pulses()
+            flim_kwargs = {}
+            if self._frame_ch is not None:
+                # The card re-syncs its pixel index on every frame edge: a
+                # lost line marker costs one frame, not the rest of the scan.
+                flim_kwargs['frame_begin_channel'] = int(self._frame_ch)
             with self._flim_lock:
                 self._flim = tt.api.Flim(
                     tt.tagger,
@@ -669,6 +792,14 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                     n_pixels=int(self._scan['n_pixels_total']),
                     n_bins=self._n_bins,
                     binwidth=self._binwidth_ps,
+                    **flim_kwargs,
+                )
+                # The frame count at arming: the final frame is the first
+                # one the card closes after this, whichever side of
+                # scan-done that happens on.
+                getter = getattr(self._flim, 'getFramesAcquired', None)
+                self._scan['frames_baseline'] = (
+                    int(getter()) if getter is not None else None
                 )
         except Exception as error:
             with self._flim_lock:
@@ -732,7 +863,13 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         period_ps = int(self._scan['pixel_period_ps'])
         width_ps = int(self._scan['pixel_width_ps'])
 
-        begin_pattern = np.arange(Nx, dtype=np.int64) * np.int64(period_ps)
+        # The pattern starts a little after the line edge (the block's
+        # pixelPatternOffsetPs, plus a positive line delay): the designer
+        # raises the frame clock on the same sample as the first line edge,
+        # and the frame marker must lead pixel 0 whatever the cable skew.
+        offset_ps = np.int64(self._timeTagger.patternOffsetPs(self._line_role))
+        self._scan['pattern_offset_ps'] = int(offset_ps)
+        begin_pattern = offset_ps + np.arange(Nx, dtype=np.int64) * np.int64(period_ps)
         end_pattern = begin_pattern + np.int64(width_ps)
 
         # Release previous generators before creating new ones
@@ -952,8 +1089,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             callbacks = self._finishAcks.pop(generation, ())
             self._completedFinalFrameGenerations.add(generation)
             self._finishedScanGenerations.add(generation)
-        # The final frame has landed: the card may be reconditioned again.
-        self._releaseCard()
+        # The final frame has landed: the card may be reconditioned again
+        # -- unless a newer scan already holds it.
+        self._releaseCard(generation)
         for acknowledge in callbacks:
             try:
                 acknowledge()
@@ -975,7 +1113,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         with self._finishAckLock:
             callbacks = self._finishAcks.pop(generation, ())
             self._finishedScanGenerations.add(generation)
-        self._releaseCard()
+        self._releaseCard(generation)
         for acknowledge in callbacks:
             try:
                 acknowledge()
@@ -1070,13 +1208,6 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         config: TimeResolvedScanConfig,
         owner: str | None = None,
     ) -> str | None:
-        with self._tr_lock:
-            current = self._tr_owner
-            if self._tr_enabled and current is not None and current != owner:
-                raise RuntimeError(
-                    f"{self.name}: time-resolved products are owned by another "
-                    f"run ({current}); wait for it to finish or clear its session"
-                )
         if not isinstance(config, TimeResolvedScanConfig):
             config = TimeResolvedScanConfig(
                 capture_cube=bool(getattr(config, "capture_cube", False)),
@@ -1090,14 +1221,22 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 ),
             )
         fit = config.fit
-        self._fit_method = str(fit.method)
-        self._min_counts_per_pixel = int(fit.min_counts_per_pixel)
-        if fit.laser_rep_rate_mhz is not None:
-            self._laser_rep_rate_mhz = float(fit.laser_rep_rate_mhz)
-        self.parameters["fit_method"].value = self._fit_method
-        self.parameters["min_counts_per_pixel"].value = self._min_counts_per_pixel
-        self.parameters["laser_rep_rate_mhz"].value = self._laser_rep_rate_mhz
+        # The check and the claim share one lock block: two runs racing
+        # for the session must not both pass the check and both claim it.
         with self._tr_lock:
+            current = self._tr_owner
+            if self._tr_enabled and current is not None and current != owner:
+                raise RuntimeError(
+                    f"{self.name}: time-resolved products are owned by another "
+                    f"run ({current}); wait for it to finish or clear its session"
+                )
+            self._fit_method = str(fit.method)
+            self._min_counts_per_pixel = int(fit.min_counts_per_pixel)
+            if fit.laser_rep_rate_mhz is not None:
+                self._laser_rep_rate_mhz = float(fit.laser_rep_rate_mhz)
+            self.parameters["fit_method"].value = self._fit_method
+            self.parameters["min_counts_per_pixel"].value = self._min_counts_per_pixel
+            self.parameters["laser_rep_rate_mhz"].value = self._laser_rep_rate_mhz
             self._tr_config = config
             self._tr_enabled = True
             self._tr_owner = owner
@@ -1411,6 +1550,12 @@ class _TTFlimWorker(Worker):
     # (sigScanDone path), so the final frame is never delayed.
     LIVE_PREVIEW_S = 1.0
     STALL_MAX = 10  # consecutive live-preview ticks with no data → ~10 s
+    #: Tick while waiting for the card to close the frame, and without live
+    #: fits (intensity previews only).
+    POLL_S = 0.25
+    #: After scan-done, how long to wait for the card to close the frame
+    #: before the current frame is taken as the final one.
+    FINAL_FRAME_GRACE_S = 2.0
 
     def __init__(self, m: SwabianTimeTaggerManager, scanGeneration):
         super().__init__()
@@ -1452,7 +1597,8 @@ class _TTFlimWorker(Worker):
                 if self._direction == 'reverse' and n_bins else 0
             )
             self._background_per_bin = background_per_bin(
-                self._m._background_rate_hz, self._dwell_s, binwidth_ps
+                self._m._background_rate_hz, self._dwell_s, binwidth_ps,
+                period_ps,
             )
             self._pileup_warned = False
             self._overflow_baseline = int(scan.get('overflow_baseline', 0))
@@ -1479,35 +1625,79 @@ class _TTFlimWorker(Worker):
             sin_table = np.sin(omega * t_s)
 
             stall_count = 0
+            live_fit_s = float(getattr(self._m, '_live_fit_period_s', self.LIVE_PREVIEW_S))
+            tick = live_fit_s if live_fit_s > 0 else self.POLL_S
+            # The final frame is detected by count, not by signal order: the
+            # card closes a frame after n_pixels pixel ends, which can happen
+            # before or after sigScanDone reaches us.
+            frames_baseline = scan.get('frames_baseline')
+            if frames_baseline is None:
+                frames_baseline = self._frames_acquired()
+            self._frame_closed_by_card = False
+            grace_deadline = None
+            last_preview = time.monotonic()
 
             while self._running:
-                # Block until scan-done signal OR live-preview tick, whichever
-                # comes first.  scan_done=True means the event was set.
-                scan_done = self._done_event.wait(timeout=self.LIVE_PREVIEW_S)
+                scan_done = self._done_event.wait(timeout=tick)
                 if not self._running:
                     break
 
-                cube = self._poll_frame(expected_shape, Nx, Ny, n_bins)
-
-                if cube is None:
-                    if scan_done:
-                        break  # scan finished but Flim had no data yet
-                    stall_count += 1
-                    if stall_count >= self.STALL_MAX:
-                        self._logger.error(
-                            'TimeTagger: no valid frame for ~10 s. '
-                            'Check line trigger signal. Stopping worker.'
-                        )
+                frames = self._frames_acquired()
+                if (frames is not None and frames_baseline is not None
+                        and frames - frames_baseline >= 1):
+                    cube = self._read_ready_frame(expected_shape, Nx, Ny, n_bins)
+                    if cube is not None:
+                        self._frame_closed_by_card = True
+                        self._emit_frame(cube, t_axis, t_axis_f64, fit_method,
+                                         omega, cos_table, sin_table, min_counts,
+                                         rep_rate_hz, is_final=True)
                         break
-                    continue
-
-                stall_count = 0
-                self._emit_frame(cube, t_axis, t_axis_f64, fit_method,
-                                 omega, cos_table, sin_table, min_counts,
-                                 rep_rate_hz, is_final=scan_done)
 
                 if scan_done:
-                    break  # final frame emitted — exit cleanly
+                    # The scan is over but the card has not closed the frame
+                    # yet: give it a moment, then take what it has.
+                    now = time.monotonic()
+                    if grace_deadline is None:
+                        grace_deadline = now + self.FINAL_FRAME_GRACE_S
+                        tick = self.POLL_S
+                    if now < grace_deadline:
+                        continue
+                    cube = self._poll_frame(expected_shape, Nx, Ny, n_bins)
+                    if cube is None:
+                        break  # scan finished but Flim had no data yet
+                    if frames_baseline is not None:
+                        self._logger.warning(
+                            'The Time Tagger did not close the last frame '
+                            f'within {self.FINAL_FRAME_GRACE_S:g} s of scan-done: '
+                            'fewer pixel markers arrived than expected (a '
+                            'missing line edge, or a line delay past the end '
+                            'of the scan). Taking the frame as it is.'
+                        )
+                    self._emit_frame(cube, t_axis, t_axis_f64, fit_method,
+                                     omega, cos_table, sin_table, min_counts,
+                                     rep_rate_hz, is_final=True)
+                    break
+
+                # A preview: the full fit at the live-fit cadence, or the
+                # intensity alone when live fits are off.
+                if live_fit_s > 0:
+                    cube = self._poll_frame(expected_shape, Nx, Ny, n_bins)
+                    if cube is None:
+                        stall_count += 1
+                        if stall_count >= self.STALL_MAX:
+                            self._logger.error(
+                                'TimeTagger: no valid frame for ~10 s. '
+                                'Check line trigger signal. Stopping worker.'
+                            )
+                            break
+                        continue
+                    stall_count = 0
+                    self._emit_frame(cube, t_axis, t_axis_f64, fit_method,
+                                     omega, cos_table, sin_table, min_counts,
+                                     rep_rate_hz, is_final=False)
+                elif time.monotonic() - last_preview >= self.LIVE_PREVIEW_S:
+                    last_preview = time.monotonic()
+                    self._emit_intensity_preview(Nx, Ny, t_axis)
 
             if self._last_total_counts == 0.0:
                 self._logger.warning(
@@ -1531,6 +1721,84 @@ class _TTFlimWorker(Worker):
             # no-data/crash fallback and generation-checks delayed delivery.
             self.sigTerminated.emit(self.scanGeneration)
             self.sigFinished.emit()
+
+    def _frames_acquired(self):
+        """How many frames the card has closed, or None when unknown."""
+        with self._m._flim_lock:
+            flim = self._m._flim
+        getter = getattr(flim, 'getFramesAcquired', None) if flim is not None else None
+        if getter is None:
+            return None
+        try:
+            return int(getter())
+        except Exception:
+            self._logger.exception('getFramesAcquired() raised.')
+            return None
+
+    def _read_ready_frame(self, expected_shape, Nx, Ny, n_bins):
+        """The frame the card closed: getReadyFrameEx (with its validity),
+        else getReadyFrame, else the current frame."""
+        with self._m._flim_lock:
+            flim = self._m._flim
+        if flim is None:
+            return None
+        try:
+            ex = getattr(flim, 'getReadyFrameEx', None)
+            if ex is not None:
+                info = ex()
+                if info is None or (hasattr(info, 'isValid') and not info.isValid()):
+                    return None
+                h = info.getHistograms() if hasattr(info, 'getHistograms') else info
+            elif hasattr(flim, 'getReadyFrame'):
+                h = flim.getReadyFrame()
+            else:
+                h = flim.getCurrentFrame()
+        except Exception:
+            self._logger.exception('Reading the ready frame raised.')
+            return None
+        return self._as_cube(h, expected_shape, Nx, Ny, n_bins)
+
+    def _emit_intensity_preview(self, Nx, Ny, t_axis):
+        """A cheap preview while live fits are off: counts per pixel only."""
+        with self._m._flim_lock:
+            flim = self._m._flim
+        getter = getattr(flim, 'getCurrentFrameIntensity', None) if flim is not None else None
+        if getter is None:
+            return
+        try:
+            intensity = np.asarray(getter(), dtype=np.float32).reshape(Ny, Nx)
+        except Exception:
+            self._logger.exception('getCurrentFrameIntensity() raised.')
+            return
+        n_bins = int(t_axis.size)
+        live = LiveProducts(
+            intensity=intensity,
+            lifetime_ns=None,
+            decay_counts=np.zeros(n_bins, dtype=np.float32),
+            t_axis_ns=(t_axis * 1e9).astype(np.float32),
+            gate_images={},
+            global_tau_ns=0.0,
+            peak_time_ns=0.0,
+            background_per_bin=float(self._background_per_bin),
+            pileup_max=float(pileup_fraction(intensity, max(1.0, float(self._m._laser_rep_rate_mhz)) * 1e6, self._dwell_s).max()) if intensity.size else 0.0,
+            tcspc_direction=self._direction,
+            frame_index=0,
+            is_final=False,
+            metadata={"preview": "intensity"},
+        )
+        self._m.sigTimeResolvedProducts.emit(live)
+
+    def _as_cube(self, h, expected_shape, Nx, Ny, n_bins):
+        if h is None:
+            return None
+        arr = np.asarray(h)
+        if arr.ndim != 2 or arr.shape != expected_shape:
+            return None
+        if arr.dtype != np.float32:
+            arr = arr.astype(np.float32, copy=False)
+        if not arr.flags['C_CONTIGUOUS']:
+            arr = np.ascontiguousarray(arr)
+        return arr.reshape(Ny, Nx, n_bins)
 
     def _poll_frame(self, expected_shape, Nx, Ny, n_bins):
         """Single non-throwing poll. Returns a (Ny, Nx, n_bins) cube or None."""
@@ -1647,6 +1915,8 @@ class _TTFlimWorker(Worker):
         frame_metadata = {
             "overflows": int(overflows),
             "frame_valid": overflows == 0,
+            "frame_closed_by_card": bool(getattr(self, '_frame_closed_by_card', False)) if is_final else None,
+            "pattern_offset_ps": int(self._m._scan.get('pattern_offset_ps', 0)),
             "tcspc_direction": self._direction,
             "laser_period_ns": float(self._period_ns),
             "dwell_s": float(self._dwell_s),

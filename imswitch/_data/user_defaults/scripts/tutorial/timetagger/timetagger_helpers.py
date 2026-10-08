@@ -2,7 +2,7 @@
 
 Imported by: 02_trigger_levels_and_dead_time.py
 
-(03 to 10 use it too.)
+(01 and 03 to 10 use it too; 07 to 09 use the scan helpers at the end.)
 
 The tutorials reach the card through the workflow facade:
 ``api.imcontrol.buildWorkflowFacade().time_tagger``. It is ``None`` on a
@@ -62,3 +62,113 @@ def describeCard(tt):
              f'{c.deadtime_ps / 1000:g} ns', f'{c.delay_ps} ps')
             for role, c in tt.channels().items()]
     printTable(rows, header=('role', 'channel', 'edge', 'trigger', 'dead time', 'delay'))
+
+
+# --------------------------------------------------------------------------- #
+# Scans for the scan-aware tutorials (07 to 09)                                #
+# --------------------------------------------------------------------------- #
+
+import json as _json
+import os as _os
+import tempfile as _tempfile
+
+
+def loadScanParams(path):
+    """Back up the Scan widget's settings, load ``path`` into it, and return
+    ``(backupPath, design)``: ``design`` has ``Nx``, ``Ny``, ``dwell_s`` and
+    ``n_linesteps`` from the file. Put the backup back in a ``finally``
+    with ``api.imcontrol.loadScanParamsFromFile(backupPath)``."""
+    backup = _os.path.join(_tempfile.gettempdir(), 'imswitch_timetagger_scan_backup.json')
+    api.imcontrol.saveScanParamsToFile(backup)
+    api.imcontrol.loadScanParamsFromFile(path)
+    with open(path, encoding='utf-8') as file:
+        settings = _json.load(file)
+    digital = settings['digitalParameterDict']
+    design = {
+        'Nx': int(digital['Nx']), 'Ny': int(digital['Ny']),
+        'dwell_s': float(digital['sequence_time']),
+        'n_linesteps': int(digital.get('n_linesteps', 1)),
+    }
+    return backup, design
+
+
+def setFlimEnabled(detector, enabled):
+    """Switch the FLIM detector's participation in scans; returns the previous
+    setting (a string, 'True' or 'False'). With it off, the APD images and
+    the card is not held, so a calibration can run during the scan."""
+    if detector is None:
+        return None
+    previous = api.imcontrol.getDetectorParameter(detector, 'enabled')
+    api.imcontrol.setDetectorParameter(detector, 'enabled', 'True' if enabled else 'False')
+    return previous
+
+
+def restoreFlimEnabled(detector, previous):
+    if detector is not None and previous is not None:
+        api.imcontrol.setDetectorParameter(detector, 'enabled', previous)
+
+
+class ScanRun:
+    """A scan started without waiting, to measure while it runs::
+
+        run = helpers.ScanRun()
+        run.start()                 # returns once the scan's clocks run
+        ... measure ...
+        run.wait()                  # raises if the scan failed
+
+    ``start`` can also be handed to a measurement that must span the scan
+    from its first edge: ``tt.count_edges('line_clock', 3.0, start=run.start)``.
+    """
+
+    def __init__(self, timeout=120):
+        self.timeout = timeout
+        self.handle = None
+        self._started = None
+
+    def start(self):
+        signals = api.imcontrol.signals()
+        self._started = getWaitForSignal(signals.scanStarted, timeout=60)
+        self.handle = api.imcontrol.runScan()
+        self._started()
+
+    def wait(self):
+        if self.handle is None:
+            raise RuntimeError('ScanRun.start() was not called')
+        if not self.handle.wait(self.timeout):
+            raise TimeoutError(f'the scan did not end within {self.timeout} s')
+        if not self.handle.successful:
+            raise RuntimeError(f'the scan failed: {self.handle.message}')
+
+
+def runScanMeasuring(measure, timeout=120):
+    """Start a scan, call ``measure()`` while it runs, wait for the scan to
+    end and return what ``measure`` returned."""
+    run = ScanRun(timeout)
+    run.start()
+    try:
+        result = measure()
+    finally:
+        run.wait()
+    return result
+
+
+def imageShift(measured, truth):
+    """By how many pixels along x the measured image is the truth shifted,
+    and how well they then match: ``measured[:, k] ~ truth[:, k + shift]``.
+    Every shift within a quarter of the width is tried on the whole image
+    (the two must have the same shape)."""
+    import numpy as np
+    a = np.asarray(measured, dtype=float)
+    b = np.asarray(truth, dtype=float)
+    if a.shape != b.shape:
+        raise ValueError(f'shapes differ: {a.shape} vs {b.shape}')
+    a = (a - a.mean()).ravel()
+    if not a.any() or not (b - b.mean()).any():
+        return 0, 0.0
+    best, best_r = 0, -2.0
+    for shift in range(-(b.shape[1] // 4), b.shape[1] // 4 + 1):
+        rolled = np.roll(b, -shift, axis=1)
+        r = float(np.corrcoef(a, (rolled - rolled.mean()).ravel())[0, 1])
+        if r > best_r:
+            best, best_r = shift, r
+    return best, best_r

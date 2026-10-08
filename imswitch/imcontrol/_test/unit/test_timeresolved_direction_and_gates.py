@@ -122,11 +122,16 @@ def test_roll_to_peak_is_circular_and_count_preserving():
 # --------------------------------------------------------------------------- #
 
 
-def test_background_per_bin_is_rate_times_dwell_times_binwidth():
-    # 2 kHz dark for 10 us at 32 ps bins: 0.02 photons per pixel, spread over
-    # 12.5 ns -> 0.02 * 32e-12 / 12.5e-9 per bin... as rate*dwell*binwidth.
-    assert background_per_bin(2000.0, 10e-6, 32.0) == pytest.approx(2000 * 10e-6 * 32e-12)
-    assert background_per_bin(-1.0, 10e-6, 32.0) == 0.0
+def test_background_per_bin_is_the_period_fraction_of_rate_times_dwell():
+    # 2 kHz dark for 10 us: 0.02 counts per pixel, spread over the 12.5 ns
+    # period, so a 32 ps bin collects 0.02 * 32 / 12500 of them.
+    per_bin = background_per_bin(2000.0, 10e-6, 32.0, 12_500.0)
+    assert per_bin == pytest.approx(0.02 * 32.0 / 12_500.0)
+    # Summed over one period of bins it is the whole per-pixel background.
+    n_bins = int(12_500 / 32)
+    assert per_bin * n_bins == pytest.approx(0.02, rel=0.01)
+    assert background_per_bin(-1.0, 10e-6, 32.0, 12_500.0) == 0.0
+    assert background_per_bin(2000.0, 10e-6, 32.0, 0.0) == 0.0
 
 
 def test_subtract_background_clips_at_zero_and_copies():

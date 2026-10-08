@@ -48,10 +48,25 @@ checklist: a red line names the tutorial below.
        MHz on a Time Tagger 20 or Ultra
      - tutorial 05; ``filterSyncByPhotons: true``, or a dead time on the
        photon input
-   * - The image is shifted by about a line against the APD image
-     - the line clock arrives early for the galvo's position (the known
-       ``phase_delay`` offset)
-     - tutorial 09 (next release); ``lineClockDelayPs``
+   * - The image is shifted along x against the APD image
+     - the line clock fires early for the galvo's position (the mirror lags
+       its command: the known ``phase_delay`` offset) or late (a long cable)
+     - tutorial 09; ``lineClockDelayPs`` (positive for an early clock,
+       negative for a late one)
+   * - The FLIM image misses lines, or the log says the card closed no frame
+     - line edges lost at the card: a marginal line trigger level, ringing,
+       or more linesteps than the clock carries edges for
+     - tutorial 07 (edges counted against Ny); tutorial 08's last-frame
+       check
+   * - The log says the card did not close the last frame
+     - a missing pixel marker, or the frame edge arriving after pixel 0
+       (frame-to-line skew above ``pixelPatternOffsetPs``)
+     - tutorial 08 (``skew()`` and ``frame_closed_by_card``)
+   * - A scan-aware tutorial says "held by a calibration" or the sweep is
+       refused
+     - the FLIM detector took part in the scan and holds the card
+     - the tutorials switch the detector's ``enabled`` parameter off for
+       their APD-only runs; do the same for your own measurements
    * - A trigger-level change is refused: "a scan holds the card"
      - a scan is being prepared or has not drained its final frame yet
      - wait for the scan to end; the FLIM detector holds the card until its

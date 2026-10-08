@@ -34,9 +34,15 @@ roles, so re-cabling the card is one edit here:
      - ``laserSyncChannel``, ``laserSyncTriggerV``
      - the laser's sync output, the TCSPC reference
    * - ``line_clock``
-     - ``lineClockChannel``, ``lineClockTriggerV``, ``lineClockDelayPs``
+     - ``lineClockChannel``, ``lineClockTriggerV``, ``lineClockDelayPs``,
+       ``pixelPatternOffsetPs``
      - the scan's ``scan.lineClockLine``; the pixel markers are generated
-       from its edges
+       from its edges, starting ``pixelPatternOffsetPs`` (default 10 ns)
+       after each so the frame edge leads pixel 0. ``lineClockDelayPs``
+       moves the markers against the beam: positive when the clock fires
+       *early* (a galvo lagging its command; the detector delays its
+       pattern), negative when it arrives *late* (a long cable; the card
+       moves the timestamps earlier). Tutorial 09 measures it.
    * - ``frame_clock``
      - ``frameClockChannel``, ``frameClockTriggerV`` (optional)
      - the scan's ``scan.frameStartClockLine``, if cabled
@@ -108,21 +114,39 @@ From a script: ``facade.time_tagger``
    tt.histogram(duration_s=2.0)     # HistogramResult in forward time: t_axis_ns, counts, peak_ns, fwhm_ns
    tt.trigger_sweep('photons', levels_v, duration_s=0.2)   # SweepResult with plateau_v
    tt.dark_rates(['photons'], duration_s=2.0)
-   tt.test_signal(['line_clock'], True)
+   with tt.test_signal_on(['line_clock']): ...            # owns the card, off again afterwards
    tt.overflows(); tt.health(); tt.metadata(); tt.tcspc_direction
    tt.set_trigger_level('photons', -0.3); tt.set_delay('line_clock', 800); tt.set_deadtime('photons', 50_000)
    tt.preflight(detector_name='FLIM').summary()
 
+   # while a scan runs (tutorials 07 to 09)
+   tt.count_edges('line_clock', duration_s=3.0, start=run.start)   # spans the scan from its first edge
+   tt.period('line_clock', duration_s=0.5, expected_period_ps=...)  # PeriodResult: period_ps, jitter_ps
+   tt.skew('frame_clock', 'line_clock', added_delay_ps=50_000)    # SkewResult: signed skew_ps
+   tt.scope(['frame_clock', 'line_clock'], 'frame_clock', window_ps, detector_name='FLIM')
+   tt.pattern_offset_ps(); tt.mock_truth(ny, nx); tt.set_mock_fault('line_delay_ps', -800_000)
+
 Every result has a ``summary()`` string and a ``to_dict()``. Every blocking
-call sleeps in slices that honour the script's Stop button and stops its
-measurement object afterwards. ``rep_rate`` and ``trigger_sweep`` run inside
-a calibration transaction and put the card back as they found it, also
-when the script is stopped. A conditioning write while a scan holds the
-card raises ``TimeTaggerBusyError`` with the holder's name. There is no raw
-handle to the vendor object: what the facade does not offer, a later
-release adds here. ``set_mock_laser(on)`` blocks the *mock* card's
-excitation (it cannot see the rig's lasers) and does nothing on a real
-card.
+call sleeps in slices that honour the script's Stop button, waits on the
+card in bounded steps (a measurement that does not finish within a few
+seconds of its capture is an error, never a worker blocked for good) and
+stops its measurement object afterwards. ``rep_rate``, ``histogram``,
+``skew``, ``trigger_sweep`` and ``test_signal_on`` run inside a calibration
+transaction and put the card back exactly as they found it (the divider
+and filter that were set, the input delay, the level), also when the
+script is stopped; ``histogram`` measures with the photon input at the
+block's configured delay, so its peak is the absolute ``t0_ps``. A
+conditioning write while a scan holds the card raises
+``TimeTaggerBusyError`` with the holder's name. The scan-clock
+measurements (``count_edges``, ``period``, ``scope``) are plain
+measurements and run during a scan; ``skew`` is a conditioning write, so
+tutorial 08 runs its scan with the FLIM detector's ``enabled`` parameter
+off (the APD images, the card is not held). There is no raw handle to the
+vendor object: what the facade does not offer, a later release adds here.
+``set_mock_laser(on)``, ``set_mock_fault(name, value)`` and
+``mock_truth(ny, nx)`` act on the *mock* card only (it cannot see the
+rig's lasers; the rig's truth is the APD image) and do nothing, or return
+``None``, on a real card.
 
 The tutorials
 =============
@@ -145,17 +169,30 @@ The tutorials
     Bandwidth, overflows, the conditional filter and the TCSPC direction.
 06
     The IRF and ``t0``: the photon-vs-sync histogram, its peak and width,
-    into ``t0_ps``.
+    into ``t0_ps`` (an absolute position: running it twice gives the same
+    number).
+07
+    The line clock during a scan: every line edge counted against Ny, the
+    period against dwell x Nx, a trigger sweep between APD-only runs, into
+    ``lineClockTriggerV``.
+08
+    The frame clock and the pixel markers: the frame trigger level, the
+    signed frame-to-line skew against ``pixelPatternOffsetPs``, a scope
+    trace of one line, and the check that the card closes the last frame.
+09
+    Line-delay alignment: the FLIM image against the APD image (the mock
+    sample's truth on the mock), pixels to picoseconds, into
+    ``lineClockDelayPs``, and a re-run that shows the shift at 0.
 10
     The pre-flight checklist: ``preflight()``, green/red, naming the
     tutorial that fixes each red line.
 
-Steps 07 to 09 -- the line clock during a scan, the frame clock and pixel
-markers, and the line-delay alignment against the APD image -- need a
-running scan and come with the next release. Each measurement prints a
-suggestion and writes it only when the script's ``APPLY`` is True; a
-written value holds until restart, and the printed JSON line goes into the
-``timeTagger`` block to keep it.
+Steps 07 to 09 load ``scan_params/flim_scan_64px.json`` into the Scan
+widget for their runs (64 x 64 pixels at 400 us, about 2 s) and put the
+previous settings back. Each measurement prints a suggestion and writes it
+only when the script's ``APPLY`` is True; a written value holds until
+restart, and the printed JSON line goes into the ``timeTagger`` block to
+keep it.
 
 ``scripts/diagnostics/measure_laser_rep_rate.py`` remains for a rig without
 the GUI: it runs the same rep-rate measurement on a bare card.

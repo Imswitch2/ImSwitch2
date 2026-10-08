@@ -156,3 +156,39 @@ def test_overlapping_workflows_do_not_disturb_each_other(tmp_path):
     # The second run succeeds once the first is done.
     TimeResolvedScanWorkflow(facade, second_params).run(acquisition=lambda: None)
     assert facade.time_resolved.session_owner() is None
+
+
+def test_runs_racing_for_the_session_get_exactly_one_owner():
+    """The check and the claim share one lock block: of N runs that call
+    ``configure`` at the same moment, one owns the session and the others
+    are refused -- never two owners."""
+    import threading
+
+    det = _detector()
+    n = 8
+    barrier = threading.Barrier(n)
+    outcomes = []
+    lock = threading.Lock()
+
+    def run(index):
+        barrier.wait()
+        try:
+            token = det.configureTimeResolvedProducts(
+                TimeResolvedScanConfig(), owner=f"run-{index}"
+            )
+            result = ("owner", token)
+        except RuntimeError as error:
+            result = ("refused", str(error))
+        with lock:
+            outcomes.append(result)
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5.0)
+    owners = [o for o in outcomes if o[0] == "owner"]
+    assert len(owners) == 1, outcomes
+    assert det.timeResolvedSessionOwner() == owners[0][1]
+    det.clearTimeResolvedProducts(owners[0][1])
+    assert det.timeResolvedSessionOwner() is None

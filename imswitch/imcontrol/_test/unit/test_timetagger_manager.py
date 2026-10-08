@@ -76,8 +76,13 @@ def test_simulation_uses_the_mock_and_resolves_roles():
     card = tt.tagger
     assert card.getTriggerLevel(1) == 0.5
     assert card.getDeadtime(-1) == 50_000
-    assert card.getInputDelay(3) == 1200
-    assert card.getInputDelay(4) == 1200  # the frame clock shares the delay
+    # A positive line delay moves the detector's marker pattern, not the
+    # card's input (the raw line channel stays visible to the diagnostics);
+    # the frame clock, which has no pattern, takes it on the card.
+    assert card.getInputDelay(3) == 0
+    assert card.getInputDelay(4) == 1200
+    assert tt.patternOffsetPs("line_clock") == 10_000 + 1200
+    assert tt.patternOffsetPs("frame_clock") == 10_000
     assert tt.tcspcDirection == "forward"
 
 
@@ -227,3 +232,63 @@ def test_the_mock_test_signal_counts_like_the_card_would():
     assert rate.getData()[0] == TEST_SIGNAL_RATE_HZ
     card.setTestSignal(tt.channel("photons"), False)
     assert tt.api.Countrate(card, [1]).getData()[0] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Conditioning failures and the test signal (review round 2)                   #
+# --------------------------------------------------------------------------- #
+
+
+class _FilterRefusingApi(MockTimeTaggerApi):
+    """A card whose conditional filter cannot be set (a wiring or firmware
+    refusal): the rest of the conditioning goes through."""
+
+    def createTimeTagger(self, serial=None):
+        tagger = super().createTimeTagger(serial)
+        original = tagger.setConditionalFilter
+
+        def refuse(trigger, filtered):
+            if trigger:
+                raise RuntimeError("conditional filter unsupported on this input")
+            return original(trigger, filtered)
+
+        tagger.setConditionalFilter = refuse
+        tagger._original_setConditionalFilter = original
+        return tagger
+
+
+def test_a_failed_conditioning_refuses_scans_and_never_claims_reverse():
+    info = TimeTaggerInfo(simulation=True, filterSyncByPhotons=True)
+    tt = TimeTaggerManager(info, api=_FilterRefusingApi())
+    assert tt.connected, "the card is open: the application still starts"
+    assert not tt.conditioned
+    assert "unsupported" in str(tt.conditioningError)
+    # Unfiltered data must never be read as reverse TCSPC.
+    assert tt.tcspcDirection == "forward"
+    assert tt.metadata()["conditioned"] is False
+    assert tt.health(0.001).filter_on is False
+    # The diagnostics still reach the card (to find out why) ...
+    tt.ensureConnected()
+    assert tt.api.Countrate(tt.tagger, [2]).getData()[0] > 0
+    # ... but a scan is refused (the detector turns this into a rollback) ...
+    with pytest.raises(TimeTaggerError, match="conditioning could not be applied"):
+        tt.beginScanHold("FLIM")
+    assert not tt.scanHeld
+    # ... until the conditioning goes through, which every attempt retries.
+    tt.tagger.setConditionalFilter = tt.tagger._original_setConditionalFilter
+    tt.beginScanHold("FLIM")
+    assert tt.scanHeld and tt.conditioned and tt.tcspcDirection == "reverse"
+    tt.endScanHold("FLIM")
+    assert tt.tagger.getConditionalFilterTrigger() == [1]
+
+
+def test_the_test_signal_is_refused_while_a_scan_holds_the_card():
+    tt = TimeTaggerManager(TimeTaggerInfo(simulation=True))
+    tt.beginScanHold("FLIM")
+    with pytest.raises(TimeTaggerBusyError, match="test signal"):
+        tt.setTestSignal(["line_clock"], True)
+    assert not tt.tagger.getTestSignal(3), "no fake pixel markers into the scan"
+    tt.endScanHold("FLIM")
+    tt.setTestSignal(["line_clock"], True)
+    assert tt.tagger.getTestSignal(3)
+    tt.setTestSignal(["line_clock"], False)

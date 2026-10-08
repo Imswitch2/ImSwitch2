@@ -1045,7 +1045,8 @@ Key fields:
 * ``useMockOnFailure`` (bool): fall back to the mock when the library is missing or the card cannot be opened — honoured **only while** ``nidaq.simulation`` **is also true**; on a rig a missing card stays a hard error that rolls the scan back (default ``false``, unlike ``teensyPulse``)
 * ``photonsChannel`` / ``photonsTriggerV`` / ``photonsDeadtimePs``: the single-photon detector input (defaults ``1`` / ``0.5`` / ``0``)
 * ``laserSyncChannel`` / ``laserSyncTriggerV``: the laser sync, the TCSPC reference (defaults ``2`` / ``0.5``)
-* ``lineClockChannel`` / ``lineClockTriggerV`` / ``lineClockDelayPs``: the scan's ``scan.lineClockLine`` (defaults ``3`` / ``0.5`` / ``0``); the delay also applies to the frame clock
+* ``lineClockChannel`` / ``lineClockTriggerV`` / ``lineClockDelayPs``: the scan's ``scan.lineClockLine`` (defaults ``3`` / ``0.5`` / ``0``). The delay moves the FLIM detector's pixel markers against the beam: positive when the line clock fires *early* (a galvo lagging its command; the detector delays its marker pattern by it), negative when it arrives *late* (a long cable; the card moves the line timestamps earlier). The frame clock takes the same delay on the card. Tutorial 09 measures it.
+* ``pixelPatternOffsetPs`` (int): where the FLIM detector's first pixel marker sits after a line edge, so the frame edge leads pixel 0 whatever the cable skew (default ``10000``; raise it above a measured frame-to-line skew, tutorial 08)
 * ``frameClockChannel`` / ``frameClockTriggerV``: the scan's frame-start clock, if cabled (default ``null`` = not cabled)
 * ``stedPulseChannel`` / ``stedPulseTriggerV``: a photodiode on the STED beam, if cabled (default ``null``)
 * ``filterSyncByPhotons`` (bool): enable the card's conditional filter so only the first sync after each photon is transmitted — needed on a Time Tagger 20 or Ultra with a sync at tens of MHz; the TCSPC direction then reverses (default ``false``)

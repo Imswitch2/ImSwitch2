@@ -28,7 +28,14 @@ manually tuned offsets and magic numbers, especially for fast scans.
 - **Linestep `line_clock` count bug.** `__generate_all_clocks` tiles
   `line_clock` for physical `n_steps_dx[1]` (Ny), but an Advanced scan
   with `S>1` linesteps has `Ny*S` line periods → too few edges when
-  `S>1`.
+  `S>1`. *Lifetime 2.0 (P3) note:* the `SwabianTimeTaggerManager` now
+  refuses `S>1` scans with an error naming this item, and carries the
+  card-side half of the detector-sync fix: `lineClockDelayPs` (positive →
+  the pixel-marker pattern starts later, for an early clock; negative →
+  `setInputDelay` on the card, for a late one) plus `pixelPatternOffsetPs`
+  so the frame edge leads pixel 0; tutorial `timetagger/09` measures the
+  delay from the FLIM-vs-APD shift. Fixing the clock count here lifts the
+  `S>1` refusal.
 - **Inconsistent `phase_delay` default.** `APDManager` uses
   `scanInfoDict.get('phase_delay', 0)`; `PMTManager` uses a hard key.
 - **Fast-axis line-start artifacts.** `GalvoScanDesigner.__d2scan_poly` /

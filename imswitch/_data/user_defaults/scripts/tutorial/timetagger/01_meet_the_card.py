@@ -64,14 +64,13 @@ print()
 # The card can feed its own test signal (a fixed rate, about 850 kHz on a
 # Time Tagger 20) into any input, in place of the cable. An input that counts
 # the test signal but not your signal has a cabling or trigger-level problem,
-# not a card problem. Always switch it off again: a test signal left on
-# counts into your next scan.
-tt.test_signal(['line_clock'], True)
-try:
+# not a card problem. test_signal_on() switches it off again when the block
+# ends (also on an error or a Stop), and owns the card meanwhile: a test
+# signal on the line clock during a scan would be fake pixel markers, so a
+# scan cannot start on it and it cannot start during a scan.
+with tt.test_signal_on(['line_clock']):
     with_test = tt.count_rates(['line_clock'], duration_s=0.5)
     print(f'line_clock with the test signal: {with_test.rates_hz["line_clock"]:,.0f} Hz')
-finally:
-    tt.test_signal(['line_clock'], False)
 without = tt.count_rates(['line_clock'], duration_s=0.5)
 print(f'line_clock without it:           {without.rates_hz["line_clock"]:,.0f} Hz '
       f'(no scan is running, so 0 is right)')

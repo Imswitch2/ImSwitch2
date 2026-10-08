@@ -92,15 +92,19 @@ back, delete your copy and restart ImSwitch.
 | 04 | `04_laser_sync.py` | `galvo_flim_mock_scan_setup.json` | `rep_rate()`: the sync rate measured safely, period jitter and the card's floor |
 | 05 | `05_bandwidth_and_the_filter.py` | `galvo_flim_mock_scan_setup.json` | the tag budget, `overflows()`, the conditional filter and the TCSPC direction |
 | 06 | `06_irf_and_t0.py` | `galvo_flim_mock_scan_setup.json` | `histogram()`: the IRF, its peak and width; the detector's `t0_ps` |
+| 07 | `07_line_clock_during_a_scan.py` | `galvo_flim_mock_scan_setup.json` | the line clock while a scan runs: `count_edges()` against Ny, `period()`, a trigger sweep between runs |
+| 08 | `08_frame_clock_and_pixel_markers.py` | `galvo_flim_mock_scan_setup.json` | the frame clock, the signed frame-to-line `skew()`, `scope()` of one line, the last-frame check |
+| 09 | `09_line_delay_alignment.py` | `galvo_flim_mock_scan_setup.json` | the FLIM image against the APD (or the mock truth): pixels to `lineClockDelayPs`, re-run to 0 |
 | 10 | `10_flim_preflight.py` | `galvo_flim_mock_scan_setup.json` | `preflight()`: the green/red checklist before a FLIM session |
 
-Steps 07 to 09 (the line clock, the frame clock and pixel markers, and the
-line delay, all measured during a scan) come with the next release.
-`timetagger/timetagger_helpers.py` finds the card and the FLIM detector and
-prints tables for 02-10. Every measurement that could change a setting
-prints a suggestion and writes it only when the script's `APPLY` is True;
-a written value holds until restart, the printed JSON line goes into the
-`timeTagger` block of the setup file to keep it.
+`timetagger/timetagger_helpers.py` finds the card and the FLIM detector,
+prints tables, and (for 07 to 09) loads `timetagger/scan_params/flim_scan_64px.json`
+into the Scan widget, switches the FLIM detector's `enabled` parameter so
+the APD can image while the card stays free, and starts a scan without
+waiting so a measurement can run during it. Every measurement that could
+change a setting prints a suggestion and writes it only when the script's
+`APPLY` is True; a written value holds until restart, the printed JSON line
+goes into the `timeTagger` block of the setup file to keep it.
 
 The scanning tutorials load their scan settings from `scanning/scan_params/`
 (double-click one in the Files panel to read it). The camera and stage names

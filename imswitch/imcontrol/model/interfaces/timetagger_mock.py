@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import math
 import threading
+import time
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -175,9 +177,13 @@ class SignalModel:
     tutorial switches to a Time Tagger 20 through the ``model`` fault. """
     seed: int = 0
     faults: Dict[str, Any] = field(default_factory=dict)
-    """ ``missing_line_clock``, ``line_delay_ps``, ``wrong_sync_polarity``,
-    ``dead_photons``, ``laser_rep_rate_mhz`` (an override), ``model`` (a
-    card model from ``TAG_BUDGET_PER_MODEL``, for its tag budget). """
+    """ ``missing_line_clock``, ``line_delay_ps`` (how *late* the line clock
+    reaches the card against the beam's position, in ps; negative = early,
+    as with a galvo lagging its command -- ``lineClockDelayPs`` cancels it
+    with the opposite sign), ``wrong_sync_polarity``, ``dead_photons``,
+    ``laser_rep_rate_mhz`` (an override), ``model`` (a card model from
+    ``TAG_BUDGET_PER_MODEL``, for its tag budget). The first four are read
+    live (``set_fault``); the last two at construction. """
 
     def __post_init__(self):
         amps = {
@@ -250,10 +256,19 @@ class MockTimeTagger:
         #: Scan edges by physical input, picoseconds, and the scan's duration.
         self._edges: Dict[int, np.ndarray] = {}
         self._scan_duration_s = 0.0
+        self._scan_active = False
+        #: Wall-clock moment the scan's clocks started (``start_scan``), so a
+        #: measurement sees the edges that fall into *its* window, as the
+        #: card would; ``None`` = unknown, every scan input then counts the
+        #: scan's average rate while it is active.
+        self._scan_started_at: Optional[float] = None
         #: Virtual channel id -> EventGenerator, for Flim to find its markers.
         self._generators: Dict[int, "EventGenerator"] = {}
         #: Every measurement object created against this card.
-        self.measurements: List[object] = []
+        # Weak, like the vendor library: a measurement lives as long as its
+        # Python object, so a dropped Flim (and its frame) is freed, not
+        # kept with every previous scan's cube.
+        self.measurements: "weakref.WeakSet[object]" = weakref.WeakSet()
 
     # -- identity -------------------------------------------------------- #
 
@@ -371,20 +386,45 @@ class MockTimeTagger:
         if abs(ch) == abs(m.sync_channel):
             return m.rep_rate_hz
         edges = self._edges.get(abs(ch))
-        if edges is not None and self._scan_duration_s > 0:
+        if edges is not None and self._scan_active and self._scan_duration_s > 0:
             return len(edges) / self._scan_duration_s
         return 0.0
 
-    def channelRate(self, channel: int) -> float:
+    def _scan_edges_in_window(self, channel: int, duration_s: float,
+                              started_at: Optional[float] = None) -> Optional[int]:
+        """Edges of a scan input inside a measurement's window of
+        ``duration_s`` that began at wall-clock ``started_at`` (now minus
+        the duration when unknown), in scan time; ``None`` when the input
+        is not a scan clock or the scan's start is unknown."""
+        edges = self._edges.get(abs(int(channel)))
+        if edges is None or self._scan_started_at is None:
+            return None
+        if started_at is None:
+            started_at = time.monotonic() - float(duration_s)
+        lo = (started_at - self._scan_started_at) * 1e12
+        hi = lo + float(duration_s) * 1e12
+        return int(np.count_nonzero((edges >= lo) & (edges < hi)))
+
+    def channelRate(self, channel: int, duration_s: Optional[float] = None,
+                    started_at: Optional[float] = None) -> float:
         """What the card counts on an input, after trigger level, dead time,
-        the test signal and the conditional filter."""
+        the test signal and the conditional filter. For a scan clock with a
+        known scan start, ``duration_s`` (from wall-clock ``started_at``) is
+        the measurement's window and the rate is the edges that fell into
+        it (a Counter spanning the scan sees every line; one started late
+        misses the first)."""
         ch = int(channel)
         if self._testSignal.get(abs(ch), False):
             return TEST_SIGNAL_RATE_HZ
         if ch in self._rates:
             return self._rates[ch]  # pinned by a test: no comparator model
         m = self._model
-        rate = self._raw_rate(ch) * self._trigger_factor(ch)
+        raw = self._raw_rate(ch)
+        if duration_s:
+            n = self._scan_edges_in_window(ch, duration_s, started_at)
+            if n is not None:
+                raw = n / float(duration_s)
+        rate = raw * self._trigger_factor(ch)
         rate *= self._deadtime_factor(ch, rate)
         if abs(ch) == abs(m.sync_channel) and self.filterOn:
             # Only the first sync after each photon is transmitted.
@@ -395,6 +435,23 @@ class MockTimeTagger:
     def set_laser_on(self, on: bool) -> None:
         """Test / tutorial hook: block or unblock the excitation."""
         self._model.laser_on = bool(on)
+
+    def set_fault(self, name: str, value) -> None:
+        """Test / tutorial hook: inject or clear a fault at run time (the
+        live ones: ``line_delay_ps``, ``missing_line_clock``,
+        ``dead_photons``, ``wrong_sync_polarity``). ``None`` clears it."""
+        if value is None:
+            self._model.faults.pop(str(name), None)
+        else:
+            self._model.faults[str(name)] = value
+
+    def sample_truth(self, ny: int, nx: int):
+        """What the sample really looks like on an ``ny`` x ``nx`` grid:
+        ``(rate_map_hz, lifetime_map_ns)`` -- the truth a FLIM image is
+        compared against (tutorial 09)."""
+        sample = self._model.sample
+        return (np.asarray(sample.rate_map(int(ny), int(nx)), dtype=np.float64),
+                np.asarray(sample.lifetime_map(int(ny), int(nx)), dtype=np.float64))
 
     def transmittedRate(self) -> float:
         """All tags the USB link must carry per second."""
@@ -433,13 +490,60 @@ class MockTimeTagger:
                 arr = arr[:0]
             self._edges[abs(int(channel))] = arr
         self._scan_duration_s = float(duration_s)
+        self._scan_active = True
+        self._scan_started_at = None
 
     def clear_scan_edges(self) -> None:
         self._edges = {}
         self._scan_duration_s = 0.0
+        self._scan_active = False
+        self._scan_started_at = None
+
+    def start_scan(self) -> None:
+        """The scan's clocks start now (``sigScanStarted``): from here the
+        scan inputs count the edges that fall into a measurement's window."""
+        self._scan_started_at = time.monotonic()
+        self._scan_active = True
+
+    def end_scan(self) -> None:
+        """The scan is over: its clocks stop (count rates drop to 0), while
+        the edges stay for a ``Flim`` frame that is read afterwards."""
+        self._scan_active = False
+
+    @property
+    def scan_active(self) -> bool:
+        return self._scan_active
 
     def edges(self, channel: int) -> np.ndarray:
         return self._edges.get(abs(int(channel)), np.zeros(0, dtype=np.int64))
+
+    def _delay_ps(self, channel: int) -> int:
+        """The input delay stamped onto a channel, whichever sign it was
+        set with."""
+        ch = int(channel)
+        return int(self._inputDelays.get(ch, 0) + self._inputDelays.get(-ch, 0))
+
+    def stamped_edges(self, channel: int) -> np.ndarray:
+        """The edges of a scan clock as the card timestamps them: the loaded
+        edges plus the input delay. Empty for any other input."""
+        edges = self.edges(channel)
+        if edges.size == 0:
+            return edges
+        return edges + self._delay_ps(channel)
+
+    def has_scan_edges(self, channel: int) -> bool:
+        return abs(int(channel)) in self._edges
+
+    def marker_times(self, virtual_channel: int) -> np.ndarray:
+        """The markers an ``EventGenerator`` emits on its virtual channel for
+        the loaded scan: one pattern per stamped trigger edge."""
+        gen = self._generators.get(int(virtual_channel))
+        if gen is None:
+            return np.zeros(0, dtype=np.int64)
+        trigger = self.stamped_edges(gen.trigger_channel)
+        if trigger.size == 0 or gen.pattern.size == 0:
+            return np.zeros(0, dtype=np.int64)
+        return (trigger[:, None] + gen.pattern[None, :]).reshape(-1)
 
     # -- histograms ------------------------------------------------------ #
 
@@ -521,13 +625,16 @@ class _Measurement:
         self._tagger = tagger
         self._running = True
         self._capture_ps = 0
-        tagger.measurements.append(self)
+        self._started_at: Optional[float] = None
+        tagger.measurements.add(self)
 
     def start(self):
         self._running = True
+        self._started_at = time.monotonic()
 
     def startFor(self, duration_ps, clear=True):
         self._capture_ps = int(duration_ps)
+        self._started_at = time.monotonic()
         self._running = False  # the capture is complete the moment it is read
 
     def stop(self):
@@ -557,8 +664,8 @@ class Countrate(_Measurement):
 
     def getData(self):
         self._tagger._budget_factor(self._duration_s)
-        return np.array([self._tagger.channelRate(c) for c in self._channels],
-                        dtype=np.float64)
+        return np.array([self._tagger.channelRate(c, self._duration_s, self._started_at)
+                         for c in self._channels], dtype=np.float64)
 
 
 class Counter(_Measurement):
@@ -570,9 +677,10 @@ class Counter(_Measurement):
         self._n_values = int(n_values)
 
     def getData(self, rolling=True):
-        per_bin = [self._tagger.channelRate(c) * self._binwidth * 1e-12
+        window_s = self._binwidth * 1e-12
+        per_bin = [self._tagger.channelRate(c, window_s, self._started_at) * window_s
                    for c in self._channels]
-        return np.tile(np.array(per_bin, dtype=np.int64)[:, None],
+        return np.tile(np.rint(np.array(per_bin, dtype=np.float64)).astype(np.int64)[:, None],
                        (1, self._n_values))
 
     def getDataNormalized(self, rolling=True):
@@ -603,6 +711,8 @@ class Histogram(_Measurement):
     def getData(self):
         tagger = self._tagger
         m = tagger._model
+        if tagger.has_scan_edges(self.click_channel) and tagger.has_scan_edges(self.start_channel):
+            return self._from_edges()
         duration = self._duration_s
         factor = tagger._budget_factor(duration)
         photons = tagger.channelRate(m.photon_channel) * duration * factor
@@ -618,6 +728,25 @@ class Histogram(_Measurement):
             np.array(background),
         )
         return tagger.sample_counts(expected).astype(np.int64)
+
+    def _from_edges(self) -> np.ndarray:
+        """Two scan clocks: the time from each start edge to the click edges
+        that fall inside the window, as the card stamps them (input delays
+        included). The frame-to-line skew measurement (tutorial 08)."""
+        tagger = self._tagger
+        starts = np.sort(tagger.stamped_edges(self.start_channel))
+        clicks = np.sort(tagger.stamped_edges(self.click_channel))
+        counts = np.zeros(self.n_bins, dtype=np.int64)
+        window = self.n_bins * self.binwidth
+        if starts.size == 0 or clicks.size == 0:
+            return counts
+        lo = np.searchsorted(clicks, starts, side="left")
+        hi = np.searchsorted(clicks, starts + window, side="left")
+        for start, a, b in zip(starts, lo, hi):
+            if b > a:
+                bins = (clicks[a:b] - start) // self.binwidth
+                np.add.at(counts, bins.astype(np.int64), 1)
+        return counts
 
 
 class TimeDifferences(_Measurement):
@@ -647,6 +776,19 @@ class TimeDifferences(_Measurement):
         m = tagger._model
         counts = np.zeros((1, self.n_bins), dtype=np.int64)
         if abs(self.click_channel) != abs(self.start_channel):
+            return counts
+        if tagger.has_scan_edges(self.click_channel):
+            # A scan clock: the real edge-to-edge differences of the loaded
+            # scan (line = dwell x Nx + flyback), jittered by the card.
+            edges = np.sort(tagger.stamped_edges(self.click_channel))
+            if edges.size < 2 or not tagger.scan_active:
+                return counts
+            floor = self.JITTER_FLOOR_PS.get(m.model, 30.0)
+            diffs = np.diff(edges).astype(np.float64)
+            diffs += tagger._rng.normal(0.0, floor, size=diffs.size)
+            bins = np.floor(diffs / self.binwidth).astype(np.int64)
+            inside = (bins >= 0) & (bins < self.n_bins)
+            np.add.at(counts[0], bins[inside], 1)
             return counts
         rate = tagger.channelRate(self.click_channel)
         if rate <= 0:
@@ -682,6 +824,102 @@ class EventGenerator(_Measurement):
         return self._channel
 
 
+class _ScopeEvent:
+    """One edge in a ``Scope`` trace: ``state`` (True = rising) at ``time``
+    picoseconds after the trigger edge."""
+
+    __slots__ = ("state", "time")
+
+    def __init__(self, state: bool, time: int):
+        self.state = bool(state)
+        self.time = int(time)
+
+    def __repr__(self):
+        return f"Event({'rising' if self.state else 'falling'} @ {self.time} ps)"
+
+
+class Scope(_Measurement):
+    """An oscilloscope-like trace: every edge on ``event_channels`` within
+    ``window_size`` ps after the first edge on ``trigger_channel`` (the
+    vendor's ``Scope`` with ``n_traces=1``). Scan clocks and the pixel
+    markers come from the loaded scan (input delays included), the laser
+    sync is periodic, the photons Poisson at the channel's rate. Clock
+    pulses are 1 us wide, the sync half a period."""
+
+    CLOCK_WIDTH_PS = 1_000_000
+
+    def __init__(self, tagger, event_channels: Iterable[int], trigger_channel,
+                 window_size, n_traces=1, n_max_events=1000):
+        super().__init__(tagger)
+        self.event_channels = [int(c) for c in event_channels]
+        self.trigger_channel = int(trigger_channel)
+        self.window_size = int(window_size)
+        self.n_max_events = int(n_max_events)
+
+    def _edges_of(self, channel: int, t0: int, t1: int) -> np.ndarray:
+        tagger = self._tagger
+        m = tagger._model
+        if channel in tagger._generators:
+            times = tagger.marker_times(channel)
+        elif tagger.has_scan_edges(channel):
+            times = tagger.stamped_edges(channel)
+        elif abs(channel) == abs(m.sync_channel):
+            period = m.period_ps
+            first = math.ceil(t0 / period) * period
+            times = np.arange(first, t1, period, dtype=np.float64)
+        elif abs(channel) == abs(m.photon_channel):
+            n = tagger._rng.poisson(tagger.channelRate(channel) * (t1 - t0) * 1e-12)
+            times = np.sort(tagger._rng.uniform(t0, t1, size=int(n)))
+        else:
+            times = np.zeros(0)
+        times = np.asarray(times, dtype=np.float64)
+        return times[(times >= t0) & (times < t1)].astype(np.int64)
+
+    def getData(self):
+        tagger = self._tagger
+        m = tagger._model
+        trigger = self._edges_of(self.trigger_channel, 0, 1 << 62)
+        if trigger.size == 0:
+            return [[] for _ in self.event_channels]
+        t0 = int(trigger[0])
+        t1 = t0 + self.window_size
+        traces = []
+        for channel in self.event_channels:
+            events = []
+            width = (m.period_ps / 2 if abs(channel) == abs(m.sync_channel)
+                     else self.CLOCK_WIDTH_PS)
+            for t in self._edges_of(channel, t0, t1)[: self.n_max_events]:
+                events.append(_ScopeEvent(True, t - t0))
+                if t + width < t1:
+                    events.append(_ScopeEvent(False, int(t + width - t0)))
+            traces.append(sorted(events, key=lambda e: e.time))
+        return traces
+
+
+class _FlimFrameInfo:
+    """What ``Flim.getReadyFrameEx`` returns."""
+
+    def __init__(self, histograms: np.ndarray, frame_number: int, valid: bool = True):
+        self._histograms = histograms
+        self._frame_number = frame_number
+        self._valid = valid
+
+    def isValid(self):
+        return self._valid
+
+    def getFrameNumber(self):
+        return self._frame_number
+
+    def getHistograms(self):
+        return self._histograms.copy()
+
+    def getIntensities(self):
+        return self._histograms.sum(axis=1).astype(np.uint32)
+
+    def getPixelPosition(self):
+        return int(self._histograms.shape[0])
+
+
 class Flim(_Measurement):
     """A FLIM frame drawn from the sample, pixel by pixel.
 
@@ -689,6 +927,12 @@ class Flim(_Measurement):
     pixel-begin generator's trigger input, one column per pattern entry.
     No edges (the line clock not cabled, or the ``missing_line_clock``
     fault) means an empty frame -- the "image is all zeros" symptom.
+
+    The card closes a frame once ``n_pixels`` pixel ends have passed, which
+    the mock reports through ``getFramesAcquired``: ``1`` as soon as the
+    loaded edges carry enough markers, independent of any read. A test can
+    delay that with ``complete_after_polls`` to exercise the worker's
+    count-based final-frame detection in both orders against scan-done.
     """
 
     def __init__(self, tagger, start_channel, click_channel,
@@ -707,7 +951,12 @@ class Flim(_Measurement):
         self.n_bins = int(n_bins)
         self.binwidth = int(binwidth)
         self._frame: Optional[np.ndarray] = None
-        self._frames_acquired = 0
+        self._polls = 0
+        #: Test knob: the frame counts as closed only after this many
+        #: ``getFramesAcquired`` calls. The default, 1, lets the detector's
+        #: baseline read at arming see an open frame and the worker's first
+        #: look see it closed -- a scan that completes before scan-done.
+        self.complete_after_polls = 1
 
     def getIndex(self):
         return np.arange(self.n_bins, dtype=np.int64) * self.binwidth
@@ -738,15 +987,18 @@ class Flim(_Measurement):
 
         rate = np.asarray(m.sample.rate_map(ny_used, nx), dtype=np.float64)
         tau = np.asarray(m.sample.lifetime_map(ny_used, nx), dtype=np.float64)
-        # The line delay: a late line clock starts the markers late, so each
-        # pixel samples a later position -- the image shifts. The fault adds
-        # a delay the card does not know about; a configured input delay or
-        # a pattern offset moves the markers the other way and cancels it.
-        delay_ps = (float(m.faults.get("line_delay_ps", 0))
-                    - tagger._inputDelays.get(m.line_channel, 0)
-                    - tagger._inputDelays.get(-m.line_channel, 0)
-                    - offset_ps)
-        shift = int(round(delay_ps / dwell_ps)) if dwell_ps else 0
+        # The line delay. A line clock reaching the card *late* against the
+        # beam (the ``line_delay_ps`` fault, positive) starts the markers
+        # late, so each pixel samples a later position and the image shifts
+        # left; an early clock (negative fault: a galvo lagging its command)
+        # the other way. A card input delay or a pattern offset moves the
+        # markers by its own sign, so ``lineClockDelayPs`` cancels the fault
+        # with the opposite sign: positive (the pattern) for an early clock,
+        # negative (the card) for a late one.
+        lateness_ps = (float(m.faults.get("line_delay_ps", 0))
+                       + tagger._delay_ps(m.line_channel)
+                       + offset_ps)
+        shift = int(round(lateness_ps / dwell_ps)) if dwell_ps else 0
         if shift:
             rate = np.roll(rate, -shift, axis=1)
             tau = np.roll(tau, -shift, axis=1)
@@ -765,22 +1017,31 @@ class Flim(_Measurement):
         frame[:ny_used * nx] = counts
         return frame
 
+    def _markers_suffice(self) -> bool:
+        ny, nx, dwell_ps, _ = self._geometry()
+        return ny * nx >= self.n_pixels and dwell_ps > 0
+
     def getCurrentFrame(self):
         if self._frame is None:
             self._frame = self._render()
-            if self._frame.any() or self._geometry()[0]:
-                self._frames_acquired = 1
         return self._frame.copy()
 
     def getReadyFrame(self):
         return self.getCurrentFrame()
 
+    def getReadyFrameEx(self):
+        if self.getFramesAcquired() < 1:
+            return _FlimFrameInfo(np.zeros((self.n_pixels, self.n_bins), np.uint32), 0, valid=False)
+        return _FlimFrameInfo(self.getCurrentFrame(), 1)
+
     def getCurrentFrameIntensity(self):
         return self.getCurrentFrame().sum(axis=1).astype(np.uint32)
 
     def getFramesAcquired(self):
-        self.getCurrentFrame()
-        return self._frames_acquired
+        self._polls += 1
+        if not self._markers_suffice():
+            return 0
+        return 1 if self._polls > self.complete_after_polls else 0
 
 
 class MockTimeTaggerApi:
@@ -797,6 +1058,7 @@ class MockTimeTaggerApi:
     Histogram = Histogram
     TimeDifferences = TimeDifferences
     EventGenerator = EventGenerator
+    Scope = Scope
     Flim = Flim
 
     def __init__(self, rates_hz: Optional[Dict[int, float]] = None,

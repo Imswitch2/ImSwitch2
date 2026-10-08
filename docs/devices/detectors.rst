@@ -606,7 +606,15 @@ consumer needs it.
    * - ``line_role``
      - str
      - ``"line_clock"``
-     - Role whose input receives the scan's line clock; the pixel markers are generated from its edges.
+     - Role whose input receives the scan's line clock; the pixel markers are generated from its edges, starting ``pixelPatternOffsetPs`` (block field, default 10 ns) plus a positive ``lineClockDelayPs`` after each edge.
+   * - ``frame_role``
+     - str
+     - ``"auto"``
+     - Role whose input receives the scan's frame-start clock: ``"auto"`` uses ``frame_clock`` when the block configures it, ``"none"`` never. With it the card re-syncs its pixel index on every frame edge, so a lost line marker costs one frame, not the rest of the scan. The resolved channel shows as the read-only ``frame_channel`` parameter (``0`` when none).
+   * - ``live_fit_period_s``
+     - float
+     - ``1.0``
+     - How often, during a scan, a preview with per-pixel lifetimes is fitted and emitted; ``0`` emits intensity-only previews (``preview: "intensity"`` in their metadata) and fits the final frame only.
    * - ``n_bins``
      - int
      - one laser period
@@ -618,7 +626,7 @@ consumer needs it.
    * - ``t0_ps``
      - int
      - ``0``
-     - Histogram zero-time offset in picoseconds.
+     - The IRF peak's position, in picoseconds, measured with the card's configured conditioning (tutorial 06): an absolute number. Forward mode applies it as ``-t0_ps`` on top of the photon input's configured delay for the scan and restores the input afterwards; reverse mode applies it as a circular roll.
    * - ``min_counts_per_pixel``
      - int
      - ``20``
@@ -638,7 +646,7 @@ consumer needs it.
    * - ``enabled``
      - bool
      - ``true``
-     - If ``false`` the manager is constructed but ``initiateScan`` is a no-op.
+     - Whether the detector takes part in scans; also a runtime parameter (``'True'`` / ``'False'``). Off, the manager is constructed but ``initiateScan`` is a no-op, so another detector images while the card is not held and a calibration can run during the scan (tutorials 07 to 09).
    * - ``click_channel``
      - int
      - legacy, **required** without a ``timeTagger`` block
@@ -705,6 +713,18 @@ against a baseline taken when the scan was prepared; a frame read after
 the count moved carries ``overflows`` and ``frame_valid: false`` in its
 metadata, with an error in the log, and its lifetimes are not to be
 trusted.
+
+**The final frame.** The card closes a frame once it has counted the last
+pixel end, and the worker reads it through ``getReadyFrameEx`` when the
+card's frame count has moved past the count taken at arming -- whether
+that happens before or after the scan reports done. A frame the card has
+not closed within a grace period after scan-done is read as it stands,
+with ``frame_closed_by_card: false`` in the metadata and a warning naming
+the likely cause (a missing marker, or the frame edge arriving after
+pixel 0); tutorial 08 checks this. Scans with more than one linestep are
+refused until the TTL designer emits one line edge per linestep (ROADMAP
+M9): the clock carries only ``Ny`` edges today, so the markers would stop
+after the first step.
 
 **Lifetime fitting**
 

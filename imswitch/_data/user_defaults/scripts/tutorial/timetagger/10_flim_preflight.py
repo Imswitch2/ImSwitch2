@@ -5,8 +5,7 @@ You will learn
     prints a green/red list -- the same list the Lifetime widget shows
   * which tutorial fixes which red line
   * that the checks needing a scan (line clock edges, frame clock, last
-    frame) are reported as skipped here and come with the scan-aware
-    tutorials 07 to 09
+    frame) are reported as skipped here: tutorials 07 to 09 run them
 
 Setup
   Mock setup:   galvo_flim_mock_scan_setup.json
@@ -35,5 +34,5 @@ elif report.ok:
 else:
     print('RED: fix the failing lines first, with the tutorial each one names.')
 print()
-print('Three lines are skipped: they need a running scan. The scan-aware tutorials')
-print('(07 line clock, 08 frame clock and pixel markers, 09 line delay) fill them in.')
+print('Three lines are skipped: they need a running scan. Tutorials 07 (line clock),')
+print('08 (frame clock and pixel markers) and 09 (line delay) run them.')

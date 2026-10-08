@@ -68,7 +68,7 @@
       ]
     },
     "enabled": {
-      "description": "If ``false`` the manager is constructed but ``initiateScan`` is a no-op.",
+      "description": "Whether the detector takes part in scans; also a runtime parameter (``'True'`` / ``'False'``). Off, the manager is constructed but ``initiateScan`` is a no-op, so another detector images while the card is not held and a calibration can run during the scan (tutorials 07 to 09).",
       "x-imswitch-kind": "boolean",
       "x-imswitch-source": [
         "code:default:boolean",
@@ -77,6 +77,14 @@
     },
     "fit_method": {
       "description": "Lifetime fit method; one of ``\"moment\"``, ``\"phasor\"``, ``\"exp1\"``.  All three apply automatic IRF-peak compensation (see \"Lifetime fitting\" below); ``exp1`` is the most accurate for clean mono-exponential decays.",
+      "x-imswitch-kind": "string",
+      "x-imswitch-source": [
+        "code:default:string",
+        "code:optional(get)"
+      ]
+    },
+    "frame_role": {
+      "description": "Role whose input receives the scan's frame-start clock: ``\"auto\"`` uses ``frame_clock`` when the block configures it, ``\"none\"`` never. With it the card re-syncs its pixel index on every frame edge, so a lost line marker costs one frame, not the rest of the scan. The resolved channel shows as the read-only ``frame_channel`` parameter (``0`` when none).",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -107,7 +115,7 @@
       ]
     },
     "line_role": {
-      "description": "Role whose input receives the scan's line clock; the pixel markers are generated from its edges.",
+      "description": "Role whose input receives the scan's line clock; the pixel markers are generated from its edges, starting ``pixelPatternOffsetPs`` (block field, default 10 ns) plus a positive ``lineClockDelayPs`` after each edge.",
       "x-imswitch-kind": "string",
       "x-imswitch-source": [
         "code:default:string",
@@ -123,6 +131,20 @@
       ],
       "x-imswitch-kind": "number",
       "x-imswitch-source": [
+        "code:float()",
+        "code:optional(get)"
+      ]
+    },
+    "live_fit_period_s": {
+      "description": "How often, during a scan, a preview with per-pixel lifetimes is fitted and emitted; ``0`` emits intensity-only previews (``preview: \"intensity\"`` in their metadata) and fits the final frame only.",
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "x-imswitch-kind": "number",
+      "x-imswitch-source": [
+        "code:default:number",
         "code:float()",
         "code:optional(get)"
       ]
@@ -181,7 +203,7 @@
       ]
     },
     "t0_ps": {
-      "description": "Histogram zero-time offset in picoseconds.",
+      "description": "The IRF peak's position, in picoseconds, measured with the card's configured conditioning (tutorial 06): an absolute number. Forward mode applies it as ``-t0_ps`` on top of the photon input's configured delay for the scan and restores the input afterwards; reverse mode applies it as a circular roll.",
       "type": [
         "integer",
         "number",

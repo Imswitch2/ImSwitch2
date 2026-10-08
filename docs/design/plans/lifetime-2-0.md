@@ -1,7 +1,9 @@
 # Lifetime 2.0 — Swabian Time Tagger, calibration tutorials, and a Lifetime widget
 
-Status: **revision 4** — in implementation. P1a, P1b, P1c and P2 are on
-their branches (`feat/lifetime-2-0-p1a` … `-p2`, stacked); P3 is next. Revision 4 folds in the first external review
+Status: **revision 4** — in implementation. P1a, P1b, P1c, P2 and P3 are on
+their branches (`feat/lifetime-2-0-p1a` … `-p3`, stacked); P4 is next. The
+second external review (§15, "External review 2": eleven items against the
+P1/P2 code) is folded into the P3 branch. Revision 4 folds in the first external review
 (§15, "External review 1"): four of its eight items changed code already
 written (product-session ownership, the hold's lifetime and calibration
 exclusivity, a single overflow owner, the gate default), the other four
@@ -748,13 +750,20 @@ for each fit method, forward and reverse, with and without background.
 `debugging.rst`; README rows; `update_user_defaults_history`; CLI wrapper.
 *Rig check*: 02–06 on the real card; model-specific numbers for §1's table.
 
-**P3 — Scan-aware diagnostics and scan correctness.** Tutorials 07–09;
-`getReadyFrameEx` path with final-frame detection; frame role with the
-pattern offset; D14 (refuse or fix linesteps); delay mechanism; overflow
-flagging; preview from intensity; `update_user_defaults_history`. Roadmap M9
-updated with the card-side half (and, if D14 = fix, the clock count).
-*Rig check*: 07 edge count/period vs design; 08 skew < offset and last frame
-closes; 09 shift → 0 after delay.
+**P3 — Scan-aware diagnostics and scan correctness.** *Done on
+`feat/lifetime-2-0-p3`.* Tutorials 07–09 with `scan_params/flim_scan_64px.json`
+and the detector's runtime `enabled` parameter; `getReadyFrameEx` with
+count-based final-frame detection and the grace-period fallback; frame
+role (`auto`) with `pixelPatternOffsetPs`; D14 decided as *refuse* (S > 1
+rolls the scan back naming M9); the delay rule (positive → pattern,
+negative → card; the mock's sign corrected to match the physics); overflow
+flagging; intensity-only previews (`live_fit_period_s`); facade
+`count_edges` / `period` / `skew` / `scope` / `test_signal_on` and the mock's
+scan-timed clocks, `sample_truth` and `set_fault`; `getLaserActive` and
+`getDetectorLatestFrame` API exports; `update_user_defaults_history`.
+Roadmap M9 carries the card-side note. *Rig check (open)*: 07 edge
+count/period vs design; 08 skew < offset and last frame closes; 09 shift →
+0 after delay.
 
 **P4 — Lifetime widget v1 (depends on P1 and P2).** FLIM and Tau STED
 panels, Signals panel (facade-backed, worker-threaded), status strip, footer
@@ -873,10 +882,10 @@ FWHM, fallback 1.5 ns**.
   withhold the frame from a recording.
 - **D13 — STED-pulse photodiode role.** Include the optional role and decay
   marker in P5 (proposed, cheap) or leave it to the follow-up.
-- **D14 — Linesteps in P3.** Refuse S > 1 until M9 (safest), or include the
-  one-line TTL-clock count fix here (proposed: fix, since it is M9's own
-  listed sub-item and touches no analog waveform; needs a designer unit test
-  and a rig check with tutorial 07).
+- **D14 — Linesteps in P3.** *Decided in P3: refuse.* S > 1 rolls the scan
+  back with an error naming M9 until the TTL designer emits one line edge
+  per linestep; the one-line clock-count fix stays M9's (it needs the
+  designer's own test and a rig check with tutorial 07).
 
 ## 13. Rig facts the plan needs
 
@@ -1055,3 +1064,45 @@ Dispositions:
   Pulse Streamer exists but is not wired; template `default` entries deleted;
   shipped-tutorial contract; `update_user_defaults_history`; changelog per
   PR).
+
+### External review 2 (eleven items against the P1 and P2 code; folded into P3)
+
+1. **Background normalisation** — `background_per_bin` lacked the division
+   by the laser period (80 million times too small at 80 MHz). Fixed: the
+   period fraction of rate × dwell; a test pins the per-period sum.
+2. **Session ownership race** — the check and the claim sat in separate
+   lock blocks. Fixed: one lock block; a barrier test races eight runs.
+3. **Stale scan callbacks** — an old worker's completion released a newer
+   scan's hold. Fixed: the hold records its generation and a worker releases
+   only its own; teardown paths release unconditionally.
+4. **Conditioning failures ignored** — fixed: the manager remembers the
+   failure, `tcspcDirection` never claims reverse on an unconditioned card,
+   `beginScanHold` (through `ensureConditioned`) refuses scans and retries
+   the conditioning once; `ensureConnected` stays open for the diagnostics.
+5. **Mock memory retention** — fixed: the mock card keeps weak references
+   to its measurements.
+6. **Dark-count tutorial enabled disabled lasers** — fixed: new
+   `api.imcontrol.getLaserActive`; only lasers found on are switched and
+   put back.
+7. **Test signal bypassed the hold** — fixed: `TimeTaggerManager.setTestSignal`
+   checks writability; `test_signal_on` owns a calibration transaction for
+   enable → measure → restore; tutorial 01 uses it.
+8. **t0 tutorial double-counted** — fixed: `histogram()` measures with the
+   photon input at the block's configured delay inside a transaction and
+   restores it; the detector applies `-t0_ps` on top of that delay and puts
+   the input back after the scan; tutorial 06 suggests the absolute peak.
+9. **Measurement completion blocked cancellation** — fixed: bounded
+   `waitUntilFinished` polls with checkpoints and a 5 s margin
+   (`FINISH_MARGIN_S`); tests cover a stalled measurement and Stop.
+10. **Rep-rate restore** — fixed: the divider and the filter lists found on
+    the card are snapshotted and restored, also on failure.
+11. **Bandwidth tutorial's false "within budget"** — fixed: the overflow
+    baseline is taken before a count-rate measurement that spans the
+    interval.
+
+Found while implementing P3: the mock's line-delay sign cancelled a *late*
+clock with a *positive* delay, the opposite of the physics the delay rule
+encodes (a positive delay moves the markers later, so it cancels an *early*
+clock). The mock now models lateness = fault + card delay + pattern offset;
+the worker test cancels a late clock with a negative delay and a new test
+an early clock with a positive one.

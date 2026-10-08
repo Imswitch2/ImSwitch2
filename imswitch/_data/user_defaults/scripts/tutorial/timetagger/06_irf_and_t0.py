@@ -7,7 +7,8 @@ You will learn
     excitation pulse lands on the time axis, its width is the detector's
     and the card's timing resolution
   * ``t0_ps``: the FLIM detector's offset that moves the IRF peak to the
-    start of the window, and how to find it from the histogram
+    start of the window, and how to find it from the histogram -- as an
+    absolute position, so running this twice gives the same number
   * what a truncated window looks like, and why you never want one
 
 Setup
@@ -19,8 +20,7 @@ Setup
                 SPAD's IRF also shifts with wavelength. For t0 alone, the
                 sample does not matter.
 
-Next: 10_flim_preflight.py (07 to 09 need a scan and come with the next
-      release)
+Next: 07_line_clock_during_a_scan.py
 """
 
 import os
@@ -39,6 +39,9 @@ print(f'laser_rep_rate_mhz {rep_rate_mhz}, current t0_ps {t0_now}')
 
 # The histogram over one laser period, 32 ps bins, two seconds. The facade
 # returns forward time: in reverse mode it has already mirrored the axis.
+# It measures with the photon input at the card's configured delay (not
+# whatever the last scan left there, and not the detector's software roll),
+# so the peak is an absolute position. A scan must not be running.
 hist = tt.histogram(binwidth_ps=32, duration_s=2.0, laser_rep_rate_mhz=rep_rate_mhz)
 print(hist.summary())
 print()
@@ -54,13 +57,16 @@ for a, value in zip(edges[:-1], binned):
     print(f'{a:6.2f} ns |{bar}')
 print()
 
-# The IRF peak is where the pulse is. In forward mode t0_ps delays the
-# photon channel so the peak lands at the start of the window; the new
-# offset is the old one plus where the peak sits now. In reverse mode the
-# detector applies the same number as a circular roll instead.
-new_t0 = t0_now + int(round(hist.peak_ns * 1000))
-print(f'IRF peak at {hist.peak_ns:.3f} ns, FWHM {hist.fwhm_ns * 1000:.0f} ps')
-print(f'suggested t0_ps = {new_t0}  (current {t0_now} + peak {hist.peak_ns * 1000:.0f} ps)')
+# The IRF peak is where the pulse is. t0_ps is that position: in forward
+# mode the detector delays the photon input by -t0_ps on top of the
+# configured delay so the peak lands at the start of the window (and puts
+# the input back after the scan); in reverse mode it applies the same
+# number as a circular roll instead. Either way the number is absolute --
+# not "the old t0 plus what is left", which would double-count on a re-run.
+new_t0 = int(round(hist.peak_ns * 1000))
+print(f'IRF peak at {hist.peak_ns:.3f} ns, FWHM {hist.fwhm_ns * 1000:.0f} ps '
+      f'(photon input delay during the measurement: {hist.photon_delay_ps} ps)')
+print(f'suggested t0_ps = {new_t0}  (current {t0_now})')
 print()
 print('A window shorter than the period would cut the tail (forward) or the peak')
 print('(reverse) off; the detector defaults to one period, leave n_bins undeclared.')

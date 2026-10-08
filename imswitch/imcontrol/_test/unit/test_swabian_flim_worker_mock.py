@@ -334,7 +334,34 @@ def test_line_delay_fault_shifts_the_image_and_the_delay_setting_cancels_it():
     assert np.corrcoef(shifted[0], truth[0])[0, 1] < 0.5, "shifted by three pixels"
     assert np.corrcoef(shifted[0], np.roll(truth[0], -3))[0, 1] > 0.95
 
-    card.setDelay("line_clock", delay_ps)
+    # A late clock is cancelled by a *negative* lineClockDelayPs (the card
+    # moves its timestamps earlier); the positive sign would double it.
+    card.setDelay("line_clock", -delay_ps)
     frames, _ = _run_scan(nidaq, det)
     aligned, *_ = _lifetimes(frames)
     assert np.corrcoef(aligned[0], truth[0])[0, 1] > 0.95
+    assert card.tagger.getInputDelay(3) == -delay_ps
+
+
+def test_an_early_line_clock_takes_a_positive_delay_through_the_pattern():
+    stripes = MockSample(
+        "stripes",
+        lambda ny, nx: np.tile(np.where(np.arange(nx) % 8 < 4, 2.0e6, 1e5), (ny, 1)),
+        lambda ny, nx: np.full((ny, nx), 2.5),
+    )
+    # A galvo lagging its command: the line clock fires 2 pixels early.
+    early_ps = 2 * DWELL_SAMPLES * int(1e12 / SAMPLE_RATE)
+    nidaq, card, det = _rig(faults={"line_delay_ps": -early_ps},
+                            model_kwargs={"sample": stripes})
+    frames, _ = _run_scan(nidaq, det)
+    shifted, *_ = _lifetimes(frames)
+    truth = stripes.rate_map(NY, NX)
+    assert np.corrcoef(shifted[0], np.roll(truth[0], 2))[0, 1] > 0.95, "shifted right"
+
+    card.setDelay("line_clock", early_ps)
+    frames, _ = _run_scan(nidaq, det)
+    aligned, *_ = _lifetimes(frames)
+    assert np.corrcoef(aligned[0], truth[0])[0, 1] > 0.95
+    # The positive delay went into the marker pattern, not onto the card.
+    assert card.tagger.getInputDelay(3) == 0
+    assert det._scan["pattern_offset_ps"] == 10_000 + early_ps

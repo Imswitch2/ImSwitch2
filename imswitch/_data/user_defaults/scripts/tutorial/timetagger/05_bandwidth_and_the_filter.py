@@ -40,8 +40,11 @@ print()
 # Overflows: the card dropped tags because the link could not carry them.
 # overflows() is the one reader of the card's counter, kept as a running
 # total, so a frame and this script never hide an overflow from each other.
+# The card only transmits (and so only overflows) while a measurement is
+# running, so take the baseline first and keep one running for the whole
+# interval; a baseline taken after the count above would miss its overflows.
 before = tt.overflows()
-sleep(2.0)
+tt.count_rates(duration_s=2.0)
 dropped = tt.overflows() - before
 print(f'overflows in 2 s: {dropped}')
 if dropped:

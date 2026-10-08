@@ -144,6 +144,7 @@ class TimeTaggerManager(SignalInterface):
         self._tagger = None
         self._isMock = False
         self._connectError: Optional[Exception] = None
+        self._conditioningError: Optional[Exception] = None
         self._lock = threading.RLock()
         self._holders: set = set()
         self._calibrationOwner: Optional[str] = None
@@ -178,6 +179,12 @@ class TimeTaggerManager(SignalInterface):
             # built after the low-level managers), so the mock card knows
             # the scan's edges before a Flim is built on it.
             scanBuilt.connect(self._onScanBuilt)
+        scanStarted = getattr(nidaqManager, "sigScanStarted", None)
+        if scanStarted is not None and hasattr(scanStarted, "connect"):
+            scanStarted.connect(self._onScanStarted)
+        scanDone = getattr(nidaqManager, "sigScanDone", None)
+        if scanDone is not None and hasattr(scanDone, "connect"):
+            scanDone.connect(self._onScanDone)
 
     # ------------------------------------------------------------------ #
     # Connection                                                           #
@@ -220,13 +227,7 @@ class TimeTaggerManager(SignalInterface):
             self._api = api
             self._tagger = tagger
             self._connectError = None
-            try:
-                self._applyConditioning()
-            except Exception:
-                self.__logger.exception(
-                    "Time Tagger connected but its channel conditioning "
-                    "could not be applied"
-                )
+            self._tryApplyConditioning()
             self.__logger.info(
                 f"Time Tagger connected: {self.model} ({self.serial})"
                 f"{' [mock]' if self._isMock else ''}; roles "
@@ -248,7 +249,7 @@ class TimeTaggerManager(SignalInterface):
             self._isMock = True
             self._tagger = self._api.createTimeTagger()
             self._connectError = None
-            self._applyConditioning()
+            self._tryApplyConditioning()
             return True
         if info.useMockOnFailure and not simulatedRig:
             self.__logger.error(
@@ -305,12 +306,66 @@ class TimeTaggerManager(SignalInterface):
         except Exception:
             self.__logger.exception("Could not feed the scan's edges to the mock card")
 
+    def _onScanStarted(self, *_args):
+        """The scan's clocks start now: the mock card times its edges from
+        here, so a measurement sees the ones that fall into its window."""
+        self._mockHook("start_scan")
+
+    def _onScanDone(self, *_args):
+        """The scan's clocks have stopped: tell the mock card so its scan
+        inputs count 0 Hz again (the edges stay for the final frame)."""
+        self._mockHook("end_scan")
+
+    def _mockHook(self, name: str):
+        if not self._isMock or self._tagger is None:
+            return
+        hook = getattr(self._tagger, name, None)
+        if hook is not None:
+            try:
+                hook()
+            except Exception:
+                self.__logger.exception(f"Mock card hook {name} failed")
+
     def ensureConnected(self):
-        """Raise ``TimeTaggerError`` unless the card is open (retrying once)."""
+        """Raise ``TimeTaggerError`` unless the card is open (retrying once).
+
+        Open is enough for the diagnostics (count rates, the test signal:
+        what you run to find out *why* the conditioning failed); a scan
+        needs :meth:`ensureConditioned`, which :meth:`beginScanHold` calls.
+        """
         if self._tagger is None and not self.connect():
             raise TimeTaggerError(
                 f"Time Tagger is not available: {self._connectError}"
             ) from self._connectError
+
+    def ensureConditioned(self):
+        """Raise ``TimeTaggerError`` unless the card is open *and* conditioned.
+
+        A card whose conditioning (trigger levels, dead times, delays, the
+        conditional filter) could not be applied is retried once and
+        otherwise refused: a scan on an unconditioned card would read
+        unfiltered data as reverse TCSPC, or count at the wrong trigger
+        level, without anyone noticing.
+        """
+        self.ensureConnected()
+        if self._conditioningError is not None:
+            with self._lock:
+                self._tryApplyConditioning()
+            if self._conditioningError is not None:
+                raise TimeTaggerError(
+                    "Time Tagger is connected but its channel conditioning "
+                    f"could not be applied: {self._conditioningError}"
+                ) from self._conditioningError
+
+    @property
+    def conditioningError(self) -> Optional[Exception]:
+        """The error of the last failed conditioning write, else ``None``."""
+        return self._conditioningError
+
+    @property
+    def conditioned(self) -> bool:
+        """Whether the card carries the configured conditioning."""
+        return self._tagger is not None and self._conditioningError is None
 
     @property
     def connected(self) -> bool:
@@ -386,11 +441,31 @@ class TimeTaggerManager(SignalInterface):
         PC, so the histogram must be started by the photon and stopped by the
         sync. The FLIM detector swaps its ``Flim`` channels accordingly.
         """
-        return "reverse" if self._info.filterSyncByPhotons else "forward"
+        if not self._info.filterSyncByPhotons:
+            return "forward"
+        if self._tagger is not None and self._conditioningError is not None:
+            # The filter was asked for but not applied: the card transmits
+            # every sync, so the data is forward whatever the block says.
+            return "forward"
+        return "reverse"
 
     # ------------------------------------------------------------------ #
     # Conditioning                                                         #
     # ------------------------------------------------------------------ #
+
+    def _tryApplyConditioning(self) -> bool:
+        """Apply the conditioning, remembering a failure (``_lock`` held)."""
+        try:
+            self._applyConditioning()
+        except Exception as error:
+            self._conditioningError = error
+            self.__logger.exception(
+                "Time Tagger connected but its channel conditioning could "
+                "not be applied; scans are refused until it is"
+            )
+            return False
+        self._conditioningError = None
+        return True
 
     def _applyConditioning(self):
         tagger = self._tagger
@@ -398,13 +473,40 @@ class TimeTaggerManager(SignalInterface):
             tagger.setTriggerLevel(channel.channel, channel.trigger_v)
             if channel.deadtime_ps:
                 tagger.setDeadtime(channel.channel, channel.deadtime_ps)
-            if channel.delay_ps:
-                tagger.setInputDelay(channel.channel, channel.delay_ps)
+            tagger.setInputDelay(channel.channel, self._hardwareDelayPs(channel))
         if self._info.filterSyncByPhotons:
             tagger.setConditionalFilter(
                 trigger=[self.channel("photons")],
                 filtered=[self.channel("laser_sync")],
             )
+
+    def _hardwareDelayPs(self, channel: ChannelInfo) -> int:
+        """The delay the card applies to an input.
+
+        A positive line-clock delay is *not* applied here: it moves the
+        detector's pixel-marker pattern instead (``patternOffsetPs``), so
+        the raw line channel stays visible to the diagnostics; a negative
+        one has to be a card delay. The frame clock has no pattern, so it
+        always takes the full delay on the card.
+        """
+        if channel.role == "line_clock" and channel.delay_ps > 0:
+            return 0
+        return int(channel.delay_ps)
+
+    def hardwareDelayPs(self, role: str) -> int:
+        """The input delay the card carries for ``role`` (see above); the
+        FLIM detector adds its ``t0_ps`` to this on the photon input."""
+        return self._hardwareDelayPs(self.channelInfo(role))
+
+    def patternOffsetPs(self, role: str = "line_clock") -> int:
+        """Where a detector starts its pixel markers after an edge of ``role``:
+        the block's ``pixelPatternOffsetPs``, plus the line clock's positive
+        delay when the markers hang off the line clock (the frame clock has
+        no pattern: its delay is on the card)."""
+        offset = int(getattr(self._info, "pixelPatternOffsetPs", 0) or 0)
+        if role == "line_clock" and self.hasRole(role):
+            offset += max(0, int(self.channelInfo(role).delay_ps))
+        return offset
 
     def _checkWritable(self, what: str, owner: Optional[str] = None):
         if self._holders:
@@ -430,16 +532,33 @@ class TimeTaggerManager(SignalInterface):
                 info.deadtime_ps, info.delay_ps,
             )
 
+    def setTestSignal(self, roles, enabled: bool, *,
+                      owner: Optional[str] = None) -> None:
+        """The card's built-in test signal on these roles' inputs.
+
+        Refused while a scan holds the card or another calibration owns
+        it: a test signal on the line clock during a scan would inject
+        false pixel markers.
+        """
+        with self._lock:
+            self._checkWritable("test signal", owner)
+            channels = [self.channel(role) for role in roles]
+            self.tagger.setTestSignal(channels, bool(enabled))
+
     def setDelay(self, role: str, delay_ps: int, *,
                  owner: Optional[str] = None) -> None:
+        """Set a role's delay. For ``line_clock`` the frame clock follows
+        (one delay for both DAQ-derived roles), and a positive value is
+        applied as a pattern offset rather than a card delay."""
         with self._lock:
             self._checkWritable("input delay", owner)
-            info = self.channelInfo(role)
-            self.tagger.setInputDelay(info.channel, int(delay_ps))
-            self._channels[role] = ChannelInfo(
-                info.role, info.channel, info.trigger_v,
-                info.deadtime_ps, int(delay_ps),
-            )
+            roles = [role] + (["frame_clock"] if role == "line_clock" and self.hasRole("frame_clock") else [])
+            for each in roles:
+                info = self.channelInfo(each)
+                updated = ChannelInfo(info.role, info.channel, info.trigger_v,
+                                      info.deadtime_ps, int(delay_ps))
+                self.tagger.setInputDelay(info.channel, self._hardwareDelayPs(updated))
+                self._channels[each] = updated
 
     def setDeadtime(self, role: str, deadtime_ps: int, *,
                     owner: Optional[str] = None) -> None:
@@ -464,6 +583,7 @@ class TimeTaggerManager(SignalInterface):
         calibration transaction owns the card: a scan must not start on
         temporary settings.
         """
+        self.ensureConditioned()
         with self._lock:
             if self._calibrationOwner is not None:
                 raise TimeTaggerBusyError(
@@ -572,7 +692,7 @@ class TimeTaggerManager(SignalInterface):
             total = self.overflows()
             overflows = total - self._healthOverflowSeen
             self._healthOverflowSeen = total
-        filterOn = bool(self._info.filterSyncByPhotons)
+        filterOn = self.tcspcDirection == "reverse"
         health = TimeTaggerHealth(
             rates_hz=rates,
             overflows=overflows,
@@ -650,6 +770,10 @@ class TimeTaggerManager(SignalInterface):
             "connected": self.connected,
             "tcspc_direction": self.tcspcDirection,
             "filter_sync_by_photons": bool(self._info.filterSyncByPhotons),
+            "conditioned": self.conditioned,
+            "conditioning_error": (
+                str(self._conditioningError) if self._conditioningError else None
+            ),
             "roles": {
                 role: {
                     "channel": c.channel,

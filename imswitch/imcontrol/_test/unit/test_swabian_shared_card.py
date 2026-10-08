@@ -226,8 +226,10 @@ def test_scan_on_the_mock_card_holds_it_until_the_final_frame_lands():
     assert flim.n_pixels == 12
     assert flim.start_channel == 2 and flim.click_channel == 1
     assert manager._ev_pix_begin.trigger_channel == 3
+    # The pattern starts pixelPatternOffsetPs after the line edge so the
+    # frame marker leads pixel 0 whatever the cable skew.
     np.testing.assert_array_equal(
-        manager._ev_pix_begin.pattern, np.arange(4) * 10_000_000,
+        manager._ev_pix_begin.pattern, 10_000 + np.arange(4) * 10_000_000,
     )
     assert card.tagger.getInputDelay(1) == 0  # t0_ps 0
 
