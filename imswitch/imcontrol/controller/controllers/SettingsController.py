@@ -641,7 +641,8 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         produced -- after a point scan, the scan image (what the live view
         shows for it). A script compares two detectors' images with it
         (tutorial timetagger/09). """
-        return np.array(self._master.detectorsManager[detectorName].getLatestFrame(), copy=True)
+        detector = self._master.detectorsManager[detectorName]
+        return np.array(detector.getLatestFrameShared(), copy=True)
 
     @APIExport(runOnUIThread=True)
     def getDetectorParameters(self, detectorName: str) -> Dict[str, Dict[str, Any]]:
