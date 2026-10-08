@@ -150,12 +150,12 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._master = mock_master
     controller._widget = mock_widget
     controller._logger = Mock()
-    controller._manualPowerValues = {}
+    controller._livePowerValues = {}
     controller._scanPowerValues = {}
-    controller._currentPowerContext = LaserPowerContext.MANUAL
+    controller._currentPowerContext = LaserPowerContext.LIVE
     controller._scanLaserState = {}
     controller._selectedPresetByContext = {
-        LaserPowerContext.MANUAL: None,
+        LaserPowerContext.LIVE: None,
         LaserPowerContext.SCAN: None,
     }
 
@@ -180,8 +180,8 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._isMilliwattUnit = lambda units: LaserController._isMilliwattUnit(controller, units)
     controller._selectedPresetName = lambda context: LaserController._selectedPresetName(controller, context)
     controller._setSelectedPresetName = lambda context, name: LaserController._setSelectedPresetName(controller, context, name)
-    controller._manualPowerValue = lambda name: LaserController._manualPowerValue(controller, name)
-    controller.getLaserPower = lambda name, context=LaserPowerContext.MANUAL.value: LaserController.getLaserPower(
+    controller._livePowerValue = lambda name: LaserController._livePowerValue(controller, name)
+    controller.getLaserPower = lambda name, context=LaserPowerContext.LIVE.value: LaserController.getLaserPower(
         controller, name, context
     )
 
@@ -198,7 +198,7 @@ def test_get_component_state(laser_controller, mock_widget):
     """Test getComponentState returns correct structure."""
     mock_widget.isLaserActive.side_effect = lambda name: name == '488nm'
     mock_widget.getValue.side_effect = lambda name: 100.0 if name == '488nm' else 0
-    laser_controller._selectedPresetByContext[LaserPowerContext.MANUAL] = 'Default'
+    laser_controller._selectedPresetByContext[LaserPowerContext.LIVE] = 'Default'
     
     state = laser_controller.getComponentState()
     
@@ -409,7 +409,7 @@ def test_apply_preset_skips_unavailable_and_binary_lasers(mock_laser_manager, mo
     LaserController.applyPreset(controller, preset)
 
     controller.setLaserPower.assert_called_once_with(
-        '488nm', 12.5, LaserPowerContext.MANUAL
+        '488nm', 12.5, LaserPowerContext.LIVE
     )
     assert controller._logger.warning.call_count == 2
 
@@ -574,7 +574,7 @@ def test_round_trip_state_persistence(laser_controller, mock_widget):
     # Setup initial state
     mock_widget.isLaserActive.side_effect = lambda name: name == '488nm'
     mock_widget.getValue.side_effect = lambda name: 80.0 if name == '488nm' else 0
-    laser_controller._selectedPresetByContext[LaserPowerContext.MANUAL] = 'TestPreset'
+    laser_controller._selectedPresetByContext[LaserPowerContext.LIVE] = 'TestPreset'
     
     # Capture state
     state = laser_controller.getComponentState()

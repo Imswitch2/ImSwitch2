@@ -6,7 +6,7 @@ from .basewidgets import Widget
 
 
 class LaserWidget(Widget):
-    """Laser widget with contextual Manual and Scan power views."""
+    """Laser widget with contextual Live and Scan power views."""
 
     sigEnableChanged = QtCore.Signal(str, bool)
     sigValueChanged = QtCore.Signal(str, float)
@@ -29,7 +29,7 @@ class LaserWidget(Widget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.laserModules = {}
-        self._powerContext = 'manual'
+        self._powerContext = 'live'
 
         self.setMinimumSize(0, 0)
         self.layout = QtWidgets.QGridLayout()
@@ -56,9 +56,9 @@ class LaserWidget(Widget):
         contextLayout = QtWidgets.QHBoxLayout(self.contextFrame)
         contextLayout.setContentsMargins(0, 0, 0, 0)
         contextLayout.setSpacing(0)
-        self.manualModeButton = QtWidgets.QPushButton('MANUAL')
+        self.liveModeButton = QtWidgets.QPushButton('LIVE')
         self.scanModeButton = QtWidgets.QPushButton('SCAN')
-        for button in (self.manualModeButton, self.scanModeButton):
+        for button in (self.liveModeButton, self.scanModeButton):
             button.setCheckable(True)
             button.setMinimumHeight(38)
             button.setMinimumWidth(115)
@@ -69,12 +69,12 @@ class LaserWidget(Widget):
             button.setFont(font)
         self.contextButtonGroup = QtWidgets.QButtonGroup(self)
         self.contextButtonGroup.setExclusive(True)
-        self.contextButtonGroup.addButton(self.manualModeButton)
+        self.contextButtonGroup.addButton(self.liveModeButton)
         self.contextButtonGroup.addButton(self.scanModeButton)
-        contextLayout.addWidget(self.manualModeButton)
+        contextLayout.addWidget(self.liveModeButton)
         contextLayout.addWidget(self.scanModeButton)
-        self.manualModeButton.clicked.connect(
-            lambda checked: checked and self._contextClicked('manual')
+        self.liveModeButton.clicked.connect(
+            lambda checked: checked and self._contextClicked('live')
         )
         self.scanModeButton.clicked.connect(
             lambda checked: checked and self._contextClicked('scan')
@@ -89,7 +89,7 @@ class LaserWidget(Widget):
         )
         self.scanEditingLabel.setToolTip(
             'Scan power values are being edited. Changes are stored for acquisition '
-            'and do not directly control Manual illumination.'
+            'and do not directly control Live illumination.'
         )
         self.scanEditingLabel.hide()
 
@@ -127,7 +127,7 @@ class LaserWidget(Widget):
         self.layout.addLayout(self.topBar, 0, 0)
         self.layout.addWidget(self.scrollArea, 1, 0)
 
-        self.setPowerContext('manual', emitSignal=False)
+        self.setPowerContext('live', emitSignal=False)
         self.setPresetNames([], selected=None)
 
     def _contextClicked(self, context):
@@ -200,11 +200,11 @@ class LaserWidget(Widget):
 
     def setPowerContext(self, context, emitSignal=False):
         context = str(getattr(context, 'value', context)).lower()
-        if context not in ('manual', 'scan'):
+        if context not in ('live', 'scan'):
             raise ValueError(f'Unknown laser power context: {context!r}')
         changed = context != self._powerContext
         self._powerContext = context
-        self.manualModeButton.setChecked(context == 'manual')
+        self.liveModeButton.setChecked(context == 'live')
         self.scanModeButton.setChecked(context == 'scan')
         for module in self.laserModules.values():
             module.setContext(context)
@@ -335,7 +335,7 @@ class LaserModule(QtWidgets.QWidget):
         self.valueUnits = valueUnits
         self.isBinary = valueRange is None
         self.isModulated = all(num > 0 for num in frequencyRange)
-        self._context = 'manual'
+        self._context = 'live'
 
         isBinary = self.isBinary
         isModulated = self.isModulated
@@ -584,10 +584,10 @@ class LaserModule(QtWidgets.QWidget):
 
     def setContext(self, context):
         self._context = str(getattr(context, 'value', context)).lower()
-        manual = self._context == 'manual'
-        self.enableButton.setVisible(manual)
+        live = self._context == 'live'
+        self.enableButton.setVisible(live)
         if self.modulationGroup is not None:
-            self.modulationGroup.setVisible(manual)
+            self.modulationGroup.setVisible(live)
         if not self.isBinary:
             self.powerFrame.setVisible(True)
         self.setAOOwned(False)
@@ -608,7 +608,7 @@ class LaserModule(QtWidgets.QWidget):
 
     def setScanActive(self, active):
         # Muting is visual only; inactive direct Scan powers remain editable.
-        self._powerOpacity.setOpacity(1.0 if active or self._context == 'manual' else 0.55)
+        self._powerOpacity.setOpacity(1.0 if active or self._context == 'live' else 0.55)
 
     def setSecondaryStatus(
         self, text, *, emphasized=False, muted=False, tooltip='', badge=False

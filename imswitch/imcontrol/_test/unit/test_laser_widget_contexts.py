@@ -20,7 +20,7 @@ def test_context_switch_is_separate_from_preset_loading(qtbot):
     widget.sigPresetSelected.connect(loaded.append)
     widget.sigPowerContextChanged.connect(contexts.append)
 
-    widget.setPresetNames(['Manual A', 'Manual B'], selected='Manual A')
+    widget.setPresetNames(['Live A', 'Live B'], selected='Live A')
     widget.setPowerContext('scan', emitSignal=False)
     widget.setPresetNames(['Scan A'], selected='Scan A')
 
@@ -30,7 +30,7 @@ def test_context_switch_is_separate_from_preset_loading(qtbot):
     assert widget.getCurrentPreset() == 'Scan A'
 
 
-def test_scan_view_hides_manual_controls_and_ao_replaces_direct_value(qtbot):
+def test_scan_view_hides_live_controls_and_ao_replaces_direct_value(qtbot):
     widget = _widget(qtbot)
     module = widget.laserModules['488']
 
@@ -71,11 +71,11 @@ def test_context_bar_is_fixed_above_scroll_area_and_prominent(qtbot):
 
     assert widget.layout.itemAtPosition(0, 0).layout() is widget.topBar
     assert widget.layout.itemAtPosition(1, 0).widget() is widget.scrollArea
-    assert widget.manualModeButton.minimumHeight() >= 38
+    assert widget.liveModeButton.minimumHeight() >= 38
     assert widget.scanModeButton.minimumHeight() >= 38
-    assert widget.manualModeButton.minimumWidth() >= 115
+    assert widget.liveModeButton.minimumWidth() >= 115
     assert widget.scanModeButton.minimumWidth() >= 115
-    assert widget.manualModeButton.font().bold()
+    assert widget.liveModeButton.font().bold()
     assert widget.scanModeButton.font().bold()
 
 
@@ -87,11 +87,11 @@ def test_scan_context_shows_amber_editing_banner_without_restyling_content(qtbot
     widget.setPowerContext('scan', emitSignal=False)
 
     assert not widget.scanEditingLabel.isHidden()
-    assert widget.scanEditingLabel.text() == 'Editing scan powers'
+    assert widget.scanEditingLabel.text() == 'EDITING SCAN POWERS'
     assert '#d6b15d' in widget.scanEditingLabel.styleSheet().lower()
     assert widget.lasersGridContainer.styleSheet() == default_style
 
-    widget.setPowerContext('manual', emitSignal=False)
+    widget.setPowerContext('live', emitSignal=False)
     assert widget.scanEditingLabel.isHidden()
     assert widget.lasersGridContainer.styleSheet() == default_style
 

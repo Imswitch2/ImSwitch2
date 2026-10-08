@@ -68,7 +68,7 @@ class ViewSetupInfo(SetupInfo):
     """ Additional ROIs available to select in detector settings. """
 
     laserPresets: Dict[str, Dict[str, 'LaserPresetInfo']] = field(default_factory=dict)
-    """ Manual laser presets available to select (map preset name -> laser
+    """ Live laser presets available to select (map preset name -> laser
     name -> LaserPresetInfo). Kept under its historical key for backward
     compatibility. """
 

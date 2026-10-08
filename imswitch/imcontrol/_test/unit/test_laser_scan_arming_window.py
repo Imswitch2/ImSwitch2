@@ -19,7 +19,7 @@ arms both. Other defects fixed alongside, all previously silent:
   bad read.
 
 Contract: a laser in the scan's TTL list is gated by the scan and its paired
-power device is switched on, both regardless of their manual toggles and both
+power device is switched on, both regardless of their Live toggles and both
 off afterwards; their on/off buttons lock while the setpoints stay editable;
 lasers outside the list are never touched.
 
@@ -220,7 +220,7 @@ def test_laser_outside_the_ttl_list_is_untouched():
     assert '640' not in ctrl._widget.enableEditable
 
 
-def test_arming_is_independent_of_the_manual_toggle():
+def test_arming_is_independent_of_the_live_toggle():
     """Ticking the box is the authority; the on/off button is not consulted."""
     ctrl = _controller(names=('561AOTF',))
 
@@ -230,13 +230,13 @@ def test_arming_is_independent_of_the_manual_toggle():
 
 
 @pytest.mark.parametrize(
-    ('manual_active', 'participating'),
+    ('live_active', 'participating'),
     ((True, True), (False, True), (True, False), (False, False)),
 )
-def test_manual_state_and_scan_participation_baseline(manual_active, participating):
-    """Freeze the pre-Manual/Scan lifecycle contract before Patch 3 changes it."""
+def test_live_state_and_scan_participation_baseline(live_active, participating):
+    """Freeze the pre-Live/Scan lifecycle contract before Patch 3 changes it."""
     ctrl = _controller(names=('488',))
-    ctrl._widget.active['488'] = manual_active
+    ctrl._widget.active['488'] = live_active
 
     LaserController.scanDevicesResolved(
         ctrl, ['488'] if participating else []
@@ -250,9 +250,9 @@ def test_manual_state_and_scan_participation_baseline(manual_active, participati
         assert calls == []
         assert ctrl._scanArmedLasers == []
 
-    # Patch 1 must not alter Manual ON/OFF at scan arming. Patch 3 will
-    # intentionally change this characterization by suppressing Manual light.
-    assert ctrl._widget.active['488'] is manual_active
+    # Patch 1 must not alter Live ON/OFF at scan arming. Patch 3 will
+    # intentionally change this characterization by suppressing Live light.
+    assert ctrl._widget.active['488'] is live_active
 
 
 # --------------------------------------------------------------------------- #
@@ -316,10 +316,10 @@ def test_pause_is_idempotent():
     assert ctrl._master.lasersManager['561AOTF'].calls == [('enabled', False)]
 
 
-def test_a_manually_enabled_laser_is_not_paused():
+def test_a_live_enabled_laser_is_not_paused():
     """The pause covers exactly the emission the arming switched on. A laser
     in the TTL list with no power pairing was enabled by hand (or gates over
-    its own line) and keeps its manual state, just as it does at arming."""
+    its own line) and keeps its Live state, just as it does at arming."""
     ctrl = _controller(names=('561AOTF',))
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
     ctrl._master.lasersManager['561AOTF'].calls.clear()
