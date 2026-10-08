@@ -839,7 +839,7 @@ def test_lock_click_joins_pending_target_batch_and_captures_draft_row_values():
         collection.deleteLater()
 
 
-def test_only_raster_multi_foci_exposes_row_lock_controls():
+def test_raster_and_vector_multi_foci_expose_row_lock_controls():
     _app()
     from slmcore.qt.sections.collection import SectionsCollectionView
 
@@ -850,7 +850,7 @@ def test_only_raster_multi_foci_exposes_row_lock_controls():
     try:
         cgh = _cgh_group(collection)
         assert set(cgh._lock_buttons["multi_foci"]) == {"fov","n_foci"}
-        assert "multi_foci_vector" not in cgh._lock_buttons
+        assert set(cgh._lock_buttons["multi_foci_vector"]) == {"fov","n_foci"}
 
         fov = cgh._lock_buttons["multi_foci"]["fov"]
         n_foci = cgh._lock_buttons["multi_foci"]["n_foci"]

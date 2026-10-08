@@ -42,10 +42,10 @@ LOCALIZATION_PARAMS = MappingProxyType({
         ),
     ),
     "manual_stagger":ParamSpec(
-        0.0,float,min_value=0.0,max_value=1.0,step=0.05,decimals=2,
+        0.0,float,min_value=-1.0,max_value=1.0,step=0.05,decimals=2,
         editor=EditorKind.DOUBLE_SPIN_BOX,
         label="Stagger",
-        tooltip="Odd-row X shift as a fraction of the X lattice period.",
+        tooltip="Signed odd-row X shift as a fraction of the X lattice period.",
     ),
     "period_prior_mode":ParamSpec(
         "target",str,choices=("target","manual","auto"),

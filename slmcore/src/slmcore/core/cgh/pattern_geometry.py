@@ -46,8 +46,8 @@ class LatticeTargetGeometry(PatternGeometry):
             raise ValueError("period_x_reference_px must be finite and > 0")
         if not math.isfinite(py) or py <= 0:
             raise ValueError("period_y_reference_px must be finite and > 0")
-        if not math.isfinite(stagger) or not 0.0 <= stagger <= 1.0:
-            raise ValueError("stagger must be finite and in [0, 1]")
+        if not math.isfinite(stagger) or not -1.0 <= stagger <= 1.0:
+            raise ValueError("stagger must be finite and in [-1, 1]")
         if count_x <= 0 or count_y <= 0:
             raise ValueError("count_x/count_y must be > 0")
 

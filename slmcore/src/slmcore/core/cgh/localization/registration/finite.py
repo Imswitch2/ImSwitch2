@@ -72,7 +72,9 @@ def _infer_finite_grid_initializer(detections,model):
         if len(complete_labels) < minimum_complete:
             continue
 
-        for reverse_rows in (False,True):
+        for reverse_rows,reverse_columns in (
+            (False,False),(False,True),(True,False),(True,True),
+        ):
             correspondences = _finite_grid_correspondences(
                 points=points,
                 direction=direction,
@@ -82,6 +84,7 @@ def _infer_finite_grid_initializer(detections,model):
                 j_values=j_values,
                 index_lookup=index_lookup,
                 reverse_rows=reverse_rows,
+                reverse_columns=reverse_columns,
             )
             if correspondences is None:
                 continue
@@ -165,6 +168,7 @@ def _infer_finite_grid_initializer(detections,model):
                     "row_cluster_score":float(row_score),
                     "row_direction":tuple(float(v) for v in direction),
                     "row_order_reversed":bool(reverse_rows),
+                    "column_order_reversed":bool(reverse_columns),
                 }
                 if "parity_perpendicular_ratio" in stagger_diagnostics:
                     diagnostics["parity_perpendicular_ratio"] = float(
@@ -197,7 +201,7 @@ def _infer_finite_grid_initializer(detections,model):
 
 def _finite_grid_correspondences(
     *,points,direction,row_labels,complete_labels,
-    i_values,j_values,index_lookup,reverse_rows,
+    i_values,j_values,index_lookup,reverse_rows,reverse_columns,
 ):
     ny = int(j_values.size)
     nx = int(i_values.size)
@@ -216,6 +220,8 @@ def _finite_grid_correspondences(
         ordered = detection_ids[
             np.argsort(direction.dot(points[:,detection_ids]))
         ]
+        if reverse_columns:
+            ordered = ordered[::-1]
         if ordered.size != nx:
             continue
         target_j = target_row_for_label[label]

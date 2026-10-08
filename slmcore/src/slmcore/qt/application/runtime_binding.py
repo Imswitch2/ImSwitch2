@@ -211,7 +211,7 @@ class SLMRuntimeViewBinding(QtCore.QObject):
     def request_target_lock(
         self,section_key: str,target_key: str,kind: str | None,
     ) -> None:
-        """Apply or join one raster-lattice lock request transactionally."""
+        """Apply or join one lattice lock request transactionally."""
         self._require_active()
         if not self._writes_enabled:
             return

@@ -10,11 +10,9 @@ from slmcore.core.cgh.localization import (
 from slmcore.core.cgh.localization.model import DetectedSpots,LatticeRegistrationOptions
 from slmcore.core.cgh.targets.lattice import LatticeDefinition
 
-
 def _indices(nx,ny):
     i,j = np.meshgrid(np.arange(nx),np.arange(ny),indexing="xy")
     return np.vstack([i.ravel(),j.ravel()])
-
 
 def _detections_for_stagger(stagger,nx=17,ny=15):
     indices = _indices(nx,ny)
@@ -36,17 +34,15 @@ def _detections_for_stagger(stagger,nx=17,ny=15):
         crop_coord=(0,32,0,32),
     )
 
-
 def test_canonical_representation_preserves_public_stagger_positions():
     indices = _indices(7,6)
-    for stagger in (0.0,0.2,0.5,0.9,1.0):
+    for stagger in (-1.0,-0.9,-0.5,-0.2,0.0,0.2,0.5,0.9,1.0):
         representation = LatticeRepresentation.alternating_rows(indices,stagger)
         expected = indices.astype(np.float64)
         expected[0] += (indices[1] % 2) * stagger
         assert np.allclose(representation.logical_positions,expected)
         canonical = float(representation.diagnostics["canonical_stagger"])
         assert -0.5 <= canonical <= 0.5
-
 
 def test_lattice_definition_positions_are_unchanged_by_representation():
     lattice = LatticeDefinition(
@@ -70,6 +66,37 @@ def test_lattice_definition_positions_are_unchanged_by_representation():
     assert np.allclose(lattice.spot_positions_kxy(),expected,atol=1e-14)
 
 
+def test_known_signed_stagger_registers_with_reflected_x_axis():
+    indices = _indices(17,15)
+    for stagger in (-0.8,-0.5,-0.2,0.2,0.5,0.8):
+        representation = LatticeRepresentation.alternating_rows(indices,stagger)
+        logical = representation.centered_logical_positions
+        linear = np.array([[-10.7,1.8],[0.9,11.4]],dtype=np.float64)
+        translation = np.array([130.0,120.0],dtype=np.float64)
+        points = linear.dot(logical) + translation[:,None]
+        rng = np.random.default_rng(2)
+        points = points + rng.normal(scale=0.05,size=points.shape)
+        count = points.shape[1]
+        image = np.zeros((32,32),dtype=np.float64)
+        detections = DetectedSpots(
+            positions_px=points,
+            intensities=np.ones(count,dtype=np.float64),
+            scores=np.ones(count,dtype=np.float64),
+            cropped_image=image,
+            processed_image=image,
+            crop_coord=(0,32,0,32),
+        )
+        model = make_lattice_model(indices,stagger=stagger)
+        result = register_lattice(
+            detections,model,
+            LatticeRegistrationOptions(lattice_candidate_search_mode="fast"),
+        )
+        assert result.matched_count == indices.shape[1]
+        assert result.rms_residual_px < 0.2
+        assert result.diagnostics["resolved_stagger"] == stagger
+        finite = result.model.diagnostics["finite_grid_inference"]
+        assert finite["column_order_reversed"] is True
+
 def test_unknown_stagger_is_inferred_before_registration():
     indices,detections = _detections_for_stagger(0.27)
     unresolved = make_lattice_model(indices,stagger=None)
@@ -83,13 +110,11 @@ def test_unknown_stagger_is_inferred_before_registration():
     assert abs(float(result.diagnostics["resolved_stagger"])-0.27) < 0.03
     assert result.rms_residual_px < 0.2
 
-
 def test_lattice_size_is_inferred_from_image_rows():
     _indices_value,detections = _detections_for_stagger(0.27,nx=17,ny=15)
     shape,diagnostics = infer_lattice_shape(detections)
     assert shape == (17,15)
     assert diagnostics["source"] == "image"
-
 
 def test_auto_size_and_auto_stagger_localize_without_target_geometry():
     nx,ny = 13,11

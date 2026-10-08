@@ -63,6 +63,13 @@ class ParamField(QtWidgets.QWidget):
 
         self.label = QtWidgets.QLabel()
         self.editor = self._create_editor(editor_width)
+        if isinstance(
+            self.editor,(QtWidgets.QSpinBox,QtWidgets.QDoubleSpinBox),
+        ):
+            # Free-form numeric typing is provisional until the editor is
+            # finished. Discrete arrow/key/wheel stepping still commits live
+            # through the spinbox valueChanged signal.
+            self._commit_mode = ParameterCommitMode.EDIT_FINISHED
         self.complementaryLabel = QtWidgets.QLabel()
         self.complementaryLabel.setStyleSheet("color: #888;")
         self.complementaryLabel.setVisible(self._show_complementary)

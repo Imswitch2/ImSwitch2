@@ -20,10 +20,8 @@ from slmcore.core.cgh.signature import CGHSignature
 from slmcore.core.cgh.targets.resolution import TargetResolution
 from slmcore.core.cgh.pattern_geometry import LatticeTargetGeometry
 
-
 def _defaults():
     return {key:spec.default for key,spec in LOCALIZATION_PARAMS.items()}
-
 
 def test_legacy_crop_kernel_parameter_migrates_to_margin():
     values = normalize_localization_parameter_input({
@@ -33,7 +31,6 @@ def test_legacy_crop_kernel_parameter_migrates_to_margin():
     assert values["crop_threshold"] == 0.5
     assert values["crop_margin_px"] == 2
     assert "dilation_kernel_size" not in values
-
 
 def _resolution(indices, *, period_x=6.0, period_y=8.0, stagger=0.5):
     n = indices.shape[1]
@@ -62,7 +59,6 @@ def _resolution(indices, *, period_x=6.0, period_y=8.0, stagger=0.5):
             count_y=int(np.unique(indices[1]).size),
         ),
     )
-
 
 def test_hint_resolution_target_manual_none_and_safe_period_only():
     indices = np.array([[0,1,0,1],[0,0,1,1]],dtype=np.int64)
@@ -152,6 +148,34 @@ def test_hint_resolution_target_manual_none_and_safe_period_only():
     assert hints.count_source == "auto"
 
 
+def test_signed_target_and_manual_stagger_are_preserved():
+    indices = np.array([[0,1,0,1],[0,0,1,1]],dtype=np.int64)
+    resolution = _resolution(indices,stagger=-0.25)
+    params = _defaults()
+
+    target = resolve_localization_guidance(
+        target_params={"stagger":-0.25},
+        resolution=resolution,
+        calibration=None,
+        parameters=params,
+    )
+    assert target.stagger == -0.25
+    assert target.stagger_source == "target"
+
+    manual = dict(params)
+    manual.update({
+        "stagger_prior_mode":"manual",
+        "manual_stagger":-0.4,
+    })
+    hints = resolve_localization_guidance(
+        target_params={"stagger":-0.25},
+        resolution=resolution,
+        calibration=None,
+        parameters=manual,
+    )
+    assert hints.stagger == -0.4
+    assert hints.stagger_source == "manual"
+
 def test_finite_grid_registration_is_not_derailed_by_wrong_period_guidance():
     n = 13
     i,j = np.meshgrid(np.arange(n),np.arange(n),indexing="xy")
@@ -184,7 +208,6 @@ def test_finite_grid_registration_is_not_derailed_by_wrong_period_guidance():
     assert result.matched_count == indices.shape[1]
     assert result.diagnostics["search_path"] == "finite_grid"
     assert result.diagnostics["fallback_used"] is False
-
 
 def test_known_stagger_and_period_use_finite_grid_path():
     n = 13
@@ -220,7 +243,6 @@ def test_known_stagger_and_period_use_finite_grid_path():
     assert result.diagnostics["search_path"] == "finite_grid"
     assert result.diagnostics["fallback_used"] is False
 
-
 def test_fft_registration_mode_forces_periodic_search_path():
     n = 11
     i,j = np.meshgrid(np.arange(n),np.arange(n),indexing="xy")
@@ -244,7 +266,6 @@ def test_fft_registration_mode_forces_periodic_search_path():
         ),
     )
     assert result.diagnostics["search_path"].startswith("global_")
-
 
 def test_finite_grid_mode_preserves_known_finite_topology():
     nx,ny = 5,4
@@ -274,7 +295,6 @@ def test_finite_grid_mode_preserves_known_finite_topology():
     assert np.allclose(
         np.linalg.norm(result.affine_linear,axis=0),(47.4,47.2),atol=0.8,
     )
-
 
 def test_auto_keeps_partial_finite_grid_if_fft_fallback_is_weaker():
     nx,ny = 9,7

@@ -10,14 +10,12 @@ from slmcore.core.cgh.targets.raster_lattice import (
     resolve_raster_lattice,
 )
 
-
 def _period_policy():
     return RasterResolutionPolicy(
         priority=RasterResolutionPriority.PERIOD,
         min_foci_delta=-1,
         max_foci_delta=1,
     )
-
 
 def _square_lattice(period_px=6.0,n_foci=61,stagger=0.0):
     return LatticeDefinition(
@@ -27,7 +25,6 @@ def _square_lattice(period_px=6.0,n_foci=61,stagger=0.0):
         n_foci_y=n_foci,
         stagger=stagger,
     )
-
 
 def test_coupled_resolver_uses_small_axis_as_common_feasible_scale():
     resolved = resolve_raster_lattice(
@@ -48,7 +45,6 @@ def test_coupled_resolver_uses_small_axis_as_common_feasible_scale():
         atol=1e-12,
     )
 
-
 def test_coupled_resolver_ignores_extra_height_when_common_scale_is_512():
     resolved = resolve_raster_lattice(
         _square_lattice(),
@@ -62,7 +58,6 @@ def test_coupled_resolver_ignores_extra_height_when_common_scale_is_512():
     assert resolved.lattice.period_x_px == 6.0
     assert resolved.lattice.period_y_px == 6.0
 
-
 def test_exact_materialization_uses_same_coupled_scale_policy():
     resolved = materialize_exact_raster_lattice(
         _square_lattice(),
@@ -72,7 +67,6 @@ def test_exact_materialization_uses_same_coupled_scale_policy():
     assert resolved.target_shape == (512,512)
     assert resolved.x_grid.raster_spacing == 6
     assert resolved.y_grid.raster_spacing == 6
-
 
 def test_coupling_does_not_change_non_equivalent_scientific_compromise():
     resolved = resolve_raster_lattice(
@@ -98,3 +92,32 @@ def test_coupling_does_not_change_non_equivalent_scientific_compromise():
     )
     assert resolved.lattice.n_foci_x == 40
     assert resolved.lattice.n_foci_y == 37
+
+def test_negative_stagger_is_materialized_safely_on_the_left_edge():
+    resolved = materialize_exact_raster_lattice(
+        _square_lattice(period_px=8.0,n_foci=5,stagger=-0.5),
+        section_shape=(256,256),
+    )
+
+    assert resolved.x_grid.stagger_shift < 0
+    assert int(np.min(resolved.x_pixels)) >= 0
+    assert int(np.max(resolved.x_pixels)) < resolved.target_shape[1]
+    assert np.allclose(
+        resolved.spot_positions_kxy,
+        resolved.lattice.spot_positions_kxy(),
+        rtol=0.0,atol=1e-12,
+    )
+
+def test_positive_and_negative_stagger_get_symmetric_raster_headroom():
+    positive = materialize_exact_raster_lattice(
+        _square_lattice(period_px=8.0,n_foci=5,stagger=0.5),
+        section_shape=(256,256),
+    )
+    negative = materialize_exact_raster_lattice(
+        _square_lattice(period_px=8.0,n_foci=5,stagger=-0.5),
+        section_shape=(256,256),
+    )
+
+    assert positive.target_shape == negative.target_shape
+    assert positive.x_grid.raster_spacing == negative.x_grid.raster_spacing
+    assert positive.x_grid.stagger_shift == -negative.x_grid.stagger_shift

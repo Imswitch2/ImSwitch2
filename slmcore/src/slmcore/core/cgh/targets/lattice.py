@@ -108,12 +108,12 @@ BASE_LATTICE_PARAMS = {
 
 @dataclass
 class LatticeLockState(StateModel):
-    """Persistent raster-lattice intent across separate parameter patches.
+    """Persistent lattice intent across separate parameter patches.
 
     ``kind`` is deliberately limited to the two dependent quantities whose
-    realized values may drift across repeated raster resolutions. ``reference``
-    stores the requested X/Y values, independently of the currently realized
-    canonical values shown by the parameter form.
+    realized values may drift across repeated edits. ``reference`` stores the
+    requested X/Y values independently of the currently realized canonical
+    values shown by the parameter form.
     """
 
     kind: str | None = None
@@ -169,7 +169,7 @@ class LatticeLockState(StateModel):
 
 @dataclass(frozen=True)
 class LatticeLockRequest:
-    """Atomic request to replace one raster target's persistent lock."""
+    """Atomic request to replace one lattice target's persistent lock."""
 
     target_key: str
     kind: str | None
@@ -211,7 +211,7 @@ LATTICE_MODIFIER_PARAMS = {
         editor=EditorKind.DOUBLE_SPIN_BOX,
     ),
     "stagger":ParamSpec(
-        0.0,float,min_value=0.0,max_value=1.0,step=0.05,decimals=2,
+        0.0,float,min_value=-1.0,max_value=1.0,step=0.05,decimals=2,
         editor=EditorKind.DOUBLE_SPIN_BOX,
     ),
 }
@@ -230,10 +230,12 @@ def lattice_param_specs(modifiers: Sequence[str]=()) -> dict[str, ParamSpec]:
 def reconcile_lattice_params(
     params: Mapping[str,Any],
     changed_keys: Iterable[str],
+    *,
+    lock: LatticeLockState | None=None,
 ) -> dict[str, Any]:
-    """Reconcile the continuous lattice without persistent raster intent."""
+    """Reconcile a continuous lattice with optional persistent intent."""
     resolved,intent = reconcile_lattice_params_with_intent(
-        params,changed_keys,lock=None,
+        params,changed_keys,lock=lock,
     )
     del intent
     return resolved
@@ -466,8 +468,8 @@ class LatticeDefinition:
             raise ValueError("Lattice periods must be > 0")
         if self.n_foci_x <= 0 or self.n_foci_y <= 0:
             raise ValueError("Lattice numbers of foci must be > 0")
-        if not 0.0 <= self.stagger <= 1.0:
-            raise ValueError("Lattice stagger must be in [0, 1]")
+        if not -1.0 <= self.stagger <= 1.0:
+            raise ValueError("Lattice stagger must be in [-1, 1]")
 
     @classmethod
     def from_params(cls,params: Mapping[str,Any]) -> "LatticeDefinition":

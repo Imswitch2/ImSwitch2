@@ -260,11 +260,12 @@ def test_section_view_resets_to_slm_units_before_hiding():
         view.deleteLater()
 
 
-def test_param_field_spinbox_commits_live_text_without_enter():
+def test_param_field_spinbox_defers_typed_text_until_editing_finished():
     pytest.importorskip("qtpy")
     pytest.importorskip("pyqtgraph")
     try:
         from qtpy import QtWidgets
+        from slmcore.qt.application.interaction import ParameterCommitMode
         from slmcore.qt.widgets.fields import ParamField
     except Exception as error:
         pytest.skip(f"ParamField dependencies are unavailable: {error}")
@@ -287,23 +288,38 @@ def test_param_field_spinbox_commits_live_text_without_enter():
         lambda key,value: changes.append((key,value))
     )
 
-    line_edit = field.editor.lineEdit()
-    line_edit.setText("123")
-    line_edit.textEdited.emit("123")
-    app.processEvents()
-
     try:
+        assert field.commit_mode is ParameterCommitMode.EDIT_FINISHED
+
+        line_edit = field.editor.lineEdit()
+        line_edit.setText("123")
+        line_edit.textEdited.emit("123")
+        app.processEvents()
+
+        assert changes == []
+        assert field.value() == 0
+
+        field.editor.editingFinished.emit()
+        app.processEvents()
+
         assert changes == [("period",123)]
         assert field.value() == 123
+
+        changes.clear()
+        field.editor.stepUp()
+        app.processEvents()
+        assert changes == [("period",124)]
+        assert field.value() == 124
     finally:
         field.deleteLater()
 
 
-def test_param_field_double_spinbox_commits_dot_decimal_live_text():
+def test_param_field_double_spinbox_defers_dot_decimal_until_editing_finished():
     pytest.importorskip("qtpy")
     pytest.importorskip("pyqtgraph")
     try:
         from qtpy import QtWidgets
+        from slmcore.qt.application.interaction import ParameterCommitMode
         from slmcore.qt.widgets.fields import ParamField
     except Exception as error:
         pytest.skip(f"ParamField dependencies are unavailable: {error}")
@@ -326,12 +342,20 @@ def test_param_field_double_spinbox_commits_dot_decimal_live_text():
         lambda key,value: changes.append((key,value))
     )
 
-    line_edit = field.editor.lineEdit()
-    line_edit.setText("1.25")
-    line_edit.textEdited.emit("1.25")
-    app.processEvents()
-
     try:
+        assert field.commit_mode is ParameterCommitMode.EDIT_FINISHED
+
+        line_edit = field.editor.lineEdit()
+        line_edit.setText("1.25")
+        line_edit.textEdited.emit("1.25")
+        app.processEvents()
+
+        assert changes == []
+        assert field.value() == 0.0
+
+        field.editor.editingFinished.emit()
+        app.processEvents()
+
         assert changes == [("phase",1.25)]
         assert field.value() == 1.25
     finally:

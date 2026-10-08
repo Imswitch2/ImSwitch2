@@ -23,9 +23,6 @@ from ...core.engine.state.items import CGHTargetState,ItemState
 from ..widgets.binding import ParameterBinding
 from ..cgh.session_views import format_target_summary
 from ..widgets.fields import ParamForm
-from ..application.interaction import (
-    ParameterCommitMode,is_group_target_parameter_path,
-)
 from ..widgets.param_section import PARAM_ACTIVE_KEY,ParamSection
 from .policy import RenderPolicy
 
@@ -622,12 +619,6 @@ class CghGroupView(BaseGroupView):
         )
         self.param_section.layout.setColumnStretch(0,1)
 
-        # Target spinboxes defer free-form typed text until editingFinished,
-        # while arrow/key/wheel stepping remains live through valueChanged.
-        for path,field in self.binding.fields.items():
-            if is_group_target_parameter_path(path):
-                field.set_commit_mode(ParameterCommitMode.EDIT_FINISHED)
-
         if selector is not None and isinstance(
             selector.editor,QtWidgets.QComboBox,
         ):
@@ -734,13 +725,13 @@ class CghGroupView(BaseGroupView):
                 label = "FOV" if name == "fov" else "Foci count"
                 button.setToolTip(
                     f"{label} reference locked: X={x:g}, Y={y:g}. "
-                    "Click to unlock. Realized values may differ after rasterization."
+                    "Click to unlock. Realized values may differ after reconciliation."
                 )
             else:
                 label = "FOV" if name == "fov" else "foci count"
                 button.setToolTip(
                     f"Keep the current X/Y {label} as the reference across "
-                    "subsequent raster target changes."
+                    "subsequent lattice target changes."
                 )
 
     def sync_target_lock_states(self,state: CGHState) -> None:

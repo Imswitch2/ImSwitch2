@@ -432,8 +432,8 @@ def _exact_raster_axis_grids(
         raise ValueError("section_size must be > 0")
     if n_foci <= 0:
         raise ValueError("n_foci must be > 0")
-    if not 0.0 <= stagger <= 1.0:
-        raise ValueError("stagger must be in [0, 1]")
+    if not -1.0 <= stagger <= 1.0:
+        raise ValueError("stagger must be in [-1, 1]")
 
     stagger_fraction = Fraction(str(stagger)).limit_denominator(
         section_size
@@ -506,8 +506,8 @@ def _axis_candidates(
         raise ValueError("section_size must be > 0")
     if requested_n <= 0:
         raise ValueError("n_foci must be > 0")
-    if not 0.0 <= stagger <= 1.0:
-        raise ValueError("stagger must be in [0, 1]")
+    if not -1.0 <= stagger <= 1.0:
+        raise ValueError("stagger must be in [-1, 1]")
 
     stagger_fraction = Fraction(str(stagger)).limit_denominator(section_size)
     if not np.isclose(
@@ -566,7 +566,7 @@ def _axis_candidates(
             if not spacings:
                 continue
 
-            span_factor = (effective_n - 1) + 2.0 * stagger
+            span_factor = (effective_n - 1) + 2.0 * abs(stagger)
             maximum_spacing = (
                 section_size
                 if span_factor <= 0
@@ -686,8 +686,9 @@ def _preferred_ratio(
                 continue
             half_span = (n_foci - 1) * spacing / 2.0
             center = target_size / 2.0
-            minimum = center - half_span
-            maximum = center + half_span + stagger * spacing
+            stagger_shift = stagger * spacing
+            minimum = center - half_span + min(0.0,stagger_shift)
+            maximum = center + half_span + max(0.0,stagger_shift)
             if round(minimum) < 0 or round(maximum) >= target_size:
                 continue
 
@@ -759,10 +760,10 @@ def _try_axis_grid(
         return None
     stagger_shift = int(shift)
 
-    last_pixel = (
-        first_pixel + (n_foci - 1) * raster_spacing + stagger_shift
-    )
-    if first_pixel < 0 or last_pixel >= target_size:
+    last_unshifted = first_pixel + (n_foci - 1) * raster_spacing
+    minimum_pixel = first_pixel + min(0,stagger_shift)
+    maximum_pixel = last_unshifted + max(0,stagger_shift)
+    if minimum_pixel < 0 or maximum_pixel >= target_size:
         return None
 
     return RasterAxisGrid(

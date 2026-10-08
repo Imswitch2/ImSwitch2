@@ -7,6 +7,7 @@ import numpy as np
 from .base import Target
 from .lattice import (
     LatticeDefinition,
+    LatticeLockState,
     lattice_param_specs,
     rasterize_spots,
     reconcile_lattice_params,
@@ -66,11 +67,19 @@ class MultiFociVectorTarget(Target):
         validate_lattice_params(params)
 
     @classmethod
+    def create_lock_state(cls):
+        return LatticeLockState()
+
+    @classmethod
     def canonicalize_params(
         cls,params,changed_keys,context=None,lock_state=None,
     ):
         """Canonicalize semantic lattice dependencies without runtime preparation."""
-        resolved = reconcile_lattice_params(params,changed_keys)
+        if lock_state is not None and not isinstance(lock_state,LatticeLockState):
+            raise TypeError("multi_foci_vector lock state must be LatticeLockState")
+        resolved = reconcile_lattice_params(
+            params,changed_keys,lock=lock_state,
+        )
         resolved = apply_param_links(
             resolved,
             cls.target_params,

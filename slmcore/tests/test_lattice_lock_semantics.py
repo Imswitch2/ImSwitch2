@@ -19,7 +19,7 @@ from slmcore.core.cgh.targets.raster_lattice import (
 from slmcore.core.engine.section import split_slm_geometry
 
 
-def _runtime() -> SLMRuntime:
+def _runtime(target_key="multi_foci") -> SLMRuntime:
     geometry = SLMGeometry(width=512,height=512,pixel_size_um=1.0)
     runtime = SLMRuntime(
         identity=SLMIdentity("slm","SER"),
@@ -28,7 +28,7 @@ def _runtime() -> SLMRuntime:
         registries=DEFAULT_REGISTRIES,
     )
     runtime.apply_section_patch(
-        "sec_0",{("cgh","selected_target"):"multi_foci"},
+        "sec_0",{("cgh","selected_target"):target_key},
     )
     return runtime
 
@@ -37,48 +37,55 @@ def _target(runtime: SLMRuntime,target_key="multi_foci"):
     return runtime.get_section_snapshot("sec_0").state.cgh.items[target_key]
 
 
-def _value(runtime: SLMRuntime,key: str):
-    return _target(runtime).params.get_param_value(key)
+def _value(runtime: SLMRuntime,key: str,target_key="multi_foci"):
+    return _target(runtime,target_key).params.get_param_value(key)
 
 
-def _lock(runtime: SLMRuntime):
-    return _target(runtime).lock_state
+def _lock(runtime: SLMRuntime,target_key="multi_foci"):
+    return _target(runtime,target_key).lock_state
 
 
-def _set_lock(runtime: SLMRuntime,kind: str,reference):
+def _set_lock(runtime: SLMRuntime,kind: str,reference,target_key="multi_foci"):
     return runtime.apply_section_patch(
         "sec_0",{},
         lattice_lock_request=LatticeLockRequest(
-            "multi_foci",kind,reference,
+            target_key,kind,reference,
         ),
     )
 
 
-def _patch(runtime: SLMRuntime,**values):
+def _patch(runtime: SLMRuntime,target_key="multi_foci",**values):
     return runtime.apply_section_patch(
         "sec_0",{
-            ("cgh","multi_foci","params",key):value
+            ("cgh",target_key,"params",key):value
             for key,value in values.items()
         },
     )
 
 
-def test_raster_lock_state_is_persisted_but_vector_target_has_none():
+def test_lattice_lock_state_is_persisted_for_raster_and_vector_targets():
     runtime = _runtime()
     _set_lock(runtime,"fov",(180.0,170.0))
+    _set_lock(
+        runtime,"n_foci",(31,29),target_key="multi_foci_vector",
+    )
 
     state = runtime.get_section_snapshot("sec_0").state
     data = state.to_dict()
     assert data["cgh"]["items"]["multi_foci"]["lock_state"] == {
         "kind":"fov","reference":[180.0,170.0],
     }
-    assert "lock_state" not in data["cgh"]["items"]["multi_foci_vector"]
+    assert data["cgh"]["items"]["multi_foci_vector"]["lock_state"] == {
+        "kind":"n_foci","reference":[31,29],
+    }
 
     cloned = state.clone()
     assert cloned.cgh.items["multi_foci"].lock_state.to_dict() == {
         "kind":"fov","reference":[180.0,170.0],
     }
-    assert cloned.cgh.items["multi_foci_vector"].lock_state is None
+    assert cloned.cgh.items["multi_foci_vector"].lock_state.to_dict() == {
+        "kind":"n_foci","reference":[31,29],
+    }
 
     restored = SLMRuntime.from_config(
         runtime.create_config(),registries=DEFAULT_REGISTRIES,
@@ -87,7 +94,9 @@ def test_raster_lock_state_is_persisted_but_vector_target_has_none():
     assert restored_state.items["multi_foci"].lock_state.to_dict() == {
         "kind":"fov","reference":[180.0,170.0],
     }
-    assert restored_state.items["multi_foci_vector"].lock_state is None
+    assert restored_state.items["multi_foci_vector"].lock_state.to_dict() == {
+        "kind":"n_foci","reference":[31,29],
+    }
 
 
 def test_fov_lock_prevents_stepwise_drift_from_becoming_next_reference():
@@ -120,6 +129,39 @@ def test_n_foci_lock_prevents_realized_count_from_becoming_next_reference():
     assert _lock(direct).reference == (31,31)
     for key in ("period_x_px","fov_x_px","n_foci_x"):
         assert _value(stepped,key) == pytest.approx(_value(direct,key))
+
+
+@pytest.mark.parametrize("kind,reference",[
+    ("fov",(180.0,180.0)),
+    ("n_foci",(31,31)),
+])
+def test_vector_lock_prevents_stepwise_period_drift(kind,reference):
+    stepped = _runtime("multi_foci_vector")
+    direct = _runtime("multi_foci_vector")
+    _set_lock(stepped,kind,reference,target_key="multi_foci_vector")
+    _set_lock(direct,kind,reference,target_key="multi_foci_vector")
+
+    for period in (6.05,6.10,6.15,6.20,6.25):
+        _patch(stepped,"multi_foci_vector",period_x_px=period)
+    _patch(direct,"multi_foci_vector",period_x_px=6.25)
+
+    assert _lock(stepped,"multi_foci_vector").reference == reference
+    assert _lock(direct,"multi_foci_vector").reference == reference
+    for key in ("period_x_px","fov_x_px","n_foci_x"):
+        assert _value(stepped,key,"multi_foci_vector") == pytest.approx(
+            _value(direct,key,"multi_foci_vector")
+        )
+
+
+def test_vector_editing_locked_quantity_updates_reference():
+    runtime = _runtime("multi_foci_vector")
+    _set_lock(
+        runtime,"fov",(180.0,180.0),target_key="multi_foci_vector",
+    )
+
+    _patch(runtime,"multi_foci_vector",fov_x_px=190.0)
+
+    assert _lock(runtime,"multi_foci_vector").reference == (190.0,180.0)
 
 
 def test_explicit_batch_overrides_lock_for_transaction_without_replacing_it():

@@ -120,8 +120,8 @@ def resolve_localization_guidance(
     )
     if stagger_mode == "manual":
         stagger = float(parameters["manual_stagger"])
-        if not np.isfinite(stagger) or not 0.0 <= stagger <= 1.0:
-            raise ValueError("manual_stagger must be in [0, 1]")
+        if not np.isfinite(stagger) or not -1.0 <= stagger <= 1.0:
+            raise ValueError("manual_stagger must be in [-1, 1]")
         stagger_source = "manual"
     elif stagger_mode == "target":
         stagger = _target_stagger_hint(target_params,resolution)
@@ -223,7 +223,7 @@ def _target_stagger_hint(
             value = float(source["stagger"])
         except Exception:
             continue
-        if np.isfinite(value) and 0.0 <= value <= 1.0:
+        if np.isfinite(value) and -1.0 <= value <= 1.0:
             return value
     return None
 
