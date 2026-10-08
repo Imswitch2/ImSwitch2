@@ -332,6 +332,8 @@ class ImConMainView(QtWidgets.QMainWindow):
             enabledDockKeys = []
         elif enabledDockKeys is True:
             enabledDockKeys = allDockKeys
+        else:
+            enabledDockKeys = _renameRetiredWidgetKeys(enabledDockKeys, self.__logger)
 
         if 'Image' in enabledDockKeys:
             self.docks['Image'] = Dock('Image Display', size=(1, 1))
@@ -699,6 +701,29 @@ class _DockInfo:
     yPosition: int
 
 
+#: Widget keys retired in favour of another: a setup file naming the old key
+#: still boots, with the new panel and a log line asking for the rename.
+_RETIRED_WIDGET_KEYS = {
+    'FLIMHist': 'Lifetime',   # Lifetime 2.0: the FLIM histogram became the Lifetime widget
+}
+
+
+def _renameRetiredWidgetKeys(keys, logger=None):
+    """``keys`` with every retired widget key replaced by its successor (no
+    duplicates), logging each rename."""
+    renamed = []
+    for key in keys:
+        new = _RETIRED_WIDGET_KEYS.get(key, key)
+        if new != key and logger is not None:
+            logger.warning(
+                f'availableWidgets names "{key}", which is now "{new}": the setup '
+                f'file should say "{new}" (the panel opens either way).'
+            )
+        if new not in renamed:
+            renamed.append(new)
+    return renamed
+
+
 # Display names for every known widget key.  Used when widgetLayout is present
 # in the setup JSON so the dock title doesn't have to be specified separately.
 # Falls back to the raw key name for unknown/future widgets.
@@ -726,7 +751,6 @@ _DOCK_DISPLAY_NAMES = {
     'ULenses': 'uLenses Tool',
     'FFT': 'FFT Tool',
     'Lifetime': 'Lifetime (FLIM / STED)',
-    'FLIMHist': 'FLIM Lifetime Histogram',  # alias of Lifetime
     'FlipMirror': 'Flip Mirrors',
     'Watcher': 'File Watcher',
     'Tiling': 'Tiling',
@@ -774,7 +798,6 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'AlignXY':       _DockInfo(name='Rotational Alignment Tool',     yPosition=3),
     'ULenses':       _DockInfo(name='uLenses Tool',                  yPosition=3),
     'FFT':           _DockInfo(name='FFT Tool',                      yPosition=3),
-    'FLIMHist':      _DockInfo(name='FLIM Lifetime Histogram',       yPosition=3),
     'FlipMirror':    _DockInfo(name='Flip Mirrors',                  yPosition=0),
     'Watcher':               _DockInfo(name='File Watcher',           yPosition=3),
     'Tiling':               _DockInfo(name='Tiling',                 yPosition=3),

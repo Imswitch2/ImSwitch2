@@ -7,8 +7,8 @@ panel; a status strip with the card's live rates; and a footer with Run
 once / Live / Stop, the software accumulate count, a name and Save.
 
 The widget holds no device logic: every control emits a signal the
-``LifetimeController`` acts on, and every display is fed by it. ``FLIMHist``
-in a setup file is an alias for this widget opened on its FLIM view.
+``LifetimeController`` acts on, and every display is fed by it. ``FLIMHist``,
+the panel's old key, is renamed to ``Lifetime`` when a setup file loads.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ SETTING_FIELDS = (
 class LifetimeWidget(Widget):
     """See the module docstring."""
 
-    #: The mode the panel opens on; the ``FLIMHist`` alias keeps 'FLIM'.
+    #: The mode the panel opens on.
     initialMode = 'FLIM'
 
     sigDetectorChanged = QtCore.Signal(str)
@@ -713,9 +713,3 @@ class LifetimeWidget(Widget):
             cursor.insertText(line + '\n', fmt)
         cursor.movePosition(QtGui.QTextCursor.Start)
         self.signalsText.setTextCursor(cursor)
-
-
-class FLIMHistWidget(LifetimeWidget):
-    """``FLIMHist`` in a setup file: the Lifetime widget on its FLIM view."""
-
-    initialMode = 'FLIM'

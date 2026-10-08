@@ -1,6 +1,8 @@
 # Time-Resolved Detector Workflows
 
-Status: Implementation in progress
+Status: **Superseded** by `lifetime-2-0.md` (its contract and workflows
+were kept and extended there: the shared Time Tagger card, the Lifetime
+widget, products v2 and `timeresolved/io.py`); kept for history.
 
 Implemented so far:
 

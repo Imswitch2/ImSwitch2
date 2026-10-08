@@ -5,9 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from imswitch.imcontrol.view import widgets
+from imswitch.imcontrol.view.ImConMainView import _renameRetiredWidgetKeys
 from imswitch.imcontrol.view.widgets.LifetimeWidget import (
-    FLIMHistWidget,
     LifetimeWidget,
     MODES,
 )
@@ -21,11 +20,13 @@ def widget(qapp):
     return WidgetFactory(None).createWidget(LifetimeWidget)
 
 
-def test_flimhist_resolves_to_the_lifetime_widget_on_its_flim_view(qapp):
-    assert widgets.FLIMHistWidget is FLIMHistWidget
-    assert issubclass(FLIMHistWidget, LifetimeWidget)
-    alias = WidgetFactory(None).createWidget(widgets.FLIMHistWidget)
-    assert alias.getMode() == 'FLIM'
+def test_flimhist_in_a_setup_file_is_renamed_to_lifetime_at_load():
+    logs = []
+    logger = type('L', (), {'warning': lambda self, msg: logs.append(msg)})()
+    assert _renameRetiredWidgetKeys(['Settings', 'FLIMHist', 'Lifetime', 'Scan'], logger) == \
+        ['Settings', 'Lifetime', 'Scan']
+    assert logs and 'FLIMHist' in logs[0] and 'Lifetime' in logs[0]
+    assert _renameRetiredWidgetKeys(['Settings'], logger) == ['Settings'] and len(logs) == 1
 
 
 def test_modes_switch_the_panel_and_hide_the_settings_in_signals(widget):

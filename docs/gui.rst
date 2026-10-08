@@ -313,8 +313,8 @@ One panel for a time-resolved detector such as the Swabian Time Tagger
 :doc:`timetagger/index`): the fitted lifetimes of a FLIM scan, the
 tau-STED view, and the card's live signals. ``Lifetime`` in
 ``availableWidgets`` loads it (*Lifetime (FLIM / STED)*, in the right dock
-next to Scan); ``FLIMHist`` in an older setup file opens the same panel on
-its FLIM view.
+next to Scan); ``FLIMHist``, the panel's old key, is renamed to ``Lifetime``
+when an older setup file loads, with a log line asking for the edit.
 
 * **Detector** and **Mode** -- the time-resolved detector the panel follows
   and the view: **FLIM**, **Tau STED** or **Signals**.

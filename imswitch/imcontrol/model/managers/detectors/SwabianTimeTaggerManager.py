@@ -1332,9 +1332,13 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             # The stored cube is the card's integer counts; the gates and
             # the fits use the background-subtracted one.
             stored = raw_cube_counts if raw_cube_counts is not None else cube_counts
-            cube_for_storage = (
-                np.array(stored, copy=True) if config.capture_cube else None
-            )
+            cube_for_storage = None
+            if config.capture_cube:
+                stored = np.asarray(stored)
+                if np.issubdtype(stored.dtype, np.integer):
+                    cube_for_storage = np.array(stored, copy=True)
+                else:
+                    cube_for_storage = np.rint(np.clip(stored, 0, None)).astype(np.uint32)
             frame = dict(extra_metadata or {})
             snapshot = dict(self._scan or {})
             gate_images = compute_gate_images(

@@ -1,8 +1,11 @@
 # Lifetime 2.0 — Swabian Time Tagger, calibration tutorials, and a Lifetime widget
 
-Status: **revision 4** — in implementation. P1a, P1b, P1c, P2, P3, P4 and
-P5 are done, all on the single branch `feat/lifetime-2-0` (one commit per
-phase); what remains is the rig validation (§8 P6, in the follow-up plan). The
+Status: **revision 4** — implemented. P1a to P5 and the software half of P6
+are done, all on the single branch `feat/lifetime-2-0` (one commit per
+phase); what remains of P6 is the rig campaign itself
+(`docs/timetagger/validation.rst`, sign-off in
+`docs/setup-validation/etsted.md`), whose numbers open the follow-up plan
+`lifetime-2-1.md`. The
 second external review (§15, "External review 2": eleven items against the
 P1/P2 code) is folded into the P3 branch. Revision 4 folds in the first external review
 (§15, "External review 1"): four of its eight items changed code already
@@ -795,10 +798,20 @@ old `workflows/timeresolved` scripts removed; `update_user_defaults_history`.
 *Rig check (open)*: the widget's gated image equals tutorial 12's on the
 same scan (identical file contents).
 
-**P6 — Validation campaign and release.** Roadmap 13.A FLIM row closed with
-the per-fit-method convergence test on a reference dye (tutorial 10's
-extended mode); FLIMHist alias removed; old plan marked superseded; the
-follow-up plan (§9) opened with the rig numbers measured here.
+**P6 — Validation campaign and release.** *Software half done on
+`feat/lifetime-2-0`; the rig half awaits the card.* `timeresolved/validation.py`
+(`refit_cube`, `convergence_report`: convergence = the median lifetime
+stops moving with photons; the bias against the reference is reported
+beside it, since the moment and the phasor carry the window and IRF bias)
+and tutorial 10's extended mode run the per-fit-method convergence test and
+save `flim_convergence.json`; `docs/timetagger/validation.rst` is the
+campaign with acceptance criteria per step and `docs/setup-validation/etsted.md`
+the sign-off log (ROADMAP 13.A points at both; the FLIM row stays open until
+the rig session). The FLIMHist alias is removed: `FLIMHist` in a setup file
+is renamed to `Lifetime` at load with a log line. The old plan
+(`time-resolved-detector-workflows.md`) is marked superseded, and the
+follow-up plan `lifetime-2-1.md` is opened with §9's items and a table for
+the rig numbers.
 
 Rough size: P1b and P4 are the big ones; P1c is medium-large; P2/P3 are
 many small files; P5 medium. Everything before P4 is invisible to a user who
@@ -808,8 +821,9 @@ never opens the Scripting tab, except P1a's fixes.
 
 ## 9. Follow-up plan (recorded here, not planned here)
 
-Moved out after review so this plan stays deliverable; each item depends on
-rig numbers from P2/P3:
+Now a file of its own, `lifetime-2-1.md`, with the table of rig numbers it
+waits for. Moved out after review so this plan stays deliverable; each item
+depends on rig numbers from P2/P3:
 
 - **Two-colour FLIM**: two photon roles → two `Flim` objects sharing one
   `EventGenerator` pair, started under `SynchronizedMeasurements`.

@@ -1046,7 +1046,3 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             except Exception:
                 pass
         return drained
-
-
-#: ``FLIMHist`` in a setup file resolves to the Lifetime controller.
-FLIMHistController = LifetimeController

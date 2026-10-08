@@ -444,7 +444,6 @@ POPULATORS = {
     "RotatorWidget": _populate_rotator,
     "FFTWidget": _populate_fft,
     "LifetimeWidget": _populate_lifetime,
-    "FLIMHistWidget": _populate_lifetime,
     "BeadRecWidget": _populate_beadrec,
     "AlignmentLineWidget": _populate_alignment_line,
     "AlignAverageWidget": _populate_align_average,

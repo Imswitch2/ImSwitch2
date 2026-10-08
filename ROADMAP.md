@@ -507,6 +507,9 @@ rotators, camera + APD + PMT detectors, one SLM.
 - ⬜ STED arm/disarm via SLM pattern switching.
 - ⬜ FLIM acquisition: τ from each fit method on a reference dye
   converges (M8 closed the FLIM gap; this re-tests on hardware).
+  Protocol and tooling ready: `docs/timetagger/validation.rst`,
+  tutorial `timetagger/10` with `EXTENDED = True`, sign-off log
+  `docs/setup-validation/etsted.md`; awaiting the rig session.
 - ⬜ Event-triggered loop: full arm → detect → STED → resume cycle on
   a real sample.
 - ⬜ Tiling: stitched overview + cell-target navigation.
@@ -677,7 +680,8 @@ Major UI / workflow modernization. Headline items:
 - FLIM support: `FLIMHistWidget` + `FLIMHistController`, optimized
   pipeline, `SwabianTimeTaggerManager` fixes, IRF peak detection,
   rep-rate-aware phasor, dist / decay mode toggle, diagnostic
-  rep-rate script.
+  rep-rate script. (Lifetime 2.0 later replaced the histogram widget
+  with the Lifetime panel; `FLIMHist` is renamed at setup load.)
 - Time-resolved detector workflows: a generic time-resolved detector
   contract (`model/timeresolved`) plus opt-in workflows
   (`model/workflows/time_resolved.py`) for binned photon-arrival cubes,

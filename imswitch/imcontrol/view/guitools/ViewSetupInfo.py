@@ -101,8 +101,8 @@ class ViewSetupInfo(SetupInfo):
     - ``Lifetime`` (the Lifetime widget: FLIM, tau-STED and the Time
       Tagger's signals; requires a time-resolved detector such as the
       Swabian TimeTagger detector)
-    - ``FLIMHist`` (alias of ``Lifetime``, opened on its FLIM view; kept
-      for existing setup files)
+      (``FLIMHist``, the panel's old key, is renamed to ``Lifetime`` when
+      the setup loads, with a log line)
     - ``Console`` (Python console widget)
     - ``EtSTED`` (etSTED widget)
     - ``Rotator`` (Rotator widget; requires "Rotator" field to be defined)

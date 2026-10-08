@@ -782,7 +782,8 @@ multidimensional output support is implemented.
 
 **The Lifetime widget**
 
-``Lifetime`` in ``availableWidgets`` (``FLIMHist`` in older setup files)
+``Lifetime`` in ``availableWidgets`` (``FLIMHist`` in an older setup file is
+renamed to it at load)
 shows this detector's products live: the aggregated decay with the IRF
 peak and background, the histogram of the per-pixel lifetimes, the phasor,
 the lifetime or intensity image or an intensity-weighted overlay as a

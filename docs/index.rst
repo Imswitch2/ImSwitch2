@@ -158,6 +158,7 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     Hdf5datafile
     timetagger/index
     timetagger/debugging
+    timetagger/validation
 
 .. toctree::
     :hidden:

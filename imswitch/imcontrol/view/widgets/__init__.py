@@ -21,7 +21,6 @@ _WIDGET_MODULES = {
     "EtSnoutyWidget": "EtSnoutyWidget",
     # "EtWidget": "EtWidget",  # Prototype on old Monalisa machine.
     "FFTWidget": "FFTWidget",
-    "FLIMHistWidget": "LifetimeWidget",  # alias: the Lifetime widget on its FLIM view
     "FlipMirrorWidget": "FlipMirrorWidget",
     "FocusLockWidget": "FocusLockWidget",
     "ImageWidget": "ImageWidget",

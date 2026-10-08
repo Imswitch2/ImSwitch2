@@ -2615,7 +2615,6 @@ def _load_widget_registry() -> dict:
         # Analysis
         "FFT": "Analysis",
         "Lifetime": "Analysis",
-        "FLIMHist": "Analysis",
         "BeadRec": "Analysis",
         "AlignAverage": "Analysis",
         "AlignXY": "Analysis",
@@ -2659,7 +2658,6 @@ def _load_widget_registry() -> dict:
         "Analysis": [
             ("FFT",            "Live FFT tool"),
             ("Lifetime",       "Lifetime: FLIM, tau-STED and the Time Tagger's signals (needs a FLIM detector)"),
-            ("FLIMHist",       "FLIM lifetime histogram (alias of Lifetime)"),
             ("BeadRec",        "Bead reconstruction"),
             ("AlignAverage",   "Axial alignment tool"),
             ("AlignXY",        "Rotational alignment tool"),

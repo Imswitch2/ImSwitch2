@@ -22,7 +22,6 @@ _CONTROLLER_MODULES = {
     "EtSnoutyController": "EtSnoutyController",
     # "EtController": "EtController",  # Prototype on old Monalisa machine.
     "FFTController": "FFTController",
-    "FLIMHistController": "LifetimeController",  # alias (see LifetimeController)
     "FlipMirrorController": "FlipMirrorController",
     "FocusLockController": "FocusLockController",
     "ImageController": "ImageController",

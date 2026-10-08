@@ -315,3 +315,25 @@ def test_settings_edited_during_a_scan_do_not_relabel_its_products():
     # The next scan takes the edits.
     _build(nidaq, det)
     assert det._scan["fit_method"] == "phasor" and det._scan["binwidth_ps"] == 64
+
+
+def test_the_convergence_report_runs_on_the_mock_detectors_cubes():
+    """Tutorial 10's extended mode: cubes from the detector itself."""
+    from imswitch.imcontrol.model.timeresolved import TimeResolvedScanConfig
+    from imswitch.imcontrol.model.timeresolved.validation import convergence_report
+
+    nidaq, card, det = _rig()
+    products = []
+    for _ in range(3):
+        token = det.configureTimeResolvedProducts(TimeResolvedScanConfig(capture_cube=True), owner="v")
+        _build(nidaq, det)
+        _run_worker(det, done_before_run=True, complete_after_polls=1)
+        products.append(det.getLastTimeResolvedProducts())
+        det.clearTimeResolvedProducts(token)
+    assert products[0].cube_counts.dtype == np.uint32
+    truth = card.tagger.sample_truth(NY, NX)[1]
+    report = convergence_report(products, reference_tau_ns=truth, tolerance_ns=0.5)
+    assert [p.scans for p in report.points if p.method == "moment"] == [1, 2, 3]
+    assert report.last("moment").photons_per_pixel > 200
+    assert report.converged("moment") is True, report.summary()
+    assert abs(report.last("moment").bias_ns) < 0.5, report.summary()
