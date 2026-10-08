@@ -1,4 +1,4 @@
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.view.guitools import colorutils
 from imswitch.imcontrol.view import guitools
@@ -35,7 +35,7 @@ class LaserWidget(Widget):
         self.layout = QtWidgets.QGridLayout()
         self.setLayout(self.layout)
 
-        # Laser rows remain scrollable; the context/preset bar below does not.
+        # Laser rows remain scrollable; the context/preset bar stays fixed at the top.
         self.lasersGrid = QtWidgets.QGridLayout()
         self.lasersGrid.setContentsMargins(4, 4, 4, 4)
         self.lasersGridContainer = QtWidgets.QWidget()
@@ -49,9 +49,15 @@ class LaserWidget(Widget):
         self.scrollArea.setWidget(self.lasersGridContainer)
         self.scrollArea.setWidgetResizable(True)
         self.lasersGridContainer.installEventFilter(self)
-        self.layout.addWidget(self.scrollArea, 0, 0)
 
-        self.bottomBar = QtWidgets.QHBoxLayout()
+        # Keep pristine palettes so Scan mode can add a subtle tint without
+        # hard-coding a light/dark-theme-specific color.
+        self.scrollArea.viewport().setAutoFillBackground(True)
+        self.lasersGridContainer.setAutoFillBackground(True)
+        self._defaultScrollPalette = QtGui.QPalette(self.scrollArea.viewport().palette())
+        self._defaultGridPalette = QtGui.QPalette(self.lasersGridContainer.palette())
+
+        self.topBar = QtWidgets.QHBoxLayout()
 
         self.contextFrame = QtWidgets.QWidget()
         contextLayout = QtWidgets.QHBoxLayout(self.contextFrame)
@@ -61,8 +67,13 @@ class LaserWidget(Widget):
         self.scanModeButton = QtWidgets.QPushButton('SCAN')
         for button in (self.manualModeButton, self.scanModeButton):
             button.setCheckable(True)
-            button.setMinimumHeight(30)
-            button.setMinimumWidth(90)
+            button.setMinimumHeight(38)
+            button.setMinimumWidth(115)
+            font = button.font()
+            font.setBold(True)
+            if font.pointSizeF() > 0:
+                font.setPointSizeF(font.pointSizeF() + 1)
+            button.setFont(font)
         self.contextButtonGroup = QtWidgets.QButtonGroup(self)
         self.contextButtonGroup.setExclusive(True)
         self.contextButtonGroup.addButton(self.manualModeButton)
@@ -101,11 +112,12 @@ class LaserWidget(Widget):
         self.clearPresetAction = self.moreMenu.addAction('Clear selection')
         self.clearPresetAction.triggered.connect(self.sigClearPresetClicked)
 
-        self.bottomBar.addWidget(self.contextFrame, 0)
-        self.bottomBar.addStretch(1)
-        self.bottomBar.addWidget(self.presetsList, 0)
-        self.bottomBar.addWidget(self.moreButton, 0)
-        self.layout.addLayout(self.bottomBar, 1, 0)
+        self.topBar.addWidget(self.contextFrame, 0)
+        self.topBar.addStretch(1)
+        self.topBar.addWidget(self.presetsList, 0)
+        self.topBar.addWidget(self.moreButton, 0)
+        self.layout.addLayout(self.topBar, 0, 0)
+        self.layout.addWidget(self.scrollArea, 1, 0)
 
         self.setPowerContext('manual', emitSignal=False)
         self.setPresetNames([], selected=None)
@@ -116,7 +128,42 @@ class LaserWidget(Widget):
         self._powerContext = context
         for module in self.laserModules.values():
             module.setContext(context)
+        self._updateContextAppearance()
         self.sigPowerContextChanged.emit(context)
+
+    @staticmethod
+    def _blendColors(base, accent, accentFraction):
+        accentFraction = max(0.0, min(1.0, float(accentFraction)))
+        baseFraction = 1.0 - accentFraction
+        return QtGui.QColor(
+            round(base.red() * baseFraction + accent.red() * accentFraction),
+            round(base.green() * baseFraction + accent.green() * accentFraction),
+            round(base.blue() * baseFraction + accent.blue() * accentFraction),
+            base.alpha(),
+        )
+
+    def _updateContextAppearance(self):
+        """Give Scan editing a subtle widget-level cue without widening rows."""
+        if self._powerContext != 'scan':
+            self.scrollArea.viewport().setPalette(QtGui.QPalette(self._defaultScrollPalette))
+            self.lasersGridContainer.setPalette(QtGui.QPalette(self._defaultGridPalette))
+            return
+
+        accent = self.palette().color(QtGui.QPalette.Highlight)
+
+        scrollPalette = QtGui.QPalette(self._defaultScrollPalette)
+        scrollBase = self._defaultScrollPalette.color(QtGui.QPalette.Base)
+        scrollPalette.setColor(
+            QtGui.QPalette.Base, self._blendColors(scrollBase, accent, 0.08)
+        )
+        self.scrollArea.viewport().setPalette(scrollPalette)
+
+        gridPalette = QtGui.QPalette(self._defaultGridPalette)
+        gridBase = self._defaultGridPalette.color(QtGui.QPalette.Window)
+        gridPalette.setColor(
+            QtGui.QPalette.Window, self._blendColors(gridBase, accent, 0.08)
+        )
+        self.lasersGridContainer.setPalette(gridPalette)
 
     def _presetActivated(self, index):
         # Qt bindings normally emit the combo index here, but accepting the
@@ -183,6 +230,7 @@ class LaserWidget(Widget):
         self.scanModeButton.setChecked(context == 'scan')
         for module in self.laserModules.values():
             module.setContext(context)
+        self._updateContextAppearance()
         if emitSignal and changed:
             self.sigPowerContextChanged.emit(context)
 
@@ -433,7 +481,11 @@ class LaserModule(QtWidgets.QWidget):
         self.layout.addWidget(powerFrame)
 
         self.secondaryFrame = QtWidgets.QWidget()
-        self.secondaryFrame.setMinimumWidth(145)
+        # Alternate-context text used to live permanently beside every row.
+        # Keep the internal status widgets for compatibility/future compact
+        # indicators, but hide the container so it consumes no row width.
+        self.secondaryFrame.hide()
+        self.secondaryFrame.setMinimumWidth(0)
         secondaryLayout = QtWidgets.QHBoxLayout(self.secondaryFrame)
         secondaryLayout.setContentsMargins(0, 0, 0, 0)
         secondaryLayout.setSpacing(4)
@@ -453,7 +505,7 @@ class LaserModule(QtWidgets.QWidget):
         self.secondaryAOIndicator.hide()
         secondaryLayout.addWidget(self.secondaryAOIndicator)
         secondaryLayout.addStretch(1)
-        self.layout.addWidget(self.secondaryFrame)
+        # Intentionally not added to the row layout: alternate-context status is hidden.
 
         if isBinary:
             sizePolicy = powerFrame.sizePolicy()

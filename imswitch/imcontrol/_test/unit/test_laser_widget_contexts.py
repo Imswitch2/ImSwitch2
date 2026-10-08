@@ -1,3 +1,5 @@
+from qtpy import QtGui
+
 from imswitch.imcontrol.view.widgets.LaserWidget import LaserWidget
 
 
@@ -66,17 +68,41 @@ def test_inactive_scan_power_is_muted_but_stays_editable(qtbot):
     assert module._powerOpacity.opacity() < 1.0
 
 
-def test_manual_view_uses_compact_secondary_ao_indicator(qtbot):
+def test_context_bar_is_fixed_above_scroll_area_and_prominent(qtbot):
+    widget = _widget(qtbot)
+
+    assert widget.layout.itemAtPosition(0, 0).layout() is widget.topBar
+    assert widget.layout.itemAtPosition(1, 0).widget() is widget.scrollArea
+    assert widget.manualModeButton.minimumHeight() >= 38
+    assert widget.scanModeButton.minimumHeight() >= 38
+    assert widget.manualModeButton.minimumWidth() >= 115
+    assert widget.scanModeButton.minimumWidth() >= 115
+    assert widget.manualModeButton.font().bold()
+    assert widget.scanModeButton.font().bold()
+
+
+def test_scan_context_adds_subtle_tint_and_manual_restores_palette(qtbot):
+    widget = _widget(qtbot)
+    default_color = widget._defaultScrollPalette.color(QtGui.QPalette.Base)
+
+    widget.setPowerContext('scan', emitSignal=False)
+    scan_color = widget.scrollArea.viewport().palette().color(QtGui.QPalette.Base)
+    assert scan_color != default_color
+
+    widget.setPowerContext('manual', emitSignal=False)
+    restored_color = widget.scrollArea.viewport().palette().color(QtGui.QPalette.Base)
+    assert restored_color == default_color
+
+
+def test_alternate_context_status_does_not_consume_row_width(qtbot):
     widget = _widget(qtbot)
     module = widget.laserModules['488']
 
-    widget.setPowerContext('manual', emitSignal=False)
     widget.setLaserSecondaryStatus(
         '488', 'AO', emphasized=True,
         tooltip='Power controlled through analog output by the scan configuration.',
         badge=True,
     )
 
-    assert module.secondaryLabel.isHidden()
-    assert not module.secondaryAOIndicator.isHidden()
-    assert module.secondaryAOIndicator.text() == 'AO'
+    assert module.secondaryFrame.isHidden()
+    assert module.layout.indexOf(module.secondaryFrame) == -1
