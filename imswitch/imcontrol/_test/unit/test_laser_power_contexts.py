@@ -45,6 +45,12 @@ class _Widget:
         self.currentPreset = None
         self.laserModules = {"488": None, "binary": None}
         self.presets = []
+        self.context = "manual"
+        self.presetNames = []
+        self.aoOwned = {}
+        self.powerEditable = {}
+        self.scanActive = {}
+        self.secondary = {}
 
     def getValue(self, name):
         return self.values[name]
@@ -72,6 +78,25 @@ class _Widget:
         if name in self.presets:
             self.presets.remove(name)
 
+    def setPowerContext(self, context, emitSignal=False):
+        self.context = context
+
+    def setPresetNames(self, names, selected=None):
+        self.presetNames = list(names)
+        self.currentPreset = selected
+
+    def setLaserAOOwned(self, name, owned, tooltip=''):
+        self.aoOwned[name] = (owned, tooltip)
+
+    def setLaserPowerEditable(self, name, editable):
+        self.powerEditable[name] = editable
+
+    def setLaserScanActive(self, name, active):
+        self.scanActive[name] = active
+
+    def setLaserSecondaryStatus(self, name, text, **kwargs):
+        self.secondary[name] = (text, kwargs)
+
 
 class _Logger:
     def warning(self, *args, **kwargs):
@@ -86,7 +111,11 @@ def _controller(*, manual=5.0, setup=None):
     ctrl._commChannel = SimpleNamespace(sharedAttrs={})
     ctrl._logger = _Logger()
     ctrl.settingAttr = False
+    ctrl._manualPowerValues = {"488": manual}
     ctrl._scanPowerValues = {}
+    ctrl._currentPowerContext = LaserPowerContext.MANUAL
+    ctrl._scanLaserState = {}
+    ctrl._laserDisplayMeta = {"488": ("mW", 1)}
     ctrl._selectedPresetByContext = {
         LaserPowerContext.MANUAL: None,
         LaserPowerContext.SCAN: None,
@@ -124,6 +153,22 @@ def test_unset_scan_power_follows_manual_until_scan_becomes_explicit():
     ctrl.setLaserPower("488", 7.0, "manual")
     assert ctrl.getLaserPower("488", "manual") == 7.0
     assert ctrl.getLaserPower("488", "scan") == 25.0
+
+
+def test_scan_view_refreshes_manual_fallback_but_preserves_explicit_scan_value():
+    ctrl = _controller(manual=4.0)
+    ctrl._currentPowerContext = LaserPowerContext.SCAN
+    ctrl._widget.setPowerContext('scan')
+
+    ctrl.setLaserPower('488', 6.0, LaserPowerContext.MANUAL)
+    assert ctrl._widget.getValue('488') == 6.0
+
+    ctrl.setLaserPower('488', 25.0, LaserPowerContext.SCAN)
+    assert ctrl._widget.getValue('488') == 25.0
+
+    ctrl.setLaserPower('488', 7.0, LaserPowerContext.MANUAL)
+    assert ctrl.getLaserPower('488', LaserPowerContext.SCAN) == 25.0
+    assert ctrl._widget.getValue('488') == 25.0
 
 
 def test_manual_and_scan_preset_namespaces_are_independent():
@@ -303,3 +348,81 @@ def test_old_component_state_without_scan_keys_resets_to_manual_fallback():
 
     assert ctrl._scanPowerValues == {}
     assert ctrl.getLaserPower("488", "scan") == 8.0
+
+
+def test_context_switch_changes_preset_namespace_without_loading_or_hardware_write():
+    setup = ViewSetupInfo(
+        laserPresets={"Screening": {"488": LaserPresetInfo(value=2.0)}},
+        laserScanPresets={"Acquisition": {"488": LaserPresetInfo(value=30.0)}},
+    )
+    ctrl = _controller(manual=2.0, setup=setup)
+    ctrl._setSelectedPresetName(LaserPowerContext.MANUAL, "Screening")
+    ctrl._setSelectedPresetName(LaserPowerContext.SCAN, "Acquisition")
+
+    ctrl.powerContextChanged("scan")
+
+    assert ctrl._widget.context == "scan"
+    assert ctrl._widget.presetNames == ["Acquisition"]
+    assert ctrl._widget.currentPreset == "Acquisition"
+    assert ctrl.getLaserPower("488", "scan") == 2.0  # still fallback; not loaded
+    assert ctrl._master.lasersManager["488"].calls == []
+
+
+def test_combo_selection_immediately_loads_current_scan_context_only():
+    setup = ViewSetupInfo(
+        laserScanPresets={"Acquisition": {"488": LaserPresetInfo(value=30.0)}}
+    )
+    ctrl = _controller(manual=2.0, setup=setup)
+    ctrl.powerContextChanged("scan")
+
+    ctrl.presetSelected("Acquisition")
+
+    assert ctrl.getLaserPower("488", "scan") == 30.0
+    assert ctrl.getLaserPower("488", "manual") == 2.0
+    assert ctrl._selectedPresetByContext[LaserPowerContext.SCAN] == "Acquisition"
+    assert ctrl._master.lasersManager["488"].calls == []
+
+
+def test_save_current_values_to_does_not_load_or_change_selected_preset():
+    setup = ViewSetupInfo(
+        laserScanPresets={
+            "Current": {"488": LaserPresetInfo(value=20.0)},
+            "Other": {"488": LaserPresetInfo(value=10.0)},
+        }
+    )
+    ctrl = _controller(manual=2.0, setup=setup)
+    ctrl.powerContextChanged("scan")
+    ctrl.loadLaserPreset("Current", "scan")
+    ctrl.setLaserPower("488", 42.0, "scan")
+
+    with patch(
+        "imswitch.imcontrol.controller.controllers.LaserController.configfiletools.loadOptions",
+        return_value=(SimpleNamespace(), False),
+    ), patch(
+        "imswitch.imcontrol.controller.controllers.LaserController.configfiletools.saveSetupInfo"
+    ):
+        ctrl.saveCurrentValuesTo("Other")
+
+    assert setup.laserScanPresets["Other"]["488"].value == 42.0
+    assert ctrl._selectedPresetByContext[LaserPowerContext.SCAN] == "Current"
+    assert ctrl.getLaserPower("488", "scan") == 42.0
+    assert ctrl._master.lasersManager["488"].calls == []
+
+
+def test_ao_status_disables_scan_power_but_never_writes_hardware():
+    from imswitch.imcontrol.model import LaserScanState, LaserScanPowerControl
+
+    ctrl = _controller(manual=2.0)
+    ctrl.setLaserPower("488", 35.0, "scan")
+    ctrl.powerContextChanged("scan")
+    ctrl._master.lasersManager["488"].calls.clear()
+
+    ctrl.scanLaserStateChanged({
+        "488": LaserScanState(True, LaserScanPowerControl.AO)
+    })
+
+    assert ctrl._widget.aoOwned["488"][0] is True
+    assert ctrl._widget.aoOwned["488"][1] == LaserController._AO_TOOLTIP
+    assert ctrl._widget.powerEditable["488"] is False
+    assert ctrl._widget.scanActive["488"] is True
+    assert ctrl._master.lasersManager["488"].calls == []

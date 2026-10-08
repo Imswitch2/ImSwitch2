@@ -194,15 +194,37 @@ class ScanWorkflowService(SignalInterface):
     """
 
     sigDispatchScanRequest = Signal(object)
+    sigLaserScanStateChanged = Signal(object)
 
     def __init__(self, comm_channel) -> None:
         super().__init__()
         self._comm_channel = comm_channel
         self._activeScanRequest = None
+        self._laserScanState = {}
         self.sigDispatchScanRequest.connect(self._execute_scan_dispatch)
 
     def request_scan_parameters(self) -> None:
         self._comm_channel.sigRequestScanParameters.emit()
+
+    def publish_laser_scan_state(self, state_by_laser) -> None:
+        """Publish semantic participation/power-ownership state per laser.
+
+        The service owns a copy so consumers that are created after the scan
+        controller can immediately query the current configuration. Repeated
+        publication of identical state is ignored.
+        """
+        normalized = {
+            str(name): state
+            for name, state in dict(state_by_laser or {}).items()
+        }
+        if normalized == self._laserScanState:
+            return
+        self._laserScanState = normalized
+        self.sigLaserScanStateChanged.emit(dict(self._laserScanState))
+
+    def laser_scan_state(self):
+        """Return the latest semantic scan-laser state as a defensive copy."""
+        return dict(self._laserScanState)
 
     def prepare_recording_for_scan(self, source) -> bool:
         """Let an armed recording bind to ``source`` before it starts.

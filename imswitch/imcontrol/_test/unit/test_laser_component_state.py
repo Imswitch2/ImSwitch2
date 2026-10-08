@@ -150,7 +150,10 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._master = mock_master
     controller._widget = mock_widget
     controller._logger = Mock()
+    controller._manualPowerValues = {}
     controller._scanPowerValues = {}
+    controller._currentPowerContext = LaserPowerContext.MANUAL
+    controller._scanLaserState = {}
     controller._selectedPresetByContext = {
         LaserPowerContext.MANUAL: None,
         LaserPowerContext.SCAN: None,
@@ -177,6 +180,10 @@ def laser_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget)
     controller._isMilliwattUnit = lambda units: LaserController._isMilliwattUnit(controller, units)
     controller._selectedPresetName = lambda context: LaserController._selectedPresetName(controller, context)
     controller._setSelectedPresetName = lambda context, name: LaserController._setSelectedPresetName(controller, context, name)
+    controller._manualPowerValue = lambda name: LaserController._manualPowerValue(controller, name)
+    controller.getLaserPower = lambda name, context=LaserPowerContext.MANUAL.value: LaserController.getLaserPower(
+        controller, name, context
+    )
 
     # Mock action methods
     controller.setLaserValue = Mock()
@@ -191,7 +198,7 @@ def test_get_component_state(laser_controller, mock_widget):
     """Test getComponentState returns correct structure."""
     mock_widget.isLaserActive.side_effect = lambda name: name == '488nm'
     mock_widget.getValue.side_effect = lambda name: 100.0 if name == '488nm' else 0
-    mock_widget.getCurrentPreset.return_value = 'Default'
+    laser_controller._selectedPresetByContext[LaserPowerContext.MANUAL] = 'Default'
     
     state = laser_controller.getComponentState()
     
@@ -567,7 +574,7 @@ def test_round_trip_state_persistence(laser_controller, mock_widget):
     # Setup initial state
     mock_widget.isLaserActive.side_effect = lambda name: name == '488nm'
     mock_widget.getValue.side_effect = lambda name: 80.0 if name == '488nm' else 0
-    mock_widget.getCurrentPreset.return_value = 'TestPreset'
+    laser_controller._selectedPresetByContext[LaserPowerContext.MANUAL] = 'TestPreset'
     
     # Capture state
     state = laser_controller.getComponentState()
