@@ -501,3 +501,54 @@ def test_live_values_are_formatted_for_reading():
     assert format_quantity(QuantitySpec('dop', '', 'x'), 0.99512) == '0.995'
     assert format_quantity(power, float('nan')) == '—'
     assert stokes_text({'azimuth': 0.0, 'ellipticity': 0.0}) == '+1.000 / +0.000 / +0.000'
+
+
+# ------------------------------------------------- live Poincaré sphere
+def test_poincare_view_tracks_the_state_and_paints(qtbot):
+    from imswitch.imcontrol.view.widgets.PoincareView import PoincareView, stokes_from_angles
+
+    view = PoincareView()
+    qtbot.addWidget(view)
+    view.resize(200, 200)
+    view.show()
+    assert view.state is None
+    s1, s2, s3 = stokes_from_angles(math.pi / 4, 0.0)        # linear +45° -> S2
+    assert (round(s1, 6), round(s2, 6), round(s3, 6)) == (0.0, 1.0, 0.0)
+    view.setState(s1, s2, s3, dop=0.5)                        # radius = DOP
+    assert view.state == pytest.approx((0.0, 0.5, 0.0))
+    view.setState(float('nan'), 0, 0)                          # ignored
+    assert view.state == pytest.approx((0.0, 0.5, 0.0))
+    for i in range(100):                                       # the trail is bounded
+        view.setState(math.cos(i / 10), math.sin(i / 10), 0.0)
+    assert len(view._trail) == view.TRAIL
+    image = view.grab()
+    assert not image.isNull()
+    view.clearState()
+    assert view.state is None and not view._trail
+
+
+def test_the_panel_moves_the_sphere_from_live_samples(qtbot, registry):
+    from imswitch.imcontrol.controller.controllers.InstrumentsController import (
+        InstrumentsController,
+    )
+    from imswitch.imcontrol.view.widgets.InstrumentsWidget import InstrumentsWidget
+
+    _, master = _serviceWith({'pax': _info(managerName='MockPAXManager', connectOnStartup=True,
+                                           managerProperties={'noiseDeg': 0.0})})
+    widget = InstrumentsWidget(None)
+    qtbot.addWidget(widget)
+    controller = InstrumentsController(None, SimpleNamespace(sharedAttrs={}), master,
+                                       widget=widget, factory=None, moduleCommChannel=None)
+    try:
+        box = widget.boxes['pax']
+        assert box.sphere is not None and box.sphereCheck.isChecked()
+        qtbot.waitUntil(lambda: box.sphere.state is not None, timeout=3000)
+        s1, s2, s3 = box.sphere.state
+        assert abs(math.hypot(s1, s2, s3) - 0.995) < 0.02          # radius = DOP of the mock
+        assert widget.boxes.get('pm') is None
+        box.sphereCheck.setChecked(False)
+        assert box.sphere.isHidden()
+        widget.setState('pax', 'Not connected', connected=False, usable=False)
+        assert box.sphere.state is None
+    finally:
+        controller.closeEvent()

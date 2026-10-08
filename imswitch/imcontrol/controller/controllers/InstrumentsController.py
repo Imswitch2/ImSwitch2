@@ -47,6 +47,7 @@ from imswitch.imcontrol.model.measurement.laser_lut import (
     run_laser_lut,
 )
 from imswitch.imcontrol.model.resources import get_resource_registry
+from imswitch.imcontrol.view.widgets.PoincareView import stokes_from_angles
 from ..basecontrollers import ImConWidgetController
 
 #: Shared attributes the Laser panel keeps for each laser (LaserController).
@@ -157,6 +158,11 @@ class InstrumentsController(ImConWidgetController):
         stokes = stokes_text(values)
         if stokes is not None:
             texts['stokes'] = stokes
+            s1, s2, s3 = stokes_from_angles(float(values['azimuth']),
+                                            float(values['ellipticity']))
+            dop = values.get('dop', 1.0)
+            self._widget.setPolarisationState(
+                name, s1, s2, s3, dop if isinstance(dop, (int, float)) else 1.0)
         self._widget.setValues(name, texts)
 
     def _refreshStates(self):

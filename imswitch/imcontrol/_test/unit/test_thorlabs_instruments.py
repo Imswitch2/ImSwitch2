@@ -39,10 +39,21 @@ class FakeInstrument:
         self.writes = []
         self.unplugged = False
         self.closed = False
+        self.clears = 0
+        #: A reply left pending by an earlier session: the next query fails
+        #: with a protocol violation until the device is cleared.
+        self.stale_reply = False
+
+    def clear(self):
+        self.clears += 1
+        self.stale_reply = False
 
     def query(self, command):
         if self.unplugged:
             raise FakeVisaError('VI_ERROR_TMO (-1073807339): Timeout expired')
+        if self.stale_reply:
+            raise FakeVisaError('VI_ERROR_INP_PROT_VIOL (-1073807305): Device reported an '
+                                'input protocol error during transfer.')
         if command not in self.answers:
             raise FakeVisaError(f'VI_ERROR_TMO: no answer to {command}')
         answer = self.answers[command]
@@ -147,7 +158,7 @@ def test_pm100_finds_its_serial_and_reads_watts():
     identity = driver.connect()
     assert (identity.model, identity.serial, identity.firmware) == ('PM100D', 'P0011748', '2.4.0')
     assert rm.backend == '@py' and rm.opened == [(PM_RESOURCE, 2000)]
-    assert inst.writes == ['SENS:CORR:WAV 775']
+    assert inst.writes == ['*CLS', 'SENS:CORR:WAV 775']       # device clear first
     assert driver.settings() == {'wavelength_nm': 775.0}
     assert driver.read().values == {'power': 1.25e-3}
 
@@ -240,7 +251,7 @@ def test_pax_connect_sets_mode_9_wavelength_and_starts_rotation():
     inst, rm = _pax()
     driver = ThorlabsPAX1000Driver('M01012314', wavelength_nm=633, resource_manager_factory=rm)
     driver.connect()
-    assert inst.writes == ['SENS:CALC 9', 'SENS:WAV 6.33e-07', 'INP:ROT:STAT 1']
+    assert inst.writes == ['*CLS', 'SENS:CALC 9', 'SENS:WAV 6.33e-07', 'INP:ROT:STAT 1']
     assert driver.settings()['mode'] == 9
     assert driver.settings()['wavelength_nm'] == pytest.approx(633.0)
     assert not driver.unconfirmed_settings
@@ -439,4 +450,36 @@ def test_a_dark_pax_reading_is_a_valid_reading_not_a_bad_packet():
     inst.answers['SENS:DATA:LAT?'] = _pax_packet(dop=float('nan'))
     result = session.sample_window(session.open_window(allow_unverified=True), 1, 0.3)
     assert not result.samples and 'dop' in result.invalid[0].reason
+
+
+def test_connect_clears_the_device_so_a_stale_reply_cannot_poison_the_first_query():
+    """Rig, 2026-10-08: the first connect of a PAX faulted on its first read
+    with VI_ERROR_INP_PROT_VIOL; the second connect worked because the
+    close/reopen had cleared the USB buffers. Now the open clears them."""
+    inst, rm = _pax()
+    inst.stale_reply = True
+    driver = ThorlabsPAX1000Driver('M01012314', resource_manager_factory=rm)
+    driver.connect()                                   # *IDN? would have failed
+    assert inst.clears >= 1 and '*CLS' in inst.writes
+    assert driver.read().values['dop'] == pytest.approx(0.99)
+
+
+def test_a_protocol_violation_during_a_read_is_retried_once_after_a_clear():
+    inst, rm = _pax()
+    driver = ThorlabsPAX1000Driver('M01012314', resource_manager_factory=rm)
+    driver.connect()
+    clears = inst.clears
+    inst.stale_reply = True                            # poisoned mid-session
+    assert driver.read().values['dop'] == pytest.approx(0.99)
+    assert inst.clears == clears + 1
+
+    pm_inst, pm_rm = _pm100()
+    meter = ThorlabsPM100Driver('P0011748', resource_manager_factory=pm_rm)
+    meter.connect()
+    pm_inst.stale_reply = True
+    assert meter.read().values['power'] == 1.25e-3
+
+    pm_inst.unplugged = True                           # a timeout is not retried
+    with pytest.raises(TransportError, match='Timeout'):
+        meter.read()
 

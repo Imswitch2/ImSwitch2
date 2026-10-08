@@ -986,3 +986,15 @@ is on). Still owed: the AA AOTF utility switching to the shared PM100 driver
 (needs the P-4 driver); a script entry point once instruments live in the
 setup (P-4); the 775 rig re-measure.
 
+**Rig day 1 (2026-10-08, PAX1000 on the redSTED rig).** Connect / live
+panel / `measureRotatorGrid` with two Standa mounts worked. Three fixes
+from it: a dark PAX reports DOP < 0 and power ≈ 0 -- that is a valid
+reading now, not a malformed packet (89a3be125); the first connect of a
+session faulted with `VI_ERROR_INP_PROT_VIOL` on its first read (a reply
+left pending by the previous session) -- `VisaLink` now does a USB-TMC
+device clear + `*CLS` on open and after any failed query, and a read is
+retried once after a protocol violation; and the Instruments panel gained a
+live Poincaré sphere (`PoincareView`, QPainter, no OpenGL). Still open from
+§6.6: the PAX power unit and whether `SENS:CALC?` / `SENS:WAV?` are answered
+(the connect log tells), and the timing placeholders.
+

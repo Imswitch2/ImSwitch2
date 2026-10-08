@@ -1,6 +1,7 @@
 from qtpy import QtCore, QtGui, QtWidgets
 
 from .basewidgets import Widget
+from .PoincareView import PoincareView
 
 
 class _InstrumentBox(QtWidgets.QGroupBox):
@@ -40,6 +41,18 @@ class _InstrumentBox(QtWidgets.QGroupBox):
             values.addWidget(value, row, 1)
             self.valueLabels[key] = value
         layout.addLayout(values)
+
+        # A polarimeter gets a live Poincaré sphere beside its numbers.
+        self.sphere = None
+        keys = {key for key, _ in quantities}
+        if {'azimuth', 'ellipticity'} <= keys:
+            self.sphereCheck = QtWidgets.QCheckBox('Sphere')
+            self.sphereCheck.setChecked(True)
+            self.sphereCheck.setToolTip('Show the polarisation state on the Poincaré sphere.')
+            top.insertWidget(1, self.sphereCheck)
+            self.sphere = PoincareView(self)
+            layout.addWidget(self.sphere, 1)
+            self.sphereCheck.toggled.connect(self.sphere.setVisible)
 
         self.settingInputs = {}
         self.settingButtons = {}
@@ -144,6 +157,8 @@ class InstrumentsWidget(Widget):
         if not connected:
             for label in box.valueLabels.values():
                 label.setText('—')
+            if box.sphere is not None:
+                box.sphere.clearState()
 
     def setValues(self, name, texts):
         box = self.boxes.get(name)
@@ -153,6 +168,12 @@ class InstrumentsWidget(Widget):
             label = box.valueLabels.get(key)
             if label is not None:
                 label.setText(text)
+
+    def setPolarisationState(self, name, s1, s2, s3, dop=1.0):
+        """Move the instrument's sphere dot to the given Stokes state."""
+        box = self.boxes.get(name)
+        if box is not None and box.sphere is not None:
+            box.sphere.setState(s1, s2, s3, dop)
 
     def setSettingValue(self, name, setting, value):
         box = self.boxes.get(name)

@@ -111,6 +111,23 @@ class VisaLink:
             self.close()
             raise TransportError(f'{self.label}: opening {candidates[0]} failed: {exc}') from exc
         self.resource_name = candidates[0]
+        # A reply left pending by an earlier session (a query that timed out
+        # before ImSwitch closed) poisons the first transfer of this one:
+        # USB-TMC answers "input protocol violation" (seen on the rig, first
+        # connect of a PAX1000). A device clear starts the session clean.
+        self.clear()
+
+    def clear(self) -> None:
+        """USB-TMC device clear plus ``*CLS``, both best effort: the
+        instrument's transfer buffers and status registers start clean."""
+        inst = self._inst
+        if inst is None:
+            return
+        for action in (lambda: inst.clear(), lambda: inst.write('*CLS')):
+            try:
+                action()
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Close this instrument's session -- never the resource manager.
@@ -134,7 +151,15 @@ class VisaLink:
         try:
             return str(inst.query(command)).strip()
         except Exception as exc:
+            # A failed query (a timeout, a protocol violation) can leave the
+            # transfer half done; clear so the next command starts clean.
+            self.clear()
             raise TransportError(f'{self.label}: {command} failed: {exc}') from exc
+
+    @staticmethod
+    def is_protocol_violation(exc: BaseException) -> bool:
+        text = str(exc)
+        return 'INP_PROT_VIOL' in text or 'protocol' in text.lower()
 
     def write(self, command: str) -> None:
         inst = self._require()
@@ -258,7 +283,17 @@ class ThorlabsPM100Driver(InstrumentDriver):
             self._sleep(0.1)
 
     def read(self) -> RawReading:
-        return RawReading(values={'power': _float(self.link.query('READ?'), 'PM100 READ?')})
+        return RawReading(values={'power': _float(self._query_retrying('READ?'), 'PM100 READ?')})
+
+    def _query_retrying(self, command: str) -> str:
+        """One retry after a USB-TMC protocol violation (the link clears the
+        device on the failure); anything else is a fault at once."""
+        try:
+            return self.link.query(command)
+        except TransportError as exc:
+            if not self.link.is_protocol_violation(exc):
+                raise
+            return self.link.query(command)
 
 
 #: Field positions in a ``SENS:DATA:LAT?`` packet (measurement mode 9).
@@ -374,7 +409,15 @@ class ThorlabsPAX1000Driver(InstrumentDriver):
         return self._settings[name]
 
     def read(self) -> RawReading:
-        fields = parse_pax_packet(self.link.query('SENS:DATA:LAT?'))
+        try:
+            packet = self.link.query('SENS:DATA:LAT?')
+        except TransportError as exc:
+            # One retry after a USB-TMC protocol violation (the link cleared
+            # the device on the failure); anything else is a fault at once.
+            if not self.link.is_protocol_violation(exc):
+                raise
+            packet = self.link.query('SENS:DATA:LAT?')
+        fields = parse_pax_packet(packet)
         if len(fields) <= PAX_POWER:
             raise MalformedReading(
                 f'PAX packet has {len(fields)} fields, mode 9 needs {PAX_POWER + 1}')

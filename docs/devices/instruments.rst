@@ -104,6 +104,11 @@ vector s1 / s2 / s3 for a polarimeter -- its settings (the wavelength) and
 actions (Zero, after a "beam blocked" confirmation), and Connect /
 Disconnect.
 
+A polarimeter also shows its state on a small **Poincaré sphere**: the dot
+sits at a radius equal to the degree of polarisation, a fading trail follows
+the last readings, and dragging rotates the view (the *Sphere* box hides
+it). It is drawn with plain Qt painting, no OpenGL.
+
 With **Live** on, a connected instrument is read continuously. While a
 measurement run or a script holds it, the panel makes no reads of its own:
 it shows the holder's samples and says who holds it, and its settings and
