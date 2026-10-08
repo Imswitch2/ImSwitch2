@@ -1,7 +1,8 @@
 # Lifetime 2.0 — Swabian Time Tagger, calibration tutorials, and a Lifetime widget
 
-Status: **revision 4** — in implementation. P1a, P1b, P1c, P2 and P3 are on
-their branches (`feat/lifetime-2-0-p1a` … `-p3`, stacked); P4 is next. The
+Status: **revision 4** — in implementation. P1a, P1b, P1c, P2 and P3 are
+done, all on the single branch `feat/lifetime-2-0` (one commit per phase);
+P4 is next. The
 second external review (§15, "External review 2": eleven items against the
 P1/P2 code) is folded into the P3 branch. Revision 4 folds in the first external review
 (§15, "External review 1"): four of its eight items changed code already
