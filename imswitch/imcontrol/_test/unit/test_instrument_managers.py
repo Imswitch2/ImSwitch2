@@ -552,3 +552,32 @@ def test_the_panel_moves_the_sphere_from_live_samples(qtbot, registry):
         assert box.sphere.state is None
     finally:
         controller.closeEvent()
+
+
+def test_instrument_diagnostics_expose_the_raw_packet_and_timing_state():
+    _, master = _serviceWith({'pax': _info(managerName='MockPAXManager', connectOnStartup=True,
+                                           managerProperties={})})
+    api = _instrumentsController(master)
+    api.readInstrument('pax')
+    diagnostics = api.getInstrumentDiagnostics('pax')
+    assert diagnostics['connected'] and diagnostics['timing_profile'] == 'mock-mode9'
+    assert diagnostics['timing_verified'] == 'verified'
+    assert diagnostics['last_fields'] is None               # the mock has no raw packet
+    assert diagnostics['settings']['mode'] == 9
+
+
+def test_rotator_grid_records_the_laser_that_lit_the_run(tmp_path, monkeypatch, registry):
+    from imswitch.imcommon.model.measurement_run import MeasurementRunFile
+
+    rotators = _elliptec_mocks(monkeypatch)
+    _, master = _serviceWith({'pax': _info(managerName='MockPAXManager', connectOnStartup=True,
+                                           managerProperties={})})
+    master.rotatorsManager = rotators
+    master.lasersManager = {'561': SimpleNamespace(wavelength=561)}
+    api = _instrumentsController(master)
+    report = api.measureRotatorGrid([('hwp', [0, 10])], ['pax'], samples_per_point=1,
+                                    settle_s=0.0, folder=str(tmp_path), allow_simulated=True,
+                                    laser='561')
+    run = MeasurementRunFile.load(report.run_file)
+    assert run.metadata['illumination'] == {'source': '561', 'wavelength_nm': 561.0}
+

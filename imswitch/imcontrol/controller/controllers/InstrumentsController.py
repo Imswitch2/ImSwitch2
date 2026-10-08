@@ -338,6 +338,28 @@ class InstrumentsController(ImConWidgetController):
         return [dict(sample.values) for sample in window.samples]
 
     @APIExport()
+    def getInstrumentDiagnostics(self, name: str) -> dict:
+        """ What the driver knows beyond the quantities -- for checking an
+        instrument on the rig: the PAX1000's last raw packet (``last_fields``:
+        fields 0-8 carry its revolution counter, timestamp and misalignment),
+        settings the firmware did not read back (``unconfirmed_settings``),
+        the timing profile in force and whether it is verified. """
+        manager = self._instrument(name)
+        session = manager.session
+        driver = session.driver
+        fields = getattr(driver, 'last_fields', None)
+        return {
+            'name': name,
+            'connected': manager.connected,
+            'identity': session.identity.as_dict() if session.identity else None,
+            'settings': session.settings() if manager.connected else {},
+            'unconfirmed_settings': sorted(getattr(driver, 'unconfirmed_settings', ()) or ()),
+            'timing_profile': session.profile.id if session.profile else None,
+            'timing_verified': session.verification.value,
+            'last_fields': list(fields) if fields else None,
+        }
+
+    @APIExport()
     def measureRotatorGrid(
         self,
         axes: Sequence[Sequence],
@@ -351,6 +373,7 @@ class InstrumentsController(ImConWidgetController):
         return_to_start: bool = True,
         plane_label: str = '',
         notes: str = '',
+        laser: Optional[str] = None,
         progress: Optional[Callable] = None,
     ) -> RunReport:
         """ Measure instruments on a grid of rotator positions.
@@ -373,7 +396,9 @@ class InstrumentsController(ImConWidgetController):
         ``folder`` (default ``ImSwitchConfig/measurement_runs``).
         ``allow_unverified_timing``: needed until the instrument's timing is
         checked on hardware. ``allow_simulated``: accept simulated rotators
-        (mock setups); recorded in the run file. """
+        (mock setups); recorded in the run file. ``laser`` names the laser
+        that lit the instruments; its wavelength is recorded with the run
+        (the polarisation map compares it with the polarimeter's). """
         controls, values = [], []
         for name, angles in axes:
             controls.append(RotatorManagerControl(self._master.rotatorsManager[name],
@@ -382,6 +407,11 @@ class InstrumentsController(ImConWidgetController):
         sessions = {name: self._instrument(name).session for name in instruments}
         if not sessions:
             raise ValueError('measureRotatorGrid needs at least one instrument')
+        illumination = None
+        if laser:
+            laserManager = self._master.lasersManager[laser]
+            illumination = {'source': laser,
+                            'wavelength_nm': float(getattr(laserManager, 'wavelength', 0) or 0)}
         runFolder = Path(folder) if folder else default_runs_folder()
         os.makedirs(runFolder, exist_ok=True)
         runner = MeasurementRunner(
@@ -395,6 +425,7 @@ class InstrumentsController(ImConWidgetController):
                 allow_unverified_timing=bool(allow_unverified_timing),
                 return_to_start=bool(return_to_start),
                 plane_label=plane_label,
+                illumination=illumination,
                 notes=notes,
             ),
             owner='rotator grid (script)',
