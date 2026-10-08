@@ -1263,7 +1263,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 continue
             try:
                 position = self._analogParameterDict['axis_centerpos'][index]
-                self._master.positionersManager[positionerName].setPosition(position, 0)
+                manager = self._master.positionersManager[positionerName]
+                # Managers address axes by name ('Z'), not by index.
+                manager.setPosition(position, manager.axes[0])
             except Exception:
                 self._logger.warning(
                     'Failed to set %s to center before scan:\n%s',
@@ -2069,6 +2071,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             mode['scanMode'] = self._widget.isScanMode()
         if hasattr(self._widget, 'isContLaserMode'):
             mode['contLaserMode'] = self._widget.isContLaserMode()
+        if hasattr(self._widget, 'progressEnabled'):
+            mode['progressEnabled'] = self._widget.progressEnabled()
 
         scanInfo = getattr(self._setupInfo, 'scan', None)
 
@@ -2173,6 +2177,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
             if mode.get('repeatEnabled') is not None and hasattr(self._widget, 'setRepeatEnabled'):
                 self._widget.setRepeatEnabled(bool(mode['repeatEnabled']))
+            if mode.get('progressEnabled') is not None and hasattr(self._widget, 'setProgressEnabled'):
+                self._widget.setProgressEnabled(bool(mode['progressEnabled']))
 
             self.setParameters()
             self.signalDict = None
@@ -2290,9 +2296,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             "repeatEnabled": "repeat",
             "scanMode": "scan mode",
             "contLaserMode": "continuous laser mode",
+            "progressEnabled": "progress bar",
         }
         summaries = []
-        for key in ("repeatEnabled", "scanMode", "contLaserMode"):
+        for key in ("repeatEnabled", "scanMode", "contLaserMode", "progressEnabled"):
             value = mode.get(key)
             if value is not None:
                 summaries.append(f"    {labels[key]}: {self._fmt(value)}")
