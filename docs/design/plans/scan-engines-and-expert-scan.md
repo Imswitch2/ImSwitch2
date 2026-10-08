@@ -1,8 +1,8 @@
 # Unleashing the scanner: one scan model, engines that say what they can do
 
-**Status:** Plan, draft 5, for review. The direction is agreed (Lenny,
-2026-10-08: "that sounds like what we're aiming for"). Draft 5 answers the
-second review round, on draft 4. Nothing is implemented.
+**Status:** Plan, draft 6, for review. The direction is agreed (Lenny,
+2026-10-08: "that sounds like what we're aiming for"). Draft 6 answers the
+third review round, on draft 5. Nothing is implemented.
 **Date:** 2026-10-08
 **Branch:** `docs/scan-engines-expert-scan`, off `feat/simple-point-scan`
 (56ef43f0, which carries the scan cloak and the Advanced scan-freeze work).
@@ -16,6 +16,29 @@ File references are to this branch.
 - **(b)** Add a further layer, ExpertScan, for more complicated patterns: the
   Snouty multi-scan RESOLFT schemes, and arbitrary curves such as a circle or
   a spiral.
+
+## Changes since draft 5: the third review round (2026-10-08)
+
+The review accepted open points 1-6, rejected the 1 % default (7) under the
+project's rule against magic numbers, and found three issues. The code claim
+holds: Beta's default 2 ms move and 2 ms settle (`BetaScanDesigner.py:12-13`)
+refuse a 25 µs dwell before any waveform is built, so draft 5's example was
+wrong and is replaced.
+
+| # | Finding | Change | Where |
+|---|---|---|---|
+| 1 | The resume guard lengthened pulses and could trigger cameras early | A scheduled preparation stage after each barrier. Only devices that need preparation change state in it, for reasons their configuration states. Timed illumination and detector triggers keep their scheduled times. The stage is in the realized schedule and in conformance | §2.4 |
+| 2 | Exact dwells do not stop drift from repeated rounded waits | The complete repeat period of each loop (steps, motion, waits, preparation) is validated against the request; iterations are scheduled against absolute deadlines where the engine can; the run-wide error is computed and reported, not assumed | §2.6, §3.1 |
+| 3 | Showing the realized dwell must not rewrite the requested scan | Requested values, realized schedule and `timingPolicy` are kept apart and persisted. The panel shows realized beside requested. Enabling a new option migrates visibly and nothing is snapped silently. Load → preview → save → reload test | §2.6, M0 |
+| — | No magic numbers | Hardware numbers from capabilities and device configuration; tolerances only from named, versioned policies with units and rationale; derived bounds calculated; unknowns reported, not guessed; numbers and sources recorded. `strict-v1` is exact | §2.8, §2.6 |
+| — | The 25 µs Beta example | Replaced: 4.025 ms runs as 4.03 ms, +1.3 s over 512 × 512 | §2.6, §10 |
+
+Guessed numbers elsewhere in the plan went too:
+
+- the pulse-generator timing resolution no longer defaults to the minimum
+  pulse (§5.3);
+- the multi-engine drift is derived from declared clock accuracies (§5.4);
+- an invented upload time was dropped from an example (§3.2).
 
 ## Changes since draft 4: the second review round (2026-10-08)
 
@@ -339,7 +362,7 @@ class Wait:                       # §2.4
                                   # without the trigger, recorded as a timeout)
     hold: str = 'idle'            # outputs while waiting: 'idle' (logical: illumination
                                   # off, positions held, no window open) or 'hold'
-    resume_s: float = 0.0         # guard after release before the segment starts
+    # After release: a scheduled preparation stage, from device configuration (§2.4)
 
 @dataclass(frozen=True)
 class DetectorBinding:            # §2.5
@@ -361,6 +384,8 @@ class ScanProgram:
     phases: tuple[Phase, ...] = ()               # the phase loop's per-phase states
     waits: tuple[Wait, ...] = ()
     separations: tuple[Separation, ...] = ()
+    timing_policy: str = 'strict-v1'             # a named, versioned policy (§2.6);
+                                                 # persisted with the program, never inferred
     park: Mapping[str, float] = field(default_factory=dict)
     detectors: tuple[DetectorBinding, ...] = ()
     trajectory: Optional[Trajectory] = None      # §1.5: free path instead of loops
@@ -368,6 +393,10 @@ class ScanProgram:
 
 **Positions are in µm and times in seconds.** Volts, sample rates and table
 formats belong to the engines and their compilers, never to the program.
+
+**The program holds what was requested.** What will run is the realized
+schedule (§2.6), derived from the program, the engine and the timing
+policy. Neither overwrites the other.
 
 ### 2.2 How devices move: stepped is not enough
 
@@ -507,13 +536,27 @@ the trigger arrives. The model therefore splits the timeline at each wait:
   compiler maps it per device (§2.6a). A laser is never left on through an
   unbounded wait by accident. `hold` keeps the outputs exactly as they were
   at the barrier, and must be asked for.
-- **Resuming.** On release, the engine sets the **segment-initial state**:
-  the logical state the program defines at the start of the next segment,
-  computed by the interpreter. It then waits the wait's `resume_s` (default
-  0), a guard for devices that need time to switch on, such as a shutter.
-  Then the segment's time 0 begins.
-  - Nothing is restored implicitly. Illumination comes back because the next
-    segment turns it on, not because it was on before the wait.
+- **Resuming: a scheduled preparation stage.** The segment after a barrier
+  begins with a preparation stage, part of the schedule like any other.
+  - **Only devices that need preparation change state in it,** and each
+    needs it for a reason its configuration states:
+    - a positioner whose segment-initial position differs from where it was
+      held needs its `Motion` (move and settle);
+    - a device with a declared preparation time needs that time: a shutter's
+      opening delay, a laser's enable-to-emission delay.
+  - **The stage lasts as long as its longest preparation.** Each device
+    starts its preparation so that it is ready at the stage's end.
+  - **Timed events are untouched.** Illumination pulses and detector
+    triggers happen at their scheduled times in the segment. None of them
+    is switched on early, and no pulse is lengthened by the preparation.
+  - **Nothing is restored implicitly.** Illumination comes back because the
+    segment schedules it, not because it was on before the wait.
+  - **The realized schedule and conformance include the stage:** every
+    preparation transition, with its start, duration and device, is checked
+    like any other event.
+  - A device with no declared preparation time has none. One that needs it
+    and has none is shown as "preparation unknown" (§2.8), not given a
+    guess.
 - **Timeout.** `timeout_s` with `on_timeout`:
   - `fail` ends the run as failed, with the reason;
   - `continue` releases the barrier without the trigger, runs the gated
@@ -574,7 +617,9 @@ period as requested and as it will happen. Preview, acquisition and recorded
 metadata all use it. The plot shows what will run, the detectors integrate
 what ran, and the file says what ran.
 
-**How times are realized.** Rounding each edge on its own is not enough. A
+**How times are realized.** Under `strict-v1` every time must already be on
+the grid; the rules below apply where a policy allows a deviation, and
+decide which deviation it is. Rounding each edge on its own is not enough. A
 pulse requested from 6 to 24 µs on a 10 µs grid becomes 10 to 20 µs: each
 edge moves only 4 µs, but the illumination falls from 18 to 10 µs. So:
 
@@ -586,46 +631,89 @@ edge moves only 4 µs, but the illumination falls from 18 to 10 µs. So:
   `Separation(after, before)` places `before` from `after`'s realized edge,
   not from the step start. Examples: the end of the off-switching pulse to
   the start of the readout, or a pulse to its camera window.
-- **Repeated steps do not accumulate.** A step period is a whole number of
-  grid steps, so every repetition starts exactly one period after the last.
 
-**Acceptance: each quantity has its own tolerance.** There is no overall
-percentage.
+**Acceptance: exact unless a named policy allows otherwise.** Every
+program names its timing policy, a named and versioned document (§2.8):
 
-| Quantity | Default tolerance | Beyond it |
-|---|---|---|
-| Edge position (rounding) | ½ grid step. This is a property of the rounding, reported, not an acceptance criterion | — |
-| Pulse, level and detector-window duration | 1 % of the requested duration. A duration that is a whole number of grid steps realizes exactly | Refused, with the nearest representable durations ("18 µs is not on the NI-DAQ's 10 µs grid: 10 µs or 20 µs") |
-| Critical separation | ½ grid step | Refused, naming both events |
-| Order and overlap | Exact: an order may not change, a gap may not close, pulses may not start to overlap, no event may leave its step, and a `stationary` event may not leave its stationary interval | Refused |
-| Pulse or window below one grid step or the engine's minimum pulse | Not acceptable | Refused |
-| Step period | Exact: must be a whole number of grid steps | Refused, offering the two nearest periods. Editors snap the dwell to the grid, as SimplePointScan's `snap_dwell_s` already does |
-| Waits and intervals (fixed time) | ½ grid step each | Reported |
-| Accumulated drift at repeated-step boundaries | Zero by construction. The schedule reports the total against the request, which is at most ½ grid step per segment from waits and intervals | — |
+- **`strict-v1`, the default, is exact representability.**
+  - Every duration, critical separation and repeat period must be a whole
+    number of grid steps.
+  - Every order and overlap relation must hold: an order may not change, a
+    gap may not close, pulses may not start to overlap, no event may leave
+    its step, and a `stationary` event may not leave its stationary
+    interval.
+  - What is not representable is refused, with the representable neighbours
+    offered ("18 µs is not on the NI-DAQ's 10 µs grid: 10 µs or 20 µs").
+  - Edge rounding (½ grid step at most) applies only to events whose edges
+    may round: markers and clocks. That bound is derived, not chosen.
+- **A policy may allow deviations,** for example a duration tolerance for a
+  preset. It states each tolerance with its unit and its rationale, has a
+  version, and is recorded with the acquisition. There is no built-in
+  percentage.
+- **`advanced-compatible-v1` is the compatibility policy** (below).
 
-The tolerances are per program, with these defaults, and shown in the
-report.
+**Repeats and drift: the whole period, against absolute deadlines.** Exact
+step periods are not enough: a wait or a motion that rounds, repeated every
+step, still accumulates.
+
+- **The complete repeat period** of every loop is the realized sum of its
+  steps, motion, waits and preparation. It is computed and validated
+  against the request: exact under `strict-v1`, within a policy's stated
+  tolerance otherwise.
+- **Where the engine can, iterations are scheduled against absolute
+  deadlines.** Iteration *k* of a loop starts at `t₀ + k × requested
+  period`, rounded once from the segment start rather than accumulated. The
+  error then stays within ½ grid step and does not grow. Engines that
+  repeat a fixed sequence (a pulse generator's repeat count) cannot do this;
+  for them the period must be exact.
+- **The schedule reports the timing error over the whole run:** the largest
+  deviation of any scheduled time and the deviation at the end of the run,
+  accounting for every independently rounded interval. The bound of ½ grid
+  step per segment only holds for deadline-scheduled segments; the report
+  computes the bound, it does not assume it.
 
 **Timing correction is not intensity normalization.** The realized schedule
 is a fact about timing, the same for every detector. A detector normalizes
 its own measurement by its own realized window (§6), and only that.
-Illumination changes are never "corrected" by normalization: they are held
-to the duration tolerance above and recorded as realized.
+Illumination changes are never "corrected" by normalization: the policy
+refuses them or records them.
 
-**Advanced as today (the compatible realization).** Today's designers
-already realize: `BetaScanDesigner` rounds a dwell that is not a whole
-number of samples **up**, with a warning (`BetaScanDesigner.py:266-271`).
-A 25 µs dwell at 100 kHz runs as 30 µs, 20 % longer per pixel.
+**Advanced as today: the compatibility policy `advanced-compatible-v1`.**
+Today's designers already realize, and the policy documents exactly how:
 
-- An Advanced-shaped program compiled through today's designers is realized
-  the way they realize, so the waveforms stay byte-identical. That covers
-  the dwell and the TTL designer's sample rounding of pulse windows. The schedule
-  reports it ("dwell 25 µs realized as 30 µs; the scan takes 20 % longer")
-  and the metadata records the realized dwell. It is not refused.
-- The Advanced dwell field shows the realized dwell. That is a display fix;
-  nothing that runs changes.
-- Everything else (Expert, Advanced's new options, plugin engines) uses the
-  strict policy above.
+- `BetaScanDesigner` rounds a dwell that is not a whole number of samples
+  **up**, per pixel, with a warning (`BetaScanDesigner.py:266-271`).
+  - Its default move and settle (2 ms each, `BetaScanDesigner.py:12-13`)
+    refuse any dwell of 4 ms or less before a waveform is built, so the
+    case that occurs is a dwell such as 4.025 ms.
+  - At 100 kHz that is 402.5 samples, which runs as 403 samples: 4.03 ms,
+    5 µs longer per pixel, and 1.3 s longer over a 512 × 512 scan.
+- The TTL designer rounds pulse windows to samples.
+- Under this policy those roundings are what runs, so the waveforms stay
+  byte-identical. They are reported ("dwell 4.025 ms realized as 4.03 ms;
+  the scan takes 1.3 s longer") and recorded. They are not refused.
+
+**Requested, realized and policy are kept apart, and all three persist:**
+
+- **The program keeps the requested values,** for example the 4.025 ms
+  dwell. Saving writes the requested values, never the realized ones, so
+  loading, compiling again and saving again cannot drift.
+- **The realized schedule is derived.** It is shown and recorded with the
+  acquisition, but never written back into the program.
+- **The policy is persisted with the scan** (`timingPolicy`), not inferred
+  from its shape. A scan file without it is a legacy file and loads as
+  `advanced-compatible-v1`. Advanced saves write the key, an additive
+  field.
+- **The Advanced panel shows the realized dwell beside the requested one**
+  ("4.025 ms, runs as 4.03 ms"). It does not replace the field's value.
+- **Enabling a new option migrates the scan to `strict-v1` visibly.** The
+  panel says so and keeps every requested value. It reports every value the
+  strict policy refuses, with its representable neighbours, and the user
+  chooses. Nothing is snapped silently.
+- **The test:** load → preview → save → reload on legacy Advanced files
+  must give identical requested values, identical waveforms and an
+  identical realized schedule. The saved file differs only by the added
+  `timingPolicy`.
 
 #### 2.6a Logical and electrical states
 
@@ -635,6 +723,10 @@ a window open or closed. Each engine's compiler maps them per device:
 - **A TTL line** maps on to its active level. A new optional device key,
   `ttlActiveLevel` (`"high"` by default, `"low"` for an inverted line), says
   which. None exists today: every scan line is assumed active-high.
+  - **One mapping, used everywhere** the line is driven: scan output, manual
+    control (the Laser panel's on and off), waiting, stopping and failure
+    cleanup. The device owns the mapping, so no path can forget it.
+  - A test drives an inverted line through each of these paths.
 - **An analog level** maps through the device's own mapping (laser power %
   onto its `valueRange`). Logical off is the device's off value, which is
   not necessarily 0 V.
@@ -679,6 +771,29 @@ step engine in M1 (§7) is an independent executor of its own compiled plan.
 - **The interpreter covers** stepped loops with motion, timelines, phases,
   composites, waits and trajectories.
 
+### 2.8 Where numbers come from
+
+The project's rule against magic numbers (`magic-number-audit.md`: "a fact
+that is right for the case it was written for, silently wrong for its
+neighbour") applies to every number this plan uses:
+
+- **Hardware quantities come from the engine's capabilities or the device's
+  configuration:** timing grid, minimum pulse, sequence capacity, repeat
+  limit, move and settle, preparation times, trigger latency and clock
+  accuracy.
+- **Experimental tolerances come from a named, versioned timing policy**
+  (`strict-v1`, `advanced-compatible-v1`, or a preset's own), with units
+  and a documented rationale. A constant with a name is not a policy.
+- **Derived bounds are calculated, not chosen.** Half a grid step follows
+  from nearest-grid rounding; a drift bound follows from the declared clock
+  accuracies and the run time.
+- **A missing capability is reported as unknown or unsupported, never
+  guessed.** The features that need it are refused with "unknown: the
+  engine does not declare its trigger latency" until it does.
+- **The resolved values and their sources are recorded with the
+  acquisition:** each number, its unit, and where it came from (engine
+  capability, device key, policy and version, or derivation).
+
 ---
 
 ## 3. Capabilities and the feasibility report
@@ -699,6 +814,10 @@ class EngineCapabilities:
     triggers_out: tuple                    # camera / marker lines
     timing_grid_s: float                   # the grid edges land on (§2.6)
     min_pulse_s: float
+    trigger_latency_s: Optional[float]     # None: unknown (§2.8)
+    clock_accuracy_ppm: Optional[float]    # None: unknown; bounds multi-engine drift
+    deadlines: bool                        # schedules iterations against absolute
+                                           # deadlines (§2.6), or repeats a sequence
     waits: frozenset                       # 'time', 'start-trigger', 'step-trigger'
     sync_in: frozenset                     # 'start' (a start trigger) and/or
                                            # 'clock' (an external sample clock), §5.4
@@ -715,7 +834,9 @@ engine says which channels it owns (`owns(channel)`):
 - a plugin engine names its own prefix, for example `"MyBoard/…"`.
 
 Devices keep their `analogChannel` and `digitalLine` fields, so the setup
-format for devices does not change. A channel no engine owns is reported as
+format for devices does not change. **Ownership must be unambiguous:** a
+channel claimed by two engines is a setup error when the setup loads, and
+the error names both engines and the channel. A channel no engine owns is reported as
 such; today it is dropped silently (§10). A program whose devices sit on two
 engines needs multi-engine sync (§5.4). Until then it is refused, with the
 reason.
@@ -728,8 +849,8 @@ three answers:
 | Answer | Example |
 |---|---|
 | **Native** | The NI-DAQ plays a swept X; a step engine evaluates the affine positions on board |
-| **Emulated, at a cost** | The NI-DAQ densifies a 5 ms-dwell stepped scan: "62 M samples per channel, 0.5 GB, uploaded in 1.2 s" |
-| **Impossible, with the reason and the remedy** | "X is swept by a galvo: an interleaved order needs stepped positions. Make X stepped (`smoothScan: false`)." / "The TriggerScope firmware does not run step programs: needs the engine-protocol firmware (§5.2)." / "405 is on the TriggerScope, the scan runs on the NI-DAQ: needs multi-engine sync." |
+| **Emulated, at a cost** | The NI-DAQ densifies a 5 ms-dwell stepped scan: "62 M samples per channel, 0.5 GB", computed from the program and the engine's grid |
+| **Impossible, with the reason and the remedy** | "X is swept by a galvo: an interleaved order needs stepped positions. Make X stepped (`smoothScan: false`)." The remedy is offered only when the device and the engine can step it. / "The TriggerScope firmware does not run step programs: needs the engine-protocol firmware (§5.2)." / "405 is on the TriggerScope, the scan runs on the NI-DAQ: needs multi-engine sync." |
 
 The features: swept loop, stepped loop, interleave/affine map, explicit
 table, composite drive, phase loop at each level, timeline events by kind
@@ -886,10 +1007,10 @@ the model and not from today's firmware:
   the electrical values each line takes for that, so polarity lives on the
   host. The board reports `STOPPED` and where it stopped.
 - **Waits:** a step or loop may wait on the trigger input with a timeout,
-  and outputs follow the wait's `hold` (§2.4). On release, the board sets
-  the segment-initial state it was sent, waits `resume_s`, then runs the
-  segment. It reports each release, so the trigger conformance tests (§2.4)
-  can check them.
+  and outputs follow the wait's `hold` (§2.4). On release, the board runs
+  the segment's preparation stage it was sent (§2.4), then the segment. It
+  reports each release and each preparation transition, so the trigger and
+  preparation conformance tests can check them.
 - **Introspection:** `*CAPS?` returns the capabilities (§3.1): DAC count and
   range, TTL count, timing resolution, limits. The engine reports what the
   connected board says, as the Teensy v4 `*IDN?` already does.
@@ -937,7 +1058,8 @@ stands for the boards people have.
 - **The contract is extended with optional properties**, conservative when
   absent:
   - `max_sequence_steps` (absent: refuse any program that needs the number);
-  - `timing_resolution_ns` (absent: `min_pulse_width_ns`);
+  - `timing_resolution_ns` (absent: unknown, so every timing check that
+    needs it is refused as unknown, §2.8);
   - `max_repeats`;
   - `run(..., trigger='none' | 'start')`, offered only when
     `supports_hw_trigger_in`.
@@ -979,9 +1101,10 @@ the model needs no change for it is a hypothesis until these contracts are
 designed:
 
 - **A shared start trigger is not a shared clock.**
-  - A start trigger aligns the starts. The clocks then drift apart by their
-    ppm difference over the run: a few µs per second, a pixel within a long
-    scan.
+  - A start trigger aligns the starts. The clocks then drift apart by
+    their combined error, from each engine's declared `clock_accuracy_ppm`,
+    times the run time. The report computes it; an engine that declares no
+    accuracy makes the bound unknown.
   - A shared sample clock (or a reference clock both lock to) keeps them in
     step. It is wired differently and not every board can take it.
 
@@ -1041,6 +1164,11 @@ designed:
     as one additive attribute. The interpreter recomputes every
     measurement's position from it, which is what a later reconstructor
     needs.
+  - **The reduction is recorded explicitly** as provenance with the image:
+    - that it was gridded from a trajectory;
+    - the grid;
+    - the weighting (count rate or time-weighted mean);
+    - that the raw measurements were not stored.
 - **One caveat, so the choice is made knowingly.** The gridded image is a
   reduction:
   - measurements that land in one bin are averaged;
@@ -1086,8 +1214,8 @@ designed:
 
 | Phase | Content | Behaviour change | Checked by |
 |---|---|---|---|
-| M0 | `ScanProgram` with `Motion`, per-device stationarity and `during`, `Wait`, `Separation` and `DetectorBinding`; logical states and their mapping (§2.6a); the interpreter with segments and input traces (§2.4); `RealizedSchedule` with the strict and compatible policies (§2.6); `layout_for` (§2.5); the Advanced dicts ↔ program adapter (every existing window `during: 'any'`); **Beta goldens captured first** | none | Qt-free tests. Advanced-shaped programs: the interpreter reproduces the Beta goldens (or Beta stays a compile path, §2.7); `layout_for` equals `build_advanced_scan_layouts`; the realized schedule equals what today's designers play (compatible). Round trip as the cloak contract. Strict-policy cases: 6-24 µs on 10 µs refused (duration 18 → 20 µs), a critical separation held to ½ step, a non-grid period refused with its neighbours, a closing gap refused, an offset transition under a stationary window refused |
-| M1 | `scan_engine` plugin kind under `imswitch.pluginapi.experimental`; `NidaqScanEngine`; **an independent in-process step engine** (its own compiled plan of tables and an event list, executed on a worker thread against a clock it advances, logging what it did); capabilities and the feasibility report; Advanced and Simple grey out from it; refusals for channels no engine owns; registry resolution for `pulse_generator` | Greyed parts; refusals instead of silent drops (§10) | Goldens; "Advanced as today"; an analog-only mock setup. The conformance suite on both engines: prepare, detector readiness (a mock camera triggered by the step engine's TTL events), start, stop (also during a wait), failure, completion. Trigger handling against independently specified arrival traces: on time, early-release and ignored-trigger mutants caught, `fail` and `continue` timeouts. The step engine's log against the interpreter |
+| M0 | `ScanProgram` with `Motion`, per-device stationarity and `during`, `Wait`, `Separation` and `DetectorBinding`; logical states and their mapping (§2.6a); the interpreter with segments and input traces (§2.4); `RealizedSchedule` with `strict-v1` and `advanced-compatible-v1` as versioned policy documents, repeat periods and absolute deadlines, and the run-wide error report (§2.6); preparation stages (§2.4); number provenance (§2.8); `layout_for` (§2.5); the Advanced dicts ↔ program adapter (every existing window `during: 'any'`; requested values, realized schedule and `timingPolicy` kept apart); **Beta goldens captured first** | none | Qt-free tests. **Advanced-shaped programs:** the interpreter reproduces the Beta goldens (or Beta stays a compile path, §2.7); `layout_for` equals `build_advanced_scan_layouts`; the realized schedule equals what today's designers play; load → preview → save → reload of legacy files gives identical requested values, waveforms and schedule. **Strict cases:** 6-24 µs on 10 µs refused with 10/20 µs offered; a non-representable separation or period refused with its neighbours; a closing gap refused; an offset transition under a stationary window refused; a rounded wait repeated N times reported as run-wide error, or held by deadlines. **Preparation:** pulses and triggers keep their scheduled times after a wait; the preparation transitions are in the schedule. **Unknowns:** a missing capability is reported as unknown, never defaulted. The resolved numbers and their sources are recorded |
+| M1 | `scan_engine` plugin kind under `imswitch.pluginapi.experimental`; `NidaqScanEngine`; **an independent in-process step engine** (its own compiled plan of tables and an event list, executed on a worker thread against a clock it advances, logging what it did); capabilities and the feasibility report; Advanced and Simple grey out from it; refusals for channels no engine owns, and a setup error for channels two engines claim; `ttlActiveLevel` through every path that drives a line (§2.6a); registry resolution for `pulse_generator` | Greyed parts; refusals instead of silent drops (§10) | Goldens; "Advanced as today"; an analog-only mock setup. The conformance suite on both engines: prepare, detector readiness (a mock camera triggered by the step engine's TTL events), start, stop (also during a wait), failure, completion. Trigger handling against independently specified arrival traces: on time, early-release and ignored-trigger mutants caught, `fail` and `continue` timeouts. The step engine's log against the interpreter |
 | M2 | Advanced: per-axis order (forward, serpentine, interleave *k*), intra-pixel moves as `offset` events (Guillaume's fields, every line step, hold or ramp, refused on swept axes and when they do not fit the stationary interval, §2.2). **Index-mapped assembly** in APD and PMT (windows placed by their index tuple, not reshaped in acquisition order). Camera frame streams with the interleaved layout | New options, off by default; saved intra-pixel scans start to do what they say | **Through the real mock detector and recording path.** An interleaved acquisition of the deterministic mock sample must give the same assembled image as the forward scan. The recorded file's layout must place every frame and pixel at its true coordinates, read back through the layout reader and the SNOUTY restack. The offsets appear in the AO trace per phase |
 | M3 | Expert panel: loops, drives (composite axes), phases, timeline, waits, presets (MS-RESOLFT first), the report and the realized schedule beside the editor; `PulseGeneratorScanEngine` on the extended pulse-generator contract (§5.3) | New panel | Mock APD and mock camera; layouts read by the SNOUTY reconstructor; the Teensy mock against the interpreter, refusals included (§5.3) |
 | M4 | Trajectories (circle, spiral, Lissajous, script pattern); APD/PMT measurement mode; gridding by measurement type (count rate, time-weighted voltage), NaN for unvisited, coverage in seconds as an auxiliary measurement (§6); recording | New pattern kind | Mock APD images the sample along a spiral (correlation, as the overview test). Unequal windows give the same rates (APD) and the same voltages (PMT). Unvisited bins are NaN, measured dark bins 0. Units and coverage are in the file |
@@ -1128,46 +1256,34 @@ designed:
 
 ## 9. Open points for this review
 
-**Answered in the second review round:**
+**Answered in the third review round:**
 
 | # | Point | Answer | Where |
 |---|---|---|---|
-| 5 | Outputs during a wait | Idle by default: positions held, illumination off, as **logical** states; resuming is defined | §2.4, §2.6a |
-| 6 | Timing defaults | Revised: separate tolerances for edges, durations, critical separations, order and overlap, and step periods; no overall percentage | §2.6 |
-| 7 | Coverage | Yes: integration time in seconds, with its detector and grid, as an auxiliary measurement with its unit | §6 |
-| 8 | Experimental API | Yes: M3 is the earliest point; readiness is both engines passing conformance and the acquisition tests | §5.0 |
+| 1 | `scanEngines` setup section | Accepted; channel ownership must be unambiguous, and overlapping claims are a setup error | §3.1, §5.0, M1 |
+| 2 | Composite axes Expert only | Accepted | §4 |
+| 3 | What M2 refuses | Accepted as the first supported subset; "make it stepped" is offered only when the device and the engine can step | §3.2 |
+| 4 | Re-gridding needs raw measurements | Accepted; the reduction is recorded explicitly | §6 |
+| 5 | `ttlActiveLevel` | Accepted; one mapping for scan output, manual control, waiting, stopping and failure cleanup | §2.6a, M1 |
+| 6 | The compatibility exception | Accepted, with the preservation rules: requested, realized and policy kept apart and persisted; visible migration; the load-save-reload test | §2.6 |
+| 7 | A 1 % default duration tolerance | Rejected: no tolerance without a justified source. `strict-v1` is exact; deviations only through a named, versioned policy | §2.6, §2.8 |
 
-**Still open (from drafts 3 and 4):**
+**Still open:**
 
-1. **The setup format for engines** (§5.0): a `scanEngines` map resolved
-   through the registry, the NI-DAQ engine implied by the `nidaq` section
-   when the map is absent, and `scan.engine` naming the engine a panel runs
-   on.
-2. **Composite axes are Expert only.** Advanced gains order and intra-pixel
-   moves (M2) but keeps one device per axis row.
-3. **What M2 refuses.** An interleaved order or an intra-pixel move on a
-   swept axis is refused with the remedy "make the axis stepped". An offset
-   is also refused when it does not fit with its transitions, or when its
-   transitions overlap a `stationary` event (§2.2).
-4. **The gridded-image caveat** (§6): re-gridding later needs the raw
-   measurements, which stay an option for M6.
-
-**New in draft 5:**
-
-5. **`ttlActiveLevel`**, a new optional device key (§2.6a), so a logical
-   "off" is right on an inverted line.
-6. **The compatible realization** for Advanced-shaped programs on today's
-   designers (§2.6). Today's rounding is reported and recorded, never
-   refused, and the Advanced dwell field shows the realized dwell.
-   Everything new is strict, and a scan that uses one of Advanced's new
-   options moves onto the strict policy as a whole, because it is compiled
-   by the program compiler. The panel then snaps its dwell to the grid
-   instead of rounding it up.
-7. **The duration tolerance default is 1 %.** With the duration-first
-   rounding, only durations that are not whole grid steps can miss it, and
-   the refusal offers the representable neighbours.
-8. **`on_timeout` is `fail` or `continue`.** Skipping a gated step waits for
-   recorded spans of missing events (M6).
+1. **`on_timeout: fail | continue`.** The review's recommendation for this
+   point did not come through in the pasted text. As proposed, `skip` waits
+   for recorded spans of missing events (M6).
+2. **The policy documents themselves:**
+   - where `strict-v1` and `advanced-compatible-v1` live (proposed: beside
+     the model, as versioned, documented data with a test that pins each
+     version);
+   - how a preset ships its own policy.
+3. **The device keys for preparation** (§2.4): a shutter's opening delay, a
+   laser's enable-to-emission delay. They are new optional keys on those
+   devices; without them a device has no preparation.
+4. **Engines that cannot schedule against deadlines** (§2.6) need exact
+   periods even under a tolerant policy. Is that acceptable, or should such
+   a policy be refused on them outright?
 
 ---
 
@@ -1194,8 +1310,8 @@ designed:
   consumers; none is.
 - **Beta stretches dwells with only a warning.** A dwell that is not a whole
   number of samples is rounded up per pixel (`BetaScanDesigner.py:266-271`).
-  A 25 µs dwell at 100 kHz runs as 30 µs, and the scan takes 20 % longer
-  than the panel says.
+  A 4.025 ms dwell at 100 kHz runs as 4.03 ms, and a 512 × 512 scan takes
+  1.3 s longer than the panel says.
 - **Scan TTL lines have no polarity setting.** Every line is driven
   active-high, so an inverted laser or shutter input is on when ImSwitch
   thinks it is off.
