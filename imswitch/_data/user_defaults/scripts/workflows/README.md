@@ -6,7 +6,9 @@ script, and edit the device names and output folders before running.
 
 * `wfs/` -- WidefieldSTARSS and related widefield acquisitions
   (Kiralux camera, Teensy pulses, rotators).
-* `timeresolved/` -- photon-arrival, gated-STED and tau-STED products from a
-  time-resolved detector (e.g. Swabian TimeTagger).
+
+The time-resolved acquisitions (binned photon arrivals, gated STED, tau
+STED) are tutorials now: `../tutorial/timetagger/11_*` to `13_*`, which run
+on the simulated card and write into the Recording folder.
 
 New to scripting? Start with `../tutorial/basic`.

@@ -657,6 +657,21 @@ class TimeTaggerFacade:
         if hook is not None:
             hook(name, value)
 
+    def sted_pulse_delay(self, duration_s: float = 1.0, binwidth_ps: int = 16,
+                         laser_rep_rate_mhz: float = 80.0,
+                         owner: Optional[str] = None) -> HistogramResult:
+        """Where the STED pulse sits after the laser sync: the histogram of
+        the ``sted_pulse`` photodiode against the sync, so its ``peak_ns``
+        is on the same absolute axis as :meth:`histogram`'s IRF peak (the
+        STED-to-excitation delay is the difference). Needs the optional
+        ``sted_pulse`` role."""
+        if not self._manager.hasRole("sted_pulse"):
+            raise TimeTaggerError("No sted_pulse role: cable a photodiode on the STED beam "
+                                  "and set stedPulseChannel in the timeTagger block.")
+        return self.histogram("sted_pulse", "laser_sync", binwidth_ps=binwidth_ps,
+                              duration_s=duration_s, laser_rep_rate_mhz=laser_rep_rate_mhz,
+                              owner=owner)
+
     def trigger_sweep(self, role: str, levels_v: Sequence[float],
                       duration_s: float = 0.2) -> SweepResult:
         """Count rate at each trigger level; the original level is restored.

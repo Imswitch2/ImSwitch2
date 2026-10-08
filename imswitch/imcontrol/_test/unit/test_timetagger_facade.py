@@ -492,3 +492,16 @@ def test_mock_truth_and_faults_exist_on_the_mock_only():
     tt.set_mock_fault("line_delay_ps", None)
     assert "line_delay_ps" not in tt.manager.tagger._model.faults
     assert tt.pattern_offset_ps("line_clock") == 10_000
+
+
+def test_sted_pulse_delay_needs_the_role_and_peaks_after_the_excitation():
+    with pytest.raises(TimeTaggerError, match="sted_pulse"):
+        _facade().sted_pulse_delay(duration_s=0.01)
+    tt = _facade(stedPulseChannel=5)
+    assert "sted_pulse" in tt.roles()
+    sted = tt.sted_pulse_delay(duration_s=0.05)
+    model = tt.manager.tagger._model
+    # The mock's STED pulse sits sted_delay_ps after the excitation (t0).
+    assert sted.peak_ns == pytest.approx((model.t0_ps + model.sted_delay_ps) / 1000.0, abs=0.05)
+    assert sted.total > 1000
+    assert sted.click_role == "sted_pulse" and sted.direction == "forward"

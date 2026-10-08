@@ -19,7 +19,12 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from .basewidgets import Widget
 
-MODES = ('FLIM', 'Tau STED', 'Signals')
+MODES = ('FLIM', 'Gated STED', 'Tau STED', 'Signals')
+GATE_REFERENCES = ('peak', 'absolute')
+#: Gate colours, by row: the decay regions and the viewer layers share them.
+GATE_COLOURS = ((255, 90, 90), (90, 160, 255), (90, 210, 120), (240, 190, 60),
+                (200, 110, 230), (90, 220, 220))
+GATE_COLORMAPS = ('red', 'blue', 'green', 'yellow', 'magenta', 'cyan')
 FIT_METHODS = ('moment', 'phasor', 'exp1')
 DISPLAYS = (('lifetime', 'Lifetime image'), ('intensity', 'Intensity image'),
             ('overlay', 'Intensity-weighted lifetime overlay'), ('none', 'No layer'))
@@ -57,6 +62,11 @@ class LifetimeWidget(Widget):
     sigSave = QtCore.Signal()
     sigPileupMapToggled = QtCore.Signal(bool)
     sigTriggerLevelEdited = QtCore.Signal(str, float)  # (role, volts)
+    sigGatesChanged = QtCore.Signal()
+    sigPresetSelected = QtCore.Signal(str)  # (preset name)
+    sigGateLayersToggled = QtCore.Signal(bool)
+    sigRatioToggled = QtCore.Signal(bool)
+    sigMeasureStedPulse = QtCore.Signal()
     sigTriggerSweep = QtCore.Signal(str)  # (role)
     sigScopeSnapshot = QtCore.Signal()
     sigPreflight = QtCore.Signal()
@@ -64,6 +74,9 @@ class LifetimeWidget(Widget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._roleRows = {}
+        self._regions = []
+        self._peakNs = None
+        self._syncingGates = False
         self._buildTop()
         self._buildDecay()
         self._buildSettings()
@@ -211,6 +224,8 @@ class LifetimeWidget(Widget):
         layout.addWidget(self.histStatLabel)
         self._modeStack.addWidget(flim)
 
+        self._modeStack.addWidget(self._buildGatedPanel())
+
         # Tau STED: lifetime against intensity per pixel, the pile-up map.
         tau = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tau)
@@ -262,6 +277,57 @@ class LifetimeWidget(Widget):
         self.signalsText.setPlaceholderText('Sweep, scope and pre-flight results appear here.')
         layout.addWidget(self.signalsText, stretch=1)
         self._modeStack.addWidget(signals)
+
+    def _buildGatedPanel(self):
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
+        self.gateTable = QtWidgets.QTableWidget(0, 5)
+        self.gateTable.setHorizontalHeaderLabels(['gate', 'from (ns)', 'to (ns)', 'ref', ''])
+        self.gateTable.horizontalHeader().setStretchLastSection(True)
+        self.gateTable.verticalHeader().setVisible(False)
+        self.gateTable.setMaximumHeight(170)
+        self.gateTable.itemChanged.connect(self._onGateItemChanged)
+        layout.addWidget(self.gateTable)
+        row = QtWidgets.QHBoxLayout()
+        self.addGateButton = QtWidgets.QPushButton('+')
+        self.addGateButton.setFixedWidth(28)
+        self.addGateButton.clicked.connect(self._onAddGate)
+        self.removeGateButton = QtWidgets.QPushButton('−')
+        self.removeGateButton.setFixedWidth(28)
+        self.removeGateButton.clicked.connect(self._onRemoveGate)
+        row.addWidget(self.addGateButton)
+        row.addWidget(self.removeGateButton)
+        row.addWidget(QtWidgets.QLabel('presets'))
+        self.presetCombo = QtWidgets.QComboBox()
+        self.presetCombo.setMinimumWidth(140)
+        row.addWidget(self.presetCombo)
+        self.loadPresetButton = QtWidgets.QPushButton('Load')
+        self.loadPresetButton.clicked.connect(
+            lambda: self.sigPresetSelected.emit(self.presetCombo.currentText()))
+        row.addWidget(self.loadPresetButton)
+        row.addStretch()
+        self.measureStedButton = QtWidgets.QPushButton('Measure STED pulse')
+        self.measureStedButton.setToolTip('The STED photodiode against the laser sync: a dashed '
+                                          'marker on the decay (needs the sted_pulse role)')
+        self.measureStedButton.clicked.connect(self.sigMeasureStedPulse)
+        row.addWidget(self.measureStedButton)
+        layout.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
+        self.gateLayersCheck = QtWidgets.QCheckBox('Gate layers in viewer')
+        self.gateLayersCheck.setChecked(True)
+        self.gateLayersCheck.toggled.connect(self.sigGateLayersToggled)
+        row.addWidget(self.gateLayersCheck)
+        self.ratioCheck = QtWidgets.QCheckBox('Ratio layer (last / first gate)')
+        self.ratioCheck.toggled.connect(self.sigRatioToggled)
+        row.addWidget(self.ratioCheck)
+        row.addStretch()
+        layout.addLayout(row)
+        self.gateStatusLabel = QtWidgets.QLabel('Gates apply on the next Run; the decay regions '
+                                                'can be dragged.')
+        self.gateStatusLabel.setStyleSheet('color: grey;')
+        layout.addWidget(self.gateStatusLabel)
+        layout.addStretch()
+        return panel
 
     def _buildStatusAndFooter(self):
         self._statusStrip = QtWidgets.QLabel('● no card')
@@ -395,13 +461,14 @@ class LifetimeWidget(Widget):
         self._decayCurve.setData(t, shown)
         if peak_ns is not None:
             self._peakLine.setValue(float(peak_ns))
+            self._peakNs = float(peak_ns)
+            self._moveRegionsToPeak()
         self._peakLine.setVisible(peak_ns is not None)
         if background_per_bin > 0:
             self._backgroundLine.setValue(float(background_per_bin))
         self._backgroundLine.setVisible(background_per_bin > 0)
         if sted_ns is not None:
-            self._stedLine.setValue(float(sted_ns))
-        self._stedLine.setVisible(sted_ns is not None)
+            self.setStedMarker(sted_ns)
         bins = f'{t.size}×{binwidth_ps:g} ps' if binwidth_ps else f'{t.size} bins'
         self._decayInfo.setText(
             f'{direction} · peak {peak_ns:.2f} ns · τ {tau_ns:.2f} ns · {int(c.sum()):,} photons '
@@ -447,6 +514,147 @@ class LifetimeWidget(Widget):
             self.tauStatLabel.setText(f'τ: median {np.median(y):.2f} ns over {y.size} px')
         else:
             self.tauStatLabel.setText('τ: —')
+
+    # ------------------------------------------------------------------ #
+    # Gates                                                                #
+    # ------------------------------------------------------------------ #
+
+    def getGates(self):
+        """``[{'name', 'start_ns', 'stop_ns', 'reference'}, ...]`` from the table,
+        in row order; rows that do not parse are skipped."""
+        gates = []
+        for row in range(self.gateTable.rowCount()):
+            try:
+                name = self.gateTable.item(row, 0).text().strip()
+                start = float(self.gateTable.item(row, 1).text())
+                stop = float(self.gateTable.item(row, 2).text())
+            except (AttributeError, ValueError):
+                continue
+            combo = self.gateTable.cellWidget(row, 3)
+            reference = combo.currentText() if combo is not None else 'peak'
+            if name and stop > start:
+                gates.append(dict(name=name, start_ns=start, stop_ns=stop, reference=reference))
+        return gates
+
+    def setGates(self, gates):
+        """Fill the table (and the decay regions) from ``getGates``-shaped dicts
+        or ``GateSpec``-like objects; silent (no ``sigGatesChanged``)."""
+        self._syncingGates = True
+        try:
+            self.gateTable.setRowCount(0)
+            for gate in gates:
+                get = (lambda k, g=gate: g[k]) if isinstance(gate, dict) else \
+                      (lambda k, g=gate: getattr(g, k))
+                self._appendGateRow(str(get('name')), float(get('start_ns')), float(get('stop_ns')),
+                                    str(get('reference')))
+        finally:
+            self._syncingGates = False
+        self._rebuildRegions()
+
+    def _appendGateRow(self, name, start, stop, reference='peak'):
+        row = self.gateTable.rowCount()
+        self.gateTable.insertRow(row)
+        self.gateTable.setItem(row, 0, QtWidgets.QTableWidgetItem(name))
+        self.gateTable.setItem(row, 1, QtWidgets.QTableWidgetItem(f'{start:g}'))
+        self.gateTable.setItem(row, 2, QtWidgets.QTableWidgetItem(f'{stop:g}'))
+        combo = QtWidgets.QComboBox()
+        combo.addItems(GATE_REFERENCES)
+        combo.setCurrentText(reference if reference in GATE_REFERENCES else 'peak')
+        combo.currentTextChanged.connect(lambda _t: self._onGateEdited())
+        self.gateTable.setCellWidget(row, 3, combo)
+        swatch = QtWidgets.QTableWidgetItem('')
+        colour = GATE_COLOURS[row % len(GATE_COLOURS)]
+        swatch.setBackground(QtGui.QColor(*colour))
+        swatch.setFlags(QtCore.Qt.ItemIsEnabled)
+        self.gateTable.setItem(row, 4, swatch)
+
+    def _onAddGate(self):
+        n = self.gateTable.rowCount()
+        last_stop = max([g['stop_ns'] for g in self.getGates()] or [0.5])
+        self._syncingGates = True
+        try:
+            self._appendGateRow(f'gate{n + 1}', last_stop, last_stop + 2.0)
+        finally:
+            self._syncingGates = False
+        self._onGateEdited()
+
+    def _onRemoveGate(self):
+        row = self.gateTable.currentRow()
+        if row < 0:
+            row = self.gateTable.rowCount() - 1
+        if row >= 0:
+            self.gateTable.removeRow(row)
+            self._onGateEdited()
+
+    def _onGateItemChanged(self, _item):
+        if not self._syncingGates:
+            self._onGateEdited()
+
+    def _onGateEdited(self):
+        if self._syncingGates:
+            return
+        self._rebuildRegions()
+        self.sigGatesChanged.emit()
+
+    def _regionBounds(self, gate):
+        """Where a gate sits on the decay axis (peak-relative ones need the
+        last decay's peak; without it they are drawn from 0)."""
+        offset = (self._peakNs or 0.0) if gate['reference'] == 'peak' else 0.0
+        return gate['start_ns'] + offset, gate['stop_ns'] + offset
+
+    def _rebuildRegions(self):
+        for region in self._regions:
+            self._decayPlot.removeItem(region)
+        self._regions = []
+        for row, gate in enumerate(self.getGates()):
+            colour = GATE_COLOURS[row % len(GATE_COLOURS)]
+            region = pg.LinearRegionItem(values=self._regionBounds(gate), movable=True,
+                                         brush=pg.mkBrush(*colour, 50),
+                                         pen=pg.mkPen(*colour, width=1.2))
+            region.setZValue(-10)
+            region.sigRegionChangeFinished.connect(lambda r=region, i=row: self._onRegionDragged(i, r))
+            self._decayPlot.addItem(region)
+            self._regions.append(region)
+
+    def _onRegionDragged(self, row, region):
+        if self._syncingGates or row >= self.gateTable.rowCount():
+            return
+        lo, hi = region.getRegion()
+        combo = self.gateTable.cellWidget(row, 3)
+        offset = (self._peakNs or 0.0) if combo is not None and combo.currentText() == 'peak' else 0.0
+        self._syncingGates = True
+        try:
+            self.gateTable.item(row, 1).setText(f'{lo - offset:.3f}')
+            self.gateTable.item(row, 2).setText(f'{hi - offset:.3f}')
+        finally:
+            self._syncingGates = False
+        self.sigGatesChanged.emit()
+
+    def _moveRegionsToPeak(self):
+        if not self._regions:
+            return
+        self._syncingGates = True
+        try:
+            for region, gate in zip(self._regions, self.getGates()):
+                region.setRegion(self._regionBounds(gate))
+        finally:
+            self._syncingGates = False
+
+    def setPresets(self, names):
+        self.presetCombo.clear()
+        self.presetCombo.addItems(list(names))
+        self.loadPresetButton.setEnabled(bool(names))
+
+    def setStedMarker(self, ns):
+        if ns is None:
+            self._stedLine.setVisible(False)
+            return
+        self._stedLine.setValue(float(ns))
+        self._stedLine.setVisible(True)
+
+    def setGateStatus(self, text, error=False):
+        self.gateStatusLabel.setText(text)
+        self.gateStatusLabel.setStyleSheet('color: #c33;' if error else 'color: grey;')
 
     def setRoles(self, roles):
         self.sweepRoleCombo.clear()

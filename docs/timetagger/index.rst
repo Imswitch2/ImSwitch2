@@ -125,6 +125,7 @@ From a script: ``facade.time_tagger``
    tt.skew('frame_clock', 'line_clock', added_delay_ps=50_000)    # SkewResult: signed skew_ps
    tt.scope(['frame_clock', 'line_clock'], 'frame_clock', window_ps, detector_name='FLIM')
    tt.pattern_offset_ps(); tt.mock_truth(ny, nx); tt.set_mock_fault('line_delay_ps', -800_000)
+   tt.sted_pulse_delay(duration_s=1.0)   # HistogramResult of the STED photodiode vs the sync
 
 Every result has a ``summary()`` string and a ``to_dict()``. Every blocking
 call sleeps in slices that honour the script's Stop button, waits on the
@@ -186,8 +187,18 @@ The tutorials
 10
     The pre-flight checklist: ``preflight()``, green/red, naming the
     tutorial that fixes each red line.
+11
+    Binned photon arrivals: the cube and gate images saved to HDF5
+    (format version 2) in the Recording folder, read back with
+    ``load_products``.
+12
+    Gated STED: gates from a peak-relative preset (``gate_presets/``, shared
+    with the Lifetime widget), the late/early ratio, and the STED pulse
+    against the sync (``sted_pulse_delay``, with the optional photodiode).
+13
+    Tau STED: the per-pixel lifetime image and what the products carry.
 
-Steps 07 to 09 load ``scan_params/flim_scan_64px.json`` into the Scan
+Steps 07 to 13 load ``scan_params/flim_scan_64px.json`` into the Scan
 widget for their runs (64 x 64 pixels at 400 us, about 2 s) and put the
 previous settings back. Each measurement prints a suggestion and writes it
 only when the script's ``APPLY`` is True; a written value holds until

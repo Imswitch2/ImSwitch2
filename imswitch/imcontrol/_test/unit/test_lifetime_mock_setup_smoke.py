@@ -105,7 +105,7 @@ def test_the_widget_runs_on_the_shipped_flim_setup(qapp):
     try:
         assert widget.getDetector() == 'FLIM'
         assert widget.getSetting('rep_rate_mhz') == 80.0
-        assert widget.sweepRoleCombo.count() == 4, "photons, sync, line and frame roles"
+        assert widget.sweepRoleCombo.count() == 5, "photons, sync, line, frame and STED-pulse roles"
         assert widget.preflightButton.isEnabled()
 
         # One mock scan through the detector's own worker.

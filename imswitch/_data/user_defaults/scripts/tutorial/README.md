@@ -96,9 +96,14 @@ back, delete your copy and restart ImSwitch.
 | 08 | `08_frame_clock_and_pixel_markers.py` | `galvo_flim_mock_scan_setup.json` | the frame clock, the signed frame-to-line `skew()`, `scope()` of one line, the last-frame check |
 | 09 | `09_line_delay_alignment.py` | `galvo_flim_mock_scan_setup.json` | the FLIM image against the APD (or the mock truth): pixels to `lineClockDelayPs`, re-run to 0 |
 | 10 | `10_flim_preflight.py` | `galvo_flim_mock_scan_setup.json` | `preflight()`: the green/red checklist before a FLIM session |
+| 11 | `11_binned_photon_arrivals.py` | `galvo_flim_mock_scan_setup.json` | `BinnedPhotonArrivalWorkflow`: the cube and gates saved to HDF5 (format 2), read back with `load_products()` |
+| 12 | `12_gated_sted.py` | `galvo_flim_mock_scan_setup.json` | `GatedSTEDWorkflow` with a peak-relative preset from `gate_presets/`; the late/early ratio; `sted_pulse_delay()` |
+| 13 | `13_tau_sted.py` | `galvo_flim_mock_scan_setup.json` | `TauSTEDWorkflow`: the per-pixel lifetime image and what the products carry |
 
+`timetagger/gate_presets/*.json` are the gate presets tutorial 12 and the
+Lifetime widget share (peak-relative gates and a ratio).
 `timetagger/timetagger_helpers.py` finds the card and the FLIM detector,
-prints tables, and (for 07 to 09) loads `timetagger/scan_params/flim_scan_64px.json`
+prints tables, and (for 07 to 13) loads `timetagger/scan_params/flim_scan_64px.json`
 into the Scan widget, switches the FLIM detector's `enabled` parameter so
 the APD can image while the card stays free, and starts a scan without
 waiting so a measurement can run during it. Every measurement that could

@@ -24,9 +24,11 @@ What it owns (Lifetime 2.0 plan, section 5.2):
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -34,10 +36,13 @@ import numpy as np
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.timeresolved import (
     PILEUP_WARN,
+    GateSpec,
     LifetimeFitConfig,
     TimeResolvedScanProducts,
+    load_gate_preset,
     pileup_fraction,
 )
+from imswitch.imcontrol.view.widgets.LifetimeWidget import GATE_COLORMAPS
 from ..basecontrollers import (
     ComponentStateApplyMode,
     ImConWidgetController,
@@ -60,6 +65,32 @@ DEFAULT_TAU_RANGE = (0.5, 5.0)
 RUN_TIMEOUT_S = 600.0
 #: Roles a scope snapshot shows (never the photons: millions of edges).
 SCOPE_ROLES = ('line_clock', 'frame_clock', 'laser_sync')
+#: Where the gate presets live, relative to the user's scripts folder (the
+#: same files tutorial 12 loads); the shipped defaults are the fallback.
+GATE_PRESETS_RELATIVE = os.path.join('scripts', 'tutorial', 'timetagger', 'gate_presets')
+
+
+def gate_preset_folders():
+    """The user's gate-preset folder first, then the shipped one."""
+    from imswitch.imcommon.model import dirtools
+    folders = []
+    for root in (getattr(dirtools.UserFileDirs, 'Root', None),
+                 getattr(dirtools.DataFileDirs, 'UserDefaults', None)):
+        if root:
+            folder = Path(root) / GATE_PRESETS_RELATIVE
+            if folder.is_dir():
+                folders.append(folder)
+    return folders
+
+
+def ratio_image(numerator, denominator):
+    """``numerator / denominator`` per pixel, 0 where the denominator is 0."""
+    num = np.asarray(numerator, dtype=np.float64)
+    den = np.asarray(denominator, dtype=np.float64)
+    out = np.zeros(np.broadcast(num, den).shape, dtype=np.float32)
+    good = den > 0
+    out[good] = (num[good] / den[good]).astype(np.float32)
+    return out
 
 
 def tau_overlay_rgb(lifetime_ns, intensity, tau_range, hue_span=(0.0, 0.7)):
@@ -135,17 +166,26 @@ def combine_products(products_list):
     global_tau = float((photons * taus).sum() / photons.sum()) if photons.sum() > 0 else 0.0
     metadata = dict(products_list[-1].metadata)
     metadata['frames_accumulated'] = len(products_list)
+    gate_images = {}
+    for name in first.gate_images:
+        images = [p.gate_images[name] for p in products_list if name in p.gate_images]
+        gate_images[name] = sum(np.asarray(im, dtype=np.float64) for im in images).astype(np.float32)
     return TimeResolvedScanProducts(
         cube_counts=None,
         cube_axes=first.cube_axes,
         t_axis_ns=np.asarray(first.t_axis_ns),
         intensity=intensity.astype(np.float32),
         lifetime_ns=lifetime if weight.any() else None,
-        gate_images={},
+        gate_images=gate_images,
         decay_counts=decay.astype(np.float32),
         global_tau_ns=global_tau,
         metadata=metadata,
         is_final=True,
+        tcspc_direction=str(products_list[-1].tcspc_direction),
+        background_rate_hz=float(products_list[-1].background_rate_hz),
+        pileup_max=max(float(p.pileup_max) for p in products_list),
+        overflows=sum(int(p.overflows) for p in products_list),
+        frames_accumulated=len(products_list),
     )
 
 
@@ -194,6 +234,14 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         widget.sigPreflight.connect(self._onPreflight)
         widget.histBinsSpin.valueChanged.connect(lambda _v: self._renderHistogram())
         widget.accumulateHistCheck.toggled.connect(self._onPoolToggled)
+        widget.sigGatesChanged.connect(self._onGatesChanged)
+        widget.sigPresetSelected.connect(self._onPresetSelected)
+        widget.sigGateLayersToggled.connect(lambda _on: self._renderLast())
+        widget.sigRatioToggled.connect(lambda _on: self._renderLast())
+        widget.sigMeasureStedPulse.connect(self._onMeasureStedPulse)
+        self._presets = {}
+        self._loadPresetList()
+        self._stedPeakNs = None
 
         names = list(self._detectors)
         widget.setDetectors(names, names[0] if names else None)
@@ -339,6 +387,79 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             self._widget.setFooterStatus(f'{param}: {error}', error=True)
             self._loadSettingsFromDetector()
 
+    # ------------------------------------------------------------------ #
+    # Gates                                                                #
+    # ------------------------------------------------------------------ #
+
+    def _gateSpecs(self) -> tuple:
+        specs = []
+        for gate in self._widget.getGates():
+            try:
+                specs.append(GateSpec(gate['name'], gate['start_ns'], gate['stop_ns'],
+                                      reference=gate['reference']))
+            except ValueError as error:
+                self._widget.setGateStatus(str(error), error=True)
+                return ()
+        names = [s.name for s in specs]
+        if len(set(names)) != len(names):
+            self._widget.setGateStatus('gate names must be unique', error=True)
+            return ()
+        return tuple(specs)
+
+    def _onGatesChanged(self):
+        specs = self._gateSpecs()
+        if specs:
+            self._widget.setGateStatus(f'{len(specs)} gate(s); they apply on the next Run.')
+        elif not self._widget.getGates():
+            self._widget.setGateStatus('no gates: add one or load a preset', error=False)
+
+    def _loadPresetList(self):
+        self._presets = {}
+        for folder in gate_preset_folders():
+            for path in sorted(folder.glob('*.json')):
+                self._presets.setdefault(path.stem, path)
+        self._widget.setPresets(list(self._presets))
+
+    def _onPresetSelected(self, name: str):
+        path = self._presets.get(name)
+        if path is None:
+            return
+        try:
+            preset = load_gate_preset(path)
+        except Exception as error:
+            self._widget.setGateStatus(f'{name}: {error}', error=True)
+            return
+        self._widget.setGates(preset['gates'])
+        if preset['ratio'] is not None:
+            self._widget.ratioCheck.setChecked(True)
+        self._onGatesChanged()
+        if self._gateSpecs():
+            self._widget.setGateStatus(f"preset {preset['name']}: {len(preset['gates'])} gate(s), "
+                                       "applied on the next Run.")
+
+    def _onMeasureStedPulse(self):
+        if self._tt is None:
+            return
+        if 'sted_pulse' not in self._tt.roles():
+            self._widget.setGateStatus('no sted_pulse role on the card (stedPulseChannel)', error=True)
+            return
+        rep = float(self._widget.getSetting('rep_rate_mhz'))
+        t0_ns = float(self._widget.getSetting('t0_ps')) / 1000.0
+
+        def body():
+            hist = self._tt.sted_pulse_delay(duration_s=1.0, laser_rep_rate_mhz=rep)
+            # The decay is shown with t0 applied (the IRF peak at 0); the
+            # photodiode histogram is absolute, so the marker moves by t0.
+            marker = float(hist.peak_ns) - t0_ns
+
+            def show():
+                self._stedPeakNs = marker
+                self._widget.setStedMarker(marker)
+                self._widget.setGateStatus(f'STED pulse at {hist.peak_ns:.3f} ns after the sync '
+                                           f'({marker:+.3f} ns on the decay axis)')
+            self._invokeOnControllerThread(show)
+        self._runOnWorker(body, 'measuring the STED pulse')
+
     def _onPoolToggled(self, enabled: bool):
         if not enabled:
             self._pooledLifetimes = []
@@ -390,18 +511,22 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         self._render(live.intensity, live.lifetime_ns, live.decay_counts, live.t_axis_ns,
                      peak_ns=live.peak_time_ns, background_per_bin=live.background_per_bin,
                      direction=live.tcspc_direction, tau_ns=live.global_tau_ns,
-                     metadata=live.metadata, is_final=live.is_final)
+                     metadata=live.metadata, is_final=live.is_final,
+                     gate_images=live.gate_images)
         if live.is_final and live.lifetime_ns is not None and self._widget.accumulateHistCheck.isChecked():
             self._pooledLifetimes.append(np.asarray(live.lifetime_ns, dtype=np.float32).ravel())
             self._renderHistogram()
 
     def _render(self, intensity, lifetime_ns, decay_counts, t_axis_ns, *, peak_ns, background_per_bin,
-                direction, tau_ns, metadata, is_final):
+                direction, tau_ns, metadata, is_final, gate_images=None):
         widget = self._widget
         t = np.asarray(t_axis_ns, dtype=float)
         binwidth_ps = float(t[1] - t[0]) * 1000.0 if t.size > 1 else None
         widget.updateDecay(t, decay_counts, peak_ns=peak_ns, background_per_bin=background_per_bin,
-                           direction=direction, tau_ns=tau_ns, binwidth_ps=binwidth_ps)
+                           direction=direction, tau_ns=tau_ns, binwidth_ps=binwidth_ps,
+                           sted_ns=self._stedPeakNs)
+        if gate_images:
+            self._lastGateImages = dict(gate_images)
         g, s = phasor_point(t, decay_counts, float(widget.getSetting('rep_rate_mhz')), peak_ns or 0.0)
         widget.updatePhasor(g, s)
         # An intensity-only preview (live_fit_period_s = 0, or between fits)
@@ -424,6 +549,25 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         if self._widget.getMode() == 'Tau STED' and lifetime_ns is not None:
             self._widget.updateScatter(intensity, lifetime_ns)
         self._renderLayers(intensity, lifetime_ns, metadata)
+
+    def _renderGateLayers(self, wanted: set):
+        """One layer per gate image of the last frame (``FLIM › gate:late``),
+        plus the ratio of the last to the first gate, in Gated STED mode."""
+        widget = self._widget
+        images = getattr(self, '_lastGateImages', None) or {}
+        if widget.getMode() != 'Gated STED' or not images:
+            return
+        names = list(images)
+        if widget.gateLayersCheck.isChecked():
+            for index, name in enumerate(names):
+                kind = f'gate:{name}'
+                self._upsertLayer(kind, np.asarray(images[name], dtype=np.float32),
+                                  colormap=GATE_COLORMAPS[index % len(GATE_COLORMAPS)])
+                wanted.add(self._layerName(kind))
+        if widget.ratioCheck.isChecked() and len(names) >= 2:
+            self._upsertLayer('gate ratio', ratio_image(images[names[-1]], images[names[0]]),
+                              colormap='inferno')
+            wanted.add(self._layerName('gate ratio'))
 
     def _renderHistogram(self):
         widget = self._widget
@@ -482,6 +626,7 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         elif display == 'overlay' and lifetime_ns is not None:
             self._upsertLayer('τ overlay', tau_overlay_rgb(lifetime_ns, intensity, tau_range), rgb=True)
             wanted.add(self._layerName('τ overlay'))
+        self._renderGateLayers(wanted)
         if widget.pileupMapCheck.isChecked() and widget.getMode() == 'Tau STED':
             dwell_s = float((metadata or {}).get('dwell_s', 0.0) or 0.0)
             rep_hz = float(widget.getSetting('rep_rate_mhz')) * 1e6
@@ -519,8 +664,9 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
 
     def _runParams(self):
         from imswitch.imcontrol.model.workflows.time_resolved import TimeResolvedWorkflowParams
+        gates = self._gateSpecs() if self._widget.getMode() == 'Gated STED' else ()
         return TimeResolvedWorkflowParams(
-            capture_cube=False, fit=self._fitConfig(), timeout_s=RUN_TIMEOUT_S,
+            capture_cube=False, gates=gates, fit=self._fitConfig(), timeout_s=RUN_TIMEOUT_S,
             measurement_name=str(self._widget.nameEdit.text() or 'lifetime'),
             save_h5=False, save_npz=False, save_tiff=False,
         )
@@ -537,6 +683,9 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             return False
         if self._workerBusy():
             self._widget.setFooterStatus('a run is in progress', error=True)
+            return False
+        if self._widget.getMode() == 'Gated STED' and not self._gateSpecs():
+            self._widget.setFooterStatus('Gated STED needs at least one gate', error=True)
             return False
         self._stopEvent.clear()
         self._live = live
@@ -575,13 +724,13 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
         if self._closed:
             return
         self._lastProducts = products
-        self._pileupMax = float((products.metadata or {}).get('pileup_max', self._pileupMax) or 0.0)
+        self._pileupMax = float(products.pileup_max or (products.metadata or {}).get('pileup_max', 0.0) or 0.0)
         self._render(products.intensity, products.lifetime_ns, products.decay_counts,
                      products.t_axis_ns, peak_ns=(products.metadata or {}).get('peak_time_ns'),
                      background_per_bin=float((products.metadata or {}).get('background_per_bin', 0.0) or 0.0),
-                     direction=str((products.metadata or {}).get('tcspc_direction', 'forward')),
+                     direction=str(products.tcspc_direction or 'forward'),
                      tau_ns=float(products.global_tau_ns or 0.0), metadata=products.metadata,
-                     is_final=True)
+                     is_final=True, gate_images=products.gate_images)
         if products.lifetime_ns is not None and self._widget.accumulateHistCheck.isChecked():
             self._pooledLifetimes.append(np.asarray(products.lifetime_ns, dtype=np.float32).ravel())
             self._renderHistogram()
@@ -750,6 +899,9 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             'pileup_map': bool(widget.pileupMapCheck.isChecked()),
             'hist_bins': int(widget.histBinsSpin.value()),
             'pool_scans': bool(widget.accumulateHistCheck.isChecked()),
+            'gates': widget.getGates(),
+            'gate_layers': bool(widget.gateLayersCheck.isChecked()),
+            'ratio_layer': bool(widget.ratioCheck.isChecked()),
         }
 
     def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
@@ -785,6 +937,15 @@ class LifetimeController(ImConWidgetController, StatefulComponentMixin):
             widget.histBinsSpin.setValue(int(state['hist_bins']))
         if 'pool_scans' in state:
             widget.accumulateHistCheck.setChecked(bool(state['pool_scans']))
+        if 'gates' in state:
+            try:
+                widget.setGates(list(state['gates']))
+            except Exception as error:
+                warnings.append(f'gates: {error}')
+        if 'gate_layers' in state:
+            widget.gateLayersCheck.setChecked(bool(state['gate_layers']))
+        if 'ratio_layer' in state:
+            widget.ratioCheck.setChecked(bool(state['ratio_layer']))
         return warnings
 
     def describeComponentState(self, state: dict) -> list[str]:

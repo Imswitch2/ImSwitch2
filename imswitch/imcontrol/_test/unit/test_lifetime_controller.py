@@ -355,3 +355,56 @@ def _facade_detector(detector):
         wait_for_final=lambda timeout_s=None, owner=None: detector.waitForFinalTimeResolvedProducts(timeout_s, owner),
         clear=lambda owner=None: detector.clearTimeResolvedProducts(owner),
     )
+
+
+def test_gated_run_carries_the_gates_and_shows_gate_and_ratio_layers(rig, qtbot, monkeypatch):
+    controller, detector, widget, comm = rig.controller, rig.detector, rig.widget, rig.comm
+    widget.setMode('Gated STED')
+    widget.runButton.click()
+    assert 'at least one gate' in widget.footerStatus.text(), 'no gates: refused before the scan'
+    widget.setGates([dict(name='early', start_ns=0.5, stop_ns=2.5, reference='peak'),
+                     dict(name='late', start_ns=2.5, stop_ns=8.0, reference='peak')])
+    widget.ratioCheck.setChecked(True)
+    products = _products()
+    products.gate_images = {'early': products.intensity * 0.4, 'late': products.intensity * 0.6}
+    detector.final = products
+    facade = SimpleNamespace(time_resolved=_facade_detector(detector),
+                             scan=SimpleNamespace(run_once=lambda timeout_s=None: None))
+    monkeypatch.setattr(controller, '_buildFacade', lambda name: facade)
+    widget.runButton.click()
+    qtbot.waitUntil(lambda: widget.runButton.isEnabled(), timeout=5000)
+    config = detector.configured[-1][0]
+    assert [g.name for g in config.gates] == ['early', 'late']
+    assert config.gates[0].reference == 'peak'
+    qtbot.waitUntil(lambda: 'FLIM › gate ratio' in comm.layers, timeout=2000)
+    assert 'FLIM › gate:early' in comm.layers and 'FLIM › gate:late' in comm.layers
+    ratio, _, options = comm.layers['FLIM › gate ratio']
+    assert np.allclose(ratio, 1.5) and options['colormap'] == 'inferno'
+    assert comm.layers['FLIM › gate:early'][2]['colormap'] == 'red'
+    widget.gateLayersCheck.setChecked(False)
+    qtbot.waitUntil(lambda: 'FLIM › gate:early' in comm.removed, timeout=2000)
+    assert 'FLIM › gate ratio' in comm.layers
+    # Component state carries the gates.
+    state = controller.getComponentState()
+    assert [g['name'] for g in state['gates']] == ['early', 'late'] and state['ratio_layer']
+
+
+def test_presets_load_from_the_shipped_folder(rig):
+    controller, widget = rig.controller, rig.widget
+    assert 'sted_early_late' in controller._presets
+    widget.presetCombo.setCurrentText('sted_early_late')
+    widget.loadPresetButton.click()
+    gates = widget.getGates()
+    assert [g['name'] for g in gates] == ['early', 'late']
+    assert widget.ratioCheck.isChecked(), 'the preset names a ratio'
+    assert 'preset sted_early_late' in widget.gateStatusLabel.text()
+
+
+def test_combine_products_sums_gate_images_and_version_2_fields():
+    a, b = _products(1), _products(2)
+    a.gate_images = {'g': np.ones((NY, NX))}
+    b.gate_images = {'g': np.ones((NY, NX)) * 2}
+    a.overflows, b.overflows, b.pileup_max = 1, 2, 0.2
+    out = combine_products([a, b])
+    assert np.all(out.gate_images['g'] == 3)
+    assert out.overflows == 3 and out.pileup_max == 0.2 and out.frames_accumulated == 2

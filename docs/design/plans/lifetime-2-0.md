@@ -1,8 +1,8 @@
 # Lifetime 2.0 — Swabian Time Tagger, calibration tutorials, and a Lifetime widget
 
-Status: **revision 4** — in implementation. P1a, P1b, P1c, P2, P3 and P4
-are done, all on the single branch `feat/lifetime-2-0` (one commit per
-phase); P5 is next. The
+Status: **revision 4** — in implementation. P1a, P1b, P1c, P2, P3, P4 and
+P5 are done, all on the single branch `feat/lifetime-2-0` (one commit per
+phase); what remains is the rig validation (§8 P6, in the follow-up plan). The
 second external review (§15, "External review 2": eleven items against the
 P1/P2 code) is folded into the P3 branch. Revision 4 folds in the first external review
 (§15, "External review 1"): four of its eight items changed code already
@@ -782,13 +782,18 @@ container; the widget, controller and shipped-setup smoke are unit tests
 on `qapp` instead).
 *Rig check (open)*: live τ overlay on a reference dye; preflight green.
 
-**P5 — Gated STED panel, shared io, products v2.** Gate table with
-`reference`, regions, presets, gate layers, ratio image, STED-pulse marker
-(if cabled), `timeresolved/io.py` with reader, products v2; tutorials 11–13
-re-headed onto the mock setup, Recording-folder output, under test;
-`update_user_defaults_history`.
-*Rig check*: the widget's gated image equals tutorial 12's on the same scan
-(identical file contents).
+**P5 — Gated STED panel, shared io, products v2.** *Done on
+`feat/lifetime-2-0`.* Gate table with `reference`, draggable regions,
+presets (two shipped), gate layers, ratio layer, STED-pulse marker through
+the mock's photodiode model and `sted_pulse_delay`; `timeresolved/io.py`
+(writers, `load_products`, gate presets) shared by the workflows and the
+widget's Save; products v2 fields on `TimeResolvedScanProducts` and in the
+HDF5 layout (`max_retained_products` kept as an accepted no-op rather than
+removed, to leave old scripts constructing); tutorials 11–13 in
+`tutorial/timetagger` on the mock setup with Recording-folder output, the
+old `workflows/timeresolved` scripts removed; `update_user_defaults_history`.
+*Rig check (open)*: the widget's gated image equals tutorial 12's on the
+same scan (identical file contents).
 
 **P6 — Validation campaign and release.** Roadmap 13.A FLIM row closed with
 the per-fit-method convergence test on a reference dye (tutorial 10's

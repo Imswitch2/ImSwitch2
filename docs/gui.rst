@@ -341,6 +341,15 @@ its FLIM view.
 * **Tau STED** -- lifetime against intensity per pixel, the median lifetime,
   and **Pile-up map layer**: photons per excitation pulse per pixel, from the
   configured rep rate (above 10 % the histogram is biased).
+* **Gated STED** -- a table of time gates (name, from, to, and whether the
+  bounds are measured from the IRF **peak** or **absolute** on the axis),
+  drawn as draggable coloured regions on the decay; **+** / **−**;
+  **presets** from ``tutorial/timetagger/gate_presets`` (the files tutorial
+  12 loads); **Gate layers in viewer** puts each gate image of the last
+  frame in its own layer (``FLIM › gate:late``) and **Ratio layer** the
+  last gate over the first; **Measure STED pulse** marks where the STED
+  photodiode's pulse sits on the decay (needs the ``sted_pulse`` role).
+  Gate edits apply on the next Run.
 * **Signals** -- what every role of the card counts, sampled every second,
   its trigger level (editable; refused with a message while a scan holds the
   card), the TCSPC direction, the filter state and the overflow count;
@@ -360,9 +369,6 @@ its FLIM view.
   a run that overlaps one is refused.
 * **name** and **Save** -- write the last result (HDF5 and TIFFs, as a
   workflow would) into the Recording widget's folder.
-
-The gated-STED view (gate table, presets, gate layers and the ratio image)
-and the STED-pulse marker on the decay come with the next release.
 
 
 Hardware control

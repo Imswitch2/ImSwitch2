@@ -154,6 +154,11 @@ class SignalModel:
     sync_channel: int = 2
     line_channel: int = 3
     frame_channel: Optional[int] = None
+    sted_channel: Optional[int] = None
+    """ A photodiode on the STED beam: one edge per laser pulse,
+    ``sted_delay_ps`` after the excitation (after the IRF peak). """
+    sted_delay_ps: float = 300.0
+    sted_width_ps: float = 120.0
     sample: MockSample = field(default_factory=_beads_sample)
     rep_rate_hz: float = 80e6
     sync_jitter_ps: float = 20.0
@@ -193,6 +198,8 @@ class SignalModel:
         }
         if self.frame_channel is not None:
             amps[abs(self.frame_channel)] = 1.2
+        if self.sted_channel is not None:
+            amps[abs(self.sted_channel)] = 0.8
         for ch, amp in amps.items():
             self.pulse_amplitude_v.setdefault(ch, amp)
         if self.faults.get("wrong_sync_polarity"):
@@ -222,6 +229,8 @@ class SignalModel:
             line_channel=int(info.lineClockChannel),
             frame_channel=(int(info.frameClockChannel)
                            if info.frameClockChannel is not None else None),
+            sted_channel=(int(info.stedPulseChannel)
+                          if getattr(info, "stedPulseChannel", None) is not None else None),
             sample=preset(),
             faults=dict(getattr(info, "mockFaults", {}) or {}),
         )
@@ -385,6 +394,8 @@ class MockTimeTagger:
             return m.sample.parked_rate_hz * (1 + m.afterpulse_fraction) + m.dark_rate_hz
         if abs(ch) == abs(m.sync_channel):
             return m.rep_rate_hz
+        if m.sted_channel is not None and abs(ch) == abs(m.sted_channel):
+            return m.rep_rate_hz if m.laser_on else 0.0
         edges = self._edges.get(abs(ch))
         if edges is not None and self._scan_active and self._scan_duration_s > 0:
             return len(edges) / self._scan_duration_s
@@ -558,6 +569,8 @@ class MockTimeTagger:
             return "garbage" if self.filterOn else "forward"
         if (start, click) == (p, s):
             return "reverse"
+        if m.sted_channel is not None and (start, click) == (s, abs(m.sted_channel)):
+            return "sted"
         return None
 
     def expected_histogram(self, start_channel: int, click_channel: int,
@@ -577,6 +590,14 @@ class MockTimeTagger:
             return (photons + background) * flat
         m = self._model
         period_ns = m.period_ps * 1e-3
+        if direction == "sted":
+            # The STED pulse: one edge per sync, a narrow peak after the
+            # excitation (t0) by the STED delay.
+            centre = (m.t0_ps + m.sted_delay_ps) * 1e-3
+            sigma = max(1e-3, m.sted_width_ps * 1e-3 / 2.355)
+            shape = np.exp(-0.5 * ((t_raw_ns - centre) / sigma) ** 2)
+            total = shape.sum()
+            return photons * shape / total if total > 0 else photons * flat
         delay_ns = self._inputDelays.get(m.photon_channel, 0) * 1e-3
         if direction == "forward":
             # A photon delay moves the peak: setInputDelay(photons, -t0).
@@ -715,6 +736,13 @@ class Histogram(_Measurement):
             return self._from_edges()
         duration = self._duration_s
         factor = tagger._budget_factor(duration)
+        if tagger._direction_for(self.start_channel, self.click_channel) == "sted":
+            pulses = tagger.channelRate(self.click_channel) * duration * factor
+            expected = tagger.expected_histogram(
+                self.start_channel, self.click_channel, self.binwidth, self.n_bins,
+                np.array(pulses), np.array(0.0), np.array(0.0),
+            )
+            return tagger.sample_counts(expected).astype(np.int64)
         photons = tagger.channelRate(m.photon_channel) * duration * factor
         if m.faults.get("dead_photons") or not m.laser_on:
             photons = min(photons, m.dark_rate_hz * duration * factor)

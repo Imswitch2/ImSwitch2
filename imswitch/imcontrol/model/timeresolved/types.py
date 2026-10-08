@@ -115,7 +115,17 @@ class TimeResolvedScanConfig:
 
 @dataclass
 class TimeResolvedScanProducts:
-    """Standard output object for one time-resolved scan product snapshot."""
+    """Standard output object for one time-resolved scan product snapshot.
+
+    Version 2 (Lifetime 2.0) adds the fields after ``is_final``, all with
+    defaults so a version-1 producer still constructs it: the TCSPC
+    direction the frame was taken in, the background rate subtracted, the
+    worst per-pixel pile-up, the USB overflows during the scan, how many
+    scans were summed, an optional IRF (``{"t_axis_ns", "counts",
+    "peak_ns", "fwhm_ns"}``) and the format version. ``cube_counts``, when
+    kept, holds the raw integer counts (the background is subtracted from
+    the gates and the fits, never from the stored cube).
+    """
 
     cube_counts: np.ndarray | None
     cube_axes: tuple[str, ...]
@@ -127,6 +137,13 @@ class TimeResolvedScanProducts:
     global_tau_ns: float
     metadata: dict[str, Any]
     is_final: bool
+    tcspc_direction: str = "forward"
+    background_rate_hz: float = 0.0
+    pileup_max: float = 0.0
+    overflows: int = 0
+    frames_accumulated: int = 1
+    irf: dict[str, Any] | None = None
+    format_version: int = 2
 
 
 @dataclass
@@ -188,4 +205,11 @@ def copy_time_resolved_products(
         global_tau_ns=float(products.global_tau_ns),
         metadata=copy.deepcopy(products.metadata),
         is_final=bool(products.is_final),
+        tcspc_direction=str(products.tcspc_direction),
+        background_rate_hz=float(products.background_rate_hz),
+        pileup_max=float(products.pileup_max),
+        overflows=int(products.overflows),
+        frames_accumulated=int(products.frames_accumulated),
+        irf=copy.deepcopy(products.irf),
+        format_version=int(products.format_version),
     )

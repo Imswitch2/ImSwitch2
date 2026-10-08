@@ -95,3 +95,38 @@ def test_running_state_locks_the_footer_and_unchecks_live(widget):
     assert not widget.saveButton.isEnabled()
     widget.setRunning(False)
     assert widget.runButton.isEnabled() and not widget.liveButton.isChecked()
+
+
+def test_gate_table_regions_and_presets(widget):
+    seen = []
+    widget.sigGatesChanged.connect(lambda: seen.append(True))
+    widget.setGates([dict(name='early', start_ns=0.5, stop_ns=2.5, reference='peak'),
+                     dict(name='late', start_ns=2.5, stop_ns=8.0, reference='absolute')])
+    assert seen == [], 'setGates is silent'
+    assert [g['name'] for g in widget.getGates()] == ['early', 'late']
+    assert len(widget._regions) == 2
+    # Peak-relative regions follow the decay's peak.
+    t = (np.arange(40) + 0.5) * 0.32
+    widget.updateDecay(t, np.ones(40), peak_ns=1.0)
+    assert widget._regions[0].getRegion() == pytest.approx((1.5, 3.5))
+    assert widget._regions[1].getRegion() == pytest.approx((2.5, 8.0))
+    # Dragging a region edits the table (relative to the peak); setRegion
+    # ends with the same finished signal a drag does.
+    widget._regions[0].setRegion((2.0, 4.0))
+    assert widget.getGates()[0]['start_ns'] == pytest.approx(1.0)
+    assert widget.getGates()[0]['stop_ns'] == pytest.approx(3.0)
+    assert seen == [True]
+    # Editing the table moves the region.
+    widget.gateTable.item(1, 2).setText('9')
+    assert widget._regions[1].getRegion() == pytest.approx((2.5, 9.0))
+    widget.addGateButton.click()
+    assert len(widget.getGates()) == 3 and widget.getGates()[2]['start_ns'] == 9.0
+    widget.removeGateButton.click()
+    assert len(widget.getGates()) == 2
+    widget.setPresets(['sted_early_late'])
+    chosen = []
+    widget.sigPresetSelected.connect(chosen.append)
+    widget.loadPresetButton.click()
+    assert chosen == ['sted_early_late']
+    widget.setStedMarker(0.3)
+    assert widget._stedLine.isVisible()

@@ -140,6 +140,8 @@
     "lineClockDelayPs": 0,
     "frameClockChannel": 4,
     "frameClockTriggerV": 0.5,
+    "stedPulseChannel": 5,
+    "stedPulseTriggerV": 0.5,
     "filterSyncByPhotons": false,
     "mockSample": "beads_two_lifetimes",
     "mockFaults": {}

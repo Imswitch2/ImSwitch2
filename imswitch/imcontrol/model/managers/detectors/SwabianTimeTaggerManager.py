@@ -1308,6 +1308,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         peak_time_ns: float,
         is_final: bool,
         extra_metadata: dict | None = None,
+        raw_cube_counts: np.ndarray | None = None,
     ) -> None:
         with self._tr_lock:
             if not self._tr_enabled:
@@ -1317,9 +1318,13 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             if not should_store:
                 return
 
+            # The stored cube is the card's integer counts; the gates and
+            # the fits use the background-subtracted one.
+            stored = raw_cube_counts if raw_cube_counts is not None else cube_counts
             cube_for_storage = (
-                np.array(cube_counts, copy=True) if config.capture_cube else None
+                np.array(stored, copy=True) if config.capture_cube else None
             )
+            frame = dict(extra_metadata or {})
             gate_images = compute_gate_images(
                 cube_counts, t_axis_ns, config.gates, peak_time_ns=peak_time_ns
             )
@@ -1361,6 +1366,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                 global_tau_ns=float(global_tau_ns),
                 metadata=metadata,
                 is_final=bool(is_final),
+                tcspc_direction=str(frame.get("tcspc_direction", "forward")),
+                background_rate_hz=float(frame.get("background_rate_hz", 0.0) or 0.0),
+                pileup_max=float(frame.get("pileup_max", 0.0) or 0.0),
+                overflows=int(frame.get("overflows", 0) or 0),
             )
             if is_final:
                 self._tr_final_event.set()
@@ -1928,6 +1937,7 @@ class _TTFlimWorker(Worker):
 
         self._m._store_time_resolved_products(
             cube_counts=cube,
+            raw_cube_counts=raw_counts,
             intensity=intensity,
             lifetime_s=lifetime,
             decay_counts=decay_counts,
