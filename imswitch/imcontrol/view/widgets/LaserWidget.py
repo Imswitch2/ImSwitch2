@@ -1,4 +1,4 @@
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.view.guitools import colorutils
 from imswitch.imcontrol.view import guitools
@@ -50,13 +50,6 @@ class LaserWidget(Widget):
         self.scrollArea.setWidgetResizable(True)
         self.lasersGridContainer.installEventFilter(self)
 
-        # Keep pristine palettes so Scan mode can add a subtle tint without
-        # hard-coding a light/dark-theme-specific color.
-        self.scrollArea.viewport().setAutoFillBackground(True)
-        self.lasersGridContainer.setAutoFillBackground(True)
-        self._defaultScrollPalette = QtGui.QPalette(self.scrollArea.viewport().palette())
-        self._defaultGridPalette = QtGui.QPalette(self.lasersGridContainer.palette())
-
         self.topBar = QtWidgets.QHBoxLayout()
 
         self.contextFrame = QtWidgets.QWidget()
@@ -87,6 +80,19 @@ class LaserWidget(Widget):
             lambda checked: checked and self._contextClicked('scan')
         )
 
+        self.scanEditingLabel = QtWidgets.QLabel('EDITING SCAN POWERS')
+        self.scanEditingLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.scanEditingLabel.setStyleSheet(
+            'font-weight: bold; padding: 5px 12px; '
+            'border: 1px solid #a8832f; border-radius: 4px; '
+            'background-color: #d6b15d; color: #2f2818;'
+        )
+        self.scanEditingLabel.setToolTip(
+            'Scan power values are being edited. Changes are stored for acquisition '
+            'and do not directly control Manual illumination.'
+        )
+        self.scanEditingLabel.hide()
+
         self.presetsList = QtWidgets.QComboBox()
         self.presetsList.setMinimumWidth(150)
         # ``activated`` is user-only: rebuilding the combo or switching context
@@ -114,6 +120,8 @@ class LaserWidget(Widget):
 
         self.topBar.addWidget(self.contextFrame, 0)
         self.topBar.addStretch(1)
+        self.topBar.addWidget(self.scanEditingLabel, 0, QtCore.Qt.AlignCenter)
+        self.topBar.addStretch(1)
         self.topBar.addWidget(self.presetsList, 0)
         self.topBar.addWidget(self.moreButton, 0)
         self.layout.addLayout(self.topBar, 0, 0)
@@ -131,39 +139,9 @@ class LaserWidget(Widget):
         self._updateContextAppearance()
         self.sigPowerContextChanged.emit(context)
 
-    @staticmethod
-    def _blendColors(base, accent, accentFraction):
-        accentFraction = max(0.0, min(1.0, float(accentFraction)))
-        baseFraction = 1.0 - accentFraction
-        return QtGui.QColor(
-            round(base.red() * baseFraction + accent.red() * accentFraction),
-            round(base.green() * baseFraction + accent.green() * accentFraction),
-            round(base.blue() * baseFraction + accent.blue() * accentFraction),
-            base.alpha(),
-        )
-
     def _updateContextAppearance(self):
-        """Give Scan editing a subtle widget-level cue without widening rows."""
-        if self._powerContext != 'scan':
-            self.scrollArea.viewport().setPalette(QtGui.QPalette(self._defaultScrollPalette))
-            self.lasersGridContainer.setPalette(QtGui.QPalette(self._defaultGridPalette))
-            return
-
-        accent = self.palette().color(QtGui.QPalette.Highlight)
-
-        scrollPalette = QtGui.QPalette(self._defaultScrollPalette)
-        scrollBase = self._defaultScrollPalette.color(QtGui.QPalette.Base)
-        scrollPalette.setColor(
-            QtGui.QPalette.Base, self._blendColors(scrollBase, accent, 0.08)
-        )
-        self.scrollArea.viewport().setPalette(scrollPalette)
-
-        gridPalette = QtGui.QPalette(self._defaultGridPalette)
-        gridBase = self._defaultGridPalette.color(QtGui.QPalette.Window)
-        gridPalette.setColor(
-            QtGui.QPalette.Window, self._blendColors(gridBase, accent, 0.08)
-        )
-        self.lasersGridContainer.setPalette(gridPalette)
+        """Show the explicit Scan-editing banner for the active context."""
+        self.scanEditingLabel.setVisible(self._powerContext == 'scan')
 
     def _presetActivated(self, index):
         # Qt bindings normally emit the combo index here, but accepting the
@@ -266,7 +244,7 @@ class LaserWidget(Widget):
         self.laserModules[laserName].setAOOwned(aoOwned, tooltip=tooltip)
 
     def setLaserScanActive(self, laserName, active):
-        self.laserModules[laserName].setScanActive(active)
+        self.laserModules[laserName].setScanActive(bool(active))
 
     def setLaserSecondaryStatus(
         self, laserName, text, *, emphasized=False, muted=False, tooltip='', badge=False

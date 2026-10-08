@@ -1,5 +1,3 @@
-from qtpy import QtGui
-
 from imswitch.imcontrol.view.widgets.LaserWidget import LaserWidget
 
 
@@ -81,17 +79,33 @@ def test_context_bar_is_fixed_above_scroll_area_and_prominent(qtbot):
     assert widget.scanModeButton.font().bold()
 
 
-def test_scan_context_adds_subtle_tint_and_manual_restores_palette(qtbot):
+def test_scan_context_shows_amber_editing_banner_without_restyling_content(qtbot):
     widget = _widget(qtbot)
-    default_color = widget._defaultScrollPalette.color(QtGui.QPalette.Base)
+    default_style = widget.lasersGridContainer.styleSheet()
 
+    assert widget.scanEditingLabel.isHidden()
     widget.setPowerContext('scan', emitSignal=False)
-    scan_color = widget.scrollArea.viewport().palette().color(QtGui.QPalette.Base)
-    assert scan_color != default_color
+
+    assert not widget.scanEditingLabel.isHidden()
+    assert widget.scanEditingLabel.text() == 'Editing scan powers'
+    assert '#d6b15d' in widget.scanEditingLabel.styleSheet().lower()
+    assert widget.lasersGridContainer.styleSheet() == default_style
 
     widget.setPowerContext('manual', emitSignal=False)
-    restored_color = widget.scrollArea.viewport().palette().color(QtGui.QPalette.Base)
-    assert restored_color == default_color
+    assert widget.scanEditingLabel.isHidden()
+    assert widget.lasersGridContainer.styleSheet() == default_style
+
+
+def test_scan_active_state_has_no_per_row_badge(qtbot):
+    widget = _widget(qtbot)
+    module = widget.laserModules['488']
+
+    assert not hasattr(widget, 'scanActiveBadges')
+    widget.setPowerContext('scan', emitSignal=False)
+    widget.setLaserScanActive('488', True)
+    assert module._powerOpacity.opacity() == 1.0
+    widget.setLaserScanActive('488', False)
+    assert module._powerOpacity.opacity() < 1.0
 
 
 def test_alternate_context_status_does_not_consume_row_width(qtbot):
