@@ -136,7 +136,8 @@
    "9e1f5152c82cc64572abfd2497c8d0b8baa8598bf1928822c26f81c813e8caf8",
    "b823b64dd11d4cc8fd1ebc4c382b577d4b564ce8c0bb4ce44840b9f1849d2044",
    "dea4553a5d72f090260f650fbdc66e17eea97fe90a22120ce6fac87d19b11d7b",
-   "e9d6666d52b729e649bd9eb6a28b55478b8599197f6bab6d92361b1259bd705f"
+   "e9d6666d52b729e649bd9eb6a28b55478b8599197f6bab6d92361b1259bd705f",
+   "fcb948f2af2c3b35485028deeca26fd7fb27e7d5870ab42edf0fb246923179de"
   ],
   "scripts/tutorial/basic/01_hello_imswitch.py": [
    "2a661eceb758b42d934de34210a40e06562de80d47d6ea8b0c4178d7ee60eb80",
@@ -225,6 +226,30 @@
   ],
   "scripts/tutorial/scanning/scan_params/point_scan_5um.json": [
    "9d8e34becafab231cefbc212b5a483b65587e82f5730904a2cb04a63ece9bbf0"
+  ],
+  "scripts/tutorial/timetagger/01_meet_the_card.py": [
+   "f7d623626dbff417a09f551dcb92674ed11a10966a4a8a3192b6afdb05520ccc"
+  ],
+  "scripts/tutorial/timetagger/02_trigger_levels_and_dead_time.py": [
+   "ea9274da27dd67e4a2eef36ea43184bd8fcc6c3d9fcfe783acc9a50b38547f1c"
+  ],
+  "scripts/tutorial/timetagger/03_dark_counts_and_afterpulsing.py": [
+   "cf3f05b7f2319e5223eb51c07cb2d5a894e34e062cbbcce997d5965b14fe7aa2"
+  ],
+  "scripts/tutorial/timetagger/04_laser_sync.py": [
+   "e562036252a0a38103a41ee8bf737d720cb7c6d927030fae4cdb4972c593a81f"
+  ],
+  "scripts/tutorial/timetagger/05_bandwidth_and_the_filter.py": [
+   "ec957809df9527758abb32d32554289b94dc88d13e83cc7fe5355fb42cc83b5e"
+  ],
+  "scripts/tutorial/timetagger/06_irf_and_t0.py": [
+   "a4bdd9af7e48600f2d76394c8203d5f631f49b081d7210d609f1d8a9b6205f5e"
+  ],
+  "scripts/tutorial/timetagger/10_flim_preflight.py": [
+   "e30400e033db6557daabb72d4bd155db777ee805c57ade142b7ae5ce36cc854c"
+  ],
+  "scripts/tutorial/timetagger/timetagger_helpers.py": [
+   "f30f757279b64c5363ebd069691ade8876f19fd609313a56a4c6225f33487648"
   ],
   "scripts/wfs/01_WidefieldSTARSS_example.py": [
    "5b6b848b9591c868460e80364d42a11a326ef79268717b0c7a1b49a3d92f2cda"

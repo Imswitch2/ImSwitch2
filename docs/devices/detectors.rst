@@ -531,6 +531,8 @@ substitutes ``MockCameraTIS`` from
 `PiCamManager.py <https://github.com/Imswitch2/ImSwitch2/blob/main/imswitch/imcontrol/model/managers/detectors/PiCamManager.py>`_
 
 
+.. _swabian-detector:
+
 SwabianTimeTaggerManager
 ========================
 

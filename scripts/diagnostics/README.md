@@ -10,7 +10,7 @@ This directory contains one-off hardware diagnostic and exploration scripts that
 
 - **`test_standa_motrot.py`** — Standa motor/rotation stage serial communication test. Queries device serial number via ASRL8::INSTR. Requires Standa hardware.
 
-- **`measure_laser_rep_rate.py`** — Measures laser repetition rate on a Swabian Time Tagger channel using `TimeTagger.Countrate`. Output feeds the `laser_rep_rate_mhz` parameter used by the FLIM phasor fit.
+- **`measure_laser_rep_rate.py`** — Measures the laser repetition rate and period jitter on a Swabian Time Tagger without the GUI: the same measurement `facade.time_tagger.rep_rate()` makes from a script (sync divided, conditional filter off, card restored afterwards). Output feeds the FLIM detector's `laser_rep_rate_mhz`. `--simulation` runs it on the mock card.
 
 ## Why Not in `_test/`?
 

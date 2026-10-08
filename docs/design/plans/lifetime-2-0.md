@@ -1,7 +1,7 @@
 # Lifetime 2.0 — Swabian Time Tagger, calibration tutorials, and a Lifetime widget
 
-Status: **revision 4** — in implementation. P1a and P1b are on their
-branches; P1c is in progress. Revision 4 folds in the first external review
+Status: **revision 4** — in implementation. P1a, P1b, P1c and P2 are on
+their branches (`feat/lifetime-2-0-p1a` … `-p2`, stacked); P3 is next. Revision 4 folds in the first external review
 (§15, "External review 1"): four of its eight items changed code already
 written (product-session ownership, the hold's lifetime and calibration
 exclusivity, a single overflow owner, the gate default), the other four

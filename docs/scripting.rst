@@ -132,6 +132,15 @@ what it will do, and only then press **Run all**.
     your own in the Scan widget and save them with
     ``api.imcontrol.saveScanParamsToFile()``.
 
+``tutorial/timetagger``
+    The Swabian Time Tagger, on a simulated card
+    (``galvo_flim_mock_scan_setup.json``): its roles and the test signal,
+    trigger levels and dead time, dark counts, the laser sync's rate and
+    jitter, bandwidth and the conditional filter, the IRF and ``t0``, and
+    the pre-flight checklist. Each measurement prints a suggestion and
+    writes it only when the script's ``APPLY`` is True. See
+    :doc:`timetagger/index`.
+
 ``workflows``
     Complete acquisitions for real rigs -- see the cookbooks below. These
     need the hardware they name.

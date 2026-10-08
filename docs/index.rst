@@ -156,6 +156,8 @@ see ``docs/design/ARCHITECTURE.md`` in the repository.
     devices/rotators
     devices/stands
     Hdf5datafile
+    timetagger/index
+    timetagger/debugging
 
 .. toctree::
     :hidden:

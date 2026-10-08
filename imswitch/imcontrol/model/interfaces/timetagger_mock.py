@@ -164,6 +164,10 @@ class SignalModel:
     pulse_amplitude_v: Dict[int, float] = field(default_factory=dict)
     """ Per input: a SPAD's NIM pulse is about -0.5 V, a DAQ line about
     +1.2 V into 50 ohm. Defaults are filled in per role. """
+    laser_on: bool = True
+    """ The excitation laser: off, the parked photon rate is dark counts only
+    (what tutorial 03 measures). The mock cannot see the rig's lasers, so a
+    tutorial sets this through the facade. """
     model: str = "Time Tagger X"
     """ Sets the USB tag budget (``TAG_BUDGET_PER_MODEL``). The default is
     the card that takes an unfiltered 80 MHz sync without overflowing, so
@@ -238,6 +242,7 @@ class MockTimeTagger:
         self._deadtimes: Dict[int, int] = {}
         self._testSignal: Dict[int, bool] = {}
         self._conditionalFilter: tuple = ([], [])
+        self._eventDividers: Dict[int, int] = {}
         self._overflows = 0
         self._freed = False
         self._lock = threading.Lock()
@@ -297,6 +302,12 @@ class MockTimeTagger:
     def setConditionalFilter(self, trigger, filtered):
         self._conditionalFilter = (list(trigger), list(filtered))
 
+    def setEventDivider(self, channel, divider):
+        self._eventDividers[abs(int(channel))] = max(1, int(divider))
+
+    def getEventDivider(self, channel):
+        return self._eventDividers.get(abs(int(channel)), 1)
+
     def getConditionalFilterTrigger(self):
         return list(self._conditionalFilter[0])
 
@@ -335,8 +346,11 @@ class MockTimeTagger:
         trig = self._triggerLevels.get(ch, 0.5)
         if trig == 0.0 or (trig > 0) != (amp > 0):
             return 0.0
+        # A comparator counts every pulse whose amplitude clears the
+        # threshold: a flat plateau, with 20 mV wide edges at the noise
+        # floor (50 mV) and at the pulse amplitude.
         a, v = abs(amp), abs(trig)
-        return float(1 / (1 + math.exp(-(a - v) / 0.05)) * 1 / (1 + math.exp(-(v - 0.05) / 0.02)))
+        return float(1 / (1 + math.exp(-(a - v) / 0.02)) * 1 / (1 + math.exp(-(v - 0.05) / 0.02)))
 
     def _deadtime_factor(self, channel: int, rate_hz: float) -> float:
         dead_s = self._deadtimes.get(int(channel), 0) * 1e-12
@@ -351,6 +365,8 @@ class MockTimeTagger:
         if abs(ch) == abs(m.photon_channel):
             if m.faults.get("dead_photons"):
                 return 0.0
+            if not m.laser_on:
+                return m.dark_rate_hz
             return m.sample.parked_rate_hz * (1 + m.afterpulse_fraction) + m.dark_rate_hz
         if abs(ch) == abs(m.sync_channel):
             return m.rep_rate_hz
@@ -373,7 +389,12 @@ class MockTimeTagger:
         if abs(ch) == abs(m.sync_channel) and self.filterOn:
             # Only the first sync after each photon is transmitted.
             rate = min(rate, self.channelRate(m.photon_channel))
+        rate /= self._eventDividers.get(abs(ch), 1)
         return rate
+
+    def set_laser_on(self, on: bool) -> None:
+        """Test / tutorial hook: block or unblock the excitation."""
+        self._model.laser_on = bool(on)
 
     def transmittedRate(self) -> float:
         """All tags the USB link must carry per second."""
@@ -585,8 +606,8 @@ class Histogram(_Measurement):
         duration = self._duration_s
         factor = tagger._budget_factor(duration)
         photons = tagger.channelRate(m.photon_channel) * duration * factor
-        if m.faults.get("dead_photons"):
-            photons = 0.0
+        if m.faults.get("dead_photons") or not m.laser_on:
+            photons = min(photons, m.dark_rate_hz * duration * factor)
         dark = tagger._raw_rate(m.photon_channel) - m.sample.parked_rate_hz * (1 + m.afterpulse_fraction)
         background = (max(0.0, dark) + m.sample.parked_rate_hz * m.afterpulse_fraction) \
             * tagger._trigger_factor(m.photon_channel) * duration * factor
@@ -597,6 +618,50 @@ class Histogram(_Measurement):
             np.array(background),
         )
         return tagger.sample_counts(expected).astype(np.int64)
+
+
+class TimeDifferences(_Measurement):
+    """Time from each start to the next click. With ``click == start`` it
+    is the period histogram of a periodic signal -- what the rep-rate
+    measurement reads for the laser's period jitter, floored by the card's
+    own two-tag jitter."""
+
+    #: The card's two-tag timing jitter floor, RMS picoseconds, per model.
+    JITTER_FLOOR_PS = {"Time Tagger 20": 48.0, "Time Tagger Ultra": 30.0,
+                       "Time Tagger X": 8.0}
+
+    def __init__(self, tagger, click_channel, start_channel=CHANNEL_UNUSED,
+                 next_channel=CHANNEL_UNUSED, sync_channel=CHANNEL_UNUSED,
+                 binwidth=1000, n_bins=1000, n_histograms=1):
+        super().__init__(tagger)
+        self.click_channel = int(click_channel)
+        self.start_channel = int(start_channel)
+        self.binwidth = int(binwidth)
+        self.n_bins = int(n_bins)
+
+    def getIndex(self):
+        return np.arange(self.n_bins, dtype=np.int64) * self.binwidth
+
+    def getData(self):
+        tagger = self._tagger
+        m = tagger._model
+        counts = np.zeros((1, self.n_bins), dtype=np.int64)
+        if abs(self.click_channel) != abs(self.start_channel):
+            return counts
+        rate = tagger.channelRate(self.click_channel)
+        if rate <= 0:
+            return counts
+        period_ps = 1e12 / rate
+        floor = self.JITTER_FLOOR_PS.get(m.model, 30.0)
+        sigma = math.hypot(m.sync_jitter_ps, floor)
+        centres = (np.arange(self.n_bins) + 0.5) * self.binwidth
+        shape = np.exp(-0.5 * ((centres - period_ps) / sigma) ** 2)
+        total = shape.sum()
+        if total <= 0:
+            return counts
+        n = rate * self._duration_s
+        counts[0] = tagger.sample_counts(n * shape / total)
+        return counts
 
 
 class EventGenerator(_Measurement):
@@ -730,6 +795,7 @@ class MockTimeTaggerApi:
     Countrate = Countrate
     Counter = Counter
     Histogram = Histogram
+    TimeDifferences = TimeDifferences
     EventGenerator = EventGenerator
     Flim = Flim
 
@@ -771,5 +837,6 @@ __all__ = [
     "MockTimeTagger",
     "MockTimeTaggerApi",
     "SignalModel",
+    "TimeDifferences",
     "decay_shape",
 ]

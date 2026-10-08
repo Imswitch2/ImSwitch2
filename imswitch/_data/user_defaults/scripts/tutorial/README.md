@@ -37,6 +37,7 @@ The tutorials are ordered so you only switch when a new block begins:
 | scanning 01-03 | `hamamatsu_mock_scan_setup.json` | a camera triggered by a scan |
 | scanning 04 | `mixed_hamamatsu_apd_mock_scan_setup.json` | the same, plus a point detector (APD) |
 | scanning 05 | `galvo_apd_mock_scan_setup.json` | a point-scanning microscope with two lasers |
+| timetagger 01-10 | `galvo_flim_mock_scan_setup.json` | the same, plus a simulated Swabian Time Tagger with a FLIM detector |
 
 ## Running a tutorial
 
@@ -80,6 +81,26 @@ back, delete your copy and restart ImSwitch.
 | 03 | `03_scan_timelapse.py` | `hamamatsu_mock_scan_setup.json` | repeat a scan at intervals |
 | 04 | `04_camera_and_apd.py` | `mixed_hamamatsu_apd_mock_scan_setup.json` | a camera and an APD in one scan |
 | 05 | `05_laser_power_series.py` | `galvo_apd_mock_scan_setup.json` | lasers; several scans in one recording |
+
+## timetagger
+
+| Step | Script | Setup file | You learn |
+|---|---|---|---|
+| 01 | `01_meet_the_card.py` | `galvo_flim_mock_scan_setup.json` | the card's roles and channels; `count_rates()`; the built-in test signal |
+| 02 | `02_trigger_levels_and_dead_time.py` | `galvo_flim_mock_scan_setup.json` | `trigger_sweep()` and the plateau; 50 Ω inputs; dead time; the APPLY pattern |
+| 03 | `03_dark_counts_and_afterpulsing.py` | `galvo_flim_mock_scan_setup.json` | `dark_rates()` with the excitation blocked; the detector's `background_rate_hz` |
+| 04 | `04_laser_sync.py` | `galvo_flim_mock_scan_setup.json` | `rep_rate()`: the sync rate measured safely, period jitter and the card's floor |
+| 05 | `05_bandwidth_and_the_filter.py` | `galvo_flim_mock_scan_setup.json` | the tag budget, `overflows()`, the conditional filter and the TCSPC direction |
+| 06 | `06_irf_and_t0.py` | `galvo_flim_mock_scan_setup.json` | `histogram()`: the IRF, its peak and width; the detector's `t0_ps` |
+| 10 | `10_flim_preflight.py` | `galvo_flim_mock_scan_setup.json` | `preflight()`: the green/red checklist before a FLIM session |
+
+Steps 07 to 09 (the line clock, the frame clock and pixel markers, and the
+line delay, all measured during a scan) come with the next release.
+`timetagger/timetagger_helpers.py` finds the card and the FLIM detector and
+prints tables for 02-10. Every measurement that could change a setting
+prints a suggestion and writes it only when the script's `APPLY` is True;
+a written value holds until restart, the printed JSON line goes into the
+`timeTagger` block of the setup file to keep it.
 
 The scanning tutorials load their scan settings from `scanning/scan_params/`
 (double-click one in the Files panel to read it). The camera and stage names
