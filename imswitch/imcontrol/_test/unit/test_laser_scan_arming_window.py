@@ -20,8 +20,8 @@ arms both. Other defects fixed alongside, all previously silent:
 
 Contract: a laser in the scan's TTL list is gated by the scan and its paired
 power device is switched on, both regardless of their Live toggles and both
-off afterwards; their on/off buttons lock while the setpoints stay editable;
-lasers outside the list are never touched.
+off afterwards. The whole LaserWidget is read-only while a scan is active.
+Lasers outside the scan-owned gate/power paths are never touched.
 
 Between the parts of a multi-part run (timelapse timepoints), the run stays
 armed but the power devices the arming switched on are paused on each part's
@@ -37,9 +37,16 @@ import inspect
 import pytest
 
 from imswitch.imcontrol.controller.basecontrollers import SuperScanController
+from imswitch.imcontrol.controller.controllers._triggerscope_scan_lifecycle import (
+    TriggerScopeScanLifecycleMixin,
+)
 from imswitch.imcontrol.controller.controllers.LaserController import (
     LaserController,
 )
+from imswitch.imcontrol.controller.controllers.EventTriggeredBaseController import (
+    EventTriggeredControllerBase,
+)
+from imswitch.imcontrol.model import LaserScanPowerControl, LaserScanState
 
 
 class _Laser:
@@ -50,6 +57,7 @@ class _Laser:
         self.name = name
         self.calls = []
         self._zeroesOnExit = zeroesOnExit
+        self.isBinary = False
 
     def setScanModeActive(self, active):
         self.calls.append(('scanMode', active))
@@ -87,6 +95,10 @@ class _Widget:
         self.enableEditable = {}
         self.active = {}
         self.values = {}
+        self.editable = True
+
+    def setEditable(self, editable):
+        self.editable = bool(editable)
 
     def setLaserEnableEditable(self, name, editable):
         self.enableEditable[name] = editable
@@ -97,6 +109,9 @@ class _Widget:
     def getValue(self, name):
         return self.values.get(name, 10.0)
 
+    def isLaserActive(self, name):
+        return bool(self.active.get(name, False))
+
 
 class _LaserInfo:
     def __init__(self, powerDevice=None):
@@ -106,6 +121,30 @@ class _LaserInfo:
 class _SetupInfo:
     def __init__(self, lasers):
         self.lasers = lasers
+
+
+class _SharedAttrs(dict):
+    pass
+
+
+class _Workflow:
+    def __init__(self):
+        self.error = None
+
+    def set_laser_scan_preparation_error(self, message):
+        self.error = message
+
+    def clear_laser_scan_preparation_error(self):
+        self.error = None
+
+    def laser_scan_preparation_error(self):
+        return self.error
+
+
+class _CommChannel:
+    def __init__(self):
+        self.sharedAttrs = _SharedAttrs()
+        self.scanWorkflow = _Workflow()
 
 
 class _Logger:
@@ -132,6 +171,17 @@ def _controller(names=('561', '561AOTF'), pairs=None, zeroesOnExit=()):
     ctrl._master = _Master(_LasersManager(names, zeroesOnExit))
     ctrl._widget = _Widget()
     ctrl._logger = _Logger()
+    ctrl._commChannel = _CommChannel()
+    ctrl.settingAttr = False
+    ctrl.is_scanning = False
+    ctrl._livePowerValues = {}
+    ctrl._scanPowerValues = {}
+    ctrl._scanLaserState = {}
+    ctrl._scanLiveEnabledSnapshot = None
+    ctrl._scanLiveSuppressed = False
+    ctrl._resumableLiveEnabledSnapshot = None
+    ctrl._scanPreparationFailed = None
+    ctrl._scanPowerWrittenLasers = []
     ctrl._scanArmedLasers = []
     ctrl._scanEnabledLasers = []
     ctrl._scanLasersPaused = False
@@ -158,24 +208,25 @@ def test_gate_and_its_power_device_are_both_armed():
     assert ctrl._scanArmedLasers == ['561', '561AOTF']
 
 
-def test_power_device_button_is_synced_on_when_armed():
-    """Locking the button while it reads OFF looks exactly like "I still have
-    to press ON"."""
+def test_power_device_live_button_stays_off_when_scan_owns_emission():
+    """Scan-owned emission must not masquerade as Live ON state."""
     ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
 
     LaserController.scanDevicesResolved(ctrl, ['561'])
 
-    assert ctrl._widget.active['561AOTF'] is True
+    assert ctrl._widget.active.get('561AOTF', False) is False
 
 
-def test_on_off_locks_for_both_while_setpoints_stay_editable():
+def test_entire_laser_widget_is_read_only_while_scan_is_active():
     ctrl = _controller(names=('561', '561AOTF'),
                        pairs={'561': '561AOTF'})
 
+    LaserController.scanChanged(ctrl, True)
     LaserController.scanDevicesResolved(ctrl, ['561'])
 
-    assert ctrl._widget.enableEditable == {'561': False, '561AOTF': False}
-    assert not hasattr(ctrl._widget, 'editable')  # setpoints never locked
+    assert ctrl._widget.editable is False
+    LaserController.scanChanged(ctrl, False)
+    assert ctrl._widget.editable is True
 
 
 def test_a_laser_owning_both_gate_and_power_needs_no_pairing():
@@ -185,7 +236,9 @@ def test_a_laser_owning_both_gate_and_power_needs_no_pairing():
     LaserController.scanDevicesResolved(ctrl, ['775AOM'])
 
     assert ctrl._scanArmedLasers == ['775AOM']
-    assert ctrl._master.lasersManager['775AOM'].calls == [('scanMode', True)]
+    assert ctrl._master.lasersManager['775AOM'].calls[:2] == [
+        ('value', 10.0), ('scanMode', True)
+    ]
 
 
 def test_a_missing_power_device_is_reported_and_does_not_block_the_gate():
@@ -197,17 +250,15 @@ def test_a_missing_power_device_is_reported_and_does_not_block_the_gate():
     assert any(level == 'error' for level, _ in ctrl._logger.messages)
 
 
-def test_arming_never_writes_the_power():
-    """The widget already pushed the setpoint to the device. Re-writing it at
-    arm overwrote a good amplitude with a bad widget read and silenced the
-    AOTF lasers, which armed "@0" while the widget showed a real power."""
+def test_direct_scan_power_is_applied_before_arming():
     ctrl = _controller(names=('561AOTF',))
+    ctrl._livePowerValues['561AOTF'] = 10.0
+    ctrl._scanPowerValues['561AOTF'] = 25.0
 
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
 
     calls = ctrl._master.lasersManager['561AOTF'].calls
-    assert calls == [('scanMode', True)]
-
+    assert calls[:2] == [('value', 25.0), ('scanMode', True)]
 
 def test_laser_outside_the_ttl_list_is_untouched():
     ctrl = _controller(names=('561', '561AOTF', '640', '640AOTF'),
@@ -233,8 +284,8 @@ def test_arming_is_independent_of_the_live_toggle():
     ('live_active', 'participating'),
     ((True, True), (False, True), (True, False), (False, False)),
 )
-def test_live_state_and_scan_participation_baseline(live_active, participating):
-    """Freeze the pre-Live/Scan lifecycle contract before Patch 3 changes it."""
+def test_live_state_and_scan_participation_policy(live_active, participating):
+    """Patch 3 changes participating paths only; nonparticipants stay baseline."""
     ctrl = _controller(names=('488',))
     ctrl._widget.active['488'] = live_active
 
@@ -250,9 +301,15 @@ def test_live_state_and_scan_participation_baseline(live_active, participating):
         assert calls == []
         assert ctrl._scanArmedLasers == []
 
-    # Patch 1 must not alter Live ON/OFF at scan arming. Patch 3 will
-    # intentionally change this characterization by suppressing Live light.
-    assert ctrl._widget.active['488'] is live_active
+    if participating:
+        # A participating Live-ON laser is darkened before scan ownership.
+        assert ctrl._widget.active.get('488', False) is False
+        if live_active:
+            assert ('enabled', False) in calls
+    else:
+        # Immediate pre-work ImSwitch2 baseline: non-participants are untouched.
+        assert ctrl._widget.active.get('488', False) is live_active
+        assert calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -273,9 +330,9 @@ def test_power_device_pauses_when_a_lapse_part_ends():
     assert ctrl._master.lasersManager['561AOTF'].calls == [('enabled', False)]
     assert ctrl._master.lasersManager['561'].calls == []
     assert ctrl._widget.active['561AOTF'] is False
-    # Still the scan's laser: armed, and the buttons stay locked.
+    # Still the scan's laser: armed, with the whole LaserWidget read-only.
     assert ctrl._scanArmedLasers == ['561', '561AOTF']
-    assert ctrl._widget.enableEditable['561AOTF'] is False
+    assert ctrl._widget.editable is False
 
 
 def test_paused_power_device_resumes_when_the_next_part_arms():
@@ -288,7 +345,7 @@ def test_paused_power_device_resumes_when_the_next_part_arms():
     LaserController.scanDevicesResolved(ctrl, ['561'])
 
     assert ctrl._master.lasersManager['561AOTF'].calls == [('enabled', True)]
-    assert ctrl._widget.active['561AOTF'] is True
+    assert ctrl._widget.active.get('561AOTF', False) is False
     # The gate is not re-armed; membership republish is not a new run.
     assert ctrl._master.lasersManager['561'].calls == []
 
@@ -316,10 +373,8 @@ def test_pause_is_idempotent():
     assert ctrl._master.lasersManager['561AOTF'].calls == [('enabled', False)]
 
 
-def test_a_live_enabled_laser_is_not_paused():
-    """The pause covers exactly the emission the arming switched on. A laser
-    in the TTL list with no power pairing was enabled by hand (or gates over
-    its own line) and keeps its Live state, just as it does at arming."""
+def test_gate_without_serial_power_device_is_not_paused_between_parts():
+    """Pause only serial emission that arming explicitly switched on."""
     ctrl = _controller(names=('561AOTF',))
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
     ctrl._master.lasersManager['561AOTF'].calls.clear()
@@ -381,17 +436,17 @@ def test_armed_laser_ends_the_scan_off_with_the_ui_in_sync():
     assert ctrl._widget.active['775AOM'] is False
 
 
-def test_teardown_never_touches_a_laser_the_scan_did_not_arm():
-    """Disarming every laser is what silently zeroed an unrelated AOM."""
+def test_teardown_leaves_nonparticipating_live_laser_untouched():
     ctrl = _controller(names=('561AOTF', '775AOM'))
+    ctrl._widget.active['775AOM'] = True
+    LaserController.scanChanged(ctrl, True)
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
     ctrl._master.lasersManager['775AOM'].calls.clear()
 
     LaserController.scanChanged(ctrl, False)
 
     assert ctrl._master.lasersManager['775AOM'].calls == []
-    assert '775AOM' not in ctrl._widget.active
-
+    assert ctrl._widget.active['775AOM'] is True
 
 def test_teardown_restores_a_setpoint_that_leaving_scan_mode_destroyed():
     """NidaqLaserManager zeroes the output when it leaves scan mode, which is
@@ -405,17 +460,15 @@ def test_teardown_restores_a_setpoint_that_leaving_scan_mode_destroyed():
     assert ctrl._master.lasersManager['775AOM'].calls[-1] == ('value', 20.0)
 
 
-def test_teardown_never_writes_a_zero_setpoint():
-    """A widget reading 0 for a laser the user did set (the AOTFs) must not
-    have its real amplitude destroyed on the way out."""
+def test_teardown_restores_explicit_zero_live_setpoint():
     ctrl = _controller(names=('561AOTF',))
-    ctrl._widget.values['561AOTF'] = 0.0
+    ctrl._livePowerValues['561AOTF'] = 0.0
+    ctrl._scanPowerValues['561AOTF'] = 20.0
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
 
     LaserController.scanChanged(ctrl, False)
 
-    assert ('value', 0.0) not in ctrl._master.lasersManager['561AOTF'].calls
-
+    assert ctrl._master.lasersManager['561AOTF'].calls[-1] == ('value', 0.0)
 
 def test_teardown_is_idempotent():
     ctrl = _controller(names=('775AOM',))
@@ -521,3 +574,247 @@ def test_participation_is_resolved_from_the_ttl_list_not_the_daq_channels():
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+# --------------------------------------------------------------------------- #
+# Patch 3 Live/Scan handoff                                                    #
+# --------------------------------------------------------------------------- #
+
+def test_live_on_nonparticipant_remains_untouched_during_scan_handoff():
+    ctrl = _controller(names=('405', '488'))
+    ctrl._widget.active['405'] = True
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+
+    assert ctrl._master.lasersManager['405'].calls == []
+    assert ctrl._widget.active['405'] is True
+    assert ctrl._scanLiveEnabledSnapshot == {'488': False}
+
+
+def test_live_on_participant_is_suppressed_before_scan_power_and_arming():
+    ctrl = _controller(names=('488',))
+    ctrl._widget.active['488'] = True
+    ctrl._scanPowerValues['488'] = 20.0
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+
+    calls = ctrl._master.lasersManager['488'].calls
+    assert calls[:3] == [
+        ('enabled', False), ('value', 20.0), ('scanMode', True)
+    ]
+    assert ctrl._widget.active['488'] is False
+    assert ctrl._scanLiveEnabledSnapshot == {'488': True}
+
+
+def test_explicit_zero_scan_power_is_written_before_scan_mode():
+    ctrl = _controller(names=('488',))
+    ctrl._livePowerValues['488'] = 5.0
+    ctrl._scanPowerValues['488'] = 0.0
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+
+    assert ctrl._master.lasersManager['488'].calls[:2] == [
+        ('value', 0.0), ('scanMode', True)
+    ]
+
+
+def test_ao_owned_laser_skips_direct_scan_power_write():
+    ctrl = _controller(names=('488',))
+    ctrl._livePowerValues['488'] = 5.0
+    ctrl._scanPowerValues['488'] = 40.0
+    ctrl._scanLaserState['488'] = LaserScanState(
+        active_for_scan=True, power_control=LaserScanPowerControl.AO
+    )
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+
+    assert ('value', 40.0) not in ctrl._master.lasersManager['488'].calls
+    assert ('scanMode', True) in ctrl._master.lasersManager['488'].calls
+
+
+def test_gate_scan_power_is_applied_to_power_device_once():
+    ctrl = _controller(
+        names=('561', '561AOTF'), pairs={'561': '561AOTF'}
+    )
+    ctrl._livePowerValues.update({'561': 1.0, '561AOTF': 2.0})
+    ctrl._scanPowerValues.update({'561': 9.0, '561AOTF': 22.0})
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert ('value', 22.0) in ctrl._master.lasersManager['561AOTF'].calls
+    assert ('value', 9.0) not in ctrl._master.lasersManager['561'].calls
+
+
+def test_repeat_membership_does_not_reapply_scan_power():
+    ctrl = _controller(names=('488',))
+    ctrl._scanPowerValues['488'] = 30.0
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+    first = list(ctrl._master.lasersManager['488'].calls)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+
+    assert ctrl._master.lasersManager['488'].calls == first
+
+
+def test_scan_end_restores_live_power_only_after_off():
+    ctrl = _controller(names=('488',))
+    ctrl._livePowerValues['488'] = 3.0
+    ctrl._scanPowerValues['488'] = 30.0
+    ctrl._widget.active['488'] = True
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+    ctrl._master.lasersManager['488'].calls.clear()
+    LaserController.scanChanged(ctrl, False)
+
+    calls = ctrl._master.lasersManager['488'].calls
+    restore_index = max(i for i, call in enumerate(calls) if call == ('value', 3.0))
+    off_indices = [i for i, call in enumerate(calls) if call == ('enabled', False)]
+    assert off_indices and max(off_indices) < restore_index
+    assert ctrl._widget.active['488'] is False
+    assert ctrl._resumableLiveEnabledSnapshot == {'488': True}
+
+
+def test_live_suppression_failure_sets_prearm_veto_and_scan_stays_unarmed():
+    ctrl = _controller(names=('488',))
+    ctrl._widget.active['488'] = True
+
+    def fail_disable(enabled):
+        if enabled is False:
+            raise RuntimeError('USB timeout')
+
+    ctrl._master.lasersManager['488'].setEnabled = fail_disable
+
+    LaserController.scanChanged(ctrl, True)
+
+    with pytest.raises(RuntimeError):
+        LaserController.scanDevicesResolved(ctrl, ['488'])
+    assert ctrl._scanPreparationFailed is not None
+    assert ctrl._commChannel.scanWorkflow.error is not None
+    assert ctrl._scanArmedLasers == []
+
+
+def test_explicit_disable_rejection_sets_prearm_veto():
+    ctrl = _controller(names=('488',))
+    ctrl._widget.active['488'] = True
+
+    def reject_disable(enabled):
+        if enabled is False:
+            return False
+        return True
+
+    ctrl._master.lasersManager['488'].setEnabled = reject_disable
+    LaserController.scanChanged(ctrl, True)
+
+    with pytest.raises(RuntimeError, match='suppress participating Live'):
+        LaserController.scanDevicesResolved(ctrl, ['488'])
+
+    assert ctrl._commChannel.scanWorkflow.error is not None
+    assert ctrl._scanArmedLasers == []
+
+
+def test_scan_power_failure_sets_prearm_veto_before_manager_arming():
+    ctrl = _controller(names=('488',))
+    ctrl._scanPowerValues['488'] = 30.0
+
+    def fail_value(value):
+        raise RuntimeError('serial timeout')
+
+    ctrl._master.lasersManager['488'].setValue = fail_value
+    LaserController.scanChanged(ctrl, True)
+
+    with pytest.raises(RuntimeError):
+        LaserController.scanDevicesResolved(ctrl, ['488'])
+
+    assert ctrl._commChannel.scanWorkflow.error is not None
+    assert ctrl._scanArmedLasers == []
+
+
+def test_abort_style_teardown_restores_owned_live_values_and_leaves_others_alone():
+    ctrl = _controller(names=('405', '488'))
+    ctrl._livePowerValues.update({'405': 1.0, '488': 2.0})
+    ctrl._scanPowerValues['488'] = 20.0
+    ctrl._widget.active.update({'405': True, '488': False})
+
+    LaserController.scanChanged(ctrl, True)
+    LaserController.scanDevicesResolved(ctrl, ['488'])
+    LaserController.scanChanged(ctrl, False)
+
+    assert ctrl._widget.active == {'405': True, '488': False}
+    assert ('value', 2.0) == ctrl._master.lasersManager['488'].calls[-1]
+    assert ctrl._master.lasersManager['405'].calls == []
+    assert ('enabled', False) in ctrl._master.lasersManager['488'].calls
+
+
+
+
+def test_laser_mutations_are_rejected_while_scan_is_active():
+    ctrl = _controller(names=('488',))
+    ctrl.is_scanning = True
+
+    mutators = (
+        lambda: LaserController.toggleLaser(ctrl, '488', True),
+        lambda: LaserController.setLaserPower(ctrl, '488', 5.0, 'live'),
+        lambda: LaserController.setLaserPower(ctrl, '488', 25.0, 'scan'),
+        lambda: LaserController.toggleModulation(ctrl, '488', True),
+        lambda: LaserController.frequencyChanged(ctrl, '488', 100),
+        lambda: LaserController.dutyCycleChanged(ctrl, '488', 50),
+        lambda: LaserController.powerContextChanged(ctrl, 'scan'),
+        lambda: LaserController.clearPresetSelection(ctrl),
+        lambda: LaserController.savePresetAs(ctrl),
+    )
+    for mutate in mutators:
+        with pytest.raises(RuntimeError, match='read-only'):
+            mutate()
+
+    assert ctrl._master.lasersManager['488'].calls == []
+
+def test_nidaq_prearm_boundary_enforces_laser_preparation_veto():
+    source = inspect.getsource(SuperScanController._armScanIteration)
+    checks = [
+        pos for pos in range(len(source))
+        if source.startswith('_raiseIfLaserScanPreparationFailed()', pos)
+    ]
+    publish = source.index('sigScanDevicesResolved')
+    arm = source.index('_scanCoordinator.arm(')
+    assert len(checks) >= 2
+    assert checks[0] < publish < checks[-1] < arm
+
+
+def test_triggerscope_prearm_boundary_enforces_laser_preparation_veto():
+    source = inspect.getsource(TriggerScopeScanLifecycleMixin._startTriggerScopeScan)
+    checks = [
+        pos for pos in range(len(source))
+        if source.startswith('_raiseIfLaserScanPreparationFailed()', pos)
+    ]
+    publish = source.index('sigScanDevicesResolved')
+    firmware = source.index('def startFirmware')
+    assert len(checks) >= 2
+    assert checks[0] < publish < checks[-1] < firmware
+
+
+def test_nidaq_membership_resolution_failure_is_blocking_before_arm():
+    source = inspect.getsource(SuperScanController._armScanIteration)
+    resolve = source.index('resolveScanTTLDevices')
+    refusal = source.index(
+        'Could not resolve scan laser/device membership before arming.'
+    )
+    arm = source.index('_scanCoordinator.arm(')
+    assert resolve < refusal < arm
+
+
+def test_event_triggered_membership_resolution_failure_stops_slow_scan():
+    source = inspect.getsource(EventTriggeredControllerBase.runSlowScan)
+    resolve = source.index('resolveScanTTLDevices')
+    refusal = source.index('laser ownership is undefined')
+    publish = source.index('sigScanDevicesResolved.emit')
+    assert resolve < refusal < publish
+    # The resolution-exception branch must stop before membership publication.
+    resolution_block = source[resolve:publish]
+    assert 'return False' in resolution_block

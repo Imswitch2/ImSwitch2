@@ -201,6 +201,7 @@ class ScanWorkflowService(SignalInterface):
         self._comm_channel = comm_channel
         self._activeScanRequest = None
         self._laserScanState = {}
+        self._laserScanPreparationError = None
         self.sigDispatchScanRequest.connect(self._execute_scan_dispatch)
 
     def request_scan_parameters(self) -> None:
@@ -225,6 +226,23 @@ class ScanWorkflowService(SignalInterface):
     def laser_scan_state(self):
         """Return the latest semantic scan-laser state as a defensive copy."""
         return dict(self._laserScanState)
+
+    def set_laser_scan_preparation_error(self, message) -> None:
+        """Record a safety-critical laser pre-arm failure for this scan run.
+
+        Scan lifecycle owners query this synchronously immediately before and
+        after publishing ``sigScanDevicesResolved``.  This makes laser
+        preparation fail closed even on Qt bindings where an exception raised
+        inside a signal slot is reported rather than propagated to ``emit``.
+        """
+        self._laserScanPreparationError = str(message) if message else None
+
+    def clear_laser_scan_preparation_error(self) -> None:
+        self._laserScanPreparationError = None
+
+    def laser_scan_preparation_error(self):
+        """Return the current laser preparation failure, if any."""
+        return self._laserScanPreparationError
 
     def prepare_recording_for_scan(self, source) -> bool:
         """Let an armed recording bind to ``source`` before it starts.

@@ -1183,6 +1183,18 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
     def runSlowScan(self) -> bool:
         self._state.detLog['scan_start'] = _now_us_tag()
+        preparationError = getattr(
+            self._commChannel.scanWorkflow,
+            'laser_scan_preparation_error',
+            lambda: None,
+        )()
+        if preparationError:
+            self._logger.error(
+                f'Laser preparation failed; slow scan will not start: '
+                f'{preparationError}'
+            )
+            return False
+
         # Publish scan membership while the DAQ is still free — see
         # SuperScanController._armScanIteration. This is the fifth NI-DAQ entry
         # point and needs the same window, or lasers here are armed by a
@@ -1192,11 +1204,25 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         except Exception as e:
             self._logger.error(
                 f'Could not resolve the scan device list for the '
-                f'{self.MODALITY_LABEL} slow scan; membership consumers are '
-                f'not being notified: {e}', exc_info=True
+                f'{self.MODALITY_LABEL} slow scan; refusing to start because '
+                f'laser ownership is undefined: {e}', exc_info=True
             )
+            return False
         else:
             self._commChannel.sigScanDevicesResolved.emit(devices)
+
+        preparationError = getattr(
+            self._commChannel.scanWorkflow,
+            'laser_scan_preparation_error',
+            lambda: None,
+        )()
+        if preparationError:
+            self._logger.error(
+                f'Laser preparation failed; slow scan will not start: '
+                f'{preparationError}'
+            )
+            return False
+
         result = self._triggeredScanRunner.trigger(
             self._state.scanInitiationMode.name,
             nidaq_manager=self._master.nidaqManager,

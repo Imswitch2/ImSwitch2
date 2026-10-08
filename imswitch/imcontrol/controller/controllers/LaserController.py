@@ -60,6 +60,15 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # Lasers this scan armed, so teardown touches exactly those and no
         # others (see scanDevicesResolved / _disarmScanLasers).
         self._scanArmedLasers = []
+        # Run-level Live/Scan handoff state. Only lasers actually owned by
+        # the resolved scan (selected gate plus any declared powerDevice) are
+        # snapshotted/suppressed. Non-participating Live lasers deliberately
+        # retain the immediate pre-work ImSwitch2 behaviour and are untouched.
+        self._scanLiveEnabledSnapshot = None
+        self._scanLiveSuppressed = False
+        self._resumableLiveEnabledSnapshot = None
+        self._scanPreparationFailed = None
+        self._scanPowerWrittenLasers = []
         # The subset of _scanArmedLasers whose emission the arming itself
         # switched on (the declared power devices). These are what
         # scanPartDone pauses during the waits of a multi-part run.
@@ -154,8 +163,16 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._master.lasersManager.execOnAll(lambda l: l.setValue(0))
         self._master.lasersManager.execOnAll(lambda l: l.setEnabled(False))
 
+    def _requireLaserEditsAllowed(self):
+        """Reject user/API laser mutations while acquisition owns the widget."""
+        if getattr(self, 'is_scanning', False):
+            raise RuntimeError(
+                'Laser controls are read-only while a scan is active.'
+            )
+
     def toggleLaser(self, laserName, enabled):
         """ Enable or disable laser (on/off)."""
+        self._requireLaserEditsAllowed()
         applied = self._master.lasersManager[laserName].setEnabled(enabled)
         # Managers may explicitly reject an unsafe enable (for example an MPB
         # laser with no positive setpoint). Keep the toggle and shared state
@@ -170,21 +187,25 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def valueChanged(self, laserName, magnitude):
         """Change the primary power value in the currently displayed context."""
+        self._requireLaserEditsAllowed()
         self.setLaserPower(laserName, magnitude, self._currentPowerContext)
     
     def toggleModulation(self, laserName, enabled):
         """ Enable or disable laser modulation (on/off). """
+        self._requireLaserEditsAllowed()
         self._master.lasersManager[laserName].setModulationEnabled(enabled)
         self.setSharedAttr(laserName, _freqEnAttr, enabled)
 
     def frequencyChanged(self, laserName, frequency):
         """ Change modulation frequency. """
+        self._requireLaserEditsAllowed()
         self._master.lasersManager[laserName].setModulationFrequency(frequency)
         self._widget.setModulationFrequency(laserName, frequency)
         self.setSharedAttr(laserName, _freqAttr, frequency)
     
     def dutyCycleChanged(self, laserName, dutyCycle):
         """ Change modulation duty cycle. """
+        self._requireLaserEditsAllowed()
         self._master.lasersManager[laserName].setModulationDutyCycle(dutyCycle)
         self._widget.setModulationDutyCycle(laserName, dutyCycle)
         self.setSharedAttr(laserName, _dcAttr, dutyCycle)
@@ -231,6 +252,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def powerContextChanged(self, context):
         """Switch which laser power context is displayed; never load a preset."""
+        self._requireLaserEditsAllowed()
         context = normalizeLaserPowerContext(context)
         self._currentPowerContext = context
         setContext = getattr(self._widget, 'setPowerContext', None)
@@ -275,6 +297,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self.saveLaserPreset(name, self._currentPowerContext, select=True)
 
     def savePresetAs(self):
+        self._requireLaserEditsAllowed()
         context = self._currentPowerContext
         name = guitools.askForTextInput(
             self._widget, 'Add laser preset', 'Enter a name for this preset:'
@@ -295,15 +318,18 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def saveCurrentValuesTo(self, name):
         """Overwrite another preset without loading or selecting it first."""
+        self._requireLaserEditsAllowed()
         if not name:
             return
         self.saveLaserPreset(name, self._currentPowerContext, select=False)
 
     def clearPresetSelection(self):
+        self._requireLaserEditsAllowed()
         self._setSelectedPresetName(self._currentPowerContext, None)
         self._refreshPresetControls()
 
     def renamePreset(self):
+        self._requireLaserEditsAllowed()
         context = self._currentPowerContext
         oldName = self._selectedPresetName(context)
         if not oldName:
@@ -325,6 +351,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self.renameLaserPreset(oldName, newName, context)
 
     def deletePreset(self):
+        self._requireLaserEditsAllowed()
         context = self._currentPowerContext
         presetToDelete = self._selectedPresetName(context)
         if not presetToDelete:
@@ -362,6 +389,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         Loading a Scan preset only updates software state; it never writes to a
         laser manager or changes physical enable state.
         """
+        self._requireLaserEditsAllowed()
         context = normalizeLaserPowerContext(context)
         presets = self._presetStoreForContext(context)
         if name not in presets:
@@ -385,6 +413,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         The legacy Live UI wrappers pass ``select=True`` to preserve their
         historical Save/Save As behaviour.
         """
+        self._requireLaserEditsAllowed()
         context = normalizeLaserPowerContext(context)
         presets = self._presetStoreForContext(context)
         isNew = name not in presets
@@ -412,6 +441,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
     @APIExport(runOnUIThread=True)
     def deleteLaserPreset(self, name: str, context=LaserPowerContext.LIVE.value) -> bool:
         """Delete ``name`` from one preset namespace."""
+        self._requireLaserEditsAllowed()
         context = normalizeLaserPowerContext(context)
         presets = self._presetStoreForContext(context)
         if name not in presets:
@@ -436,6 +466,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         context=LaserPowerContext.LIVE.value,
     ) -> bool:
         """Rename a preset inside one context without loading it."""
+        self._requireLaserEditsAllowed()
         context = normalizeLaserPowerContext(context)
         presets = self._presetStoreForContext(context)
         if oldName not in presets or not newName:
@@ -639,25 +670,171 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 muted=not activeForScan,
             )
 
-    def scanChanged(self, isScanning):
-        """ Handles what happens when a scan is started/stopped.
+    def _scanWorkflowPreparationError(self, message=None, *, clear=False):
+        workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        if workflow is None:
+            return
+        if clear:
+            method = getattr(workflow, 'clear_laser_scan_preparation_error', None)
+            if callable(method):
+                method()
+            return
+        method = getattr(workflow, 'set_laser_scan_preparation_error', None)
+        if callable(method):
+            method(message)
 
-        Arming and its UI locking belong to :meth:`scanDevicesResolved`, which
-        knows exactly which lasers the scan owns. This method only tracks the
-        scanning flag and tears down at the end.
+    def _prepareScanRun(self):
+        """Reset run-level laser handoff state without touching hardware.
 
-        It deliberately no longer disables every laser for the duration: the
-        scan owns only the lasers it gates, and locking the rest took controls
-        away from the user for no reason. It also no longer disarms every
-        laser on the way out — ``setScanModeActive(False)`` zeroes the output
-        on managers with an analog channel, so that silently destroyed the
-        setpoint of an AOM the scan had never touched.
+        Scan membership is not known at ``sigScanStarting``. To preserve the
+        immediate pre-work ImSwitch2 behaviour, non-participating Live lasers
+        are left completely untouched; suppression therefore happens later at
+        ``sigScanDevicesResolved`` for scan-owned devices only.
         """
+        if self._scanLiveEnabledSnapshot is not None:
+            return
 
-        self.is_scanning = isScanning
+        self._scanWorkflowPreparationError(clear=True)
+        self._scanPreparationFailed = None
+        self._scanPowerWrittenLasers = []
+        self._resumableLiveEnabledSnapshot = None
+        self._scanLiveEnabledSnapshot = {}
+        self._scanLiveSuppressed = False
 
-        if not isScanning:
+    def _scanOwnedDevices(self, deviceList):
+        """Return the unique gate/power devices whose hardware this scan owns."""
+        owned = []
+        for gateName in deviceList:
+            if gateName not in self._setupInfo.lasers:
+                continue
+            for name in (gateName, self._powerDeviceFor(gateName)):
+                if name is not None and name not in owned:
+                    owned.append(name)
+        return owned
+
+    def _suppressParticipatingLiveForScan(self, deviceList):
+        """Dark only scan-owned devices that were Live-ON before handoff."""
+        if self._scanLiveSuppressed:
+            return
+
+        owned = self._scanOwnedDevices(deviceList)
+        snapshot = {
+            name: bool(self._widget.isLaserActive(name))
+            for name in owned
+        }
+        self._scanLiveEnabledSnapshot = dict(snapshot)
+        failures = []
+
+        for name in owned:
+            if not snapshot.get(name, False):
+                continue
+            manager = self._master.lasersManager[name]
+            try:
+                applied = manager.setEnabled(False)
+                if applied is False:
+                    raise RuntimeError('manager rejected disable request')
+            except Exception as e:
+                failures.append(f'{name}: {e}')
+                self._logger.error(
+                    f'Failed to suppress Live illumination for scan-owned '
+                    f'laser "{name}" before the scan: {e}',
+                    exc_info=True,
+                )
+                continue
+            self._widget.setLaserActive(name, False, emitSignal=False)
+            self.setSharedAttr(name, _enabledAttr, False)
+
+        self._logger.debug(
+            '[LaserScan] scan-owned Live snapshot: %s; suppressed: %s',
+            snapshot,
+            [name for name, enabled in snapshot.items() if enabled],
+        )
+
+        if failures:
+            message = (
+                'Could not reliably suppress participating Live illumination '
+                'before scan: ' + '; '.join(failures)
+            )
+            self._scanPreparationFailed = message
+            self._scanWorkflowPreparationError(message)
+            self._logger.error('[LaserScan] %s', message)
+            raise RuntimeError(message)
+
+        self._scanLiveSuppressed = True
+
+    def scanChanged(self, isScanning):
+        """Track scan ownership and make the LaserWidget read-only in-run."""
+        if isScanning:
+            self.is_scanning = True
+            setEditable = getattr(self._widget, 'setEditable', None)
+            if callable(setEditable):
+                setEditable(False)
+            self._prepareScanRun()
+            return
+
+        try:
             self._disarmScanLasers()
+        finally:
+            self.is_scanning = False
+            setEditable = getattr(self._widget, 'setEditable', None)
+            if callable(setEditable):
+                setEditable(True)
+
+    def _scanPowerControlFor(self, laserName):
+        return self._scanStateFor(laserName).power_control
+
+    def _scanPowerTargetFor(self, gateName):
+        return self._powerDeviceFor(gateName) or gateName
+
+    def _applyDirectScanPowers(self, deviceList):
+        """Apply direct Scan setpoints once after owned Live paths are dark."""
+        targets = []
+        for gateName in deviceList:
+            if gateName not in self._setupInfo.lasers:
+                continue
+            target = self._scanPowerTargetFor(gateName)
+            if target not in targets:
+                targets.append(target)
+
+        direct = {}
+        ao = []
+        failures = []
+        for target in targets:
+            manager = self._master.lasersManager[target]
+            if manager.isBinary:
+                continue
+            if self._scanPowerControlFor(target) is LaserScanPowerControl.AO:
+                ao.append(target)
+                continue
+            try:
+                value = self.getLaserPower(target, LaserPowerContext.SCAN)
+                # Zero is a real acquisition setpoint and must be written.
+                if value is not None:
+                    applied = manager.setValue(value)
+                    if applied is False:
+                        raise RuntimeError('manager rejected Scan power write')
+                    direct[target] = value
+                    if target not in self._scanPowerWrittenLasers:
+                        self._scanPowerWrittenLasers.append(target)
+            except Exception as e:
+                failures.append(f'{target}: {e}')
+                self._logger.error(
+                    f'Failed to apply Scan power for laser "{target}": {e}',
+                    exc_info=True,
+                )
+
+        self._logger.debug('[LaserScan] direct Scan powers: %s', direct)
+        if ao:
+            self._logger.debug('[LaserScan] AO-controlled powers: %s', ao)
+
+        if failures:
+            message = (
+                'Could not apply all direct Scan powers before arming: '
+                + '; '.join(failures)
+            )
+            self._scanPreparationFailed = message
+            self._scanWorkflowPreparationError(message)
+            raise RuntimeError(message)
 
     def _powerDeviceFor(self, laserName):
         """The device that sets ``laserName``'s emission power, if separate.
@@ -694,20 +871,24 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         hardware. On NI-DAQ, ``sigScanBuilt`` is already inside the busy
         window; on TriggerScope it is only a compatibility boundary.
 
-        For each gated laser:
+        For each new run:
 
-        1. Hand the gate over to the scan (``setScanModeActive(True)``), which
-           releases its static line so the scan's DO task owns it.
-        2. Switch on its declared ``powerDevice``, if any. This is what makes
-           ticking the box sufficient: the attenuator that actually sets the
-           power is a separate entry with no TTL line of its own, so without
-           this step the scan gates a beam that nothing has turned on.
-        3. Lock the on/off buttons of both — the scan owns emission now — but
-           leave the power setpoints editable so they can still be tuned.
+        1. Snapshot and suppress Live emission only for scan-owned devices
+           (selected gates plus declared ``powerDevice`` entries).
+        2. Apply each DIRECT Scan setpoint to the actual power-bearing device.
+           AO-owned lasers are deliberately skipped.
+        3. Hand each gate over to its existing manager-specific scan mode.
+        4. Switch on a declared ``powerDevice`` when the existing pairing
+           contract requires serial enabling.
 
-        The power is never written here. The widget already pushed the user's
-        setpoint to the device when they set it, and re-writing it risks
-        overwriting a good value with a bad read.
+        Non-participating Live lasers are intentionally untouched, matching the
+        immediate pre-work ImSwitch2 baseline. The LaserWidget is globally
+        read-only during the run, so that preserved Live state cannot be edited
+        while acquisition owns its participating devices.
+
+        Direct Scan power is applied once per run, before manager arming, after
+        participating Live emission has been suppressed. Repeat frames and later
+        parts reuse that prepared state rather than issuing per-frame power writes.
 
         Arming happens once per scan RUN. Membership is republished for every
         repeat frame, and several managers issue blocking RS232 commands here,
@@ -717,9 +898,20 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         ``scanPartDone`` paused during the preceding wait — this fires before
         the execution backend claims the hardware, so the writes get through.
         """
+        # Defensive fallback for third-party scan sources that publish
+        # membership without sigScanStarting. Normal ImSwitch runs reset the
+        # handoff state at the run-level start signal.
+        if self._scanLiveEnabledSnapshot is None:
+            self.scanChanged(True)
+        if self._scanPreparationFailed:
+            raise RuntimeError(self._scanPreparationFailed)
+
         if self._scanArmedLasers:
             self._resumeScanLasersForNextPart()
             return
+
+        self._suppressParticipatingLiveForScan(deviceList)
+        self._applyDirectScanPowers(deviceList)
 
         armed = []
         enabled = []
@@ -731,11 +923,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 self._master.lasersManager[lName].setScanModeActive(True)
                 if powerDevice is not None:
                     self._master.lasersManager[powerDevice].setEnabled(True)
-                    # Sync the toggle to the hardware we just switched on.
-                    # Without this the button reads OFF while the laser emits,
-                    # which looks exactly like "I still have to press ON".
-                    self._widget.setLaserActive(powerDevice, True,
-                                                emitSignal=False)
             except Exception as e:
                 self._logger.error(
                     f'Failed to arm laser "{lName}" for the scan: {e}',
@@ -751,9 +938,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._scanArmedLasers = list(armed)
         self._scanEnabledLasers = list(enabled)
         self._scanLasersPaused = False
-        for lName in armed:
-            self._widget.setLaserEnableEditable(lName, False)
-
         requested = [name for name in deviceList
                      if name in dict(self._master.lasersManager)]
         failed = [name for name in requested if name not in armed]
@@ -766,7 +950,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         ) or 'none'
         self._logger.debug(
             f'Scan lasers armed: {detail}. Gates handed to the scan TTL; '
-            f'declared power devices switched on at their current setpoint.'
+            f'declared power devices switched on at prepared Scan setpoints.'
         )
         if failed:
             self._logger.warning(
@@ -785,10 +969,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         switched on over serial would keep emitting into the sample for the
         whole wait.
 
-        So pause exactly the emission the arming switched on, and nothing
-        else: a laser the user enabled by hand keeps its Live state here,
-        just as it does at arming. ``scanDevicesResolved`` switches the paused
-        lasers back on when the next part republishes membership.
+        So pause exactly the serial emission the arming switched on, and
+        nothing else. Pre-scan Live state for scan-owned devices remains
+        suppressed for the whole run; non-participating Live lasers remain
+        untouched. ``scanDevicesResolved`` switches the paused power devices
+        back on when the next part republishes membership.
 
         This also fires once when a single scan completes; the pause is then
         immediately followed by the full teardown, which switches the same
@@ -816,7 +1001,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         for lName in self._scanEnabledLasers:
             try:
                 self._master.lasersManager[lName].setEnabled(True)
-                self._widget.setLaserActive(lName, True, emitSignal=False)
             except Exception as e:
                 self._logger.error(
                     f'Failed to switch laser "{lName}" back on for the next '
@@ -825,47 +1009,109 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 )
 
     def _disarmScanLasers(self):
-        """ Return every laser this scan armed to a known-off idle state.
+        """End scan ownership, restore Live setpoints, and keep owned paths dark.
 
-        A participating laser ends the scan OFF, and the UI is synced to match
-        so the toggle cannot claim the laser is on while the hardware is dark.
-        Lasers the scan never armed are untouched — the scan did not own them,
-        so it does not get to switch them off.
+        Only devices actually owned/prepared by this scan are touched.
+        Non-participating Live lasers preserve their pre-scan hardware state.
+        Manager-specific ``setScanModeActive(False)`` sequencing remains
+        authoritative for every armed laser. No path here restores Live ON.
         """
-        for lName in getattr(self, '_scanArmedLasers', ()):
+        armed = list(getattr(self, '_scanArmedLasers', ()))
+        snapshot = dict(getattr(self, '_scanLiveEnabledSnapshot', None) or {})
+        written = list(getattr(self, '_scanPowerWrittenLasers', ()))
+        if not armed and not snapshot and not written:
+            self._scanLiveEnabledSnapshot = None
+            self._scanLiveSuppressed = False
+            self._scanPreparationFailed = None
+            self._scanWorkflowPreparationError(clear=True)
+            return
+
+        restoreTargets = []
+        for name in armed + written + list(snapshot):
+            if name not in restoreTargets:
+                restoreTargets.append(name)
+
+        # First preserve the existing manager-specific scan exit semantics.
+        for name in armed:
             try:
-                manager = self._master.lasersManager[lName]
-                manager.setScanModeActive(False)
-                manager.setEnabled(False)
-                # Leaving scan mode zeroes the output on managers that drive an
-                # analog channel (NidaqLaserManager does setValue(0)), which
-                # silently discards the user's Live setpoint: the laser
-                # backend still owns that value even when LaserWidget is
-                # currently displaying Scan power. Put the Live setpoint
-                # back so device and backend agree again.
-                #
-                # Never write a zero back. Zero carries no information — the
-                # laser is already off via setEnabled — and a widget that reads
-                # 0 for a laser the user did set (as the AOTFs do) would
-                # otherwise have its real amplitude destroyed here instead.
-                setpoint = self._livePowerValue(lName)
-                if setpoint:
-                    manager.setValue(setpoint)
+                self._master.lasersManager[name].setScanModeActive(False)
             except Exception as e:
                 self._logger.error(
-                    f'Failed to disarm laser "{lName}" after the scan: {e}',
+                    f'Failed to leave scan mode for laser "{name}": {e}',
                     exc_info=True,
                 )
-            self._widget.setLaserActive(lName, False, emitSignal=False)
-            self._widget.setLaserEnableEditable(lName, True)
-        if self._scanArmedLasers:
-            self._logger.debug(
-                f'Scan lasers returned to idle and switched off: '
-                f'{", ".join(self._scanArmedLasers)}'
+
+        # Explicitly dark only scan-owned/prepared devices. Non-participating
+        # Live lasers are deliberately not called here.
+        darkFailures = []
+        for name in restoreTargets:
+            manager = self._master.lasersManager[name]
+            try:
+                applied = manager.setEnabled(False)
+                if applied is False:
+                    raise RuntimeError('manager rejected disable request')
+            except Exception as e:
+                darkFailures.append(f'{name}: {e}')
+                self._logger.error(
+                    f'CRITICAL: failed to ensure scan-owned laser "{name}" '
+                    f'is OFF after the scan: {e}',
+                    exc_info=True,
+                )
+                continue
+            self._widget.setLaserActive(name, False, emitSignal=False)
+            self.setSharedAttr(name, _enabledAttr, False)
+
+        # Restore the current Live setpoints only after scan-owned emission has
+        # been forced OFF. Explicit zero is meaningful and must not be skipped.
+        restored = {}
+        for name in restoreTargets:
+            manager = self._master.lasersManager[name]
+            if manager.isBinary:
+                continue
+            try:
+                setpoint = self._livePowerValue(name)
+                if setpoint is not None:
+                    applied = manager.setValue(setpoint)
+                    if applied is False:
+                        raise RuntimeError('manager rejected Live setpoint restore')
+                    restored[name] = setpoint
+            except Exception as e:
+                self._logger.error(
+                    f'Failed to restore Live setpoint for laser "{name}": {e}',
+                    exc_info=True,
+                )
+
+        # Patch 4 may offer Resume only when teardown really ended dark. The
+        # snapshot contains scan-owned devices only; untouched Live lasers do
+        # not need resuming because their state never changed.
+        self._resumableLiveEnabledSnapshot = (
+            dict(snapshot)
+            if snapshot and any(snapshot.values()) and not darkFailures
+            else None
+        )
+
+        if darkFailures:
+            self._logger.error(
+                '[LaserScan] teardown could not confirm all scan-owned lasers '
+                'dark; Resume state discarded: %s',
+                '; '.join(darkFailures),
             )
+        elif armed or snapshot or written:
+            self._logger.debug(
+                '[LaserScan] teardown complete; Live setpoints restored: %s; '
+                'scan-owned lasers remain OFF; non-participating Live lasers '
+                'were untouched',
+                restored,
+            )
+
         self._scanArmedLasers = []
         self._scanEnabledLasers = []
         self._scanLasersPaused = False
+        self._scanPowerWrittenLasers = []
+        self._scanLiveEnabledSnapshot = None
+        self._scanLiveSuppressed = False
+        self._scanPreparationFailed = None
+        self._scanWorkflowPreparationError(clear=True)
 
     def attrChanged(self, key, value):
         if self.settingAttr or len(key) != 3 or key[0] != _attrCategory:
@@ -911,6 +1157,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             pass
 
     def _setLaserValue(self, laserName, value):
+        self._requireLaserEditsAllowed()
         self._master.lasersManager[laserName].setValue(value)
         if not hasattr(self, '_livePowerValues'):
             self._livePowerValues = {}
@@ -944,6 +1191,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def _setScanPowerValue(self, laserName, value):
         """Store an explicit Scan power without touching hardware or the UI."""
+        self._requireLaserEditsAllowed()
         manager = self._master.lasersManager[laserName]
         if manager.isBinary:
             raise ValueError(
@@ -966,6 +1214,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
     @APIExport(runOnUIThread=True)
     def setLaserActive(self, laserName: str, active: bool) -> None:
         """ Sets whether the specified laser is powered on. """
+        self._requireLaserEditsAllowed()
         self._widget.setLaserActive(laserName, active)
 
     @APIExport(runOnUIThread=True)
@@ -1126,6 +1375,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         Returns:
             List of warning strings (empty if fully successful)
         """
+        self._requireLaserEditsAllowed()
         warnings = []
         known_lasers = {name for name, _ in self._master.lasersManager}
         lasers = state.get('lasers', {})

@@ -268,6 +268,23 @@ class ScanLifecycleMixin:
     #: Why the last scan start request was refused (None when it was not).
     _lastScanStartRejection = None
 
+    def _laserScanPreparationError(self):
+        """Return a safety-critical laser preparation error, if published.
+
+        LaserController owns the actual preparation.  Scan controllers only
+        enforce its veto at the final synchronous pre-arm boundary.
+        """
+        workflow = getattr(self._commChannel, 'scanWorkflow', None)
+        getter = getattr(workflow, 'laser_scan_preparation_error', None)
+        return getter() if callable(getter) else None
+
+    def _raiseIfLaserScanPreparationFailed(self):
+        error = self._laserScanPreparationError()
+        if error:
+            raise RuntimeError(
+                f'Laser preparation failed; scan will not start: {error}'
+            )
+
     def _recordScanStartRejection(self, reason):
         """ Make a refused start observable (plan A-05).
 
@@ -1655,8 +1672,10 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         ``sigScanBuilt`` arrives and its write is refused. Publishing first
         gives those consumers a window while the DAQ is still free.
 
-        A failure to resolve the device list must not block the scan: the scan
-        itself does not depend on this, only the consumers do.
+        Patch 3 makes laser membership part of the hardware handoff: it decides
+        which Live paths are suppressed and where Scan power is applied. A
+        failure to resolve the TTL device list therefore must abort before the
+        backend is armed rather than running with undefined laser ownership.
         """
         self._scanPositionersRestored = False
         # Published here rather than alongside sigScanStarting, which fires
@@ -1666,18 +1685,23 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # Consumers have already yielded on sigScanStarting and this only ever
         # releases them, so arriving later is safe -- arriving wrong is not.
         self._publishScanActuators()
+        self._raiseIfLaserScanPreparationFailed()
         try:
             devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
-        except Exception:
+        except Exception as error:
             self._logger.error(
-                'Could not resolve the scan device list; lasers and other '
-                f'membership consumers are not being notified:\n'
+                'Could not resolve the scan device list; refusing to arm '
+                f'acquisition because laser ownership is undefined:\n'
                 f'{traceback.format_exc()}'
             )
+            raise RuntimeError(
+                'Could not resolve scan laser/device membership before arming.'
+            ) from error
         else:
             self.emitScanSignal(
                 self._commChannel.sigScanDevicesResolved, devices
             )
+        self._raiseIfLaserScanPreparationFailed()
         recordingManager = getattr(self._master, 'recordingManager', None)
         markScanStarted = getattr(
             recordingManager, 'markScanStarted', None
