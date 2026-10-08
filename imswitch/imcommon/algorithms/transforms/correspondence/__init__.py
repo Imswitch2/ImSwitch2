@@ -12,6 +12,16 @@ from .foci_grid import (
     find_grid_correspondence,
     order_grid_points,
 )
+from .grid_correspondence import (
+    GridCorrespondence,
+    GridCorrespondenceResolution,
+    GridOrdering,
+    available_grid_orderings,
+    correspondence_options,
+    grid_ordering_label,
+    grid_ordering_permutation,
+    resolve_grid_correspondence,
+)
 from .registry import (
     LocalizationDiagnostics,
     LocalizationFailure,
@@ -22,6 +32,14 @@ from .registry import (
 )
 
 __all__ = [
+    "GridCorrespondence",
+    "GridCorrespondenceResolution",
+    "GridOrdering",
+    "available_grid_orderings",
+    "correspondence_options",
+    "grid_ordering_label",
+    "grid_ordering_permutation",
+    "resolve_grid_correspondence",
     "LocalizationDiagnostics",
     "LocalizationFailure",
     "ImageLocalizationResult",

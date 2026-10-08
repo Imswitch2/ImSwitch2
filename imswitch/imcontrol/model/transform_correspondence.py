@@ -13,9 +13,12 @@ from imswitch.imcommon.algorithms.grid_localization import (
 from imswitch.imcommon.algorithms.transforms.correspondence import (
     CorrespondenceResult,
     CorrespondenceStrategySpec,
+    GridCorrespondence,
     ImageLocalizationResult,
     LocalizationDiagnostics,
     LocalizationFailure,
+    correspondence_options,
+    resolve_grid_correspondence,
 )
 from .ulenses_localizer import (
     GridLocalizationResult,
@@ -46,7 +49,6 @@ def _normalize(parameters: Mapping[str, Any]) -> dict[str, Any]:
         "stagger_mode": str(supplied.get("stagger_mode", "auto")),
         "stagger_axis": str(supplied.get("stagger_axis", "auto")),
         "stagger_fraction": float(supplied.get("stagger_fraction", 0.5)),
-        "max_relative_tilt_deg": float(supplied.get("max_relative_tilt_deg", 30.0)),
     }
     for name, default in LOCALIZATION_DEFAULTS.items():
         legacy = aliases.get(name)
@@ -68,8 +70,6 @@ def _normalize(parameters: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("stagger_fraction must be within [0, 1]")
     if normalized["stagger_mode"] == "manual" and normalized["stagger_axis"] == "auto":
         raise ValueError("manual stagger requires rows or columns")
-    if not 0.0 < normalized["max_relative_tilt_deg"] <= 45.0:
-        raise ValueError("max_relative_tilt_deg must be within (0, 45]")
     return normalized
 
 
@@ -170,7 +170,12 @@ def _localized_result_from_grid(
     refined = np.asarray(grid.measured_points_rc[matched], dtype=np.float64)
     measured_indices = np.asarray(grid.logical_indices[matched], dtype=np.int64)
     metadata = _grid_localization_dict(grid)
+    logical_for_ordering = _grid_logical_positions(grid)
     metadata.update({
+        "correspondence_options": tuple(
+            item.value
+            for item in correspondence_options(grid.logical_indices, logical_for_ordering)
+        ),
         "x_period_guess_px": float(xp_guess),
         "y_period_guess_px": float(yp_guess),
         "grid_size_mode": params["grid_size_mode"],
@@ -192,6 +197,21 @@ def _localized_result_from_grid(
         ),
         payload=grid,
     )
+
+
+
+def _grid_logical_positions(grid: GridLocalizationResult) -> np.ndarray:
+    """Return centered logical coordinates for topology-preserving symmetry tests."""
+    indices = np.asarray(grid.logical_indices, dtype=np.float64)
+    logical = np.array(indices, copy=True)
+    stagger = float(grid.stagger_fraction)
+    if abs(stagger) >= 0.05:
+        if grid.stagger_axis == "rows":
+            logical[:, 0] += (indices[:, 1].astype(np.int64) % 2) * stagger
+        elif grid.stagger_axis == "columns":
+            logical[:, 1] += (indices[:, 0].astype(np.int64) % 2) * stagger
+    logical -= np.mean(logical, axis=0, keepdims=True)
+    return logical
 
 
 def ulenses_grid_strategy_spec(
@@ -273,6 +293,7 @@ def ulenses_grid_strategy_spec(
         target: ImageLocalizationResult,
         source_parameters: Mapping[str, Any],
         target_parameters: Mapping[str, Any],
+        pairing_parameters: Mapping[str, Any],
     ) -> CorrespondenceResult:
         source_grid = source.payload
         target_grid = target.payload
@@ -282,36 +303,27 @@ def ulenses_grid_strategy_spec(
             raise TypeError("uLenses correspondence requires grid-localization payloads")
         _check_same_finite_grid(source_grid, target_grid)
 
-        tilt = abs(
-            _wrapped_grid_angle_difference(source_grid.angle_deg, target_grid.angle_deg)
+        # Localization solves each image independently.  Its finite (i,j) labels
+        # are valid within that image, but equivalent flips/rotations can still
+        # assign different labels to the same physical spots in the two cameras.
+        # Resolve that *cross-image* ambiguity separately using the same finite
+        # symmetry scoring used by SLMcore reference correspondence.
+        logical = _grid_logical_positions(source_grid)
+        options = correspondence_options(source_grid.logical_indices, logical)
+        requested = GridCorrespondence.normalize(
+            pairing_parameters.get("correspondence", GridCorrespondence.AUTO.value)
         )
-        tilt_limit = min(
-            float(source_parameters["max_relative_tilt_deg"]),
-            float(target_parameters["max_relative_tilt_deg"]),
+        source_points, target_points, resolution = resolve_grid_correspondence(
+            source_grid.measured_points_rc,
+            target_grid.measured_points_rc,
+            source_grid.logical_indices,
+            source_matched=source_grid.matched_mask,
+            target_matched=target_grid.matched_mask,
+            logical_positions=logical,
+            correspondence=requested,
         )
-        if tilt > tilt_limit:
-            raise ValueError(
-                f"the two localized grids differ in orientation by {tilt:.1f} degrees, "
-                f"past the {tilt_limit:.1f} degree correspondence limit. "
-                "The finite grid axes may be transposed."
-            )
-        source_indices = (
-            None if source.diagnostics is None else source.diagnostics.logical_indices
-        )
-        target_indices = (
-            None if target.diagnostics is None else target.diagnostics.logical_indices
-        )
-        if source_indices is None or target_indices is None:
-            raise RuntimeError("uLenses localization is missing logical focus indices")
-        source_lookup = {tuple(map(int, index)): pos for pos, index in enumerate(source_indices)}
-        target_lookup = {tuple(map(int, index)): pos for pos, index in enumerate(target_indices)}
-        common = sorted(set(source_lookup) & set(target_lookup), key=lambda item: (item[1], item[0]))
-        if len(common) < 3:
-            raise RuntimeError(
-                "fewer than three measured grid sites are shared by Moving and Reference"
-            )
-        source_points = np.asarray([source.points[source_lookup[index]] for index in common])
-        target_points = np.asarray([target.points[target_lookup[index]] for index in common])
+        diagnostics = resolution.to_dict()
+        diagnostics["options"] = tuple(item.value for item in options)
 
         return CorrespondenceResult(
             source_points=source_points,
@@ -319,10 +331,10 @@ def ulenses_grid_strategy_spec(
             metadata={
                 "n_rows": int(source_grid.n_rows),
                 "n_cols": int(source_grid.n_cols),
-                "relative_tilt_deg": float(tilt),
-                "measured_pair_count": int(len(common)),
+                "measured_pair_count": int(resolution.pair_count),
                 "moving_missing_count": int(source_grid.missing_count),
                 "reference_missing_count": int(target_grid.missing_count),
+                "correspondence": diagnostics,
                 "grid_localization": {
                     "moving": dict(source.metadata),
                     "reference": dict(target.metadata),
@@ -348,11 +360,25 @@ def ulenses_grid_strategy_spec(
         description=(
             "Localize a finite 2-D grid with the SLMcore-compatible crop, spot "
             "detection, stagger inference and robust registration pipeline, then "
-            "pair measured foci by logical index."
+            "resolve cross-image finite-grid correspondence using SLMcore-style "
+            "Auto/manual symmetry matching."
         ),
         localize_handler=localize,
-        match_handler=match,
+        pairing_match_handler=match,
         recovery_handler=recover_missing,
+        pairing_parameter_specs={
+            "correspondence": ParameterSpec(
+                GridCorrespondence.AUTO.value,
+                str,
+                "Correspondence",
+                "Auto tests the topology-preserving finite-grid symmetries and "
+                "chooses the pairing requiring the least residual reflection, "
+                "rotation and deformation. Choose a fixed ordering to override "
+                "Auto without rerunning localization.",
+                choices=tuple(item.value for item in GridCorrespondence),
+                group="Correspondence",
+            ),
+        },
         parameter_specs={
             "use_ulenses_widget_guesses": ParameterSpec(
                 True, bool, "Use uLenses widget period guesses",
@@ -410,12 +436,6 @@ def ulenses_grid_strategy_spec(
                 group="Grid geometry", enabled_when=("stagger_mode", "manual"),
             ),
             **_backend_parameter_specs(),
-            "max_relative_tilt_deg": ParameterSpec(
-                30.0, float, "Maximum relative grid tilt (deg)",
-                "Safety limit between Moving and Reference grid orientations.",
-                minimum=0.1, maximum=45.0, step=1.0, decimals=1, advanced=True,
-                group="Correspondence",
-            ),
         },
         normalize_parameters=_normalize,
     )

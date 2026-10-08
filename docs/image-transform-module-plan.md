@@ -221,6 +221,17 @@ These are *correspondence finders*; they all feed one shared fitter/validator.
 `pystackreg` is not a core dependency and must stay behind a lazy guard, as
 `multicolor._require_pystackreg()` already does.
 
+**Current finite-grid correspondence (2026-10-07).** The SLMcore-compatible
+Grid localizer deliberately localizes Moving and Reference independently. A
+valid finite localization does not guarantee that both images chose the same
+flip/rotation convention for their logical `(i,j)` labels, so equal-index
+pairing is not sufficient. The Grid strategy therefore has a separate
+post-localization correspondence resolver, ported from SLMcore: `Auto` tests
+only topology-preserving finite-grid symmetries and scores them by residual
+reflection/rotation/deformation/RMS; choosing a fixed ordering is the manual
+override. Changing this setting re-pairs the existing measured spots and does
+not rerun localization.
+
 ---
 
 ## Step 0 — Standalone affine calibration harness

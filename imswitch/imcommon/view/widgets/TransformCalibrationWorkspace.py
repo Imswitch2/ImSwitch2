@@ -14,6 +14,9 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.algorithms.transforms import ParameterSpec, parameter_defaults
+from imswitch.imcommon.algorithms.transforms.correspondence import (
+    GridCorrespondence, grid_ordering_label,
+)
 
 if TYPE_CHECKING:
     from .TransformCalibrationWidget import TransformCalibrationWidget
@@ -670,6 +673,7 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         self.owner = owner
         self._skipLocalizationFormSync = False
         self._skipTransformFormSync = False
+        self._skipPairingSync = False
         self.setWindowTitle("Transform Calibration — Inspect / tune")
         self.setWindowModality(QtCore.Qt.NonModal)
         self.setWindowFlags(
@@ -772,6 +776,24 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         splitter.addWidget(self.transformViewer)
         right = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right)
+
+        self.pairingBox = QtWidgets.QGroupBox("Correspondence")
+        pairing_layout = QtWidgets.QVBoxLayout(self.pairingBox)
+        pairing_row = QtWidgets.QHBoxLayout()
+        pairing_row.addWidget(QtWidgets.QLabel("Pairing:"))
+        self.pairingCombo = QtWidgets.QComboBox()
+        self.pairingCombo.setToolTip(
+            "Resolve the finite-grid identity convention between independently "
+            "localized Moving and Reference images. Auto uses SLMcore-style "
+            "symmetry scoring; selecting an ordering is a manual override."
+        )
+        pairing_row.addWidget(self.pairingCombo, 1)
+        pairing_layout.addLayout(pairing_row)
+        self.pairingInfo = QtWidgets.QLabel()
+        self.pairingInfo.setWordWrap(True)
+        pairing_layout.addWidget(self.pairingInfo)
+        right_layout.addWidget(self.pairingBox)
+
         model_row = QtWidgets.QHBoxLayout()
         model_row.addWidget(QtWidgets.QLabel("Model:"))
         self.workspaceModelCombo = QtWidgets.QComboBox()
@@ -800,6 +822,7 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         root.addWidget(splitter, 1)
 
         self.transformViewCombo.currentIndexChanged.connect(self._transformViewChanged)
+        self.pairingCombo.currentIndexChanged.connect(self._pairingChanged)
         self.workspaceModelCombo.currentIndexChanged.connect(self._workspaceModelChanged)
         self.transformForm.sigValuesChanged.connect(self._transformParametersChanged)
         self.fitButton.clicked.connect(self.owner.fitTransform)
@@ -811,6 +834,7 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
     def refreshFromState(self) -> None:
         self._syncMethodCombo()
         self._syncModelCombo()
+        self._syncPairingControls()
         self._refreshLocalizationPanel()
         self._refreshTransformPanel()
 
@@ -823,6 +847,85 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
         if index >= 0:
             self.methodCombo.setCurrentIndex(index)
         del blocker
+
+    def _syncPairingControls(self) -> None:
+        specs = self.owner.pairingParameterSpecs()
+        spec = specs.get("correspondence")
+        self.pairingBox.setVisible(spec is not None)
+        if spec is None:
+            self.pairingInfo.clear()
+            return
+
+        current = str(
+            self.owner.pairingParameters().get(
+                "correspondence", GridCorrespondence.AUTO.value
+            )
+        )
+        result = self.owner.correspondenceResult
+        diagnostics = {} if result is None else dict(
+            result.metadata.get("correspondence") or {}
+        )
+        available = tuple(str(value) for value in diagnostics.get("options", ()))
+        if not available:
+            localized = self.owner.localizationResult("source")
+            if localized is not None:
+                available = tuple(
+                    str(value)
+                    for value in localized.metadata.get("correspondence_options", ())
+                )
+        choices = tuple(str(value) for value in (spec.choices or ()))
+        if available:
+            choices = tuple(value for value in choices if value in available)
+        if current not in choices:
+            choices = choices + (current,)
+
+        blocker = QtCore.QSignalBlocker(self.pairingCombo)
+        self.pairingCombo.clear()
+        resolved = str(diagnostics.get("resolved") or "canonical")
+        for value in choices:
+            if value == GridCorrespondence.AUTO.value:
+                try:
+                    label = f"Auto — {grid_ordering_label(resolved)}" if diagnostics else "Auto"
+                except Exception:
+                    label = "Auto"
+            else:
+                try:
+                    label = grid_ordering_label(value)
+                except Exception:
+                    label = value.replace("_", " ").title()
+            self.pairingCombo.addItem(label, value)
+        index = self.pairingCombo.findData(current)
+        self.pairingCombo.setCurrentIndex(index if index >= 0 else 0)
+        del blocker
+
+        if not diagnostics:
+            if self.owner.localizationResult("source") is None or self.owner.localizationResult("target") is None:
+                self.pairingInfo.setText(
+                    "Localize both images to resolve finite-grid correspondence."
+                )
+            else:
+                self.pairingInfo.setText(
+                    "Correspondence has not resolved successfully for the current choice."
+                )
+            return
+        try:
+            resolved_label = grid_ordering_label(resolved)
+        except Exception:
+            resolved_label = resolved.replace("_", " ").title()
+        prefix = f"Auto → {resolved_label}" if current == "auto" else resolved_label
+        details = [prefix]
+        pairs = diagnostics.get("pair_count")
+        rotation = diagnostics.get("relative_rotation_deg")
+        rms = diagnostics.get("rms_px")
+        if pairs is not None:
+            details.append(f"{int(pairs)} measured pairs")
+        if rotation is not None:
+            details.append(f"Δrot {float(rotation):+.2f}°")
+        if rms is not None:
+            details.append(f"score RMS {float(rms):.3g} px")
+        if bool(diagnostics.get("reflection", False)):
+            details.append("reflection")
+        self.pairingInfo.setText(" · ".join(details))
 
     def _syncModelCombo(self) -> None:
         blocker = QtCore.QSignalBlocker(self.workspaceModelCombo)
@@ -962,6 +1065,20 @@ class TransformCalibrationWorkspace(QtWidgets.QDialog):
 
     def _searchMissingSites(self) -> None:
         self.owner.recoverMissingForRole(self._selectedRole())
+
+    def _pairingChanged(self, *_args: Any) -> None:
+        if self._skipPairingSync:
+            return
+        value = self.pairingCombo.currentData()
+        if value is None:
+            return
+        try:
+            self._skipPairingSync = True
+            self.owner.setPairingParameters({"correspondence": str(value)})
+        except (TypeError, ValueError) as error:
+            self.pairingInfo.setText(f"Invalid correspondence: {error}")
+        finally:
+            self._skipPairingSync = False
 
     def _workspaceModelChanged(self, *_args: Any) -> None:
         name = self.workspaceModelCombo.currentData()

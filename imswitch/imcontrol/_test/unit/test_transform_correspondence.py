@@ -189,3 +189,84 @@ def test_ulenses_strategy_matches_only_indices_measured_in_both_images(monkeypat
     assert result.metadata["measured_pair_count"] == 17
     assert result.metadata["moving_missing_count"] == 2
     assert result.metadata["reference_missing_count"] == 2
+
+
+def test_ulenses_grid_auto_correspondence_resolves_flip_x(monkeypatch):
+    from imswitch.imcommon.algorithms.transforms.correspondence import (
+        GridOrdering, grid_ordering_permutation,
+    )
+
+    source_grid = _grid_result(n_cols=5, n_rows=4, stagger_axis=None)
+    permutation = grid_ordering_permutation(
+        source_grid.logical_indices, GridOrdering.FLIP_X
+    )
+    target_grid = _grid_result(n_cols=5, n_rows=4, stagger_axis=None)
+    target_grid = GridLocalizationResult(
+        **{
+            **target_grid.__dict__,
+            # Simulate an independently valid localization that chose the
+            # opposite finite X identity convention in the second image.
+            "measured_points_rc": source_grid.grid_points_rc[permutation]
+            + np.array([2.0, -3.0]),
+        }
+    )
+    localizations = iter([source_grid, target_grid])
+    monkeypatch.setattr(
+        module, "localize_grid", lambda _image, **_kwargs: next(localizations)
+    )
+
+    spec = module.ulenses_grid_strategy_spec()
+    result = spec.run(np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters)
+
+    assert result.metadata["correspondence"]["requested"] == "auto"
+    assert result.metadata["correspondence"]["resolved"] == "flip_x"
+    np.testing.assert_allclose(
+        result.target_points - result.source_points, np.array([2.0, -3.0])
+    )
+
+
+def test_ulenses_grid_manual_correspondence_override_is_respected(monkeypatch):
+    from imswitch.imcommon.algorithms.transforms.correspondence import (
+        GridOrdering, grid_ordering_permutation,
+    )
+
+    source_grid = _grid_result(n_cols=5, n_rows=4, stagger_axis=None)
+    permutation = grid_ordering_permutation(
+        source_grid.logical_indices, GridOrdering.ROTATE_180
+    )
+    target_grid = _grid_result(n_cols=5, n_rows=4, stagger_axis=None)
+    target_grid = GridLocalizationResult(
+        **{
+            **target_grid.__dict__,
+            "measured_points_rc": source_grid.grid_points_rc[permutation]
+            + np.array([1.0, 4.0]),
+        }
+    )
+    localizations = iter([source_grid, target_grid])
+    monkeypatch.setattr(
+        module, "localize_grid", lambda _image, **_kwargs: next(localizations)
+    )
+
+    spec = module.ulenses_grid_strategy_spec()
+    pairing = {"correspondence": "rotate_180"}
+    result = spec.run(
+        np.zeros((8, 8)), np.zeros((8, 8)), spec.default_parameters,
+        pairing_parameters=pairing,
+    )
+
+    assert result.metadata["correspondence"]["requested"] == "rotate_180"
+    assert result.metadata["correspondence"]["resolved"] == "rotate_180"
+    np.testing.assert_allclose(
+        result.target_points - result.source_points, np.array([1.0, 4.0])
+    )
+
+
+def test_ulenses_grid_correspondence_parameter_is_separate_from_localization():
+    spec = module.ulenses_grid_strategy_spec()
+
+    assert "correspondence" not in spec.parameter_specs
+    assert spec.pairing_parameter_specs["correspondence"].choices == (
+        "auto", "canonical", "flip_x", "flip_y", "rotate_180",
+        "transpose", "rotate_90_cw", "rotate_90_ccw", "anti_transpose",
+    )
+    assert spec.default_pairing_parameters["correspondence"] == "auto"

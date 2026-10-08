@@ -150,8 +150,20 @@ class CorrespondenceResult:
         rows = self.metadata.get("n_rows")
         cols = self.metadata.get("n_cols")
         if rows is not None and cols is not None:
-            return f"{self.pair_count} paired points · {int(rows)}x{int(cols)} grid"
-        return f"{self.pair_count} paired points"
+            text = f"{self.pair_count} paired points · {int(rows)}x{int(cols)} grid"
+        else:
+            text = f"{self.pair_count} paired points"
+        correspondence = dict(self.metadata.get("correspondence") or {})
+        if correspondence:
+            label = str(
+                correspondence.get("resolved_label")
+                or correspondence.get("resolved")
+                or ""
+            ).strip()
+            requested = str(correspondence.get("requested") or "")
+            if label:
+                text += f" · {'Auto → ' if requested == 'auto' else ''}{label}"
+        return text
 
 
 CorrespondenceHandler = Callable[
@@ -162,6 +174,16 @@ LocalizationHandler = Callable[
 ]
 LocalizationMatcher = Callable[
     [ImageLocalizationResult, ImageLocalizationResult, Mapping[str, Any], Mapping[str, Any]],
+    CorrespondenceResult,
+]
+LocalizationPairingMatcher = Callable[
+    [
+        ImageLocalizationResult,
+        ImageLocalizationResult,
+        Mapping[str, Any],
+        Mapping[str, Any],
+        Mapping[str, Any],
+    ],
     CorrespondenceResult,
 ]
 LocalizationRecovery = Callable[
@@ -183,13 +205,18 @@ class CorrespondenceStrategySpec:
     normalize_parameters: ParameterNormalizer | None = None
     localize_handler: LocalizationHandler | None = None
     match_handler: LocalizationMatcher | None = None
+    pairing_match_handler: LocalizationPairingMatcher | None = None
     recovery_handler: LocalizationRecovery | None = None
+    pairing_parameter_specs: Mapping[str, ParameterSpec] = field(default_factory=dict)
+    default_pairing_parameters: Mapping[str, Any] = field(default_factory=dict)
+    normalize_pairing_parameters: ParameterNormalizer | None = None
 
     def __post_init__(self) -> None:
         if not str(self.name).strip():
             raise ValueError("correspondence strategy name cannot be empty")
         if self.handler is None and (
-            self.localize_handler is None or self.match_handler is None
+            self.localize_handler is None
+            or (self.match_handler is None and self.pairing_match_handler is None)
         ):
             raise ValueError(
                 "strategy must provide either handler or both localize_handler/match_handler"
@@ -198,10 +225,16 @@ class CorrespondenceStrategySpec:
         for name, value in parameter_defaults(self.parameter_specs).items():
             defaults.setdefault(name, value)
         object.__setattr__(self, "default_parameters", defaults)
+        pairing_defaults = dict(self.default_pairing_parameters)
+        for name, value in parameter_defaults(self.pairing_parameter_specs).items():
+            pairing_defaults.setdefault(name, value)
+        object.__setattr__(self, "default_pairing_parameters", pairing_defaults)
 
     @property
     def supports_independent_localization(self) -> bool:
-        return self.localize_handler is not None and self.match_handler is not None
+        return self.localize_handler is not None and (
+            self.match_handler is not None or self.pairing_match_handler is not None
+        )
 
     @property
     def supports_missing_recovery(self) -> bool:
@@ -214,6 +247,20 @@ class CorrespondenceStrategySpec:
             supplied = normalize_parameter_values(self.parameter_specs, supplied)
         if self.normalize_parameters is not None:
             supplied = self.normalize_parameters(supplied)
+        return supplied
+
+
+    def normalize_pairing(
+        self, parameters: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        supplied = dict(self.default_pairing_parameters)
+        supplied.update(dict(parameters or {}))
+        if self.pairing_parameter_specs:
+            supplied = normalize_parameter_values(
+                self.pairing_parameter_specs, supplied
+            )
+        if self.normalize_pairing_parameters is not None:
+            supplied = self.normalize_pairing_parameters(supplied)
         return supplied
 
     def localize(
@@ -252,8 +299,9 @@ class CorrespondenceStrategySpec:
         target: ImageLocalizationResult,
         source_parameters: Mapping[str, Any],
         target_parameters: Mapping[str, Any] | None = None,
+        pairing_parameters: Mapping[str, Any] | None = None,
     ) -> CorrespondenceResult:
-        if self.match_handler is None:
+        if self.match_handler is None and self.pairing_match_handler is None:
             raise RuntimeError(
                 f"{self.label} does not support correspondence from independent localizations"
             )
@@ -261,7 +309,16 @@ class CorrespondenceStrategySpec:
         target_params = self.normalize(
             source_parameters if target_parameters is None else target_parameters
         )
-        result = self.match_handler(source, target, source_params, target_params)
+        if self.pairing_match_handler is not None:
+            result = self.pairing_match_handler(
+                source,
+                target,
+                source_params,
+                target_params,
+                self.normalize_pairing(pairing_parameters),
+            )
+        else:
+            result = self.match_handler(source, target, source_params, target_params)
         if not isinstance(result, CorrespondenceResult):
             raise TypeError(f"strategy {self.name!r} returned an invalid correspondence")
         return result
@@ -272,6 +329,7 @@ class CorrespondenceStrategySpec:
         target_image: np.ndarray,
         parameters: Mapping[str, Any],
         target_parameters: Mapping[str, Any] | None = None,
+        pairing_parameters: Mapping[str, Any] | None = None,
     ) -> CorrespondenceResult:
         if self.supports_independent_localization:
             source_params = self.normalize(parameters)
@@ -280,7 +338,9 @@ class CorrespondenceStrategySpec:
             )
             source = self.localize(source_image, source_params)
             target = self.localize(target_image, target_params)
-            return self.correspond(source, target, source_params, target_params)
+            return self.correspond(
+                source, target, source_params, target_params, pairing_parameters
+            )
         if self.handler is None:
             raise RuntimeError(f"strategy {self.label} has no correspondence handler")
         if target_parameters is not None and self.normalize(target_parameters) != self.normalize(parameters):

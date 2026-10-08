@@ -349,6 +349,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
 
         self._correspondence_specs: dict[str, CorrespondenceStrategySpec] = {}
         self._strategy_parameters: dict[str, dict[str, dict[str, Any]]] = {}
+        self._strategy_pairing_parameters: dict[str, dict[str, Any]] = {}
         self._parameters: dict[str, Any] = {}  # compatibility alias: Moving params
         self._model_specs = {spec.name: spec for spec in estimator_specs()}
         self._model_parameters = {
@@ -564,6 +565,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
             "source": shared,
             "target": shared,
         }
+        self._strategy_pairing_parameters[spec.name] = spec.normalize_pairing(None)
         if select:
             self.correspondenceCombo.setCurrentIndex(existing)
             self._correspondenceChanged()
@@ -712,6 +714,13 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
     def localizationParameterSpecs(self) -> dict[str, ParameterSpec]:
         return dict(self.correspondenceSpec().parameter_specs)
 
+    def pairingParameterSpecs(self) -> dict[str, ParameterSpec]:
+        """Parameters that change cross-image pairing without rerunning localization."""
+        return dict(self.correspondenceSpec().pairing_parameter_specs)
+
+    def pairingParameters(self) -> dict[str, Any]:
+        return dict(self._strategy_pairing_parameters[self.selectedCorrespondence()])
+
     def transformParameterSpecs(self) -> dict[str, ParameterSpec]:
         return dict(fit_parameter_specs(self.selectedModel()))
 
@@ -754,6 +763,32 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
         self._refreshLocalizationStatusLabels()
         self._updateEnabledState()
         self._emitStateChanged()
+
+    def setPairingParameters(self, values: dict[str, Any]) -> None:
+        """Change correspondence interpretation without rerunning either localizer."""
+        strategy = self.correspondenceSpec()
+        normalized = strategy.normalize_pairing(values)
+        store = self._strategy_pairing_parameters[self.selectedCorrespondence()]
+        if normalized == store:
+            return
+        self._strategy_pairing_parameters[self.selectedCorrespondence()] = normalized
+        self._clearCorrespondence(emit=True)
+        self._invalidateTransform(emit=True)
+        # SLMcore correspondence is deliberately a post-localization operation.
+        # Rebuild it immediately when both existing localizations are current so
+        # manual Auto/flip/rotation choices are cheap and interactive.
+        source = self._localization_results["source"]
+        target = self._localization_results["target"]
+        if (
+            source is not None and target is not None
+            and not self._localization_stale["source"]
+            and not self._localization_stale["target"]
+        ):
+            self.buildCorrespondence()
+        else:
+            self._refreshLocalizationStatusLabels()
+            self._updateEnabledState()
+            self._emitStateChanged()
 
     def setTransformParameters(self, values: dict[str, Any]) -> None:
         """Validate fit parameters while preserving current localization."""
@@ -1082,6 +1117,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
                 target,
                 self.localizationParameters("source"),
                 self.localizationParameters("target"),
+                self.pairingParameters(),
             )
         except Exception as error:
             self._clearCorrespondence(emit=True)
@@ -1126,6 +1162,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
                 self._target_image,
                 self.localizationParameters("source"),
                 self.localizationParameters("target"),
+                self.pairingParameters(),
             )
         except Exception as error:
             self._clearCorrespondence(emit=True)
@@ -1195,6 +1232,7 @@ class TransformCalibrationWidget(QtWidgets.QWidget):
                 "moving": self.localizationParameters("source"),
                 "reference": self.localizationParameters("target"),
             },
+            "pairing_parameters": self.pairingParameters(),
             "correspondence": correspondence_metadata,
             "estimator": fit.estimator,
             "fit_parameters": dict(fit_params),
