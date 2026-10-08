@@ -11,7 +11,10 @@ from imswitch.improcess.reconstructors.snouty._pipeline import (
     _validate_geometry,
     load_restack_deskew_timelapse,
 )
-from imswitch.improcess.reconstructors.snouty.metadata import DEFAULT_PARAMS
+from imswitch.improcess.reconstructors.snouty.metadata import (
+    DEFAULT_PARAMS,
+    recorded_snouty_geometry,
+)
 from imswitch.improcess.reconstructors.snouty.result import SnoutyResult
 from .deconvolve import DeconvolutionProcessorCPU, DeconvolutionProcessorGPU
 from .defaults import DECONVOLUTION_DEFAULTS
@@ -96,7 +99,13 @@ class SnoutyDeconvolutionReconstructor(Reconstructor):
             gradient_consent=bool(params['gradient_consent']),
         )
         deconvolver = None
-        counter = {'timepoint': 0, 'total': max(1, int(params.get('n_timepoints', 1)))}
+        # The pipeline takes the timepoint count from the recording when it
+        # can; mirror that here so the progress text counts the right total.
+        total_timepoints = max(1, int(params.get('n_timepoints', 1)))
+        recorded = recorded_snouty_geometry(data_obj)
+        if recorded is not None and recorded[2] is not None:
+            total_timepoints = max(1, int(recorded[2]))
+        counter = {'timepoint': 0, 'total': total_timepoints}
 
         def per_timepoint(_deskew_processor, tp_stack, use_gpu, cp):
             nonlocal deconvolver

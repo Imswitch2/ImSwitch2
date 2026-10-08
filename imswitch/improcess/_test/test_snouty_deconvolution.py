@@ -33,6 +33,7 @@ from imswitch.improcess.reconstructors.snouty_deconvolution.kernel import (
 )
 from imswitch.improcess.reconstructors.snouty_deconvolution.psf import (
     richards_wolf_psf,
+    richards_wolf_radial,
 )
 
 GEOMETRY = dict(
@@ -79,7 +80,70 @@ def processor():
     return proc
 
 
+class _OriginalKirchhoffSimpson:
+    """Verbatim port of Deconvolution_GUI's adaptive integrator, the reference for the PSF."""
+
+    def __init__(self, defocus, ni, na, wavelength):
+        import math
+
+        self.math = math
+        self.defocus, self.ni, self.na, self.wavelength = defocus, ni, na, wavelength
+        self.tol, self.k_required = 0.1, 5
+
+    def integrand(self, theta, r):
+        from scipy.special import jn
+
+        m = self.math
+        s, c = m.sin(theta), m.cos(theta)
+        sq = m.sqrt(c) * s
+        k = 2 * m.pi * self.ni / (self.wavelength * 1e-9)
+        x = k * s * r
+        b0, b1 = sq * (1 + c) * jn(0, x), sq * s * jn(1, x)
+        b2 = sq * (1 - c) * jn(2, x) if x != 0 else 0.0
+        w = k * self.defocus * c
+        cw, sw = m.cos(w), m.sin(w)
+        return np.array([[b0 * cw, b0 * sw], [b1 * cw, b1 * sw], [b2 * cw, b2 * sw]])
+
+    def _integral(self, va, even, odd, vb, d):
+        re = va[:, 0] + 2 * even[:, 0] + 4 * odd[:, 0] + vb[:, 0]
+        im = va[:, 1] + 2 * even[:, 1] + 4 * odd[:, 1] + vb[:, 1]
+        return (re[0] ** 2 + im[0] ** 2 + 2 * (re[1] ** 2 + im[1] ** 2) + re[2] ** 2 + im[2] ** 2) * d ** 2
+
+    def calculate(self, r):
+        b = self.math.asin(self.na / self.ni)
+        n, d, k, iteration = 2, b / 2, 0, 1
+        even, odd = np.zeros((3, 2)), self.integrand(b / 2, r)
+        va, vb = self.integrand(0.0, r), self.integrand(b, r)
+        current = self._integral(va, even, odd, vb, d)
+        previous = current
+        while k < self.k_required and iteration < 10000:
+            iteration += 1
+            n *= 2
+            d /= 2
+            even += odd
+            odd = np.zeros((3, 2))
+            for i in range(1, n, 2):
+                odd += self.integrand(i * d, r)
+            current = self._integral(va, even, odd, vb, d)
+            difference = abs(previous - current) / (current if current != 0 else 1e-5)
+            k = k + 1 if difference <= self.tol else 0
+            previous = current
+        return current
+
+
 class TestPSF:
+    def test_radial_profile_matches_the_original_integrator(self):
+        radii = np.array([0.0, 100.0, 250.0, 800.0]) * 1e-9
+        defocus = np.array([0.0, 500.0]) * 1e-9
+        mine = richards_wolf_radial(radii, defocus, 1.1, 510.0, 1.5)
+        original = np.array([
+            [_OriginalKirchhoffSimpson(z, 1.5, 1.1, 510.0).calculate(r) for r in radii]
+            for z in defocus
+        ])
+        mine = mine / mine[0, 0]
+        original = original / original[0, 0]
+        assert np.allclose(mine, original, rtol=1e-4, atol=1e-6)
+
     def test_richards_wolf_psf_is_centred_symmetric_and_diffraction_sized(self):
         psf = richards_wolf_psf(41, 100.0, 1.1, 510.0, 1.5)
         assert psf.shape == (41, 41, 41)
@@ -129,6 +193,18 @@ class TestKernel:
         assert kernel.min() >= 0
         assert kernel.sum() == pytest.approx(1.0, abs=1e-5)
         assert np.unravel_index(kernel.argmax(), kernel.shape) == tuple(n // 2 for n in kernel.shape)
+
+    def test_pixel_footprint_is_applied_for_large_camera_pixels(self):
+        """A 116 nm pixel on 50 nm voxels folds the pixel footprint in; still odd, unit sum."""
+        params = {
+            **GEOMETRY, **DECONVOLUTION_DEFAULTS,
+            "sample_vx_size": 50.0, "psf_size_px": 41,
+        }
+        kernel = effective_kernel(params)
+        assert all(n % 2 == 1 for n in kernel.shape)
+        assert kernel.sum() == pytest.approx(1.0, abs=1e-5)
+        assert kernel.min() >= 0
+        assert kernel.shape[0] > kernel.shape[2]
 
     def test_crop_and_pad(self):
         volume = np.zeros((6, 6, 6))
@@ -212,6 +288,28 @@ class TestRichardsonLucy:
         assert correlations[-1] > _corr(deskewed, true)
         assert estimate.min() >= 0
         assert float(estimate.sum()) == pytest.approx(float(true.sum()), rel=0.02)
+
+    def test_loop_reproduces_the_gui_loop_with_a_fresh_canvas(self, processor):
+        """The original update, written with ndimage and a canvas rebuilt per iteration."""
+        _true, stack = _phantom(processor)
+        stack = np.random.default_rng(7).poisson(stack).astype(np.float32)
+        data = processor.camera_values(stack)
+        kernel = processor.kernel
+        n_out = int(np.prod(processor.out_shape))
+
+        def forward(x):
+            return ndimage.correlate(x, kernel[::-1, ::-1, ::-1], mode="constant").ravel()[processor._flat_idx]
+
+        def adjoint(v):
+            canvas = np.bincount(processor._flat_idx, weights=v, minlength=n_out).reshape(processor.out_shape)
+            return ndimage.correlate(canvas, kernel, mode="constant")
+
+        ht1 = adjoint(np.ones_like(data))
+        ht1 = np.maximum(ht1, 0.3 * ht1.max())
+        reference = np.ones(processor.out_shape)
+        for _ in range(4):
+            reference = reference * adjoint(data / np.maximum(forward(reference), 1e-12)) / ht1
+        assert np.allclose(processor.run(stack, 4), reference, rtol=1e-4, atol=1e-3)
 
     def test_adjoint_canvas_is_rebuilt_every_iteration(self, processor):
         """Two iterations from a flat start equal one iteration continued from the first."""

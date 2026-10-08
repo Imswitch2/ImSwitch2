@@ -37,6 +37,12 @@ def _is_cupy(xp) -> bool:
     return xp.__name__ == "cupy"
 
 
+def _to_host(array) -> np.ndarray:
+    """A NumPy copy of ``array`` whichever backend owns it."""
+    get = getattr(array, "get", None)
+    return np.asarray(get() if callable(get) else array)
+
+
 class ShearedRichardsonLucy:
     """Multiplicative Richardson–Lucy through the SNOUTY sampling operator.
 
@@ -214,10 +220,13 @@ class ShearedRichardsonLucy:
             estimate = xp.asarray(initial, dtype=xp.float32).copy()
 
         if self.gradient_consent:
-            rng = xp.random.RandomState(self.seed)
-            counts = xp.rint(data).astype(xp.int64)
-            half_a = rng.binomial(counts, 0.5).astype(xp.float32)
-            half_b = counts.astype(xp.float32) - half_a
+            # The split happens once per stack, so it is done on the host with
+            # NumPy's generator for both backends: one RNG, one result,
+            # whichever device runs the iterations.
+            counts = np.rint(_to_host(data)).astype(np.int64)
+            half_a_host = np.random.default_rng(self.seed).binomial(counts, 0.5)
+            half_a = xp.asarray(half_a_host, dtype=xp.float32)
+            half_b = xp.asarray(counts - half_a_host, dtype=xp.float32)
 
         for iteration in range(iterations):
             if cancel is not None:
